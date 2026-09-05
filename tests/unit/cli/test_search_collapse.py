@@ -818,6 +818,7 @@ class _FakeFeatures:
     entropy = 0.5
     exp = 40
     is_fix = False
+    file_churn = ()
 
 
 class _FakeChangeResult:

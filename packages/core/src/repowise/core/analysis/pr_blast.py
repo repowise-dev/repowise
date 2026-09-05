@@ -330,11 +330,7 @@ class PRBlastRadiusAnalyzer:
                             "direction": "undirected",
                             "evidence_kind": "historical",
                             "provenance": "git_history",
-                            **(
-                                {"support": partner.record["frequency"]}
-                                if partner.record.get("frequency") is not None
-                                else {}
-                            ),
+                            **({"support": partner.support} if partner.support else {}),
                         }
                     )
 

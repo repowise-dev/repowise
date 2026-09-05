@@ -155,7 +155,6 @@ async def _query_pages(repo_path: Path) -> tuple[dict[str, int], int]:
         create_session_factory,
         get_repository_by_path,
         get_session,
-        list_pages,
     )
 
     url = get_db_url_for_repo(repo_path)
@@ -170,10 +169,32 @@ async def _query_pages(repo_path: Path) -> tuple[dict[str, int], int]:
             repo = await get_repository_by_path(session, str(repo_path))
             if repo is None:
                 return counts, total_tokens
-            pages = await list_pages(session, repo.id, include_tombstones=False, limit=10000)
-            for p in pages:
-                counts[p.page_type] = counts.get(p.page_type, 0) + 1
-                total_tokens += (p.input_tokens or 0) + (p.output_tokens or 0)
+            # Aggregated in SQL rather than by counting a fetched list. This
+            # read `list_pages(..., limit=10000)`, and `list_pages` is the
+            # paginated listing helper whose limit defaults to 100 — so the
+            # per-type table stopped at exactly 10000 pages and the token total
+            # with it, while the header above printed the true count from a
+            # different query. A wiki over the cap disagreed with itself.
+            from sqlalchemy import func, select
+
+            from repowise.core.persistence.models import Page
+
+            rows = await session.execute(
+                select(
+                    Page.page_type,
+                    func.count(),
+                    func.sum(func.coalesce(Page.input_tokens, 0)),
+                    func.sum(func.coalesce(Page.output_tokens, 0)),
+                )
+                .where(
+                    Page.repository_id == repo.id,
+                    Page.freshness_status != "tombstone",
+                )
+                .group_by(Page.page_type)
+            )
+            for page_type, count, in_tokens, out_tokens in rows.all():
+                counts[page_type] = counts.get(page_type, 0) + count
+                total_tokens += int(in_tokens or 0) + int(out_tokens or 0)
     finally:
         await engine.dispose()
     return counts, total_tokens

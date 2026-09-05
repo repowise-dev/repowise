@@ -290,12 +290,39 @@ def _expand_one_hop(conn: sqlite3.Connection, seeds: list[str]) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
+#: Governance is acceptance, not a status string. Spelled out here rather than
+#: imported because this path opens the store with stdlib sqlite3 and never
+#: imports ``repowise.core``; it mirrors ``crud.authority.ACCEPTED_SQL_PREDICATE``.
+_ACCEPTED = "EXISTS (SELECT 1 FROM decision_acceptances a WHERE a.decision_id = {ref}.id)"
+
+#: What to add to a governance query on a store that predates the entity split.
+#: Nothing, deliberately. This path opens the store read-only and never runs the
+#: schema reconciler, so it cannot create the table and cannot wait for one: an
+#: acceptance filter there would silently strip every standing decision from the
+#: agent, with no error and no way for this process to fix it. The status column
+#: is what such a store has, and it is what the split's own migration reads.
+_UNMIGRATED = "1 = 1"
+
+
+def _accepted_clause(conn: sqlite3.Connection, ref: str) -> str:
+    """The acceptance filter for *ref*, or a no-op on a pre-split store."""
+    try:
+        found = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("decision_acceptances",),
+        ).fetchone()
+    except sqlite3.Error:
+        return _UNMIGRATED
+    return _ACCEPTED.format(ref=ref) if found else _UNMIGRATED
+
+
 def _load_active_decisions(conn: sqlite3.Connection) -> list[dict]:
-    """Active decisions with their node links, as plain dicts."""
+    """Accepted, current decisions with their node links, as plain dicts."""
     try:
         rows = conn.execute(
             "SELECT id, title, decision, rationale, confidence, staleness_score, source "
-            "FROM decision_records WHERE status = 'active'"
+            "FROM decision_records WHERE status = 'active' AND "
+            + _accepted_clause(conn, "decision_records")
         ).fetchall()
     except sqlite3.Error:
         return []
@@ -459,7 +486,8 @@ def _governing_decisions(conn: sqlite3.Connection, rel: str) -> list[dict]:
         for row in conn.execute(
             "SELECT d.id, d.title, d.decision, d.rationale "
             "FROM decision_node_links l JOIN decision_records d ON d.id = l.decision_id "
-            "WHERE l.node_id IN (?, ?) AND l.link_type = 'file' AND d.status = 'active'",
+            "WHERE l.node_id IN (?, ?) AND l.link_type = 'file' AND d.status = 'active' "
+            "AND " + _accepted_clause(conn, "d"),
             (rel, native),
         ):
             if row[0] not in seen:
@@ -469,7 +497,8 @@ def _governing_decisions(conn: sqlite3.Connection, rel: str) -> list[dict]:
         for row in conn.execute(
             "SELECT d.id, d.title, d.decision, d.rationale, l.node_id "
             "FROM decision_node_links l JOIN decision_records d ON d.id = l.decision_id "
-            "WHERE l.link_type = 'module' AND d.status = 'active'"
+            "WHERE l.link_type = 'module' AND d.status = 'active' "
+            "AND " + _accepted_clause(conn, "d")
         ):
             if (
                 row[0] not in seen

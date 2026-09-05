@@ -41,6 +41,9 @@ def _seed_wiki_db(repo_root: Path, decisions: list[dict]) -> None:
                         source=spec.get("source", "cli"),
                         confidence=spec.get("confidence", 0.9),
                         staleness_score=spec.get("staleness", 0.0),
+                        affected_files_json=json.dumps(
+                            spec.get("affected_files", ["src/app.py"])
+                        ),
                         evidence_file=spec["id"],
                     )
                 )
@@ -130,18 +133,30 @@ def test_a_flag_driven_decision_lands_proposed(indexed_repo: Path) -> None:
 
 
 def test_decision_add_prompts_record_active(indexed_repo: Path) -> None:
-    """The interactive path is unchanged, including the status it writes."""
-    answers = "Interactive title\ncontext\nthe decision\nwhy\n\n\n\n\n"
-    result = CliRunner().invoke(
-        cli, ["decision", "add", str(indexed_repo)], input=answers
-    )
+    """Answering the prompts is an acceptance, and a scope is part of it."""
+    answers = "Interactive title\ncontext\nthe decision\nwhy\n\n\nsrc/app.py\n\n"
+    result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
 
     assert result.exit_code == 0, result.output
-    listed = CliRunner().invoke(
-        cli, ["decision", "list", str(indexed_repo), "--format", "json"]
-    )
+    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
     records = json.loads(listed.output)["decisions"]
     assert [d["status"] for d in records if d["title"] == "Interactive title"] == ["active"]
+
+
+def test_decision_add_without_a_scope_stays_a_candidate(indexed_repo: Path) -> None:
+    """A decision that names no files cannot be checked, so it cannot govern.
+
+    It is kept rather than refused: eight answered questions are worth more
+    than the round trip, and ``confirm --scope`` finishes the job.
+    """
+    answers = "Unscoped title\ncontext\nthe decision\nwhy\n\n\n\n\n"
+    result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "Stored as a candidate" in result.output
+    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
+    records = json.loads(listed.output)["decisions"]
+    assert [d["status"] for d in records if d["title"] == "Unscoped title"] == ["proposed"]
 
 
 def test_half_a_command_line_is_an_error_not_a_prompt(indexed_repo: Path) -> None:
@@ -252,7 +267,7 @@ def test_decision_confirm_promotes_proposed(indexed_repo: Path) -> None:
 
     result = CliRunner().invoke(cli, ["decision", "confirm", "cccccccc", str(indexed_repo)])
     assert result.exit_code == 0, result.output
-    assert "confirmed (active)" in result.output
+    assert "accepted (governing)" in result.output
 
     shown = CliRunner().invoke(cli, ["decision", "show", "cccccccc", str(indexed_repo)])
     assert shown.exit_code == 0, shown.output
@@ -329,3 +344,140 @@ def test_decision_health_prints_summary(indexed_repo: Path) -> None:
     assert "Decision Health" in result.output
     assert "Active decisions" in result.output
     assert "Proposed (needs review)" in result.output
+
+
+class TestTheLifecycleIsDrivableByAnAgent:
+    """Confirm/dismiss/deprecate are how a decision gains and loses authority.
+
+    They were human-only: no machine-readable output, exit 0 on a bad id, and a
+    dismissal that blocked on a prompt no non-interactive caller can answer.
+    """
+
+    def test_confirm_emits_json_and_the_new_status(self, indexed_repo: Path):
+        _seed_wiki_db(indexed_repo, [{"id": "c0ffee01", "title": "T", "status": "proposed"}])
+
+        result = CliRunner().invoke(
+            cli, ["decision", "confirm", "c0ffee01", str(indexed_repo), "--format", "json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload == {"id": "c0ffee01", "status": "active", "action": "accepted"}
+
+    def test_dismiss_does_not_prompt_under_json(self, indexed_repo: Path):
+        _seed_wiki_db(indexed_repo, [{"id": "c0ffee02", "title": "T", "status": "proposed"}])
+
+        result = CliRunner().invoke(
+            cli, ["decision", "dismiss", "c0ffee02", str(indexed_repo), "--format", "json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["status"] == "dismissed"
+
+    def test_dismiss_yes_skips_the_prompt_for_a_person_too(self, indexed_repo: Path):
+        _seed_wiki_db(indexed_repo, [{"id": "c0ffee03", "title": "T", "status": "proposed"}])
+
+        result = CliRunner().invoke(
+            cli, ["decision", "dismiss", "c0ffee03", str(indexed_repo), "--yes"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "dismissed" in result.output
+
+    @pytest.mark.parametrize("action", ["confirm", "dismiss", "deprecate", "show"])
+    def test_an_unknown_id_exits_non_zero(self, indexed_repo: Path, action: str):
+        """Exit 0 on a typo'd id made a failed confirm indistinguishable from a
+        successful one."""
+        _seed_wiki_db(indexed_repo, [])
+
+        result = CliRunner().invoke(
+            cli, ["decision", action, "deadbeef", str(indexed_repo), "--format", "json"]
+        )
+
+        assert result.exit_code != 0, result.output
+
+    @pytest.mark.parametrize("action", ["confirm", "dismiss", "deprecate"])
+    def test_an_unknown_id_reports_a_parseable_reason(self, indexed_repo: Path, action: str):
+        _seed_wiki_db(indexed_repo, [])
+
+        result = CliRunner().invoke(
+            cli, ["decision", action, "deadbeef", str(indexed_repo), "--format", "json"]
+        )
+
+        assert json.loads(result.output) == {
+            "error": "decision_not_found",
+            "decision_id": "deadbeef",
+        }
+
+    def test_deprecate_records_the_successor(self, indexed_repo: Path):
+        _seed_wiki_db(
+            indexed_repo,
+            [
+                {"id": "c0ffee04", "title": "old"},
+                {"id": "c0ffee05", "title": "new"},
+            ],
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "decision", "deprecate", "c0ffee04", str(indexed_repo),
+                "--superseded-by", "c0ffee05", "--format", "json",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["status"] == "deprecated"
+
+
+def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) -> None:
+    """Acceptance needs a reason, a scope and an evidence reference.
+
+    Storing a blank one would make the acceptance log say a person agreed to
+    something it cannot state, which is the pre-split promotion under a new
+    name. The refusal is machine-readable, because a scripted review has to be
+    able to tell it apart from a crash.
+    """
+    _seed_wiki_db(
+        indexed_repo,
+        [
+            {
+                "id": "badbadbadbadbadbadbadbadbadbadba",
+                "title": "Nothing to go on",
+                "status": "proposed",
+                "rationale": "",
+                "decision": "",
+                "affected_files": [],
+            }
+        ],
+    )
+
+    result = CliRunner().invoke(
+        cli, ["decision", "confirm", "badbadba", str(indexed_repo), "--format", "json"]
+    )
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    assert payload["error"] == "acceptance_refused"
+    assert any("scope" in blocker for blocker in payload["blockers"])
+
+    # And it is acceptable once the missing parts are supplied.
+    fixed = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "confirm",
+            "badbadba",
+            str(indexed_repo),
+            "--reason",
+            "Because the alternative was measured slower",
+            "--scope",
+            "src/app.py",
+            "--evidence",
+            "docs/notes.md",
+            "--format",
+            "json",
+        ],
+    )
+    assert fixed.exit_code == 0, fixed.output
+    assert json.loads(fixed.output)["status"] == "active"

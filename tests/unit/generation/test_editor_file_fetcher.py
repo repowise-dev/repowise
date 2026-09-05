@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -99,6 +100,13 @@ async def _add_page(session, repo_id, page_id, page_type, target_path, content):
     return page
 
 
+def _touch(root: Path, *paths: str) -> None:
+    """The hotspot list only names files that exist in the checkout."""
+    for path in paths:
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("", encoding="utf-8")
+
+
 async def _add_git_meta(
     session,
     repo_id,
@@ -130,6 +138,11 @@ async def _add_git_meta(
 
 
 async def _add_decision(session, repo_id, title, status="active", rationale="Some reason"):
+    """Add a record, accepting it when the caller wants one that governs.
+
+    The generated block serves accepted decisions, so a fixture that only sets
+    ``status`` would be seeding candidates and asserting on decisions.
+    """
     dr = DecisionRecord(
         repository_id=repo_id,
         title=title,
@@ -138,10 +151,16 @@ async def _add_decision(session, repo_id, title, status="active", rationale="Som
         decision="Decided to use X",
         context="Context here",
         source="inline_marker",
+        affected_files_json='["src/app.py"]',
+        evidence_file="src/app.py",
         staleness_score=0.0,
     )
     session.add(dr)
     await session.flush()
+    if status == "active":
+        from repowise.core.persistence.crud.authority import accept_decision
+
+        await accept_decision(session, dr, accepter="tester")
     return dr
 
 
@@ -259,6 +278,7 @@ async def test_fetch_entry_points_prefers_curated_list(session, repo, tmp_path):
 
 
 async def test_fetch_hotspots(session, repo, tmp_path):
+    _touch(tmp_path, "src/billing.py", "src/utils.py")
     await _add_git_meta(
         session, repo.id, "src/billing.py", is_hotspot=True, churn_pct=0.95, owner="@alice"
     )
@@ -277,6 +297,7 @@ async def test_fetch_hotspots(session, repo, tmp_path):
 async def test_fetch_hotspots_admits_bug_magnets_that_are_not_churn_hotspots(
     session, repo, tmp_path
 ):
+    _touch(tmp_path, "src/busy.py", "src/broken.py")
     # The filter used to be is_hotspot-only, so a file fixed four times last
     # month that simply is not busy could never appear no matter how it ranked.
     await _add_git_meta(session, repo.id, "src/busy.py", is_hotspot=True, churn_pct=0.99)
@@ -303,6 +324,7 @@ async def test_fetch_hotspots_admits_bug_magnets_that_are_not_churn_hotspots(
 
 
 async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session, repo, tmp_path):
+    _touch(tmp_path, "src/low.py", "src/high.py")
     # A repo with no fix convention has zero fix mass everywhere; the ordering
     # must degrade to exactly the churn ranking it had before, not to nothing.
     await _add_git_meta(session, repo.id, "src/low.py", is_hotspot=True, churn_pct=0.20)
@@ -318,6 +340,7 @@ async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session
 async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
     session, repo, tmp_path
 ):
+    _touch(tmp_path, "src/a.py")
     # bug_magnet with a NULL last_fix_at would render an unanchored accusation.
     await _add_git_meta(
         session,
@@ -347,6 +370,23 @@ async def test_fetch_active_decisions_only(session, repo, tmp_path):
     titles = [d.title for d in data.decisions]
     assert "Use JWT" in titles
     assert "Old choice" not in titles
+
+
+async def test_a_candidate_never_reaches_the_generated_block(session, repo, tmp_path):
+    """An agent reads that block as instructions, so acceptance is the gate.
+
+    A record whose status column says ``active`` but which nobody accepted is
+    still a candidate, and the block is where treating one as guidance does the
+    most damage.
+    """
+    await _add_decision(session, repo.id, "Never accepted", status="proposed")
+    unaccepted = await _add_decision(session, repo.id, "Looks active", status="proposed")
+    unaccepted.status = "active"
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [d.title for d in data.decisions] == []
 
 
 async def test_fetch_avg_confidence(session, repo, tmp_path):
@@ -414,3 +454,62 @@ async def test_fetch_indexed_commit_falls_back_to_live_head_when_stored_is_empty
 
     # tmp_path is not a git checkout, so the fallback resolves to "".
     assert data.indexed_commit == ""
+
+
+async def test_fetch_hotspots_skips_files_no_longer_in_the_checkout(session, repo, tmp_path):
+    """A git_metadata row outlives its file when the prune refuses a run; the
+    deleted file used to rank first in "files that need care" forever (#1929)."""
+    _touch(tmp_path, "src/alive.py")
+    await _add_git_meta(
+        session,
+        repo.id,
+        "src/deleted.py",
+        is_hotspot=True,
+        churn_pct=0.99,
+        fix_mass=9.0,
+        bug_magnet=True,
+        last_fix_at=_now() - timedelta(days=3),
+    )
+    await _add_git_meta(session, repo.id, "src/alive.py", is_hotspot=True, churn_pct=0.50)
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [h.path for h in data.hotspots] == ["src/alive.py"]
+
+
+async def _add_metric(session, repo_id, path, score):
+    from repowise.core.persistence.models import HealthFileMetric
+
+    session.add(HealthFileMetric(repository_id=repo_id, file_path=path, score=score, nloc=10))
+    await session.flush()
+
+
+async def test_code_health_trend_is_absent_without_history(session, repo, tmp_path):
+    await _add_metric(session, repo.id, "src/a.py", 7.0)
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health is not None
+    assert data.code_health.hotspot_trend is None
+
+
+async def test_code_health_trend_is_read_from_the_snapshots(session, repo, tmp_path):
+    from repowise.core.persistence.crud import save_health_snapshot
+
+    await _add_metric(session, repo.id, "src/a.py", 7.0)
+    for day, value in enumerate((8.0, 6.5)):
+        await save_health_snapshot(
+            session,
+            repo.id,
+            hotspot_health=value,
+            average_health=value,
+            worst_performer_path="src/a.py",
+            worst_performer_score=value,
+            per_file_scores={"src/a.py": value},
+            per_file_deductions={},
+            taken_at=_now() + timedelta(days=day),
+        )
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health.hotspot_trend == "declining"

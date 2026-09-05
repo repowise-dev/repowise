@@ -54,6 +54,7 @@ from sqlalchemy import select
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server._budget import register_post_shed
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -64,6 +65,7 @@ from repowise.server.mcp_server._helpers import (
     read_repo_file_text,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import completeness_line as _completeness_line
 from repowise.server.mcp_server._meta import symbol_hint as _symbol_hint
 from repowise.server.mcp_server._references import (
     omission_reference,
@@ -422,6 +424,10 @@ async def _resolve_range_read(
             targets=[path],
         ),
     }
+    if s == 1 and e == total and not range_truncated:
+        # Only a range that covers the file end to end is a whole unit; any
+        # other slice leaves lines the caller still has to go and read.
+        response["_meta"]["complete"] = _completeness_line(files=1)
     remainder_end = min(requested_end, total)
     if range_truncated and e < remainder_end:
         # Same clean-continuation contract as a truncated symbol read: name the
@@ -580,6 +586,7 @@ async def _render_ambiguous(
     candidates: list[dict] = []
     not_rendered: list[dict] = []
     remaining = _AMBIGUITY_CHAR_BUDGET
+    whole_bodies = 0
 
     for i, row in enumerate(rows):
         if row.file_path not in text_cache:
@@ -623,6 +630,10 @@ async def _render_ambiguous(
         remaining -= len(numbered)
         entry["source"] = numbered
         candidates.append(entry)
+        # A candidate is whole only when the served span reaches both ends of
+        # the verified bounds; a budget-clipped or relocated one does not count.
+        if check.verified and start <= check.start_line and end >= check.end_line:
+            whole_bodies += 1
 
     response: dict[str, Any] = {
         "symbol_id": symbol_id,
@@ -640,6 +651,8 @@ async def _render_ambiguous(
             targets=sorted({r.file_path for r in rows}),
         ),
     }
+    if whole_bodies:
+        response["_meta"]["complete"] = _completeness_line(bodies=whole_bodies)
     if not_rendered:
         response["not_rendered"] = not_rendered
         response["note"] += (
@@ -654,6 +667,29 @@ async def _render_ambiguous(
     if full_tokens:
         declare_replaced(response, full_tokens)
     return response
+
+
+def _correct_ambiguity_note(result: dict[str, Any], _collector: Any) -> None:
+    """Stop promising every candidate body once the budget has cut some.
+
+    The ambiguous shape exists so a wrong pick is never made silently, and says
+    so in ``note``. A shed that leaves the note standing makes exactly the
+    claim the shape was built to avoid.
+    """
+    if not result.get("ambiguous"):
+        return
+    emitted = result.get("candidates_emitted")
+    if emitted is None or emitted >= (result.get("match_count") or 0):
+        return
+    result["note"] = (
+        f"{result.get('match_count')} symbols match this id (overloads, "
+        f"re-exports, or conditional definitions). {emitted} candidate bodies "
+        "fit this response; the rest are recoverable from the omission ref, or "
+        "fetch one directly with its file range."
+    )
+
+
+register_post_shed("get_symbol", _correct_ambiguity_note)
 
 
 @mcp.tool(surface_order=30, artifact_type="source", presentation="source", evidence_basis="measured")
@@ -892,6 +928,10 @@ async def get_symbol(
             targets=[row.file_path],
         ),
     }
+    if not truncated and check.verified:
+        # The whole body was served against live bytes, so nothing is left to
+        # fetch for this symbol.
+        response["_meta"]["complete"] = _completeness_line(bodies=1)
     if truncated and not check.approximate and end < check.end_line:
         # The body exceeds the serve cap. Hand back the exact range read that
         # fetches the remainder so the agent never has to guess the next span

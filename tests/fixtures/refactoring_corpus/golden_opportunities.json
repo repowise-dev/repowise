@@ -1,0 +1,355 @@
+{
+  "gopkg": [
+    {
+      "addresses_primary_problem": false,
+      "affected_files": [
+        "inventory.go"
+      ],
+      "confidence": "high",
+      "effort_bucket": "L",
+      "evidence": [],
+      "file_path": "inventory.go",
+      "judgment_steps": 1,
+      "lead_biomarker": "dry_violation",
+      "lead_refactoring_type": "split_file",
+      "mechanical_steps": 0,
+      "opportunity_id": "refop2_f8df0afac1fe67c55d05",
+      "rank_factors": {
+        "benefit": 1.6931,
+        "cost": 3.0,
+        "mechanical_share": 0.0,
+        "primary_problem": 0.0,
+        "risk": 0.0
+      },
+      "rank_score": 0.4233,
+      "recoverable_health": 0.0,
+      "refactoring_model_version": 2,
+      "step_count": 1,
+      "steps": [
+        {
+          "applicability": {
+            "classification": "judgment",
+            "facts": {
+              "affected_file_count": 1,
+              "blast_size": 0,
+              "confidence": "high",
+              "cross_file": false,
+              "dependents": 0,
+              "framework_registration": null,
+              "groups_named": false,
+              "shim_required": false
+            },
+            "reasons": [
+              "no_named_target"
+            ],
+            "unknowns": [
+              "framework_registration"
+            ]
+          },
+          "confidence": "high",
+          "effort_bucket": "L",
+          "file_path": "inventory.go",
+          "impact_delta": 0.0,
+          "plan_id": "refac2_396717806264bd16aab8",
+          "refactoring_type": "split_file",
+          "relocated_by": null,
+          "source_biomarker": "",
+          "target_symbol": "inventory.go -> 2 files"
+        }
+      ],
+      "why_ranked": [
+        {
+          "factor": "cost",
+          "value": 3.0
+        },
+        {
+          "factor": "benefit",
+          "value": 1.6931
+        }
+      ]
+    }
+  ],
+  "orm": [],
+  "tsapp": [
+    {
+      "addresses_primary_problem": true,
+      "affected_files": [
+        "account.ts"
+      ],
+      "confidence": "high",
+      "effort_bucket": "S",
+      "evidence": [],
+      "file_path": "account.ts",
+      "judgment_steps": 0,
+      "lead_biomarker": "complex_method",
+      "lead_refactoring_type": "extract_method",
+      "mechanical_steps": 1,
+      "opportunity_id": "refop2_d82fe75fc83659cefa14",
+      "rank_factors": {
+        "benefit": 1.452,
+        "cost": 1.0,
+        "mechanical_share": 0.5,
+        "primary_problem": 0.5,
+        "risk": 0.0
+      },
+      "rank_score": 1.452,
+      "recoverable_health": 1.452,
+      "refactoring_model_version": 2,
+      "step_count": 1,
+      "steps": [
+        {
+          "applicability": {
+            "classification": "mechanical",
+            "facts": {
+              "affected_file_count": 1,
+              "blast_size": 0,
+              "confidence": "high",
+              "cross_file": false,
+              "local_scope": true
+            },
+            "reasons": [
+              "dataflow_proved_local_extraction"
+            ],
+            "unknowns": []
+          },
+          "confidence": "high",
+          "effort_bucket": "S",
+          "file_path": "account.ts",
+          "impact_delta": 1.452,
+          "plan_id": "refac2_a5f94bcfa0d5e0e24f37",
+          "refactoring_type": "extract_method",
+          "relocated_by": null,
+          "source_biomarker": "complex_method",
+          "target_symbol": "parseAccount"
+        }
+      ],
+      "why_ranked": [
+        {
+          "factor": "benefit",
+          "value": 1.452
+        },
+        {
+          "factor": "cost",
+          "value": 1.0
+        },
+        {
+          "factor": "mechanical_share",
+          "value": 0.5
+        }
+      ]
+    },
+    {
+      "addresses_primary_problem": true,
+      "affected_files": [
+        "workspace.ts"
+      ],
+      "confidence": "high",
+      "effort_bucket": "S",
+      "evidence": [],
+      "file_path": "workspace.ts",
+      "judgment_steps": 0,
+      "lead_biomarker": "complex_method",
+      "lead_refactoring_type": "extract_method",
+      "mechanical_steps": 1,
+      "opportunity_id": "refop2_443f00cfefc5d4f86685",
+      "rank_factors": {
+        "benefit": 1.452,
+        "cost": 1.0,
+        "mechanical_share": 0.5,
+        "primary_problem": 0.5,
+        "risk": 0.0
+      },
+      "rank_score": 1.452,
+      "recoverable_health": 1.452,
+      "refactoring_model_version": 2,
+      "step_count": 1,
+      "steps": [
+        {
+          "applicability": {
+            "classification": "mechanical",
+            "facts": {
+              "affected_file_count": 1,
+              "blast_size": 0,
+              "confidence": "high",
+              "cross_file": false,
+              "local_scope": true
+            },
+            "reasons": [
+              "dataflow_proved_local_extraction"
+            ],
+            "unknowns": []
+          },
+          "confidence": "high",
+          "effort_bucket": "S",
+          "file_path": "workspace.ts",
+          "impact_delta": 1.452,
+          "plan_id": "refac2_b21dea1501a82eec255a",
+          "refactoring_type": "extract_method",
+          "relocated_by": null,
+          "source_biomarker": "complex_method",
+          "target_symbol": "parseWorkspace"
+        }
+      ],
+      "why_ranked": [
+        {
+          "factor": "benefit",
+          "value": 1.452
+        },
+        {
+          "factor": "cost",
+          "value": 1.0
+        },
+        {
+          "factor": "mechanical_share",
+          "value": 0.5
+        }
+      ]
+    }
+  ],
+  "web": [
+    {
+      "addresses_primary_problem": false,
+      "affected_files": [
+        "handlers.py"
+      ],
+      "confidence": "high",
+      "effort_bucket": "S",
+      "evidence": [
+        {
+          "plan_id": "refac2_aa609dc289a6e9572306",
+          "refactoring_type": "extract_helper",
+          "source_biomarker": "dry_violation",
+          "summary": {
+            "co_change_count": 0,
+            "duplicated_lines": 21,
+            "is_intra_file": true,
+            "occurrence_count": 3,
+            "token_count": 14000
+          },
+          "target_symbol": "handlers.py:25-45"
+        },
+        {
+          "plan_id": "refac2_8ea65569516929f43f5b",
+          "refactoring_type": "extract_helper",
+          "source_biomarker": "dry_violation",
+          "summary": {
+            "co_change_count": 0,
+            "duplicated_lines": 21,
+            "is_intra_file": true,
+            "occurrence_count": 2,
+            "token_count": 7050
+          },
+          "target_symbol": "handlers.py:87-107"
+        }
+      ],
+      "file_path": "handlers.py",
+      "judgment_steps": 0,
+      "lead_biomarker": "dry_violation",
+      "lead_refactoring_type": "extract_method",
+      "mechanical_steps": 3,
+      "opportunity_id": "refop2_1a90a90d31e0cde5d50b",
+      "rank_factors": {
+        "benefit": 0.75,
+        "cost": 3.0,
+        "mechanical_share": 0.5,
+        "primary_problem": 0.0,
+        "risk": 0.0
+      },
+      "rank_score": 0.2812,
+      "recoverable_health": 0.75,
+      "refactoring_model_version": 2,
+      "step_count": 3,
+      "steps": [
+        {
+          "applicability": {
+            "classification": "mechanical",
+            "facts": {
+              "affected_file_count": 1,
+              "blast_size": 0,
+              "confidence": "high",
+              "cross_file": false,
+              "local_scope": true
+            },
+            "reasons": [
+              "dataflow_proved_local_extraction"
+            ],
+            "unknowns": []
+          },
+          "confidence": "high",
+          "effort_bucket": "S",
+          "file_path": "handlers.py",
+          "impact_delta": 0.25,
+          "plan_id": "refac2_cdc5177783ea57d763e5",
+          "refactoring_type": "extract_method",
+          "relocated_by": null,
+          "source_biomarker": "complex_method",
+          "target_symbol": "read_account"
+        },
+        {
+          "applicability": {
+            "classification": "mechanical",
+            "facts": {
+              "affected_file_count": 1,
+              "blast_size": 0,
+              "confidence": "high",
+              "cross_file": false,
+              "local_scope": true
+            },
+            "reasons": [
+              "dataflow_proved_local_extraction"
+            ],
+            "unknowns": []
+          },
+          "confidence": "high",
+          "effort_bucket": "S",
+          "file_path": "handlers.py",
+          "impact_delta": 0.25,
+          "plan_id": "refac2_48c888afc5af0d975522",
+          "refactoring_type": "extract_method",
+          "relocated_by": null,
+          "source_biomarker": "complex_method",
+          "target_symbol": "read_workspace"
+        },
+        {
+          "applicability": {
+            "classification": "mechanical",
+            "facts": {
+              "affected_file_count": 1,
+              "blast_size": 0,
+              "confidence": "high",
+              "cross_file": false,
+              "local_scope": true
+            },
+            "reasons": [
+              "dataflow_proved_local_extraction"
+            ],
+            "unknowns": []
+          },
+          "confidence": "high",
+          "effort_bucket": "S",
+          "file_path": "handlers.py",
+          "impact_delta": 0.25,
+          "plan_id": "refac2_4ecbf32a9c6419829a56",
+          "refactoring_type": "extract_method",
+          "relocated_by": null,
+          "source_biomarker": "complex_method",
+          "target_symbol": "read_project"
+        }
+      ],
+      "why_ranked": [
+        {
+          "factor": "cost",
+          "value": 3.0
+        },
+        {
+          "factor": "benefit",
+          "value": 0.75
+        },
+        {
+          "factor": "mechanical_share",
+          "value": 0.5
+        }
+      ]
+    }
+  ]
+}

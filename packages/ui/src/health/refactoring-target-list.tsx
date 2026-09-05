@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import {
   HealthWorkItemCard,
   type HealthWorkItem,
@@ -28,6 +29,11 @@ export interface HealthWorkQueueListProps {
   onLoadFindings?:
     | ((filePath: string) => Promise<HealthWorkItemFinding[]>)
     | undefined;
+  /** Resolve a file's composed refactoring opportunity, on first expand. */
+  onLoadOpportunity?:
+    | ((filePath: string) => Promise<RefactoringOpportunity | null>)
+    | undefined;
+  refactoringOpportunityHref?: ((opportunityId: string) => string) | undefined;
   emptyMessage?: string;
   /** File path of the card to flash-highlight (quadrant click). */
   highlightedPath?: string | null | undefined;
@@ -39,6 +45,8 @@ export function HealthWorkQueueList({
   onStatusChange,
   onGeneratePrompt,
   onLoadFindings,
+  onLoadOpportunity,
+  refactoringOpportunityHref,
   emptyMessage = "No health work items match the current filters.",
   highlightedPath,
 }: HealthWorkQueueListProps) {
@@ -83,6 +91,8 @@ export function HealthWorkQueueList({
             onStatusChange={onStatusChange}
             onGeneratePrompt={onGeneratePrompt}
             onLoadFindings={onLoadFindings}
+            onLoadOpportunity={onLoadOpportunity}
+            refactoringOpportunityHref={refactoringOpportunityHref}
             highlighted={highlightedPath === t.file_path}
           />
         ))}

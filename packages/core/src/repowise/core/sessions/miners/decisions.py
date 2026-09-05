@@ -55,7 +55,9 @@ from typing import Any
 
 import structlog
 
+from repowise.core.analysis.decisions.discovery.spans import SpanCollector
 from repowise.core.analysis.decisions.extractor import ExtractedDecision
+from repowise.core.analysis.decisions.policy import resolve_policy
 from repowise.core.analysis.decisions.provenance import (
     compute_confidence,
     rank_for_source,
@@ -76,7 +78,7 @@ from repowise.core.sessions.events import (
     is_prose_user_text,
     relative_files,
 )
-from repowise.core.sessions.staging import SessionStagingStore
+from repowise.core.sessions.staging import DISCOVERY_KIND, SessionStagingStore
 
 logger = structlog.get_logger(__name__)
 
@@ -85,6 +87,7 @@ __all__ = [
     "apply_injection_feedback",
     "mine_events",
     "mine_session_decisions",
+    "promotion_decisions",
     "session_mining_enabled",
 ]
 
@@ -497,12 +500,13 @@ _LLM_CHUNK = 12
 
 
 def session_mining_enabled(repo_config: dict[str, Any] | None) -> bool:
-    """Resolve the ``decisions.session_mining`` config gate (default on)."""
-    cfg = repo_config or {}
-    decisions_cfg = cfg.get("decisions") or {}
-    if not isinstance(decisions_cfg, dict):
-        return True
-    return decisions_cfg.get("session_mining", True) is not False
+    """Whether the transcript miner may run at all.
+
+    Resolved from the shared policy, which still honours the legacy
+    ``decisions.session_mining`` boolean.
+    """
+    return resolve_policy(repo_config).policy.source_enabled("session")
+
 
 
 def _candidates_block(raws: list[dict[str, Any]]) -> str:
@@ -597,17 +601,22 @@ def _gate_structured(item: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any
 _MAX_EVIDENCE_SESSIONS = 5
 
 
-def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[ExtractedDecision]:
+def promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[ExtractedDecision]:
     """decision_records-ready members for one promotable staging row.
 
     One member per observing session (capped) so each session becomes its own
-    evidence row via the ``bulk_upsert_decisions`` accretion path. The first
-    promotion lands ``active``; later observation-driven re-emissions land
-    ``proposed``, which adds evidence but can never overwrite a status a
-    human (or the evolution judge) set deliberately.
+    evidence row via the ``bulk_upsert_decisions`` accretion path.
+
+    Every member lands ``proposed``, first promotion included. Recurrence
+    across sessions is evidence that a candidate is worth reviewing, not an
+    acceptance event: authority comes from a person confirming the record.
+    ``first_promotion`` still gates re-emission in the staging store, so a
+    recurring candidate accretes evidence without re-proposing itself.
     """
     structured = row["structured"]
-    status = "active" if row["first_promotion"] else "proposed"
+    # Both session lanes store source="session"; the staging kind is what tells
+    # a reviewer which one raised the candidate.
+    lane = DISCOVERY_KIND if row.get("kind") == DISCOVERY_KIND else "session"
     files = relative_files(structured.get("affected_files") or row["files"], repo_root)
     modules = resolve_module_nodes(files)
     confidence = compute_confidence(
@@ -626,9 +635,11 @@ def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[Extracted
             source="session",
             evidence_commits=[sid] if sid else [],
             confidence=confidence,
-            status=status,
+            status="proposed",
             source_quote=structured.get("source_quote", ""),
             verification=structured.get("verification", "unverified"),
+            lane=lane,
+            needs_split=bool(structured.get("needs_split")),
         )
         for sid in sessions
     ]
@@ -641,7 +652,6 @@ def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[Extracted
 #: An injection is judged only after this long: the showing session must have
 #: had time to react (or end) before "no contradiction" reads as "followed".
 INJECTION_EVAL_MIN_AGE_SECONDS = 3600.0
-
 
 
 async def apply_injection_feedback(
@@ -786,6 +796,7 @@ async def mine_session_decisions(
     provider: Any | None,
     projects_root: Path | None = None,
     max_structured: int = MAX_STRUCTURED_PER_UPDATE,
+    collect_discovery_spans: bool = False,
     now: float | None = None,
 ) -> list[ExtractedDecision]:
     """Read this repo's new transcript lines once, and serve both consumers.
@@ -806,6 +817,11 @@ async def mine_session_decisions(
     *provider* may be ``None``. Discovery, folding and staging are keyless and
     run regardless; only the structuring pass needs a model, so a user with no
     API key gets transcript episodes and a staged backlog rather than nothing.
+
+    With *collect_discovery_spans*, the same read also queues the user and
+    assistant prose that the broad discovery lane consumes. It rides this pass
+    for the same reason the episode recorder does: the cursor advances as the
+    bytes are read, so a second reader would find an empty file.
     """
     repo_root = Path(repo_path).resolve()
     repo_prefix = str(repo_root).lower().rstrip("\\/")
@@ -816,6 +832,7 @@ async def mine_session_decisions(
     recorder = TranscriptEpisodeRecorder(repo_root)
 
     store = SessionStagingStore.open_default(repo_root)
+    collector = SpanCollector(store, repo_root, now=now) if collect_discovery_spans else None
     try:
         # Stage new gate hits from transcript lines appended since last run.
         staged = 0
@@ -839,7 +856,10 @@ async def mine_session_decisions(
                 break
             try:
                 events = iter_new_events(adapter, path, store.cursors, prefilter=prefilter)
-                for candidate in mine_events(recorder.observe(path, events), repo_prefix):
+                stream = recorder.observe(path, events)
+                if collector is not None:
+                    stream = collector.observe(stream)
+                for candidate in mine_events(stream, repo_prefix):
                     if store.add_raw(
                         hash_=candidate.hash,
                         kind=candidate.kind,
@@ -906,7 +926,9 @@ async def mine_session_decisions(
         # Promotion: observation-qualified decisions, ready for upsert.
         decisions: list[ExtractedDecision] = []
         for row in store.promotable():
-            decisions.extend(_promotion_decisions(row, repo_root))
+            if row["kind"] == DISCOVERY_KIND:
+                continue  # the broad lane runs its own promotion, under its own rules
+            decisions.extend(promotion_decisions(row, repo_root))
             store.mark_emitted(row["key"], observations=row["observations"], now=now)
         store.commit()
 
@@ -915,6 +937,7 @@ async def mine_session_decisions(
             staged=staged,
             structured=structured_count,
             pending_backlog=max(0, len(pending) - processed),
+            discovery_spans=collector.queued if collector else 0,
             promoted=len(decisions),
             episodes=episodes,
             transcripts_deferred=deferred,

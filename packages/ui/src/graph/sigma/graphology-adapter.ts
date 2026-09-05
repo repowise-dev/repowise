@@ -55,13 +55,118 @@ function classifyEdge(
     sourceNode.community_id === targetNode.community_id
   )
     return "internal";
-  if (
-    sourceNode &&
-    targetNode &&
-    sourceNode.community_id !== targetNode.community_id
-  )
-    return "crossCommunity";
-  return "import";
+  // One endpoint is missing from `nodeMap`, which is built from exactly
+  // `graph.nodes` — so the edge loop below drops this link before it is ever
+  // drawn. It still needs a kind to be bucketed by; "crossCommunity" is the
+  // honest reading of an edge leaving the known set.
+  return "crossCommunity";
+}
+
+/**
+ * Positions for a community slice, which the whole-repo seed lays out badly.
+ *
+ * That seed partitions by `community_id` and puts each community's centroid on
+ * a golden-angle ring. A slice is one community by definition, so the partition
+ * degenerates: every member shares an id and lands in a single small disc,
+ * while the boundary stubs carry their own real community ids and get strewn
+ * across the rest of the ring. Measured on a 94-node slice the members occupied
+ * 3.4% of the drawn area and every member-to-stub edge was a chord longer than
+ * the members' own diameter.
+ *
+ * So lay a slice out on its own terms: members fill the middle, stubs ring the
+ * edge on the bearing of whatever they attach to.
+ */
+function seedSlicePositions(
+  graph: GraphExport,
+  boundaryNodeIds: Set<string>,
+  spread: number,
+): Map<string, { x: number; y: number }> {
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const positions = new Map<string, { x: number; y: number }>();
+  const members = graph.nodes.filter((n) => !boundaryNodeIds.has(n.node_id));
+  const stubs = graph.nodes.filter((n) => boundaryNodeIds.has(n.node_id));
+  if (members.length === 0) return positions;
+
+  // Sunflower over the inner 60% of the field. sqrt on the radius keeps the
+  // distribution uniform over area rather than bunched at the centre.
+  const memberRadius = spread * 0.6;
+  const memberAngle = new Map<string, number>();
+  members.forEach((node, i) => {
+    const angle = i * goldenAngle;
+    // `i / n`, so member 0 sits at the centre and member n-1 near the rim.
+    // With `(i + 1) / n` the first member took the full radius, which drew a
+    // one-file community out on the 3 o'clock ray with every stub stacked on
+    // that same bearing and the rest of the field empty.
+    const r = memberRadius * Math.sqrt(i / members.length);
+    memberAngle.set(node.node_id, angle);
+    positions.set(node.node_id, {
+      x: r * Math.cos(angle),
+      y: r * Math.sin(angle),
+    });
+  });
+
+  // Vector mean of the bearings a stub is pulled toward, not a mean of the
+  // angles: averaging 0.1 and 6.2 radians numerically would put the stub on the
+  // opposite side of the graph from both of its neighbours.
+  const pull = new Map<string, { x: number; y: number; n: number }>();
+  for (const link of graph.links) {
+    const sourceIsStub = boundaryNodeIds.has(link.source);
+    const targetIsStub = boundaryNodeIds.has(link.target);
+    if (sourceIsStub === targetIsStub) continue;
+    const stub = sourceIsStub ? link.source : link.target;
+    const angle = memberAngle.get(sourceIsStub ? link.target : link.source);
+    if (angle === undefined) continue;
+    const acc = pull.get(stub) ?? { x: 0, y: 0, n: 0 };
+    acc.x += Math.cos(angle);
+    acc.y += Math.sin(angle);
+    acc.n += 1;
+    pull.set(stub, acc);
+  }
+
+  // Resolve every bearing first, then fan. Cancellation is judged against a
+  // residue scaled by the number of contributing links, because two exactly
+  // opposite bearings sum to ~1e-17 rather than to 0.
+  const bearings = stubs.map((node, i) => {
+    const acc = pull.get(node.node_id);
+    const cancelled =
+      !acc || Math.hypot(acc.x, acc.y) < acc.n * 1e-9;
+    // Nothing to point at, or pulls that cancel: spread the unanchored stubs
+    // evenly instead of stacking them on one bearing.
+    return cancelled ? i * goldenAngle : Math.atan2(acc.y, acc.x);
+  });
+
+  // Stubs that share a bearing get a band wide enough to hold them all. A
+  // community whose boundary hangs off one high-degree member would otherwise
+  // put every stub in one small box, and since the seed IS the layout — FA2
+  // and noverlap are both off for a file graph — nothing separates them later.
+  const perBearing = new Map<number, number>();
+  const bucketOf = (a: number) => Math.round(a / 0.15);
+  for (const a of bearings) {
+    const b = bucketOf(a);
+    perBearing.set(b, (perBearing.get(b) ?? 0) + 1);
+  }
+  const placedInBucket = new Map<number, number>();
+
+  stubs.forEach((node, i) => {
+    const angle = bearings[i]!;
+    const bucket = bucketOf(angle);
+    const crowd = perBearing.get(bucket) ?? 1;
+    const seat = placedInBucket.get(bucket) ?? 0;
+    placedInBucket.set(bucket, seat + 1);
+    // The ring is a band, not a circle. The arc grows with the crowd so 40
+    // stubs on one bearing occupy 40 seats rather than 40 overlapping discs;
+    // the radial jitter is deterministic, like the rest of the seed.
+    const arc = Math.min(0.2 * crowd, Math.PI / 2);
+    const offset = crowd === 1 ? 0 : (seat / (crowd - 1) - 0.5) * arc;
+    const hash = simpleHash(node.node_id);
+    const ring = spread * (0.92 + (((hash >> 10) % 1000) / 1000) * 0.16);
+    positions.set(node.node_id, {
+      x: ring * Math.cos(angle + offset),
+      y: ring * Math.sin(angle + offset),
+    });
+  });
+
+  return positions;
 }
 
 function computeEdgeSize(
@@ -113,6 +218,9 @@ const CHUNK_SIZE = 500;
 export type FileGraphAdapterOptions = {
   signals?: { hotNodeIds?: Set<string>; deadNodeIds?: Set<string> };
   nodeCount?: number;
+  /** Nodes that are context rather than content — the one-hop stubs a community
+   *  slice carries. Drawn as the boundary of the scoped view. */
+  boundaryNodeIds?: Set<string>;
 };
 
 export function fileGraphToGraphology(
@@ -173,6 +281,13 @@ function* buildFileGraph(
   );
   const communityCount = sortedCommunities.length;
 
+  // A slice gets its own seed; see seedSlicePositions for why the partition
+  // above degenerates when every member shares one community id.
+  const slicePositions =
+    options?.boundaryNodeIds?.size && spread > 0
+      ? seedSlicePositions(graph, options.boundaryNodeIds, spread)
+      : null;
+
   let processed = 0;
   for (let i = 0; i < sortedCommunities.length; i++) {
     const communityId = sortedCommunities[i]!;
@@ -192,8 +307,9 @@ function* buildFileGraph(
       const hash = simpleHash(node.node_id);
       const r = (jitter / 2) * Math.sqrt((hash % 1000) / 1000);
       const theta = (((hash >> 10) % 1000) / 1000) * 2 * Math.PI;
-      const x = centroidX + r * Math.cos(theta);
-      const y = centroidY + r * Math.sin(theta);
+      const seeded = slicePositions?.get(node.node_id);
+      const x = seeded ? seeded.x : centroidX + r * Math.cos(theta);
+      const y = seeded ? seeded.y : centroidY + r * Math.sin(theta);
 
       let baseSize: number;
       if (node.is_entry_point) {
@@ -205,6 +321,12 @@ function* buildFileGraph(
       }
       let size = getScaledNodeSize(baseSize, nodeCount);
       size *= Math.min(1 + node.pagerank * 2, 2);
+
+      const isBoundary = options?.boundaryNodeIds?.has(node.node_id) ?? false;
+      // Two thirds, so a stub reads as smaller than every member without
+      // vanishing. Colour is handled in use-sigma's colour pass, which runs
+      // after this and would otherwise overwrite anything set here.
+      if (isBoundary) size *= 0.65;
 
       const color = languageColor(node.language);
 
@@ -227,6 +349,7 @@ function* buildFileGraph(
         mass: getNodeMass("file", nodeCount),
         originalColor: color,
       };
+      if (isBoundary) attrs.isBoundary = true;
 
       // Signal data may come from two sources: explicit overlay sets
       // (legacy unified-graph flow) or enriched node payloads from Phase A.
@@ -256,7 +379,6 @@ function* buildFileGraph(
   // Classify edges in one O(E) pass, then bucket by kind (avoids O(E log E) sort)
   const kindBuckets: Record<SigmaEdgeAttributes["edgeKind"], GraphLink[]> = {
     crossCommunity: [],
-    import: [],
     internal: [],
     dynamic: [],
     lowConfidence: [],
@@ -269,7 +391,6 @@ function* buildFileGraph(
   }
   const orderedLinks = (
     kindBuckets.crossCommunity
-      .concat(kindBuckets.import)
       .concat(kindBuckets.internal)
       .concat(kindBuckets.dynamic)
       .concat(kindBuckets.lowConfidence)

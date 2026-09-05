@@ -11,7 +11,7 @@ that **every edge carries its own evidence**.
 <p>
   <img src="https://img.shields.io/badge/17-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="17 edge types" />
   <img src="https://img.shields.io/badge/29-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="29 resolution origins" />
-  <img src="https://img.shields.io/badge/19-languages-F59520?style=flat-square&labelColor=0A0A0A" alt="19 languages" />
+  <img src="https://img.shields.io/badge/25-languages-F59520?style=flat-square&labelColor=0A0A0A" alt="25 languages" />
   <img src="https://img.shields.io/badge/22-framework_detectors-7F52FF?style=flat-square&labelColor=0A0A0A" alt="22 framework detectors" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
   <img src="https://img.shields.io/badge/compiler_graded-7_of_7_cells_undominated-DC2626?style=flat-square&labelColor=0A0A0A" alt="no tool is both more precise and more complete, in 7 of 7 compiler-graded cells" />

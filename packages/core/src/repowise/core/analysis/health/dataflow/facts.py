@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -209,10 +209,19 @@ class FileDataflow:
     non-convergence -- degrades to an empty result for the affected scope.
     """
 
-    def __init__(self, abs_path: str, language: str, source: bytes | None = None) -> None:
+    def __init__(
+        self,
+        abs_path: str,
+        language: str,
+        source: bytes | None = None,
+        read_source: Any | None = None,
+    ) -> None:
         self.abs_path = abs_path
         self.language = language
         self._source = source
+        # When set, the only source of bytes: a miss is unreadable, not a
+        # fall-through to the checkout.
+        self._read_source_fn = read_source
         self._parsed = False
         self._root: Node | None = None
         self._lmap: LanguageNodeMap | None = None
@@ -312,6 +321,9 @@ class FileDataflow:
     def _read_source(self) -> bytes | None:
         if self._source is not None:
             return self._source
+        if self._read_source_fn is not None:
+            self._source = self._read_source_fn(self.abs_path)
+            return self._source
         try:
             self._source = Path(self.abs_path).read_bytes()
         except OSError:
@@ -368,14 +380,18 @@ class FileDataflowCache:
 
     Keyed by absolute path; entries are created lazily and hold no parse until
     a consumer gate fires. The cache lives for one pass and is dropped with it.
+
+    *read_source* is the pass's source reader, handed to each entry so a
+    revision analysis cannot fall through to the working tree for any file.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, read_source: Any | None = None) -> None:
         self._by_path: dict[str, FileDataflow] = {}
+        self._read_source = read_source
 
     def get(self, abs_path: str, language: str) -> FileDataflow:
         fd = self._by_path.get(abs_path)
         if fd is None:
-            fd = FileDataflow(abs_path, language)
+            fd = FileDataflow(abs_path, language, read_source=self._read_source)
             self._by_path[abs_path] = fd
         return fd

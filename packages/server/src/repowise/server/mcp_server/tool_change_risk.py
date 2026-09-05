@@ -5,15 +5,22 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import threading
 import time
+from collections import OrderedDict
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
 import pathspec
+import structlog
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from repowise.core.analysis.change_health.service import (
+    ChangeHealthDeltaService,
+    DeltaRequest,
+)
 from repowise.core.analysis.change_risk import (
     change_risk_payload,
     normalize_extensions,
@@ -21,8 +28,17 @@ from repowise.core.analysis.change_risk import (
 )
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._budget.contracts import response_budget_shed_order
+from repowise.server.mcp_server._change_health import (
+    directive as _directive,
+)
+from repowise.server.mcp_server._change_health import (
+    finding_detail as _finding_detail,
+)
+from repowise.server.mcp_server._change_health import (
+    health_delta_block as _health_delta_block,
+)
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _is_workspace_mode,
@@ -32,6 +48,13 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._test_impact import (
+    _norm,
+    cross_repo_tests,
+    tests_block_for,
+)
+
+log = structlog.get_logger(__name__)
 
 #: Cap on the line-precise impacted-test list, matching the get_risk directive's
 #: ``tests_to_run`` cap so both surfaces stay glanceable. The tail goes to the
@@ -48,12 +71,49 @@ _PRIOR_FIXES_LIMIT = 10
 _CROSS_REPO_BREAKING_LIMIT = 5
 _CROSS_REPO_CONSUMER_LIMIT = 10
 
+#: Ceiling on the branch scan, bounded so a repository with hundreds of refs
+#: cannot hold the response.
+_BRANCH_OVERLAP_TIMEOUT_SECONDS = 20
+
+#: Caps on the branch-overlap block. It answers "is anyone else editing these
+#: files", not "list every branch", so both lists stay short and their tails go
+#: to the omission store.
+_BRANCH_OVERLAP_LIMIT = 5
+_BRANCH_OVERLAP_FILES_LIMIT = 10
+
+#: Cap on the files the index cannot link. The count is already in the block's
+#: summary, so the names are supporting detail and their tail is recoverable.
+_UNGROUPED_FILES_LIMIT = 10
+
 # Compatibility projection for direct callers and older tests. The shared
 # response contract remains the single source of truth for this order.
 _SHED_ORDER = response_budget_shed_order("get_change_risk")
 
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
-_INCLUDE_BLOCKS = frozenset({"scales"})
+#: ``diagnostics`` carries the raw model mechanics; ``findings`` lifts the
+#: top-findings cap. Both are projections, recoverable by an exact call.
+_INCLUDE_BLOCKS = frozenset({"scales", "diagnostics", "findings"})
+
+#: Score mechanics that are identical or near-identical on every call. Moved
+#: behind ``include=["diagnostics"]`` so the action-first blocks lead.
+_DIAGNOSTIC_FIELDS = (
+    "risk_authority",
+    "score_measures",
+    "score_unit",
+    "baseline_sample_size",
+    "features",
+    "drivers",
+)
+
+#: Compact supporting context: the ranked reading, not the model's workings.
+_CHANGE_SHAPE_FIELDS = (
+    "score",
+    "risk_percentile",
+    "review_priority",
+    "classification",
+    "fallback_band",
+    "is_fix",
+)
 
 @mcp.tool(
     surface_order=60,
@@ -68,35 +128,38 @@ async def get_change_risk(
     exclude_patterns: list[str] | None = None,
     baseline: int = 200,
     include: list[str] | None = None,
+    finding_id: str | None = None,
 ) -> dict:
-    """Score a live commit, ``base..head`` range, or uncommitted work.
+    """Review a commit, ``base..head`` range, or uncommitted work.
 
-    For a pre-merge read on a commit or PR range; ``get_risk`` scores indexed
-    files instead. The filters also apply to the percentile baseline.
+    Leads with ``directive`` (what to do) and ``health_delta`` (what this
+    change newly made worse across defect, maintainability, and performance).
+    Both sides are analysed from their own content, so a finding present at
+    head is only reported when the diff explains it; every finding names its
+    ``attribution`` basis and confidence.
 
-    Act on ``risk_percentile`` + ``classification``: they rank this diff
-    against recent commits, and ``risk_authority`` names them. ``score`` is a
-    supporting 0-10 model score for diff size and spread, never a probability;
-    ``fallback_band`` stands in only when no baseline exists. ``fix_history``
-    carries the bug-fix record of the touched files.
+    Trust ``health_delta.status``: ``partial`` means files were skipped and the
+    change is not cleared. ``scope`` counts what was actually compared.
 
-    ``impacted_tests`` keeps measured coverage and inferred graph candidates
-    distinct, labels unavailable analysis, and exposes truncation metadata.
-    ``prior_fixes`` counts past fixes whose lines overlap this diff.
+    ``impacted_tests`` keeps measured coverage and inferred candidates distinct.
+    ``prior_fixes`` counts past fixes overlapping this diff. ``change_shape``
+    ranks the diff's size and spread against recent commits.
 
-    Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
-    carry counts and recovery status in ``_meta``.
-    Include-gated blocks are projections, not omissions.
+    ``branch_overlap`` names other open branches editing the same files, each
+    row stating its basis. ``change_shape.independent_changes`` says when the
+    diff is several changes the index does not connect.
 
     Args:
-        revspec: Commit or ``base..head`` range to score. Omit it to score the
-            uncommitted change, or ``HEAD`` when the working tree is clean.
+        revspec: Commit or ``base..head`` range. Omit to review uncommitted
+            work, or ``HEAD`` when the tree is clean.
         repo: Repository alias in workspace mode; omit for the default.
         extensions: File suffixes to count, e.g. ``[".py", ".ts"]``.
         exclude_patterns: Gitignore-style paths to omit, e.g. ``["tests/"]``.
-        baseline: Recent commits to sample for percentile ranking; 0 disables it.
-        include: opt-in blocks - "scales" for every scalar's unit, range and
-            calibration. Identical on every call, so ask once.
+        baseline: Recent commits sampled for percentile ranking; 0 disables it.
+        include: ``"findings"`` for every change finding, ``"diagnostics"`` for
+            raw score mechanics, ``"scales"`` for units. All identical on
+            repeat, so ask once.
+        finding_id: Expand one ``health_delta`` finding by its id.
     """
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
@@ -125,6 +188,10 @@ async def get_change_risk(
         if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
     }
     payload = change_risk_payload(result, scales="scales" in include_set)
+    if "diagnostics" not in include_set:
+        diagnostics = {f: payload.pop(f) for f in _DIAGNOSTIC_FIELDS if f in payload}
+    else:
+        diagnostics = {}
     if result.features.nf == 0:
         payload["warning"] = (
             f"No counted file changes in {payload['ref']!r} "
@@ -134,27 +201,60 @@ async def get_change_risk(
     # extensions + riskignore + request excludes), so nothing downstream
     # disagrees with the score about which files the change touches. Read once
     # and shared: both blocks below need it and git is the expensive part.
-    # The test and fix blocks need the index; the cross-repo block needs only
-    # workspace contracts, so an unindexed member still gets one rather than
-    # going silently blind. Nothing else pays the git call.
-    changed: dict[str, set[int]] = {}
-    changed_error: tuple[str, str] | None = None
-    if getattr(ctx, "session_factory", None) is not None or _has_contract_data():
-        changed, changed_error = await _changed_in_scope(
+    # The test and fix blocks need the index and the cross-repo block needs
+    # workspace contracts, but the branch-overlap block needs only git, so every
+    # call pays this read rather than an unindexed repo going blind.
+    changed, changed_error = await _changed_in_scope(
+        str(ctx.path),
+        revspec,
+        normalize_extensions(tuple(extensions or ())),
+        result.riskignore_excludes + result.request_excludes,
+        working_tree=result.working_tree,
+    )
+    collector = OmissionCollector("get_change_risk", repo_root=ctx.path)
+    # The delta is the expensive half and needs nothing the enrichments need,
+    # so it runs alongside them rather than after.
+    delta_task = asyncio.create_task(
+        asyncio.to_thread(
+            _compare_health,
             str(ctx.path),
             revspec,
-            normalize_extensions(tuple(extensions or ())),
-            result.riskignore_excludes + result.request_excludes,
-            working_tree=result.working_tree,
+            tuple(extensions or ()),
+            tuple(result.riskignore_excludes + result.request_excludes),
         )
-    collector = OmissionCollector("get_change_risk", repo_root=ctx.path)
-    payload["impacted_tests"] = await _impacted_tests_block(ctx, changed, changed_error, collector)
-    prior_fixes = await _prior_fixes_block(ctx, changed)
-    if prior_fixes is not None:
-        payload["prior_fixes"] = prior_fixes
-    cross_repo = _cross_repo_block(getattr(ctx, "alias", ""), sorted(changed))
-    if cross_repo is not None:
-        payload["cross_repo"] = cross_repo
+    )
+    try:
+        payload["impacted_tests"] = await _impacted_tests_block(
+            ctx, changed, changed_error, collector
+        )
+        prior_fixes = await _prior_fixes_block(ctx, changed)
+        if prior_fixes is not None:
+            payload["prior_fixes"] = prior_fixes
+        alias = getattr(ctx, "alias", "")
+        # The join needs an open index per consumer repo, so it runs once for
+        # the whole change and the block distributes its rows.
+        impact = await cross_repo_tests(alias, sorted(changed))
+        cross_repo = _cross_repo_block(alias, sorted(changed), impact, collector)
+        if cross_repo is not None:
+            payload["cross_repo"] = cross_repo
+        # A drill-down returns one finding and nothing else, so neither block
+        # would reach the caller; both are pure cost on that path.
+        overlap = independent = None
+        if finding_id is None:
+            overlap = await _branch_overlap_block(ctx, changed, collector)
+            if overlap is not None:
+                payload["branch_overlap"] = overlap
+            independent = await _independent_changes_block(ctx, changed, collector, revspec)
+    except BaseException:
+        # Never leave the comparison running for a request that is already over.
+        delta_task.cancel()
+        raise
+    delta = await delta_task
+    await _attach_health_references(ctx, delta)
+    if finding_id is not None:
+        return _drill_down(payload, delta, finding_id, revspec)
+    _attach_health(payload, delta, revspec, expand="findings" in include_set)
+    payload["change_shape"] = _change_shape(payload, diagnostics, independent)
     # source: live_git marks that the *score* is computed from the working
     # checkout's git. The two blocks above are index-backed, so the freshness
     # fields do apply to them, scoped to the change's files. None (not []) when
@@ -169,6 +269,177 @@ async def get_change_risk(
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
     return payload
+
+
+#: One service per repository, so its comparison cache and stampede guard
+#: outlive a single call. LRU-bounded: a long-lived server can see many
+#: worktrees and workspace members over its lifetime.
+_DELTA_SERVICES: OrderedDict[str, ChangeHealthDeltaService] = OrderedDict()
+_DELTA_SERVICE_CAPACITY = 8
+_DELTA_SERVICES_LOCK = threading.Lock()
+
+
+def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
+    with _DELTA_SERVICES_LOCK:
+        service = _DELTA_SERVICES.get(repo_path)
+        if service is not None:
+            _DELTA_SERVICES.move_to_end(repo_path)
+            return service
+    # Built outside the lock: the fingerprint reads config off disk.
+    service = ChangeHealthDeltaService(
+        repo_path=repo_path, rules_fingerprint=_rules_fingerprint(repo_path)
+    )
+    with _DELTA_SERVICES_LOCK:
+        existing = _DELTA_SERVICES.get(repo_path)
+        if existing is not None:
+            _DELTA_SERVICES.move_to_end(repo_path)
+            return existing
+        _DELTA_SERVICES[repo_path] = service
+        while len(_DELTA_SERVICES) > _DELTA_SERVICE_CAPACITY:
+            _DELTA_SERVICES.popitem(last=False)
+    return service
+
+
+def _rules_fingerprint(repo_path: str) -> str:
+    """Identity of the effective health rules; empty when they cannot be read."""
+    try:
+        from repowise.core.repo_config import config_fingerprint
+
+        return config_fingerprint(repo_path)
+    except Exception:
+        return ""
+
+
+def _compare_health(
+    repo_path: str,
+    revspec: str | None,
+    extensions: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+) -> Any:
+    """Run the comparison, degrading to an explicit unavailable state."""
+    from repowise.core.analysis.change_health.models import ChangeHealthDelta
+
+    try:
+        return _delta_service(repo_path).compare(
+            DeltaRequest(repo_path, revspec, extensions, exclude_patterns)
+        )
+    except Exception as exc:
+        log.warning("change_health_comparison_failed", revspec=revspec, error=str(exc))
+        return ChangeHealthDelta(
+            status="unavailable",
+            explanation=f"Health comparison failed: {exc}",
+            base=None,
+            head=None,
+            comparison_basis="not_compared",
+            fingerprint=None,
+        )
+
+
+async def _attach_health_references(ctx: Any, delta: Any) -> None:
+    """Point a change finding at its stored twin, when it has one exactly.
+
+    Only an exact match earns the canonical reference: same file, marker,
+    symbol, and span. Anything looser would hand an agent a pointer to a
+    different finding, and most change findings have no stored twin at all
+    because uncommitted and historical work is never persisted.
+    """
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import HealthFinding
+
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is None or not delta.findings:
+        return
+    paths = sorted({f.path for f in delta.findings})
+    try:
+        async with get_session(session_factory) as session:
+            repository = await _get_repo(session)
+            rows = (
+                await session.execute(
+                    select(HealthFinding).where(
+                        HealthFinding.repository_id == repository.id,
+                        HealthFinding.file_path.in_(paths),
+                    )
+                )
+            ).scalars().all()
+    except SQLAlchemyError:
+        return
+    if not rows:
+        return
+    from repowise.server.mcp_server.tool_health import _health_finding_id
+
+    alias = getattr(ctx, "alias", None) or repository.name
+    stored = {
+        (r.file_path, r.biomarker_type, r.function_name or "", r.line_start, r.line_end): r
+        for r in rows
+    }
+    for finding in delta.findings:
+        row = stored.get(
+            (
+                finding.path,
+                finding.biomarker_type,
+                finding.symbol or "",
+                finding.line_start,
+                finding.line_end,
+            )
+        )
+        if row is None:
+            continue
+        finding.health_reference = {
+            "tool": "get_health",
+            "arguments": {"finding_id": _health_finding_id(row, alias)},
+        }
+
+
+def _attach_health(payload: dict, delta: Any, revspec: str | None, *, expand: bool) -> None:
+    """Put the directive first and the compact delta second."""
+    block = _health_delta_block(delta, revspec=revspec)
+    if expand:
+        from repowise.server.mcp_server._change_health import finding_row
+
+        block["top_findings"] = [finding_row(f, revspec) for f in delta.findings]
+        block["findings_emitted"] = len(delta.findings)
+        block.pop("findings_reduced_reason", None)
+        block.pop("all_findings_via", None)
+    ordered = {
+        "directive": _directive(delta, payload.get("impacted_tests")),
+        "health_delta": block,
+    }
+    for key, value in payload.items():
+        ordered[key] = value
+    payload.clear()
+    payload.update(ordered)
+
+
+def _change_shape(
+    payload: dict, diagnostics: dict, independent: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The ranked diff-shape reading, kept compact and clearly supporting."""
+    shape = {f: payload[f] for f in _CHANGE_SHAPE_FIELDS if f in payload}
+    shape["measures"] = "diff size and spread, not danger"
+    # How many changes this diff is belongs beside its size, not above it.
+    if independent is not None:
+        shape["independent_changes"] = independent
+    if diagnostics:
+        shape["diagnostics_via"] = "get_change_risk(include=['diagnostics'])"
+    return shape
+
+
+def _drill_down(payload: dict, delta: Any, finding_id: str, revspec: str | None) -> dict:
+    """Expand one ephemeral change finding, or say why it is not there."""
+    match = next(
+        (f for f in delta.findings if f.change_finding_id == finding_id), None
+    )
+    if match is None:
+        return {
+            "error": f"No change finding {finding_id!r} in {payload.get('ref', 'this change')}.",
+            "hint": "Ids are scoped to one comparison; re-run without finding_id to list them.",
+            "available": [f.change_finding_id for f in delta.findings[:10]],
+        }
+    return {
+        "finding": _finding_detail(match, revspec),
+        "ref": payload.get("ref"),
+        "health_delta_status": delta.status,
+    }
 
 
 async def _repository(ctx: Any) -> Any | None:
@@ -228,17 +499,12 @@ def _filter_changed(
     return out
 
 
-def _has_contract_data() -> bool:
-    """Whether workspace contracts are loaded, so the cross-repo block can speak."""
-    from repowise.server.mcp_server import _state
-
-    if not _is_workspace_mode():
-        return False
-    enricher = _state._cross_repo_enricher
-    return bool(enricher is not None and getattr(enricher, "has_contract_data", False))
-
-
-def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | None:
+def _cross_repo_block(
+    alias: str,
+    changed_files: list[str],
+    impact: Any = None,
+    collector: OmissionCollector | None = None,
+) -> dict[str, Any] | None:
     """What this commit does to consumers in other repos, or ``None``.
 
     A commit that changes a published signature is the same class of fact as
@@ -341,8 +607,41 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
             summary += "; the last workspace update found no break in them."
         else:
             summary += "; no breaking-change report has been built for them."
+        shown = consumers[:_CROSS_REPO_CONSUMER_LIMIT]
+        if impact is not None:
+            for i, row in enumerate(shown):
+                row["tests"] = tests_block_for(
+                    impact,
+                    row.get("repo") or "",
+                    row.get("file") or "",
+                    row.get("contract_id") or "",
+                    collector,
+                    f"cross_repo.consumers[{i}].tests.tests_to_run",
+                )
+            # Counted over the rows this payload actually carries, so the
+            # sentence never promises tests for a consumer the cap dropped.
+            keys = {
+                (
+                    row.get("repo") or "",
+                    _norm(row.get("file") or ""),
+                    row.get("contract_id") or "",
+                )
+                for row in shown
+            }
+            test_files = {
+                rec.test_file
+                for rec in impact.recommendations
+                for path in rec.consumer_files
+                for cid in rec.contract_ids
+                if (rec.consumer_repo, path, cid) in keys
+            }
+            undetermined = sum(1 for row in shown if row["tests"]["state"] == "unresolved")
+            summary += (
+                f" {len(test_files)} consumer test file(s) to run, "
+                f"{undetermined} link(s) could not be determined."
+            )
         return {
-            "consumers": consumers[:_CROSS_REPO_CONSUMER_LIMIT],
+            "consumers": shown,
             "consumers_truncated": max(0, len(consumers) - _CROSS_REPO_CONSUMER_LIMIT),
             "consumer_repos": repos,
             "breaking_changes": breaking,
@@ -539,6 +838,123 @@ async def _prior_fixes_block(ctx: Any, changed: dict[str, set[int]]) -> dict[str
     return block
 
 
+async def _independent_changes_block(
+    ctx: Any,
+    changed: dict[str, set[int]],
+    collector: OmissionCollector,
+    revspec: str | None = None,
+) -> dict[str, Any] | None:
+    """The changed files split into groups nothing in the index links, or ``None``.
+
+    Silent for a single changed file and without an index: the split is a claim
+    about what the index holds, so an unindexed repo makes no claim at all.
+    """
+    from repowise.core.analysis.independent_changes import independent_changes
+    from repowise.core.git_refs import commit_file_sets
+    from repowise.core.persistence.database import get_session
+
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is None or len(changed) < 2:
+        return None
+    # Returns [] without a git call for anything that is not a range, so the
+    # range test lives in one place rather than here as well.
+    sets = await asyncio.to_thread(
+        commit_file_sets, str(ctx.path), _normalize_revspec(revspec)
+    )
+    try:
+        async with get_session(session_factory) as session:
+            repo_id = (await _get_repo(session)).id
+            result = await independent_changes(
+                session, repo_id, list(changed), commit_sets=sets
+            )
+    except (LookupError, SQLAlchemyError):
+        return None
+    if result is None:
+        return None
+    block = result.to_dict()
+    cap_collection(
+        block,
+        "ungrouped_files",
+        block["ungrouped_files"],
+        _UNGROUPED_FILES_LIMIT,
+        collector,
+        label=(
+            "change_shape.independent_changes.ungrouped_files "
+            f"beyond cap={_UNGROUPED_FILES_LIMIT}"
+        ),
+    )
+    return block
+
+
+def _scan_from_trunk(path: str, files: list[str]) -> Any:
+    """The base lookup and the scan, both git, in one hop off the event loop."""
+    from repowise.core.analysis.branch_overlap import scan_branches
+    from repowise.core.git_refs import default_base
+
+    return scan_branches(path, files, base=default_base(path))
+
+
+async def _scan_overlap(ctx: Any, files: list[str]) -> Any:
+    """Run the branch scan, with the index when one opens and without when it does not."""
+    from repowise.core.analysis.branch_overlap import rank_with_index
+    from repowise.core.persistence.database import get_session
+
+    path = str(ctx.path)
+    scan = await asyncio.to_thread(_scan_from_trunk, path, files)
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is not None:
+        try:
+            # The session opens only for the index step, never across the git work.
+            async with get_session(session_factory) as session:
+                return await rank_with_index(session, (await _get_repo(session)).id, scan)
+        except (LookupError, SQLAlchemyError):
+            pass
+    return scan.overlap
+
+
+async def _branch_overlap_block(
+    ctx: Any, changed: dict[str, set[int]], collector: OmissionCollector
+) -> dict[str, Any] | None:
+    """Other open branches editing the files this change edits, or ``None``.
+
+    Git alone answers it, so a repo without an index still gets the block; an
+    index only ranks the shared files and adds the history rows. ``None`` when
+    no other branch overlaps, because an all-clear block is noise.
+    """
+    if not changed:
+        return None
+    try:
+        overlap = await asyncio.wait_for(
+            _scan_overlap(ctx, sorted(changed)), timeout=_BRANCH_OVERLAP_TIMEOUT_SECONDS
+        )
+    except (TimeoutError, subprocess.SubprocessError, OSError):
+        return None
+
+    block = overlap.to_dict()
+    if not block["branches"]:
+        return None
+    # Branches first: an entry the cap drops goes to the store whole, and only
+    # the entries that survive can carry an index the reader can find.
+    kept = cap_collection(
+        block,
+        "branches",
+        block["branches"],
+        _BRANCH_OVERLAP_LIMIT,
+        collector,
+        label=f"branch_overlap.branches beyond cap={_BRANCH_OVERLAP_LIMIT}",
+    )
+    for i, entry in enumerate(kept):
+        cap_collection(
+            entry,
+            "files",
+            entry["files"],
+            _BRANCH_OVERLAP_FILES_LIMIT,
+            collector,
+            label=f"branch_overlap.branches[{i}].files beyond cap={_BRANCH_OVERLAP_FILES_LIMIT}",
+        )
+    return block
+
+
 #: A file has to carry this much of the change's lines before the response will
 #: say the risk sits there. Below it the change is spread out and naming one
 #: file would be a stronger claim than the numbers support.
@@ -697,6 +1113,8 @@ async def _impacted_tests_block(
                     by_file[source_file] = ids
     except LookupError:
         return _empty_impacted("no_index", "No indexed repository; run `repowise init`.")
+    except SQLAlchemyError:
+        return _empty_impacted("unknown", "Could not read the coverage map.")
 
     tests = rank_tests_by_reach(by_file)
     total = len(tests)

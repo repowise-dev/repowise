@@ -26,7 +26,18 @@
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { HeartPulse, RotateCw } from "lucide-react";
+import {
+  Bug,
+  FlaskConical,
+  Gauge,
+  HeartPulse,
+  LayoutDashboard,
+  RotateCw,
+  Scissors,
+  Shield,
+  Waypoints,
+  type LucideIcon,
+} from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { OverviewSection } from "@repowise-dev/ui/overview";
@@ -47,14 +58,15 @@ import { getDeadCodeSummary } from "@/lib/api/dead-code";
 import {
   getChurnComplexity,
   getHealthCoverage,
+  getHealthMap,
   getHealthOverview,
   getHealthTrend,
-  listHealthFiles,
+  getPerformanceOpportunity,
   type ChurnComplexityResponse,
   type HealthCoverageResponse,
+  type HealthMapFeed,
   type HealthOverviewResponse,
   type HealthTrendResponse,
-  type HealthFilesResponse,
 } from "@/lib/api/code-health";
 
 const TABS = [
@@ -79,6 +91,22 @@ const TAB_LABELS: Record<TabId, string> = {
 };
 
 /**
+ * One mark per tab, to make the row scannable without reading every word.
+ * They are identity, not status: monochrome, inheriting the tab's own color, so
+ * no icon can imply a health band. The label still carries the accessible name,
+ * which is why `ViewTabs` renders them `aria-hidden`.
+ */
+const TAB_ICONS: Record<TabId, LucideIcon> = {
+  triage: LayoutDashboard,
+  performance: Gauge,
+  findings: Bug,
+  coverage: FlaskConical,
+  "dead-code": Scissors,
+  security: Shield,
+  impact: Waypoints,
+};
+
+/**
  * Legacy tab ids → their new home. `heatmap` was the old churn tab and
  * `hotspots` its successor; both now land on the map, whose churn lens replaced
  * them. `modules` folded into the map's hub layer, `trend` into the section
@@ -98,8 +126,13 @@ const TAB_ALIASES: Record<string, TabId> = {
  */
 const OVERLAYS: CodeHealthOverlay[] = ["health", "maintainability", "performance", "churn"];
 
-/** Files pulled for the map: biggest first, capped so the galaxy stays legible. */
-const MAP_FILE_LIMIT = 2000;
+/**
+ * Nodes the map draws. The server chooses which ones: the selected file first,
+ * then every file carrying an open performance cause in rank order, then the
+ * biggest files fill the rest. Ranking by size alone used to push tens of
+ * files with open causes off the field entirely.
+ */
+const MAP_CAP = 2000;
 /**
  * Churn points pulled for the churn lens. Deliberately larger than
  * `MAP_FILE_LIMIT`: the map ranks by NLOC and churn-complexity ranks by
@@ -123,16 +156,33 @@ export default function CodeHealthPage() {
   const searchParams = useSearchParams();
   const repoId = params.id;
 
+  // `?pillar=` predates the lens and the performance tab: the Overview health
+  // card still links with it. Performance now has a tab of its own and the
+  // other two are lenses, so the parameter resolves onto whichever surface
+  // actually answers it rather than onto a control that no longer exists.
+  const rawPillar = searchParams.get("pillar");
+
   const rawTab = searchParams.get("tab");
   const aliased = rawTab ? TAB_ALIASES[rawTab] : undefined;
   const activeTab: TabId =
     aliased ??
-    (rawTab && (TABS as readonly string[]).includes(rawTab) ? (rawTab as TabId) : "triage");
+    (rawTab && (TABS as readonly string[]).includes(rawTab)
+      ? (rawTab as TabId)
+      : rawPillar === "performance"
+        ? "performance"
+        : "triage");
 
   const rawLens = searchParams.get("lens");
   const overlay: CodeHealthOverlay = (OVERLAYS as readonly string[]).includes(rawLens ?? "")
     ? (rawLens as CodeHealthOverlay)
-    : "health";
+    : rawPillar === "maintainability"
+      ? "maintainability"
+      : "health";
+
+  // The map's selection and its opportunity highlight live in the URL, so a
+  // link from the performance queue opens this field on the file it is about.
+  const selectedPath = searchParams.get("file");
+  const opportunityId = searchParams.get("opportunity");
 
   // Shares the SWR key with TriageView — the meta line and the findings count
   // cost no extra request.
@@ -167,20 +217,39 @@ export default function CodeHealthPage() {
     revalidateOnFocus: false,
   });
 
-  // Every file (NLOC-first) for the map — one big pull, shared across overlays
-  // so switching the lens never refetches. `fields: "summary"` because the map
-  // and the spotlight read none of the lead/detail keys: at 2,000 rows the full
-  // shape was 1.06 MB, about 432 KB of it keys nobody here touches.
-  const { data: mapFiles } = useSWR<HealthFilesResponse>(
-    `code-health-map-files:${repoId}`,
-    () =>
-      listHealthFiles(repoId, {
-        limit: MAP_FILE_LIMIT,
-        sort: "nloc",
-        order: "desc",
-        fields: "summary",
-      }),
+  // The opportunity a link arrived with, so its files can be guaranteed a node
+  // and marked. One bounded request, and only when the link carries an id.
+  const { data: opportunity } = useSWR(
+    opportunityId ? `code-health-map-opportunity:${repoId}:${opportunityId}` : null,
+    () => getPerformanceOpportunity(repoId, opportunityId as string, { evidenceLimit: 25 }),
     { revalidateOnFocus: false },
+  );
+
+  // The intervention file plus the files its evidence sits in. An id from a
+  // retired model resolves to a state rather than to a row, and that shape
+  // carries no paths, so it simply marks nothing.
+  const highlightPaths = useMemo(() => {
+    if (!opportunity || !("file_path" in opportunity)) return undefined;
+    const paths = [opportunity.file_path, ...opportunity.evidence.map((e) => e.file_path)];
+    return [...new Set(paths.filter(Boolean))];
+  }, [opportunity]);
+
+  // The bounded field: one pull, shared across lenses so switching never
+  // refetches. The paths the page needs on screen ride along as `active`, which
+  // is what makes the guarantee a server-side one rather than a hope that the
+  // size ranking happened to include them.
+  const activePaths = useMemo(
+    () => [...new Set([...(selectedPath ? [selectedPath] : []), ...(highlightPaths ?? [])])],
+    [selectedPath, highlightPaths],
+  );
+  const { data: mapFeed } = useSWR<HealthMapFeed>(
+    `code-health-map:${repoId}:${activePaths.join(",")}`,
+    () =>
+      getHealthMap(repoId, {
+        cap: MAP_CAP,
+        ...(activePaths.length ? { active: activePaths } : {}),
+      }),
+    { revalidateOnFocus: false, keepPreviousData: true },
   );
 
   // Churn percentiles for the churn lens. Fetched only once that lens is
@@ -196,17 +265,17 @@ export default function CodeHealthPage() {
   // Join churn onto the map rows by path. Until it lands every node would be
   // neutral, so the legend is told it is loading rather than letting an
   // all-grey field read as "no churn anywhere".
-  const mapFilesWithChurn: HealthFilesResponse | undefined = useMemo(() => {
-    if (!mapFiles || !churn) return mapFiles;
+  const mapFeedWithChurn: HealthMapFeed | undefined = useMemo(() => {
+    if (!mapFeed || !churn) return mapFeed;
     const byPath = new Map(churn.points.map((p) => [p.file_path, p.churn_percentile]));
     return {
-      ...mapFiles,
-      files: mapFiles.files.map((file) => ({
+      ...mapFeed,
+      files: mapFeed.files.map((file) => ({
         ...file,
         churn_percentile: byPath.get(file.file_path) ?? null,
       })),
     };
-  }, [mapFiles, churn]);
+  }, [mapFeed, churn]);
 
   // ---- Tab counts ----
   // Dead code uses the same key + fetcher as its own tab, so this is a prefetch
@@ -252,6 +321,17 @@ export default function CodeHealthPage() {
     [router, searchParams],
   );
 
+  const setSelectedPath = useCallback(
+    (next: string | null) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (next) sp.set("file", next);
+      else sp.delete("file");
+      const qs = sp.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+
   const setOverlay = useCallback(
     (next: CodeHealthOverlay) => {
       const sp = new URLSearchParams(searchParams.toString());
@@ -276,7 +356,7 @@ export default function CodeHealthPage() {
       maxWidth="wide"
       actions={
         <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing}>
-          <RotateCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />{" "}
+          <RotateCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? "motion-safe:animate-spin" : ""}`} />{" "}
           {refreshing ? "Refreshing…" : "Refresh"}
         </Button>
       }
@@ -292,11 +372,15 @@ export default function CodeHealthPage() {
       ) : null}
 
       <ViewTabs
-        tabs={TABS.map((id) => ({
-          id,
-          label: TAB_LABELS[id],
-          ...(badges[id] !== undefined ? { badge: badges[id] } : {}),
-        }))}
+        tabs={TABS.map((id) => {
+          const Icon = TAB_ICONS[id];
+          return {
+            id,
+            label: TAB_LABELS[id],
+            icon: <Icon className="h-3.5 w-3.5" />,
+            ...(badges[id] !== undefined ? { badge: badges[id] } : {}),
+          };
+        })}
         value={activeTab}
         onValueChange={setTab}
       >
@@ -307,8 +391,11 @@ export default function CodeHealthPage() {
             overlay={overlay}
             onOverlayChange={setOverlay}
             lenses={OVERLAYS}
-            mapFiles={mapFilesWithChurn}
+            mapFeed={mapFeedWithChurn}
             overlayLoading={churnWanted && churnLoading && !churn}
+            selectedPath={selectedPath}
+            onSelectPath={setSelectedPath}
+            highlightPaths={highlightPaths}
             hotspotsSlot={<HotspotsSection repoId={repoId} />}
             trendSlot={
               <OverviewSection

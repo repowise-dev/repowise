@@ -6,6 +6,9 @@ import { InfoTip } from "../shared/info-tip";
 import { biomarkerInfo, biomarkerLabel } from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
 import { type Severity } from "./tokens";
+import { ImpactFigure } from "./impact-figure";
+import { FindingOpportunityLink } from "./file-opportunity";
+import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { SeverityMark } from "./severity-mark";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
@@ -51,6 +54,17 @@ export interface HealthWorkItemCardProps {
   onSelect?: ((target: HealthWorkItem) => void) | undefined;
   onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
   onGeneratePrompt?: ((target: HealthWorkItem) => void) | undefined;
+  /** This file's composed refactoring opportunity, if the host already has one. */
+  opportunity?: RefactoringOpportunity | null | undefined;
+  /**
+   * Resolve this file's opportunity on first expand, alongside the findings.
+   * Lazy for the same reason they are: a queue of hundreds of collapsed cards
+   * should not fetch a plan for every one of them.
+   */
+  onLoadOpportunity?:
+    | ((filePath: string) => Promise<RefactoringOpportunity | null>)
+    | undefined;
+  refactoringOpportunityHref?: ((opportunityId: string) => string) | undefined;
   /**
    * Fetch this file's findings, called on first expand. The list response
    * deliberately omits them — serializing every file's findings to render a
@@ -85,6 +99,9 @@ export function HealthWorkItemCard({
   onSelect,
   onStatusChange,
   onGeneratePrompt,
+  opportunity,
+  refactoringOpportunityHref,
+  onLoadOpportunity,
   onLoadFindings,
   expandable = true,
   highlighted = false,
@@ -92,6 +109,10 @@ export function HealthWorkItemCard({
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState<HealthWorkItemFinding[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [loadedOpportunity, setLoadedOpportunity] = useState<
+    RefactoringOpportunity | null | undefined
+  >(undefined);
+  const shownOpportunity = opportunity ?? loadedOpportunity;
 
   // `finding_count` is on every target, so the expander's presence and its
   // label no longer depend on shipping the findings themselves.
@@ -101,7 +122,15 @@ export function HealthWorkItemCard({
   const toggle = async () => {
     const next = !expanded;
     setExpanded(next);
-    if (!next || findings || !onLoadFindings) return;
+    if (!next) return;
+    if (onLoadOpportunity && opportunity === undefined && loadedOpportunity === undefined) {
+      // A failure here stays `undefined` rather than becoming `null`: the card
+      // must not claim a file has no plan when the lookup is what failed.
+      void onLoadOpportunity(target.file_path)
+        .then((result) => setLoadedOpportunity(result ?? null))
+        .catch(() => undefined);
+    }
+    if (findings || !onLoadFindings) return;
     setLoadFailed(false);
     try {
       setLoaded(await onLoadFindings(target.file_path));
@@ -187,7 +216,7 @@ export function HealthWorkItemCard({
                 e.stopPropagation();
                 onGeneratePrompt(target);
               }}
-              className="group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-success)]/40 bg-[var(--color-success)]/10 px-2.5 py-1 text-xs font-semibold text-[var(--color-success)] hover:bg-[var(--color-success)]/20 hover:border-[var(--color-success)]/60 transition-colors"
+              className="group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-model)]/40 bg-[var(--color-model-muted)] px-2.5 py-1 text-xs font-semibold text-[var(--color-model)] hover:bg-[var(--color-model)]/20 hover:border-[var(--color-model)]/60 transition-colors"
               title="Generate a ready-to-paste prompt for an AI coding agent"
             >
               <Sparkles className="h-3.5 w-3.5 transition-transform group-hover/ai:rotate-12" />
@@ -224,11 +253,14 @@ export function HealthWorkItemCard({
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}
-                    <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">
-                      −{f.health_impact.toFixed(2)}
-                    </span>
+                    <ImpactFigure impact={f.health_impact} className="ml-auto text-xs" />
                   </div>
                   <p className="text-xs text-[var(--color-text-tertiary)] line-clamp-2">{f.reason}</p>
+                  <FindingOpportunityLink
+                    opportunity={shownOpportunity}
+                    biomarkerType={f.biomarker_type}
+                    href={refactoringOpportunityHref}
+                  />
                   {onStatusChange ? (
                     <div className="flex flex-wrap gap-1 pt-1">
                       <StatusButton current={f.status} value="acknowledged" onClick={() => onStatusChange(f.id, "acknowledged")} label="Acknowledge" />

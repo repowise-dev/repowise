@@ -1,24 +1,24 @@
 "use client";
 
 /**
- * The top of the Refactoring page: the structural plans as a field, and the
- * handful worth doing first as ranked rows underneath.
+ * The top of the Refactoring page: the structural opportunities as a field, and
+ * the handful worth doing first as ranked rows underneath.
  *
  * These are one section rather than two because they answer different halves of
- * the same question and neither is sufficient alone. The map says which plans
- * are expensive and far-reaching, which is a shape a sorted column cannot carry
- * — a 1,417-line file with 11 dependents and a 1,052-line file with 195 are
+ * the same question and neither is sufficient alone. The field says which work
+ * is expensive and far-reaching, which is a shape a sorted column cannot carry
+ * - a 1,417-line file with 11 dependents and a 1,052-line file with 195 are
  * neighbours in a list and opposite corners here. The rows say what to do
- * first, and carry the evidence sentence a dot has no room for.
+ * first, and carry the step count and the lead cause a mark has no room for.
  *
  * They share hover state in both directions, so the two halves read as one
  * object: pointing at a mark lights its row, and pointing at a row lights its
  * mark.
  *
- * Below `MAP_MIN_POINTS` plottable plans the map does not render. A scatter
- * with four dots asks a reader to decode two axes to learn less than four rows
- * already told them, and a repo with no large files would otherwise get an
- * empty centrepiece with a confident heading over it.
+ * Below `MAP_MIN_POINTS` plottable opportunities the field does not render. A
+ * scatter with four marks asks a reader to decode two axes to learn less than
+ * four rows already told them, and a repo with no large files would otherwise
+ * get an empty centrepiece with a confident heading over it.
  */
 
 import * as React from "react";
@@ -26,22 +26,25 @@ import * as React from "react";
 import { formatNumber } from "../lib/format";
 import { StructuralMap } from "./structural-map";
 import { typeMeta } from "./meta";
+import { MAP_MIN_POINTS } from "./types";
 import {
-  MAP_MIN_POINTS,
-  planPoint,
-  planReason,
-  planSynopsis,
-} from "./types";
-import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+  addressesPrimaryShort,
+  stepSummary,
+  structuralMarks,
+  type StructuralMark,
+} from "./opportunity";
+import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 
 export interface StartHereProps {
-  /** Structural plans, already in rank order. */
-  plans: RefactoringPlan[];
-  onOpen?: ((plan: RefactoringPlan) => void) | undefined;
+  /** Structural opportunities, already in rank order. */
+  opportunities: RefactoringOpportunity[];
+  onOpen?: ((opportunity: RefactoringOpportunity) => void) | undefined;
   /** Jump to the full list filtered to structural types. */
   onSeeAll?: (() => void) | undefined;
-  /** How many ranked rows to show under the map. */
+  /** How many ranked rows to show under the field. */
   leadCount?: number;
+  highlightedId?: string | null | undefined;
+  onHighlight?: ((id: string | null) => void) | undefined;
 }
 
 const EFFORT_WORD: Record<string, string> = {
@@ -51,14 +54,38 @@ const EFFORT_WORD: Record<string, string> = {
   XL: "Extra large",
 };
 
-export function StartHere({ plans, onOpen, onSeeAll, leadCount = 5 }: StartHereProps) {
-  const [highlighted, setHighlighted] = React.useState<string | null>(null);
+export function StartHere({
+  opportunities,
+  onOpen,
+  onSeeAll,
+  leadCount = 5,
+  highlightedId,
+  onHighlight,
+}: StartHereProps) {
+  const [localHighlight, setLocalHighlight] = React.useState<string | null>(null);
+  const highlighted = highlightedId !== undefined ? highlightedId : localHighlight;
+  const setHighlighted = onHighlight ?? setLocalHighlight;
 
-  const plottable = React.useMemo(() => plans.filter((p) => planPoint(p) !== null), [plans]);
-  const showMap = plottable.length >= MAP_MIN_POINTS;
-  const lead = plans.slice(0, leadCount);
+  const marks = React.useMemo(() => structuralMarks(opportunities), [opportunities]);
+  const showMap = marks.length >= MAP_MIN_POINTS;
+  const lead = opportunities.slice(0, leadCount);
+  const dropped = opportunities.length - marks.length;
 
-  if (plans.length === 0) return null;
+  const byId = React.useMemo(() => {
+    const map = new Map<string, RefactoringOpportunity>();
+    for (const item of opportunities) map.set(item.opportunity_id, item);
+    return map;
+  }, [opportunities]);
+
+  const onSelectMark = React.useCallback(
+    (mark: StructuralMark) => {
+      const item = byId.get(mark.opportunityId);
+      if (item && onOpen) onOpen(item);
+    },
+    [byId, onOpen],
+  );
+
+  if (opportunities.length === 0) return null;
 
   return (
     <section className="space-y-5 border-t border-[var(--color-border-default)] pt-8">
@@ -67,8 +94,8 @@ export function StartHere({ plans, onOpen, onSeeAll, leadCount = 5 }: StartHereP
           <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">Start here</h2>
           <p className="mt-1 max-w-[68ch] text-sm text-[var(--color-text-secondary)]">
             {showMap
-              ? "Up the page is a bigger file to work through; right is more code that imports it. Top right is where a morning changes the most, and where the back-compat shim matters."
-              : "The plans that change how the codebase is laid out, ranked by how depended-upon the file is and how much rides along with it."}
+              ? "Up the page is a bigger file to work through; right is more code that imports it. Top right is where a morning changes the most, and where the back-compat shim matters. One mark is one file."
+              : "The work that changes how the codebase is laid out, ranked by how depended-upon the file is and how much rides along with it."}
           </p>
         </div>
         {onSeeAll ? (
@@ -77,37 +104,37 @@ export function StartHere({ plans, onOpen, onSeeAll, leadCount = 5 }: StartHereP
             onClick={onSeeAll}
             className="shrink-0 text-sm font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline"
           >
-            See all {formatNumber(plans.length)} structural
+            See all {formatNumber(opportunities.length)} structural
           </button>
         ) : null}
       </div>
 
       {showMap ? (
         <StructuralMap
-          plans={plans}
-          onSelect={onOpen}
+          marks={marks}
+          dropped={dropped}
+          onSelect={onOpen ? onSelectMark : undefined}
           highlightedId={highlighted}
           onHighlight={setHighlighted}
         />
       ) : null}
 
       <div>
-        {lead.map((plan, i) => {
-          const meta = typeMeta(plan.refactoring_type);
-          const reason = planReason(plan);
-          const effort = EFFORT_WORD[plan.effort_bucket || "M"] ?? plan.effort_bucket;
-          const lit = plan.id === highlighted;
+        {lead.map((item, i) => {
+          const meta = typeMeta(item.lead_refactoring_type || "");
+          const effort = EFFORT_WORD[item.effort_bucket] ?? item.effort_bucket;
+          const lit = item.opportunity_id === highlighted;
           return (
             <button
-              key={plan.id}
+              key={item.opportunity_id}
               type="button"
-              onClick={onOpen ? () => onOpen(plan) : undefined}
+              onClick={onOpen ? () => onOpen(item) : undefined}
               disabled={!onOpen}
-              onMouseEnter={() => setHighlighted(plan.id)}
+              onMouseEnter={() => setHighlighted(item.opportunity_id)}
               onMouseLeave={() => setHighlighted(null)}
-              onFocus={() => setHighlighted(plan.id)}
+              onFocus={() => setHighlighted(item.opportunity_id)}
               onBlur={() => setHighlighted(null)}
-              className={`group grid w-full grid-cols-[28px_minmax(0,1fr)] items-start gap-4 border-t border-[var(--color-border-default)] px-3 py-4 text-left transition-colors first:border-t-0 md:grid-cols-[28px_minmax(0,1fr)_150px] md:items-center ${
+              className={`group grid w-full grid-cols-[28px_minmax(0,1fr)] items-start gap-4 border-t border-[var(--color-border-default)] px-3 py-4 text-left transition-colors first:border-t-0 md:grid-cols-[28px_minmax(0,1fr)_170px] md:items-center ${
                 lit ? "bg-[var(--color-accent-muted)]" : "hover:bg-[var(--color-bg-elevated)]"
               }`}
             >
@@ -116,23 +143,26 @@ export function StartHere({ plans, onOpen, onSeeAll, leadCount = 5 }: StartHereP
               </span>
               <span className="min-w-0">
                 <span className="block text-[15px] font-semibold text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
-                  {planSynopsis(plan) || meta.label}
+                  {meta.label} · {item.file_path.split("/").pop()}
                 </span>
                 {/* Full path, no ellipsis: a truncated title reports a layout
                     decision to the reader as missing content. */}
                 <span className="mt-0.5 block break-all font-mono text-[11px] text-[var(--color-text-tertiary)]">
-                  {plan.file_path}
+                  {item.file_path}
                 </span>
-                {reason ? (
-                  <span className="mt-1.5 block max-w-[70ch] text-[13px] text-[var(--color-text-secondary)]">
-                    {reason}
-                  </span>
-                ) : null}
+                <span className="mt-1.5 block max-w-[70ch] text-[13px] text-[var(--color-text-secondary)]">
+                  {stepSummary(item)} ·{" "}
+                  {addressesPrimaryShort(item.addresses_primary_problem).toLowerCase()}
+                </span>
               </span>
               <span className="mt-2 block text-xs text-[var(--color-text-tertiary)] md:mt-0 md:text-right">
                 {effort} effort
                 <br />
-                {plan.confidence === "high" ? "High" : plan.confidence === "low" ? "Low" : "Medium"}{" "}
+                {item.confidence === "high"
+                  ? "High"
+                  : item.confidence === "low"
+                    ? "Low"
+                    : "Medium"}{" "}
                 confidence
               </span>
             </button>

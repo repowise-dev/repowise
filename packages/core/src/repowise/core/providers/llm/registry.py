@@ -33,6 +33,7 @@ from __future__ import annotations
 import importlib
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from repowise.core.providers.llm.base import BaseProvider
@@ -326,3 +327,23 @@ def list_providers() -> list[str]:
     Includes both built-in and runtime-registered custom providers.
     """
     return sorted(set(_BUILTIN_PROVIDERS) | set(_custom_providers))
+
+
+def provider_available_for_repo(repo_path: Path | str) -> bool:
+    """Whether a provider would resolve for *repo_path*, constructing nothing.
+
+    Mirrors the CLI's resolution order: an explicit choice is checked for
+    usability, auto-detection asks only whether credentials name a provider.
+    Reporting-only, so it answers False rather than raising on a broken config.
+    """
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        configured = (os.environ.get("REPOWISE_PROVIDER") or "").strip()
+        if not configured:
+            configured = str(load_repo_config(repo_path).get("provider") or "").strip()
+        if configured:
+            return provider_is_usable(configured)
+        return any(provider_credentials_present(name) for name in PROVIDER_AUTODETECT_ORDER)
+    except Exception:
+        return False

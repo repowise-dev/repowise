@@ -4,9 +4,13 @@ from .bindings import extract_import_bindings
 from .docstrings import extract_module_docstring, extract_symbol_docstring
 from .helpers import (
     extract_go_receiver_type,
+    fsharp_type_name,
     node_text,
+    refine_elixir_call_kind,
+    refine_fsharp_type_kind,
     refine_go_type_kind,
     refine_kotlin_class_kind,
+    refine_pascal_type_kind,
 )
 from .heritage import HERITAGE_EXTRACTORS, extract_heritage
 from .signatures import build_signature
@@ -21,7 +25,11 @@ __all__ = [
     "extract_import_bindings",
     "extract_module_docstring",
     "extract_symbol_docstring",
+    "fsharp_type_name",
     "node_text",
+    "refine_elixir_call_kind",
+    "refine_fsharp_type_kind",
     "refine_go_type_kind",
     "refine_kotlin_class_kind",
+    "refine_pascal_type_kind",
 ]

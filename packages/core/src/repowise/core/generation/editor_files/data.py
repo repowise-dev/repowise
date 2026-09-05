@@ -66,7 +66,8 @@ class CodeHealthBlock:
     average_health: float
     worst_score: float
     worst_path: str
-    hotspot_trend: str = "stable"
+    # ``None`` until two snapshots exist; the section then omits the label.
+    hotspot_trend: str | None = None
     # Maintainability pillar headline (NLOC-weighted average over the per-file
     # maintainability scores). ``None`` until the split populates the column, so
     # the section omits it rather than printing a misleading 10.0.

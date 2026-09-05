@@ -21,7 +21,9 @@ export function GraphDocPanel({ repoId, nodeId, onClose }: GraphDocPanelWrapperP
       page={page as DocPage | null | undefined}
       isLoading={isLoading}
       error={error}
-      fullPageHref={page ? fileEntityPath(`/repos/${repoId}`, nodeId) : undefined}
+      // Unconditional: the file page is a valid route whether or not a wiki
+      // page was written for the file, and it is the empty state's way out.
+      fullPageHref={fileEntityPath(`/repos/${repoId}`, nodeId)}
       browseDocsHref={`/repos/${repoId}/docs`}
       onClose={onClose}
     />

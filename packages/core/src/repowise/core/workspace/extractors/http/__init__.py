@@ -20,14 +20,22 @@ from .dialect import HttpDialect
 from .django import DjangoDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
+from .flask import FlaskDialect
 from .go import GoDialect
+from .go_clients import GoClientsDialect
+from .java_clients import JavaClientsDialect
 from .jaxrs import JaxRsDialect
 from .js_clients import JsClientsDialect
+from .kotlin_clients import KotlinClientsDialect
 from .laravel import LaravelDialect
+from .micronaut import MicronautDialect
 from .mounts import merge_mount_maps
 from .next_app import NextAppDialect
 from .paths import normalize_http_path
+from .php_clients import PhpClientsDialect
 from .python_clients import PythonClientsDialect
+from .remix import RemixDialect
+from .ruby_clients import RubyClientsDialect
 from .rust_axum import RustAxumDialect
 from .rust_clients import RustClientsDialect
 from .spring import SpringDialect
@@ -45,6 +53,7 @@ if TYPE_CHECKING:
 PROVIDER_DIALECTS: tuple[HttpDialect, ...] = (
     ExpressDialect(),
     FastApiDialect(),
+    FlaskDialect(),
     SpringDialect(),
     LaravelDialect(),
     GoDialect(),
@@ -52,7 +61,9 @@ PROVIDER_DIALECTS: tuple[HttpDialect, ...] = (
     RustAxumDialect(),
     DjangoDialect(),
     JaxRsDialect(),
+    MicronautDialect(),
     NextAppDialect(),
+    RemixDialect(),
 )
 
 # HTTP-client call recognisers (one client/language each).
@@ -61,6 +72,11 @@ CONSUMER_DIALECTS: tuple[HttpDialect, ...] = (
     PythonClientsDialect(),
     CSharpHttpDialect(),
     RustClientsDialect(),
+    GoClientsDialect(),
+    RubyClientsDialect(),
+    JavaClientsDialect(),
+    KotlinClientsDialect(),
+    PhpClientsDialect(),
 )
 
 

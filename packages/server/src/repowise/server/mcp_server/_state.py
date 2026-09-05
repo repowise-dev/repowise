@@ -35,6 +35,17 @@ _registry: Any = None          # RepoRegistry | None
 _workspace_root: str | None = None
 _cross_repo_enricher: Any = None  # CrossRepoEnricher | None
 
+# Consumer repo indexes held open for the cross-repo test-impact join, keyed by
+# alias. Opening one costs a full symbol-table load, so a repo is opened once
+# and reused across tool calls; ``None`` records a repo that has no index. Each
+# holds one database session, and a session is not concurrent-safe, so the lock
+# below serializes the joins that read them. Both are cleared by
+# ``_test_impact.close_test_impact_indexes()`` where the enricher is dropped.
+_test_impact_indexes: dict[str, Any] = {}
+# The loop the lock was created on, paired with the lock: an asyncio.Lock is
+# bound to one event loop, and a test or an embedded server can run a second.
+_test_impact_lock: tuple[Any, asyncio.Lock] | None = None
+
 # Embedder health — set by _resolve_embedder() in _server.py. ``None`` until an
 # embedder is resolved. When an explicitly-configured embedder fails to
 # initialise we still fall back to MockEmbedder (so non-RAG tools stay up) but

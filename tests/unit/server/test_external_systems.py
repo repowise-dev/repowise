@@ -773,4 +773,8 @@ async def test_relationship_graph_query_count_is_constant(
 
     assert response.status_code == 200
     selects = [statement for statement in statements if statement.lstrip().startswith("SELECT")]
-    assert len(selects) == 2
+    # Declarations, resolved external nodes, then the edges reaching them. The
+    # count is what matters: it does not grow with importers, communities or
+    # declared packages. Composition moved to a session-free fold, so the third
+    # read replaces the aggregate the graph query used to push down.
+    assert len(selects) == 3

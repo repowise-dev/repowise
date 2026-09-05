@@ -303,9 +303,10 @@ def test_cross_repo_participates_in_the_response_ceiling(tmp_path: Path):
     from repowise.server.mcp_server.tool_change_risk import _SHED_ORDER
 
     assert "cross_repo" in _SHED_ORDER
-    # Shed after the run-list, before fix_history's numbers.
-    assert _SHED_ORDER.index("impacted_tests") < _SHED_ORDER.index("cross_repo")
-    assert _SHED_ORDER.index("cross_repo") < _SHED_ORDER.index("fix_history.files")
+    # Shed after fix_history's rows, before the run-list: an agent keeps the
+    # tests to run for longer than the list of downstream consumers.
+    assert _SHED_ORDER.index("fix_history.files") < _SHED_ORDER.index("cross_repo")
+    assert _SHED_ORDER.index("cross_repo") < _SHED_ORDER.index("impacted_tests")
 
     payload = {
         "score": 7.0,
@@ -317,5 +318,72 @@ def test_cross_repo_participates_in_the_response_ceiling(tmp_path: Path):
     fit_to_budget(payload, _SHED_ORDER, collector)
     assert "cross_repo" not in payload
     assert payload["truncated"] is True
-    # The score and its drivers are the answer and survive.
-    assert payload["fix_history"]["density"] == 1.0
+    # The tests to run outlive both the consumer list and the fix record.
+    assert payload["impacted_tests"]["tests_to_run"] == ["t.py"]
+    assert "fix_history" not in payload
+
+
+def test_no_tests_block_without_a_test_impact_result(tmp_path: Path):
+    """The helper declining is the block being absent, not an empty list."""
+    block = _block(_enricher(tmp_path, [_link()]), [PROVIDER_FILE])
+    assert "tests" not in block["consumers"][0]
+    assert "consumer test file(s) to run" not in block["summary"]
+
+
+def test_each_consumer_row_carries_the_tests_that_guard_it(tmp_path: Path):
+    from repowise.core.workspace.test_impact import (
+        UnresolvedLink,
+        WorkspaceTestImpactResult,
+        WorkspaceTestRecommendation,
+    )
+    from repowise.server.mcp_server.tool_change_risk import _cross_repo_block
+
+    impact = WorkspaceTestImpactResult(
+        recommendations=[
+            WorkspaceTestRecommendation(
+                test_id="tests/api.test.ts::it",
+                test_file="tests/api.test.ts",
+                consumer_repo="frontend",
+                consumer_files=["src/api.ts"],
+                consumer_symbol_ids=["src/api.ts::getOrder"],
+                provider_repo="api",
+                contract_ids=["code::@acme/types::Order"],
+                contract_types=["code"],
+                basis="inferred",
+                via="call-graph",
+                confidence=0.9,
+                source_files=[PROVIDER_FILE],
+                evidence=[],
+            )
+        ],
+        unresolved=[
+            UnresolvedLink(
+                consumer_repo="frontend",
+                consumer_file="src/other.ts",
+                consumer_symbol_id=None,
+                provider_repo="api",
+                provider_file=PROVIDER_FILE,
+                contract_id="code::@acme/types::Order",
+                contract_type="code",
+                reason="unbound",
+            )
+        ],
+    )
+    enricher = _enricher(tmp_path, [_link(), _link(consumer_file="src/other.ts")])
+    prev_registry = _state._registry
+    prev_enricher = _state._cross_repo_enricher
+    _state._registry = object()
+    _state._cross_repo_enricher = enricher
+    try:
+        block = _cross_repo_block("api", [PROVIDER_FILE], impact, None)
+    finally:
+        _state._registry = prev_registry
+        _state._cross_repo_enricher = prev_enricher
+
+    assert block["consumers"][0]["tests"]["state"] == "inferred"
+    assert block["consumers"][0]["tests"]["tests_to_run"][0]["via"] == "call-graph"
+    assert block["consumers"][1]["tests"]["state"] == "unresolved"
+    assert block["consumers"][1]["tests"]["unresolved_reason"] == "unbound"
+    assert block["summary"].endswith(
+        " 1 consumer test file(s) to run, 1 link(s) could not be determined."
+    )

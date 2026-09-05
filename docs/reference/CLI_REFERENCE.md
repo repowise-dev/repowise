@@ -2,7 +2,7 @@
 
 Complete reference for all `repowise` commands. For a guided introduction, see the [Quickstart](../start/QUICKSTART.md).
 
-Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
+Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `health`, `risk`, `overlap`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
 **Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--prose` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `security`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
 
@@ -31,6 +31,7 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 **Health and risk**
 [`health`](#repowise-health-path) ·
 [`risk`](#repowise-risk-revspec) ·
+[`overlap`](#repowise-overlap) ·
 [`dead-code`](#repowise-dead-code-path) ·
 [`security`](#repowise-security) ·
 [`impacted-tests`](#repowise-impacted-tests-revspec) ·
@@ -176,7 +177,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--seed-from` | Seed the index from an explicit base checkout instead of the auto-detected one. Rarely needed: inside a linked git worktree the base is detected and seeded automatically. See [WORKTREES.md](../scale/WORKTREES.md). |
 | `--no-seed` | Disable worktree auto-seeding and run a full init even inside a linked worktree. |
 | `--yes` / `-y` | Skip confirmation prompts |
-| `--dry-run` | Show generation plan and cost estimate without running |
+| `--dry-run` | Show the generation plan and cost estimate. Writes no wiki |
 | `--test-run` | Generate docs for only the top 10 files (by PageRank) |
 | `--all` | In multi-repo mode, index every detected repo without prompting |
 | `--no-workspace` | Force single-repo mode even when invoked from a workspace root (indexes only the target PATH instead of fanning out across workspace repos) |
@@ -779,7 +780,55 @@ repowise risk -t src/auth.py --changed-file src/auth.py  # PR mode + directive
 Note `--path` on this command already means "the git repository", which is why
 the files are named with `--target`.
 
+**Independent changes.** When the index can be read, the command also prints
+whether the diff is one change or several: the changed files grouped by what
+connects them, which is the links the index holds (imports, calls, type
+references, stored co-change pairs) plus, for a `base..head` range, the files each
+commit touched, since putting two files in one commit is the author's own
+statement that they belong together. Only indexed, non-test source files a
+resolver can link are grouped; docs, config, data and tests are always printed
+under `Left out of the grouping:`, never as a change of their own, and only the
+first ten names are listed. Each group prints its files and the files that alone
+hold it together, where moving one out would split the group. A closing `Basis:`
+line says what was checked, naming a shared commit only when there were commits to
+read. It is silent when the diff is one change, and it carries no score.
+`--format json` puts the same object under `independent_changes`. See
+[Independent changes](../layers/CHANGE_RISK.md#independent-changes).
+
 See [`docs/layers/CHANGE_RISK.md`](../layers/CHANGE_RISK.md) for the scoring model.
+
+---
+
+### `repowise overlap`
+
+Which other open branches edit the files this change edits. Pure git for the
+answer, so it works in a fresh clone with no index; when an index is readable it
+orders the shared files and adds the files history pairs with them. Every row
+states its basis in words, `same file` or `co-change pair, N of M commits`, and
+there is no score anywhere in the output.
+
+Branches stacked on the current one (and the ones it is stacked on) are skipped,
+as are noise paths and dependency manifests, which every branch touches. A branch
+that shares no file produces no row. The scan is bounded to the newest branches by
+committer date and reports how many it scanned of how many exist.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--base` | Base ref to diff both sides against (default: the repository's trunk, from `origin/HEAD`, else `main` or `master`) |
+| `--branch` | The change to compare (default: `HEAD`) |
+| `--path` | Path to the git repository (default: current directory) |
+| `--limit` | How many branches to diff, newest committer date first (default 50) |
+| `--format` | Output format: `table` (default) or `json` |
+
+```bash
+repowise overlap                             # who else is editing what you are editing
+repowise overlap --base main --limit 100     # a wider scan against an explicit base
+```
+
+When nothing overlaps, the command prints one line saying so with the scan
+counts. See [Branch overlap](../layers/CHANGE_RISK.md#branch-overlap).
 
 ---
 
@@ -911,26 +960,150 @@ Manage architectural decision records.
 **Subcommands:**
 
 ```bash
-repowise decision list [PATH]           # list decisions
+repowise decision list [PATH]           # list records
 repowise decision show ID [PATH]        # full details
 repowise decision add [PATH]            # interactive add
-repowise decision confirm ID [PATH]     # confirm a proposal
-repowise decision dismiss ID [PATH]     # dismiss a proposal (sticky; never re-proposed)
-repowise decision deprecate ID [PATH]   # mark deprecated
+repowise decision candidates [PATH]     # what is awaiting review; these govern nothing
+repowise decision confirm ID... [PATH]  # accept candidates: this is what makes them govern
+repowise decision dismiss ID... [PATH]  # tombstone them (sticky; never re-proposed)
+repowise decision merge ID INTO_ID      # fold a candidate into an existing decision
+repowise decision split ID [PATH]       # flag a candidate as bundling two choices
+repowise decision deprecate ID [PATH]   # retire a decision, optionally naming its successor
 repowise decision health [PATH]         # health dashboard
+repowise decision status [PATH]         # what capture did, and what it cost
+
+repowise decision export [PATH]         # write accepted decisions to .repowise/decisions.yaml
+repowise decision import [PATH]         # reconcile the store to that file
+repowise decision migrate [PATH]        # classify pre-split rows (dry run unless --apply)
+
+repowise decision config show [PATH]              # the resolved capture policy
+repowise decision config preset NAME [PATH]       # default | off | local_only | balanced | full
+repowise decision config discovery [PATH]         # budget for the one broad discovery call
+repowise decision source list [PATH]              # the source registry and its state
+repowise decision source set SRC --on|--off       # switch one source
+repowise decision source set SRC --llm|--no-llm   # switch only its model stage
+repowise decision llm --on|--off [PATH]           # all decision-extraction model calls
 ```
+
+**Review options:**
+
+| Flag | Description |
+|------|-------------|
+| `--reason TEXT` | On `confirm`: the rationale, or why a constraint needs none. Also corrects the record. |
+| `--scope PATH` | On `confirm`: a file or module this governs. Repeatable, and replaces the proposed scope. |
+| `--evidence REF` | On `confirm`: a commit, file or link it rests on. Repeatable. |
+| `--as NAME` | On `confirm`: record a different accepter than the repo's git identity. |
+| `--preview` | On `confirm` and `dismiss`: report what each id would do, and write nothing. |
+| `--reason TEXT` | On `dismiss`: why it was tombstoned. |
+| `--superseded-by ID` | On `deprecate`: writes an explicit lineage edge and keeps the retired id resolving. |
+| `--state STATE` | On `candidates`: `open` (default), `accepted`, `merged`, `needs_split`, `dismissed`, `all`. |
+| `--lane NAME` | On `candidates`: only candidates raised by that extraction lane (`pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `cli`). Unrelated to the review lanes the Decisions page splits on. |
+| `--apply` | On `migrate`: write the plan. Without it the command reports and writes nothing. |
+| `--dry-run` | On `import`: report and write nothing. |
+
+`candidates` is a review queue, so it leads with the candidates the acceptance
+contract would take, as judged at the last index, and puts the rest below them.
+Its `Acceptable` column is either `yes` or the same blockers `confirm` would
+refuse with, so the work you can finish and the work waiting on somebody is
+separated before you start. Under `--format json` each row carries a `blockers`
+array.
+
+`confirm` refuses rather than storing a blank acceptance: a candidate needs a
+reason, a scope and an evidence reference, and the flags above supply whatever
+is missing. Under `--format json` the refusal is a document
+(`{"error": "acceptance_refused", "blockers": [...]}`) and the exit code is 1,
+so a scripted review can tell it apart from a crash.
+
+`confirm` and `dismiss` take one id or many, with the optional repository path
+still last. A refused id does not stop the others, and each id is applied
+independently, so a batch that refuses one commits the rest and exits 1.
+`--preview` puts every id through the same acceptance contract and then rolls
+the whole run back, so what it reports is what the write would have said.
+
+One id keeps the transition document those verbs already emitted
+(`{"id", "status", "action"}`). Two or more, or `--preview`, emit a results
+document instead:
+
+```json
+{
+  "action": "accepted",
+  "preview": false,
+  "results": [
+    {"given": "9f3c", "id": "...", "title": "...", "ok": true, "action": "accepted", "status": "active"},
+    {"given": "2b70", "id": "...", "title": "...", "ok": false,
+     "error": "acceptance_refused", "blockers": ["no scope: name the files or modules it governs"]}
+  ],
+  "succeeded": 1,
+  "failed": 1
+}
+```
+
+**Capture-control options:**
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Print the change and write nothing. On `config preset`, `config discovery`, `source set`, `llm`. |
+| `--format` | `table` (default) or `json`. `json` returns the full source registry. |
+| `--max-sessions` | `config discovery` only: session deltas one broad call may read (1-24, default 12). |
+| `--max-input-tokens` | `config discovery` only: input-token ceiling for one broad call (2000-60000, default 30000). |
+
+`config discovery` with neither budget flag just prints the resolved policy.
+Broad discovery itself is a source, so it is switched with
+`repowise decision source set session_discovery --on|--off`; it is off in the
+`default` policy and on in the `balanced` and `full` presets.
+
+`confirm` is the acceptance event. Nothing else promotes a record to `active`:
+extraction, recurrence across sessions, and confidence all stop at `proposed`.
+
+`--status` filters the status column, which is a projection of the acceptance
+kept in step for readers that predate the split, so it is not the same question
+as "what governs". `repowise decision candidates` is the authoritative list of
+what nobody has accepted, and the Decisions page splits the same repository
+into five lanes over the acceptance join.
+
+**Reporting on capture:** `repowise decision status` answers what the sources
+actually did, in one screen: the effective policy and preset, every source with
+its state and the reason it made no call, what each one has captured and when,
+the five review lanes, how much of the unreviewed backlog a reviewer can accept
+today against how much is blocked, the age of that backlog, the staging queues,
+and the model spend booked to decision extraction.
+
+Nothing records a capture run, so every figure is derived from a durable trace
+rather than a run ledger. That has two consequences the command states rather
+than papering over: spend is all-time with the last call named, because no
+stored boundary says which call belonged to which run; and a queue that a
+store predates is reported absent rather than as zero.
+
+```
+repowise decision status
+
+  Decision capture
+
+    Capture on  ·  LLM extraction on  ·  preset default
+
+  Source             Status               Records  Accepted  Last seen   Why
+  inline_marker      enabled              4        2         2026-08-31  Runs with model structuring.
+  pr                 skipped_no_provider  213      0         2026-08-31  No LLM provider is configured.
+  session_discovery  disabled             0        0         -           This source is switched off.
+```
+
+**Scripting these:** every subcommand takes `--format json`, and `confirm`,
+`dismiss`, `deprecate`, and `show` exit non-zero on an unknown id with
+`{"error": "decision_not_found", "decision_id": "..."}` so a caller can tell a
+typo from a successful transition. `dismiss` skips its confirmation prompt under
+`--format json`, or with `--yes`.
 
 **List options:**
 
 | Flag | Description |
 |------|-------------|
-| `--status` | `active`, `proposed`, `deprecated`, `superseded`, `all` |
+| `--status` | `active`, `proposed`, `deprecated`, `superseded`, `dismissed`, `all` |
 | `--source` | `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | Shortcut for `--status proposed` |
 | `--stale-only` | Only stale decisions |
 | `--format` | `table` (default) or `json` |
 
-`--format json` is also available on `decision show` and `decision health`. In JSON, `decision list` emits full ids rather than the table's 8-character prefixes, and `show` / `health` skip the caps the human output applies to keep a panel readable.
+`--format json` is available on every `decision` subcommand. In JSON, `decision list` emits full ids rather than the table's 8-character prefixes, and `show` / `health` skip the caps the human output applies to keep a panel readable.
 
 ---
 
@@ -1649,6 +1822,11 @@ To remove a single agent rather than all of them, use
 ### `repowise augment`
 
 Hook-driven context enrichment engine. Not meant to be called manually, invoked by Claude Code and Codex hooks installed during `repowise init`. Claude Code uses it for search-result enrichment, stale-wiki checks, and decision injection: session start gets the standing decisions relevant to the session's working set (relevance-ranked, hard token cap, silent when nothing clears the floor), and editing a governed file gets a one-line "governed by" notice once per session per decision. Codex uses it for `SessionStart` and `PostToolUse` lifecycle guidance. Shown decisions are recorded in `.repowise/sessions/sessions.db` so the next `repowise update` can judge whether the guidance was followed or contradicted and adjust decision staleness.
+
+| Flag | Meaning |
+|---|---|
+| `--client` | Hook client marker: `codex`. Codex lifecycle hooks pass this explicitly. |
+| `--verbose`, `-v` | Show debug logs from the hook pipeline. |
 
 ### `repowise-augment` / `repowise-rewrite`
 

@@ -6,6 +6,7 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from typing import Any
@@ -14,6 +15,8 @@ import structlog
 from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core import __version__
+from repowise.core.analysis.decisions.lifecycle import DECISION_STATUS_ORDER
 from repowise.core.analysis.decisions.provenance import (
     SOURCE_RANK,
     compute_confidence,
@@ -22,18 +25,37 @@ from repowise.core.analysis.decisions.provenance import (
 
 from ..decision_graph import sync_decision_node_links
 from ..models import (
+    DecisionCandidateMeta,
     DecisionEdge,
     DecisionEvidence,
     DecisionNodeLink,
     DecisionRecord,
     GitMetadata,
-    _new_uuid,
     _now_utc,
+)
+from .authority import (
+    accepted_predicate,
+    candidate_predicate,
+    candidate_review_signals,
+    upsert_candidate_meta,
 )
 
 # ---------------------------------------------------------------------------
 # DecisionRecord CRUD
 # ---------------------------------------------------------------------------
+
+# Namespaced so a decision id can never collide with another kind of derived
+# id, and versioned so a future change of the recipe is a visible new value
+# rather than a silent reshuffle of every id in every store.
+_ID_NAMESPACE = "repowise.decision.id.v1"
+
+# The four identity fields are joined with a separator none of them can
+# contain, so no pair of distinct records can flatten to the same string.
+_FIELD_SEP = "\x00"
+
+# ``evidence_file`` is nullable and NULL is not the empty string here: the
+# dedupe query treats them as different records, so the derivation must too.
+_NULL_EVIDENCE_FILE = "\x01"
 
 _VALID_DECISION_STATUSES = frozenset(
     {"proposed", "active", "deprecated", "superseded", "dismissed"}
@@ -48,16 +70,118 @@ _VALID_DECISION_STATUSES = frozenset(
 _PROTECTED_STATUSES = frozenset({"active", "deprecated", "superseded", "dismissed"})
 
 
+def _extraction_status(incoming: str) -> str:
+    """The status extraction is allowed to write.
+
+    Extraction proposes; acceptance promotes. An incoming ``active`` is a
+    parsed ADR heading or an old code path's optimism, and neither is an
+    acceptance event, so it lands as a proposal. A tracked ADR still reaches
+    ``active`` — via :func:`_accept_from_tracked_artifact` below, which records
+    the document as the accepter instead of leaving the promotion anonymous.
+    """
+    return "proposed" if incoming == "active" else incoming
+
+
 def _merge_status(existing: str, incoming: str) -> str:
     """Resolve a re-extracted status against the stored one.
 
-    Extraction only ever emits ``proposed`` or ``active`` (ADR files can also
-    carry ``deprecated``/``superseded``). A protected stored status wins over
-    an incoming ``proposed``; anything else follows the incoming value.
+    A protected stored status wins over an incoming ``proposed``; anything else
+    follows the incoming value, after :func:`_extraction_status` has taken
+    authority out of extraction's hands.
     """
+    incoming = _extraction_status(incoming)
     if incoming == "proposed" and existing in _PROTECTED_STATUSES:
         return existing
     return incoming
+
+
+def _dedup_query(
+    repository_id: str,
+    title: str,
+    *,
+    source: str,
+    evidence_file: str | None,
+) -> Any:
+    """The identity :func:`upsert_decision` deduplicates on.
+
+    ``evidence_file`` may be NULL, which no equality test matches, so the two
+    cases are separate clauses. Shared with :func:`find_decision_by_title` so a
+    caller can ask what an upsert would land on before it lands on it.
+    """
+    q = select(DecisionRecord).where(
+        DecisionRecord.repository_id == repository_id,
+        DecisionRecord.title == title,
+        DecisionRecord.source == source,
+    )
+    if evidence_file is not None:
+        return q.where(DecisionRecord.evidence_file == evidence_file)
+    return q.where(DecisionRecord.evidence_file.is_(None))
+
+
+def derive_decision_id(
+    repository_id: str,
+    title: str,
+    *,
+    source: str,
+    evidence_file: str | None,
+) -> str:
+    """The id a decision with this identity has, in every store, on every run.
+
+    Deliberately the same four columns :func:`_dedup_query` matches on, and
+    kept beside it so the id and the dedupe key cannot drift apart. Those
+    columns are what ``uq_decision_record`` names, so this makes the primary
+    key agree with the identity the schema already declares rather than
+    inventing one. A random id, by contrast, is re-minted whenever a store is
+    rebuilt instead of updated, which strands every reference held outside the
+    row: an acceptance, an alias, a vector key, a link somebody wrote down.
+
+    That constraint is weaker than it looks, and this is stricter than it:
+    ``evidence_file`` is nullable and SQL calls two NULLs distinct, so the
+    constraint does not fire for the majority of records, while two rows that
+    agree on all four do collapse to one id here. Every write path reaches an
+    insert only after a dedupe that would have found such a row, so the
+    stricter reading is not reachable from them; the migration classifies the
+    pairs a store already holds and leaves them alone.
+
+    Note the id follows the identity, so editing one of the four moves it. The
+    migration at the head of each run is what settles that.
+
+    32 lowercase hex, because ``DecisionRecord.id`` is ``String(32)`` and so is
+    every foreign key to it, so a truncated digest fits without a column
+    change. ``evidence_file`` is NULL far more often than not, and NULL is a
+    distinct case in the dedupe query, so it gets a sentinel no path can
+    contain rather than collapsing into the empty string.
+    """
+    parts = (
+        _ID_NAMESPACE,
+        repository_id,
+        title,
+        source,
+        _NULL_EVIDENCE_FILE if evidence_file is None else evidence_file,
+    )
+    digest = hashlib.sha256(_FIELD_SEP.join(parts).encode("utf-8")).hexdigest()
+    return digest[:32]
+
+
+async def find_decision_by_title(
+    session: AsyncSession,
+    repository_id: str,
+    title: str,
+    *,
+    source: str = "cli",
+    evidence_file: str | None = None,
+) -> DecisionRecord | None:
+    """The record an :func:`upsert_decision` with these arguments would update.
+
+    Exists so a caller can tell "this creates a record" from "this overwrites
+    one" before writing. The create endpoint needs the difference: overwriting
+    an accepted decision with a scopeless body would clear the scope it governs
+    and leave its acceptance row behind.
+    """
+    result = await session.execute(
+        _dedup_query(repository_id, title, source=source, evidence_file=evidence_file)
+    )
+    return result.scalar_one_or_none()
 
 
 async def upsert_decision(
@@ -94,16 +218,14 @@ async def upsert_decision(
     context = context or ""
     decision = decision or ""
 
-    # Build the WHERE clause — evidence_file may be NULL
-    q = select(DecisionRecord).where(
-        DecisionRecord.repository_id == repository_id,
-        DecisionRecord.title == title,
-        DecisionRecord.source == source,
+    q = _dedup_query(
+        repository_id, title, source=source, evidence_file=evidence_file
     )
-    if evidence_file is not None:
-        q = q.where(DecisionRecord.evidence_file == evidence_file)
-    else:
-        q = q.where(DecisionRecord.evidence_file.is_(None))
+
+    # No write path creates authority. ``active`` here would be a status a
+    # caller asserted rather than an acceptance anyone performed; the caller
+    # accepts explicitly afterwards if it means to.
+    status = _extraction_status(status)
 
     result = await session.execute(q)
     existing = result.scalar_one_or_none()
@@ -127,10 +249,16 @@ async def upsert_decision(
         existing.superseded_by = superseded_by
         existing.updated_at = _now_utc()
         await session.flush()
+        await _write_candidate_meta(session, repository_id, {}, only={existing.id})
         return existing
 
     rec = DecisionRecord(
-        id=decision_id or _new_uuid(),
+        # An explicit id still wins: the manifest importer carries ids in from
+        # a tracked file and those are the record's identity, not ours.
+        id=decision_id
+        or derive_decision_id(
+            repository_id, title, source=source, evidence_file=evidence_file
+        ),
         repository_id=repository_id,
         title=title,
         status=status,
@@ -154,6 +282,7 @@ async def upsert_decision(
     )
     session.add(rec)
     await session.flush()
+    await _write_candidate_meta(session, repository_id, {}, only={rec.id})
     return rec
 
 
@@ -171,6 +300,8 @@ async def list_decisions(
     tag: str | None = None,
     module: str | None = None,
     include_proposed: bool = True,
+    accepted: bool | None = None,
+    include_dismissed: bool = False,
     limit: int = 100,
     offset: int = 0,
     sort: str = "priority",
@@ -179,6 +310,17 @@ async def list_decisions(
 
     Dismissed records are tombstones and only show up when explicitly asked
     for via ``status="dismissed"``.
+
+    ``accepted`` filters on the acceptance join rather than the status column:
+    ``False`` is every candidate, ``True`` every decision. It is applied in SQL,
+    before the page is cut, because a caller paging a lane needs the page to be
+    of that lane. Filtering after the cut returned an empty Candidates page on a
+    store whose first fifty rows by priority were all statused ``active``.
+
+    ``include_dismissed`` keeps the tombstones in without narrowing to them.
+    A candidate that was dismissed should stay hidden, but a *decision* that was
+    accepted and then withdrawn is history somebody needs to be able to read,
+    and ``dismiss_candidate`` writes ``status="dismissed"`` for both.
 
     ``sort`` controls ordering:
 
@@ -194,7 +336,8 @@ async def list_decisions(
     if status is not None:
         q = q.where(DecisionRecord.status == status)
     else:
-        q = q.where(DecisionRecord.status != "dismissed")
+        if not include_dismissed:
+            q = q.where(DecisionRecord.status != "dismissed")
         if not include_proposed:
             q = q.where(DecisionRecord.status != "proposed")
     if source is not None:
@@ -206,21 +349,43 @@ async def list_decisions(
     if module is not None:
         # Match exact module path in JSON array
         q = q.where(DecisionRecord.affected_modules_json.contains(f'"{module}"'))
-    q = q.order_by(*_decision_order(sort)).limit(limit).offset(offset)
+    if accepted is not None:
+        predicate = accepted_predicate()
+        q = q.where(predicate if accepted else ~predicate)
+    order = _decision_order(sort)
+    if accepted is False and sort != "recent":
+        # A candidates page is a review queue, so it leads with the rows the
+        # acceptance contract would take rather than the highest-confidence
+        # ones a reviewer cannot act on.
+        q = q.outerjoin(
+            DecisionCandidateMeta,
+            DecisionCandidateMeta.decision_id == DecisionRecord.id,
+        )
+        order = (
+            func.coalesce(DecisionCandidateMeta.review_priority, 0.0).desc(),
+            *order,
+        )
+    q = q.order_by(*order).limit(limit).offset(offset)
     result = await session.execute(q)
     return list(result.scalars().all())
 
 
-# Lower sorts first. Active is a rule the team stands behind; proposed is a
-# candidate; superseded and deprecated are history.
-_STATUS_RANK = {"active": 0, "proposed": 1, "superseded": 2, "deprecated": 3}
+# Lower sorts first, from the one ladder in lifecycle. ``dismissed`` is in the
+# ladder but not here: this rank also zero-fills ``count_decisions_by_status``,
+# which excludes dismissed rows, so a key for it would report a count of zero
+# for rows the query never looked at.
+_STATUS_RANK = {
+    status: rank
+    for rank, status in enumerate(DECISION_STATUS_ORDER)
+    if status != "dismissed"
+}
 
 
 def _decision_order(sort: str) -> tuple[Any, ...]:
     """ORDER BY terms for :func:`list_decisions`."""
     if sort == "recent":
         return (DecisionRecord.created_at.desc(),)
-    rank = case(_STATUS_RANK, value=DecisionRecord.status, else_=4)
+    rank = case(_STATUS_RANK, value=DecisionRecord.status, else_=len(DECISION_STATUS_ORDER))
     return (
         rank,
         DecisionRecord.confidence.desc(),
@@ -300,10 +465,18 @@ async def update_decision_status(
     status: str,
     *,
     superseded_by: str | None = None,
+    accepter: str = "",
 ) -> DecisionRecord | None:
-    """Update the status of a decision record.
+    """Move a decision record between statuses, recording authority changes.
 
-    Raises ValueError for invalid statuses. Returns None if not found.
+    The status column is a projection, so a caller asking for ``active`` is
+    asking for an acceptance and gets one, stamped with *accepter*; a caller
+    retiring an accepted decision gets a withdrawal appended to the same log.
+    Writing the column alone would leave the two disagreeing, which is how a
+    dismissal survives in one surface and not another.
+
+    Raises ValueError for an invalid status, and for an acceptance the record
+    cannot support. Returns None if not found.
     """
     if status not in _VALID_DECISION_STATUSES:
         raise ValueError(
@@ -312,6 +485,30 @@ async def update_decision_status(
     rec = await session.get(DecisionRecord, decision_id)
     if rec is None:
         return None
+
+    from .authority import (
+        AcceptanceRefusedError,
+        accept_decision,
+        is_accepted,
+        record_acceptance,
+    )
+
+    accepted = await is_accepted(session, rec.id)
+    try:
+        if status == "active":
+            if not accepted:
+                await accept_decision(session, rec, accepter=accepter or "unrecorded")
+        elif accepted and status in ("dismissed", "deprecated", "superseded"):
+            await record_acceptance(
+                session,
+                rec,
+                action="superseded" if status == "superseded" else "dismissed",
+                currency="superseded" if status == "superseded" else "dismissed",
+                accepter=accepter or "unrecorded",
+            )
+    except AcceptanceRefusedError as exc:
+        raise ValueError(str(exc)) from exc
+
     rec.status = status
     if superseded_by is not None:
         rec.superseded_by = superseded_by
@@ -679,6 +876,56 @@ def _first_commit(d: dict) -> str | None:
     return commits[0] if commits else None
 
 
+#: Sources whose evidence file is itself a reviewable, version-controlled
+#: statement of the decision. Only these can accept without a person present.
+_TRACKED_ARTIFACT_SOURCES: frozenset[str] = frozenset({"adr"})
+
+
+async def _accept_from_tracked_artifact(
+    session: AsyncSession, rec: DecisionRecord, headline: dict
+) -> None:
+    """Grant acceptance to an ADR the repository has committed as accepted.
+
+    Silent on anything that is not one: a missing rationale or scope means the
+    document did not say enough to bind future work, and a refusal there is
+    correct rather than an error to report. Re-running is a no-op because the
+    acceptance already exists.
+    """
+    if headline.get("status") != "active":
+        return
+    if headline.get("source") not in _TRACKED_ARTIFACT_SOURCES:
+        return
+    artifact = headline.get("evidence_file") or ""
+    if not artifact:
+        return
+
+    from repowise.core.analysis.decisions.accepter import is_tracked
+
+    from ..models import Repository
+    from .authority import AcceptanceRefusedError, is_accepted, record_acceptance
+
+    if await is_accepted(session, rec.id):
+        return
+    repo = await session.get(Repository, rec.repository_id)
+    if repo is None or not is_tracked(repo.local_path, artifact):
+        # An uncommitted document is one machine's file. Letting it accept would
+        # replace the human acceptance event with a file an agent can write.
+        return
+    try:
+        await record_acceptance(
+            session,
+            rec,
+            action="accepted",
+            currency="active",
+            artifact=artifact,
+            note="accepted by a tracked decision record",
+        )
+    except AcceptanceRefusedError as exc:
+        structlog.get_logger(__name__).debug(
+            "adr_acceptance_refused", decision_id=rec.id, reason=str(exc)
+        )
+
+
 async def bulk_upsert_decisions(
     session: AsyncSession,
     repository_id: str,
@@ -819,6 +1066,7 @@ async def bulk_upsert_decisions(
     pending = PendingDecisionIndex() if batch_mode else None
 
     touched_ids: list[str] = []
+    captured: dict[str, tuple[str, bool]] = {}
 
     for norm, members in groups.items():
         headline = headline_by_norm[norm]
@@ -850,11 +1098,19 @@ async def bulk_upsert_decisions(
             continue
 
         if rec is None:
+            headline_title = headline.get("title", "")
+            headline_source = headline.get("source", "cli")
+            headline_evidence_file = headline.get("evidence_file")
             rec = DecisionRecord(
-                id=_new_uuid(),
+                id=derive_decision_id(
+                    repository_id,
+                    headline_title,
+                    source=headline_source,
+                    evidence_file=headline_evidence_file,
+                ),
                 repository_id=repository_id,
-                title=headline.get("title", ""),
-                status=headline.get("status", "proposed"),
+                title=headline_title,
+                status=_extraction_status(headline.get("status", "proposed")),
                 context=headline.get("context") or "",
                 decision=headline.get("decision") or "",
                 rationale=headline.get("rationale") or "",
@@ -864,8 +1120,8 @@ async def bulk_upsert_decisions(
                 affected_modules_json=json.dumps(headline.get("affected_modules") or []),
                 tags_json=json.dumps(headline.get("tags") or []),
                 evidence_commits_json=json.dumps(headline.get("evidence_commits") or []),
-                source=headline.get("source", "cli"),
-                evidence_file=headline.get("evidence_file"),
+                source=headline_source,
+                evidence_file=headline_evidence_file,
                 evidence_line=headline.get("evidence_line"),
                 confidence=headline.get("confidence", 0.5),
             )
@@ -907,11 +1163,23 @@ async def bulk_upsert_decisions(
                 verification=d.get("verification", "unverified"),
             )
 
+        # A committed ADR that says "accepted" is the one non-human acceptance
+        # the contract allows, because the document is version controlled and
+        # reviewable. Recorded here, where the parsed heading is still in hand.
+        await _accept_from_tracked_artifact(session, rec, headline)
+
         # Re-derive headline confidence + verification from the FULL evidence
         # set (existing + just-added), so corroboration accrues across runs.
         _rederive_headline(rec, await list_decision_evidence(session, rec.id))
         rec.updated_at = _now_utc()
         touched_ids.append(rec.id)
+        # Two title groups can fold onto one record, so this accumulates:
+        # the later group must not drop what the earlier one raised.
+        prior_lane, prior_split = captured.get(rec.id, ("", False))
+        captured[rec.id] = (
+            prior_lane or headline.get("lane") or "",
+            prior_split or bool(headline.get("needs_split")),
+        )
 
         # Mirror the JSON file/module arrays into first-class decision→code
         # links so the graph is traversable both directions (Phase 3A). The
@@ -975,8 +1243,76 @@ async def bulk_upsert_decisions(
         }
         await upsert_decision_vectors(vector_store, items, vectors_by_text=vectors_by_text)
 
+    await _write_candidate_meta(session, repository_id, captured)
+
     await session.flush()
     return touched_ids
+
+
+async def _write_candidate_meta(
+    session: AsyncSession,
+    repository_id: str,
+    captured: dict[str, tuple[str, bool]],
+    *,
+    only: set[str] | None = None,
+) -> None:
+    """Refresh the review row every open candidate in the repository is owed.
+
+    Not only the ones this run touched: the staging store does not re-emit an
+    already-promoted decision, so a backlog would otherwise stay unjudged until
+    something happened to re-extract each record individually. The signals come
+    from the record, so an unchanged candidate costs a comparison and no write.
+    """
+    rows = (
+        await session.execute(
+            select(DecisionRecord, DecisionCandidateMeta)
+            .outerjoin(
+                DecisionCandidateMeta,
+                DecisionCandidateMeta.decision_id == DecisionRecord.id,
+            )
+            .where(
+                DecisionRecord.repository_id == repository_id,
+                candidate_predicate(),
+                *([DecisionRecord.id.in_(only)] if only is not None else []),
+            )
+        )
+    ).all()
+
+    for rec, meta in rows:
+        priority, scope_unresolved = candidate_review_signals(rec)
+        capture = captured.get(rec.id)
+        if capture is None:
+            # Not extracted this run, so the provenance is not ours to write:
+            # only the contract-derived signals are refreshed, and a row with
+            # no lane yet takes the record's own source.
+            if (
+                meta is not None
+                and meta.lane
+                and meta.review_priority == priority
+                and meta.scope_unresolved == scope_unresolved
+            ):
+                continue
+            await upsert_candidate_meta(
+                session,
+                rec,
+                lane=meta.lane if meta is not None and meta.lane else rec.source,
+                review_priority=priority,
+                scope_unresolved=scope_unresolved,
+            )
+            continue
+
+        lane, needs_split = capture
+        await upsert_candidate_meta(
+            session,
+            rec,
+            lane=lane or rec.source,
+            extractor_version=__version__,
+            review_priority=priority,
+            # Raised, never cleared: a re-extraction must not walk back a split
+            # somebody asked for.
+            needs_split=True if needs_split else None,
+            scope_unresolved=scope_unresolved,
+        )
 
 
 async def purge_proposed_decisions_by_source(
@@ -1172,12 +1508,21 @@ async def get_decision_health_summary(
     session: AsyncSession,
     repository_id: str,
 ) -> dict:
-    """Return decision health: counts by status, stale decisions, ungoverned hotspots.
+    """Return decision health: counts by lane, stale decisions, ungoverned hotspots.
 
     The three list fields are returned ranked worst-first: stale by staleness,
     proposed by confidence, ungoverned hotspots by temporal hotspot score. A
     caller that shows only the first few shows the few that matter.
     Callers may truncate; they must not re-order.
+
+    Counts the acceptance, not the status column. The key names are the ones
+    every caller already renders, and they keep their product meaning:
+    ``active`` is what governs, ``proposed`` is what nobody has accepted. What
+    changed is that a record reaches ``active`` here by having an acceptance,
+    the same way it does on every other governance read. Counting the column
+    made this the one surface still reporting a hundred governing decisions on
+    a store whose acceptances were empty, and it fed ``ungoverned_hotspots``,
+    so unaccepted records were also suppressing the files nothing governs.
     """
     result = await session.execute(
         select(DecisionRecord).where(
@@ -1185,6 +1530,9 @@ async def get_decision_health_summary(
         )
     )
     all_decisions = list(result.scalars().all())
+    from .authority import decision_currencies
+
+    currencies = await decision_currencies(session, repository_id, all_decisions)
 
     counts = {
         "active": 0,
@@ -1193,7 +1541,7 @@ async def get_decision_health_summary(
         "superseded": 0,
         "dismissed": 0,
         "stale": 0,
-        # Active records naming no file. They score 0.0 because the staleness
+        # Accepted records naming no file. They score 0.0 because the staleness
         # question cannot be asked of them, which renders identically to a
         # record whose code genuinely has not moved — so they are counted
         # separately rather than banked as fresh.
@@ -1202,21 +1550,38 @@ async def get_decision_health_summary(
     stale_decisions: list[DecisionRecord] = []
     proposed_decisions: list[DecisionRecord] = []
 
-    # Collect all governed files from active decisions
+    # Files an *accepted* decision names. A candidate naming a hotspot does not
+    # make it governed, and counting one did: it removed the file from
+    # ``ungoverned_hotspots``, which is the list whose whole job is to say
+    # where nobody has decided anything.
     governed_files: set[str] = set()
     for d in all_decisions:
-        counts[d.status] = counts.get(d.status, 0) + 1
-        if d.status == "active":
-            if d.staleness_score >= 0.5:
-                counts["stale"] += 1
-                stale_decisions.append(d)
-            affected_files = json.loads(d.affected_files_json)
-            if not affected_files:
-                counts["unscoped"] += 1
-            for fp in affected_files:
-                governed_files.add(fp)
-        elif d.status == "proposed":
-            proposed_decisions.append(d)
+        currency = currencies.get(d.id)
+        if currency is None:
+            # No acceptance, so it does not govern. A retired one is not
+            # awaiting review either: it keeps the status that retired it and
+            # stays out of the queue, which is the one thing a tombstone must
+            # never be counted as.
+            if d.status in ("dismissed", "deprecated", "superseded"):
+                counts[d.status] = counts.get(d.status, 0) + 1
+            else:
+                counts["proposed"] += 1
+                proposed_decisions.append(d)
+            continue
+        if currency == "superseded":
+            counts["superseded"] += 1
+            continue
+        if currency == "dismissed":
+            counts["dismissed"] += 1
+            continue
+        counts["active"] += 1
+        if currency == "needs_review":
+            counts["stale"] += 1
+            stale_decisions.append(d)
+        if currency == "uncheckable":
+            counts["unscoped"] += 1
+        for fp in json.loads(d.affected_files_json):
+            governed_files.add(fp)
 
     # Find ungoverned hotspots, hottest first. Sorting these by path put the file
     # most in need of a decision behind whatever sorts alphabetically first,

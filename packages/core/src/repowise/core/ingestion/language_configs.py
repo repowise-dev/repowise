@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from .extractors.visibility import (
     csharp_visibility,
     dart_visibility,
+    elixir_visibility,
     go_visibility,
     java_visibility,
     kotlin_visibility,
@@ -25,6 +26,7 @@ from .extractors.visibility import (
     scala_visibility,
     swift_visibility,
     ts_visibility,
+    vbnet_visibility,
 )
 
 
@@ -39,10 +41,10 @@ class LanguageConfig:
     # Maps tree-sitter node type → our canonical SymbolKind string
     symbol_node_types: dict[str, str]
 
-    # tree-sitter node types that carry import information (doc purposes)
+    # tree-sitter node types that carry import information (descriptive metadata; not read at runtime)
     import_node_types: list[str]
 
-    # tree-sitter node types that export symbols (doc purposes)
+    # tree-sitter node types that export symbols (descriptive metadata; not read at runtime)
     export_node_types: list[str]
 
     # (name: str, modifier_texts: list[str]) → "public" | "private" | ...
@@ -280,6 +282,34 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             }
         ),
     ),
+    "vbnet": LanguageConfig(
+        symbol_node_types={
+            "class_block": "class",
+            "interface_block": "interface",
+            "module_block": "class",
+            "structure_block": "struct",
+            "enum_block": "enum",
+            "method_declaration": "function",
+            "property_declaration": "variable",
+            "event_declaration": "variable",
+            "field_declaration": "variable",
+            "namespace_block": "module",
+        },
+        import_node_types=["imports_statement"],
+        export_node_types=[],
+        visibility_fn=vbnet_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset(
+            {
+                "class_block",
+                "interface_block",
+                "module_block",
+                "structure_block",
+                "enum_block",
+                "namespace_block",
+            }
+        ),
+    ),
     "swift": LanguageConfig(
         symbol_node_types={
             "class_declaration": "class",
@@ -361,6 +391,116 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             {"class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"}
         ),
     ),
+    "elixir": LanguageConfig(
+        symbol_node_types={
+            # Elixir's one node kind for every definition. "module" is a
+            # placeholder, refined per keyword in refine_elixir_call_kind --
+            # but it must stay a NON-callable kind: a `def` sits inside its
+            # `defmodule`'s do_block, so a callable mapping here would make
+            # _has_callable_ancestor drop every function in every module.
+            "call": "module",
+        },
+        import_node_types=["call"],
+        export_node_types=[],  # every public function is exported; no syntax
+        # `defp` / `defmacrop` / `defguardp` are private; elixir.scm captures
+        # the defining keyword as @symbol.modifiers so this can read it.
+        visibility_fn=elixir_visibility,
+        parent_extraction="nesting",
+        # Deliberately empty. The generic nesting walk reads a `name` field,
+        # which an Elixir `call` does not have; the module name lives in the
+        # call's first argument, so parent detection runs through
+        # _elixir_module_parent instead.
+        parent_class_types=frozenset(),
+    ),
+    "fsharp": LanguageConfig(
+        symbol_node_types={
+            # `module Foo.Bar` / `namespace Foo.Bar` head the file;
+            # `module X =` nests inside one.
+            "named_module": "module",
+            "namespace": "module",
+            "module_defn": "module",
+            # The captured node is the binding's left-hand side, not the
+            # enclosing function_or_value_defn: that one node holds every
+            # clause of a `let rec f ... and g ...` group, so capturing it
+            # would give every clause the same span. parser.py extends each
+            # symbol over its own clause and filters the nested ones.
+            "function_declaration_left": "function",
+            "value_declaration_left": "variable",
+            # A record is a named product of fields, the same concept Go and
+            # Rust spell "struct". A discriminated union is a sum type, which
+            # is what "enum" means everywhere else in this table -- a
+            # single-case union written `type Alias = string` parses as one
+            # too, and reads as an enum; the grammar offers nothing to tell
+            # the abbreviation from the union.
+            "record_type_defn": "struct",
+            "union_type_defn": "enum",
+            "enum_type_defn": "enum",
+            "delegate_type_defn": "type_alias",
+            "type_abbrev_defn": "type_alias",
+            # Classes, structs and interfaces share this node; refined by
+            # refine_fsharp_type_kind.
+            "anon_type_defn": "class",
+            "exception_definition": "class",
+            "member_defn": "method",
+        },
+        import_node_types=["import_decl"],
+        export_node_types=[],  # F# has no re-export syntax
+        # F# spells assembly scope `internal` the way Kotlin does and has no
+        # `protected` binding form, so kotlin_visibility answers both.
+        visibility_fn=kotlin_visibility,
+        parent_extraction="nesting",
+        # Deliberately empty: no F# type node carries a `name` field, so the
+        # generic walk in _find_parent would match an ancestor and then read
+        # nothing off it. The parent walk is language-gated in parser.py --
+        # see _fsharp_parent_name.
+        parent_class_types=frozenset(),
+    ),
+    "objectivec": LanguageConfig(
+        symbol_node_types={
+            # An @interface and its @implementation are two physical nodes in
+            # (usually) two files, the same way a C declaration and its
+            # definition are: both become symbols, the @interface one marked
+            # is_declaration. Within one file they collapse -- see
+            # _dedupe_objc_interface_symbols.
+            "class_interface": "class",
+            "class_implementation": "class",
+            "protocol_declaration": "interface",
+            "method_declaration": "method",
+            "method_definition": "method",
+            # Matches C#'s and Pascal's choice for the same concept: a field
+            # and a callable value share "variable" everywhere except Rust.
+            "property_declaration": "variable",
+            # Plain C inside a .m file, mapped the way c/cpp map it.
+            "function_definition": "function",
+            "declaration": "function",
+            "preproc_def": "variable",
+            "preproc_function_def": "function",
+            "enum_specifier": "enum",
+            "struct_specifier": "struct",
+            "type_definition": "struct",
+        },
+        import_node_types=["preproc_include"],
+        export_node_types=[],  # no re-export syntax; the header is the export
+        # Objective-C has no method access modifiers. @private/@protected on
+        # instance variables is the only visibility syntax and no ivars are
+        # captured, so the placeholder C/C++/Pascal use is honest here.
+        visibility_fn=public_by_default,
+        parent_extraction="nesting",
+        # A method_declaration is a direct child of its class_interface and
+        # a method_definition of its class_implementation, so the ancestor
+        # walk needs no per-language dig -- unlike C++ and Pascal, where a
+        # definition sits outside the class body. Reading the ancestor's name
+        # does: these nodes carry it as a bare first identifier child and not
+        # in a `name` field, so _objc_container_parent supplies it.
+        parent_class_types=frozenset(
+            {"class_interface", "class_implementation", "protocol_declaration"}
+        ),
+        # A @protocol is not a declaration of anything defined elsewhere:
+        # nothing ever implements it under its own name.
+        declaration_node_types=frozenset(
+            {"class_interface", "method_declaration", "declaration"}
+        ),
+    ),
     "pascal": LanguageConfig(
         symbol_node_types={
             # declType wraps class/record/interface/helper/enum/set/array/alias
@@ -372,7 +512,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             # flagged as a follow-up, not attempted here.
             "declType": "class",
             "declProc": "function",  # signature only (interface decl / forward decl)
-            "defProc": "function",   # full definition with body
+            "defProc": "function",  # full definition with body
             # Matches C#'s choice for the same concept (property_declaration ->
             # "variable"). Rust is the one language that keeps fields under a
             # distinct "property" kind; everywhere else a field and a callable
@@ -381,7 +521,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "declProp": "variable",
         },
         import_node_types=["declUses"],
-        export_node_types=[],       # Pascal has no explicit re-export syntax
+        export_node_types=[],  # Pascal has no explicit re-export syntax
         # No pascal_visibility exists yet. Pascal visibility is per-*section*
         # (`strict private`/`protected`/`public`/`published` governs every
         # declaration until the next section keyword, i.e. extractors/
@@ -399,6 +539,45 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # method (found by tracing _find_parent's actual implementation, not
         # guessed).
         parent_class_types=frozenset({"declType"}),
+    ),
+    "gdscript": LanguageConfig(
+        symbol_node_types={
+            # `class_name Foo` names the script-level class. The node spans
+            # only that statement, not the whole file -- GDScript has no
+            # syntactic node for "the implicit outer class", so there is
+            # nothing wider to point at.
+            "class_name_statement": "class",
+            "class_definition": "class",  # inner `class Foo:` blocks
+            "function_definition": "function",
+            "constructor_definition": "function",  # `func _init(...)`
+            "variable_statement": "variable",
+            "export_variable_statement": "variable",  # GDScript 3 `export var`
+            "onready_variable_statement": "variable",  # GDScript 3 `onready var`
+            "const_statement": "constant",
+            "enum_definition": "enum",
+            # Members of both named and anonymous enums. An anonymous
+            # `enum {IDLE, RUNNING}` has no enum symbol at all, so without
+            # this its members would vanish entirely.
+            "enumerator": "constant",
+            # No "signal"/"event" member in the SymbolKind literal. "variable"
+            # is the same bucket Pascal's `declProp` and C#'s
+            # `property_declaration` land in -- a declared member that is not
+            # a callable of this class.
+            "signal_statement": "variable",
+        },
+        # `preload(...)`/`load(...)` are ordinary calls; see queries/gdscript.scm.
+        import_node_types=["call", "extends_statement"],
+        export_node_types=[],  # GDScript has no re-export syntax
+        # GDScript's privacy convention is Python's, leading underscore and
+        # all -- including the engine callbacks (`_ready`, `_process`), which
+        # genuinely are not meant to be called by other scripts. Reusing
+        # py_visibility rather than adding a byte-identical gdscript_visibility.
+        visibility_fn=py_visibility,
+        parent_extraction="nesting",
+        # Only class_definition: `class_name_statement` is a sibling of the
+        # members it logically owns, not their ancestor, so a script-level
+        # func gets no parent -- which is correct, it belongs to the file.
+        parent_class_types=frozenset({"class_definition"}),
     ),
     "luau": LanguageConfig(
         symbol_node_types={
@@ -430,3 +609,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
 # copying keeps them from drifting apart.
 LANGUAGE_CONFIGS["svelte"] = LANGUAGE_CONFIGS["typescript"]
 LANGUAGE_CONFIGS["vue"] = LANGUAGE_CONFIGS["typescript"]
+# Razor projects its C# regions (``@code`` / ``@{ }`` blocks) into a C#
+# buffer through the same sfc_source seam, so the C# config applies verbatim.
+LANGUAGE_CONFIGS["razor"] = LANGUAGE_CONFIGS["csharp"]

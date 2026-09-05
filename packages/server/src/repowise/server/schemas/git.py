@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -383,3 +384,17 @@ class CommitStatsResponse(BaseModel):
     risk_histogram: list[RiskHistogramBucket] = []
     moderate_cut: float | None = None  # raw score at the low/moderate boundary
     high_cut: float | None = None  # raw score at the moderate/high boundary
+
+
+class CoChangeResponse(BaseModel):
+    """Files that historically change together with one file.
+
+    Partners are the verbatim persisted records, not a projection: the
+    indexer writes fields this layer does not model, and a closed row model
+    would drop them.
+    """
+
+    file_path: str
+    co_change_partners: list[dict[str, Any]] = []
+    #: Partners meeting ``min_count`` shared commits.
+    total: int = 0

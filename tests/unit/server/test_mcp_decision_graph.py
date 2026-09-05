@@ -315,6 +315,28 @@ async def decision_db(session: AsyncSession, repo_id: str) -> str:
 
     await session.flush()
 
+    # Every one of these is accepted. The status column alone no longer makes a
+    # record govern: the surfaces under test join the acceptance, so a fixture
+    # that only sets the column would exercise the candidate path throughout
+    # and prove nothing about governance.
+    from repowise.core.persistence.crud.authority import (
+        accept_decision,
+        record_acceptance,
+    )
+
+    for d in decisions:
+        await accept_decision(session, d, accepter="test", evidence=[f"seed:{d.id}"])
+    superseded = next(d for d in decisions if d.id == "dec_superseded")
+    await record_acceptance(
+        session,
+        superseded,
+        action="superseded",
+        currency="superseded",
+        accepter="test",
+        evidence=["seed:dec_superseded"],
+    )
+    await session.flush()
+
     # DecisionNodeLink rows — the graph truth used by get_governing_decisions
     links = [
         DecisionNodeLink(

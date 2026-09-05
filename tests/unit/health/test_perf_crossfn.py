@@ -28,6 +28,7 @@ from repowise.core.analysis.health.complexity import (
     walk_file,
 )
 from repowise.core.analysis.health.perf import (
+    collect_blocking_io_under_lock,
     collect_crossfn_io_in_loop,
     path_to_sink,
     reachable_to_sink,
@@ -197,13 +198,7 @@ def test_crossfn_scheduler_pattern_is_caught(tmp_path):
 
 
 def test_resolver_preserves_every_call_site_on_the_collapsed_edge(tmp_path):
-    source = (
-        "def load(x):\n"
-        "    return x\n\n"
-        "def run(x):\n"
-        "    load(x)\n"
-        "    return load(x)\n"
-    )
+    source = "def load(x):\n    return x\n\ndef run(x):\n    load(x)\n    return load(x)\n"
     _walked, graph = _build(tmp_path, {"calls.py": source})
 
     edge = graph["calls.py::run"]["calls.py::load"]
@@ -407,9 +402,81 @@ def test_unresolved_loop_call_does_not_reuse_same_name_outside_loop():
         functions=[], classes=[], perf_fn_facts=[PerfFnFacts("load", 1, (), "db")]
     )
 
-    assert collect_crossfn_io_in_loop(
-        [(_pf("owner.py"), owner), (_pf("db.py"), db_sink)], graph
-    ) == {}
+    assert (
+        collect_crossfn_io_in_loop([(_pf("owner.py"), owner), (_pf("db.py"), db_sink)], graph) == {}
+    )
+
+
+def _two_same_named_callees_graph():
+    """Owner calls `load` at line 4; two `load` symbols exist on different lines."""
+    graph = nx.DiGraph()
+    for node_id, path, name in (
+        ("owner.py::run", "owner.py", "run"),
+        ("pure.py::load", "pure.py", "load"),
+        ("db.py::load", "db.py", "load"),
+    ):
+        graph.add_node(
+            node_id, node_type="symbol", name=name, file_path=path, start_line=1, end_line=8
+        )
+    # Same callee name from the same owner, distinguishable only by call line.
+    graph.add_edge("owner.py::run", "pure.py::load", edge_type="calls", call_lines=[9])
+    graph.add_edge("owner.py::run", "db.py::load", edge_type="calls", call_lines=[4])
+    return graph
+
+
+def test_crossfn_first_hop_uses_the_call_site_not_the_callee_name():
+    """The entry at line 4 must resolve to the sink-holding `load`, not the pure one.
+
+    Name-based first-hop matching cannot tell these two apart -- both are called
+    `load` by the same owner. The shared walk resolves through the index, which
+    picks the edge recorded for this call line and reports the basis it used.
+    """
+    graph = _two_same_named_callees_graph()
+    owner = FileComplexity(
+        functions=[], classes=[], perf_fn_facts=[PerfFnFacts("run", 1, (("load", 4),), None)]
+    )
+    pure = FileComplexity(
+        functions=[], classes=[], perf_fn_facts=[PerfFnFacts("load", 1, (), None)]
+    )
+    sink = FileComplexity(
+        functions=[], classes=[], perf_fn_facts=[PerfFnFacts("load", 1, (), "db")]
+    )
+
+    result = collect_crossfn_io_in_loop(
+        [(_pf("owner.py"), owner), (_pf("pure.py"), pure), (_pf("db.py"), sink)],
+        graph,
+    )
+
+    hit = next(hit for hits in result.values() for hit in hits)
+    assert hit.path == ("owner.py::run", "db.py::load")
+    assert hit.resolution_basis == "call-site"
+
+
+def test_lock_io_first_hop_also_carries_the_resolution_basis():
+    """The lock pass shares the walk, so it must keep the same exact-edge matching."""
+    graph = _two_same_named_callees_graph()
+    owner = FileComplexity(
+        functions=[],
+        classes=[],
+        perf_fn_facts=[PerfFnFacts("run", 1, (), None, lock_call_targets=(("load", 4),))],
+    )
+    pure = FileComplexity(
+        functions=[], classes=[], perf_fn_facts=[PerfFnFacts("load", 1, (), None)]
+    )
+    sink = FileComplexity(
+        functions=[], classes=[], perf_fn_facts=[PerfFnFacts("load", 1, (), "db")]
+    )
+
+    result = collect_blocking_io_under_lock(
+        [(_pf("owner.py"), owner), (_pf("pure.py"), pure), (_pf("db.py"), sink)],
+        graph,
+    )
+
+    hit = next(hit for hits in result.values() for hit in hits)
+    assert hit.path == ("owner.py::run", "db.py::load")
+    assert hit.resolution_basis == "call-site"
+    # The lock pass carries func_start; the loop pass deliberately does not.
+    assert hit.func_start == 1
 
 
 def test_dispatch_edge_connects_a_resolved_call_to_its_sink():

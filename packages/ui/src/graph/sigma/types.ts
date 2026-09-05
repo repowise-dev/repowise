@@ -52,6 +52,11 @@ export interface SigmaNodeAttributes {
   /** Render the label even when density culling would hide it (hubs/core). */
   forceLabel?: boolean | undefined;
 
+  /** A one-hop neighbour drawn *outside* the community slice on screen: the
+   *  edge of the world, not a member. Drawn smaller and desaturated so the
+   *  scoped graph has a visible boundary instead of trailing off. */
+  isBoundary?: boolean | undefined;
+
   // Signal overlays (set by adapter based on signal data)
   isHotspot?: boolean | undefined;
   isDead?: boolean | undefined;
@@ -89,7 +94,6 @@ export interface SigmaEdgeAttributes {
 
   // Semantic classification of the edge
   edgeKind:
-    | "import"
     | "crossCommunity"
     | "internal"
     | "dynamic"

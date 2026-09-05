@@ -46,17 +46,90 @@ _CALL_PATTERNS: list[tuple[re.Pattern, str, str]] = [
 ]
 _CALL_KINDS = frozenset(kind for _, kind, _ in _CALL_PATTERNS)
 
+# ``exec`` is not a global in JavaScript; the name belongs to
+# ``RegExp.prototype.exec``. The receiver-chain prefix above therefore matches
+# ``re.exec(str)``, ``/x/.exec(s)`` and ``pattern.exec(xml)`` — idiomatic parsing
+# code, reported at ``high``. Measured on a 17-repo TypeScript corpus, every
+# ``exec_call`` hit outside Python was a regex match and none was a process
+# spawn, so the kind was pure noise on those languages.
+#
+# The dangerous call in JavaScript comes from ``child_process``, so that is what
+# gates it: a file that never names the module cannot spawn one. ``eval`` needs
+# no such gate — it is a genuine global there.
+_CHILD_PROCESS_IMPORT = re.compile(r"child_process|node:child_process")
+_JS_EXEC_CALL = re.compile(r"(?<![\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)*exec(?:File)?(?:Sync)?\s*\(")
+
 _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     *_CALL_PATTERNS,
     (re.compile(r"pickle\.loads"), "pickle_loads", "high"),
     (re.compile(r"subprocess\..*shell\s*=\s*True"), "subprocess_shell_true", "high"),
     (re.compile(r"os\.system"), "os_system", "high"),
-    (re.compile(r"password\s*=\s*['\"]"), "hardcoded_password", "high"),
-    (re.compile(r"(?:api_?key|secret)\s*=\s*['\"]"), "hardcoded_secret", "high"),
+    # Case-insensitive: a credential pinned in source is usually written as a
+    # SCREAMING_CASE constant assigned a quoted literal, and the lowercase-only
+    # patterns walked straight past that form. Found by scanning a corpus in
+    # which a live n8n key sat unreported under exactly that spelling.
+    #
+    # The wording above avoids spelling the matched form out literally: this
+    # loop runs on raw source, comments included, so an example written out here
+    # would make the file report itself.
+    #
+    # Case-insensitivity is written as a scoped inline group rather than the
+    # ``re.IGNORECASE`` flag on purpose: ``_ANY_PATTERN`` below is built by
+    # concatenating these patterns' *source text*, which drops per-pattern
+    # flags. A flag here would leave the prefilter case-sensitive and it would
+    # reject the line before the pattern ever ran.
+    (re.compile(r"(?i:password)\s*=\s*['\"]"), "hardcoded_password", "high"),
+    (re.compile(r"(?i:api_?key|secret)\s*=\s*['\"]"), "hardcoded_secret", "high"),
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
     (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
     (re.compile(r"\bmd5\b|\bsha1\b"), "weak_hash", "low"),
+    # -- JS/TS patterns (#1935 Tier 1) -------------------------------------
+    # Measured on the same 17-repo, 1109-file corpus as the exec_call/secret
+    # fixes in #1947. Three of these five needed tightening before they were
+    # shippable; see docs/layers/SECURITY.md and the PR body for the
+    # first-cut vs. after-tightening counts per pattern.
+    #
+    # ``__html: <value>`` is the React ``dangerouslySetInnerHTML`` shape. A
+    # pinned string literal there is inert; the interesting case is a value
+    # that is an identifier, a member access or a call. The value test has to
+    # be stated positively (an identifier/`$`/`(` lead character) rather than
+    # as a negative lookahead excluding quotes: after the variable-width
+    # `\s*` before it, a negative lookahead is tried at the position *before*
+    # the whitespace, where "not a quote" trivially succeeds and a string
+    # literal slips through anyway. Severity is ``med``, not ``high``: on the
+    # measured corpus every hit was a name reference to a source-pinned
+    # constant (a stylesheet string assigned to a module-level name), which
+    # this test cannot distinguish from a genuinely dynamic value without
+    # dataflow, so the pattern is a places-to-read signal rather than a
+    # confirmed sink.
+    (re.compile(r"__html\s*:\s*(?=[A-Za-z_$(])"), "unsafe_inner_html", "med"),
+    # Analogue of ``fstring_sql`` for a JS/TS template literal. The bare verb
+    # `SELECT` or `UPDATE` is an ordinary English word and fires on prose
+    # (`` `Order update failed: ${status}` ``) and even on class names
+    # (`select-none`), so each verb needs its companion clause —
+    # `SELECT`..`FROM`, `UPDATE`..`SET` — before an interpolation counts.
+    (
+        re.compile(r"`[^`\n]*\b(?:SELECT\b[^`\n]*\bFROM|UPDATE\b[^`\n]*\bSET)\b[^`\n]*\$\{"),
+        "template_literal_sql",
+        "med",
+    ),
+    # A secret-shaped name exposed through a `NEXT_PUBLIC_`/`VITE_` prefix
+    # ships straight into the client bundle. The prefix needing the most care
+    # against legitimate public config: an `..._ANON_...` name (a Supabase
+    # anon key, public by design and meant to be paired with RLS) is excluded
+    # rather than flagged, since that class made up most of the corpus noise.
+    (
+        re.compile(
+            r"\b(?:NEXT_PUBLIC|VITE)_(?!\w*ANON)[A-Z0-9_]*"
+            r"(?:API_?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*\b"
+        ),
+        "public_env_secret",
+        "high",
+    ),
+    (re.compile(r"\bnew\s+Function\s*\("), "new_function_call", "high"),
+    # Analogue of ``tls_verify_false`` for Node's https/tls agent options.
+    (re.compile(r"rejectUnauthorized\s*:\s*false"), "reject_unauthorized_false", "med"),
 ]
 
 # Combined prefilter: one search per line rejects the (overwhelmingly common)
@@ -237,13 +310,25 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
     masked = _mask_comments_and_strings(source)
     lines = source.splitlines()
     findings = []
+
+    def add(kind: str, severity: str, offset: int) -> None:
+        lineno = source.count("\n", 0, offset) + 1
+        snippet = lines[lineno - 1].strip()[:120] if lineno <= len(lines) else ""
+        findings.append({"kind": kind, "severity": severity, "snippet": snippet, "line": lineno})
+
+    is_python = file_path.lower().endswith((".py", ".pyi"))
     for pattern, kind, severity in _CALL_PATTERNS:
+        if kind == "exec_call" and not is_python:
+            continue  # handled below, gated on child_process
         for match in pattern.finditer(masked):
-            lineno = source.count("\n", 0, match.start()) + 1
-            snippet = lines[lineno - 1].strip()[:120] if lineno <= len(lines) else ""
-            findings.append(
-                {"kind": kind, "severity": severity, "snippet": snippet, "line": lineno}
-            )
+            add(kind, severity, match.start())
+
+    # The module name is searched in raw source on purpose: it arrives as a
+    # string literal (``require("child_process")``), which masking blanks.
+    if not is_python and _CHILD_PROCESS_IMPORT.search(source):
+        for match in _JS_EXEC_CALL.finditer(masked):
+            add("exec_call", "high", match.start())
+
     return findings
 
 

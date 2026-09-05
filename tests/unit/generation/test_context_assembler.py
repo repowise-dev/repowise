@@ -547,7 +547,13 @@ def test_coupled_modules_name_the_package_not_the_parent_directory(sample_config
         "packages/ui/package.json": {},
         "packages/core/src/a.py": {
             "co_change_partners_json": json.dumps(
-                [{"file_path": "packages/ui/src/deep/nested/widget.ts", "co_change_count": 5}]
+                [
+                    {
+                        "file_path": "packages/ui/src/deep/nested/widget.ts",
+                        "co_change_count": 5,
+                        "structural": "unexplained",
+                    }
+                ]
             )
         },
     }
@@ -575,7 +581,13 @@ def test_coupled_modules_survive_a_changed_files_only_git_map(sample_config, tmp
     changed_only = {
         "packages/core/src/a.py": {
             "co_change_partners_json": json.dumps(
-                [{"file_path": "packages/ui/src/deep/widget.ts", "co_change_count": 5}]
+                [
+                    {
+                        "file_path": "packages/ui/src/deep/widget.ts",
+                        "co_change_count": 5,
+                        "structural": "unexplained",
+                    }
+                ]
             )
         }
     }
@@ -585,3 +597,35 @@ def test_coupled_modules_survive_a_changed_files_only_git_map(sample_config, tmp
     )
 
     assert coupled_modules == [{"path": "packages/ui", "count": 1}]
+
+
+def test_coupled_modules_exclude_pairs_the_graph_explains(sample_config):
+    """The page says these modules co-change *without* a dependency between
+    them, so a pair the graph accounts for must not be listed."""
+    assembler = ContextAssembler(sample_config)
+    git_meta_map = {
+        "packages/core/pyproject.toml": {},
+        "packages/ui/package.json": {},
+        "packages/core/src/a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    {
+                        "file_path": "packages/ui/src/imported.ts",
+                        "co_change_count": 9,
+                        "structural": "corroborated",
+                    },
+                    {
+                        "file_path": "packages/ui/src/lockfile-ish.json",
+                        "co_change_count": 9,
+                        "structural": "not_applicable",
+                    },
+                ]
+            )
+        },
+    }
+
+    _, _, _, coupled_modules, _, _ = assembler._module_git_enrichment(
+        ["packages/core/src/a.py"], {"packages/core/src/a.py"}, git_meta_map
+    )
+
+    assert coupled_modules == []

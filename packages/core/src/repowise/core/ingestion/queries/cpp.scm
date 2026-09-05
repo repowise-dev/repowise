@@ -31,6 +31,41 @@
   body: (compound_statement)
 ) @symbol.cpp_export_type
 
+; Export-macro forward declarations have the same split-name shape, but the
+; real type name is the declaration's bare declarator and there is no body.
+(declaration
+  type: (class_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+) @symbol.cpp_export_type
+
+(declaration
+  type: (struct_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+) @symbol.cpp_export_type
+
+; The same forward-declaration shape uses field nodes inside a class body.
+(field_declaration
+  type: (class_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (field_identifier) @symbol.name
+) @symbol.cpp_export_type
+
+(field_declaration
+  type: (struct_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (field_identifier) @symbol.name
+) @symbol.cpp_export_type
+
 ; Function definition: ReturnType funcName(params) { body }
 ; The name is nested inside function_declarator
 (function_definition
@@ -141,6 +176,14 @@
   name: (identifier) @symbol.name
   parameters: (preproc_params) @symbol.params
 ) @symbol.def
+
+; Generic preprocessor calls cover #undef and pragma-based macro restoration.
+(preproc_call) @symbol.cpp_preproc_call
+
+; Included files can redefine or undef any locally known macro. The one-file
+; parser cannot inspect that state transition, so includes form a conservative
+; recovery barrier until a later local definition establishes a new state.
+(preproc_include) @symbol.cpp_macro_state_barrier
 
 ; Forward declarations: void func(int x);
 (declaration
@@ -287,6 +330,25 @@
   function: (qualified_identifier
     scope: (_) @call.scope
     name: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; The same call once more, for a three-part qualifier: ns::util::fn(args).
+; The grammar nests qualified_identifier left-recursively (see the two-level
+; qualified function definition above), so the outer node's name field is
+; itself a qualified_identifier rather than an identifier, neither pattern
+; above can match it, and no call site was produced at all for this shape
+; (#1918). Capturing the innermost identifier as the target and its adjacent
+; scope as the qualifier mirrors how a two-part call is already captured;
+; the deeper namespace prefix (ns) is dropped the same way the class-name
+; extractor already drops it for definitions.
+(call_expression
+  function: (qualified_identifier
+    name: (qualified_identifier
+      scope: (namespace_identifier) @call.scope
+      name: (identifier) @call.target
+    )
   )
   arguments: (argument_list) @call.arguments
 ) @call.site

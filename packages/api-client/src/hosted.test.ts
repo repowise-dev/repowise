@@ -333,14 +333,7 @@ describe("request wiring", () => {
         "/health/performance-opportunities",
         {
           ...envelope,
-          summary: {
-            total: 0,
-            production_total: 0,
-            tooling_total: 0,
-            test_total: 0,
-            with_plan_total: 0,
-            without_plan_total: 0,
-          },
+          summary: { status: "current", total: 0, with_plan_total: 0 },
         },
       ],
     ]);
@@ -547,10 +540,42 @@ describe("getCoupling", () => {
   it("passes a well-formed payload through unchanged", async () => {
     const body = {
       nodes: [{ file_path: "a.rs", module: "src", score: 7, nloc: 100 }],
-      edges: [{ source: "a.rs", target: "b.rs", strength: 3, last_co_change: "2026-06-01" }],
+      edges: [
+        {
+          source: "a.rs",
+          target: "b.rs",
+          strength: 3,
+          last_co_change: "2026-06-01",
+          support: 11,
+          confidence_ab: 0.9,
+          confidence_ba: 0.1,
+          structural: "unexplained",
+          dependency_kind: null,
+        },
+      ],
       total_edges: 9,
+      coupled_files: 6,
+      total_files: 20,
     };
     const { p } = provider([REPOS_ROUTE, ["/coupling", body]]);
     expect(await p.getCoupling("repo-1")).toEqual(body);
+  });
+
+  it("defaults the support fields a pre-support snapshot omits", async () => {
+    // The wire type declares them required; a snapshot written before they
+    // existed has neither, and the table reads them straight into a cell.
+    const wire = [{ source: "a.rs", target: "b.rs", strength: 3, last_co_change: null }];
+    const { p } = provider([REPOS_ROUTE, ["/coupling", { edges: wire, total_edges: 1 }]]);
+    const { edges, coupled_files, total_files } = await p.getCoupling("repo-1");
+    expect(edges[0]).toMatchObject({
+      support: 0,
+      confidence_ab: null,
+      confidence_ba: null,
+      structural: null,
+      dependency_kind: null,
+    });
+    // Zero reads as "not measured", which the scope line renders by omitting
+    // the denominator rather than claiming nothing is coupled.
+    expect({ coupled_files, total_files }).toEqual({ coupled_files: 0, total_files: 0 });
   });
 });

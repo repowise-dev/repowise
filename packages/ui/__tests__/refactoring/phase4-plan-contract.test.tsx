@@ -1,6 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import type {
+  RefactoringOpportunity,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 
 import { PriorityExplanation } from "../../src/refactoring/priority-explanation";
 import { PlanDetail } from "../../src/refactoring/plan-detail";
@@ -23,6 +26,29 @@ const base = {
   source_biomarker: "io_in_loop",
   rank_score: 8.25,
 } satisfies RefactoringPlan;
+
+const opportunity: RefactoringOpportunity = {
+  opportunity_id: "refop2_board",
+  refactoring_model_version: 2,
+  status: "open",
+  file_path: "src/shared.py",
+  lead_biomarker: "long_file",
+  lead_refactoring_type: "split_file",
+  addresses_primary_problem: true,
+  effort_bucket: "M",
+  confidence: "high",
+  step_count: 2,
+  mechanical_steps: 1,
+  judgment_steps: 1,
+  evidence_total: 0,
+  affected_files_total: 1,
+  recoverable_health: 1.4,
+  rank_score: 1.452,
+  rank_position: 1,
+  queue_position: 1,
+  rank_factors: {},
+  why_ranked: [],
+};
 
 describe("Phase 4 structured plan contract", () => {
   it("explains canonical priority components without treating blast as benefit", () => {
@@ -59,16 +85,18 @@ describe("Phase 4 structured plan contract", () => {
     expect(screen.getByText(/unavailable from this older server/)).toBeTruthy();
   });
 
-  it("renders a server-filtered performance plan without re-ranking it locally", () => {
+  it("renders a server-ordered opportunity without re-ranking it locally", () => {
     render(
       <RefactoringBoard
-        plans={[base]}
+        opportunities={[opportunity]}
         showLede={false}
         serverState={{
           query: "",
-          sort: "canonical",
-          efforts: [],
-          confidences: [],
+          order: "queue",
+          status: "open",
+          effort: null,
+          confidence: null,
+          mechanicalOnly: false,
           total: 1,
           offset: 0,
           nextOffset: null,
@@ -76,9 +104,11 @@ describe("Phase 4 structured plan contract", () => {
         onServerStateChange={() => {}}
       />,
     );
-    expect(screen.getByText("Performance")).toBeTruthy();
-    expect(screen.getByText("1 plan")).toBeTruthy();
-    expect(screen.getByText("src/shared.py::load")).toBeTruthy();
+    expect(screen.getByText("Split File")).toBeTruthy();
+    // The count names the status it is counting, so a filtered list cannot
+    // read as the repository total.
+    expect(screen.getByText(/1 open\s+opportunity/)).toBeTruthy();
+    expect(screen.getByText("src/shared.py")).toBeTruthy();
   });
 
   it("links the shared intervention and does not mislabel observations as paths", () => {

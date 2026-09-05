@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import configparser
 import os
+import re
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -159,9 +160,7 @@ _MAX_UNKNOWN_LANGUAGE_PATHS = 500
 _REFERENCE_BEARING_EXTENSIONS: frozenset[str] = frozenset(
     {
         ".api",  # also matches Kotlin's .klib.api
-        ".cshtml",
         ".properties",
-        ".razor",
         ".rst",
         ".topic",
         ".xml",
@@ -436,6 +435,8 @@ class FileTraverser:
         self._console_scripts_prune_nested = not (include_submodules or include_nested_repos)
         self.stats = TraversalStats()
         self._count_lock = threading.Lock()
+        self._console_scripts_lock = threading.Lock()
+        self._dir_ignore_lock = threading.Lock()
         log.info(
             "FileTraverser initialised",
             repo_root=str(self.repo_root),
@@ -456,11 +457,34 @@ class FileTraverser:
         "repowise.cli.augment_hook:main"``) has no in-repo importer, so
         without this it reads as unreachable unless its filename happens to
         match an entry-stem heuristic.
+
+        Double-checked, because the first caller is normally
+        :meth:`_build_file_info` under the ingestion thread pool —
+        :func:`~repowise.core.pipeline.incremental.build_repo_graph` maps it
+        over every path with ~2x cpu_count workers. Unsynchronised, every
+        worker reaching the ``is None`` check before the first one assigns
+        starts its own :func:`_collect_console_scripts`, and each of those is a
+        full :func:`~repowise.core.fs_walk.iter_glob` walk of the repo. On a
+        17k-file repo with 28 workers that was ~264s of file-info phase against
+        ~8s once the value is computed a single time, for identical FileInfos.
+
+        ``functools.cached_property`` is not a substitute: 3.12 dropped its
+        internal lock (it serialised across instances), so it permits the
+        duplicate computation this exists to prevent.
+
+        The fast path stays lock-free — once assigned, readers never acquire —
+        and the assignment publishes a finished tuple, so a reader racing it
+        sees either ``None`` or the whole object.
         """
         if self._console_scripts is None:
-            self._console_scripts = _collect_console_scripts(
-                self.repo_root, prune_nested_git=self._console_scripts_prune_nested
-            )
+            with self._console_scripts_lock:
+                # Re-check under the lock: a racer may have filled it while
+                # this thread waited, and recomputing is the bug itself.
+                if self._console_scripts is None:
+                    self._console_scripts = _collect_console_scripts(
+                        self.repo_root,
+                        prune_nested_git=self._console_scripts_prune_nested,
+                    )
         return self._console_scripts
 
     @property
@@ -562,9 +586,17 @@ class FileTraverser:
         against the immediate child name (see ``_should_skip_dir`` /
         ``_build_file_info``), consistent with the existing per-directory
         ``.repowiseIgnore`` handling.
+
+        Read outside the lock and written under it, for the same reason as
+        :meth:`_console_script_tables`: the callers are ``_build_file_info``
+        workers, one per path. A miss here is two ``exists()`` and a small
+        compile rather than a repo walk, so concurrent misses on one directory
+        waste little, but they are pure waste — and the directories holding the
+        most files are the ones every worker reaches at once.
         """
         key = str(dirpath)
-        if key not in self._dir_ignore_cache:
+        spec = self._dir_ignore_cache.get(key)
+        if spec is None:
             lines: list[str] = []
             for name in (".gitignore", self._extra_ignore_filename):
                 ignore_file = dirpath / name
@@ -572,8 +604,13 @@ class FileTraverser:
                     lines.extend(
                         ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
                     )
-            self._dir_ignore_cache[key] = _compile_gitignore(lines)
-        return self._dir_ignore_cache[key]
+            spec = _compile_gitignore(lines)
+            with self._dir_ignore_lock:
+                # setdefault, not assignment: a racer's spec is equivalent, and
+                # keeping the first published one means callers holding a
+                # reference always see the cached object.
+                spec = self._dir_ignore_cache.setdefault(key, spec)
+        return spec
 
     def _should_skip_dir(
         self,
@@ -711,6 +748,10 @@ class FileTraverser:
         # fall through to binary detection + shebang when the extension is
         # unrecognised, avoiding an 8 KB read for every .py/.ts/.go/… file.
         language = _language_from_name_or_ext(abs_path)
+        # A .h is C++ by extension and may be Objective-C by content; only a
+        # short read of the file itself can tell the two apart.
+        if language == "cpp":
+            language = _objc_header_language(abs_path) or language
         if language is None:
             if _is_binary(abs_path):
                 with self._count_lock:
@@ -810,9 +851,11 @@ class FileTraverser:
                 if self.dir_chain_skipped(rel_pkg_path):
                     continue
                 seen_paths.add(rel_pkg)
-                lang = _primary_language_in(pkg_dir, prune_nested_git=prune_nested)
-                entry_pts = _find_entry_points_in(
-                    pkg_dir, self.repo_root, prune_nested_git=prune_nested
+                lang, entry_pts = _scan_package_dir(
+                    pkg_dir,
+                    self.repo_root,
+                    prune_nested_git=prune_nested,
+                    is_pruned=self.dir_chain_skipped,
                 )
                 packages.append(
                     PackageInfo(
@@ -883,10 +926,62 @@ def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None:
     return EXTENSION_TO_LANGUAGE.get(abs_path.suffix.lower())
 
 
+# A declaration or an import that opens its own line. Anchored rather than
+# matched anywhere in the file, and matched only after comments are blanked:
+# ``@interface`` and ``@class`` are Doxygen commands too, so an
+# anywhere-in-the-file token match routed C++ headers documented with
+# ``/** @class Widget */`` to the Objective-C grammar. ``@class`` is left out
+# because a bare forward declaration adds no header the rest of this rule
+# misses; ``#import`` stays because an umbrella header is a run of imports
+# with no declaration of its own, and dropping it lost every one of them.
+_OBJC_HEADER_DECLARATION_RE = re.compile(
+    rb"^[ \t]*(?:@(?:interface|implementation|protocol)\b|#[ \t]*import\b)", re.MULTILINE
+)
+
+# Comment spans to blank before that match runs, so a commented-out or
+# documented declaration cannot decide the routing.
+_C_COMMENT_RE = re.compile(rb"//[^\n]*|/\*.*?(?:\*/|\Z)", re.DOTALL)
+
+# How much of a .h file to read looking for one. Generous because the first
+# declaration sits below the licence banner and a Doxygen block per method:
+# in the corpus the first ``@interface`` landed at byte 4128 and 4374 in two
+# headers, so a 4 KB budget missed both.
+_OBJC_HEADER_SNIFF_BYTES = 16384
+
+
+def _objc_header_language(abs_path: Path) -> LanguageTag | None:
+    """``objectivec`` for a ``.h`` that reads as Objective-C, else ``None``.
+
+    One extension maps to one language for the whole repository, and ``.h``
+    belongs to C++; claiming it for Objective-C as well would reroute every C
+    and C++ header everywhere. Content is the only signal that can tell one
+    ``.h`` from another: an ``@interface``, ``@implementation``, ``@protocol``
+    or ``#import`` opening a line outside a comment is not C or C++.
+
+    Called only where the extension lookup already answered ``cpp``, so it
+    costs one read per ``.h`` file and nothing at all for anything else.
+    The traverser's existing head read, for binary detection and shebang
+    sniffing, fires only for an *unrecognised* extension, so there is no
+    earlier read of a ``.h`` to share.
+    """
+    if abs_path.suffix.lower() != ".h":
+        return None
+    try:
+        with open(abs_path, "rb") as f:
+            head = f.read(_OBJC_HEADER_SNIFF_BYTES)
+    except OSError:
+        return None
+    # Blank the comments in place so line starts are preserved.
+    head = _C_COMMENT_RE.sub(lambda m: b" " * len(m.group(0)), head)
+    return "objectivec" if _OBJC_HEADER_DECLARATION_RE.search(head) else None
+
+
 def _detect_language(abs_path: Path) -> LanguageTag:
-    """Detect the language of a file from name, extension, or shebang."""
+    """Detect the language of a file from name, extension, content, or shebang."""
     lang = _language_from_name_or_ext(abs_path)
     if lang is not None:
+        if lang == "cpp":
+            return _objc_header_language(abs_path) or lang
         return lang
     return _detect_by_shebang(abs_path)
 
@@ -1151,41 +1246,66 @@ def _is_console_script_target(rel_path: str, modules: frozenset[str]) -> bool:
     return False
 
 
-def _primary_language_in(directory: Path, *, prune_nested_git: bool = True) -> LanguageTag:
+def _scan_package_dir(
+    directory: Path,
+    repo_root: Path,
+    *,
+    prune_nested_git: bool = True,
+    is_pruned: Callable[[Path], bool],
+) -> tuple[LanguageTag, list[str]]:
+    """Primary language and entry-point paths for one package, in one walk.
+
+    Both answers come off the same pass because they are derived from the same
+    listing: language from the file extensions, entry points from the
+    filenames. Read separately they cost two walks of a tree that can be the
+    largest thing in the repo.
+
+    ``is_pruned`` is the ignore-file layer :func:`~.package_roots.
+    scan_package_roots` already applies, required rather than optional because
+    a scan that skips it answers from files nothing indexes. It matters more
+    here than it does there.
+    :func:`~repowise.core.fs_walk.walk_repo` skips vendored trees and nested
+    checkouts but not gitignored ones, so without it this descends into build
+    output — and unlike a manifest scan, which only matches filenames, language
+    detection *opens* every file whose extension it does not recognise
+    (:func:`_detect_by_shebang`). A gitignored build tree is exactly where those
+    files are, and none of them can be indexed, so the reads buy nothing.
+
+    Skipping them is also the more correct answer: a package's primary language
+    and its entry points should describe the sources traversal indexes, not
+    artifacts a build wrote.
+    """
     from repowise.core.fs_walk import walk_repo
 
     counts: dict[str, int] = {}
+    entry_points: list[str] = []
     try:
-        for dirpath, _dirnames, filenames in walk_repo(
+        for dirpath, dirnames, filenames in walk_repo(
             directory, prune_nested_git=prune_nested_git
         ):
+            # Prune in place so the walk never descends, matching
+            # scan_package_roots. Candidates are repo-relative because
+            # dir_chain_skipped tests each level against the repo root.
+            rel_dir = dirpath.relative_to(repo_root)
+            dirnames[:] = [d for d in dirnames if not is_pruned(rel_dir / d)]
             for fname in filenames:
+                if fname in _ENTRY_POINT_NAMES:
+                    entry_points.append((dirpath / fname).relative_to(repo_root).as_posix())
                 lang = _detect_language(dirpath / fname)
                 if lang not in ("unknown", "yaml", "json", "markdown", "toml"):
                     counts[lang] = counts.get(lang, 0) + 1
     except OSError:
         pass
-    if not counts:
-        return "unknown"
-    return max(counts, key=lambda k: counts[k])  # type: ignore[return-value]
-
-
-def _find_entry_points_in(
-    directory: Path, repo_root: Path, *, prune_nested_git: bool = True
-) -> list[str]:
-    from repowise.core.fs_walk import walk_repo
-
-    result: list[str] = []
-    try:
-        for dirpath, _dirnames, filenames in walk_repo(
-            directory, prune_nested_git=prune_nested_git
-        ):
-            for fname in filenames:
-                if fname in _ENTRY_POINT_NAMES:
-                    result.append((dirpath / fname).relative_to(repo_root).as_posix())
-    except OSError:
-        pass
-    return sorted(result)
+    language: LanguageTag = "unknown"
+    if counts:
+        # Tie-break by name, not by insertion order. counts is populated in
+        # walk order and walk_repo does not sort dirnames, so a bare
+        # max handed an exact tie returned whichever language the filesystem
+        # happened to yield first — a different answer on different machines,
+        # and on the same machine after an unrelated file was added. Highest
+        # count wins; equal counts resolve to the alphabetically first name.
+        language = min(counts, key=lambda k: (-counts[k], k))  # type: ignore[assignment]
+    return language, sorted(entry_points)
 
 
 def _is_nested_git_repo(path: Path) -> bool:

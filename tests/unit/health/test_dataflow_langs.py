@@ -1244,3 +1244,147 @@ def test_cpp_extraction_never_spans_a_jump():
     assert {"break_statement", "continue_statement"} <= lmap.break_kinds | lmap.continue_kinds
     assert "return_statement" in lmap.return_kinds
     assert "throw_statement" in lmap.raise_kinds
+
+
+# ---------------------------------------------------------------------------
+# Nested scopes that bind a name in the enclosing scope (and the ones that do not)
+# ---------------------------------------------------------------------------
+
+
+def _defs(analysis) -> set[tuple[str, int]]:
+    return {
+        (definition.var, definition.line)
+        for block in analysis.def_use.blocks.values()
+        for definition in block.defs
+    }
+
+
+def test_python_nested_def_binds_its_name_in_the_enclosing_scope() -> None:
+    """Without this a span calling a sibling closure omitted it from its IN set."""
+    (analysis,) = [
+        item
+        for item in _analyses(
+            "python",
+            """
+            def outer(rows):
+                def helper(value):
+                    return value + 1
+                total = 0
+                for row in rows:
+                    total += helper(row)
+                return total
+            """,
+        )
+        if item.name == "outer"
+    ]
+    assert ("helper", 3) in _defs(analysis)
+
+
+def test_a_named_function_expression_binds_nothing_outside_itself() -> None:
+    """JS scopes a function expression's own name to its body.
+
+    Recording it as an enclosing definition would shadow an unrelated variable
+    of the same name - the ``var fib = function fib(n) {...}`` idiom - and the
+    slicer would then believe the span had already redefined it and drop it
+    from the IN set.
+    """
+    (analysis,) = [
+        item
+        for item in _analyses(
+            "typescript",
+            """
+            function outer(rows) {
+              let bar = 5;
+              var f = function bar() { return 1; };
+              console.log(bar);
+              return f;
+            }
+            """,
+        )
+        if item.name == "outer"
+    ]
+    defined = _defs(analysis)
+    assert ("bar", 3) in defined, "the real let-binding must still be a definition"
+    assert ("bar", 4) not in defined, "the function expression's own name is not ours"
+
+
+def test_a_function_declaration_does_bind_in_the_enclosing_scope() -> None:
+    (analysis,) = [
+        item
+        for item in _analyses(
+            "typescript",
+            """
+            function outer(rows) {
+              function helper(v) { return v + 1; }
+              let total = 0;
+              for (const row of rows) { total += helper(row); }
+              return total;
+            }
+            """,
+        )
+        if item.name == "outer"
+    ]
+    assert ("helper", 3) in _defs(analysis)
+
+
+def test_anonymous_scope_dialects_declare_no_enclosing_binders() -> None:
+    """Go, Java and C++ have no nested construct that binds a name here."""
+    from repowise.core.analysis.health.dataflow.dialects import get_defuse_dialect
+
+    for language in ("go", "java", "cpp"):
+        dialect = get_defuse_dialect(language)
+        if dialect is None:
+            continue
+        assert not dialect.enclosing_binder_kinds, language
+
+
+def test_every_declared_binder_is_actually_a_scope_boundary() -> None:
+    """A binder kind the walk never reaches would be silently dead."""
+    from repowise.core.analysis.health.dataflow.dialects import get_defuse_dialect
+
+    for language in ("python", "typescript", "go", "java", "rust", "cpp"):
+        dialect = get_defuse_dialect(language)
+        if dialect is None:
+            continue
+        for kind in dialect.enclosing_binder_kinds:
+            node = type("N", (), {"type": kind})()
+            assert dialect._is_scope_boundary(node), f"{language}: {kind}"
+
+
+def test_hoisted_binding_precompute_matches_the_direct_test() -> None:
+    """The per-function precompute must decide exactly what a per-span scan would.
+
+    ``_hoisted_bindings`` exists to keep the check off the candidate loop, where
+    scanning every variable per span cost the analyzer real time. An optimisation
+    that also changed the answer would be a silent behaviour change, so the two
+    formulations are compared over every span shape the corpus produces.
+    """
+    from repowise.core.analysis.health.dataflow import slice as slicing
+    from repowise.core.analysis.health.dataflow.dialects import get_defuse_dialect
+
+    def directly(def_lines, use_lines, s, e) -> bool:
+        for var, defs in def_lines.items():
+            if not any(s <= ln <= e for ln in defs):
+                continue
+            if any(ln < s for ln in defs):
+                continue
+            if any(ln < s for ln in use_lines.get(var, [])):
+                return True
+        return False
+
+    from .refactoring_corpus_fixture import CASE_FILES, source_for
+
+    compared = 0
+    for language, filename in CASE_FILES:
+        if get_defuse_dialect(language) is None:
+            continue
+        result = analyze_file(filename, language, source_for(filename), flagged_only=False)
+        for analysis in result.functions:
+            def_lines, use_lines = slicing._var_lines(analysis.def_use)
+            hoisted = slicing._hoisted_bindings(def_lines, use_lines)
+            for low in range(analysis.start_line, analysis.end_line + 1):
+                for high in range(low, analysis.end_line + 1):
+                    compared += 1
+                    precomputed = any(low <= d <= high and u < low for d, u in hoisted)
+                    assert precomputed == directly(def_lines, use_lines, low, high)
+    assert compared, "the corpus produced no spans to compare"

@@ -154,9 +154,15 @@ export function SymbolDetailBody({
               {graph.pagerank_percentile != null && (
                 <Metric label="PageRank" value={`Top ${100 - graph.pagerank_percentile}%`} />
               )}
-              {graph.betweenness_percentile != null && (
-                <Metric label="Betweenness" value={`Top ${100 - graph.betweenness_percentile}%`} />
-              )}
+              {graph.betweenness_percentile != null &&
+                (graph.betweenness_scored === false ? (
+                  // Added since the last exact centrality run, so the stored
+                  // value is the column default. "Top 100%" would read as
+                  // genuinely peripheral.
+                  <Metric label="Betweenness" value="Not scored yet" />
+                ) : (
+                  <Metric label="Betweenness" value={`Top ${100 - graph.betweenness_percentile}%`} />
+                ))}
               <Metric label="Degree" value={`${graph.in_degree} in · ${graph.out_degree} out`} />
               {graph.community_label && (
                 <Metric label="Community" value={graph.community_label} />

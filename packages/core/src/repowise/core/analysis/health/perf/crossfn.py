@@ -15,7 +15,7 @@ This module is the bridge between three things that already exist:
     (non-loop) sink;
   * the resolved symbol-level ``calls`` graph the engine already has (file +
     symbol nodes, ``calls`` edges between ``path::name`` symbol ids);
-  * the sink-agnostic :mod:`.reachability` walk (Primitive 3).
+  * the sink-agnostic :mod:`.reachability` walk.
 
 It runs **once per analyze()** and is ``O(V + E)`` bounded by ``max_depth``:
 one pass to index symbol nodes, one pass to extract ``calls`` adjacency, one
@@ -48,13 +48,10 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from .callgraph import CallGraphIndex
-from .reachability import path_to_sink, reachable_to_sink
+from .sink_reach import collect_sink_reaching_hits
 
 if TYPE_CHECKING:
-    # Imported lazily at runtime (see ``_hits_for_function``) to avoid a cycle:
-    # the walker pulls in ``perf.io_boundaries`` while the ``complexity``
-    # package is still initialising, so ``crossfn`` cannot import it eagerly.
-    from ..complexity import FileComplexity, PerfFnFacts, PerfHit
+    from ..complexity import FileComplexity, PerfHit
 
 # Cross-function hits carry this so the biomarker can phrase them distinctly
 # while still scoring under the same ``io_in_loop`` / ``performance`` budget.
@@ -75,104 +72,20 @@ def collect_crossfn_io_in_loop(
     edges), or ``None``. ``index`` is an optional pre-built
     :class:`CallGraphIndex` (the engine builds one and shares it across the
     graph passes); when omitted it is built from ``graph``. Each returned
-    :class:`PerfHit` carries the sink's boundary kind in ``detail`` and the
+    :class:`PerfHit` carries the sink's boundary kind in ``detail``, the
     ``A -> ... -> sink`` symbol path in ``path`` (non-empty ``path`` is what
-    marks a hit as cross-function).
+    marks a hit as cross-function), and the ``resolution_basis`` the index
+    used to select the exact first-hop edge.
+
+    The walk itself lives in :func:`.sink_reach.collect_sink_reaching_hits`,
+    shared with the lock-held-I/O pass; only the entry set and the hit kind
+    differ between the two.
     """
-    walked_list = list(walked)
-    if graph is None or not walked_list:
-        return {}
-
-    # Cheap pre-checks over the already-computed facts, before touching the
-    # graph at all: a cross-function N+1 needs BOTH a function holding a bare
-    # sink (a reachability target) and a function with a loop-nested call (an
-    # entry). On a repo with neither, this returns without scanning the graph.
-    has_sink = any(
-        fact.bare_sink_kind is not None for _pf, fcx in walked_list for fact in fcx.perf_fn_facts
-    )
-    has_entry = any(
-        fact.loop_call_targets for _pf, fcx in walked_list for fact in fcx.perf_fn_facts
-    )
-    if not (has_sink and has_entry):
-        return {}
-
-    if index is None:
-        index = CallGraphIndex(graph)
-    if not index.forward:
-        return {}  # no resolved call edges → nothing cross-function to find
-
-    # --- sink set: functions that execute a bare (loop_depth 0) I/O sink ------
-    sink_kind: dict[str, str] = {}
-    for pf, fcx in walked_list:
-        path = pf.file_info.path
-        for fact in fcx.perf_fn_facts:
-            if fact.bare_sink_kind is None:
-                continue
-            sid = index.resolve_function(path, fact.func_start)
-            if sid is not None:
-                sink_kind.setdefault(sid, fact.bare_sink_kind)
-
-    if not sink_kind:
-        return {}
-
-    reach = reachable_to_sink(
-        sink_kind.keys(),
-        lambda node: index.reverse.get(node, ()),
+    return collect_sink_reaching_hits(
+        walked,
+        graph,
+        entries=lambda fact: fact.loop_call_targets,
+        kind=CROSSFN_KIND,
+        index=index,
         max_depth=max_depth,
     )
-
-    # --- match each loop owner's loop-nested callees against the reach map ----
-    out: dict[str, list[PerfHit]] = {}
-    for pf, fcx in walked_list:
-        path = pf.file_info.path
-        for fact in fcx.perf_fn_facts:
-            if not fact.loop_call_targets:
-                continue
-            hits = _hits_for_function(path, fact, index, reach, sink_kind)
-            if hits:
-                out.setdefault(path, []).extend(hits)
-    return out
-
-
-def _hits_for_function(
-    path: str,
-    fact: PerfFnFacts,
-    index: CallGraphIndex,
-    reach: dict[str, Any],
-    sink_kind: dict[str, str],
-) -> list[PerfHit]:
-    from ..complexity import PerfHit
-
-    a_sid = index.resolve_function(path, fact.func_start)
-    if a_sid is None:
-        return []
-    callees = index.forward.get(a_sid)
-    if not callees:
-        return []
-    hits: list[PerfHit] = []
-    seen: set[str] = set()
-    for target_name, call_line in fact.loop_call_targets:
-        if target_name in seen:
-            continue
-        targets, basis = index.resolve_call_targets(a_sid, call_line, target_name)
-        for callee in targets:
-            info = reach.get(callee)
-            if info is None:
-                continue
-            chain = path_to_sink(callee, reach)
-            if not chain:
-                continue
-            seen.add(target_name)
-            kind = sink_kind.get(info.sink, "")
-            hits.append(
-                PerfHit(
-                    kind=CROSSFN_KIND,
-                    line=call_line,
-                    function=fact.function,
-                    detail=kind,
-                    path=(a_sid, *chain),
-                    resolution_basis=basis,
-                )
-            )
-            break
-    return hits

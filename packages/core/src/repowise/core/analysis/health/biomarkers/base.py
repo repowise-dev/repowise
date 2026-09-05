@@ -70,11 +70,6 @@ class FileContext:
     # Thin graph view exposing only ``has_edge``. ``None`` on test fixtures
     # that never construct a graph.
     graph_view: HasEdge | None = None
-    # Repo-wide per-file commit totals (``commit_count_total`` from
-    # git_meta), keyed by repo-relative POSIX path. Used by
-    # ``hidden_coupling`` to compute correlation denominators against
-    # the partner file. Empty when git indexing was skipped.
-    repo_commit_counts: dict[str, int] = field(default_factory=dict)
     # Per-line blame index produced by the FULL git tier (see
     # ``ingestion.git_indexer.function_blame``). ``None`` on ESSENTIAL
     # tier until the FULL-tier backfill (``backfill_full_tier()``) runs;

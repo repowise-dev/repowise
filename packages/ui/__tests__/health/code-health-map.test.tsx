@@ -3,8 +3,12 @@ import { render, fireEvent } from "@testing-library/react";
 import {
   CodeHealthMap,
   MapLegend,
+  NEUTRAL_FILL,
   MapLensSwitcher,
   groupByModule,
+  performanceBurden,
+  performanceFill,
+  performanceSentence,
   type CodeHealthMapFile,
 } from "../../src/health/code-health-map.js";
 
@@ -115,8 +119,19 @@ describe("CodeHealthMap", () => {
     expect(blob).toBeTruthy();
     fireEvent.click(blob!);
     expect(getByText("← Overview")).toBeInTheDocument();
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(blob!, { key: "Escape" });
     expect(queryByText("← Overview")).not.toBeInTheDocument();
+  });
+
+  it("leaves an Escape aimed at something else alone", () => {
+    // The listener used to be on the window, so dismissing anything else on
+    // the page - the file drawer this map opens, most of all - also reset the
+    // zoom underneath it.
+    const files = [f("core/a.py", 120, "core"), f("ui/c.py", 40, "ui")];
+    const { getByText, container } = render(<CodeHealthMap files={files} />);
+    fireEvent.click(container.querySelector("circle[data-galaxy]")!);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(getByText("← Overview")).toBeInTheDocument();
   });
 
   it("shows the on-canvas health legend", () => {
@@ -134,29 +149,62 @@ describe("CodeHealthMap", () => {
     expect(getByText("≥80%")).toBeInTheDocument();
   });
 
-  it("performance lens colors by findings + coverage, not the score", () => {
-    // Three files: covered-with-findings (heat), covered-clean (green), and an
-    // unsupported-language file the perf pass never ran on (grey, NOT green).
+  it("never fills an analyzed-clear file green under the performance lens", () => {
+    // A detector that surfaced nothing has proved the absence of a *supported
+    // pattern*, not that the file is fast. Green is the strongest reassurance
+    // the surface has, and this is its weakest evidence.
     const files: CodeHealthMapFile[] = [
-      { ...f("core/hot.py", 120, "core"), performance_findings: 7, performance_analyzed: true },
-      { ...f("core/clean.py", 80, "core"), performance_findings: 0, performance_analyzed: true },
-      { ...f("core/leveldb.cc", 60, "core"), performance_findings: 0, performance_analyzed: false },
+      { ...f("core/hot.py", 120, "core"), performance_opportunities: 7, performance_observations: 12, performance_actionability: "plan_ready", performance_analyzed: true },
+      { ...f("core/clean.py", 80, "core"), performance_opportunities: 0, performance_analyzed: true },
+      { ...f("core/leveldb.cc", 60, "core"), performance_opportunities: 0, performance_analyzed: false },
     ];
-    const { container, getByText } = render(
-      <CodeHealthMap files={files} overlay="performance" />,
-    );
-    // Educational legend: findings-first, plus the "not analyzed" grey.
-    expect(getByText("5+ findings")).toBeInTheDocument();
-    expect(getByText("Not analyzed")).toBeInTheDocument();
-    expect(getByText("Analyzed, none found")).toBeInTheDocument();
-
+    const { container } = render(<CodeHealthMap files={files} overlay="performance" />);
     const fillFor = (path: string) =>
       container.querySelector(`circle[data-path="${path}"]`)?.getAttribute("fill");
-    // A file with findings burns red; a covered-clean file is green; an
-    // un-analyzed file is grey (tertiary) — never green.
-    expect(fillFor("core/hot.py")).toBe("var(--color-error)");
-    expect(fillFor("core/clean.py")).toBe("var(--color-success)");
-    expect(fillFor("core/leveldb.cc")).toBe("var(--color-text-tertiary)");
+    for (const path of ["core/hot.py", "core/clean.py", "core/leveldb.cc"]) {
+      expect(fillFor(path)).not.toBe("var(--color-node-good)");
+    }
+    // Both take the one neutral. Which of the two a file is cannot be read off
+    // a shade of grey, so the field stops trying and the words carry it.
+    expect(fillFor("core/clean.py")).toBe(NEUTRAL_FILL);
+    expect(fillFor("core/leveldb.cc")).toBe(NEUTRAL_FILL);
+  });
+
+  it("carries the burden on the node's own colour, with no second mark", () => {
+    const files: CodeHealthMapFile[] = [
+      { ...f("core/planned.py", 120, "core"), performance_opportunities: 9, performance_actionability: "plan_ready", performance_analyzed: true },
+      { ...f("core/one.py", 100, "core"), performance_opportunities: 1, performance_actionability: "investigate", performance_analyzed: true },
+      { ...f("core/clean.py", 80, "core"), performance_opportunities: 0, performance_analyzed: true },
+    ];
+    const { container } = render(<CodeHealthMap files={files} overlay="performance" />);
+    const fillOf = (p: string) =>
+      container.querySelector(`circle[data-path="${p}"]`)?.getAttribute("fill");
+    expect(fillOf("core/planned.py")).toBe("var(--color-node-critical)");
+    expect(fillOf("core/one.py")).toBe("var(--color-node-fair)");
+    expect(fillOf("core/clean.py")).toBe(NEUTRAL_FILL);
+    // Stored plan earns no mark of its own. It is said in words instead.
+    expect(container.querySelectorAll("circle[data-plan]")).toHaveLength(0);
+  });
+
+  it("counts observations and says so when the host serves no causal model", () => {
+    // A host with raw observations and no read model still gets a lens; it is
+    // told which unit it is counting rather than being handed a number under
+    // the other one's name.
+    const files: CodeHealthMapFile[] = [
+      { ...f("core/hot.py", 120, "core"), performance_findings: 4, performance_analyzed: true },
+    ];
+    expect(performanceBurden(files[0]!)).toEqual({
+      state: "investigate",
+      count: 4,
+      unit: "observations",
+    });
+    expect(performanceSentence(files[0]!)).toContain("observations");
+  });
+
+  it("reports an unknown state when nothing on the row says either way", () => {
+    const row = f("core/x.py", 10, "core");
+    expect(performanceBurden(row).state).toBe("unknown");
+    expect(performanceFill(row)).toBe(NEUTRAL_FILL);
   });
 
   it("fires onOverlayChange when a lens-switch button is clicked", () => {
@@ -167,8 +215,9 @@ describe("CodeHealthMap", () => {
         onOverlayChange={onOverlayChange}
       />,
     );
-    // The lens switcher renders one toggle button per lens; click "Maintainability".
-    fireEvent.click(getByRole("button", { name: "Maintainability" }));
+    // One switcher implementation, on the canvas and off it, so the two can
+    // never disagree about what picking a lens means.
+    fireEvent.click(getByRole("radio", { name: "Maintainability" }));
     expect(onOverlayChange).toHaveBeenCalledWith("maintainability");
   });
 
@@ -180,10 +229,10 @@ describe("CodeHealthMap", () => {
         lenses={["health", "churn"]}
       />,
     );
-    expect(getByRole("button", { name: "Churn" })).toBeInTheDocument();
+    expect(getByRole("radio", { name: "Churn" })).toBeInTheDocument();
     // Churn is not a default lens: it colors from a field the host has to join
     // in, so a host that did not join it must not be able to select it.
-    expect(queryByRole("button", { name: "Maintainability" })).not.toBeInTheDocument();
+    expect(queryByRole("radio", { name: "Maintainability" })).not.toBeInTheDocument();
   });
 
   it('chrome="none" renders neither the switcher nor the legend', () => {
@@ -194,7 +243,7 @@ describe("CodeHealthMap", () => {
         chrome="none"
       />,
     );
-    expect(queryByRole("button", { name: "Maintainability" })).not.toBeInTheDocument();
+    expect(queryByRole("radio", { name: "Maintainability" })).not.toBeInTheDocument();
     expect(queryByText(/galaxy = module/i)).not.toBeInTheDocument();
   });
 
@@ -204,7 +253,7 @@ describe("CodeHealthMap", () => {
     const { getByRole } = render(
       <CodeHealthMap files={[f("a.py", 30, "core")]} onOverlayChange={vi.fn()} />,
     );
-    expect(getByRole("button", { name: "Maintainability" })).toBeInTheDocument();
+    expect(getByRole("radio", { name: "Maintainability" })).toBeInTheDocument();
   });
 });
 
@@ -222,9 +271,15 @@ describe("map chrome, off canvas", () => {
 
   it("MapLegend renders the active lens's bands and caption", () => {
     const { getByText } = render(<MapLegend overlay="performance" />);
-    expect(getByText("5+ findings")).toBeInTheDocument();
-    expect(getByText("Not analyzed")).toBeInTheDocument();
-    expect(getByText(/color = findings, not a score/i)).toBeInTheDocument();
+    expect(getByText("5 or more")).toBeInTheDocument();
+    expect(getByText("Nothing surfaced")).toBeInTheDocument();
+    // The caption refuses the runtime claim the colour could be read as making,
+    // and the rows are grouped so a flat column of swatches is not the whole key.
+    expect(getByText(/never a runtime measurement/i)).toBeInTheDocument();
+    expect(getByText("Open causes")).toBeInTheDocument();
+    expect(getByText("No open cause")).toBeInTheDocument();
+    // Radius is a channel under every lens and was captioned in prose only.
+    expect(getByText("lines of code")).toBeInTheDocument();
   });
 
   it("MapLegend says it is loading rather than showing bands for absent data", () => {

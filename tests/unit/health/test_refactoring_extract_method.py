@@ -154,6 +154,8 @@ def _find_extractions_reference(analysis, lmap):
         Extraction,
         _all_blocks,
         _infer_in_out,
+    _loop_carry_free,
+    _outs_definitely_assigned,
         _sorted,
         _span_metrics,
         _unwrap_container,
@@ -185,7 +187,7 @@ def _find_extractions_reference(analysis, lmap):
 
     out = []
     evaluated = 0
-    for block in _all_blocks(fn_node, lmap.block_kinds, scope_kinds):
+    for block, loop in _all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
         stmts = block.named_children
         n = len(stmts)
         is_body = block.id == body_container.id
@@ -216,6 +218,12 @@ def _find_extractions_reference(analysis, lmap):
                 e = span[-1].end_point[0] + 1
                 params, returns = _infer_in_out(def_lines, use_lines, s, e)
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
+                    continue
+                if not _outs_definitely_assigned(span, returns, def_lines, lmap):
+                    continue
+                if loop is not None and not _loop_carry_free(
+                    span, loop, s, e, def_lines, use_lines, lmap
+                ):
                     continue
                 out.append(
                     Extraction(
@@ -386,14 +394,18 @@ def test_suggested_name_unit():
     assert name(_Analysis("process"), _Extraction(["average"])) == "compute_average"
     # Non-identifier characters normalised through the shared slug.
     assert name(_Analysis("p"), _Extraction(["total-count"])) == "compute_total_count"
-    # No single OUT -> fall back to the enclosing function, the only other
-    # anchor known for certain.
-    assert name(_Analysis("run_pipeline"), _Extraction([])) == "run_pipeline_helper"
-    assert name(_Analysis("run_pipeline"), _Extraction(["a", "b"])) == "run_pipeline_helper"
+    # No single OUT -> no anchor, so no name. The enclosing function's name
+    # described the span's context, never the span, and collided with every
+    # sibling plan in the file.
+    assert name(_Analysis("run_pipeline"), _Extraction([])) is None
+    assert name(_Analysis("run_pipeline"), _Extraction(["a", "b"])) is None
     # A return name that slugs to nothing must not yield "compute_".
-    assert name(_Analysis("process"), _Extraction(["___"])) == "process_helper"
-    # Nothing usable at all -> a stable, still-valid identifier.
-    assert name(_Analysis(""), _Extraction([])) == "extracted_helper"
+    assert name(_Analysis("process"), _Extraction(["___"])) is None
+    # An OUT named for its role, not the product: "compute_result" names
+    # nothing the reader did not already know.
+    assert name(_Analysis("process"), _Extraction(["result"])) is None
+    # Nothing usable at all -> no name at all.
+    assert name(_Analysis("___"), _Extraction([])) is None
 
 
 def test_detector_silent_without_matching_finding():

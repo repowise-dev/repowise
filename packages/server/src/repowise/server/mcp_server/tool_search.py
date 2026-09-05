@@ -20,7 +20,11 @@ from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._answer_pipeline import _RRF_K, _RRF_SCORE_SCALE
-from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
+from repowise.server.mcp_server._budget import (
+    OmissionCollector,
+    register_post_enforce,
+    register_post_shed,
+)
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
     _get_exclude_spec,
@@ -842,6 +846,8 @@ async def _federated_search(
     # Derive confidence from RRF position
     _assign_confidence(output, "rrf_score", "confidence_score")
 
+    # No freshness here: results come from several repos at once, so there is
+    # no single indexed commit to compare a live HEAD against.
     response: dict = {"results": output, "_meta": _build_meta()}
     # Drawn from every repo's ranked list, not the merged cut: a workspace
     # search that spends its window on module pages should still be able to
@@ -850,22 +856,27 @@ async def _federated_search(
         response["candidates"] = candidates
     # Last, so nothing above has to know the field is on its way out.
     _drop_derivable_page_ids(output)
-    return _fit_search_response(response, contexts[0].path if contexts else None)
+    return response
 
 
-# A search response is one ranked list, so past the derived ``candidates`` there
-# is nothing to shed but the weakest hits.
-_SHED_ORDER: tuple[str, ...] = ("candidates", "results[]")
+def _refresh_served_targets(response: dict, _collector: OmissionCollector | None) -> None:
+    """Re-derive target-scoped freshness from the hits that survived shedding.
 
-
-def _fit_search_response(response: dict, repo_root: Any) -> dict:
-    """Bring a search response under the transport ceiling, recoverably."""
-    collector = OmissionCollector("search_codebase", repo_root=repo_root)
-    fit_to_budget(response, _SHED_ORDER, collector)
+    ``_meta.targets`` claims which files the response served. Shedding decides
+    that, so this has to run after it or the claim names rows the caller never
+    received.
+    """
     if response.get("truncated") and isinstance(response.get("_meta"), dict):
         response["_meta"]["targets"] = _result_paths(response.get("results") or [])
-    collector.attach(response)
-    return response
+
+
+def _refresh_served_targets_final(response: dict) -> None:
+    """Same claim, re-derived after the final size guard may have cut again."""
+    _refresh_served_targets(response, None)
+
+
+register_post_shed("search_codebase", _refresh_served_targets)
+register_post_enforce("search_codebase", _refresh_served_targets_final)
 
 
 def _result_paths(results: list[dict]) -> list[str]:
@@ -1079,7 +1090,7 @@ async def _structured_search(
         response["grep_hint"] = grep_hint
     # Last, so nothing above has to know the field is on its way out.
     _drop_derivable_page_ids(results)
-    return _fit_search_response(response, contexts[0].path if contexts else None)
+    return response
 
 
 @mcp.tool(
@@ -1236,4 +1247,4 @@ async def search_codebase(
     attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
     _drop_derivable_page_ids(output)
-    return _fit_search_response(response, ctx.path)
+    return response

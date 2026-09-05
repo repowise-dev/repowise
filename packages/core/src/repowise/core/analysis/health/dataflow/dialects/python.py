@@ -47,6 +47,9 @@ class PythonDefUseDialect(BaseDefUseDialect):
     member_access_kinds = frozenset({"attribute"})
     keyword_kinds = frozenset({"keyword_argument"})
 
+    # A nested ``def`` is visible in the enclosing scope from its statement on.
+    enclosing_binder_kinds = frozenset({"function_definition", "async_function_definition"})
+
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
 
@@ -142,6 +145,7 @@ class PythonDefUseDialect(BaseDefUseDialect):
             uses.append(self._occ(node))
             return
         if self._is_scope_boundary(node):
+            self.boundary_def(node, defs)
             return
         for child in node.named_children:
             self._process(child, defs, uses)

@@ -57,7 +57,10 @@ class TestPascalSymbols:
         result = parser.parse_file(_pas(), UNIT_SOURCE)
         kinds = {(s.name, s.kind) for s in result.symbols}
         assert ("TCalculator", "class") in kinds
-        assert ("ICalcTarget", "class") in kinds
+        # Review follow-up on PR #1353: declType used to collapse every
+        # type form to "class" -- refine_pascal_type_kind now
+        # disambiguates via the declType's `type` field shape.
+        assert ("ICalcTarget", "interface") in kinds
 
     def test_interface_and_implementation_method_collapse_to_one_symbol(
         self, parser: ASTParser
@@ -272,6 +275,17 @@ class TestPascalImports:
         modules = {i.module_path for i in result.imports}
         assert modules == {"SysUtils", "Classes", "Ns.UnitC"}
 
+    def test_uses_clause_carries_wildcard_imported_names(self, parser: ASTParser) -> None:
+        # `uses UnitA;` exposes UnitA's entire public interface section --
+        # there's no Pascal syntax to name a specific imported symbol the
+        # way Python's `from x import y` does. `imported_names=["*"]`
+        # (this codebase's existing wildcard-import sentinel) lets
+        # dead_code/analyzer.py's file-level unused-export rescue work for
+        # Pascal; `imported_names=[]` meant it could never fire.
+        result = parser.parse_file(_pas(), UNIT_SOURCE)
+        assert result.imports
+        assert all(i.imported_names == ["*"] for i in result.imports)
+
     def test_single_unit_uses_clause(self, parser: ASTParser) -> None:
         src = b"""\
 unit Only;
@@ -382,6 +396,92 @@ end.
 """
         result = parser.parse_file(_pas("Foo.pas"), src)
         assert [i.module_path for i in result.imports] == ["SysUtils"]
+
+
+class TestPascalTypeKinds:
+    """``declType`` wraps class / record / object / interface / class-helper
+    / enum / set / array / plain-alias in one node shape. Review follow-up
+    on PR #1353: all eight forms used to collapse to ``kind="class"``;
+    ``refine_pascal_type_kind`` now disambiguates via the declType's
+    ``type`` field shape.
+    """
+
+    SRC = b"""\
+unit Foo;
+interface
+type
+  TColor = (Red, Green, Blue);
+  TColorSet = set of TColor;
+  TIntArray = array[0..9] of Integer;
+  TMyInt = Integer;
+  TRec = record
+    X: Integer;
+  end;
+  TCls = class
+    Y: Integer;
+  end;
+  TIntf = interface
+    procedure DoFoo;
+  end;
+  THelper = class helper for TObject
+    procedure Bar;
+  end;
+implementation
+end.
+"""
+
+    def test_class_stays_class(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_pas(), self.SRC)
+        kinds = {s.name: s.kind for s in result.symbols}
+        assert kinds["TCls"] == "class"
+
+    def test_record_becomes_struct(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_pas(), self.SRC)
+        kinds = {s.name: s.kind for s in result.symbols}
+        assert kinds["TRec"] == "struct"
+
+    def test_interface_becomes_interface(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_pas(), self.SRC)
+        kinds = {s.name: s.kind for s in result.symbols}
+        assert kinds["TIntf"] == "interface"
+
+    def test_class_helper_stays_class(self, parser: ASTParser) -> None:
+        # A helper declares members the same shape a class does, and has
+        # no closer match in SymbolKind.
+        result = parser.parse_file(_pas(), self.SRC)
+        kinds = {s.name: s.kind for s in result.symbols}
+        assert kinds["THelper"] == "class"
+
+    def test_enum_becomes_enum(self, parser: ASTParser) -> None:
+        result = parser.parse_file(_pas(), self.SRC)
+        kinds = {s.name: s.kind for s in result.symbols}
+        assert kinds["TColor"] == "enum"
+
+    def test_set_and_array_and_plain_alias_become_type_alias(
+        self, parser: ASTParser
+    ) -> None:
+        result = parser.parse_file(_pas(), self.SRC)
+        kinds = {s.name: s.kind for s in result.symbols}
+        assert kinds["TColorSet"] == "type_alias"
+        assert kinds["TIntArray"] == "type_alias"
+        assert kinds["TMyInt"] == "type_alias"
+
+    def test_object_form_becomes_class(self, parser: ASTParser) -> None:
+        # Pascal's pre-OOP `object` type declares members the same shape
+        # a class does -- no closer SymbolKind match, same as helper.
+        src = b"""\
+unit Foo;
+interface
+type
+  TObj = object
+    Z: Integer;
+  end;
+implementation
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        kinds = {s.name: s.kind for s in result.symbols}
+        assert kinds["TObj"] == "class"
 
 
 class TestPascalHeritage:
@@ -633,3 +733,266 @@ end.
         # emitted for it (and nothing should crash trying).
         assert None not in names
         assert "Сложить" not in names
+
+    def test_niladic_call_as_assignment_rhs_is_a_call_site(self, parser: ASTParser) -> None:
+        # Review follow-up on PR #1353 (real-world MTN2 validation): a
+        # niladic function's result assigned to a variable --
+        # `Profile := GetDefaultNDNProfile;` -- is the dominant Delphi
+        # idiom for calling one, arguably more common than the bare
+        # call-statement form covered above. Missing this meant a
+        # function called exclusively this way (even from within its own
+        # file) read as having zero callers.
+        src = b"""\
+unit Foo;
+interface
+implementation
+function GetProfile: Integer;
+begin
+  Result := 1;
+end;
+procedure P;
+var
+  Profile: Integer;
+begin
+  Profile := GetProfile;
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        calls = {(c.target_name, c.receiver_name) for c in result.calls}
+        assert ("GetProfile", None) in calls
+
+    def test_niladic_method_call_as_assignment_rhs_is_a_call_site(self, parser: ASTParser) -> None:
+        src = b"""\
+unit Foo;
+interface
+implementation
+procedure P;
+var
+  Obj: TFoo;
+  Value: Integer;
+begin
+  Value := Obj.GetValue;
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        calls = {(c.target_name, c.receiver_name) for c in result.calls}
+        assert ("GetValue", "Obj") in calls
+
+    def test_plain_variable_assignment_still_mints_a_call_edge(self, parser: ASTParser) -> None:
+        # Documents a known, deliberate imprecision: Pascal's grammar
+        # can't distinguish `X := SomeFunc;` (niladic call) from
+        # `X := SomeVar;` (plain read) without a symbol table, so the
+        # assignment-RHS pattern fires on both. Accepted because it is
+        # directionally safe for dead-code purposes -- a stray edge only
+        # ever adds usage evidence (a possible false negative), never
+        # manufactures a "confidently dead" false positive.
+        src = b"""\
+unit Foo;
+interface
+implementation
+procedure P;
+var
+  A, B: Integer;
+begin
+  A := B;
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        calls = {(c.target_name, c.receiver_name) for c in result.calls}
+        assert ("B", None) in calls
+
+
+class TestPascalTypeReferences:
+    """Type-reference coverage — a class named only in a field, parameter,
+    local-variable, or return-type position previously minted no usage
+    edge at all (pascal.scm had no ``@param.type`` captures, unlike
+    C#/Go/Java/Kotlin/TS). Review follow-up on PR #1353: verified against
+    MTN2 that classes referenced exclusively this way (never called,
+    never subclassed) read as having zero importers.
+    """
+
+    def test_field_type_reference(self, parser: ASTParser) -> None:
+        src = b"""\
+unit Foo;
+interface
+type
+  TBuffer = class
+  end;
+
+  TOwner = class
+    FBuf: TBuffer;
+  end;
+implementation
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        refs = {(t.type_name, t.origin) for t in result.type_refs}
+        assert ("TBuffer", "field_type") in refs
+
+    def test_parameter_type_reference(self, parser: ASTParser) -> None:
+        src = b"""\
+unit Foo;
+interface
+type
+  TBuffer = class
+  end;
+procedure DoWork(Buf: TBuffer);
+implementation
+procedure DoWork(Buf: TBuffer);
+begin
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        refs = {(t.type_name, t.origin) for t in result.type_refs}
+        assert ("TBuffer", "param_type") in refs
+
+    def test_local_variable_type_reference(self, parser: ASTParser) -> None:
+        src = b"""\
+unit Foo;
+interface
+type
+  TBuffer = class
+  end;
+implementation
+procedure DoWork;
+var
+  Local: TBuffer;
+begin
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        refs = {(t.type_name, t.origin) for t in result.type_refs}
+        assert ("TBuffer", "local_var_type") in refs
+
+    def test_return_type_reference(self, parser: ASTParser) -> None:
+        src = b"""\
+unit Foo;
+interface
+type
+  TBuffer = class
+  end;
+function MakeBuffer: TBuffer;
+implementation
+function MakeBuffer: TBuffer;
+begin
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        refs = {(t.type_name, t.origin) for t in result.type_refs}
+        assert ("TBuffer", "return_type") in refs
+
+    def test_qualified_type_reference_takes_the_rightmost_segment(
+        self, parser: ASTParser
+    ) -> None:
+        src = b"""\
+unit Foo;
+interface
+type
+  TOwner = class
+    FBuf: Ns.TQualifiedBuffer;
+  end;
+implementation
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        refs = {t.type_name for t in result.type_refs}
+        assert "TQualifiedBuffer" in refs
+        assert "Ns" not in refs
+
+    def test_generic_type_reference_takes_the_head(self, parser: ASTParser) -> None:
+        src = b"""\
+unit Foo;
+interface
+type
+  TOwner = class
+    FList: TList<TItem>;
+  end;
+implementation
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        refs = {t.type_name for t in result.type_refs}
+        assert "TList" in refs
+
+    def test_builtin_scalar_types_are_not_captured(self, parser: ASTParser) -> None:
+        src = b"""\
+unit Foo;
+interface
+type
+  TOwner = class
+    FCount: Integer;
+    FName: String;
+    FBase: TObject;
+  end;
+implementation
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        refs = {t.type_name for t in result.type_refs}
+        assert refs.isdisjoint({"Integer", "String", "TObject"})
+
+    def test_application_create_form_first_argument_is_a_type_reference(
+        self, parser: ASTParser
+    ) -> None:
+        # Review follow-up on PR #1353 (real-world MTN2 validation):
+        # `Application.CreateForm(TMainForm, MainForm);` is the classic
+        # VCL/FMX/LCL entry-point idiom -- the class argument is a bare
+        # call argument, not a var/field/param declaration, so none of
+        # the type-reference patterns above capture it. A form class
+        # referenced only this way (never `var x: TMainForm` elsewhere)
+        # still read as having zero importers.
+        src = b"""\
+program MTN2;
+uses uMainForm;
+begin
+  Application.Initialize;
+  Application.CreateForm(TMainForm, MainForm);
+  Application.Run;
+end.
+"""
+        result = parser.parse_file(_make_file_info("MTN2.dpr", "pascal"), src)
+        refs = {(t.type_name, t.origin) for t in result.type_refs}
+        assert ("TMainForm", "framework_ctor") in refs
+        # The second (var-reference) argument must not be captured.
+        assert "MainForm" not in {t.type_name for t in result.type_refs}
+
+    def test_create_form_case_insensitive_and_second_arg_not_captured(
+        self, parser: ASTParser
+    ) -> None:
+        # Pascal identifiers are case-insensitive; the query must match
+        # `createform` / `CREATEFORM` the same as `CreateForm`.
+        src = b"""\
+program Foo;
+begin
+  Application.createform(TSplash, Splash);
+end.
+"""
+        result = parser.parse_file(_make_file_info("Foo.dpr", "pascal"), src)
+        refs = {t.type_name for t in result.type_refs}
+        assert "TSplash" in refs
+        assert "Splash" not in refs
+
+    def test_ordinary_call_arguments_are_not_type_references(
+        self, parser: ASTParser
+    ) -> None:
+        # The CreateForm pattern must not fire for an unrelated call whose
+        # first argument happens to look like a type name.
+        src = b"""\
+unit Foo;
+interface
+implementation
+procedure P;
+begin
+  DoSomething(TFoo, TBar);
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        refs = {t.type_name for t in result.type_refs}
+        assert refs.isdisjoint({"TFoo", "TBar"})

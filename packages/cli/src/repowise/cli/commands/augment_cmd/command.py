@@ -93,6 +93,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.agent_adapters import adapter_for
 
 from ._shared import HookResult, as_result
@@ -135,8 +136,16 @@ def _adapter(client: str | None):
     default=None,
     help="Hook client marker. Codex lifecycle hooks pass this explicitly.",
 )
-def augment_command(client: str | None = None) -> None:
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the hook pipeline.",
+)
+def augment_command(client: str | None = None, verbose: bool = False) -> None:
     """Enrich AI agent tool calls with codebase graph context (hook mode)."""
+    configure_cli_logging(verbose=verbose)
     try:
         _run_augment(client=client)
     except (SystemExit, KeyboardInterrupt):

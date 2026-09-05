@@ -349,6 +349,7 @@ async def _run_upgrade(
             save_health_snapshot,
         )
         from repowise.core.pipeline.orchestrator import _run_health_analysis
+        from repowise.core.workspace.update import get_head_commit
 
         health_report = await _run_health_analysis(
             graph_builder,
@@ -359,7 +360,12 @@ async def _run_upgrade(
         )
         if health_report is not None:
             async with get_session(sf) as session:
-                await save_health_metrics(session, repo_id, health_report.metrics or [])
+                await save_health_metrics(
+                    session,
+                    repo_id,
+                    health_report.metrics or [],
+                    analyzed_commit=get_head_commit(repo_path),
+                )
                 if health_report.findings:
                     await save_health_findings(session, repo_id, health_report.findings)
                 kpis = health_report.kpis or {}

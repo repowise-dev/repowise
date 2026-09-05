@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
+import { DecisionCaptureSettingsWrapper } from "@/components/decisions/decision-capture-settings-wrapper";
 import { RefactoringSettingsSection } from "@/components/repos/refactoring-settings-section";
 import { ProviderSettingsPanel } from "@/components/settings/provider-settings-panel";
 import { getRepo } from "@/lib/api/repos";
@@ -77,6 +78,13 @@ export default async function RepoSettingsPage({ params }: Props) {
         description="A model key lets this repository's documentation be written with AI. Keys are stored with the repository and used by generation from the UI or the CLI."
       >
         <ProviderSettingsPanel repoId={id} />
+      </OverviewSection>
+
+      <OverviewSection
+        title="Decision capture"
+        description="What mines architectural decisions from this repository, and whether any of it may send prose to your configured model. Capture only ever produces candidates: nothing here can accept a decision on your behalf."
+      >
+        <DecisionCaptureSettingsWrapper repoId={id} />
       </OverviewSection>
 
       <OverviewSection

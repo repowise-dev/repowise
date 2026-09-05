@@ -2,7 +2,9 @@ import * as React from "react";
 import { cn } from "../lib/cn";
 import type { DecisionStatus } from "@repowise-dev/types/decisions";
 
-const STATUS_COLOR: Record<string, string> = {
+// Keyed on the shared ladder rather than on `string`, so a status added to the
+// vocabulary fails a typecheck here instead of silently rendering grey.
+const STATUS_COLOR: Record<DecisionStatus, string> = {
   active: "var(--color-success)",
   proposed: "var(--color-accent-primary)",
   deprecated: "var(--color-error)",
@@ -21,7 +23,11 @@ const STATUS_COLOR: Record<string, string> = {
  * colours depending on where you were looking.
  */
 export function decisionStatusColor(status: DecisionStatus | string): string {
-  return STATUS_COLOR[status] ?? "var(--color-text-tertiary)";
+  // `status` is an unconstrained string on the wire, so index safely: a row
+  // sourced `toString` would otherwise hand a function to a style attribute.
+  return Object.hasOwn(STATUS_COLOR, status)
+    ? STATUS_COLOR[status as DecisionStatus]
+    : "var(--color-text-tertiary)";
 }
 
 export interface DecisionStatusMarkProps {

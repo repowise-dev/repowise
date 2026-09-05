@@ -32,8 +32,17 @@ from typing import TYPE_CHECKING
 
 from ..base import line_at
 from ..langs import PYTHON
+from .client_calls import (
+    JS_SYNTAX,
+    PYTHON_SYNTAX,
+    VERBS,
+    is_rooted_url,
+    match_paren,
+    resolve_url,
+    split_first_arg,
+    string_constants,
+)
 from .dialect import build_consumer_contract
-from .python_urls import resolve_url_argument, string_constants
 from .wrappers import (
     DEFAULT_HOP_BUDGET,
     GENERIC_ARGS,
@@ -70,133 +79,27 @@ _CLIENT_CALL_RE = re.compile(
 
 # ``request`` is absent on purpose: it takes the method as its first argument
 # and the URL as its second, so this rule would record the verb as the path.
-_HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "head", "options"})
-
-# A first argument concrete enough to be a URL: a path, a base placeholder, or
-# an absolute URL. Mirrors the concreteness test the regex dialect already
-# applies, so both paths agree on what counts as a usable literal.
-_CONCRETE_URL_RE = re.compile(r"^(?:/|\$\{|https?:|//)")
+_HTTP_VERBS = VERBS
 
 # ``method: "POST"`` anywhere in the remaining arguments of the same call.
 _METHOD_OPT_RE = re.compile(r"""method\s*:\s*['"](\w+)['"]""")
 
-_QUOTES = "'\"`"
-
-
-def _match_paren(content: str, open_idx: int) -> int:
-    """Index of the ``)`` closing the ``(`` at *open_idx*, or -1.
-
-    Quote- and template-aware so a parenthesis inside a string literal does not
-    unbalance the scan. Nested ``${...}`` inside a template literal is tracked
-    as ordinary depth, which is what makes ``` `/a/${f(x)}/b` ``` parse.
-    """
-    depth = 0
-    i = open_idx
-    n = len(content)
-    # Open template literals, innermost last. A backtick inside a ``${...}``
-    # opens a *nested* literal rather than closing the outer one, so the state
-    # has to be a stack: ``fetch(`/a/${c ? `x` : `y`}/b`)`` otherwise reads the
-    # inner backtick as the end of the string and desynchronises everything
-    # after it.
-    tmpl: list[int] = []
-    quote: str | None = None
-    while i < n:
-        ch = content[i]
-        if quote is not None:
-            if ch == "\\":
-                i += 2
-                continue
-            if quote == "`" and ch == "$" and i + 1 < n and content[i + 1] == "{":
-                tmpl.append(depth)
-                depth += 1
-                quote = None
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch in _QUOTES:
-            quote = ch
-        elif ch in "([{":
-            depth += 1
-        elif ch in ")]}":
-            depth -= 1
-            if tmpl and ch == "}" and depth == tmpl[-1]:
-                tmpl.pop()
-                quote = "`"  # back inside the template literal that opened it
-            elif depth == 0 and ch == ")":
-                return i
-        i += 1
-    return -1
-
-
-def _split_first_arg(args: str) -> tuple[str, str]:
-    """Split an argument list into ``(first_arg, rest)`` at the top-level comma."""
-    depth = 0
-    tmpl: list[int] = []  # see :func:`_match_paren` — nested templates need a stack
-    quote: str | None = None
-    i = 0
-    n = len(args)
-    while i < n:
-        ch = args[i]
-        if quote is not None:
-            if ch == "\\":
-                i += 2
-                continue
-            if quote == "`" and ch == "$" and i + 1 < n and args[i + 1] == "{":
-                tmpl.append(depth)
-                depth += 1
-                quote = None
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch in _QUOTES:
-            quote = ch
-        elif ch in "([{":
-            depth += 1
-        elif ch in ")]}":
-            depth -= 1
-            if tmpl and ch == "}" and depth == tmpl[-1]:
-                tmpl.pop()
-                quote = "`"
-        elif ch == "," and depth == 0:
-            return args[:i].strip(), args[i + 1 :]
-        i += 1
-    return args.strip(), ""
-
-
-def _literal_url(arg: str) -> str | None:
-    """The URL text of *arg* when it is a single string/template literal, else None.
-
-    A literal spanning the whole argument is required: ``"/a" + x`` and a bare
-    identifier both return ``None``, because neither is a path this layer may
-    claim to know.
-    """
-    arg = arg.strip()
-    if len(arg) < 2 or arg[0] not in _QUOTES or arg[-1] != arg[0]:
-        return None
-    inner = arg[1:-1]
-    # A closing quote in the middle means the literal ended and something else
-    # followed (concatenation), so the argument is not a single literal.
-    if arg[0] in inner:
-        return None
-    return inner if _CONCRETE_URL_RE.match(inner) else None
+# Module-level names so a test can stand in a failing scanner.
+_match_paren = match_paren
+_split_first_arg = split_first_arg
 
 
 def _first_arg_url(arg: str, is_python: bool, constants: dict[str, str]) -> str | None:
     """The URL a call's first argument names, or ``None`` if it is not one.
 
-    Python additionally reads an f-string and folds a name bound to a string
-    literal, then faces the same concreteness test as every other language.
+    A literal spanning the whole argument is required: ``"/a" + x`` and a bare
+    identifier both return ``None``, because neither is a path this layer may
+    claim to know. Python additionally reads an f-string and folds a name bound
+    to a string literal, then faces the same concreteness test as every other
+    language.
     """
-    if not is_python:
-        return _literal_url(arg)
-    url = resolve_url_argument(arg, constants)
-    return url if url is not None and _CONCRETE_URL_RE.match(url) else None
+    url = resolve_url(arg, PYTHON_SYNTAX if is_python else JS_SYNTAX, constants)
+    return url if url is not None and is_rooted_url(url) else None
 
 
 def _client_library(
@@ -281,7 +184,7 @@ def extract_consumers(
     if not confirmed and not sinks and not clients:
         return [], 0
 
-    constants = string_constants(content, code) if is_python else {}
+    constants = string_constants(content, PYTHON_SYNTAX, code) if is_python else {}
     declarations = _declaration_sites(symbols)
 
     # Pass 1: every call site of a confirmed wrapper, split into resolved

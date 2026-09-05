@@ -4,7 +4,8 @@ Indexed by [Repowise](https://repowise.dev). Last indexed: {{ data.indexed_at }}
 
 ### How to work in this repo
 
-- **Trust the index.** `verified: true` means the bytes were checked against the live tree, so never re-read those lines. Re-read only on `bounds: "approximate"`, `_meta.stale_warning`, `search_method: "bm25"` or `confidence: "low"`; `index_behind: true` alone is informational.
+- **Trust the index.** `verified: true` and `_meta.complete` mean the bytes were checked against the live tree, so never re-read them. Re-read only what `bounds: "approximate"` or `_meta.stale_warning` names. `confidence` rates the prose, not the evidence: on `low` read the `fallback_targets` or `best_guesses` the reply names, and run `repowise update` and ask again if `_meta.hint` says the index is behind HEAD. `index_behind: true` alone is informational.
+- **A zero carries its basis.** An empty `callers`/`callees`/`used_by` comes with a `*_basis` saying how much of that language's calls the graph resolved, so read it before concluding nothing calls a symbol. `_meta.scope_hint` names the areas the answer did not touch.
 - **Pre-edit, not instead-of-edit.** These tools decide *which* files to read and edit. Claude Code requires a raw Read of any file you will Edit, and that Read is correct and expected.
 - **Noisy commands** (tests, builds, `git log`/`diff`, searches, listings): prefer `repowise distill <cmd>` — same command, exit code preserved, errors-first output. A `[repowise#<ref>: N lines omitted]` marker is recoverable via `repowise expand <ref>` (add `-q <regex>` to filter); never re-run the command to see omitted output.
 - **Recording a decision** you had to reason out: `repowise decision add --title T --decision D` records it without prompting and prints the id (`--format json` to parse it back). It lands `proposed`, for a person to confirm.
@@ -42,7 +43,7 @@ Indexed by [Repowise](https://repowise.dev). Last indexed: {{ data.indexed_at }}
 {% if data.code_health %}
 
 ### Code health
-Three co-equal signals: defect risk {{ data.code_health.average_health }}/10 avg, hotspot health {{ data.code_health.hotspot_health }}/10 ({{ data.code_health.hotspot_trend }}), worst `{{ data.code_health.worst_path }}` at {{ data.code_health.worst_score }}/10{% if data.code_health.maintainability_average is not none %} · maintainability {{ data.code_health.maintainability_average }}/10{% endif %}{% if data.code_health.performance_average is not none %} · performance risk {{ data.code_health.performance_findings }} open static I/O-in-loop / N+1 finding{{ 's' if data.code_health.performance_findings != 1 else '' }}{% endif %}. Detail: `get_health()`.
+Three co-equal signals: defect risk {{ data.code_health.average_health }}/10 avg, hotspot health {{ data.code_health.hotspot_health }}/10{% if data.code_health.hotspot_trend %} ({{ data.code_health.hotspot_trend }}){% endif %}, worst `{{ data.code_health.worst_path }}` at {{ data.code_health.worst_score }}/10{% if data.code_health.maintainability_average is not none %} · maintainability {{ data.code_health.maintainability_average }}/10{% endif %}{% if data.code_health.performance_average is not none %} · performance risk {{ data.code_health.performance_findings }} open static I/O-in-loop / N+1 finding{{ 's' if data.code_health.performance_findings != 1 else '' }}{% endif %}. Detail: `get_health()`.
 {% if data.code_health.critical_biomarkers %}
 
 Critical files:

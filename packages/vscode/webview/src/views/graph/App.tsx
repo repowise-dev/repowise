@@ -109,7 +109,8 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"graph">) {
                 host={host}
                 communityId={p.communityId}
                 onClose={p.onClose}
-                onExpandOnCanvas={p.onExpandOnCanvas}
+                onEnterCommunity={p.onEnterCommunity}
+                onNeighborSelect={p.onNeighborSelect}
               />
             )}
           />
@@ -129,12 +130,14 @@ function CommunityPanel({
   host,
   communityId,
   onClose,
-  onExpandOnCanvas,
+  onEnterCommunity,
+  onNeighborSelect,
 }: {
   host: WebviewHost;
   communityId: number;
   onClose: () => void;
-  onExpandOnCanvas: () => void;
+  onEnterCommunity: () => void;
+  onNeighborSelect: (communityId: number) => void;
 }) {
   const [community, setCommunity] = useState<CommunityDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -165,7 +168,8 @@ function CommunityPanel({
       community={community}
       isLoading={isLoading}
       onClose={onClose}
-      onExpandOnCanvas={onExpandOnCanvas}
+      onEnterCommunity={onEnterCommunity}
+      onNeighborSelect={onNeighborSelect}
     />
   );
 }

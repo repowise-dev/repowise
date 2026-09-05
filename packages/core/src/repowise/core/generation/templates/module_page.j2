@@ -89,9 +89,9 @@ Use these to explain *why* the subsystem is shaped the way it is. Do not invent 
 
 {% if ctx.coupled_modules %}
 ### Change-coupled with (co-changes in history, not import edges)
-These modules change together with this one in history without importing it — hidden coupling worth naming.
+These modules change together with this one in history and nothing in the dependency graph accounts for it — hidden coupling worth naming.
 {% for cm in ctx.coupled_modules %}
-- `{{ cm.path }}` (co-changed {{ cm.count }}×)
+- `{{ cm.path }}` ({{ cm.count }} co-changing file{{ "s" if cm.count != 1 else "" }})
 {% endfor %}
 {% endif %}
 

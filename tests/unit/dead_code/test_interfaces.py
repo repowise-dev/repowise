@@ -121,6 +121,132 @@ def test_com_contract_method_demoted_below_safe_threshold():
         assert f.safe_to_delete is False
 
 
+def test_pascal_unused_export_is_not_blanket_capped():
+    """Object Pascal is no longer capped as a whole language.
+
+    A blanket confidence cap on every Pascal unused-export finding was a
+    temporary mitigation (PR #1353 follow-up) for real query gaps —
+    assignment-RHS parenless calls and missing var/field/parameter/
+    return-type/framework-ctor type-reference captures, all now fixed in
+    pascal.scm and parser.py — plus a structural gap where ``uses``
+    carried no per-symbol ``imported_names`` for the file-level rescue to
+    match against (also fixed: Pascal imports now carry the wildcard
+    sentinel ``["*"]``, since ``uses`` exposes a whole unit's public
+    interface). Re-validated against the real ~150-file Delphi codebase
+    that surfaced the original false positives: 603 findings dropped to
+    1, and that one was already a known, correctly-low-confidence
+    candidate, not a Pascal false positive. A genuinely unimported,
+    uncalled, untyped-as symbol should flag at full confidence like any
+    other language now — no language-wide cap left to interfere.
+    """
+    g = _build_graph(
+        nodes={
+            "src/uConsole.pas": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "TConsoleBuffer",
+                        "kind": "class",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 20,
+                        "complexity_estimate": 1,
+                        "language": "pascal",
+                    },
+                ],
+            },
+        },
+        edges=[],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    pascal_findings = [
+        f
+        for f in report.findings
+        if f.kind == DeadCodeKind.UNUSED_EXPORT and f.symbol_name == "TConsoleBuffer"
+    ]
+    assert pascal_findings, "expected a finding for TConsoleBuffer"
+    assert any(f.confidence >= 0.7 and f.safe_to_delete for f in pascal_findings), (
+        "a genuinely-unused Pascal symbol with no risk factors should still be able to "
+        f"reach safe-to-delete confidence, got {[(f.confidence, f.safe_to_delete) for f in pascal_findings]}"
+    )
+
+
+def test_pascal_uses_clause_rescues_every_public_symbol_in_the_unit():
+    """A ``uses UnitA;`` clause exposes UnitA's entire public interface
+    section, unlike Python/JS's name-scoped ``from x import y`` -- Pascal
+    has no per-symbol import syntax. ``parser.py`` emits
+    ``imported_names=["*"]`` for every Pascal import edge for exactly this
+    reason, which should rescue every public symbol in a unit that's
+    named in another file's ``uses`` clause, not just capped confidence.
+    """
+    g = _build_graph(
+        nodes={
+            "src/uConsole.pas": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "TConsoleBuffer",
+                        "kind": "class",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 20,
+                        "complexity_estimate": 1,
+                        "language": "pascal",
+                    },
+                ],
+            },
+            "src/uMain.pas": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 0,
+                "symbols": [],
+            },
+        },
+        # uMain.pas has `uses uConsole;` -- Pascal's parser.py emits this
+        # as a wildcard import (no per-symbol names in the uses syntax).
+        edges=[
+            (
+                "src/uMain.pas",
+                "src/uConsole.pas",
+                {"edge_type": "imports", "imported_names": ["*"]},
+            )
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    pascal_findings = [
+        f
+        for f in report.findings
+        if f.kind == DeadCodeKind.UNUSED_EXPORT and f.symbol_name == "TConsoleBuffer"
+    ]
+    assert not pascal_findings, (
+        "TConsoleBuffer should be rescued entirely by the uses-clause wildcard import, "
+        f"got {pascal_findings}"
+    )
+
+
 def test_release_in_non_com_language_not_clamped():
     """A free function named ``Release`` in TypeScript/Python is *not* a
     COM contract method — the contract-method clamp must not apply.

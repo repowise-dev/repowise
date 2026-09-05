@@ -237,7 +237,7 @@ class BasePerfDialect:
         The precision lever for the nested-loop markers: only when the OUTER
         loop multiplies over a collection is an inner I/O sink genuinely O(n*m).
         A pagination ``while`` cursor wrapping an inner ``for ... of chunk`` is
-        ``io_in_loop``, not a nested round-trip explosion (Phase-7c TS corpus).
+        ``io_in_loop``, not a nested round-trip explosion.
         Default ``True`` — a language that does not distinguish keeps today's
         behavior byte-for-byte; TS/JS overrides this to exclude ``while`` /
         C-style ``for`` cursors.

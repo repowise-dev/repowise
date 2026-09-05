@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 
 from repowise.core.generation.concept_tree.vocabulary import (
+    _doc_paths,
+    _scan_tree,
     extract_house_terms,
     extract_terms,
 )
@@ -860,3 +862,67 @@ def test_a_hard_wrapped_markdown_sentence_is_read_whole(tmp_path: Path) -> None:
     )
     # A sentence that already fits on one line is unaffected.
     assert by_term["Dead code"].definition == "Dead code is a rule no posting path reaches."
+
+
+# ---------------------------------------------------------------------------
+# Which files may be cited as where a capability is written
+# ---------------------------------------------------------------------------
+#
+# The capability table's third column is headed "Where it is written", and the
+# glossary cites the same path. Both were rendering scratch harnesses under a
+# git-excluded ``local-stash/`` and a competitive-positioning document in
+# ``docs/`` as the authority for what a term means. Nothing downstream can tell
+# a planning document from a subsystem guide by its headings, so the source set
+# is decided here.
+
+
+@pytest.fixture
+def repo_with_scratch(repo: Path) -> Path:
+    """The fixture repository plus the two shapes that leaked."""
+    (repo / ".gitignore").write_text("local-stash/\n", encoding="utf-8")
+    stash = repo / "local-stash" / "harnesses"
+    stash.mkdir(parents=True)
+    (stash / "_toggle.py").write_text(
+        '"""Blast radius is whatever this throwaway harness says it is."""\n',
+        encoding="utf-8",
+    )
+    (repo / "docs" / "BENCHMARKS.md").write_text(
+        "# Benchmarks\n\n## Blast radius\n\nWe beat every competitor on blast radius.\n",
+        encoding="utf-8",
+    )
+    return repo
+
+
+def test_a_tree_the_repository_excludes_is_not_the_repository_talking(
+    repo_with_scratch: Path,
+) -> None:
+    """A path the user told git to ignore is scratch work, not documentation.
+
+    ``local-stash/`` is absent from the index, the file tree and every other
+    surface, so citing it sends the reader to a file they cannot open.
+    """
+    prose, _ = _scan_tree(repo_with_scratch)
+    assert not [rel for rel, _ in prose if rel.startswith("local-stash/")]
+
+
+def test_an_excluded_harness_does_not_define_a_term(repo_with_scratch: Path) -> None:
+    """The visible failure: the harness supplied the sentence and the citation."""
+    term = by_term(repo_with_scratch)["Blast radius"]
+    assert "local-stash" not in (term.definition_source or "")
+    assert "local-stash" not in " ".join(term.source_paths)
+
+
+def test_a_market_facing_document_is_not_mined(repo_with_scratch: Path) -> None:
+    """Its headings are product claims, and they look exactly like subsystems."""
+    assert "docs/BENCHMARKS.md" not in [
+        p.relative_to(repo_with_scratch).as_posix() for p in _doc_paths(repo_with_scratch)
+    ]
+
+
+def test_excluding_scratch_does_not_cost_a_real_term(repo_with_scratch: Path) -> None:
+    """The filter is aimed at the source set, not at the vocabulary.
+
+    "Blast radius" is named by two real documents and spelled by real source,
+    so it survives losing both leaked citations.
+    """
+    assert "Blast radius" in by_term(repo_with_scratch)

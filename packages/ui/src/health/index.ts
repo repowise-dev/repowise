@@ -39,6 +39,7 @@ export * from "./code-health-lede";
 export * from "./coverage-lede";
 export * from "./severity-mark";
 export * from "./code-health-adapter";
+export * from "./file-opportunity";
 export * from "./triage-view";
 export * from "./findings-view";
 export * from "./performance-view";

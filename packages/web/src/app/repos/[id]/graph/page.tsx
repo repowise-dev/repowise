@@ -10,7 +10,7 @@ export default async function LegacyGraphRedirect({
 }) {
   const { id } = await params;
   const sp = await searchParams;
-  const qs = new URLSearchParams({ view: "graph" });
+  const qs = new URLSearchParams({ view: "communities" });
   for (const [key, value] of Object.entries(sp)) {
     if (typeof value === "string" && key !== "view") qs.set(key, value);
   }

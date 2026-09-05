@@ -11,6 +11,11 @@ complementary evidence about where the change lands. The supporting 0–10 score
 measures how big and spread out a change is; it is not a probability. See
 [What the score does and does not buy](#what-the-score-does-and-does-not-buy).
 
+Everything below describes diff shape, which is what `repowise risk` reports.
+The `get_change_risk` MCP tool leads instead with what the change newly made
+worse — it compares the health of both revisions and keeps diff shape as
+supporting context. See [MCP tools](../agent/MCP_TOOLS.md#get_change_risk).
+
 ```bash
 repowise risk                 # score uncommitted work, else HEAD
 repowise risk HEAD            # score the last commit
@@ -227,6 +232,77 @@ once and answers subsequent `get_change_risk` calls without repeating it. A new
 commit, a moved branch, or a different set of filters produces a different
 anchor or a different filter set, and so a fresh walk.
 
+## Independent changes
+
+This is a structural property of the diff, not a score: it answers whether the
+files in front of you are one change or several. The changed files are grouped by
+connectivity, and one group is separate from another only because nothing
+connected them.
+
+Not every changed file is eligible to be grouped. A file is grouped only when it
+has a file node in the index, is not a test file, and is written in a language
+whose resolver can emit an import edge at all. That rules out documentation,
+configuration and data files: a lockfile or a markdown page is a node with no
+edges, so "nothing links it" is a fact about the language rather than about this
+change. It rules out test files too, because no index records the tie from a test
+to the code it exercises, and an integration test otherwise attaches to whichever
+shared harness the diff happens to contain. Files that fail either test are never
+placed in a group, not even through a co-change pair, and they never bridge two
+groups: only eligible files are in the graph at all, and any link with one end
+outside that set is dropped before grouping.
+
+Three kinds of link connect two eligible files:
+
+- **Index edges.** Every non-containment edge whose two ends belong to two
+  different changed files: imports, calls projected to the files that own them,
+  type references, framework and dynamic edges, and reads. Edges whose ends belong
+  to the same file are dropped, which is how the containment types (`defines`,
+  `has_method`) stay out without being enumerated, and an edge to a dependency
+  outside the repository links nothing.
+- **Stored co-change pairs.** Two files history moves together are one change even
+  when nothing imports anything.
+- **Commit co-membership, for a `base..head` range only.** The files one commit
+  touched are linked to each other, so a file two commits share joins them. That
+  is the author's own statement that the files belong together, which is stronger
+  evidence than any edge, and it is what `bridging_files` most often names. A
+  single commit and the working tree carry no such evidence: one commit says
+  nothing about what moves with what, so the range's commit list is read only when
+  the subject is a range.
+
+A group also has to carry at least one file the index has in fact linked to
+something, whether through an edge, a stored co-change partner, or a shared
+commit. Elsewhere, an absent edge is not evidence, so the files fall out of the
+grouping instead.
+
+Everything not grouped is reported as `ungrouped_files` and never counted as an
+independent change, and the summary says so in those terms: *N changed file(s)
+is/are left out of the grouping: docs, config, tests, files not in the index, or files it has never
+linked.* `bridging_files` names the articulation points of a group's own subgraph,
+the files that alone hold the group together: move one out and the group splits.
+It is computed only for groups of three or more files, since removing either end
+of a pair leaves one file, which is not a split.
+
+There is no score, no percentage, and no adjective on the result. The `basis`
+field states in words what was actually checked, and it is not the same sentence
+in both cases. When the commits of a range were read, it is *no import, call, type
+reference, co-change pair or shared commit in the index and this range links one
+group to another*; when there were no commits to read, the shared commit drops out
+of the sentence and it is *no import, call, type reference or co-change pair in
+the index links one group to another*. That wording is deliberate in either form:
+a missing edge is a claim about this index, not about the code, and the sentence
+never claims a check that did not happen.
+
+The report is silent unless it has something to say. Nothing is produced when
+fewer than two changed files exist, when fewer than two of them are eligible to be
+grouped, or when fewer than two groups survive. A change that is one change gets
+no report.
+
+It surfaces in two places. `repowise risk` prints the groups under the driver
+table, naming each group's files, its bridging files, and the first ten ungrouped
+paths; `--format json` carries the same object under `independent_changes`. In
+`get_change_risk` it is `change_shape.independent_changes`, which needs an index
+and is absent without one.
+
 ## Calibration & accuracy
 
 Constants are learned offline against the defect corpus (AG-SZZ bug-inducing
@@ -316,8 +392,9 @@ CLI `--json` output and this table carry it unconditionally.
 
 ## Cross-repo change risk (workspace mode)
 
-> **Note:** This section describes `get_risk` in PR mode (`changed_files`). `get_change_risk` is
-> pure diff-shape scoring and does not access the workspace graph — it produces no cross-repo fields.
+> **Note:** This section describes `get_risk` in PR mode (`changed_files`).
+> `get_change_risk` carries its own `cross_repo` block, built from workspace
+> contracts rather than from the graph traversal described here.
 
 In a workspace, a change rarely stops at the repo boundary. When `get_risk` is
 called in PR mode (`changed_files`), its `directive` block gains two cross-repo
@@ -349,3 +426,60 @@ current contracts against the previously-indexed set during
 `repowise update --workspace`; non-breaking changes (an added optional field, a
 new endpoint) never appear. See
 [Breaking-Change Guard](../scale/WORKSPACES.md#breaking-change-guard) for the full model.
+
+## Branch overlap
+
+Branch overlap answers one question: which other open branches edit the files
+this change edits. It is git first, so it works in a fresh clone with no index.
+
+The scan starts from one `git for-each-ref` over `refs/heads` and
+`refs/remotes`, sorted by committer date, newest first. Symbolic remote heads
+are skipped, refs sharing a tip commit collapse to one entry (the local name
+where there is one, otherwise the shortest remote name), and the base ref, the
+change's own ref, and any ref whose tip is the base's or the change's commit are
+dropped. Branches stacked on the current one, and the ones it is stacked on, are
+dropped too: either shares every file by construction, which is one change split
+over two refs rather than two changes racing. The scan is bounded to the newest
+50 branches by committer date, raised or lowered with `--limit`, and what was
+left out is reported through `scanned` and `total` rather than dropped silently.
+
+For each scanned branch the file list is `git diff --name-only base...branch`,
+which is what that branch did since it forked, not what the base did in the
+meantime. That list is intersected with the change's own changed files. Noise
+paths (workflows, lockfiles, generated and vendored files, localization blobs)
+are removed from both sides by the shared noise filter, and dependency manifests
+(`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`,
+`composer.json`, `requirements.txt`, `setup.py`, `pom.xml`, `build.gradle`,
+`build.gradle.kts`) are removed with them, because every dependency bump edits
+the manifest and sharing one says nothing about the work. A branch with no shared
+file after that filtering produces no entry, ever.
+
+Every row states its basis in words, and there are exactly two:
+
+- **`same file`.** A direct hit: both branches change that path.
+- **`co-change pair, N of M commits`.** A secondary row, shown only beneath a
+  branch that already has a direct hit. It names a file the other branch edits
+  that is not itself a direct hit and that the index's stored co-change record
+  pairs with one of this change's files, with that file carried as `partner`. It
+  is made only when both counts are recorded and the pair moved together at least
+  half the time (`N * 2 >= M`), and at most three appear per branch, so one file
+  that pairs with everything cannot drown out the files truly shared.
+
+An entry also carries `ahead` and `behind` (commits only on the branch, then only
+on the base, from one `git rev-list --left-right --count`) and the date of its
+last commit. Branches are ordered by how many files they share directly, then by
+most recent commit, then by name; the co-change rows are appended afterwards and
+never reorder the list. There is no score and no percentage anywhere in the
+output. With an index, the shared files inside an entry are ordered by the same
+hub metric the PR blast radius uses (temporal hotspot and pagerank of the file);
+that metric orders rows and is never rendered. Without an index the git answer
+stands and the shared files are alphabetical, with no co-change rows.
+
+What it does not claim: it compares paths, not hunks, so a shared file is a
+reason to talk to the other branch's author and not a predicted merge conflict.
+The co-change rows are historical correlation, never a structural link.
+
+Silence is the default. `repowise overlap` prints one line when no other branch
+edits a shared file, naming how many branches were scanned of how many exist, and
+`get_change_risk` omits the `branch_overlap` block entirely in that case. The
+block is also omitted when the branch scan times out.

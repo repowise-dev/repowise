@@ -38,6 +38,13 @@ _INGEST_URL = "https://api.repowise.dev/telemetry/events"
 #: Best-effort: telemetry must never stall or break a tool call.
 _TIMEOUT = 2.0
 
+#: Attribute an exception carries to report the other failures it was raised
+#: alongside. anyio reports a task group's death as one wrapper holding several
+#: leaves; whoever unwraps it stamps the leaf class names here, and whoever
+#: classifies the invocation reads them off. Named once, in the package both
+#: sides already import, so a rename cannot silently unhook the two.
+GROUP_LEAF_TYPES_ATTR = "repowise_group_leaf_types"
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
 #: Common CI signals (kept in sync with the CLI's environment module).

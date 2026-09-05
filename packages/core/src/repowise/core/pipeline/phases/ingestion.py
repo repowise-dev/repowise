@@ -478,10 +478,13 @@ async def _run_ingestion(
 
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
+    from repowise.core.workspace.update import get_head_commit
+
     graph_builder = GraphBuilder(
         repo_path=repo_path,
         exclude_patterns=exclude_patterns,
         centrality_cache_dir=repo_path / ".repowise",
+        head_commit=get_head_commit(repo_path),
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
     )

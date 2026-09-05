@@ -2,25 +2,24 @@
 
 Recognises the call shapes common in C# / Unity service clients:
 
-* ``HttpClient`` and wrapper methods — ``GetAsync`` / ``PostAsync`` /
+* ``HttpClient`` and wrapper methods: ``GetAsync`` / ``PostAsync`` /
   ``GetRequest<T>`` / ``PostRequest<T>`` (with or without a generic type arg);
 * ``UnityWebRequest.Get/Post/Put/Delete`` with a literal or interpolated URL;
-* Best.HTTP — ``new HTTPRequest(new Uri("..."), HTTPMethods.Get)``.
+* Best.HTTP: ``new HTTPRequest(new Uri("..."), HTTPMethods.Get)``.
 
-C# interpolated strings (``$"{_baseUrl}/path/{id}"``) are normalised by
-rewriting ``{expr}`` to the ``${expr}`` template form the shared path helpers
-already understand, so the leading base placeholder is stripped and interior
-expressions collapse to ``{param}``.
+An interpolated string (``$"{_baseUrl}/path/{id}"``) resolves through the
+shared C# syntax table, so the leading base placeholder is stripped and
+interior expressions collapse to ``{param}``.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from ..base import line_at
 from ..langs import CSHARP
-from .dialect import build_consumer_contract
+from .client_calls import CSHARP_SYNTAX, ClientCallMatch, consumer_contracts, matches_in
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -48,15 +47,43 @@ _BESTHTTP_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CONFIDENCE = 0.70
 
-def _to_template(prefix: str, text: str) -> str:
-    """Rewrite a C# interpolated string body into ``${expr}`` template form.
 
-    For a non-interpolated string the text is returned unchanged.
-    """
-    if "$" in prefix:
-        return text.replace("{", "${")
-    return text
+def httpclient_calls(content: str) -> Iterator[ClientCallMatch]:
+    yield from matches_in(
+        content,
+        _WRAPPER_RE,
+        client="httpclient",
+        url_group=3,
+        prefix_group=2,
+        method_group=1,
+        confidence=_CONFIDENCE,
+    )
+
+
+def unitywebrequest_calls(content: str) -> Iterator[ClientCallMatch]:
+    yield from matches_in(
+        content,
+        _UNITY_RE,
+        client="unitywebrequest",
+        url_group=3,
+        prefix_group=2,
+        method_group=1,
+        confidence=_CONFIDENCE,
+    )
+
+
+def besthttp_calls(content: str) -> Iterator[ClientCallMatch]:
+    yield from matches_in(
+        content,
+        _BESTHTTP_RE,
+        client="besthttp",
+        url_group=2,
+        prefix_group=1,
+        method_group=3,
+        confidence=_CONFIDENCE,
+    )
 
 
 class CSharpHttpDialect:
@@ -65,24 +92,10 @@ class CSharpHttpDialect:
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        out: list[Contract] = []
-
-        def emit(method: str, prefix: str, text: str, client: str, line: int) -> None:
-            url = _to_template(prefix, text)
-            if "/" not in url:
-                return  # Not a URL path — skip non-route strings.
-            c = build_consumer_contract(
-                ctx, method=method.upper(), url=url, client=client, line=line, confidence=0.70
-            )
-            if c is not None:
-                out.append(c)
-
-        for m in _WRAPPER_RE.finditer(content):
-            emit(m.group(1), m.group(2), m.group(3), "httpclient", line_at(content, m.start()))
-        for m in _UNITY_RE.finditer(content):
-            emit(m.group(1), m.group(2), m.group(3), "unitywebrequest", line_at(content, m.start()))
-        for m in _BESTHTTP_RE.finditer(content):
-            # Group order: prefix, text, method (method trails the URL here).
-            emit(m.group(3), m.group(1), m.group(2), "besthttp", line_at(content, m.start()))
-
-        return out
+        matches = [
+            *httpclient_calls(content),
+            *unitywebrequest_calls(content),
+            *besthttp_calls(content),
+        ]
+        # A slash-free string is a key or a name, not a route.
+        return consumer_contracts(ctx, matches, CSHARP_SYNTAX, path_only=True)

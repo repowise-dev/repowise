@@ -5,8 +5,20 @@ import type {
   WorkspaceContractEntry,
   WorkspaceContractLinkEntry,
 } from "@/lib/api/types";
-import type { ContractSchema, SchemaField } from "@repowise-dev/types/workspace";
-import { contractTypeLabel } from "@repowise-dev/ui/workspace/contract-type-badge";
+import type {
+  ContractSchema,
+  SchemaField,
+  WorkspaceTestImpactResponse,
+} from "@repowise-dev/types/workspace";
+import { contractTypeLabel } from "@repowise-dev/ui/workspace/contract-type-label";
+import { ContractTestsSection } from "@repowise-dev/ui/workspace/contract-tests-section";
+import {
+  asContractSchema,
+  contractHeading,
+  contractLede,
+  contractMetaEntries,
+  contractMetaLabel,
+} from "@repowise-dev/ui/workspace/contract-facts";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 
@@ -29,12 +41,15 @@ interface Props {
   detail: WorkspaceContractDetail;
   /** Repo alias to indexed repo id. A never-indexed repo has no entry. */
   repoIds: Record<string, string>;
+  /** Consumer tests guarding this contract. Providers only; null otherwise. */
+  testImpact?: WorkspaceTestImpactResponse | null;
+  testImpactError?: string | null;
 }
 
-export function ContractBody({ detail, repoIds }: Props) {
+export function ContractBody({ detail, repoIds, testImpact, testImpactError }: Props) {
   const { contract, links, unmatched_reason: unmatchedReason } = detail;
   const isProvider = contract.role === "provider";
-  const schema = asSchema(detail.contract_schema);
+  const schema = asContractSchema(detail.contract_schema);
 
   return (
     <div className="mx-auto w-full max-w-[1280px] p-[var(--page-pad)]">
@@ -52,10 +67,10 @@ export function ContractBody({ detail, repoIds }: Props) {
           {isProvider ? "Provider" : "Consumer"}
         </p>
         <h1 className="text-[2rem] font-semibold leading-tight tracking-tight text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
-          {headingFor(contract)}
+          {contractHeading(contract)}
         </h1>
         <p className="max-w-[68ch] text-base leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-          {ledeFor(contract)}
+          {contractLede(contract)}
         </p>
       </header>
 
@@ -104,6 +119,12 @@ export function ContractBody({ detail, repoIds }: Props) {
         repoIds={repoIds}
       />
 
+      <ContractTestsSection
+        result={testImpact ?? null}
+        contractId={contract.contract_id}
+        error={testImpactError ?? null}
+      />
+
       <SchemaSection contract={contract} schema={schema} />
 
       <Section
@@ -111,12 +132,12 @@ export function ContractBody({ detail, repoIds }: Props) {
         description="What the extractor recorded about this contract. The layer is the part worth reading: an index contract came from the parsed symbol table, a regex one from a text dialect, which is where recall is least certain."
       >
         <Facts>
-          {metaEntries(contract.meta).map(([key, value]) => (
-            <Fact key={key} label={metaLabel(key)}>
+          {contractMetaEntries(contract.meta).map(([key, value]) => (
+            <Fact key={key} label={contractMetaLabel(key)}>
               <span className="font-mono text-xs [overflow-wrap:anywhere]">{value}</span>
             </Fact>
           ))}
-          {metaEntries(contract.meta).length === 0 && (
+          {contractMetaEntries(contract.meta).length === 0 && (
             <Fact label="Detail">
               <span className="text-[var(--color-text-tertiary)]">
                 The extractor recorded none.
@@ -549,114 +570,6 @@ function FileRef({
 // Copy
 // ---------------------------------------------------------------------------
 
-/** The readable name of a contract, falling back to its id. */
-export function headingFor(contract: WorkspaceContractEntry): string {
-  const meta = contract.meta ?? {};
-  const method = typeof meta.method === "string" ? meta.method : null;
-  const path = typeof meta.path === "string" ? meta.path : null;
-  const table = typeof meta.table === "string" ? meta.table : null;
-  if (method && path) return `${method} ${path}`;
-  if (table) return table;
-  if (contract.contract_type === "code" && contract.symbol_name) return contract.symbol_name;
-  return contract.contract_id;
-}
-
-/** One sentence saying what this record is, before any of the tables. */
-function ledeFor(contract: WorkspaceContractEntry): string {
-  const isProvider = contract.role === "provider";
-  const pkg = typeof contract.meta?.package === "string" ? contract.meta.package : null;
-  switch (contract.contract_type) {
-    case "http":
-      return isProvider
-        ? `${contract.repo} serves this route.`
-        : `${contract.repo} calls this route.`;
-    case "data":
-      return isProvider
-        ? `${contract.repo} defines this table.`
-        : `${contract.repo} reads or writes this table.`;
-    case "code":
-      return isProvider
-        ? `${contract.repo} exports this from ${pkg ?? "a package"}.`
-        : `${contract.repo} imports this from ${pkg ?? "a package"}.`;
-    default:
-      return isProvider
-        ? `${contract.repo} declares this ${contractTypeLabel(contract.contract_type)} contract.`
-        : `${contract.repo} consumes this ${contractTypeLabel(contract.contract_type)} contract.`;
-  }
-}
-
 function countPhrase(n: number, one: string, many: string): string {
   return `${formatNumber(n)} ${n === 1 ? one : many}`;
-}
-
-/** `meta` keys in the order they read, across every contract type. */
-const META_ORDER = [
-  "extraction_layer",
-  "framework",
-  "client",
-  "handler",
-  "method",
-  "path",
-  "table",
-  "verb",
-  "package",
-  "ecosystem",
-  "host",
-  "external",
-  "base_token",
-  "base_stripped",
-];
-
-const META_LABELS: Record<string, string> = {
-  extraction_layer: "Layer",
-  framework: "Framework",
-  client: "Client",
-  handler: "Handler",
-  method: "Method",
-  path: "Path",
-  table: "Table",
-  verb: "Verb",
-  package: "Package",
-  ecosystem: "Ecosystem",
-  host: "Host",
-  external: "External",
-  base_token: "Base token",
-  base_stripped: "Base stripped",
-};
-
-function metaLabel(key: string): string {
-  return META_LABELS[key] ?? key.replace(/_/g, " ");
-}
-
-/**
- * `meta` as ordered, printable pairs. Keys vary by contract type and an
- * extractor is free to add one, so anything unrecognised is kept and printed
- * under its own name rather than dropped.
- */
-function metaEntries(meta: Record<string, unknown>): [string, string][] {
-  const known = new Set(META_ORDER);
-  const present = (k: string) => meta?.[k] !== undefined && meta[k] !== null;
-  const keys = [
-    ...META_ORDER.filter(present),
-    ...Object.keys(meta ?? {}).filter((k) => !known.has(k) && present(k)),
-  ];
-  return keys.map((k) => [k, String(meta[k])]);
-}
-
-/**
- * Narrow the loosely-typed `contract_schema` off the wire.
- *
- * It arrives as a bare object because the endpoint passes the artifact block
- * straight through, so the shape is checked here rather than assumed: a
- * workspace indexed by an older build can carry a block without the arrays.
- */
-function asSchema(raw: Record<string, unknown> | null): ContractSchema | null {
-  if (!raw) return null;
-  return {
-    source: typeof raw.source === "string" ? raw.source : "unknown",
-    request_fields: Array.isArray(raw.request_fields) ? (raw.request_fields as SchemaField[]) : [],
-    response_fields: Array.isArray(raw.response_fields)
-      ? (raw.response_fields as SchemaField[])
-      : [],
-  };
 }

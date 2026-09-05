@@ -46,10 +46,11 @@ CONTRACTS_FILENAME = "contracts.json"
 #: package surface became a ``code`` contract, and to 5 when ASP.NET minimal
 #: APIs gained ``MapGroup`` prefixes and a handler-bound ``symbol_id``, and to 6
 #: when a multi-line axum route became readable and go/axum providers gained a
-#: handler-bound ``symbol_id``.
+#: handler-bound ``symbol_id``, and to 7 when HTTP consumers gained Go, Ruby,
+#: Java, Kotlin and PHP client calls resolved from URL expressions.
 #: A store written under an older version is readable but not reusable: its
 #: rows carry no identity, and nothing short of re-extraction can give them one.
-CONTRACTS_VERSION = 6
+CONTRACTS_VERSION = 7
 
 
 # ---------------------------------------------------------------------------

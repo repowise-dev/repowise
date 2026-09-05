@@ -11,6 +11,7 @@ import type {
   WorkspaceBreakingChangesResponse,
   WorkspaceConformanceResponse,
   WorkspaceArchitectureResponse,
+  WorkspaceTestImpactResponse,
   ExtractionDiagnostics,
 } from "./types";
 
@@ -168,5 +169,29 @@ export async function syncWorkspace(opts?: {
     undefined,
     undefined,
     params,
+  );
+}
+
+/**
+ * Which tests in the consumer repos guard a change to these provider files.
+ *
+ * Rows carry the basis they came from: `measured` when a coverage map recorded
+ * the test against the consumer call site, `inferred` when the consumer call or
+ * import graph reaches it. Links the join could not follow come back in
+ * `unresolved` with a reason, so an empty answer always names its state.
+ */
+export async function getWorkspaceTestImpact(
+  repo: string,
+  files: string[],
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceTestImpactResponse> {
+  // `file` repeats once per changed path, so the query is built here: the
+  // shared param helper sets each key once.
+  const query = new URLSearchParams({ repo });
+  for (const file of files) query.append("file", file);
+  return apiGet<WorkspaceTestImpactResponse>(
+    `/api/workspace/test-impact?${query.toString()}`,
+    undefined,
+    fetchOptions,
   );
 }

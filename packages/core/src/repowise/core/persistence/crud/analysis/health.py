@@ -14,6 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 if TYPE_CHECKING:
     from ....analysis.health.perf.coverage import PerfCoverage
 
+from ....analysis.health.finding_identity import finding_public_id
+
+# The comparator is pure and lives with the health read models; only the SQL
+# that feeds it belongs here. Re-imported rather than moved out of reach: the
+# crud surface is where the MCP tool and the tests already read it from.
+from ....analysis.health.ranking import (
+    deduction_by_path,
+    sort_metrics_worst_first,
+    worst_metric,
+)
+from ....analysis.health.rows import detail_map
 from ...models import (
     GraphNode,
     HealthFileMetric,
@@ -24,6 +35,47 @@ from ...models import (
     _now_utc,
 )
 from .._shared import _BATCH_SIZE
+
+
+def _health_finding_row_kwargs(finding: Any, repository_id: str) -> dict:
+    """Normalize an analyzer dataclass or a plain dict into ORM row kwargs.
+
+    All three writers land here, so a column added to the row is written by
+    every path or by none. ``public_id`` is stamped here because this is the
+    one place every persisted finding passes through.
+    """
+    if hasattr(finding, "biomarker_type"):
+        severity = finding.severity
+        data = {
+            "file_path": finding.file_path,
+            "biomarker_type": finding.biomarker_type,
+            "severity": str(severity.value) if hasattr(severity, "value") else str(severity),
+            "function_name": finding.function_name,
+            "line_start": finding.line_start,
+            "line_end": finding.line_end,
+            "details_json": json.dumps(finding.details or {}),
+            "health_impact": float(finding.health_impact),
+            "reason": finding.reason or "",
+            "dimension": getattr(finding, "dimension", None) or "defect",
+        }
+    else:
+        data = dict(finding)
+        if "details" in data:
+            data["details_json"] = json.dumps(data.pop("details") or {})
+    data.setdefault("public_id", finding_public_id(finding))
+    if data.get("dimension") == "performance":
+        # Present before the finalizer runs because the analyzer stamps it into
+        # ``details``; the finalizer restates it from authoritative stored rows.
+        data.setdefault("opportunity_id", detail_map(finding).get("opportunity_id"))
+    return {
+        "id": _new_uuid(),
+        "repository_id": repository_id,
+        **{
+            k: v
+            for k, v in data.items()
+            if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
+        },
+    }
 
 
 async def save_health_findings(
@@ -48,37 +100,7 @@ async def save_health_findings(
     for i in range(0, len(findings), _BATCH_SIZE):
         batch = findings[i : i + _BATCH_SIZE]
         for f in batch:
-            if hasattr(f, "biomarker_type"):
-                severity = f.severity
-                severity_str = str(severity.value) if hasattr(severity, "value") else str(severity)
-                data = {
-                    "file_path": f.file_path,
-                    "biomarker_type": f.biomarker_type,
-                    "severity": severity_str,
-                    "function_name": f.function_name,
-                    "line_start": f.line_start,
-                    "line_end": f.line_end,
-                    "details_json": json.dumps(f.details or {}),
-                    "health_impact": float(f.health_impact),
-                    "reason": f.reason or "",
-                    "dimension": getattr(f, "dimension", None) or "defect",
-                }
-            else:
-                data = dict(f)
-                if "details" in data:
-                    data["details_json"] = json.dumps(data.pop("details") or {})
-
-            session.add(
-                HealthFinding(
-                    id=_new_uuid(),
-                    repository_id=repository_id,
-                    **{
-                        k: v
-                        for k, v in data.items()
-                        if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
-                    },
-                )
-            )
+            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
         await session.flush()
 
 
@@ -131,37 +153,7 @@ async def replace_governance_findings(
     for i in range(0, len(findings), _BATCH_SIZE):
         batch = findings[i : i + _BATCH_SIZE]
         for f in batch:
-            if hasattr(f, "biomarker_type"):
-                severity = f.severity
-                severity_str = str(severity.value) if hasattr(severity, "value") else str(severity)
-                data = {
-                    "file_path": f.file_path,
-                    "biomarker_type": f.biomarker_type,
-                    "severity": severity_str,
-                    "function_name": f.function_name,
-                    "line_start": f.line_start,
-                    "line_end": f.line_end,
-                    "details_json": json.dumps(f.details or {}),
-                    "health_impact": float(f.health_impact),
-                    "reason": f.reason or "",
-                    "dimension": getattr(f, "dimension", None) or "defect",
-                }
-            else:
-                data = dict(f)
-                if "details" in data:
-                    data["details_json"] = json.dumps(data.pop("details") or {})
-
-            session.add(
-                HealthFinding(
-                    id=_new_uuid(),
-                    repository_id=repository_id,
-                    **{
-                        k: v
-                        for k, v in data.items()
-                        if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
-                    },
-                )
-            )
+            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
         await session.flush()
 
 
@@ -323,12 +315,26 @@ async def get_health_findings(
     min_severity: str | None = None,
     file_path: str | None = None,
     dimension: str | None = None,
+    exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
 ) -> list[HealthFinding]:
+    """Open findings for one repository, ordered by health impact.
+
+    ``exclude_dimensions`` is how a general queue keeps a dimension out of a
+    ranking it does not share units with. It is ignored when ``dimension``
+    names one explicitly, so asking for a dimension always returns it.
+    """
     q = select(HealthFinding).where(
         HealthFinding.repository_id == repository_id,
         HealthFinding.status == status,
     )
+    if dimension is None and exclude_dimensions:
+        q = q.where(
+            or_(
+                HealthFinding.dimension.is_(None),
+                HealthFinding.dimension.not_in(list(exclude_dimensions)),
+            )
+        )
     if biomarker_type is not None:
         # Accept a comma-separated list so a caller can pull several biomarker
         # types in one request (e.g. the function-level + coupling panels).
@@ -396,30 +402,6 @@ async def get_deduction_by_path(
         for path, total in (await session.execute(q.group_by(HealthFinding.file_path))).all():
             totals[path] = float(total or 0.0)
     return totals
-
-
-def sort_metrics_worst_first(rows: list[Any], deduction_by_path: dict[str, float]) -> list[Any]:
-    """Order per-file metrics worst-first: ``(score asc, deduction desc, path)``.
-
-    ``score`` alone cannot rank the band that matters. It clamps at 1.0, so on
-    a real repo dozens of files tie there and any list sorted on score alone
-    comes back in whatever order the DB happened to return — path order, in
-    practice. That put this repo's single worst file (12.9 points of deduction)
-    at position 27 of a list capped at 20.
-
-    ``total_deduction`` is the pre-clamp magnitude, so it keeps ranking below
-    the floor: a -25 file sorts above a -9 file that prints the same 1.0. The
-    trailing ``file_path`` makes the order total, so a page boundary is stable
-    across requests instead of shuffling two equal rows.
-
-    Shared with the MCP ``get_health`` tool, which builds its own deduction map
-    from findings it has already loaded rather than re-querying. One comparator
-    so REST, MCP and hosted cannot drift into three different "worst files".
-    """
-    return sorted(
-        rows,
-        key=lambda m: (m.score, -deduction_by_path.get(m.file_path, 0.0), m.file_path),
-    )
 
 
 async def get_health_metrics(
@@ -565,7 +547,6 @@ async def get_health_summary(
         avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
     else:
         avg = sum(m.score for m in metrics) / len(metrics)
-    worst = min(metrics, key=lambda r: r.score)
 
     # Maintainability headline: NLOC-weighted average over the per-file
     # maintainability scores (skipping rows that predate the split / lack one).
@@ -611,6 +592,14 @@ async def get_health_summary(
 
     if findings is None:
         findings = await get_health_findings(session, repository_id)
+
+    # Ranked with the same key as ``get_health_metrics``, off the findings this
+    # function already holds. Previously a plain ``min`` on the score, which
+    # agreed with the worst-files list only because every caller happened to
+    # pass an already-ranked list — a floor tie made the headline and the list
+    # under it disagree the moment one did not.
+    worst = worst_metric(metrics, deduction_by_path(findings))
+
     by_dim: dict[str, int] = {}
     for finding in findings:
         dim = finding.dimension or "defect"
@@ -942,37 +931,7 @@ async def upsert_health_findings(
     for i in range(0, len(scoped), _BATCH_SIZE):
         batch = scoped[i : i + _BATCH_SIZE]
         for f in batch:
-            if hasattr(f, "biomarker_type"):
-                severity = f.severity
-                severity_str = str(severity.value) if hasattr(severity, "value") else str(severity)
-                data = {
-                    "file_path": f.file_path,
-                    "biomarker_type": f.biomarker_type,
-                    "severity": severity_str,
-                    "function_name": f.function_name,
-                    "line_start": f.line_start,
-                    "line_end": f.line_end,
-                    "details_json": json.dumps(f.details or {}),
-                    "health_impact": float(f.health_impact),
-                    "reason": f.reason or "",
-                    "dimension": getattr(f, "dimension", None) or "defect",
-                }
-            else:
-                data = dict(f)
-                if "details" in data:
-                    data["details_json"] = json.dumps(data.pop("details") or {})
-
-            session.add(
-                HealthFinding(
-                    id=_new_uuid(),
-                    repository_id=repository_id,
-                    **{
-                        k: v
-                        for k, v in data.items()
-                        if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
-                    },
-                )
-            )
+            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
         await session.flush()
 
 

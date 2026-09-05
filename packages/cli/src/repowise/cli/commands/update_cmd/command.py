@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 import time
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import click
@@ -39,6 +40,7 @@ from repowise.cli.helpers import (
     write_update_pending,
 )
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
+from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.reasoning import REASONING_MODES
 
 from .incremental import (
@@ -408,6 +410,35 @@ class UpdateOutcome(StrEnum):
     DRY_RUN = "dry_run"  # dry run, nothing written
 
 
+def _render_full_upgrade_dry_run(
+    repo_path: Path,
+    *,
+    provider_name: str | None,
+    model: str | None,
+) -> None:
+    """Describe a full upgrade without resolving providers or touching the store."""
+    state = load_state(repo_path)
+    config = load_config(repo_path)
+
+    planned_provider = (
+        provider_name or config.get("provider") or state.get("provider") or "auto-detect"
+    )
+    planned_model = model or config.get("model") or state.get("model") or "provider default"
+    current_git_tier = str(state.get("git_tier") or "essential").upper()
+    recorded_pages = state.get("total_pages")
+    page_label = f"{recorded_pages:,}" if isinstance(recorded_pages, int) else "unknown"
+
+    console.print("[yellow]Dry run — full upgrade plan:[/yellow]")
+    console.print(
+        f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]"
+    )
+    console.print(
+        f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]"
+    )
+    console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
+    console.print("  The whole-repository wiki would be generated. No changes made.")
+
+
 def _renderer_inputs(repo_path):
     """The (language, style fingerprint, style template dir) a file page uses.
 
@@ -555,6 +586,14 @@ def run_update(
     a no-op until you committed.
     """
     start = time.monotonic()
+    # Per-stage wall clock for this run, written to ``state.json`` as
+    # ``phase_timings`` by the paths that rebuild the index. ``run`` is the
+    # denominator; stages nest and overlap, so compare each against it and
+    # never against their sum. The fast paths (already up to date, no changed
+    # files, config-only re-score) do not record: they do no stage work and
+    # would overwrite the last real run's numbers with nothing.
+    timings = PhaseTimings()
+    timings.start("run")
 
     # --- Machine-readable progress (--progress json) --------------------
     # Silence structlog/stdlib logging and redirect the shared Rich console
@@ -666,6 +705,22 @@ def run_update(
     # incremental change-detection so the normal `repowise update` flow below
     # is byte-for-byte unchanged. ---
     if full:
+        if dry_run:
+            _render_full_upgrade_dry_run(
+                repo_path,
+                provider_name=provider_name,
+                model=model,
+            )
+            if emitter is not None:
+                emitter.done(
+                    ok=True,
+                    pages_generated=0,
+                    cost_usd=0.0,
+                    duration_s=time.monotonic() - start,
+                    outcome=UpdateOutcome.DRY_RUN.value,
+                )
+            return UpdateOutcome.DRY_RUN
+
         from repowise.cli.commands.upgrade_flow import upgrade_to_full
 
         if emitter is not None:
@@ -819,13 +874,25 @@ def run_update(
     if not dry_run:
         _repair_module_attribution(repo_path)
 
-    if (
+    git_is_current = bool(
         head
         and head == base_ref
         and not config_changed
         and not renderer_changed
         and not working_tree_diffs
-    ):
+    )
+    # A page can be stale for a reason no commit explains: a cascade that ran
+    # out of budget, an interrupted run, an expiry. Git says nothing changed,
+    # so the shortcut below is the only place such a page could be skipped
+    # forever, and the store is asked only once the git checks would otherwise
+    # have exited, so the common case stays free of a store read.
+    stale_db_paths: list[str] = []
+    if git_is_current:
+        from repowise.core.persistence import load_stale_structural_file_paths
+
+        stale_db_paths = load_stale_structural_file_paths(repo_path)
+
+    if git_is_current and not stale_db_paths:
         console.print("[green]Already up to date.[/green]")
         # D7: on a template (index-only) wiki, "up to date" is true of the code
         # but the pages are still unwritten. Point at the command that writes
@@ -1035,12 +1102,37 @@ def run_update(
 
     from repowise.core.ingestion.change_detector import merge_file_diffs
 
-    file_diffs = merge_file_diffs(
-        detector.get_changed_files(base_ref, head or "HEAD"),
-        working_tree_diffs,
-    )
+    with timed(timings, "detect_changes"):
+        file_diffs = merge_file_diffs(
+            detector.get_changed_files(base_ref, head or "HEAD"),
+            working_tree_diffs,
+        )
 
-    if not file_diffs and not config_changed and not renderer_changed:
+    # A stale page whose file is gone is a deletion the diff walk never saw
+    # (the file left in a range an earlier run did not cover, or was never
+    # committed). Re-rendering cannot clear it, so hand it to the same
+    # tombstone and prune steps a diffed deletion goes through. The pages
+    # whose files still exist stay on the regeneration list below.
+    if stale_db_paths:
+        from repowise.core.ingestion.change_detector import FileDiff
+
+        present, absent = [], []
+        for path in stale_db_paths:
+            (present if (repo_path / path).exists() else absent).append(path)
+        stale_db_paths = present
+        known = {fd.path for fd in file_diffs}
+        file_diffs = [
+            *file_diffs,
+            *(
+                FileDiff(path, "deleted", None, None, None, None)
+                for path in absent
+                if path not in known
+            ),
+        ]
+        if absent:
+            console.print(f"Stale pages for deleted files: [cyan]{len(absent)}[/cyan]")
+
+    if not file_diffs and not config_changed and not renderer_changed and not stale_db_paths:
         console.print("[green]No changed files detected.[/green]")
         # Always advance the sync pointer so the on-disk freshness marker stays
         # current on no-op syncs. In docs mode, no changed files means no docs
@@ -1170,14 +1262,17 @@ def run_update(
             include_submodules=bool(state.get("include_submodules", False)),
             include_nested_repos=bool(state.get("include_nested_repos", False)),
             idle_decay_sink=git_decay_map,
+            timings=timings,
         )
     )
 
     if emitter is not None:
         emitter.stage("plan_pages")
 
+    timings.start("plan_pages")
     # Determine affected pages (auto-scale budget if not explicitly set)
-    if cascade_budget is None:
+    cascade_budget_is_auto = cascade_budget is None
+    if cascade_budget_is_auto:
         from repowise.core.ingestion.change_detector import compute_adaptive_budget
 
         cascade_budget = compute_adaptive_budget(file_diffs, file_count)
@@ -1185,11 +1280,14 @@ def run_update(
             console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
     # Pass the builder's cached file pagerank so the cascade ordering does
     # not recompute a full-graph pagerank pass on every update.
+    from .deterministic import load_stale_file_page_ages
+
     affected = detector.get_affected_pages(
         file_diffs,
         graph_builder.graph(),
         cascade_budget,
         pagerank=graph_builder.pagerank(),
+        stale_pages=load_stale_file_page_ages(repo_path),
     )
 
     # File pages a newer renderer would write differently. The cascade above
@@ -1198,9 +1296,30 @@ def run_update(
     # and no model will come along later to fix it. Appended rather than merged
     # so the cascade's own ordering is preserved.
     stale_renderer_paths = _stale_renderer_paths(repo_path, parsed_files)
+    timings.stop("plan_pages")
     if stale_renderer_paths:
-        affected.regenerate = list(dict.fromkeys([*affected.regenerate, *stale_renderer_paths]))
         console.print(f"Pages from an older renderer: [cyan]{len(stale_renderer_paths)}[/cyan]")
+    # Pages already marked stale in the store, on the same list for the same
+    # reason: nothing else re-renders a file page whose file did not change.
+    # Ceiling: a stale page for a file that exists but is no longer indexed
+    # (excluded since, or unsupported) is not in parsed_files, so the render
+    # skips it and it stays stale; it costs a full reparse on every idle run
+    # until it is retired.
+    if stale_db_paths:
+        console.print(f"Reconciling stale structural pages: [cyan]{len(stale_db_paths)}[/cyan]")
+    stale_extra = list(dict.fromkeys([*stale_renderer_paths, *stale_db_paths]))
+    if stale_extra:
+        affected.regenerate = list(dict.fromkeys([*affected.regenerate, *stale_extra]))
+
+    if affected.stale_due_to_budget > 0:
+        console.print(
+            f"\n[yellow]⚠ Cascade budget of {cascade_budget} pages was reached. "
+            f"{affected.stale_due_to_budget} dependent pages were skipped and marked stale.[/yellow]"
+        )
+        console.print(
+            f"[yellow]  Pass `--cascade-budget {cascade_budget + affected.stale_due_to_budget}` "
+            f"to regenerate them all.[/yellow]\n"
+        )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
     if affected.decay_only:
@@ -1223,6 +1342,10 @@ def run_update(
     # as "no commits" without the stored rows. The stored function-mod p80
     # keeps the hotspot gate repo-wide instead of derived from the changed
     # subset (issue #1484).
+    with timed(timings, "analysis.stored_reads"):
+        stored_git_meta = _load_stored_git_meta(repo_path)
+        stored_performance_callers = _load_stored_performance_callers(repo_path, file_diffs)
+        repo_function_mod_p80 = _load_stored_function_mod_p80(repo_path)
     partial_health_report, dead_code_report = _run_partial_analysis(
         repo_path,
         graph_builder,
@@ -1230,9 +1353,10 @@ def run_update(
         parsed_files,
         file_diffs,
         source_map,
-        stored_git_meta=_load_stored_git_meta(repo_path),
-        stored_performance_callers=_load_stored_performance_callers(repo_path, file_diffs),
-        repo_function_mod_p80=_load_stored_function_mod_p80(repo_path),
+        stored_git_meta=stored_git_meta,
+        stored_performance_callers=stored_performance_callers,
+        repo_function_mod_p80=repo_function_mod_p80,
+        timings=timings,
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
@@ -1246,15 +1370,16 @@ def run_update(
     # shape changed — previously init-only, so update served a stale
     # orientation snapshot to CLAUDE.md/get_overview forever (#669). None
     # means fingerprint-unchanged: the persisted artifact is still current.
-    knowledge_graph_result = _refresh_knowledge_graph(
-        repo_path,
-        parsed_files,
-        graph_builder,
-        repo_structure,
-        git_meta_map,
-        dead_code_report,
-        (state.get("knowledge_graph") or {}).get("fingerprint"),
-    )
+    with timed(timings, "knowledge_graph"):
+        knowledge_graph_result = _refresh_knowledge_graph(
+            repo_path,
+            parsed_files,
+            graph_builder,
+            repo_structure,
+            git_meta_map,
+            dead_code_report,
+            (state.get("knowledge_graph") or {}).get("fingerprint"),
+        )
 
     if index_only:
         # A repo whose wiki was rendered from templates keeps it current here.
@@ -1281,31 +1406,35 @@ def run_update(
             # keep separate: a file page can no longer be model-written, so a
             # page that predates the single-renderer change re-renders to its
             # structural form here, which is the shape it now has.
-            det_pages = regenerate_deterministic_pages(
-                repo_path=repo_path,
-                parsed_files=parsed_files,
-                source_map=source_map,
-                graph_builder=graph_builder,
-                repo_structure=repo_structure,
-                git_meta_map=git_meta_map,
-                regenerate_paths=affected.regenerate,
-                cfg=cfg,
-                concurrency=concurrency,
-                degraded=degraded,
-                dead_code_report=dead_code_report,
-                prior_page_ids=prior_ids,
-            )
+            with timed(timings, "render"):
+                det_pages = regenerate_deterministic_pages(
+                    repo_path=repo_path,
+                    parsed_files=parsed_files,
+                    source_map=source_map,
+                    graph_builder=graph_builder,
+                    repo_structure=repo_structure,
+                    git_meta_map=git_meta_map,
+                    regenerate_paths=affected.regenerate,
+                    cfg=cfg,
+                    concurrency=concurrency,
+                    degraded=degraded,
+                    dead_code_report=dead_code_report,
+                    prior_page_ids=prior_ids,
+                )
 
             if det_pages:
-                state["total_pages"] = persist_deterministic_pages(
-                    repo_path=repo_path,
-                    generated_pages=det_pages,
-                    # decay_only are cascade-reached templates the render did not
-                    # touch: marked stale so the view stays honest about which
-                    # pages predate this commit.
-                    decay_paths=affected.decay_only,
-                    degraded=degraded,
-                )
+                # Its own session, apart from the index persist below, so it
+                # is its own row rather than a ``persist.*`` one.
+                with timed(timings, "render.persist"):
+                    state["total_pages"] = persist_deterministic_pages(
+                        repo_path=repo_path,
+                        generated_pages=det_pages,
+                        # decay_only are cascade-reached templates the render
+                        # did not touch: marked stale so the view stays honest
+                        # about which pages predate this commit.
+                        decay_paths=affected.decay_only,
+                        degraded=degraded,
+                    )
                 state["last_docs_commit"] = head
                 console.print(
                     f"  [green]✓[/green] Re-rendered [bold]{len(det_pages)}[/bold] "
@@ -1337,6 +1466,7 @@ def run_update(
                 exclude_patterns=exclude_patterns,
                 head_ts=head_ts,
                 force_full_rescore=config_changed,
+                timings=timings,
             )
         except Exception as exc:
             if emitter is not None:
@@ -1421,18 +1551,29 @@ def run_update(
 
     # (dead_code_report computed above, before the index-only branch)
 
+    # One row for the decision passes below: the marker re-scan, session
+    # mining, discovery, injection feedback, hook efficacy and evolution. Each
+    # is best-effort and most are model calls, so they are read as a group.
+    timings.start("decisions")
+
     # Re-scan changed files for inline decision markers
+    from repowise.core.analysis.decisions.policy import resolve_policy
+
+    decision_policy = resolve_policy(cfg).policy
     new_decision_markers: list = []
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
         changed_paths = [fd.path for fd in file_diffs if fd.status in ("added", "modified")]
-        if changed_paths:
+        # The rescan is the inline_marker source; it was running regardless of
+        # whether that source was switched off.
+        if changed_paths and decision_policy.source_enabled("inline_marker"):
             extractor = DecisionExtractor(
                 repo_path=repo_path,
                 provider=provider,
                 graph=graph_builder.graph(),
                 git_meta_map=git_meta_map,
+                policy=decision_policy,
             )
             # Label these calls as decision extraction so the Costs page can
             # tell them apart from page regeneration (both ride this provider).
@@ -1456,13 +1597,17 @@ def run_update(
     # `decisions.session_mining: false` in .repowise/config.yaml disables it.
     session_decisions: list = []
     try:
-        from repowise.core.sessions.miners.decisions import (
-            mine_session_decisions,
-            session_mining_enabled,
-        )
+        from repowise.core.sessions.miners.decisions import mine_session_decisions
 
-        if session_mining_enabled(cfg):
-            session_decisions = run_async(mine_session_decisions(repo_path, provider=provider))
+        if decision_policy.source_enabled("session"):
+            session_provider = provider if decision_policy.llm_allowed("session") else None
+            session_decisions = run_async(
+                mine_session_decisions(
+                    repo_path,
+                    provider=session_provider,
+                    collect_discovery_spans=decision_policy.llm_allowed("session_discovery"),
+                )
+            )
             if session_decisions and verbose:
                 promoted_titles = {d.title for d in session_decisions}
                 console.print(f"Session decisions promoted: [green]{len(promoted_titles)}[/green]")
@@ -1471,6 +1616,35 @@ def run_update(
         if verbose:
             console.print(f"[yellow]Session decision mining skipped: {exc}[/yellow]")
 
+    # The broad lane: at most one model call over the prose the pass above
+    # just read. It runs second because that read is what fills its queue.
+    try:
+        from repowise.core.analysis.decisions.discovery import run_update_discovery
+
+        with cost_tracker.record_as("decision_extraction"):
+            outcome = run_async(
+                run_update_discovery(
+                    repo_path,
+                    provider=provider,
+                    policy=decision_policy,
+                )
+            )
+        session_decisions = [*session_decisions, *outcome.decisions]
+        if outcome.report.status == "failed":
+            degraded.append(f"Session discovery: {outcome.report.reason}")
+        if verbose:
+            funnel = outcome.report
+            console.print(
+                f"Session discovery: {funnel.status}"
+                + (f" ({funnel.reason})" if funnel.reason else "")
+                + f" · {funnel.calls} call(s) · {funnel.candidates_grounded} grounded"
+                + f" · {funnel.spans_deferred} span(s) queued"
+            )
+    except Exception as exc:
+        degraded.append(f"Session discovery: {exc}")
+        if verbose:
+            console.print(f"[yellow]Session discovery skipped: {exc}[/yellow]")
+
     # Usage feedback v1: decisions the augment hooks injected into agent
     # sessions are judged against those sessions' mined corrections (followed
     # -> staleness relaxes, contradicted -> staleness bumps). Pure SQLite over
@@ -1478,7 +1652,7 @@ def run_update(
     try:
         from repowise.core.sessions.miners.decisions import apply_injection_feedback
 
-        if session_mining_enabled(cfg):
+        if decision_policy.source_enabled("session"):
 
             async def _run_injection_feedback() -> dict:
                 from repowise.cli.helpers import get_db_url_for_repo
@@ -1522,7 +1696,7 @@ def run_update(
     try:
         from repowise.core.sessions.efficacy import ingest_transcript_efficacy
 
-        if session_mining_enabled(cfg):
+        if decision_policy.source_enabled("session"):
             classified = ingest_transcript_efficacy(
                 repo_path, since=time.time() - _EFFICACY_LOOKBACK_SECONDS
             )
@@ -1622,6 +1796,7 @@ def run_update(
         degraded.append(f"Decision evolution: {exc}")
         if verbose:
             console.print(f"[yellow]Decision evolution skipped: {exc}[/yellow]")
+    timings.stop("decisions")
 
     # Filter to only affected files
     regen_set = set(affected.regenerate)
@@ -1744,7 +1919,8 @@ def run_update(
         )
 
         try:
-            generated_pages = run_async(_generate_with_checkpoint())
+            with timed(timings, "generate"):
+                generated_pages = run_async(_generate_with_checkpoint())
         except Exception as exc:
             if emitter is not None:
                 emitter.error(str(exc))
@@ -1781,17 +1957,18 @@ def run_update(
         try:
             from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
 
-            knowledge_graph_result = run_async(
-                enrich_knowledge_graph(
-                    kg_skeleton=knowledge_graph_result,
-                    llm_client=provider,
-                    graph_builder=graph_builder,
-                    repo_structure=repo_structure,
-                    tech_stack=knowledge_graph_result.project.get("tech_stack", []),
-                    generated_pages=generated_pages,
-                    reasoning=config.reasoning,
+            with timed(timings, "knowledge_graph.enrich"):
+                knowledge_graph_result = run_async(
+                    enrich_knowledge_graph(
+                        kg_skeleton=knowledge_graph_result,
+                        llm_client=provider,
+                        graph_builder=graph_builder,
+                        repo_structure=repo_structure,
+                        tech_stack=knowledge_graph_result.project.get("tech_stack", []),
+                        generated_pages=generated_pages,
+                        reasoning=config.reasoning,
+                    )
                 )
-            )
         except Exception as exc:
             console.print(f"[yellow]Knowledge-graph enrichment skipped: {exc}[/yellow]")
             degraded.append(f"Knowledge-graph enrichment: {exc}")
@@ -1803,24 +1980,26 @@ def run_update(
     if emitter is not None:
         emitter.stage("persist")
     try:
-        db_total_pages = _persist_full_update(
-            repo_path=repo_path,
-            repo_name=repo_name,
-            generated_pages=generated_pages,
-            file_diffs=file_diffs,
-            git_meta_map=git_meta_map,
-            new_decision_markers=[*new_decision_markers, *session_decisions],
-            decision_vector_store=decision_vector_store,
-            provider=provider,
-            partial_health_report=partial_health_report,
-            dead_code_report=dead_code_report,
-            graph_builder=graph_builder,
-            knowledge_graph_result=knowledge_graph_result,
-            degraded=degraded,
-            decay_paths=affected.decay_only,
-            parsed_files=parsed_files,
-            git_decay_map=git_decay_map,
-        )
+        with timed(timings, "persist"):
+            db_total_pages = _persist_full_update(
+                repo_path=repo_path,
+                repo_name=repo_name,
+                generated_pages=generated_pages,
+                file_diffs=file_diffs,
+                git_meta_map=git_meta_map,
+                new_decision_markers=[*new_decision_markers, *session_decisions],
+                decision_vector_store=decision_vector_store,
+                provider=provider,
+                partial_health_report=partial_health_report,
+                dead_code_report=dead_code_report,
+                graph_builder=graph_builder,
+                knowledge_graph_result=knowledge_graph_result,
+                degraded=degraded,
+                decay_paths=affected.decay_only,
+                parsed_files=parsed_files,
+                git_decay_map=git_decay_map,
+                timings=timings,
+            )
     except Exception as exc:
         if emitter is not None:
             emitter.error(str(exc))
@@ -1839,9 +2018,13 @@ def run_update(
     # config edit invalidates every persisted score, and the partial health
     # update only reaches the changed files. Reusing this hook is what makes
     # falling through cost nothing extra — the graph is already built.
-    if (config_changed or full_rescore_due(state, head_ts)) and run_decay_health_rescore(
-        repo_path, graph_builder, parsed_files, exclude_patterns
-    ):
+    rescored = False
+    if config_changed or full_rescore_due(state, head_ts):
+        with timed(timings, "rescore"):
+            rescored = run_decay_health_rescore(
+                repo_path, graph_builder, parsed_files, exclude_patterns
+            )
+    if rescored:
         # Only the time gate reads this stamp, and it treats a non-numeric
         # value as "never re-scored". A forced re-score with git unavailable
         # has no timestamp to record, so leave a real stamp alone rather than
@@ -1851,7 +2034,8 @@ def run_update(
         state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
 
     # ---- Editor project files (best-effort) ----
-    _refresh_editor_stamp(repo_path, agents_md, degraded)
+    with timed(timings, "editor_files"):
+        _refresh_editor_stamp(repo_path, agents_md, degraded)
 
     # Update state
     from repowise.cli.helpers import config_fingerprint
@@ -1873,6 +2057,10 @@ def run_update(
     state["total_pages"] = db_total_pages
     state["config_fingerprint"] = config_fingerprint(repo_path)
     state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
+    # Closed at the state write, as the index-only path does, so the two
+    # paths' ``run`` rows measure the same span.
+    timings.stop("run")
+    state["phase_timings"] = timings.totals
     save_state(repo_path, state)
 
     # --- Pending-marker cleanup --------------------------------------------

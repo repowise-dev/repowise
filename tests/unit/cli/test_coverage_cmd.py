@@ -134,3 +134,76 @@ def test_coverage_add_help_documents_strict() -> None:
 
     assert result.exit_code == 0
     assert "--strict" in result.output
+
+
+def test_coverage_add_stamps_live_head_not_stored_column(tmp_path, monkeypatch) -> None:
+    """Regression for #1747: coverage describes the working tree, so it must be
+    stamped with the live HEAD, not the stored ``head_commit`` column.
+
+    The stored column names the last *indexed* commit. Commit, run tests, then
+    ``coverage add`` without an intervening ``repowise update``: the coverage
+    describes the working tree, the column names the older indexed commit, and
+    they differ. This test fails on main, which stamps the stale column.
+    """
+    import git as gitpython
+
+    from repowise.cli.commands import coverage_cmd
+
+    # A real repo with one commit; the stored column will claim an older sha.
+    repo = gitpython.Repo.init(tmp_path)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("x = 1\n")
+    repo.index.add(["src/foo.py"])
+    repo.index.commit("feat: add foo")
+    live_head = repo.head.commit.hexsha
+    repo.close()
+
+    lcov = tmp_path / "coverage" / "lcov.info"
+    lcov.parent.mkdir()
+    lcov.write_text("TN:\nSF:src/foo.py\nDA:1,2\nLF:1\nLH:1\nend_of_record\n")
+
+    class _FakeRepoRow:
+        id = "repo-1"
+        head_commit = "0" * 40  # stale: the indexed commit, not live HEAD
+
+    recorded: dict = {}
+
+    async def _fake_save_coverage_files(session, repository_id, files, **kwargs):
+        recorded["sha"] = kwargs.get("ingested_commit_sha")
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _fake_get_repository_by_path(session, local_path):
+        return _FakeRepoRow()
+
+    monkeypatch.setattr(
+        "repowise.core.persistence.crud.get_repository_by_path",
+        _fake_get_repository_by_path,
+    )
+    monkeypatch.setattr(
+        "repowise.core.persistence.crud.save_coverage_files", _fake_save_coverage_files
+    )
+    async def _fake_repo_file_keys(session, repo_id):
+        return {"src/foo.py"}
+
+    monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _fake_repo_file_keys)
+    monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+    monkeypatch.setattr("repowise.core.persistence.create_engine", lambda url: object())
+    monkeypatch.setattr("repowise.core.persistence.create_session_factory", lambda engine: object())
+    monkeypatch.setattr("repowise.core.persistence.get_session", lambda sf: _FakeSession())
+
+    result = CliRunner().invoke(
+        cli, ["coverage", "add", str(lcov), "--path", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert recorded["sha"] == live_head
+    assert recorded["sha"] != _FakeRepoRow.head_commit

@@ -53,7 +53,24 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
     )
 
     assert result["working_tree"] is False
-    assert result["features"] == {
+    # Raw model mechanics are a projection now; the default leads with action.
+    assert "features" not in result
+    assert "drivers" not in result
+    assert "risk_authority" not in result
+    assert result["directive"]["status"] in {
+        "review_required",
+        "review_recommended",
+        "clear_in_analyzed_scope",
+        "unknown",
+    }
+    diagnostics = await module.get_change_risk(
+        "HEAD",
+        extensions=["py", "md"],
+        exclude_patterns=["docs/"],
+        baseline=0,
+        include=["diagnostics"],
+    )
+    assert diagnostics["features"] == {
         "la": 1,
         "ld": 0,
         "nf": 1,
@@ -62,16 +79,16 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
         "entropy": 0.0,
         "exp": 1,
     }
+    assert diagnostics["risk_authority"]["primary_fields"] == [
+        "risk_percentile",
+        "classification",
+    ]
     assert result["exclude_patterns"] == ["tests/", "docs/"]
     assert result["risk_percentile"] is None
     assert result["review_priority"] is None
     assert result["classification"] is None
     assert result["fallback_band"] in {"low", "moderate", "high"}
-    assert result["baseline_sample_size"] == 0
-    assert result["risk_authority"]["primary_fields"] == [
-        "risk_percentile",
-        "classification",
-    ]
+    assert diagnostics["baseline_sample_size"] == 0
     # The per-field dictionary is identical on every call, so it is opt-in.
     assert "risk_scales" not in result
     expanded = await module.get_change_risk(
@@ -125,7 +142,7 @@ async def test_get_change_risk_empty_diff_warns(tmp_path, monkeypatch) -> None:
     # Only a .py change exists; restricting to .md counts zero files.
     result = await module.get_change_risk(extensions=["md"], baseline=0)
 
-    assert result["features"]["nf"] == 0
+    assert result["change_shape"]["score"] is not None
     assert "warning" in result
     assert "no counted file changes" in result["warning"].lower()
 

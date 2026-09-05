@@ -8,13 +8,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
+from repowise.server.schemas import (
+    HealthFindingResponse,
+    HealthFindingWithSymbolResponse,
+)
 
 from ._router import router
 from .loaders import _attach_symbol_ids
 from .serializers import _finding_to_dict
 
 
-@router.get("/api/repos/{repo_id}/health/findings")
+@router.get(
+    "/api/repos/{repo_id}/health/findings",
+    response_model=list[HealthFindingWithSymbolResponse],
+)
 async def list_health_findings(
     repo_id: str,
     biomarker_type: str | None = Query(None),
@@ -24,6 +31,14 @@ async def list_health_findings(
     limit: int = Query(100, ge=1, le=1000),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
+    """Open findings, ranked by health impact.
+
+    Performance is out of the unfiltered list by default. Its findings carry a
+    health impact of zero by construction, so ranking them here sorts them
+    below every defect row and reads as "nothing here" rather than as a
+    different unit; the performance surfaces rank the same evidence by cause.
+    Asking for ``dimension=performance`` still returns it.
+    """
     findings = await crud.get_health_findings(
         session,
         repo_id,
@@ -31,6 +46,7 @@ async def list_health_findings(
         file_path=file_path,
         min_severity=min_severity,
         dimension=dimension,
+        exclude_dimensions=("performance",),
     )
     return await _attach_symbol_ids(
         session, repo_id, [_finding_to_dict(f) for f in findings[:limit]]
@@ -44,7 +60,10 @@ class FindingStatusUpdate(BaseModel):
 _ALLOWED_STATUSES = {"open", "acknowledged", "resolved", "false_positive"}
 
 
-@router.patch("/api/repos/{repo_id}/health/findings/{finding_id}")
+@router.patch(
+    "/api/repos/{repo_id}/health/findings/{finding_id}",
+    response_model=HealthFindingResponse,
+)
 async def update_finding_status(
     repo_id: str,
     finding_id: str,

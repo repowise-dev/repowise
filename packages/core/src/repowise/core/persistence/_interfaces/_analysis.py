@@ -166,7 +166,11 @@ class AnalysisIndexStore(ABC):
 
     @abstractmethod
     async def save_health_metrics(
-        self, repository_id: str, metrics: list[Any]
+        self,
+        repository_id: str,
+        metrics: list[Any],
+        *,
+        analyzed_commit: str | None = None,
     ) -> None: ...
 
     @abstractmethod
@@ -238,6 +242,7 @@ class AnalysisIndexStore(ABC):
         *,
         source_format: str,
         ingested_commit_sha: str | None = None,
+        mapping_partial: bool = False,
     ) -> None: ...
 
     @abstractmethod

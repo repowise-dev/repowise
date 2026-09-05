@@ -9,11 +9,12 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import click
 from rich.console import Console
 
+from repowise.cli.errors import reasoned_error
 from repowise.cli.output import resolve_console_width
 from repowise.core.reasoning import (
     ReasoningMode,
@@ -21,7 +22,7 @@ from repowise.core.reasoning import (
 from repowise.core.reasoning import (
     resolve_reasoning as resolve_core_reasoning,
 )
-from repowise.core.repo_config import CONFIG_FILENAME, load_repo_config
+from repowise.core.repo_config import CONFIG_FILENAME, RepoConfigError, load_repo_config
 
 # Update lock — coordinates concurrent `repowise update` invocations and lets
 # the augment hook suppress stale-wiki warnings while a refresh is in flight.
@@ -42,6 +43,11 @@ from repowise.core.update_lock import (
 from repowise.core.update_lock import (
     try_acquire_update_lock as try_acquire_update_lock,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 T = TypeVar("T")
 
@@ -197,6 +203,38 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     from repowise.core.persistence.database import resolve_db_url
 
     return resolve_db_url(repo_path)
+
+
+@contextlib.asynccontextmanager
+async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, str] | None]:
+    """Open the repo-local store, yielding ``(session, repo_id)`` or ``None``.
+
+    A scoring or scanning command must never fail because the index is absent,
+    stale or locked, so every storage error yields ``None`` instead.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+
+    if not (root / REPOWISE_DIR / "wiki.db").is_file():
+        yield None
+        return
+    # The stack keeps the session open across the yield and disposes the engine
+    # on the way out, whether the caller left the block or raised inside it.
+    async with contextlib.AsyncExitStack() as stack:
+        opened: tuple[AsyncSession, str] | None = None
+        try:
+            engine = create_engine(get_db_url_for_repo(root))
+            stack.push_async_callback(engine.dispose)
+            factory = create_session_factory(engine)
+            session = await stack.enter_async_context(get_session(factory))
+            repo = await get_repository_by_path(session, str(root))
+            if repo is not None:
+                opened = (session, repo.id)
+        except (SQLAlchemyError, OSError, LookupError):
+            opened = None
+        yield opened
 
 
 #: Busy timeout for the reconcile's own connection. The engine default is 30s,
@@ -605,8 +643,19 @@ def head_commit_ts(repo_path: Path) -> float | None:
 
 
 def load_config(repo_path: Path) -> dict[str, Any]:
-    """Load ``.repowise/config.yaml`` or return an empty dict if absent."""
-    return load_repo_config(repo_path)
+    """Load ``.repowise/config.yaml`` or return an empty dict if absent.
+
+    A broken config is surfaced as a warning (to stderr, so ``--format json``
+    stays parseable) and degrades to an empty dict rather than crashing the
+    command or silently using defaults — issue #852: configuration errors must
+    be visible, not swallowed. Callers keep their current behaviour either
+    way; the warning is the fix.
+    """
+    try:
+        return load_repo_config(repo_path)
+    except RepoConfigError as exc:
+        err_console.print(f"[yellow]Warning:[/yellow] {exc}")
+        return {}
 
 
 def resolve_reasoning(
@@ -617,7 +666,7 @@ def resolve_reasoning(
     try:
         return resolve_core_reasoning(reasoning, config)
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise reasoned_error(str(exc), reason="invalid_reasoning") from exc
 
 
 def resolve_max_file_pages(
@@ -946,14 +995,10 @@ def resolve_provider(
             # as a raw traceback that escaped every caller's handler —
             # OLLAMA_BASE_URL=http://localhost:abc makes httpx raise
             # InvalidURL, which killed `init` outright.
-            # Imported here, not at module scope: the telemetry spool imports
-            # this module back for the global config dir.
-            from repowise.cli.platform import telemetry
-
-            telemetry.add_command_outcome(failure_reason="provider_setup_failed")
-            raise click.ClickException(
+            raise reasoned_error(
                 f"Could not set up the {name} provider: {exc}. Check its "
-                "settings in your environment and .repowise/config.yaml."
+                "settings in your environment and .repowise/config.yaml.",
+                reason="provider_setup_failed",
             ) from exc
 
     if provider_name is not None:
@@ -975,10 +1020,9 @@ def resolve_provider(
         if provider_credentials_present(candidate):
             return _build(candidate)
 
-    from repowise.cli.platform import telemetry
-
-    telemetry.add_command_outcome(failure_reason="no_provider_configured")
-    raise click.ClickException(
+    # Not fatal on every path: `init` catches this and renders a template wiki
+    # instead, so the reason must not be recorded until it ends a command.
+    raise reasoned_error(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
         "OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / "
@@ -986,8 +1030,64 @@ def resolve_provider(
         "REPOWISE_PROVIDER=claude_cli to use an "
         "authenticated Claude Code subscription, REPOWISE_PROVIDER=codex_cli to use "
         "an authenticated Codex CLI subscription, or REPOWISE_PROVIDER=opencode "
-        "to use opencode."
+        "to use opencode.",
+        reason="no_provider_configured",
     )
+
+
+def resolve_explicit_provider_or_prompt(
+    provider_name: str | None,
+    model: str | None,
+    repo_path: Path,
+    *,
+    interactive: bool,
+    save_key: bool = True,
+) -> Any:
+    """Resolve an explicit provider, onboarding missing credentials in a TTY.
+
+    ``resolve_provider`` stays non-interactive because hooks, CI, and library
+    callers must never block on stdin. ``init`` can opt into this wrapper when
+    it has a real terminal: a missing explicit provider key gets the same
+    inline setup as the provider picker, and an explicit OpenAI provider also
+    gets the endpoint question used by local gateways.
+    """
+    from repowise.cli.ui.provider_selection import interactive_provider_credentials
+
+    if interactive and provider_name == "openai":
+        # A pty can report TTY while stdin is not readable. Let the normal
+        # resolution below produce the actionable provider error instead of
+        # replacing it with Abort.
+        with contextlib.suppress(EOFError, click.Abort):
+            interactive_provider_credentials(
+                console,
+                provider_name,
+                repo_path=repo_path,
+                save_key=save_key,
+            )
+
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+
+    try:
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+    except click.ClickException as original_error:
+        if not interactive or provider_name is None:
+            raise
+
+        try:
+            configured = interactive_provider_credentials(
+                console,
+                provider_name,
+                repo_path=repo_path,
+                save_key=save_key,
+            )
+        except (EOFError, click.Abort):
+            # A pty can report TTY while stdin is not readable. Preserve the
+            # actionable provider error instead of replacing it with Abort.
+            raise original_error from None
+
+        if not configured:
+            raise original_error
+        return resolve_provider(provider_name, model, repo_path=repo_path)
 
 
 def resolve_provider_or_prompt(

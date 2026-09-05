@@ -122,9 +122,118 @@ async def test_an_ingested_report_answers_as_measured(client, session, tmp_path)
     body = await _get(client, repo["id"], limit=500)
 
     assert body["basis"] == "measured"
-    # The graph is present and says something, and it stays out of the answer.
-    assert "inferred" not in body
     assert body["summary"]["line_coverage_pct"] == 40.0
+    # The measured rows fill `files`; the inferred block (served when the
+    # report missed some files) is present but has nothing to add here, because
+    # every file has a measured row. `files_total` is 0, so the UI renders no
+    # gap section.
+    assert body["inferred"]["files_total"] == 0
+    assert body["inferred"]["measured_file_count"] == 1
+
+
+async def test_partial_report_answers_measured_and_fills_the_gap(
+    client, session, tmp_path
+):
+    """A report that missed some files is measured, with the graph filling the gap.
+
+    This is the bug in #1763: one stored row selects the measured basis for the
+    whole repo, and every file the lcov report never mentioned became invisible
+    on the Tests tab. The fix serves the graph-inferred answer for exactly those
+    files, in a separate ``inferred`` block scoped to non-measured paths, so a
+    partial ingest stops hiding the files it did not mention.
+    """
+    repo = await create_test_repo(client, tmp_path)
+    # Only src/a.py has a measured row.
+    await save_coverage_files(
+        session,
+        repo["id"],
+        [
+            {
+                "file_path": "src/a.py",
+                "line_coverage_pct": 40.0,
+                "covered_lines": [1],
+                "total_coverable_lines": 10,
+                "branch_coverage_pct": None,
+            }
+        ],
+        source_format="lcov",
+    )
+    # src/b.py has no measured row but IS reached by a test; src/c.py is not.
+    await save_health_metrics(
+        session,
+        repo["id"],
+        [_metric("src/a.py"), _metric("src/b.py"), _metric("src/c.py")],
+    )
+    await _seed_graph(
+        session,
+        repo["id"],
+        nodes={
+            "tests/test_a.py": True,
+            "src/a.py": False,
+            "src/b.py": False,
+            "src/c.py": False,
+        },
+        edges=_calls("tests/test_a.py", "src/b.py"),
+    )
+    await session.commit()
+
+    body = await _get(client, repo["id"])
+
+    # Measured basis, measured rows in `files`.
+    assert body["basis"] == "measured"
+    assert [f["file_path"] for f in body["files"]] == ["src/a.py"]
+    assert body["summary"]["file_count"] == 1
+
+    # The inferred block answers the non-measured files only — never both.
+    assert body["inferred"]["measured_file_count"] == 1
+    reached = {f["file_path"]: f["reached"] for f in body["inferred"]["files"]}
+    assert reached == {"src/b.py": True, "src/c.py": False}
+    assert body["inferred"]["files_total"] == 2
+    assert body["inferred"]["files_reached"] == 1
+    assert body["inferred"]["files_not_reached"] == 1
+
+    # The inferred payload carries no percentage — the invariant holds on the
+    # hybrid shape too.
+    blob = json.dumps(body["inferred"])
+    assert "pct" not in blob
+
+
+async def test_the_hybrid_inferred_map_carries_no_percentage(
+    client, session, tmp_path
+):
+    """Same no-ratio rule as the pure-inferred shape, on the hybrid block."""
+    repo = await create_test_repo(client, tmp_path)
+    await save_coverage_files(
+        session,
+        repo["id"],
+        [
+            {
+                "file_path": "src/a.py",
+                "line_coverage_pct": 40.0,
+                "covered_lines": [1],
+                "total_coverable_lines": 10,
+                "branch_coverage_pct": None,
+            }
+        ],
+        source_format="lcov",
+    )
+    await save_health_metrics(
+        session,
+        repo["id"],
+        [_metric("src/a.py"), _metric("src/b.py")],
+    )
+    await _seed_graph(
+        session,
+        repo["id"],
+        nodes={"tests/test_a.py": True, "src/a.py": False, "src/b.py": False},
+        edges=_calls("tests/test_a.py", "src/b.py"),
+    )
+    await session.commit()
+
+    body = await _get(client, repo["id"])
+
+    assert body["basis"] == "measured"
+    assert "pct" not in json.dumps(body["inferred"])
 
 
 async def test_no_report_falls_back_to_the_graph(client, session, tmp_path):

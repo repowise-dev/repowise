@@ -4,22 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from repowise.core.analysis.health.biomarkers import continuous_biomarkers
+from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
 from repowise.core.analysis.health.coverage import decay_since, measurement_ref
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
+from repowise.core.analysis.health.models import primary_finding
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
-from repowise.core.analysis.health.perf.opportunities import build_performance_opportunities
+from repowise.core.analysis.health.perf.opportunity_rank import observation_rank
+from repowise.core.analysis.health.ranking import deduction_by_path, sort_metrics_worst_first
 from repowise.core.analysis.health.refactoring.recommendations import (
     Recommendation,
     build_recommendations,
@@ -36,13 +39,13 @@ from repowise.core.persistence.crud import (
     get_coverage_summary,
     get_file_language_map,
     get_git_metadata_bulk,
+    get_health_finding_by_public_id,
     get_hotspot_file_paths,
     get_node_degree_counts_bulk,
     get_refactoring_suggestions,
     get_test_file_paths,
     list_health_snapshots,
     load_coverage_for_repo,
-    sort_metrics_worst_first,
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -52,7 +55,11 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import (
+    OmissionCollector,
+    register_post_enforce,
+    register_post_shed,
+)
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -60,106 +67,386 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._references import path_identity, stable_entity_id
+from repowise.server.mcp_server._references import (
+    path_identity,
+    refactoring_plan_id,
+    stable_entity_id,
+)
+from repowise.server.services.performance_health import (
+    PerformanceHealthService,
+    PerformancePage,
+    evidence_block,
+    parse_query,
+)
+from repowise.server.services.refactoring_health import CANONICAL_VIEWS as _REFACTORING_VIEWS
+from repowise.server.services.refactoring_health import DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT
+from repowise.server.services.refactoring_health import (
+    RefactoringHealthService,
+    plan_view,
+)
+from repowise.server.services.refactoring_health import (
+    parse_query as parse_refactoring_query,
+)
 
-# How much a single execution of each I/O boundary costs, as an order of
-# magnitude rather than a measurement: a process spawn is milliseconds, a wire
-# round-trip is hundreds of microseconds up, a pooled local query is tens, and a
-# filesystem call is usually a page-cache hit. "A subprocess spawn in a loop is
-# not a filesystem stat in a loop" is the whole point of ranking on this.
-_PERF_BOUNDARY_POINTS = {"subprocess": 4, "network": 3, "db": 2, "lock": 2, "filesystem": 1}
+# The opportunity id space is shared with the performance pillar's, and told
+# apart by prefix alone, so ``opportunity_id`` stays one selector.
+_REFACTORING_OPPORTUNITY_PREFIX = "refop"
 
-# What the marker itself proves about *how often* the boundary cost is paid.
-# Two independent proofs, and neither dominates — which is why the three signals
-# are added rather than multiplied:
-#
-#   * a **multiplier** — the cost repeats per iteration (N), per nested pair
-#     (N x M), or quadratically. Every ``*_in_loop`` marker carries this.
-#   * **hotness** — the cost is paid on a request-reachable path.
-#     ``hot_path_sync_io`` and ``nested_loop_quadratic`` are the request-
-#     reachability signal, and it needs no new column: both are emitted **only**
-#     for a function ``perf.ranking.PerfRanker`` called hot (top-quintile
-#     call-graph in-degree, or a churny/hotspot file), so their presence is
-#     already a proof. ``blocking_io_under_lock`` proves something adjacent —
-#     every thread serializes behind the wait.
-#
-# ``hot_path_sync_io`` therefore sits level with a plain loop marker, not above
-# it: it proves hotness and no multiplier, and a loop proves a multiplier and no
-# hotness. Boundary kind is what separates them in practice.
-#
-# Deliberately not ``severity``: the column disagrees with this ordering and
-# cannot be fixed from here without a re-score. ``hot_path_sync_io`` is written
-# ``LOW`` and ``io_in_loop`` ``MEDIUM``, so the marker carrying a hotness proof
-# is graded *below* the ungated one — and on this repo severity takes exactly
-# two values across all 697 perf findings (522 medium, 175 low), which is not
-# an ordering.
-#
-# Exhaustive over the 20 detectors declaring ``category = "performance"``;
-# ``test_perf_rank.py`` fails if a new one is added without a weight, so the
-# default below is a guard rather than a resting place.
-_PERF_MARKER_POINTS = {
-    # Superlinear, and gated on hotness.
-    "nested_loop_quadratic": 5,
-    # N x M round-trips, or a wait every thread queues behind.
-    "nested_loop_with_io": 4,
-    "blocking_io_under_lock": 4,
-    "sql_cartesian_join": 4,
-    # One boundary crossing per iteration — the N+1 family.
-    "io_in_loop": 3,
-    "serial_await_in_loop": 3,
-    "lock_in_loop": 3,
-    "goroutine_in_unbounded_loop": 3,
-    "resource_construction_in_loop": 3,
-    # One crossing, but proven to sit on a hot path.
-    "hot_path_sync_io": 3,
-    # In-loop CPU/allocation costs: real, and orders below a round-trip.
-    "blocking_sync_in_async": 2,
-    "pandas_iterrows_in_loop": 2,
-    "pd_concat_in_loop": 2,
-    "json_parse_in_loop": 2,
-    "array_spread_in_reduce": 2,
-    "defer_in_loop": 2,
-    "regex_compile_in_loop": 1,
-    "string_concat_in_loop": 1,
-    "membership_test_against_list_in_loop": 1,
-    "list_insert_zero_in_loop": 1,
-}
+_REFACTORING_COLLECTION_CAP = 6
+"""Opportunities per response, independent of ``limit``. ``cursor`` pages it."""
 
-# Unknown marker. Deliberately the floor, not the middle: a detector added
-# without a weight should under-rank rather than jump the queue, the same
-# degrade-to-no-signal direction the perf gate itself takes.
-_PERF_UNKNOWN_MARKER_POINTS = 1
+_REFACTORING_STEP_CAP = 3
+"""Steps per row in the queue. The detail call pages the rest."""
 
-# A hit whose loop and whose sink are in different functions. Worth a point on
-# its own: an intra-function loop is often visibly bounded at the call site,
-# while a cross-function N+1 is the one nobody sees by reading the loop.
-_PERF_CROSSFN_POINTS = 1
+_REFACTORING_STEP_PAGE_CAP = 20
+"""Ceiling on one page of a detail call's ordered steps."""
+
+_REFACTORING_EVIDENCE_CAP = 3
+"""Evidence rows beside a detail response. ``only=['refactoring_evidence']`` pages more."""
+
+_REFACTORING_EVIDENCE_PAGE_CAP = 20
+"""Ceiling on one evidence page."""
+
+_PERFORMANCE_COLLECTION_CAP = 6
+"""Opportunities per response, independent of ``limit``. ``cursor`` pages it."""
+
+_PERFORMANCE_EVIDENCE_CAP = 3
+"""Evidence rows per opportunity in the collection. The detail call pages more."""
+
+_PERFORMANCE_EVIDENCE_PAGE_CAP = 20
+"""Ceiling on one evidence page. ``limit`` still means what it says below it,
+including ``limit=0`` for the totals and no rows."""
+
+
+def _selector_conflict(**selectors: str | None) -> dict[str, Any] | None:
+    """Refuse two detail selectors instead of answering about one of them.
+
+    Preferring whichever was checked first gave a caller a confident answer to
+    a question they had not only asked, with no sign the other was dropped.
+    """
+    named = sorted(name for name, value in selectors.items() if value)
+    if len(named) < 2:
+        return None
+    return {
+        "mode": "conflict",
+        "resolved": False,
+        "reason": "mutually_exclusive_selectors",
+        "selectors": named,
+        "detail": "Pass exactly one of finding_id, plan_id, opportunity_id.",
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class _PerformanceBlocks:
+    """Everything the performance pillar contributes to one response."""
+
+    page: PerformancePage | None = None
+    summary: dict[str, Any] | None = None
+    directive: dict[str, Any] | None = None
+    ignored: dict[str, str] = field(default_factory=dict)
+
+
+async def _performance_blocks(
+    service: PerformanceHealthService,
+    *,
+    wants: Any,
+    included: bool,
+    file_paths: tuple[str, ...] | None,
+    scoped: bool,
+    limit: int,
+    cursor: int,
+    view: str | None,
+    context: str | None,
+    boundary: str | None,
+    confidence: str | None,
+    sort: str | None,
+) -> _PerformanceBlocks:
+    """Read the materialized queue, its rollup, and the dashboard lead.
+
+    Each block is gated on surviving the projection, so a caller that asked for
+    one of the three does not pay for the other two.
+    """
+    page = None
+    query = None
+    ignored: dict[str, str] = {}
+    if included:
+        # The lede quotes only the first row and no evidence, so a projection
+        # down to it reads one row rather than a page of six.
+        emits_queue = wants("performance_opportunities")
+        query, ignored = parse_query(
+            context=context,
+            boundary=boundary,
+            confidence=confidence,
+            view=view,
+            sort=sort,
+            file_paths=file_paths,
+            limit=min(max(limit, 0), _PERFORMANCE_COLLECTION_CAP) if emits_queue else 1,
+            offset=cursor if emits_queue else 0,
+        )
+        page = await service.page(
+            query,
+            evidence_per_item=_PERFORMANCE_EVIDENCE_CAP if emits_queue else 0,
+            # Facets are rendered by the summary block alone, so a queue or a
+            # lede does not pay for the aggregate.
+            with_facets=wants("performance_summary"),
+        )
+    return _PerformanceBlocks(
+        page=page,
+        summary=(
+            # Scoped to the same context as the queue beside it, so two blocks
+            # in one answer cannot state totals that contradict each other.
+            await service.summary(query.contexts if query else None)
+            if included and wants("performance_summary")
+            else None
+        ),
+        # The bare dashboard lead: one primary-key read of the current summary
+        # row, so it does not grow with the repository and never touches the
+        # queue.
+        directive=(
+            await service.directive() if not scoped and wants("performance_directive") else None
+        ),
+        ignored=ignored,
+    )
+
+
+async def _resolve_finding(
+    session: Any, repository_id: str, finding_id: str, repository: str
+) -> Any:
+    """Find one health finding by any id form a caller can be holding.
+
+    The public id is a column, so the common case is a seek. The scan is the
+    compatibility path: a raw storage id, or an id minted before the column
+    existed, still has to resolve.
+    """
+    match = await get_health_finding_by_public_id(session, repository_id, finding_id)
+    if match is not None:
+        return match
+    rows = (
+        (
+            await session.execute(
+                select(HealthFinding).where(
+                    HealthFinding.repository_id == repository_id,
+                    HealthFinding.status == "open",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return next(
+        (
+            row
+            for row in rows
+            if finding_id
+            in {
+                row.id,
+                _health_finding_id(row, repository),
+                _legacy_health_finding_id(row, repository),
+            }
+        ),
+        None,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _RefactoringBlocks:
+    """Everything the refactoring pillar contributes to one response."""
+
+    page: Any = None
+    summary: dict[str, Any] | None = None
+    directive: dict[str, Any] | None = None
+    ignored: dict[str, str] = field(default_factory=dict)
+
+
+async def _refactoring_blocks(
+    service: RefactoringHealthService,
+    *,
+    wants: Any,
+    included: bool,
+    file_paths: tuple[str, ...] | None,
+    scoped: bool,
+    limit: int,
+    cursor: int,
+    view: str,
+    lead_type: str | None = None,
+    confidence: str | None = None,
+    effort: str | None = None,
+) -> _RefactoringBlocks:
+    """Read the materialized queue, its rollup, and the dashboard lead.
+
+    Each block is gated on surviving the projection, so a caller that asked for
+    one of the three does not pay for the other two.
+    """
+    page = None
+    ignored: dict[str, str] = {}
+    if included:
+        emits_queue = wants("refactoring_opportunities")
+        query, ignored = parse_refactoring_query(
+            view=view,
+            lead_type=lead_type,
+            confidence=confidence,
+            effort=effort,
+            file_paths=list(file_paths) if file_paths else None,
+            limit=min(max(limit, 0), _REFACTORING_COLLECTION_CAP) if emits_queue else 1,
+            offset=cursor if emits_queue else 0,
+        )
+        page = await service.page(
+            query,
+            steps_per_item=_REFACTORING_STEP_CAP if emits_queue else 0,
+            with_facets=wants("refactoring_summary"),
+        )
+    return _RefactoringBlocks(
+        page=page,
+        summary=await service.summary() if included and wants("refactoring_summary") else None,
+        # The dashboard lead only. A targeted call is already about a file the
+        # caller named, so pointing it at the repository's worst file elsewhere
+        # would be answering a question nobody asked.
+        directive=(
+            await service.directive()
+            if not scoped and wants("refactoring_directive")
+            else None
+        ),
+        ignored=ignored,
+    )
+
+
+async def _performance_detail_response(
+    session: Any,
+    repository: Any,
+    reference_repository: str,
+    opportunity_id: str,
+    *,
+    evidence_only: bool,
+    limit: int,
+    cursor: int,
+) -> dict[str, Any]:
+    """One causal opportunity, or one page of the evidence behind it.
+
+    ``limit`` means what it means everywhere else, ``0`` included: reading it
+    as "unset" would return a page the caller declined.
+    """
+    service = PerformanceHealthService(session, repository.id, reference_repository)
+    evidence_limit = min(max(limit, 0), _PERFORMANCE_EVIDENCE_PAGE_CAP)
+    if evidence_only:
+        rows, total = await service.evidence(
+            opportunity_id, limit=evidence_limit, offset=cursor
+        )
+        return {
+            "mode": "performance_evidence",
+            "opportunity_id": opportunity_id,
+            "resolved": total > 0,
+            **evidence_block(rows, total, cursor),
+            "_meta": _build_meta(repository=repository),
+        }
+    detail = await service.detail(opportunity_id, evidence_limit=evidence_limit)
+    file_path = detail.get("file_path")
+    result = {
+        "mode": "performance_opportunity",
+        **detail,
+        "_meta": _build_meta(
+            repository=repository, targets=[file_path] if file_path else None
+        ),
+    }
+    await _attach_repository_analysis_meta(session, repository, result["_meta"])
+    return result
+
+
+async def _refactoring_detail_response(
+    session: Any,
+    repository: Any,
+    reference_repository: str,
+    opportunity_id: str,
+    *,
+    evidence_only: bool,
+    limit: int,
+    cursor: int,
+) -> dict[str, Any]:
+    """One composed opportunity, or one page of the evidence behind it."""
+    service = RefactoringHealthService(session, repository.id, reference_repository)
+    if evidence_only:
+        detail = await service.detail(
+            opportunity_id,
+            step_limit=0,
+            evidence_limit=min(max(limit, 0), _REFACTORING_EVIDENCE_PAGE_CAP),
+            evidence_offset=cursor,
+            with_plans=False,
+        )
+        block = {k: v for k, v in detail.items() if k.startswith("evidence")}
+        result = {
+            "mode": "refactoring_evidence",
+            "opportunity_id": opportunity_id,
+            "resolved": bool(detail.get("resolved")),
+            **block,
+            "_meta": _build_meta(repository=repository),
+        }
+        if block.get("evidence_next_cursor") is not None:
+            result["recovery"] = {
+                "evidence": {
+                    "remaining": block["evidence_total"] - block["evidence_next_cursor"],
+                    "call": (
+                        f"get_health(opportunity_id={opportunity_id!r}, "
+                        f"only=['refactoring_evidence'], limit={limit}, "
+                        f"cursor={block['evidence_next_cursor']})"
+                    ),
+                }
+            }
+        return result
+    detail = await service.detail(
+        opportunity_id,
+        step_limit=min(max(limit, 0), _REFACTORING_STEP_PAGE_CAP),
+        step_offset=cursor,
+        evidence_limit=_REFACTORING_EVIDENCE_CAP,
+    )
+    file_path = detail.get("file_path")
+    if not detail.get("resolved"):
+        detail.setdefault(
+            "model_state", _refactoring_model_state(opportunity_id)
+        )
+    result = {
+        "mode": "refactoring_opportunity",
+        **detail,
+        "_meta": _build_meta(
+            repository=repository, targets=[file_path] if file_path else None
+        ),
+    }
+    await _attach_repository_analysis_meta(session, repository, result["_meta"])
+    return result
+
+
+def _refactoring_model_state(opportunity_id: str) -> dict[str, Any]:
+    """Tell a stale-model id apart from a wrong one, from the string alone."""
+    from repowise.core.analysis.health.refactoring.identity import (
+        REFACTORING_MODEL_VERSION,
+        model_state,
+    )
+
+    state = model_state(
+        opportunity_id.replace(_REFACTORING_OPPORTUNITY_PREFIX, "refac", 1)
+    )
+    state["public_id"] = opportunity_id
+    state["refactoring_model_version"] = REFACTORING_MODEL_VERSION
+    return state
 
 
 def _perf_rank(biomarker_type: str | None, details: Any) -> int:
-    """Order-of-magnitude ranking key for one ``performance`` finding.
+    """Order-of-magnitude ordering key for one ``performance`` finding.
 
-    The performance dimension had none. Every finding carries
-    ``health_impact: 0`` by construction — the dimension is deliberately never
-    blended into the score — so the list came back in whatever order the impact
-    tie broke, which is file order. "Which of these 697 matters" was
-    unanswerable from the payload, and worse, the *cap* was arbitrary too: with
-    ``include=['performance']`` the head is 20 of 697 chosen by nothing.
+    Every performance finding carries ``health_impact: 0`` by construction, so
+    without a key the list came back in file order and "which of these matters"
+    was unanswerable from the payload.
 
-    Additive over three signals the payload already carries, in points rather
-    than a calibrated scale, because it is an **ordering key and not a score**.
-    Nothing here is blended into ``score`` / ``performance_score``, and nothing
-    here was fitted against the defect corpus — the frozen weights this file
-    documents stay frozen. A caller who disagrees can re-rank: every input is in
+    The weights live with the opportunity ranking rather than here. Two tables
+    used to answer "which marker costs more" and they had already drifted apart
+    on markers both named, so a finding and the opportunity built from it could
+    disagree about the same evidence. Nothing here is blended into ``score`` or
+    ``performance_score``; a caller who disagrees can re-rank from
     ``biomarker_type`` and ``details`` on the same row.
     """
     if not isinstance(details, dict):
         details = {}
-    points = _PERF_MARKER_POINTS.get(biomarker_type or "", _PERF_UNKNOWN_MARKER_POINTS)
-    points += _PERF_BOUNDARY_POINTS.get(details.get("boundary_kind") or "", 0)
-    if details.get("cross_function"):
-        points += _PERF_CROSSFN_POINTS
-    return points
+    return observation_rank(
+        biomarker_type, details.get("boundary_kind"), bool(details.get("cross_function"))
+    )
 
 
 def _rank_emitted(rows: list[Any]) -> list[Any]:
@@ -200,7 +487,23 @@ def _rank_emitted(rows: list[Any]) -> list[Any]:
     return sorted(rows, key=key)
 
 
-def _health_finding_id(f: HealthFinding, repository: str) -> str:
+def _health_finding_id(f: Any, repository: str) -> str:
+    """The finding's public id: the stored one, else the same kernel recomputed.
+
+    Storage row ids are republished on every analysis, so they cannot be quoted
+    back. This is the id evidence carries and the ``finding_id`` selector
+    resolves, and it is a column, so resolving it is a seek.
+    """
+    stored = getattr(f, "public_id", None)
+    return stored if isinstance(stored, str) and stored else finding_public_id(f)
+
+
+def _legacy_health_finding_id(f: Any, repository: str) -> str:
+    """The pre-column id form, still accepted so a quoted one keeps resolving.
+
+    Its kernel held generated prose and derived detail keys, so it moved
+    whenever a detector reworded itself or a later model changed its mind.
+    """
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except (TypeError, json.JSONDecodeError):
@@ -254,27 +557,8 @@ def _serialize_finding(f: HealthFinding, repository: str = "default") -> dict[st
 
 
 def _refactoring_plan_id(r: Any, repository: str) -> str:
-    suggestion = r.suggestion if isinstance(r, Recommendation) else r
-    raw_plan = getattr(suggestion, "plan", None)
-    if raw_plan is None:
-        raw_plan = getattr(suggestion, "plan_json", None) or "{}"
-        try:
-            raw_plan = json.loads(raw_plan)
-        except (TypeError, json.JSONDecodeError):
-            raw_plan = str(raw_plan)
-    return stable_entity_id(
-        "plan",
-        repository,
-        {
-            "path": path_identity(suggestion.file_path),
-            "kind": suggestion.refactoring_type,
-            "symbol": suggestion.target_symbol or "",
-            "line_start": suggestion.line_start,
-            "line_end": suggestion.line_end,
-            "source_biomarker": suggestion.source_biomarker or "",
-            "plan": raw_plan,
-        },
-    )
+    """Unwrap a hydrated recommendation, then defer to the identity owner."""
+    return refactoring_plan_id(r.suggestion if isinstance(r, Recommendation) else r, repository)
 
 
 def _serialize_refactoring(
@@ -376,6 +660,9 @@ def _stamp_nested_collections(value: Any) -> None:
         _stamp_nested_collections(child)
 
 
+_RANKED_DIMENSIONS_DEFAULT = {"defect", "maintainability"}
+"""Dimensions the impact-ranked findings list carries when none is asked for."""
+
 def _in_dimensions(row: Any, dimensions: set[str]) -> bool:
     """True when *row* belongs to one of *dimensions* (empty set -> everything).
 
@@ -408,16 +695,18 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
     "N% of lines uncovered", which is true and tells a reader nothing about why
     this file rather than any other. The gradient still counts in
     ``total_deduction`` and still leads when it is a file's only finding — it
-    just stops crowding out a nameable cause.
+    just stops crowding out a nameable cause. That selection rule now lives in
+    ``analysis.health.models.primary_finding``, so this and the composition
+    layer cannot drift about which finding a file leads with.
     """
-    continuous = continuous_biomarkers()
     by_file: dict[str, list[Any]] = {}
     for f in findings:
         by_file.setdefault(f.file_path, []).append(f)
     leads: dict[str, dict[str, Any]] = {}
     for path, fs in by_file.items():
-        discrete = [f for f in fs if f.biomarker_type not in continuous]
-        primary = max(discrete or fs, key=lambda x: x.health_impact)
+        primary = primary_finding(fs)
+        if primary is None:
+            continue
         leads[path] = {
             "primary_biomarker": primary.biomarker_type,
             "primary_reason": primary.reason,
@@ -553,39 +842,6 @@ def _serialize_coverage_row(row: Any, *, covered_lines: bool = True) -> dict[str
     out["total_coverable_lines"] = row.total_coverable_lines
     out["ingested_at"] = row.ingested_at.isoformat() if row.ingested_at else None
     out["ingested_commit_sha"] = row.ingested_commit_sha
-    return out
-
-
-def _module_rollups(metrics: list[HealthFileMetric]) -> list[dict[str, Any]]:
-    """NLOC-weighted module rollups derived from ``HealthFileMetric.module``.
-
-    One row per module; ``None`` modules are dropped. Sorted by health
-    ascending so the worst modules surface first — matches the per-file
-    ordering and what the dashboard already expects.
-    """
-    buckets: dict[str, list[HealthFileMetric]] = {}
-    for m in metrics:
-        if m.module:
-            buckets.setdefault(m.module, []).append(m)
-    out: list[dict[str, Any]] = []
-    for name, rows in buckets.items():
-        total_nloc = sum(max(r.nloc, 1) for r in rows)
-        if total_nloc:
-            avg = sum(r.score * max(r.nloc, 1) for r in rows) / total_nloc
-        else:
-            avg = sum(r.score for r in rows) / len(rows)
-        worst = min(rows, key=lambda r: r.score)
-        out.append(
-            {
-                "module": name,
-                "file_count": len(rows),
-                "nloc": sum(r.nloc for r in rows),
-                "average_health": round(avg, 2),
-                "worst_performer_path": worst.file_path,
-                "worst_performer_score": round(worst.score, 2),
-            }
-        )
-    out.sort(key=lambda r: r["average_health"])
     return out
 
 
@@ -789,16 +1045,135 @@ def _refactoring_plans_status(
     }
 
 
+def _prune_orphaned_validation_profiles(
+    result: dict[str, Any], collector: OmissionCollector
+) -> None:
+    """Drop profiles whose plan the response budget removed.
+
+    A validation profile only means anything next to the plan referencing it,
+    so leaving one behind after its plan is shed hands the agent an id that
+    resolves to nothing.
+    """
+    plans = result.get("refactoring_plans")
+    profiles = result.get("validation_profiles")
+    if not isinstance(plans, list) or not isinstance(profiles, list):
+        return
+    referenced = {
+        plan.get("validation_profile_id")
+        for plan in plans
+        if isinstance(plan, dict) and plan.get("validation_profile_id")
+    }
+    kept = [
+        profile
+        for profile in profiles
+        if isinstance(profile, dict) and profile.get("id") in referenced
+    ]
+    dropped = [profile for profile in profiles if profile not in kept]
+    if not dropped:
+        return
+    collector.add("validation_profiles no longer referenced after response budgeting", dropped)
+    result["validation_profiles"] = kept
+    result["validation_profiles_emitted"] = len(kept)
+    result["validation_profiles_reduced_reason"] = "response_budget"
+    result["truncated"] = True
+
+
+def _reconcile_plan_status(result: dict[str, Any]) -> None:
+    """Keep plan availability honest after the final budget mutates collections."""
+    status = result.get("refactoring_plans_status")
+    plans = result.get("refactoring_plans")
+    if not isinstance(status, dict) or status.get("state") != "available":
+        return
+    if plans is not None and (not isinstance(plans, list) or plans):
+        return
+    if not result.get("refactoring_plans_total", 0):
+        return
+    status.update(
+        state="available_not_emitted",
+        reason="response_budget",
+        message="Plans exist but were removed by the final response budget.",
+    )
+
+
+register_post_shed("get_health", _prune_orphaned_validation_profiles)
+register_post_enforce("get_health", _reconcile_plan_status)
+
+
 def _attach_health_analysis_meta(
     meta: dict[str, Any], metrics: list[HealthFileMetric]
 ) -> None:
     """Keep stored analysis distinct from index/live Git verification."""
-    meta["health_semantics"] = health_semantics_contract()
     analyzed = [m for m in metrics if getattr(m, "updated_at", None)]
-    commits = {c for m in analyzed if (c := getattr(m, "analyzed_commit", None))}
     latest = max(analyzed, key=lambda m: m.updated_at) if analyzed else None
-    latest_commit = getattr(latest, "analyzed_commit", None) if latest else None
-    status = "available" if latest_commit else "degraded" if metrics else "unavailable"
+    _write_health_analysis_meta(
+        meta,
+        has_metrics=bool(metrics),
+        latest_at=latest.updated_at if latest is not None else None,
+        latest_commit=getattr(latest, "analyzed_commit", None) if latest else None,
+        distinct_commits=len({c for m in analyzed if (c := getattr(m, "analyzed_commit", None))}),
+    )
+
+
+async def _attach_repository_analysis_meta(
+    session: Any, repository: Any, meta: dict[str, Any]
+) -> None:
+    """The same block, computed over the repository rather than one file.
+
+    "Has this repository's health analysis recorded its commit" is a fact about
+    the analysis, but every detail mode used to answer it from the rows it
+    happened to be reporting on. A ``plan_id`` call scoped to a file whose row
+    carries a commit said ``available`` at the same instant the dashboard said
+    ``provenance_unknown (analysis_commit_not_recorded)`` from the repo-wide row,
+    and the reverse when the scoped file was the one missing it. Three bounded
+    aggregates, so agreeing costs no scan.
+    """
+    latest = (
+        await session.execute(
+            select(HealthFileMetric.updated_at, HealthFileMetric.analyzed_commit)
+            .where(
+                HealthFileMetric.repository_id == repository.id,
+                HealthFileMetric.updated_at.is_not(None),
+            )
+            .order_by(HealthFileMetric.updated_at.desc())
+            .limit(1)
+        )
+    ).first()
+    total, distinct = (
+        await session.execute(
+            select(
+                func.count(),
+                func.count(func.distinct(HealthFileMetric.analyzed_commit)),
+            ).where(HealthFileMetric.repository_id == repository.id)
+        )
+    ).one()
+    _write_health_analysis_meta(
+        meta,
+        has_metrics=total > 0,
+        latest_at=latest[0] if latest else None,
+        latest_commit=latest[1] if latest else None,
+        distinct_commits=distinct,
+    )
+
+
+def _write_health_analysis_meta(
+    meta: dict[str, Any],
+    *,
+    has_metrics: bool,
+    latest_at: Any,
+    latest_commit: str | None,
+    distinct_commits: int,
+) -> None:
+    """The one place the analysis-freshness block is shaped."""
+    meta["health_semantics"] = health_semantics_contract()
+    metrics = has_metrics
+    analyzed = latest_at is not None
+    commits_count = distinct_commits
+    # Metrics without a recorded commit are usable but unattributable: a
+    # provenance gap, not degradation. ``degraded`` is reserved tool-wide for a
+    # capability that failed or was unavailable.
+    status = (
+        "available" if latest_commit else "provenance_unknown" if metrics else "unavailable"
+    )
     analysis: dict[str, Any] = {
         "status": status,
         "source": "stored_health_analysis",
@@ -820,17 +1195,16 @@ def _attach_health_analysis_meta(
     if not metrics:
         analysis["reason"] = "no_stored_health_metrics"
     if analyzed:
-        assert latest is not None
-        analyzed_at = latest.updated_at.isoformat()
+        analyzed_at = latest_at.isoformat()
         analysis["analyzed_at"] = analyzed_at
         meta["health_analyzed_at"] = analyzed_at
         if latest_commit:
             analyzed_commit = latest_commit[:12]
             analysis["analyzed_commit"] = analyzed_commit
             meta["health_analyzed_commit"] = analyzed_commit
-        if len(commits) > 1:
-            analysis["analyzed_commits_distinct"] = len(commits)
-            meta["health_analyzed_commits_distinct"] = len(commits)
+        if commits_count > 1:
+            analysis["analyzed_commits_distinct"] = commits_count
+            meta["health_analyzed_commits_distinct"] = commits_count
         if not latest_commit:
             analysis["reason"] = "analysis_commit_not_recorded"
             analysis["analyzed_commit"] = None
@@ -1083,6 +1457,22 @@ def _compute_kpis(
             'only=["performance_opportunities","refactoring_plans"])',
             ("get_health",),
         ),
+        ToolRecipe(
+            "health_performance_summary",
+            'get_health(include=["performance"], only=["performance_summary"])',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_performance_opportunity",
+            'get_health(opportunity_id="perf...")',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_performance_evidence",
+            'get_health(opportunity_id="perf...", '
+            'only=["performance_evidence"], cursor=0)',
+            ("get_health",),
+        ),
     ),
 )
 async def get_health(
@@ -1091,47 +1481,63 @@ async def get_health(
     repo: str | None = None,
     limit: int = 20,
     only: list[str] | None = None,
-    refactoring_view: str = "canonical",
+    refactoring_view: str = _REFACTORING_VIEW_DEFAULT,
+    refactoring_type: str | None = None,
+    refactoring_confidence: str | None = None,
+    refactoring_effort: str | None = None,
     cursor: int = 0,
     finding_id: str | None = None,
     plan_id: str | None = None,
+    opportunity_id: str | None = None,
+    performance_view: str | None = None,
+    performance_context: str | None = None,
+    performance_boundary: str | None = None,
+    performance_confidence: str | None = None,
+    performance_sort: str | None = None,
 ) -> dict:
     """Code-health scores and findings from stored analysis.
 
     No ``targets`` returns a dashboard; targets return ranked files and findings.
-    This verifies Git/index facts but never recomputes health. For comparisons,
-    commit health changes then run ``repowise update``; it ignores uncommitted edits.
+    Never recomputes health: commit changes, then run ``repowise update``.
+    Every block and accepted value: docs/agent/MCP_TOOLS.md.
 
     Args:
-        targets: file paths or ``module:<name>``. Empty → dashboard. Unmatched
-            targets appear in ``unresolved`` and survive any ``only``.
+        targets: file paths or ``module:<name>``. Empty means dashboard;
+            unmatched ones land in ``unresolved``, surviving ``only``.
         include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
-            ``accuracy`` | ``signals`` | ``churn_complexity`` |
-            ``performance``/``defect``/``maintainability`` (dimension).
-            ``performance`` adds causal opportunities; with ``refactoring``,
-            a compact recommendation lede. Pair with ``only`` to project.
-        only: top-level keys to keep; identity, counts, unresolved targets,
-            and recovery metadata survive. ``biomarkers``, ``accuracy``, and
-            ``refactoring`` alias; ``performance``, ``defect``, and
-            ``maintainability`` do not.
+            ``accuracy`` | ``signals`` | ``churn_complexity``, or a dimension.
+            ``performance`` and ``refactoring`` add their queues.
+        only: keys to keep; identity, counts and recovery survive.
+            ``biomarkers``, ``accuracy`` and ``refactoring`` alias their block
+            key. ``performance``, ``defect`` and ``maintainability`` do not:
+            they filter rows and land in ``unknown_only_keys``.
         repo: usually omitted.
-        limit: max rows per ranked list (``0`` for none). Performance
-            opportunities and refactoring plans have independent caps of 6;
-            performance evidence is capped at 3 rows per opportunity.
-        refactoring_view: ``canonical`` (default) or diversified
-            ``file_spread``.
-        cursor: zero-based offset for top-level ranked collections.
-        finding_id: stable ``id`` emitted by a health finding.
-        plan_id: stable ``id`` emitted by a refactoring plan.
+        limit: max rows per ranked list, ``0`` for none.
+        cursor: zero-based offset into a ranked list.
+        finding_id: stable ``id`` from a health finding.
+        plan_id: stable ``id`` from a refactoring plan.
+        opportunity_id: ``perf...`` or ``refop...`` id from a directive or
+            queue: the unit, its steps or plan, and evidence paged by
+            ``only=["*_evidence"]``. Excludes the two ids above.
+        refactoring_view: ``diversified`` (default) | ``canonical`` |
+            ``file_spread``; refactoring_type / _confidence / _effort filter.
+        performance_view / _context / _boundary / _confidence / _sort: queue
+            projection and filters; the facets list them.
+
     """
     started = perf_counter()
+    conflict = _selector_conflict(
+        finding_id=finding_id, plan_id=plan_id, opportunity_id=opportunity_id
+    )
+    if conflict is not None:
+        return conflict
     # ``0`` means none, matching the ``module_limit`` convention on the REST
     # coverage route. It used to clamp up to 1, so the documented way to ask for
     # "the totals, none of the rows" silently returned a row.
     limit = max(limit, 0)
     cursor = max(cursor, 0)
-    if refactoring_view not in {"canonical", "file_spread"}:
-        refactoring_view = "canonical"
+    if refactoring_view not in _REFACTORING_VIEWS:
+        refactoring_view = _REFACTORING_VIEW_DEFAULT
     include_set = set(include or [])
     known_includes = {
         "biomarkers",
@@ -1166,12 +1572,25 @@ async def get_health(
     # to nothing while the total still reported the whole repo. The filter now
     # decides which rows are eligible for the cap in the first place.
     dimension_filter = include_set & {"performance", "defect", "maintainability"}
+    # The ranked findings list is ordered by health impact, and every
+    # performance finding carries zero impact by construction, so leaving it
+    # in an unfiltered list appends rows that can never rank and cannot be
+    # compared against the ones above them. Asking for the dimension still
+    # returns it, and the performance blocks rank the same evidence by cause.
+    ranked_dimensions = dimension_filter or _RANKED_DIMENSIONS_DEFAULT
     # The serialized-rows read is the expensive optional one; skip it when no
     # block that carries findings survives the projection.
     wants_findings = wants("findings") or wants("top_findings")
     wants_test_findings = wants("test_findings")
-    wants_performance_opportunities = wants("performance_opportunities") or wants(
-        "recommendation_lede"
+    wants_performance_opportunities = (
+        wants("performance_opportunities")
+        or wants("recommendation_lede")
+        or wants("performance_summary")
+    )
+    wants_refactoring_opportunities = (
+        wants("refactoring_opportunities")
+        or wants("recommendation_lede")
+        or wants("refactoring_summary")
     )
     # Everything downstream of the test/production split, in one place.
     #
@@ -1218,7 +1637,10 @@ async def get_health(
         "churn_complexity",
         "coverage.files",
         "refactoring_plans",
+        "refactoring_opportunities",
+        "refactoring_evidence",
         "performance_opportunities",
+        "performance_evidence",
     }
 
     def bounded(rows: list[Any], label: str, *, cap: int | None = None) -> list[Any]:
@@ -1232,7 +1654,12 @@ async def get_health(
                 if tail_start < len(rows):
                     next_limit = (
                         min(row_cap or 6, 6)
-                        if label in {"refactoring_plans", "performance_opportunities"}
+                        if label
+                        in {
+                            "refactoring_plans",
+                            "refactoring_opportunities",
+                            "performance_opportunities",
+                        }
                         else min(len(rows) - tail_start, 50)
                     )
                     page_recoveries[label] = (
@@ -1256,25 +1683,8 @@ async def get_health(
         reference_repository = ctx.alias or repository.name
 
         if finding_id:
-            rows = list(
-                (
-                    await session.execute(
-                        select(HealthFinding).where(
-                            HealthFinding.repository_id == repository.id,
-                            HealthFinding.status == "open",
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            match = next(
-                (
-                    row
-                    for row in rows
-                    if finding_id in {row.id, _health_finding_id(row, reference_repository)}
-                ),
-                None,
+            match = await _resolve_finding(
+                session, repository.id, finding_id, reference_repository
             )
             result = {
                 "mode": "finding",
@@ -1288,66 +1698,61 @@ async def get_health(
                     targets=[match.file_path] if match else None,
                 ),
             }
-            metric_rows = (
-                list(
-                    (
-                        await session.execute(
-                            select(HealthFileMetric).where(
-                                HealthFileMetric.repository_id == repository.id,
-                                HealthFileMetric.file_path == match.file_path,
-                            )
-                        )
-                    ).scalars()
-                )
-                if match
-                else []
-            )
-            _attach_health_analysis_meta(result["_meta"], metric_rows)
+            await _attach_repository_analysis_meta(session, repository, result["_meta"])
             return result
 
+        if opportunity_id and opportunity_id.startswith(_REFACTORING_OPPORTUNITY_PREFIX):
+            return await _refactoring_detail_response(
+                session,
+                repository,
+                reference_repository,
+                opportunity_id,
+                evidence_only=only_set == {"refactoring_evidence"},
+                limit=limit,
+                cursor=cursor,
+            )
+
+        if opportunity_id:
+            return await _performance_detail_response(
+                session,
+                repository,
+                reference_repository,
+                opportunity_id,
+                evidence_only=only_set == {"performance_evidence"},
+                limit=limit,
+                cursor=cursor,
+            )
+
         if plan_id:
-            plan_rows = await get_refactoring_suggestions(session, repository.id)
-            recommendations = await hydrate_recommendations(
-                session, repository.id, plan_rows
+            # An indexed seek and one hydration, not a full load and a linear
+            # scan: resolving one id used to cost every open plan in the repo.
+            service = RefactoringHealthService(
+                session, repository.id, reference_repository
             )
-            match = next(
-                (
-                    row
-                    for row in recommendations
-                    if plan_id
-                    in {row.id, _refactoring_plan_id(row, reference_repository)}
-                ),
-                None,
-            )
+            resolved = await service.plan_detail(plan_id)
+            plan = resolved.get("plan") if resolved.get("resolved") else None
+            if plan is not None:
+                plan.setdefault("id", plan_id)
+                plan["repository"] = reference_repository
             result = {
                 "mode": "refactoring_plan",
                 "plan_id": plan_id,
-                "plan": (
-                    _serialize_refactoring(match, reference_repository)
-                    if match
-                    else None
-                ),
-                "resolved": match is not None,
+                "plan": plan,
+                "resolved": bool(resolved.get("resolved")),
                 "_meta": _build_meta(
                     repository=repository,
-                    targets=[match.suggestion.file_path] if match else None,
+                    targets=[plan["file_path"]] if plan else None,
                 ),
             }
-            metric_rows = (
-                list(
-                    (
-                        await session.execute(
-                            select(HealthFileMetric).where(
-                                HealthFileMetric.repository_id == repository.id,
-                                HealthFileMetric.file_path == match.suggestion.file_path,
-                            )
-                        )
-                    ).scalars()
+            if resolved.get("opportunity_id"):
+                result["opportunity_id"] = resolved["opportunity_id"]
+                result["next_action"] = resolved["next_action"]
+            elif plan is not None:
+                result["opportunity_note"] = (
+                    "This plan is addressable but is not a step of any composed "
+                    "opportunity; a demoted clone is supporting evidence, not work."
                 )
-                if match
-                else []
-            )
-            _attach_health_analysis_meta(result["_meta"], metric_rows)
+            await _attach_repository_analysis_meta(session, repository, result["_meta"])
             return result
 
         all_metrics_q = select(HealthFileMetric).where(
@@ -1437,7 +1842,7 @@ async def get_health(
             )
             lead_rows: list[Any] = finding_rows
             emitted = _rank_emitted(
-                [f for f in finding_rows if _in_dimensions(f, dimension_filter)]
+                [f for f in finding_rows if _in_dimensions(f, ranked_dimensions)]
             )
             finding_rows = emitted
             legend_rows: list[Any] = finding_rows
@@ -1487,7 +1892,9 @@ async def get_health(
             # leads and the performance KPI, neither of which should change
             # because the caller asked to *see* one dimension.
             lead_rows = filter_rows_by_attr(lite_rows, "file_path", exclude_spec)
-            emitted = _rank_emitted([r for r in lead_rows if _in_dimensions(r, dimension_filter)])
+            emitted = _rank_emitted(
+                [r for r in lead_rows if _in_dimensions(r, ranked_dimensions)]
+            )
             # Test material goes in its own bucket rather than competing for
             # the repo's headline finding list. Measured on this repo, **2 of
             # the top 5** open findings by impact sit on test files, and 4-5 of
@@ -1560,18 +1967,14 @@ async def get_health(
         # Deliberately ``lead_rows`` (the unfiltered open set) rather than
         # ``emitted``: asking to *see* one dimension must not restate which
         # files the repo's worst are.
-        deduction_by_path: dict[str, float] = {}
-        for f in lead_rows:
-            deduction_by_path[f.file_path] = deduction_by_path.get(f.file_path, 0.0) + float(
-                f.health_impact or 0.0
-            )
+        deductions = deduction_by_path(lead_rows)
         # Rebound rather than kept beside a sorted copy, and above every reader.
-        # ``kpis``, the module rollup, the leverage view and the churn quadrant
-        # all reduce with ``min()`` or a stable sort, which resolve ties by
-        # *input* order — so leaving them on the raw list would have one
-        # response name one file as the worst performer while the
-        # ``worst_files`` list printed below it led with another.
-        all_metrics = sort_metrics_worst_first(all_metrics, deduction_by_path)
+        # ``kpis``, the leverage view and the churn quadrant all reduce with
+        # ``min()`` or a stable sort, which resolve ties by *input* order — so
+        # leaving them on the raw list would have one response name one file as
+        # the worst performer while the ``worst_files`` list printed below it
+        # led with another. The module rollup takes the map itself.
+        all_metrics = sort_metrics_worst_first(all_metrics, deductions)
         metric_rows = (
             [m for m in all_metrics if m.file_path in set(effective_targets)]
             if scoped
@@ -1626,11 +2029,18 @@ async def get_health(
         # asked for, scoped to the same targets, exclude-filtered like findings.
         refactoring_rows: list[Any] = []
         refactoring_recommendations: list[Recommendation] = []
-        if (
-            "refactoring" in include_set
-            and (wants("refactoring_plans") or wants("recommendation_lede"))
-            and not nothing_resolved
-        ):
+        # Only when a caller names the plan list. ``include=["refactoring"]``
+        # leads with composed opportunities now, and emitting both would ship
+        # two representations of the same work in one response - 52k chars on
+        # this repo, past the expanded budget, most of it duplicated. The
+        # documented ``only=["refactoring_plans"]`` call is unchanged.
+        plans_requested = "refactoring" in include_set and (
+            "refactoring_plans" in only_set
+            # The cross-pillar lede quotes one plan beside one performance
+            # opportunity, and only when both pillars were asked for.
+            or ({"performance", "refactoring"} <= include_set and wants("recommendation_lede"))
+        )
+        if plans_requested and not nothing_resolved:
             refactoring_rows = filter_rows_by_attr(
                 await get_refactoring_suggestions(
                     session,
@@ -1645,8 +2055,45 @@ async def get_health(
                 repository.id,
                 refactoring_rows,
                 metric_rows=all_metrics,
-                view=refactoring_view,  # type: ignore[arg-type]
+                view=plan_view(refactoring_view),
             )
+
+        # The materialized causal read model. Filtering, ordering, paging, plan
+        # linkage, and facets are the shared service's; this tool caps the
+        # collection, pages it, and serializes what comes back.
+        performance_service = PerformanceHealthService(
+            session, repository.id, reference_repository
+        )
+        refactoring_service = RefactoringHealthService(
+            session, repository.id, reference_repository
+        )
+        refactoring = await _refactoring_blocks(
+            refactoring_service,
+            wants=wants,
+            included="refactoring" in include_set and wants_refactoring_opportunities,
+            file_paths=tuple(effective_targets) if scoped else None,
+            scoped=scoped,
+            limit=limit,
+            cursor=cursor,
+            view=refactoring_view,
+            lead_type=refactoring_type,
+            confidence=refactoring_confidence,
+            effort=refactoring_effort,
+        )
+        performance = await _performance_blocks(
+            performance_service,
+            wants=wants,
+            included="performance" in include_set and wants_performance_opportunities,
+            file_paths=tuple(effective_targets) if scoped else None,
+            scoped=scoped,
+            limit=limit,
+            cursor=cursor,
+            view=performance_view,
+            context=performance_context,
+            boundary=performance_boundary,
+            confidence=performance_confidence,
+            sort=performance_sort,
+        )
 
         coverage_rows: list[Any] = []
         coverage_summary: dict[str, Any] = {}
@@ -1811,7 +2258,7 @@ async def get_health(
                 row["signals"] = signals_by_path[m.file_path]
             metric_payload.append(row)
         module_rollup = _module_rollups(
-            [m for m in all_metrics if m.module in set(module_targets)]
+            [m for m in all_metrics if m.module in set(module_targets)], deductions
         )
         result: dict[str, Any] = {
             "mode": "targets",
@@ -1901,7 +2348,7 @@ async def get_health(
         # round-trip. ``by_leverage`` is built above, before the leads.
         # Same serializer as worst_files, so every row carries
         # weighted_deficit for the caller to sort on further.
-        all_modules = _module_rollups(all_metrics)
+        all_modules = _module_rollups(all_metrics, deductions)
         gap = _gap_analysis(all_metrics)
         result = {
             # Lead with the call, not the data. Every block below ranks and
@@ -1912,6 +2359,24 @@ async def get_health(
                 gap.get("weighted_gross_gap_points") or 0,
                 plan_biomarkers_by_path,
                 plan_count_by_path,
+            ),
+            # A second, additive lead for the performance pillar. The block
+            # above is unchanged: performance findings carry no defect impact,
+            # so they never competed for it and the dashboard said nothing an
+            # agent could act on about them.
+            # Two more additive leads, on the same terms: the block above ranks
+            # files by health deficit and cannot say which composed work to do,
+            # and it explicitly reports that no plan addresses the cause it
+            # names on most files. These say what there is to do about it.
+            **(
+                {"refactoring_directive": refactoring.directive}
+                if refactoring.directive is not None
+                else {}
+            ),
+            **(
+                {"performance_directive": performance.directive}
+                if performance.directive is not None
+                else {}
             ),
             "mode": "dashboard",
             "kpis": kpis,
@@ -2009,6 +2474,9 @@ async def get_health(
             result["defect_accuracy"] = compute_defect_accuracy(
                 all_metrics,
                 [_serialize_finding(f, reference_repository) for f in accuracy_rows],
+                # The same map ``all_metrics`` was ranked with, so the stat
+                # measures exactly the ``worst_files`` this response printed.
+                deductions=deductions,
             )
 
     if "biomarkers" in include_set and "findings" not in result:
@@ -2032,7 +2500,7 @@ async def get_health(
         )
         result["test_findings_total"] = test_findings_total
 
-    if "refactoring" in include_set:
+    if plans_requested:
         # Canonical is the shared REST/MCP/CLI order.  File diversity remains
         # available only through the explicitly named ``file_spread`` view.
         validation_profiles: dict[str, dict[str, Any]] = {}
@@ -2114,50 +2582,69 @@ async def get_health(
         if len(recent) > limit:
             result["trend"]["recent_reduced_reason"] = "limit"
 
-    opportunities = []
-    if "performance" in include_set and wants_performance_opportunities:
-        performance_rows = [row for row in lead_rows if _in_dimensions(row, {"performance"})]
-        opportunities = build_performance_opportunities(
-            performance_rows,
-            evidence_limit=max(len(performance_rows), 3),
-        )
-        opportunity_payload = []
-        selected_opportunities = bounded(
-            opportunities,
-            "performance_opportunities",
-            cap=min(limit, 6),
-        )
-        for opportunity in selected_opportunities:
-            payload = opportunity.as_dict()
-            evidence = list(payload.get("evidence", []))
-            payload["evidence"] = bounded(
-                evidence,
-                f"performance_opportunities.{opportunity.opportunity_id}.evidence",
-                cap=3,
+    if refactoring.page is not None and wants("refactoring_opportunities"):
+        result["refactoring_opportunities"] = refactoring.page.items
+        result["refactoring_opportunities_total"] = refactoring.page.total
+        result["refactoring_opportunities_emitted"] = len(refactoring.page.items)
+        if len(refactoring.page.items) < refactoring.page.total:
+            result["refactoring_opportunities_reduced_reason"] = (
+                "collection_cap" if limit > _REFACTORING_COLLECTION_CAP else "limit"
             )
-            payload["evidence_total"] = payload.get("observations_total", len(evidence))
-            payload["evidence_emitted"] = len(payload["evidence"])
-            if payload["evidence_emitted"] < payload["evidence_total"]:
-                payload["evidence_reduced_reason"] = "evidence_cap"
-            opportunity_payload.append(payload)
-        result["performance_opportunities"] = opportunity_payload
-        result["performance_opportunities_total"] = len(opportunities)
+        if refactoring.page.next_offset is not None:
+            page_recoveries["refactoring_opportunities"] = (
+                refactoring.page.next_offset,
+                _REFACTORING_COLLECTION_CAP,
+                refactoring.page.total - refactoring.page.next_offset,
+            )
+        if refactoring.ignored:
+            result["ignored_arguments"] = {
+                **result.get("ignored_arguments", {}),
+                **refactoring.ignored,
+            }
+
+    if refactoring.summary is not None:
+        result["refactoring_summary"] = {
+            **refactoring.summary,
+            "facets": refactoring.page.facets if refactoring.page else {},
+            "view": refactoring_view,
+            "next_call": (
+                "get_health(include=['refactoring'], "
+                "only=['refactoring_opportunities'], limit=6)"
+            ),
+        }
+
+    if performance.page is not None and wants("performance_opportunities"):
+        result["performance_opportunities"] = performance.page.items
+        result["performance_opportunities_total"] = performance.page.total
+        result["performance_opportunities_emitted"] = len(performance.page.items)
+        if performance.page.next_offset is not None:
+            page_recoveries["performance_opportunities"] = (
+                performance.page.next_offset,
+                _PERFORMANCE_COLLECTION_CAP,
+                performance.page.total - performance.page.next_offset,
+            )
+        if performance.ignored:
+            result["ignored_arguments"] = {
+                **result.get("ignored_arguments", {}),
+                **performance.ignored,
+            }
+
+    if performance.summary is not None:
+        result["performance_summary"] = {
+            **performance.summary,
+            "facets": performance.page.facets if performance.page else {},
+            "next_call": (
+                "get_health(include=['performance'], "
+                "only=['performance_opportunities'], limit=6)"
+            ),
+        }
 
     if {"performance", "refactoring"} <= include_set and wants("recommendation_lede"):
-        performance_lead = opportunities[0] if opportunities else None
+        performance_lead = (
+            performance.page.items[0] if performance.page and performance.page.items else None
+        )
         recommendation_lead = (
             refactoring_recommendations[0] if refactoring_recommendations else None
-        )
-        matching = next(
-            (
-                recommendation
-                for recommendation in refactoring_recommendations
-                if performance_lead is not None
-                and recommendation.suggestion.refactoring_type == "performance_fix"
-                and (recommendation.suggestion.evidence or {}).get("opportunity_id")
-                == performance_lead.opportunity_id
-            ),
-            None,
         )
         lead_payload = (
             _serialize_refactoring(recommendation_lead, reference_repository)
@@ -2165,16 +2652,21 @@ async def get_health(
             else None
         )
         result["recommendation_lede"] = {
-            "performance_opportunities_total": len(opportunities),
+            "performance_opportunities_total": (
+                performance.page.total if performance.page else 0
+            ),
             "refactoring_plans_total": len(refactoring_recommendations),
             "performance_lead": (
                 {
-                    "opportunity_id": performance_lead.opportunity_id,
-                    "intervention_symbol": performance_lead.intervention_symbol,
-                    "boundary_kind": performance_lead.boundary_kind,
-                    "execution_context": performance_lead.execution_context,
-                    "affected_call_sites_total": performance_lead.affected_call_sites_total,
-                    "rank_score": performance_lead.rank_score,
+                    key: performance_lead[key]
+                    for key in (
+                        "opportunity_id",
+                        "intervention_symbol",
+                        "boundary_kind",
+                        "execution_context",
+                        "affected_call_sites_total",
+                        "rank_score",
+                    )
                 }
                 if performance_lead
                 else None
@@ -2197,8 +2689,14 @@ async def get_health(
                 if lead_payload
                 else None
             ),
+            # The exact plan for the exact lead, from the one place that decides
+            # plan linkage. This used to match on a key the plan writer never
+            # wrote, so it was unconditionally null.
             "performance_plan_id": (
-                _refactoring_plan_id(matching, reference_repository) if matching else None
+                performance_lead["plan_reference"] if performance_lead else None
+            ),
+            "performance_plan_reason": (
+                performance_lead["plan_reason"] if performance_lead else None
             ),
             "next_call": (
                 f"get_health(targets={raw_targets!r}, repo={repo!r}, "
@@ -2279,7 +2777,9 @@ async def get_health(
         "test_findings": test_findings_total,
         "churn_complexity": len(churn_points),
         "refactoring_plans": len(refactoring_recommendations),
-        "performance_opportunities": len(opportunities),
+        "performance_opportunities": (
+            performance.page.total if performance.page is not None else 0
+        ),
     }
     for key, total in collection_totals.items():
         if total is None:
@@ -2331,6 +2831,9 @@ async def get_health(
                 "unknown_include_keys",
                 "unknown_include_keys_total",
                 "unknown_include_keys_emitted",
+                # A rejected filter value is a caller-error report, so it
+                # survives a projection for the same reason ``unresolved`` does.
+                "ignored_arguments",
                 "recovery",
             }
             | {
@@ -2387,7 +2890,13 @@ async def get_health(
     # dashboard (no targets) keeps the repo-level warning.
     result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
     analyzed_source = metric_rows if scoped else all_metrics
-    _attach_health_analysis_meta(result["_meta"], analyzed_source)
+    if scoped:
+        # Scoped calls used to answer repository freshness from the caller's own
+        # files, so one repo read two different statuses in the same second
+        # depending on which mode answered.
+        await _attach_repository_analysis_meta(session, repository, result["_meta"])
+    else:
+        _attach_health_analysis_meta(result["_meta"], analyzed_source)
     # Server-side wall clock, as ``get_context`` already reports. Without it a
     # regression in here is invisible until someone profiles it by hand.
     for label, dropped in semantic_omissions.items():

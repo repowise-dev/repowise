@@ -50,6 +50,7 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import completeness_line as _completeness_line
 from repowise.server.mcp_server._meta import context_hint as _context_hint
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
@@ -76,6 +77,27 @@ _INCLUDE_BLOCKS = frozenset(
         "health",
     }
 )
+
+
+async def _scope_hint(session: Any, repository: Any, raw_results: list[Any]) -> str | None:
+    """One sentence naming index layers that hold none of the files served here."""
+    try:
+        from repowise.server.mcp_server._basis import basis_cache_key
+        from repowise.server.mcp_server._scope import unrelated_scope_hint
+
+        served = [
+            r.get("path") or str(r.get("target") or "").split("::", 1)[0]
+            for r in raw_results
+            if isinstance(r, dict)
+        ]
+        return await unrelated_scope_hint(
+            session,
+            repository.id,
+            served,
+            cache_key=f"{repository.id}:{basis_cache_key(repository)}",
+        )
+    except Exception:
+        return None
 
 
 @mcp.tool(
@@ -176,6 +198,10 @@ async def get_context(
             return_exceptions=True,
         )
 
+        # repo="all" already returned above, so ctx here is always one repo.
+        # Computed on the open session: never open a second one for this.
+        scope_hint = await _scope_hint(session, repository, raw_results)
+
     results: list[dict[str, Any]] = []
     for t, r in zip(targets, raw_results, strict=True):
         if isinstance(r, BaseException) and not isinstance(r, Exception):
@@ -208,6 +234,17 @@ async def get_context(
             targets=targets,
         ),
     }
+    if scope_hint:
+        response["_meta"]["scope_hint"] = scope_hint
+    # A "raw" skeleton is the file's own source served untouched; the
+    # signatures and smart modes elide bodies, so they are not whole files.
+    whole_files = sum(
+        1
+        for r in results
+        if isinstance(r.get("skeleton"), dict) and r["skeleton"].get("mode") == "raw"
+    )
+    if whole_files:
+        response["_meta"]["complete"] = _completeness_line(files=whole_files)
 
     # Cross-repo enrichment (Phase 3 + 4)
     from repowise.server.mcp_server._helpers import _is_workspace_mode

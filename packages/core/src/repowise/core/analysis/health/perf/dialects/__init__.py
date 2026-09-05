@@ -42,6 +42,9 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("java", _java.DIALECT),
     ("go", _go.DIALECT),
     ("csharp", _csharp.DIALECT),
+    # Razor/Blazor reaches the pass as a C# buffer (its C# regions
+    # projected by sfc_source), so the C# dialect applies verbatim.
+    ("razor", _csharp.DIALECT),
     ("rust", _rust.DIALECT),
     ("dart", _dart.DIALECT),
     ("scala", _scala.DIALECT),

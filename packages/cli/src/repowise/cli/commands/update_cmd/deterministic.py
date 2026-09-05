@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, run_async
+from repowise.core.persistence import (
+    load_stale_structural_file_paths as load_stale_structural_file_paths,
+)
 
 
 def deterministic_embedder_name(cfg: dict) -> str:
@@ -337,6 +340,43 @@ def load_file_page_render_keys(repo_path: Path) -> dict[str, str]:
     population the first run after that change has to refresh.
     """
     return run_async(_load_file_page_render_keys(repo_path))
+
+
+def load_stale_file_page_ages(repo_path: Path) -> dict[str, float]:
+    """``{file_path: staleness_age_seconds}`` for already-stale file pages.
+
+    Drives the cascade-budget ordering in
+    :func:`~repowise.core.ingestion.change_detector.ChangeDetector.get_affected_pages`
+    so a constrained docs run spends its LLM calls on the oldest stale pages
+    rather than reordering purely by importance (issues #847 / #851). Best
+    effort, like the render-key load: an unreadable store yields ``{}``, which
+    keeps the historical pure-importance ordering.
+    """
+    return run_async(_load_stale_file_page_ages(repo_path))
+
+
+async def _load_stale_file_page_ages(repo_path: Path) -> dict[str, float]:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        get_stale_file_page_ages,
+    )
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            from repowise.core.persistence.crud import get_repository_by_path
+
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return {}
+            return await get_stale_file_page_ages(session, repo.id)
+    except Exception:
+        return {}
+    finally:
+        await engine.dispose()
 
 
 async def _load_file_page_render_keys(repo_path: Path) -> dict[str, str]:

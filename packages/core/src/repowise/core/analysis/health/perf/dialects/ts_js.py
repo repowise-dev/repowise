@@ -91,11 +91,11 @@ class TsJsPerfDialect(BasePerfDialect):
             "resource_construction_in_loop",
             "serial_await_in_loop",
             "membership_test_against_list_in_loop",
-            # Phase 7b — centrality-gated / nesting-confidence markers.
+            # Centrality-gated / nesting-confidence markers.
             "nested_loop_with_io",
             "nested_loop_quadratic",
             "hot_path_sync_io",
-            # Phase 7d — JS/TS-specific anti-patterns.
+            # JS/TS-specific anti-patterns.
             "json_parse_in_loop",
             "array_spread_in_reduce",
         }
@@ -181,7 +181,7 @@ class TsJsPerfDialect(BasePerfDialect):
         if method == "includes" and root in list_names:
             return "membership_test_against_list_in_loop"
         # ``JSON.parse(JSON.stringify(x))`` deep-clone in a loop is the canonical
-        # waste (use ``structuredClone``). Phase-7d gate: a BARE ``JSON.parse`` /
+        # waste (use ``structuredClone``). Gate: a BARE ``JSON.parse`` /
         # ``JSON.stringify`` per iteration was 0% precision (30/30 were
         # format-conversion loops serializing a DISTINCT payload each pass —
         # necessary work, not waste), so the marker is restricted to the

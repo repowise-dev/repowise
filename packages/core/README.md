@@ -65,10 +65,14 @@ AST parsing uses [tree-sitter](https://tree-sitter.github.io/) with one `.scm` q
 | Provider | Name | Notes |
 |----------|------|-------|
 | Anthropic | `anthropic` | Prompt caching on shared system/repo context (large-init cost reduction) |
-| OpenAI | `openai` | Any OpenAI-compatible endpoint |
+| OpenAI | `openai` | OpenAI or any OpenAI-compatible endpoint, including local gateways |
 | Ollama | `ollama` | Fully offline, no API key required |
 | LiteLLM | `litellm` | 100+ providers through one interface (optional dependency) |
 | Mock | `mock` | In-memory stub for tests — no network calls |
+
+The `openai` adapter accepts custom `OPENAI_BASE_URL` values and discovers
+model ids from compatible `/models` endpoints, so local gateways such as
+9router can be used without a provider-specific adapter.
 
 ```python
 from repowise.core.providers import get_provider

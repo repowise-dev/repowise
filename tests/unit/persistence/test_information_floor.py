@@ -285,3 +285,37 @@ def test_the_floor_is_off_unless_it_is_set(monkeypatch):
     assert information_floor() == 0
     assert meets_information_floor(SKELETON) is True
     assert meets_information_floor("") is True
+
+
+async def test_a_batch_holds_out_only_the_thin_pages(fts):
+    await fts.index_many(
+        [
+            ("file_page:esbuild.mjs", "File: esbuild.mjs", SKELETON, "", "esbuild.mjs"),
+            ("file_page:search.py", "File: search.py", SUBSTANTIAL, "", "search.py"),
+        ]
+    )
+
+    assert await fts.list_indexed_ids() == {"file_page:search.py"}
+    assert fts.skipped_below_floor == 1
+
+
+async def test_a_batch_drops_the_row_of_a_page_that_thinned_out(fts):
+    """The delete runs for every id in the batch, insert only for those above."""
+    await fts.index("file_page:a.py", "File: a.py", SUBSTANTIAL, summary="", target_path="a.py")
+
+    await fts.index_many([("file_page:a.py", "File: a.py", SKELETON, "", "a.py")])
+
+    assert await fts.list_indexed_ids() == set()
+    assert await fts.search("FTS5 virtual table") == []
+
+
+async def test_a_batch_whose_last_entry_is_thin_leaves_no_row(fts):
+    """Last-entry-wins has to hold when the last entry is the excluded one."""
+    await fts.index_many(
+        [
+            ("file_page:a.py", "File: a.py", SUBSTANTIAL, "", "a.py"),
+            ("file_page:a.py", "File: a.py", SKELETON, "", "a.py"),
+        ]
+    )
+
+    assert await fts.list_indexed_ids() == set()

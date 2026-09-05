@@ -27,6 +27,8 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.persistence.crud.authority import decision_currencies
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import DecisionRecord, GitMetadata
 
@@ -132,8 +134,13 @@ async def fetch_relevant_decisions(
     Scans active+proposed decisions (skips deprecated/superseded — those are
     historical and shouldn't drive a current answer). Ranks by overlap with
     target_paths: a decision touching three of the top hits is more relevant
-    than one touching only the fifth. Ties broken by status preference
-    (active > proposed) and confidence.
+    than one touching only the fifth. Ties broken by lane (an accepted decision
+    over a candidate) and confidence.
+
+    Each row carries the lane, not the status column, because these rows are
+    rendered into a model prompt. A candidate labelled ``active`` reads to the
+    model as something the repository has settled on, which is exactly the
+    claim nobody has made about it.
     """
     if not target_paths:
         return []
@@ -146,6 +153,7 @@ async def fetch_relevant_decisions(
             )
         )
         all_decisions = list(res.scalars().all())
+        currencies = await decision_currencies(session, repo_id, all_decisions)
 
     scored: list[tuple[int, float, DecisionRecord]] = []
     for d in all_decisions:
@@ -156,25 +164,30 @@ async def fetch_relevant_decisions(
         overlap = len(affected & targets_set)
         if overlap == 0:
             continue
-        # Active outranks proposed at the same overlap; confidence breaks
-        # ties within a status. Negative tuple element so higher = better
-        # after ascending sort.
-        status_rank = 0 if d.status == "active" else 1
-        scored.append((-overlap, status_rank, d))
+        # An accepted decision outranks a candidate at the same overlap;
+        # confidence breaks ties within a lane. Negative tuple element so
+        # higher = better after ascending sort.
+        lane_rank = 0 if is_governing(currencies.get(d.id, "")) else 1
+        scored.append((-overlap, lane_rank, d))
 
     scored.sort(key=lambda t: (t[0], t[1], -(t[2].confidence or 0.0)))
     selected = [d for _, _, d in scored[:limit]]
-    return [_decision_to_dict(d) for d in selected]
+    return [_decision_to_dict(d, currencies.get(d.id)) for d in selected]
 
 
-def _decision_to_dict(d: DecisionRecord) -> dict:
-    """Compact projection — only fields the LLM needs to ground rationale."""
+def _decision_to_dict(d: DecisionRecord, currency: str | None) -> dict:
+    """Compact projection — only fields the LLM needs to ground rationale.
+
+    ``lane`` is ``accepted`` or ``candidate``, and it replaces the status
+    column because this string is rendered verbatim into a model prompt.
+    """
     rationale = (d.rationale or "").strip()
     if len(rationale) > _DECISION_RATIONALE_CHARS:
         rationale = rationale[:_DECISION_RATIONALE_CHARS].rstrip() + "…"
     return {
         "title": d.title,
-        "status": d.status,
+        "lane": "accepted" if currency is not None else "candidate",
+        "currency": currency,
         "decision": (d.decision or "").strip(),
         "rationale": rationale,
     }
@@ -215,7 +228,7 @@ async def build_structured_prelude(
         sections.append(f"Recent significant commits: {commits_line}")
 
     if decisions:
-        titles = "; ".join(f"{d['title']} ({d['status']})" for d in decisions)
+        titles = "; ".join(f"{d['title']} ({d['lane']})" for d in decisions)
         sections.append(f"Decision records touching these files: {titles}")
 
     if not sections:
@@ -332,7 +345,7 @@ def _format_decisions_block(decisions: list[dict]) -> str:
     """Pull the ADRs to the front of the prompt where the LLM grounds intent."""
     lines = ["## Architectural decisions touching these files"]
     for i, d in enumerate(decisions, start=1):
-        lines.append(f"[D{i}] {d['title']} ({d['status']})")
+        lines.append(f"[D{i}] {d['title']} ({d['lane']})")
         if d.get("decision"):
             lines.append(f"    decision: {d['decision']}")
         if d.get("rationale"):

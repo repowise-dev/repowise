@@ -1,19 +1,30 @@
 """Hidden Coupling — files that change together but don't import each other.
 
-Joins two existing signals: ``co_change_partners_json`` (from the git
-indexer) and the file-level import edges in the dependency graph. A
-high correlation between commits of files A and B that have no static
-dependency between them captures behavioral coupling invisible to a
-pure type/import analyzer — shared protocols, parallel config, hidden
-test fixtures, copy-pasted constants.
+Reads the co-change records the git indexer persists, each already carrying
+what the dependency graph says about the pair. A high correlation between
+commits of files A and B that no dependency explains captures behavioral
+coupling invisible to a pure type/import analyzer — shared protocols,
+parallel config, hidden test fixtures, copy-pasted constants.
 
 Fires when:
 
-- ``commit_count_total`` for both files is at or above the noise floor
-- ``co_change_count(A, B) / min(total_A, total_B) >= 0.5``
-- there is **no** ``imports`` edge in either direction
+- both files clear the commit noise floor
+- ``shared_commits(A, B) / min(commits_A, commits_B) >= 0.5``
+- the graph does not explain the pair, and could have: a file the parser
+  never ingested (a lockfile, a changelog) carries no edge either way, so
+  its absence is not evidence
 - the pair is not a test ↔ production pairing (those are expected to
   co-change)
+
+Counts come from the co-change walk itself. ``commit_count_total`` looks like
+the denominator but is not one: it is collected over a shorter window and
+only for files with a code extension, so dividing by it mixes two
+populations and understates every ratio it does not simply zero.
+
+An index written before the walk recorded those counts carries neither them
+nor the structural label, and yields no findings until it is rebuilt. Silence
+is the honest answer there: without the label the detector cannot tell a pair
+the graph explains from one it does not.
 
 Tier-aware: when ``co_change_partners_json`` is empty (ESSENTIAL git
 tier) the detector short-circuits to zero findings. The empty
@@ -22,7 +33,7 @@ short-circuit is explicit so backfill behavior is testable.
 
 from __future__ import annotations
 
-from ....co_change import parse_partners
+from ....co_change import STRUCTURAL_UNEXPLAINED, parse_partners
 from ....test_paths import is_test_to_production_pair
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
@@ -41,14 +52,7 @@ _MAX_FINDINGS_PER_FILE = 3
 _MIN_CO_CHANGE_FOR_HIGH = 8
 
 
-def _as_int(value: object, default: int = 0) -> int:
-    try:
-        return int(value or 0)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
-
-
-def _severity_for(correlation: float, co_count: float) -> Severity:
+def _severity_for(correlation: float, co_count: int) -> Severity:
     # Confidence-weight by absolute sample size: below the co-change floor the
     # ratio isn't trustworthy enough to assert HIGH/CRITICAL, so cap at MEDIUM.
     if co_count < _MIN_CO_CHANGE_FOR_HIGH:
@@ -71,25 +75,22 @@ class HiddenCouplingDetector:
         if not partners:
             return []
 
-        total_self = _as_int(meta.get("commit_count_total"))
-        if total_self < _MIN_COMMITS:
-            return []
-
-        graph = ctx.graph_view
-        counts = ctx.repo_commit_counts or {}
-
-        candidates: list[tuple[float, str, float]] = []
+        candidates: list[tuple[float, str, int, int, int]] = []
         for partner in partners:
-            partner_path, co_count = partner.file_path, partner.weight
+            partner_path = partner.file_path
             if partner_path == ctx.file_path:
                 continue
-            partner_total = counts.get(partner_path, 0)
-            if partner_total < _MIN_COMMITS:
+            # Only a pair the graph could have explained and did not.
+            if partner.structural != STRUCTURAL_UNEXPLAINED:
+                continue
+            total_self = partner.self_commits
+            partner_total = partner.partner_commits
+            if total_self < _MIN_COMMITS or partner_total < _MIN_COMMITS:
                 continue
             denom = min(total_self, partner_total)
             if denom <= 0:
                 continue
-            correlation = co_count / denom
+            correlation = partner.support / denom
             if correlation < _MIN_CORRELATION:
                 continue
             # Test ↔ production pairs are expected to co-change, so they carry
@@ -98,14 +99,9 @@ class HiddenCouplingDetector:
                 ctx.file_path, partner_path, code_language=ctx.language
             ):
                 continue
-            # Skip when an explicit import edge already documents the
-            # coupling.
-            if graph is not None and (
-                graph.has_edge(ctx.file_path, partner_path, "imports")
-                or graph.has_edge(partner_path, ctx.file_path, "imports")
-            ):
-                continue
-            candidates.append((correlation, partner_path, co_count))
+            candidates.append(
+                (correlation, partner_path, partner.support, total_self, partner_total)
+            )
 
         if not candidates:
             return []
@@ -114,25 +110,25 @@ class HiddenCouplingDetector:
         capped = candidates[:_MAX_FINDINGS_PER_FILE]
 
         findings: list[BiomarkerResult] = []
-        for correlation, partner_path, co_count in capped:
+        for correlation, partner_path, support, total_self, partner_total in capped:
             findings.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
-                    severity=_severity_for(correlation, co_count),
+                    severity=_severity_for(correlation, support),
                     function_name=None,
                     line_start=None,
                     line_end=None,
                     details={
                         "partner": partner_path,
                         "correlation": round(correlation, 3),
-                        "co_change_count": round(co_count, 2),
+                        "co_change_count": support,
                         "self_commits": total_self,
-                        "partner_commits": counts.get(partner_path, 0),
+                        "partner_commits": partner_total,
                     },
                     reason=(
-                        f"{partner_path} co-changes with this file "
-                        f"{round(co_count, 2)} times ({correlation:.0%} of shared "
-                        "commits) but no static dependency exists"
+                        f"{partner_path} changed with this file in {support} of its "
+                        f"{total_self} commits ({correlation:.0%}) but no static "
+                        "dependency exists"
                     ),
                 )
             )
