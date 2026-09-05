@@ -79,7 +79,7 @@ class GeminiEmbedder:
     def dimensions(self) -> int:
         return self._output_dimensionality
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
         """Embed a batch of texts using Gemini.
 
         Runs the synchronous SDK call in a thread pool to avoid blocking the
@@ -87,10 +87,15 @@ class GeminiEmbedder:
 
         Args:
             texts: Non-empty list of strings to embed.
+            kind: Accepted for Embedder-protocol parity with directional
+                embedders; Gemini's ``task_type`` already encodes
+                query-vs-document framing (see ``__init__``), so this is
+                ignored here rather than doubly applied.
 
         Returns:
             List of unit-length (L2-normalized) float vectors.
         """
+        del kind
         if not texts:
             return []
 

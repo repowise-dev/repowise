@@ -263,7 +263,9 @@ async def question_vector(ctx: Any, question: str) -> list[float] | None:
         return cached[1]
 
     try:
-        vectors = await asyncio.wait_for(store.embed_texts([question]), timeout=_EMBED_TIMEOUT_S)
+        vectors = await asyncio.wait_for(
+            store.embed_texts([question], kind="query"), timeout=_EMBED_TIMEOUT_S
+        )
     except TimeoutError:
         # The A18 case, and the one worth naming separately: the embedder is
         # configured, reachable and healthy, and simply did not answer inside

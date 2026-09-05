@@ -362,7 +362,8 @@ class _FixedDimEmbedder:
     def __init__(self, dimensions: int) -> None:
         self.dimensions = dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind
         out: list[list[float]] = []
         for i, _ in enumerate(texts):
             vec = [0.0] * self.dimensions
@@ -423,7 +424,8 @@ class _RecordingEmbedder:
         self.calls: list[list[str]] = []
         self._fail_on_call = fail_on_call
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind
         self.calls.append(list(texts))
         if self._fail_on_call is not None and len(self.calls) == self._fail_on_call:
             raise RuntimeError("simulated 400 max_tokens_per_request")

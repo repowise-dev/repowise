@@ -85,12 +85,18 @@ class OpenRouterEmbedder:
     def dimensions(self) -> int:
         return self._dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
         """Embed a batch of texts using OpenRouter.
 
         Runs the synchronous SDK call in a thread pool to avoid blocking the
         asyncio event loop.
+
+        Args:
+            texts: Non-empty list of strings to embed.
+            kind: Accepted for Embedder-protocol parity; unused. None of the
+                models in ``_DIMS`` are configured with a directional prefix.
         """
+        del kind
         if not texts:
             return []
 

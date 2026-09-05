@@ -38,7 +38,8 @@ class _WideEmbedder:
 
     dimensions = 1536
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind
         return [[0.0] * 1535 + [1.0] for _ in texts]
 
 
@@ -447,7 +448,8 @@ def test_two_real_widths_are_never_compared(
     class _MisreportingEmbedder:
         dimensions = 768  # the hardcoded guess, not what it actually emits
 
-        async def embed(self, texts: list[str]) -> list[list[float]]:
+        async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+            del kind
             return [[0.0] * 1024 for _ in texts]
 
     monkeypatch.setattr(

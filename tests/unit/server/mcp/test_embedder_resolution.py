@@ -139,7 +139,8 @@ def test_custom_registered_embedder_is_honoured(monkeypatch):
     class _FakeEmbedder:
         dimensions = 4
 
-        async def embed(self, texts):
+        async def embed(self, texts, *, kind="document"):
+            del kind
             return [[0.0, 0.0, 0.0, 1.0] for _ in texts]
 
     register_embedder("fake-test-embedder", lambda **kw: _FakeEmbedder())
