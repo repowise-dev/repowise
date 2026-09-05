@@ -155,7 +155,7 @@ local, all deterministic, no extra LLM calls.
 
 | Foundation | What it contributes |
 |---|---|
-| **Graph** | File + symbol dependencies across 19 AST-parsed languages, confidence-stamped call resolution, communities, centrality, cycles, and execution flows |
+| **Graph** | File + symbol dependencies across 25 AST-parsed languages, confidence-stamped call resolution, communities, centrality, cycles, and execution flows |
 | **Git** | Hotspots, ownership, co-change, bus factor, and bug-fix history: behavioral signals static analysis cannot see |
 | **Docs** | A wiki for every module and file, rebuilt incrementally with freshness and confidence scoring plus hybrid search |
 | **Decisions** | Architectural rationale mined from five index-time sources plus human and agent capture, each claim traced to evidence |
