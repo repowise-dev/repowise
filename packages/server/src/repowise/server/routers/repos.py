@@ -22,7 +22,6 @@ from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DeadCodeFinding,
-    GenerationJob,
     GitMetadata,
     GraphNode,
     HealthSnapshot,
@@ -134,13 +133,7 @@ async def create_repo(
 async def _enqueue_index_job(request: Request, session_factory, repo_id: str) -> str | None:
     """Create and launch an ``initial_index`` job unless one is already active."""
     async with get_session(session_factory) as session:
-        active = await session.execute(
-            select(GenerationJob.id)
-            .where(GenerationJob.repository_id == repo_id)
-            .where(GenerationJob.status.in_(["pending", "running"]))
-            .limit(1)
-        )
-        if active.scalar_one_or_none() is not None:
+        if await crud.has_active_job(session, repo_id):
             return None
         job = await crud.upsert_generation_job(
             session,
@@ -669,19 +662,18 @@ def _accepted(job_id: str) -> JobAcceptedResponse:
 
 
 async def _ensure_no_active_job(session: AsyncSession, repo_id: str) -> None:
-    """Raise 409 if a pending/running job already holds this repo.
+    """Raise 409 if a pending/running job with a live heartbeat already holds this repo.
 
     The active-job guard is repo-wide: overlapping runs share a process-global
     cancel-token slot, so a second concurrent job is refused rather than started.
     Shared by every job-launching endpoint.
+
+    Liveness is heartbeat-based (``crud.has_active_job``), not a bare status
+    check: in a multi-worker deployment sharing one database, another
+    process's restart can flip a row's status without that row's job
+    actually having stopped. See ``crud.job_heartbeat_cutoff`` for why.
     """
-    active = await session.execute(
-        select(GenerationJob.id)
-        .where(GenerationJob.repository_id == repo_id)
-        .where(GenerationJob.status.in_(["pending", "running"]))
-        .limit(1)
-    )
-    if active.scalar_one_or_none() is not None:
+    if await crud.has_active_job(session, repo_id):
         raise HTTPException(
             status_code=409, detail="A job is already in progress for this repository"
         )

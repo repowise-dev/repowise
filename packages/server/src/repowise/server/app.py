@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import update as sa_update
 
+from repowise.core.persistence.crud import job_heartbeat_cutoff
 from repowise.core.persistence.database import (
     create_engine,
     create_session_factory,
@@ -78,13 +79,20 @@ logger = logging.getLogger(__name__)
 
 
 async def reset_workspace_stale_jobs(app_state) -> int:
-    """Mark interrupted pending/running jobs failed across workspace repo DBs."""
+    """Mark abandoned pending/running jobs failed across workspace repo DBs.
+
+    Only rows whose heartbeat (``updated_at``) has gone stale are touched —
+    see ``job_heartbeat_cutoff`` — so this never clobbers a job a different,
+    still-live server process (sharing the same workspace DBs) is actually
+    running.
+    """
     reset_count = 0
     for ws_factory in getattr(app_state, "workspace_sessions", {}).values():
         async with get_session(ws_factory) as session:
             stale_result = await session.execute(
                 sa_update(GenerationJob)
                 .where(GenerationJob.status.in_(["running", "pending"]))
+                .where(GenerationJob.updated_at < job_heartbeat_cutoff())
                 .values(
                     status="failed",
                     error_message="Server restarted; job interrupted",
@@ -176,24 +184,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # server instance (crash, restart, or cancellation between row-insert and
     # background-task launch) — they can never complete now and would block
     # new syncs via the active-job guard in the repos router.
-    # Note: with multi-worker deployments this is a best-effort race; the
-    # try/except prevents a SQLite lock error from crashing startup.
+    #
+    # Only rows whose heartbeat (`updated_at`) has gone stale are reset (see
+    # job_heartbeat_cutoff): in a multi-worker deployment sharing one DB, a
+    # bare status-based sweep here would flip a job a sibling process is
+    # still genuinely running to "failed", defeating that process's
+    # active-job guard and letting a second pipeline run start on the same
+    # repo concurrently. The try/except also still covers a SQLite lock
+    # error not crashing startup.
     try:
-        from datetime import UTC as _UTC
-        from datetime import datetime
-
-        from sqlalchemy import update as sa_update
-
-        from repowise.core.persistence.models import GenerationJob
-
         async with get_session(session_factory) as session:
             stale_result = await session.execute(
                 sa_update(GenerationJob)
                 .where(GenerationJob.status.in_(["running", "pending"]))
+                .where(GenerationJob.updated_at < job_heartbeat_cutoff())
                 .values(
                     status="failed",
                     error_message="Server restarted — job interrupted",
-                    finished_at=datetime.now(_UTC),
+                    finished_at=datetime.now(UTC),
                 )
             )
             if stale_result.rowcount:
