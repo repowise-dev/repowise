@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_path
+from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_path, warn
 from repowise.cli.ui import load_dotenv
 from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
 
@@ -160,9 +160,8 @@ def mcp_command(
     workspace = _workspace_summary(repo_path)
     repowise_dir = repo_path / ".repowise"
     if workspace is None and not repowise_dir.exists():
-        console.print(
-            f"[yellow]Warning: No .repowise directory found at {repo_path}.[/yellow]\n"
-            "Run 'repowise init' first to generate documentation."
+        warn(
+            f"No .repowise directory found at {repo_path}.\nRun 'repowise init' first to generate documentation."
         )
 
     resolved_host = host or os.environ.get("REPOWISE_HOST", "127.0.0.1")

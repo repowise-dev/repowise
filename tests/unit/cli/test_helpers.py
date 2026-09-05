@@ -21,11 +21,30 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
     validate_provider_config,
+    warn,
 )
 
 # ---------------------------------------------------------------------------
 # run_async
 # ---------------------------------------------------------------------------
+
+
+class TestWarn:
+    def test_warn_prints_warning_prefix_to_stderr(self, capsys):
+        warn("something went wrong")
+        captured = capsys.readouterr()
+        assert "Warning:" in captured.err
+        assert "something went wrong" in captured.err
+        # Nothing leaks to stdout.
+        assert captured.out == ""
+
+    def test_warn_prefix_rendered(self, capsys):
+        warn("boom")
+        captured = capsys.readouterr()
+        # Rich renders the [yellow] markup away when stderr isn't a tty, but the
+        # human-facing "Warning:" prefix must survive on the stderr stream.
+        assert captured.err.startswith("Warning: boom\n")
+        assert captured.out == ""
 
 
 class TestRunAsync:

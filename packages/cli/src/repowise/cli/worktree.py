@@ -16,7 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
-from repowise.cli.helpers import console
+from repowise.cli.helpers import console, warn
 
 _SEED_TEMPDIR_STALENESS_SECS = 3600
 
@@ -218,10 +218,10 @@ def seed_index_from_base(
             if include_submodules is not None:
                 state_include = st_data.get("include_submodules", False)
                 if include_submodules != state_include:
-                    console.print(
-                        f"[yellow]Warning: --include-submodules={include_submodules} "
+                    warn(
+                        f"--include-submodules={include_submodules} "
                         f"conflicts with copied state ({state_include}). Seeded state "
-                        f"will take precedence.[/yellow]"
+                        f"will take precedence."
                     )
 
             (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")
