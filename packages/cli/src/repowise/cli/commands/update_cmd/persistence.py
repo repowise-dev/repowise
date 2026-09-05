@@ -156,6 +156,33 @@ async def _persist_partial_health(session: Any, repo_id: str, report: Any) -> No
     await persist_partial_health(session, repo_id, report)
 
 
+async def _load_page_rows(session: Any, repo_id: str) -> list[Any]:
+    """Lightweight page rows used to derive stale structural dependents."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import load_only
+
+    from repowise.core.persistence.models import Page
+
+    result = await session.execute(
+        select(Page)
+        .options(
+            load_only(
+                Page.id,
+                Page.page_type,
+                Page.target_path,
+                Page.provider_name,
+                Page.metadata_json,
+                Page.freshness_status,
+            )
+        )
+        .where(
+            Page.repository_id == repo_id,
+            Page.freshness_status != "tombstone",
+        )
+    )
+    return list(result.scalars())
+
+
 async def _persist_incremental_commits(session: Any, repo_id: str, repo_path: Any) -> None:
     """Capture + upsert ``git_commits`` rows for commits new since the last index.
 
@@ -762,10 +789,40 @@ async def _persist_full_update_async(
             # detector computed decay_only all along but it was never
             # persisted.
             try:
-                from repowise.core.pipeline.persist import mark_stale_pages
+                from repowise.core.generation import GenerationConfig
+                from repowise.core.generation.cascade import expand_cascade
+                from repowise.core.generation.models import compute_page_id
+                from repowise.core.generation.scope import (
+                    build_dependencies,
+                    load_page_records,
+                )
+                from repowise.core.pipeline.persist import mark_page_ids_stale
+                from repowise.core.pipeline.scoped_generation import load_kg_context
+                from repowise.core.repo_config import load_repo_config
 
                 with timed(timings, "persist.stale_pages"):
-                    await mark_stale_pages(session, repo_id, decay_paths or [])
+                    if decay_paths:
+                        repo_cfg = load_repo_config(repo_path)
+                        generation_config = GenerationConfig.from_repo_config(repo_cfg)
+                        records = load_page_records(await _load_page_rows(session, repo_id))
+                        deps = build_dependencies(
+                            parsed_files=parsed_files or [],
+                            graph_builder=graph_builder,
+                            config=generation_config,
+                            kg_ctx=load_kg_context(Path(repo_path)),
+                            records=records,
+                            repo_name=repo_name,
+                        )
+                        seed_ids = {compute_page_id("file_page", path) for path in decay_paths}
+                        # mode="none": mark dependents stale, do not regenerate
+                        # them. "dependents" would regenerate every module/SCC/
+                        # repo-wide container touched by this commit, spending
+                        # model budget on every `update`, the exact cost
+                        # AUTO_SYNC.md promises sync never incurs. Marking is
+                        # free; the operator opts into the spend explicitly via
+                        # `generate --stale`.
+                        cascade = expand_cascade(seed_ids, "none", deps)
+                        await mark_page_ids_stale(session, repo_id, cascade.stale_ids)
             except Exception as exc:
                 _skip("Stale-page decay", exc)
 
