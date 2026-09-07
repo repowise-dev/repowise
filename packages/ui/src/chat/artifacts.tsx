@@ -1017,7 +1017,8 @@ export function HealthRenderer({ data }: { data: Record<string, unknown> }) {
     ["hotspot health", kpis.hotspot_health ?? data.hotspot_health],
     ["maintainability", kpis.maintainability_average ?? data.maintainability_average],
     ["performance", kpis.performance_average ?? data.performance_average],
-    ["code-only health", kpis.average_health_code_only ?? data.average_health_code_only],
+    ["structure deduction", kpis.structure_average ?? data.structure_average],
+    ["history deduction", kpis.history_average ?? data.history_average],
     ["worst performer", kpis.worst_performer_score ?? data.worst_performer_score],
   ].filter((entry): entry is [string, unknown] => entry[1] !== undefined && entry[1] !== null);
   const rows = findings.length > 0 ? findings : files;

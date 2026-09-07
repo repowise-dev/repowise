@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.perf.coverage import supported_perf_languages
+from repowise.core.analysis.health.scope import DEFAULT_SCOPE, parse_scope
 from repowise.core.persistence import crud
 
 __all__ = [
@@ -57,9 +58,12 @@ class HealthMapFeed:
     recovery: dict[str, Any]
     modules: list[dict[str, Any]] = field(default_factory=list)
     performance: dict[str, Any] | None = None
+    #: Which half of the repository the field describes.
+    scope: str = DEFAULT_SCOPE
 
     def payload(self) -> dict[str, Any]:
         return {
+            "scope": self.scope,
             "files": self.files,
             "cap": self.cap,
             "shown": self.shown,
@@ -99,7 +103,11 @@ class HealthMapService:
         self._repository_id = repository_id
 
     async def feed(
-        self, *, cap: int = DEFAULT_MAP_CAP, active: tuple[str, ...] = ()
+        self,
+        *,
+        cap: int = DEFAULT_MAP_CAP,
+        active: tuple[str, ...] = (),
+        scope: str = DEFAULT_SCOPE,
     ) -> HealthMapFeed:
         session, repo_id = self._session, self._repository_id
         metrics = await crud.get_health_metrics(session, repo_id)
@@ -107,6 +115,12 @@ class HealthMapService:
         languages = await crud.get_file_language_map(session, repo_id)
         summary = await crud.get_performance_summary(session, repo_id)
         perf_languages = supported_perf_languages()
+
+        scope_narrowed = parse_scope(scope) == "production"
+        if scope_narrowed:
+            metrics = [m for m in metrics if not m.is_test]
+            kept = {m.file_path for m in metrics}
+            rollups = [r for r in rollups if r.file_path in kept]
 
         by_path = {m.file_path: m for m in metrics}
         # A zero-NLOC file cannot be sized, and the map drops it on arrival.
@@ -185,7 +199,15 @@ class HealthMapService:
                 "raise_cap": f"cap accepts up to {MAX_MAP_CAP}.",
             },
             modules=self._modules(drawn, burden),
-            performance=self._performance_block(rollups, summary, len(performance_eligible)),
+            # The stored performance summary is a repo-wide aggregate and there
+            # is no narrowed copy of it, so a narrowed field omits the block
+            # rather than serving repo-wide totals beside production-only rows.
+            performance=(
+                None
+                if scope_narrowed
+                else self._performance_block(rollups, summary, len(performance_eligible))
+            ),
+            scope=DEFAULT_SCOPE if not scope_narrowed else "production",
         )
 
     def _row(

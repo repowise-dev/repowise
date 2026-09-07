@@ -1868,17 +1868,67 @@ async def test_a_gradient_only_file_still_leads_with_the_gradient(setup_mcp, ses
 
 
 @pytest.mark.asyncio
-async def test_kpis_report_how_much_of_the_headline_is_non_code(setup_mcp, session, populated_db):
-    """Markdown and JSON rows score a mechanical 10.0 and lift the average.
+async def test_the_headline_averages_code_and_nothing_else(setup_mcp, session, populated_db):
+    """Prose and configuration carry no score, so they cannot lift the average.
 
-    No biomarker walks a non-code file, so its 10.0 means "nothing looked at
-    this" — the same fabricated-10.0 problem the perf pillar already surfaces
-    rather than hides. Measured on the live index: 233 of 3,314 rows are
-    non-code, 221 of them score exactly 10.0, and they lift ``average_health``
-    from 7.31 to 7.47, so a repo can raise its score by adding documentation.
-    Surfaced rather than subtracted — ``average_health`` is what the badge, the
-    snapshots and the web UI read, and redefining it here alone would make this
-    tool disagree with all of them.
+    They used to: no marker walks a Markdown file, so its mechanical 10.0 meant
+    "nothing looked at this" and a repo could raise its score by writing
+    documentation. Measured on this repo, 293 of 4,064 rows were non-code and
+    they lifted the headline 6.92 -> 6.96. The analyzer now writes no row for
+    them at all, so there is no split to report and no ``non_code_files`` count
+    to explain away.
+    """
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [{"file_path": "src/auth/service.py", "score": 4.0, "nloc": 100, "max_ccn": 9}],
+    )
+    kpis = (await get_health())["kpis"]
+    assert kpis["file_count"] == 1
+    assert kpis["average_health"] == 4.0
+    assert "non_code_files" not in kpis
+    assert "average_health_code_only" not in kpis
+
+
+@pytest.mark.asyncio
+async def test_scope_narrows_every_figure_to_production(setup_mcp, session, populated_db):
+    """``scope`` is one filter over the whole response, not a per-block option."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            {"file_path": "src/auth/service.py", "score": 4.0, "nloc": 100, "is_test": False},
+            {"file_path": "tests/test_auth.py", "score": 10.0, "nloc": 100, "is_test": True},
+        ],
+    )
+    everything = await get_health()
+    assert everything["scope"] == "all"
+    assert everything["kpis"]["average_health"] == 7.0
+    assert everything["kpis"]["file_count"] == 2
+
+    production = await get_health(scope="production")
+    assert production["scope"] == "production"
+    assert production["kpis"]["average_health"] == 4.0
+    assert production["kpis"]["file_count"] == 1
+    assert all(
+        row["file_path"] != "tests/test_auth.py" for row in production.get("worst_files", [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_narrowed_target_is_not_reported_as_config_excluded(
+    setup_mcp, session, populated_db
+):
+    """``excluded`` means the repo's exclude config dropped the file.
+
+    Narrowing to production drops files for an unrelated reason, and telling a
+    caller their config did it sends them to edit something irrelevant.
     """
     from repowise.core.persistence.crud import save_health_metrics
     from repowise.server.mcp_server import get_health
@@ -1887,31 +1937,35 @@ async def test_kpis_report_how_much_of_the_headline_is_non_code(setup_mcp, sessi
         session,
         populated_db,
         [
-            {"file_path": "src/auth/service.py", "score": 4.0, "nloc": 100, "max_ccn": 9},
-            # No graph node → no language → not in LANGUAGE_MAPS → non-code.
-            {"file_path": "docs/CHANGELOG.md", "score": 10.0, "nloc": 100, "max_ccn": 0},
+            {"file_path": "src/auth/service.py", "score": 4.0, "nloc": 100, "is_test": False},
+            {"file_path": "tests/test_auth.py", "score": 10.0, "nloc": 100, "is_test": True},
         ],
     )
-    kpis = (await get_health())["kpis"]
-    assert kpis["file_count"] == 2
-    assert kpis["non_code_files"] == 1
-    assert kpis["average_health"] == 7.0
-    assert kpis["average_health_code_only"] == 4.0
+    result = await get_health(targets=["tests/test_auth.py"], scope="production")
+    reasons = {row["reason"] for row in result.get("unresolved", [])}
+    assert "excluded" not in reasons
 
 
 @pytest.mark.asyncio
-async def test_non_code_split_is_gated_on_the_language_read(setup_mcp, health_data):
-    """The split rides the language map ``kpis`` already reads — it adds no query.
+async def test_the_directive_names_a_cause_an_edit_can_remove(setup_mcp, health_data):
+    """``fix_first`` is an instruction, so its ``reason`` has to be actionable.
 
-    So it appears only where that read happens: dashboard mode with ``kpis``
-    surviving the projection. ``only=["directive"]`` stays the cheapest useful
-    call, and targeted mode (which serves no ``kpis`` block at all) is unchanged.
+    History markers carry the largest caps, so the highest-leverage file is
+    often led by one. Naming it there tells the caller to fix something no edit
+    resolves; it belongs in ``watch``.
     """
+    from repowise.core.analysis.health.models import split_by_origin
     from repowise.server.mcp_server import get_health
 
-    assert "kpis" not in await get_health(targets=["src/auth/service.py"])
-    assert "kpis" not in await get_health(only=["directive"])
-    assert "non_code_files" in (await get_health())["kpis"]
+    directive = (await get_health())["directive"]
+    reason_marker = directive.get("reason")
+    assert directive["fix_first"]
+    watch = directive.get("watch")
+    if watch is not None:
+        marker = type("F", (), {"biomarker_type": watch["biomarker"]})
+        code_shape, _ = split_by_origin([marker])
+        assert not code_shape, "watch must carry a history marker, never a code-shape one"
+        assert watch["biomarker"] not in (reason_marker or "")
 
 
 @pytest.mark.asyncio

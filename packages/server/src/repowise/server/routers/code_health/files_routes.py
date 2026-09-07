@@ -16,6 +16,7 @@ from repowise.server.deps import get_db_session
 from ._router import router
 from .breakdown import _score_breakdown_from_findings
 from .loaders import _attach_symbol_ids, _load_file_signals
+from .scope import ScopeQuery, narrow
 from .serializers import (
     _file_signals_to_dict,
     _file_trend_to_dict,
@@ -58,11 +59,13 @@ async def list_health_files(
             "narrows the finding read that produces them."
         ),
     ),
+    scope: str = ScopeQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if sort not in _SORT_FIELDS:
         sort = "score"
     metrics = await crud.get_health_metrics(session, repo_id)
+    (metrics,) = narrow(scope, metrics)
 
     hotspot_paths: set[str] = set()
     if only_hotspots:

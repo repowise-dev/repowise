@@ -48,9 +48,18 @@ export const HEALTH_DIMENSIONS: readonly HealthDimension[] = [
   "performance",
 ] as const;
 
+/**
+ * Which half of a repository a health figure describes. Tests score higher
+ * than production code, so narrowing lowers every figure without a defect
+ * having been found — `all` is the default for that reason.
+ */
+export type HealthScope = "all" | "production";
+
+export const HEALTH_SCOPES: readonly HealthScope[] = ["all", "production"] as const;
+
 /** Display labels for the dimensions surfaced today. */
 export const HEALTH_DIMENSION_LABEL: Record<HealthDimension, string> = {
-  defect: "Defect risk",
+  defect: "Code health",
   maintainability: "Maintainability",
   performance: "Performance",
 };
@@ -179,6 +188,20 @@ export interface HealthFileMetric {
   defect_score?: number | null;
   maintainability_score?: number | null;
   performance_score?: number | null;
+  /**
+   * The defect deduction split into the half a rewrite can move (code shape)
+   * and the half only time can (git history). They sum to the total deduction,
+   * so `unclamped_score` is `10 - structure - history` — the only number that
+   * moves for a file held at the score floor. Absent on older payloads.
+   */
+  structure_deduction?: number | null;
+  history_deduction?: number | null;
+  unclamped_score?: number | null;
+  /**
+   * Test material, decided at ingestion. Drives the production/all scope
+   * without re-deriving the answer from the path on every surface.
+   */
+  is_test?: boolean;
   /**
    * Open performance-risk findings on this file. The performance lens on the
    * code-health map colors by this count (+ `performance_analyzed`), not by the
@@ -779,18 +802,23 @@ export interface FileHealthTrend {
 export interface HealthTrendResponse {
   history: Array<{
     taken_at: string | null;
-    hotspot_health: number;
+    /** `null` under a narrowed scope, which recorded only the average. */
+    hotspot_health: number | null;
     average_health: number;
     worst_performer_path: string | null;
     worst_performer_score: number | null;
   }>;
   summary: {
-    current_hotspot_health: number;
+    /** `null` under a narrowed scope: only the average covers both populations. */
+    current_hotspot_health: number | null;
     current_average_health: number;
     previous_hotspot_health: number | null;
     previous_average_health: number | null;
     hotspot_delta: number | null;
     average_delta: number | null;
+    /** The newest reading's two halves, in deduction points. */
+    current_structure_deduction?: number | null;
+    current_history_deduction?: number | null;
   };
   alerts: Array<{
     kind: string;
@@ -799,6 +827,15 @@ export interface HealthTrendResponse {
     baseline: number | null;
     delta: number;
     message: string;
+    /**
+     * Which half of the headline moved, and how far each half moved in score
+     * points. These are changes in mean deduction, so they sum to `delta` only
+     * while no file sits at the score floor. `null` on the hotspot metric,
+     * whose halves are not snapshotted, and on histories predating the split.
+     */
+    driver?: "structure" | "history" | null;
+    structure_delta?: number | null;
+    history_delta?: number | null;
   }>;
   /** Largest movements first, in either direction, capped server-side. */
   file_deltas: Array<{
@@ -813,6 +850,8 @@ export interface HealthTrendResponse {
    */
   file_deltas_total?: number;
   snapshot_count: number;
+  /** Which half of the repository these figures describe. */
+  scope?: HealthScope;
 }
 
 /* ------------------------------------------------------------------ *

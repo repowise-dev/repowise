@@ -54,6 +54,18 @@ def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> No
     )
 
 
+def _render_split_line(kpis: dict) -> None:
+    """The headline's two halves, so a reader can see which one holds it down."""
+    structure = kpis.get("structure_average")
+    history = kpis.get("history_average")
+    if structure is None or history is None:
+        return
+    console.print(
+        f"[dim]Of that deduction, [/dim]{structure:.2f}[dim] is code shape and [/dim]"
+        f"{history:.2f}[dim] is history — history answers to time, not to editing.[/dim]"
+    )
+
+
 def _render_distribution_line(dist: dict) -> None:
     """One compact line: the NLOC-weighted file split across the 3 bands."""
     bands = dist.get("bands") or {}

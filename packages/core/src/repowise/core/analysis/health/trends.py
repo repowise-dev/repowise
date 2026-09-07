@@ -50,6 +50,16 @@ class TrendAlert:
     baseline: float | None
     delta: float
     message: str
+    # Which half of the headline moved, in score points. ``structure`` is code
+    # shape, which a rewrite can fix; ``history`` is git-derived and answers to
+    # time, not to editing. They are changes in each half's mean DEDUCTION, so
+    # they sum to ``delta`` only while no file sits at the score floor — the
+    # clamp is what the two measures disagree about. All ``None`` for
+    # ``hotspot_health``, whose halves are not snapshotted, and on snapshots
+    # taken before the split existed.
+    driver: str | None = None
+    structure_delta: float | None = None
+    history_delta: float | None = None
 
 
 @dataclass
@@ -63,12 +73,103 @@ class TrendSummary:
     hotspot_delta: float | None
     average_delta: float | None
     alerts: list[TrendAlert] = field(default_factory=list)
+    # The newest snapshot's headline split, in deduction points, so a surface
+    # can show the two halves without replaying findings. ``None`` before the
+    # split was recorded.
+    current_structure_deduction: float | None = None
+    current_history_deduction: float | None = None
 
 
 def _delta(current: float, previous: float | None) -> float | None:
     if previous is None:
         return None
     return round(current - previous, 3)
+
+
+def _attribution(current: Any, baseline: Any) -> tuple[str | None, float | None, float | None]:
+    """Split a headline move into its structure and history halves.
+
+    Snapshots store the two as deduction points, so each contribution to the
+    score is the negated change. Returns ``(driver, structure, history)``, all
+    ``None`` when either snapshot predates the split.
+    """
+    values = [
+        (getattr(snap, attr, None))
+        for snap in (current, baseline)
+        for attr in ("structure_average", "history_average")
+    ]
+    if any(v is None for v in values):
+        return None, None, None
+    cur_structure, cur_history, base_structure, base_history = (float(v) for v in values)
+    structure = round(base_structure - cur_structure, 3)
+    history = round(base_history - cur_history, 3)
+    driver = "structure" if abs(structure) >= abs(history) else "history"
+    return driver, structure, history
+
+
+_DRIVER_PHRASE = {
+    "structure": "Code shape moved most",
+    "history": "History moved most, and no edit to these files settles it",
+}
+
+
+def _driver_sentence(driver: str | None, structure: float | None, history: float | None) -> str:
+    """Name the driver and both halves, without claiming they sum to ``delta``.
+
+    They are deduction means and ``delta`` is a mean of clamped scores, so the
+    two agree only on a repo with no floored file. Stating each half and
+    stopping there is the claim the numbers actually support.
+    """
+    if driver is None or structure is None or history is None:
+        return ""
+    return f" {_DRIVER_PHRASE[driver]} (code shape {structure:+.2f}, history {history:+.2f})."
+
+
+@dataclass
+class _ScopedSnapshot:
+    """One snapshot with its production figure standing in for the headline.
+
+    Only ``average_health`` was recorded for both populations. Everything else
+    on a snapshot describes the whole repository, and a repo-wide figure served
+    under a production label is worse than an absent one, so the rest is
+    dropped rather than carried across.
+    """
+
+    taken_at: Any
+    average_health: float
+    per_file_scores_json: str
+    hotspot_health: float = 0.0
+    worst_performer_path: str | None = None
+    worst_performer_score: float | None = None
+    structure_average: float | None = None
+    history_average: float | None = None
+
+
+def project_scope(history: list[Any], scope: str) -> list[Any]:
+    """Re-read a snapshot series through one scope.
+
+    The default scope is what the rows already hold. Narrowing swaps in the
+    stored production average and drops snapshots taken before it was
+    recorded — a gap in the line is honest where a repo-wide number wearing a
+    production label would not be.
+    """
+    from .scope import parse_scope
+
+    if parse_scope(scope) != "production":
+        return history
+    out: list[Any] = []
+    for snap in history:
+        value = getattr(snap, "production_average", None)
+        if value is None:
+            continue
+        out.append(
+            _ScopedSnapshot(
+                taken_at=snap.taken_at,
+                average_health=float(value),
+                per_file_scores_json=snap.per_file_scores_json,
+            )
+        )
+    return out
 
 
 def diff_snapshots(history: list[Any]) -> TrendSummary:
@@ -103,6 +204,8 @@ def diff_snapshots(history: list[Any]) -> TrendSummary:
             float(current.average_health),
             float(prior.average_health) if prior else None,
         ),
+        current_structure_deduction=getattr(current, "structure_average", None),
+        current_history_deduction=getattr(current, "history_average", None),
     )
 
     summary.alerts.extend(_declining_alerts(history))
@@ -140,6 +243,11 @@ def _declining_alerts(history: list[Any]) -> list[TrendAlert]:
         base_val = float(getattr(baseline, metric))
         delta = round(cur_val - base_val, 3)
         if delta <= -DECLINE_THRESHOLD:
+            driver, structure, history = (
+                _attribution(current, baseline)
+                if metric == "average_health"
+                else (None, None, None)
+            )
             out.append(
                 TrendAlert(
                     kind="declining",
@@ -152,7 +260,11 @@ def _declining_alerts(history: list[Any]) -> list[TrendAlert]:
                         f"{abs(delta):.2f} points vs. snapshot "
                         f"{DECLINE_LOOKBACK} ago "
                         f"({base_val:.2f} → {cur_val:.2f})."
+                        f"{_driver_sentence(driver, structure, history)}"
                     ),
+                    driver=driver,
+                    structure_delta=structure,
+                    history_delta=history,
                 )
             )
     return out
@@ -169,6 +281,11 @@ def _predicted_decline_alerts(history: list[Any]) -> list[TrendAlert]:
         vals = [float(getattr(s, metric)) for s in tail]
         if all(vals[i + 1] < vals[i] for i in range(len(vals) - 1)):
             delta = round(vals[-1] - vals[0], 3)
+            driver, structure, history = (
+                _attribution(tail[-1], tail[0])
+                if metric == "average_health"
+                else (None, None, None)
+            )
             out.append(
                 TrendAlert(
                     kind="predicted_decline",
@@ -180,10 +297,31 @@ def _predicted_decline_alerts(history: list[Any]) -> list[TrendAlert]:
                         f"{metric.replace('_', ' ').title()} declined for "
                         f"{PREDICTED_DECLINE_CONSECUTIVE} consecutive snapshots "
                         f"({vals[0]:.2f} → {vals[-1]:.2f})."
+                        f"{_driver_sentence(driver, structure, history)}"
                     ),
+                    driver=driver,
+                    structure_delta=structure,
+                    history_delta=history,
                 )
             )
     return out
+
+
+def drop_unscoped_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Blank the per-row figures a narrowed snapshot never recorded.
+
+    A projected snapshot carries the production average and nothing else, so
+    the placeholders the rest of the row picked up must not read as measurements.
+    """
+    return [
+        {
+            **row,
+            "hotspot_health": None,
+            "worst_performer_path": None,
+            "worst_performer_score": None,
+        }
+        for row in rows
+    ]
 
 
 def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:

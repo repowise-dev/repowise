@@ -4,7 +4,8 @@ import { formatDate } from "../lib/format";
 
 export interface TrendSeriesPoint {
   taken_at: string | null;
-  hotspot_health: number;
+  /** `null` under a narrowed scope, which records only the average. */
+  hotspot_health: number | null;
   average_health: number;
   worst_performer_score: number | null;
 }
@@ -78,7 +79,9 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
         {history.map((p, i) => (
           <g key={i}>
             <circle cx={xScale(i)} cy={yScale(p.average_health)} r={2.5} fill="var(--color-success)" />
-            <circle cx={xScale(i)} cy={yScale(p.hotspot_health)} r={2.5} fill="var(--color-warning)" />
+            {p.hotspot_health != null ? (
+              <circle cx={xScale(i)} cy={yScale(p.hotspot_health)} r={2.5} fill="var(--color-warning)" />
+            ) : null}
             {p.worst_performer_score != null ? (
               <circle cx={xScale(i)} cy={yScale(p.worst_performer_score)} r={2} fill="var(--color-error)" />
             ) : null}

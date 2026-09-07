@@ -64,6 +64,11 @@ export function TrendView({
     return `${formatDelta(delta)} vs. ${previous?.toFixed(1) ?? "—"}`;
   };
 
+  // Absent under a narrowed scope: only the average was recorded for both
+  // populations, so a repo-wide hotspot figure would describe files this view
+  // has dropped. Say so rather than printing one.
+  const hotspot = summary.current_hotspot_health;
+
   const stats: RibbonStat[] = [
     {
       label: "Average health",
@@ -76,10 +81,13 @@ export function TrendView({
     },
     {
       label: "Hotspot health",
-      value: summary.current_hotspot_health.toFixed(1),
-      valueColor: scoreTextColor(summary.current_hotspot_health),
-      sub: deltaSub(summary.hotspot_delta, summary.previous_hotspot_health),
-      ...(Math.abs(summary.hotspot_delta ?? 0) >= 0.05
+      value: hotspot == null ? "—" : hotspot.toFixed(1),
+      ...(hotspot == null ? {} : { valueColor: scoreTextColor(hotspot) }),
+      sub:
+        hotspot == null
+          ? "not measured for this scope"
+          : deltaSub(summary.hotspot_delta, summary.previous_hotspot_health),
+      ...(hotspot != null && Math.abs(summary.hotspot_delta ?? 0) >= 0.05
         ? { subColor: deltaColor(summary.hotspot_delta) }
         : {}),
     },

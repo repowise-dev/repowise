@@ -7,12 +7,20 @@ import json
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
+from repowise.core.analysis.health.scope import parse_scope
+from repowise.core.analysis.health.trends import (
+    diff_snapshots,
+    drop_unscoped_fields,
+    file_trend,
+    project_scope,
+    recent_kpis,
+)
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.schemas import FileHealthTrendResponse, HealthTrendResponse
 
 from ._router import router
+from .scope import ScopeQuery
 from .serializers import _file_trend_to_dict
 
 # How many per-file movements the trend response carries. Paired with
@@ -44,13 +52,18 @@ async def file_health_trend(
 async def health_trend(
     repo_id: str,
     limit: int = Query(20, ge=1, le=50),
+    scope: str = ScopeQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
-    snapshots = await crud.list_health_snapshots(session, repo_id)
+    narrowed = parse_scope(scope) == "production"
+    snapshots = project_scope(await crud.list_health_snapshots(session, repo_id), scope)
     summary = diff_snapshots(snapshots)
+    # Snapshots record per-file scores for the whole repository, so a narrowed
+    # response has to drop the test files from the movement list too.
+    test_paths = await crud.get_test_file_paths(session, repo_id) if narrowed else set()
 
     # Per-file delta from the last two snapshots.
     file_deltas: list[dict] = []
@@ -64,7 +77,7 @@ async def health_trend(
         for p in all_paths:
             before = prev.get(p)
             after = cur.get(p)
-            if before is None or after is None:
+            if before is None or after is None or p in test_paths:
                 continue
             d = round(float(after) - float(before), 2)
             if d == 0:
@@ -80,14 +93,20 @@ async def health_trend(
         file_deltas.sort(key=lambda r: (-abs(r["delta"]), r["file_path"]))
 
     return {
-        "history": recent_kpis(snapshots, limit=limit),
+        "history": (
+            drop_unscoped_fields(recent_kpis(snapshots, limit=limit))
+            if narrowed
+            else recent_kpis(snapshots, limit=limit)
+        ),
         "summary": {
-            "current_hotspot_health": summary.current_hotspot_health,
+            "current_hotspot_health": None if narrowed else summary.current_hotspot_health,
             "current_average_health": summary.current_average_health,
-            "previous_hotspot_health": summary.previous_hotspot_health,
+            "previous_hotspot_health": None if narrowed else summary.previous_hotspot_health,
             "previous_average_health": summary.previous_average_health,
-            "hotspot_delta": summary.hotspot_delta,
+            "hotspot_delta": None if narrowed else summary.hotspot_delta,
             "average_delta": summary.average_delta,
+            "current_structure_deduction": summary.current_structure_deduction,
+            "current_history_deduction": summary.current_history_deduction,
         },
         "alerts": [
             {
@@ -97,6 +116,9 @@ async def health_trend(
                 "baseline": a.baseline,
                 "delta": a.delta,
                 "message": a.message,
+                "driver": a.driver,
+                "structure_delta": a.structure_delta,
+                "history_delta": a.history_delta,
             }
             for a in summary.alerts
         ],
@@ -105,4 +127,5 @@ async def health_trend(
         # of presenting a truncated list as the whole story.
         "file_deltas_total": len(file_deltas),
         "snapshot_count": len(snapshots),
+        "scope": scope,
     }

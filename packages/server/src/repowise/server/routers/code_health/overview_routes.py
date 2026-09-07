@@ -23,6 +23,7 @@ from repowise.server.mcp_server._meta import resolve_indexed_commit
 
 from ._router import router
 from .loaders import _attach_symbol_ids
+from .scope import ScopeQuery, narrow
 from .serializers import _finding_to_dict, _leads_by_file, _metric_to_dict
 
 
@@ -49,6 +50,7 @@ def _resolve_last_indexed_at(
 async def health_overview(
     repo_id: str,
     limit: int = Query(20, ge=1, le=200),
+    scope: str = ScopeQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """KPIs + lowest-scoring files + per-module rollup + meta."""
@@ -62,22 +64,17 @@ async def health_overview(
     # two — so the route was paying for each of them twice per request.
     metrics = await crud.get_health_metrics(session, repo_id)
     findings = await crud.get_health_findings(session, repo_id)
+    metrics, findings = narrow(scope, metrics, findings)
     summary = await crud.get_health_summary(
         session, repo_id, metrics=metrics, findings=findings
     )
 
-    # Hotspot health is recomputed from the metrics already loaded above rather
-    # than read off the latest snapshot. The snapshot was described here as
-    # authoritative, and it is not: ``repowise update`` re-scores health and
-    # calls ``save_health_metrics`` without ``save_health_snapshot``
-    # (``update_cmd/persistence.py``), so after any update this route served a
-    # figure from the previous full index while every other number on the page
-    # came from the fresh rows. Measured stale on 3 of 42 local indexes, this
-    # repo among them (4.62 against 5.08 live) — a lower bound, since a corpus
-    # of frozen clones mostly has nothing to have gone stale against.
-    #
-    # It costs no query: ``metrics`` is already in hand, and the hotspot path
-    # set is one scalar column. The snapshot is still read, for ``taken_at``.
+    # Recomputed from the metrics already loaded rather than read off the latest
+    # snapshot: a snapshot is a point in time, and this page's other numbers all
+    # come from the live rows, so reading it here would make one figure older
+    # than its neighbours. It costs no query — ``metrics`` is in hand and the
+    # hotspot path set is one scalar column. The snapshot is still read, for
+    # ``taken_at``, and for ``scope`` it would be the wrong population anyway.
     snapshot = await crud.get_health_snapshot_headline(session, repo_id)
     hotspot_paths = await crud.get_hotspot_file_paths(session, repo_id)
     hotspot_health_value = hotspot_health(metrics, hotspot_paths)

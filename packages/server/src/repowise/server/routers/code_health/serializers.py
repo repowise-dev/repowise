@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from repowise.core.analysis.health.models import primary_finding
+from repowise.core.analysis.health.scoring import unclamped_score
 from repowise.core.analysis.health.signals import FileSignals
 from repowise.core.analysis.health.trends import FileTrend
 
@@ -122,6 +123,14 @@ def _metric_to_dict(
     out["performance_findings"] = perf_findings
     out["performance_analyzed"] = perf_analyzed
     if not summary:
+        # The headline's two halves, and the score the file would carry without
+        # the floor. A file pinned at 1.0 reads 1.0 for months while real work
+        # lands on it; the unclamped number is the only place that shows.
+        structure = _round_opt(getattr(m, "structure_deduction", None))
+        history = _round_opt(getattr(m, "history_deduction", None))
+        out["structure_deduction"] = structure
+        out["history_deduction"] = history
+        out["unclamped_score"] = unclamped_score(structure, history)
         # Dominant-cause lead + pre-clamp magnitude (null when findings weren't
         # loaded for this row, or the file is clean). Additive; readers degrade.
         out["primary_biomarker"] = lead.get("primary_biomarker") if lead else None

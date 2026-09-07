@@ -18,6 +18,7 @@ from repowise.server.deps import get_db_session
 from repowise.server.schemas import HealthWorkQueueResponse
 
 from ._router import router
+from .scope import ScopeQuery, narrow
 
 _SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
@@ -65,6 +66,7 @@ async def health_work_queue(
     sort: str = Query(
         "impact_per_effort", pattern="^(impact_per_effort|total_impact|score|finding_count)$"
     ),
+    scope: str = ScopeQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Health work items ranked by impact / effort.
@@ -82,8 +84,9 @@ async def health_work_queue(
         raise HTTPException(status_code=404, detail="Repository not found")
 
     metrics = await crud.get_health_metrics(session, repo_id)
-    metric_by_path = {m.file_path: m for m in metrics}
     findings = await crud.get_health_findings(session, repo_id)
+    metrics, findings = narrow(scope, metrics, findings)
+    metric_by_path = {m.file_path: m for m in metrics}
 
     by_file: dict[str, list[Any]] = {}
     for f in findings:
