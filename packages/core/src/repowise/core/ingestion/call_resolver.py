@@ -1030,6 +1030,7 @@ class CallResolver:
     def resolve_file(self, file_path: str, calls: list[CallSite]) -> list[ResolvedCall]:
         """Resolve all calls in a single file to symbol-level edges."""
         results: list[ResolvedCall] = []
+        orphaned_receivers: list[CallSite] = []
 
         for call in calls:
             if not call.caller_symbol_id:
@@ -1046,8 +1047,68 @@ class CallResolver:
                 if call.edge_type != "calls":
                     resolved = replace(resolved, edge_type=call.edge_type)
                 results.append(resolved)
+            elif call.receiver_name:
+                orphaned_receivers.append(call)
+
+        results.extend(self._credit_orphaned_receivers(file_path, orphaned_receivers, results))
 
         return results
+
+    def _credit_orphaned_receivers(
+        self,
+        file_path: str,
+        orphaned: list[CallSite],
+        resolved: list[ResolvedCall],
+    ) -> list[ResolvedCall]:
+        """A method call whose member resolved to nothing still uses its receiver.
+
+        ``STAGES.forEach(...)`` answers on ``forEach``, an unresolvable builtin,
+        and so produced no edge at all — leaving ``STAGES`` with zero inbound
+        edges, and the dead-code analyzer, which credits a symbol only on an
+        inbound edge, calling a constant used four times unused. The same shape
+        covers ``DEFAULTS.timeout``, ``ROUTES.map(...)`` and every module-level
+        table consumed through a builtin.
+
+        Two deliberate limits keep this from guessing:
+
+        * **Only when the member resolved to nothing.** ``Defaults.timeout()``
+          where ``timeout`` is a same-file method already puts an edge inside
+          the receiver, and the receiver is reachable from it. Crediting it
+          again would mint an edge for every qualified property read.
+        * **Only same-file receivers.** An imported name already carries an
+          ``imports`` edge, and a bare receiver matching an unrelated symbol in
+          another file would be a guess, not a resolution.
+
+        Emitted as ``references`` rather than ``calls``: naming a value is not
+        executing it. ``references`` sits in ``SYMBOL_USE_EDGE_TYPES`` so dead
+        code counts it, and outside ``EXECUTION_EDGE_TYPES`` so call graphs,
+        flow analysis and the inferred test map are unchanged.
+        """
+        file_symbols = self._file_symbols.get(file_path, {})
+        if not file_symbols:
+            return []
+
+        credited: list[ResolvedCall] = []
+        seen = {(rc.caller_id, rc.callee_id) for rc in resolved}
+        for call in orphaned:
+            callee_id = file_symbols.get(call.receiver_name or "")
+            caller_id = call.caller_symbol_id or f"{file_path}::__module__"
+            if not callee_id or callee_id == caller_id:
+                continue
+            if (caller_id, callee_id) in seen:
+                continue
+            seen.add((caller_id, callee_id))
+            credited.append(
+                ResolvedCall(
+                    caller_id=caller_id,
+                    callee_id=callee_id,
+                    confidence=0.95,
+                    line=call.line,
+                    origin="same_file",
+                    edge_type="references",
+                )
+            )
+        return credited
 
     def _resolve_one(self, file_path: str, call: CallSite) -> ResolvedCall | None:
         """Resolve a single CallSite through the three-tier fallback."""

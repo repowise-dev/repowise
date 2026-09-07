@@ -720,3 +720,174 @@ class TestForeignReceiverTypes:
             if get_external_receiver_types(spec.tag)
         }
         assert populated == {"rust"}
+
+
+# ---------------------------------------------------------------------------
+# A method call uses its receiver
+# ---------------------------------------------------------------------------
+
+
+def _typed_edges(
+    parsed: dict[str, ParsedFile],
+    tmp_path: Path,
+) -> list[tuple[str, str, float, str, str]]:
+    """Like ``_edges``, but carries the edge type as well."""
+    resolver = CallResolver(
+        parsed,
+        {p: set() for p in parsed},
+        repo_path=str(tmp_path),
+    )
+    return [
+        (rc.caller_id, rc.callee_id, rc.confidence, rc.origin, rc.edge_type)
+        for path, pf in parsed.items()
+        for rc in resolver.resolve_file(path, pf.calls)
+    ]
+
+
+class TestReceiverIsUsed:
+    """``STAGES.forEach(...)`` uses ``STAGES``.
+
+    Resolution answers the member (``forEach``, an unresolvable builtin) and
+    used to emit nothing at all, so the receiver carried zero inbound edges and
+    the dead-code analyzer — which credits a symbol only on an inbound edge —
+    reported a symbol used four times as dead.
+    """
+
+    _GATE = (
+        "javascript",
+        "const STAGES = ['unit', 'e2e'];\n"
+        "\n"
+        "export function run() {\n"
+        "  STAGES.forEach((s) => console.log(s));\n"
+        "  return STAGES.length;\n"
+        "}\n",
+    )
+
+    def test_a_same_file_receiver_is_credited(self, tmp_path: Path) -> None:
+        parsed = _parse_all(tmp_path, {"gate.js": self._GATE})
+        assert (
+            "gate.js::run",
+            "gate.js::STAGES",
+            0.95,
+            "same_file",
+            "references",
+        ) in _typed_edges(parsed, tmp_path)
+
+    def test_the_edge_is_a_use_and_not_an_execution(self, tmp_path: Path) -> None:
+        """Reading a value is not running it.
+
+        ``references`` sits in ``SYMBOL_USE_EDGE_TYPES`` so dead code counts it,
+        and outside ``EXECUTION_EDGE_TYPES`` so call graphs, flow analysis and
+        the inferred test map are unaffected.
+        """
+        from repowise.core.ingestion.models import (
+            EXECUTION_EDGE_TYPES,
+            SYMBOL_USE_EDGE_TYPES,
+        )
+
+        parsed = _parse_all(tmp_path, {"gate.js": self._GATE})
+        edge = next(e for e in _typed_edges(parsed, tmp_path) if e[1] == "gate.js::STAGES")
+        assert edge[4] in SYMBOL_USE_EDGE_TYPES
+        assert edge[4] not in EXECUTION_EDGE_TYPES
+
+    def test_the_receiver_is_credited_once_not_per_call_site(self, tmp_path: Path) -> None:
+        parsed = _parse_all(tmp_path, {"gate.js": self._GATE})
+        hits = [
+            e
+            for e in _typed_edges(parsed, tmp_path)
+            if e[0] == "gate.js::run" and e[1] == "gate.js::STAGES"
+        ]
+        assert len(hits) == 1
+
+    def test_a_receiver_that_names_nothing_local_mints_nothing(self, tmp_path: Path) -> None:
+        """``console`` is not a symbol in this file, and must not become one."""
+        parsed = _parse_all(tmp_path, {"gate.js": self._GATE})
+        assert not [e for e in _typed_edges(parsed, tmp_path) if not e[1].startswith("gate.js::")]
+
+    def test_a_symbol_nothing_reads_stays_uncredited(self, tmp_path: Path) -> None:
+        """The control: a genuinely dead constant must not go quietly clean."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "gate.js": (
+                    "javascript",
+                    "const STAGES = ['unit'];\nconst UNUSED = ['nothing reads this'];\n"
+                    "\n"
+                    "export function run() {\n"
+                    "  STAGES.forEach((s) => s);\n"
+                    "}\n",
+                )
+            },
+        )
+        edges = _typed_edges(parsed, tmp_path)
+        assert any(e[1] == "gate.js::STAGES" for e in edges)
+        assert not [e for e in edges if e[1] == "gate.js::UNUSED"]
+
+    def test_a_symbol_does_not_credit_itself(self, tmp_path: Path) -> None:
+        """``run.cache`` inside ``run`` is not an inbound edge for ``run``."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "gate.js": (
+                    "javascript",
+                    "export function run() {\n  return run.call(null);\n}\n",
+                )
+            },
+        )
+        assert not [
+            e
+            for e in _typed_edges(parsed, tmp_path)
+            if e[0] == "gate.js::run" and e[1] == "gate.js::run"
+        ]
+
+    def test_it_is_not_javascript_only(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "gate.py": (
+                    "python",
+                    "STAGES = ['unit', 'e2e']\n\n\ndef run():\n    return STAGES.index('e2e')\n",
+                )
+            },
+        )
+        assert (
+            "gate.py::run",
+            "gate.py::STAGES",
+            0.95,
+            "same_file",
+            "references",
+        ) in _typed_edges(parsed, tmp_path)
+
+    def test_a_resolved_member_does_not_credit_the_receiver_again(
+        self, tmp_path: Path
+    ) -> None:
+        """``Defaults.timeout()`` already puts an edge inside the receiver.
+
+        Crediting the receiver a second time would mint an edge for every
+        qualified property read, which is the noise the same-file limit exists
+        to avoid.
+        """
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "config.py": (
+                    "python",
+                    "class Defaults:\n"
+                    "    def timeout(self):\n"
+                    "        return 30\n"
+                    "\n"
+                    "\n"
+                    "def read():\n"
+                    "    return Defaults.timeout()\n",
+                )
+            },
+        )
+        edges = _typed_edges(parsed, tmp_path)
+        assert (
+            "config.py::read",
+            "config.py::Defaults::timeout",
+            0.93,
+            "receiver_same_file",
+            "calls",
+        ) in edges
+        assert not [e for e in edges if e[4] == "references"]
