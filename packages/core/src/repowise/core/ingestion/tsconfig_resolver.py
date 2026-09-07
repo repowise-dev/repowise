@@ -447,16 +447,82 @@ class TsconfigResolver:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _strip_jsonc_comments(text: str) -> str:
+        """Remove ``//`` and ``/* */`` comments, respecting strings and escapes.
+
+        A hand-written scanner rather than a regex: a regex cannot tell a ``//``
+        inside a string literal (``"url": "https://example.com"``) from a real
+        comment, and tsconfig files carry both.
+        """
+        out: list[str] = []
+        i, n = 0, len(text)
+        in_str = esc = False
+        while i < n:
+            c = text[i]
+            if in_str:
+                out.append(c)
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                i += 1
+                continue
+            if c == '"':
+                in_str = True
+                out.append(c)
+                i += 1
+                continue
+            if c == "/" and i + 1 < n and text[i + 1] == "/":
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if c == "/" and i + 1 < n and text[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i += 2
+                continue
+            out.append(c)
+            i += 1
+        return "".join(out)
+
+    @staticmethod
     def _parse_json_lenient(config_path: Path) -> dict[str, Any] | None:
-        """Parse JSON with trailing-comma tolerance (common in tsconfig)."""
+        """Parse JSON tolerating trailing commas *and* comments.
+
+        tsconfig.json is JSONC, not JSON: ``tsc`` accepts ``//`` and ``/* */``
+        and real configs carry them. Tolerating only trailing commas meant a
+        commented root tsconfig raised, was swallowed at debug level, and the
+        resolver came up with zero path aliases -- so every aliased import was
+        minted as an ``external:`` node and every aliased file read as
+        unreachable to the dead-code analyzer. Same symptom as #648, reached
+        through the config loader rather than the rebuild wiring.
+
+        Candidates are tried cheapest-first, so a plain JSON file still costs
+        one ``json.loads`` and no scanning.
+        """
         try:
             text = config_path.read_text(encoding="utf-8", errors="ignore")
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError:
-                cleaned = re.sub(r",\s*([}\]])", r"\1", text)
-                data = json.loads(cleaned)
-            return data if isinstance(data, dict) else None
+            stripped = TsconfigResolver._strip_jsonc_comments(text)
+            for candidate in (
+                text,
+                re.sub(r",\s*([}\]])", r"\1", text),
+                stripped,
+                re.sub(r",\s*([}\]])", r"\1", stripped),
+            ):
+                try:
+                    data = json.loads(candidate)
+                except json.JSONDecodeError:
+                    continue
+                return data if isinstance(data, dict) else None
+            log.debug(
+                "tsconfig_parse_failed",
+                path=str(config_path),
+                error="not parseable as JSON or JSONC",
+            )
+            return None
         except Exception as exc:
             log.debug("tsconfig_parse_failed", path=str(config_path), error=str(exc))
             return None

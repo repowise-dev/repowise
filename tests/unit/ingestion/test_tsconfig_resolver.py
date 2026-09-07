@@ -558,3 +558,78 @@ class TestMtsCtsAliasResolution:
         resolver = self._resolver(tmp_path, {"src/pkg/index.mts"})
         result = resolver.resolve("@/pkg", _importer(tmp_path, "src/app.ts"))
         assert result == "src/pkg/index.mts"
+
+
+# ---------------------------------------------------------------------------
+# JSONC — comments in tsconfig.json / jsconfig.json
+# ---------------------------------------------------------------------------
+
+
+class TestJsoncComments:
+    """``tsconfig.json`` is JSONC, not JSON: ``tsc`` accepts ``//`` and ``/* */``.
+
+    A commented config used to raise inside ``_parse_json_lenient``; the error
+    was swallowed at debug level and the resolver came up with zero aliases, so
+    every aliased import was minted as an ``external:`` node and every aliased
+    file read as unreachable to the dead-code analyzer.
+    """
+
+    @staticmethod
+    def _parse(tmp_path: Path, text: str) -> dict | None:
+        path = tmp_path / "tsconfig.json"
+        path.write_text(text, encoding="utf-8")
+        return TsconfigResolver._parse_json_lenient(path)
+
+    # -- the four shapes tsc accepts ------------------------------------
+
+    def test_plain_json_still_parses(self, tmp_path: Path) -> None:
+        assert self._parse(tmp_path, '{"a": 1}') == {"a": 1}
+
+    def test_trailing_comma_still_parses(self, tmp_path: Path) -> None:
+        """The pre-existing tolerance must survive the change."""
+        assert self._parse(tmp_path, '{"a": 1,}') == {"a": 1}
+
+    def test_line_comment(self, tmp_path: Path) -> None:
+        assert self._parse(tmp_path, '{\n  // why this is here\n  "a": 1\n}') == {"a": 1}
+
+    def test_block_comment(self, tmp_path: Path) -> None:
+        assert self._parse(tmp_path, '{\n  /* why\n     this is here */\n  "a": 1\n}') == {"a": 1}
+
+    def test_comment_and_trailing_comma(self, tmp_path: Path) -> None:
+        assert self._parse(tmp_path, '{\n  "a": 1, // trailing\n}') == {"a": 1}
+
+    # -- the traps a regex-based stripper falls into ---------------------
+
+    def test_double_slash_inside_string_is_not_a_comment(self, tmp_path: Path) -> None:
+        """``"https://example.com"`` must survive intact."""
+        assert self._parse(tmp_path, '{"u": "https://example.com"}') == {"u": "https://example.com"}
+
+    def test_escaped_quote_does_not_end_the_string(self, tmp_path: Path) -> None:
+        assert self._parse(tmp_path, '{"u": "a\\"//b"}') == {"u": 'a"//b'}
+
+    # -- and the negative -----------------------------------------------
+
+    def test_not_json_at_all_returns_none(self, tmp_path: Path) -> None:
+        assert self._parse(tmp_path, "this is not json") is None
+
+    def test_non_dict_top_level_returns_none(self, tmp_path: Path) -> None:
+        assert self._parse(tmp_path, "[1, 2, 3]") is None
+
+    # -- end to end: the symptom that made this worth fixing -------------
+
+    def test_aliases_resolve_through_a_commented_config(self, tmp_path: Path) -> None:
+        (tmp_path / "tsconfig.json").write_text(
+            """{
+  "compilerOptions": {
+    "baseUrl": ".",
+    // the app's own source
+    "paths": {
+      "@/*": ["./src/*"] /* everything under src */
+    }
+  }
+}""",
+            encoding="utf-8",
+        )
+        resolver = TsconfigResolver(repo_path=tmp_path, path_set={"src/components/Button.tsx"})
+        result = resolver.resolve("@/components/Button", _importer(tmp_path, "src/app.tsx"))
+        assert result == "src/components/Button.tsx"
