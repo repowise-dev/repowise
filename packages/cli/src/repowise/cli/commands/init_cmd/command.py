@@ -981,8 +981,8 @@ def init_command(
 
     if resume:
         console.print(
-            f"[bold]Resuming[/] the previous run in {repo_path} — "
-            "reusing its answers; pass --yes to skip this notice."
+            f"[bold]Resuming[/] the previous run in {repo_path}, "
+            "reusing the answers it already saved to config.yaml."
         )
 
     # Output language picked in the advanced-mode generation section; None
