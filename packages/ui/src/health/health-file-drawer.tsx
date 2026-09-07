@@ -12,6 +12,10 @@ import {
   CATEGORY_LABEL,
   DIMENSION_CHIP,
   DIMENSION_LABEL,
+  HISTORY_CHIP,
+  HISTORY_EXPLAINER,
+  HISTORY_LABEL,
+  isHistoryBiomarker,
   type BiomarkerDimension,
 } from "./biomarker-glossary";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
@@ -29,11 +33,13 @@ import {
   SEVERITY_LABEL,
   deltaColor,
   formatDelta,
+  healthBandColor,
   type Severity,
 } from "./tokens";
-// Shared band function, never a local threshold: two surfaces disagreeing
-// about where "Good" starts is worse than the import.
-import { healthBand } from "../overview/health-lede";
+// The canonical three bands, never a local threshold: this pill sits beside
+// marks that all derive from `bandForScore`, and two of them disagreeing about
+// where a band starts describes one file two ways in one viewport.
+import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import type {
   FileHealthTrend,
   FileSignals,
@@ -187,6 +193,7 @@ export function HealthFileDrawer({
   // it through props on every collapsible group.
   const renderFinding = (f: HealthDrawerFinding) => {
     const info = biomarkerInfo(f.biomarker_type);
+    const isHistory = isHistoryBiomarker(f.biomarker_type);
     return (
       // A hairline row, not a card inside a card. These sat as bordered boxes
       // inside a bordered group inside the drawer: three frames deep for one
@@ -210,6 +217,18 @@ export function HealthFileDrawer({
             {CATEGORY_LABEL[info.category]}
           </span>
           {(() => {
+            // A history marker wears a neutral "Watch" chip instead of its
+            // pillar's: it is scored, but nothing in this file will clear it.
+            if (isHistory) {
+              return (
+                <span
+                  className={`inline-flex items-center gap-1 rounded px-1.5 py-px text-[10px] font-medium ${HISTORY_CHIP}`}
+                >
+                  {HISTORY_LABEL}
+                  <InfoTip content={HISTORY_EXPLAINER} label="Why this is a watch item" />
+                </span>
+              );
+            }
             const dim =
               f.dimension === "maintainability" ||
               f.dimension === "defect" ||
@@ -385,16 +404,25 @@ export function HealthFileDrawer({
       .sort((a, b) => b.total - a.total);
   })();
 
-  // The one reason this file scores low: prefer the server lead, else the
-  // worst finding. Rendered as a headline so the "why" leads (P3).
+  // The one reason this file scores low, and it has to be one the reader can
+  // act on. The server's lead is the highest-impact finding outright, which on
+  // a churn-heavy file is a history marker — naming that as the leading cause
+  // points someone at a commit log and calls it the thing to fix. So a history
+  // lead is passed over for the strongest code-shape finding, and a file whose
+  // whole deficit is history says that instead of naming a cause.
   const primaryLead = (() => {
-    if (metric?.primary_biomarker) {
+    const codeShape = findings.filter((f) => !isHistoryBiomarker(f.biomarker_type));
+    if (metric?.primary_biomarker && !isHistoryBiomarker(metric.primary_biomarker)) {
       return { biomarker: metric.primary_biomarker, reason: metric.primary_reason ?? null };
     }
-    if (findings.length === 0) return null;
-    const worst = findings.reduce((a, b) => (b.health_impact > a.health_impact ? b : a));
+    if (codeShape.length === 0) return null;
+    const worst = codeShape.reduce((a, b) => (b.health_impact > a.health_impact ? b : a));
     return { biomarker: worst.biomarker_type, reason: worst.reason };
   })();
+
+  // Only meaningful once the findings have loaded: an empty list before then is
+  // "not known yet", not "nothing to fix".
+  const historyOnly = primaryLead === null && findings.length > 0;
 
   return (
     <AdaptivePanel
@@ -422,12 +450,12 @@ export function HealthFileDrawer({
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
                 <div className="flex shrink-0 flex-col gap-2 sm:w-[150px]">
                   <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                    Defect risk
+                    Code health
                   </p>
                   <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
                     <span
                       className="text-[40px] font-semibold leading-none tracking-tight tabular-nums"
-                      style={{ color: healthBand(metric.score).color }}
+                      style={{ color: healthBandColor(bandForScore(metric.score)) }}
                     >
                       {metric.score.toFixed(1)}
                     </span>
@@ -436,12 +464,12 @@ export function HealthFileDrawer({
                   <span
                     className="w-fit rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
                     style={{
-                      color: healthBand(metric.score).color,
-                      borderColor: `color-mix(in srgb, ${healthBand(metric.score).color} 40%, transparent)`,
-                      background: `color-mix(in srgb, ${healthBand(metric.score).color} 9%, transparent)`,
+                      color: healthBandColor(bandForScore(metric.score)),
+                      borderColor: `color-mix(in srgb, ${healthBandColor(bandForScore(metric.score))} 40%, transparent)`,
+                      background: `color-mix(in srgb, ${healthBandColor(bandForScore(metric.score))} 9%, transparent)`,
                     }}
                   >
-                    {healthBand(metric.score).label}
+                    {HEALTH_BAND_LABEL[bandForScore(metric.score)]}
                   </span>
 
                   {trend && trend.points.length >= 2 ? (
@@ -480,6 +508,16 @@ export function HealthFileDrawer({
                           {biomarkerLabel(primaryLead.biomarker)}.
                         </strong>
                         {primaryLead.reason ? ` ${primaryLead.reason}` : ""}
+                      </p>
+                    </div>
+                  ) : historyOnly ? (
+                    <div className="flex flex-col gap-1">
+                      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                        Leading cause
+                      </p>
+                      <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+                        Nothing in this file&rsquo;s code is scored. Its deduction is all
+                        history, which no edit here will clear.
                       </p>
                     </div>
                   ) : null}
@@ -872,7 +910,7 @@ function PillarScore({ v }: { v: number | null }) {
   return (
     <span
       className="text-lg font-semibold tabular-nums"
-      style={{ color: healthBand(v).color }}
+      style={{ color: healthBandColor(bandForScore(v)) }}
     >
       {v.toFixed(1)}
       <span className="text-xs font-normal text-[var(--color-text-tertiary)]">/10</span>

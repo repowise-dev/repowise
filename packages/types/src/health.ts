@@ -536,6 +536,14 @@ export interface HealthOverviewSummary {
    *  (a clean repo returns `null` rather than a misleading "worst" at 10.0). */
   worst_performance_path?: string | null;
   worst_performance_score?: number | null;
+  /**
+   * `average_health`'s two halves, in deduction points: what the code's own
+   * shape costs, and what its git history costs. They sum to the total
+   * deduction, so ten minus both is the unclamped score. `null`/absent until
+   * the rows carry the split.
+   */
+  structure_average?: number | null;
+  history_average?: number | null;
 }
 
 export interface HealthOverviewResponse {
@@ -566,6 +574,8 @@ export interface HealthFilesResponse {
 }
 
 export interface HealthFilesQuery {
+  /** Which half of the repository to describe. Defaults to `"all"`. */
+  scope?: HealthScope;
   limit?: number;
   offset?: number;
   sort?: string;
@@ -672,6 +682,8 @@ export interface HealthMapQuery {
   cap?: number;
   /** Paths guaranteed a node, admitted before any other band. */
   active?: string[];
+  /** Which half of the repository to describe. Defaults to `"all"`. */
+  scope?: HealthScope;
 }
 
 /* ------------------------------------------------------------------ *
@@ -807,6 +819,15 @@ export interface HealthTrendResponse {
     average_health: number;
     worst_performer_path: string | null;
     worst_performer_score: number | null;
+    /**
+     * The headline's two halves in deduction points, and the maintainability
+     * pillar, at this snapshot. `null` before each was recorded and under a
+     * narrowed scope, so a series can start partway along the axis rather than
+     * reading an unrecorded point as a zero.
+     */
+    structure_average?: number | null;
+    history_average?: number | null;
+    maintainability_average?: number | null;
   }>;
   summary: {
     /** `null` under a narrowed scope: only the average covers both populations. */
@@ -1050,6 +1071,8 @@ export interface HealthWorkQueueQuery {
   min_severity?: string;
   max_effort?: string;
   sort?: "impact_per_effort" | "total_impact" | "score" | "finding_count";
+  /** Which half of the repository to describe. Defaults to `"all"`. */
+  scope?: HealthScope;
 }
 
 /** @deprecated Use HealthWorkItem; this is a file triage row, not a plan. */

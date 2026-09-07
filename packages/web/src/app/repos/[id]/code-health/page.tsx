@@ -45,6 +45,7 @@ import { Button } from "@repowise-dev/ui/ui/button";
 import { formatDateTime } from "@repowise-dev/ui/lib/format";
 import type { CodeHealthOverlay } from "@repowise-dev/ui/health";
 import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
+import { HEALTH_SCOPES, type HealthScope } from "@repowise-dev/types/health";
 import { TriageTab } from "@/components/code-health/triage-tab";
 import { HotspotsSection } from "@/components/code-health/hotspots-section";
 import { FindingsTab } from "@/components/code-health/findings-tab";
@@ -127,6 +128,19 @@ const TAB_ALIASES: Record<string, TabId> = {
 const OVERLAYS: CodeHealthOverlay[] = ["health", "maintainability", "performance", "churn"];
 
 /**
+ * Tabs whose data honours `scope`. The routes behind the others — coverage,
+ * dead code, security, blast radius — have no production/test split, and
+ * performance carries its own execution-context control, so the toggle is
+ * offered where it does something rather than sitting inert on five tabs.
+ */
+const SCOPED_TABS: TabId[] = ["triage", "findings"];
+
+const SCOPE_LABEL: Record<HealthScope, string> = {
+  all: "All code",
+  production: "Production",
+};
+
+/**
  * Nodes the map draws. The server chooses which ones: the selected file first,
  * then every file carrying an open performance cause in rank order, then the
  * biggest files fill the rest. Ranking by size alone used to push tens of
@@ -172,6 +186,14 @@ export default function CodeHealthPage() {
         ? "performance"
         : "triage");
 
+  const rawScope = searchParams.get("scope");
+  const scope: HealthScope = (HEALTH_SCOPES as readonly string[]).includes(rawScope ?? "")
+    ? (rawScope as HealthScope)
+    : "all";
+  // Only the default population needs no key suffix, so an existing cache entry
+  // stays valid and the narrowed one gets its own.
+  const scopeKey = scope === "all" ? "" : `:${scope}`;
+
   const rawLens = searchParams.get("lens");
   const overlay: CodeHealthOverlay = (OVERLAYS as readonly string[]).includes(rawLens ?? "")
     ? (rawLens as CodeHealthOverlay)
@@ -187,8 +209,8 @@ export default function CodeHealthPage() {
   // Shares the SWR key with TriageView — the meta line and the findings count
   // cost no extra request.
   const { data: overview } = useSWR<HealthOverviewResponse>(
-    `code-health-overview:${repoId}`,
-    () => getHealthOverview(repoId, 25),
+    `code-health-overview:${repoId}${scopeKey}`,
+    () => getHealthOverview(repoId, 25, scope),
     { revalidateOnFocus: false },
   );
   const meta = overview?.meta;
@@ -213,9 +235,11 @@ export default function CodeHealthPage() {
     data: trend,
     isLoading: trendLoading,
     error: trendError,
-  } = useSWR<HealthTrendResponse>(`code-health-trend:${repoId}`, () => getHealthTrend(repoId, 20), {
-    revalidateOnFocus: false,
-  });
+  } = useSWR<HealthTrendResponse>(
+    `code-health-trend:${repoId}${scopeKey}`,
+    () => getHealthTrend(repoId, 20, scope),
+    { revalidateOnFocus: false },
+  );
 
   // The opportunity a link arrived with, so its files can be guaranteed a node
   // and marked. One bounded request, and only when the link carries an id.
@@ -243,11 +267,12 @@ export default function CodeHealthPage() {
     [selectedPath, highlightPaths],
   );
   const { data: mapFeed } = useSWR<HealthMapFeed>(
-    `code-health-map:${repoId}:${activePaths.join(",")}`,
+    `code-health-map:${repoId}${scopeKey}:${activePaths.join(",")}`,
     () =>
       getHealthMap(repoId, {
         cap: MAP_CAP,
         ...(activePaths.length ? { active: activePaths } : {}),
+        scope,
       }),
     { revalidateOnFocus: false, keepPreviousData: true },
   );
@@ -332,6 +357,17 @@ export default function CodeHealthPage() {
     [router, searchParams],
   );
 
+  const setScope = useCallback(
+    (next: string) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (next === "all") sp.delete("scope");
+      else sp.set("scope", next);
+      const qs = sp.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+
   const setOverlay = useCallback(
     (next: CodeHealthOverlay) => {
       const sp = new URLSearchParams(searchParams.toString());
@@ -355,10 +391,21 @@ export default function CodeHealthPage() {
       // goes entirely to the field, which is this page's whole subject.
       maxWidth="wide"
       actions={
-        <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing}>
-          <RotateCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? "motion-safe:animate-spin" : ""}`} />{" "}
-          {refreshing ? "Refreshing…" : "Refresh"}
-        </Button>
+        <div className="flex items-center gap-4">
+          {SCOPED_TABS.includes(activeTab) && (
+            <ViewTabs
+              tabs={HEALTH_SCOPES.map((id) => ({ id, label: SCOPE_LABEL[id] }))}
+              value={scope}
+              onValueChange={setScope}
+            />
+          )}
+          <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing}>
+            <RotateCw
+              className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? "motion-safe:animate-spin" : ""}`}
+            />{" "}
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+        </div>
       }
     >
       {meta ? (
@@ -396,6 +443,7 @@ export default function CodeHealthPage() {
             selectedPath={selectedPath}
             onSelectPath={setSelectedPath}
             highlightPaths={highlightPaths}
+            scope={scope}
             hotspotsSlot={<HotspotsSection repoId={repoId} />}
             trendSlot={
               <OverviewSection
@@ -407,7 +455,7 @@ export default function CodeHealthPage() {
             }
           />
         )}
-        {activeTab === "findings" && <FindingsTab repoId={repoId} />}
+        {activeTab === "findings" && <FindingsTab repoId={repoId} scope={scope} />}
         {activeTab === "performance" && <PerformanceTab repoId={repoId} />}
         {activeTab === "coverage" && <CoverageTab repoId={repoId} />}
         {activeTab === "dead-code" && <DeadCodeTab repoId={repoId} />}

@@ -319,9 +319,18 @@ def drop_unscoped_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "hotspot_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,
+            "structure_average": None,
+            "history_average": None,
+            "maintainability_average": None,
         }
         for row in rows
     ]
+
+
+def _point(snap: Any, attr: str) -> float | None:
+    """One optional snapshot column, rounded for the wire."""
+    value = getattr(snap, attr, None)
+    return round(float(value), 2) if value is not None else None
 
 
 def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
@@ -347,6 +356,13 @@ def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
                     if snap.worst_performer_score is not None
                     else None
                 ),
+                # The headline's two halves and the maintainability pillar at
+                # the same instant. NULL on snapshots taken before each was
+                # recorded, which is what lets a reader see where the series
+                # starts rather than reading a gap as a zero.
+                "structure_average": _point(snap, "structure_average"),
+                "history_average": _point(snap, "history_average"),
+                "maintainability_average": _point(snap, "maintainability_average"),
             }
         )
     return rows

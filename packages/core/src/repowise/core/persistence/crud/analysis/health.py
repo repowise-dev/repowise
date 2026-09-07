@@ -26,6 +26,7 @@ from ....analysis.health.ranking import (
     worst_metric,
 )
 from ....analysis.health.rows import detail_map
+from ....analysis.health.scoring import nloc_weighted_attr
 from ....analysis.health.scope import scores_language
 from ....test_paths import is_test_related_path
 from ...models import (
@@ -566,6 +567,11 @@ async def get_perf_coverage(session: AsyncSession, repository_id: str) -> PerfCo
     return coverage_for_metrics(metrics, lang_by_path)
 
 
+def _rounded(value: float | None) -> float | None:
+    """Two-decimal wire value, passing ``None`` through as "not measured"."""
+    return round(value, 2) if value is not None else None
+
+
 async def get_health_summary(
     session: AsyncSession,
     repository_id: str,
@@ -598,6 +604,8 @@ async def get_health_summary(
             "open_findings": 0,
             "maintainability_average": None,
             "performance_average": None,
+            "structure_average": None,
+            "history_average": None,
             "maintainability_findings": 0,
             "performance_findings": 0,
             "performance_findings_density": None,
@@ -692,12 +700,13 @@ async def get_health_summary(
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
         "open_findings": len(findings),
-        "maintainability_average": (
-            round(maintainability_average, 2) if maintainability_average is not None else None
-        ),
-        "performance_average": (
-            round(performance_average, 2) if performance_average is not None else None
-        ),
+        "maintainability_average": _rounded(maintainability_average),
+        "performance_average": _rounded(performance_average),
+        # The headline's two halves, in deduction points. Both come off columns
+        # already on the rows in hand, so this costs no query — and without them
+        # the page can show a score falling without saying which half moved.
+        "structure_average": _rounded(nloc_weighted_attr(metrics, "structure_deduction")),
+        "history_average": _rounded(nloc_weighted_attr(metrics, "history_deduction")),
         "maintainability_findings": by_dim.get("maintainability", 0),
         "performance_findings": performance_findings,
         "performance_findings_density": performance_findings_density,
@@ -759,6 +768,7 @@ async def save_health_snapshot(
     structure_average: float | None = None,
     history_average: float | None = None,
     production_average: float | None = None,
+    maintainability_average: float | None = None,
     taken_at: datetime | None = None,
 ) -> HealthSnapshot:
     """Append a snapshot; prune oldest rows past ``HEALTH_SNAPSHOT_RETENTION``.
@@ -791,6 +801,7 @@ async def save_health_snapshot(
         structure_average=structure_average,
         history_average=history_average,
         production_average=production_average,
+        maintainability_average=maintainability_average,
     )
     session.add(snap)
     await session.flush()

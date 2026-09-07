@@ -98,6 +98,19 @@ export function healthBandTextColor(band: HealthBand): string {
   return HEALTH_BAND_TEXT[band];
 }
 
+/* The same three colours as raw CSS values, for the places that cannot take a
+ * class: an inline `style`, an SVG stroke. Kept beside HEALTH_BAND_TEXT so the
+ * two cannot drift the way the ink and text tables once did. */
+const HEALTH_BAND_COLOR: Record<HealthBand, string> = {
+  alert: "var(--color-error)",
+  warning: "var(--color-warning)",
+  healthy: "var(--color-success)",
+};
+
+export function healthBandColor(band: HealthBand): string {
+  return HEALTH_BAND_COLOR[band];
+}
+
 /* Literal class strings per band so Tailwind's static scanner sees them. */
 const BAND_TEXT: Record<ScoreBand, string> = {
   critical: "text-[var(--color-error)]",

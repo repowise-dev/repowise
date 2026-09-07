@@ -172,6 +172,7 @@ def _persist_health(repo_path: object, *, report: object) -> None:
                     structure_average=kpis.get("structure_average"),
                     history_average=kpis.get("history_average"),
                     production_average=kpis.get("production_average"),
+                    maintainability_average=kpis.get("maintainability_average"),
                 )
             except Exception as exc:
                 console.print(f"[yellow]Snapshot write skipped: {exc}[/yellow]")

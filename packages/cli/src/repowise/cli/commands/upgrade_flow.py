@@ -420,6 +420,7 @@ async def _run_upgrade(
                         structure_average=kpis.get("structure_average"),
                         history_average=kpis.get("history_average"),
                         production_average=kpis.get("production_average"),
+                        maintainability_average=kpis.get("maintainability_average"),
                     )
             console.print(
                 f"Code health recomputed at FULL tier: "

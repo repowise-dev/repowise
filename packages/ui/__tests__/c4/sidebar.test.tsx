@@ -7,7 +7,7 @@ import { ArchNodeInfo } from "../../src/c4/panels/ArchNodeInfo";
 import { FileExplorer } from "../../src/c4/panels/FileExplorer";
 import { createMockView } from "./fixtures";
 
-vi.mock("../../src/dashboard/health-score-ring", () => ({
+vi.mock("../../src/c4/health-score-ring", () => ({
   HealthScoreRing: ({ score }: { score: number }) => (
     <div data-testid="health-score-ring">{score}</div>
   ),

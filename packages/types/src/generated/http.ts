@@ -1555,6 +1555,9 @@ export interface HealthTrendKpiRow {
   average_health: number;
   worst_performer_path?: string | null;
   worst_performer_score?: number | null;
+  structure_average?: number | null;
+  history_average?: number | null;
+  maintainability_average?: number | null;
 }
 
 export interface HealthTrendResponse {

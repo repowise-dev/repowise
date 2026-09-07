@@ -1,36 +1,37 @@
 /**
- * The Code Health page's opening read: one figure large enough to lead, and the
- * sentences that make it mean something.
+ * The Code Health page's opening read: the two figures that lead, and the
+ * sentences that make them mean something.
  *
- * It replaces four separate containers that used to stack above the map — a
- * collapsible "can you trust this score?" banner, three bordered signal tiles,
- * and a bordered strip of operational stats. Between them they carried six
- * numbers at near-identical weight behind five uppercase labels, which is the
- * box-soup failure: everything claims the same importance, so nothing leads,
- * and the page needed borders to produce the structure a type scale should have
- * given it for free.
+ * Two rather than one because they answer different questions. Code health is
+ * the calibrated, bug-predicting number, and roughly half of what it deducts
+ * comes from git history, so it can fall through a week of good refactoring
+ * and tell the reader nothing they can act on. Maintainability is pure code
+ * shape, which is why it sits at the same weight rather than in the ribbon: it
+ * is the number a refactor is supposed to move.
  *
- * The prose is not decoration here. "329 risks" reads as alarming on its own;
+ * The prose is not decoration. "329 risks" reads as alarming on its own;
  * "329 static performance risks, scored separately and never blended into the
- * defect number" reads as informative. Same figure. The accuracy claim in
- * particular only means anything next to its base rate — a 72% hit rate is
- * excellent against a 20% baseline and unremarkable against a 70% one — so it
+ * health number" reads as informative. Same figure. The accuracy claim in
+ * particular only means anything next to its base rate: a 72% hit rate is
+ * excellent against a 20% baseline and unremarkable against a 70% one, so it
  * is a sentence rather than a badge.
  */
 
-import type {
-  DefectAccuracy,
-  HealthDistribution,
-  HealthOverviewSummary,
+import {
+  bandForScore,
+  HEALTH_BAND_LABEL,
+  type DefectAccuracy,
+  type HealthDistribution,
+  type HealthOverviewSummary,
 } from "@repowise-dev/types/health";
-import { PageLede } from "../shared/page-lede";
+import { LedeFigure, PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
-// Bands come from the one shared function on purpose. Two surfaces disagreeing
-// about where "Good" starts is worse than the duplication that would avoid it.
-import { healthBand } from "../overview/health-lede";
 import { formatNumber } from "../lib/format";
-import { scoreTextColor } from "./tokens";
+import { healthBandColor, scoreTextColor } from "./tokens";
 import { HealthDistributionBar } from "./health-distribution-bar";
+
+/** Which of the two figures the page's current selection describes. */
+export type LedePillar = "health" | "maintainability";
 
 export interface CodeHealthLedeProps {
   summary: HealthOverviewSummary;
@@ -38,7 +39,13 @@ export interface CodeHealthLedeProps {
   accuracy?: DefectAccuracy | null;
   /** NLOC-weighted split across the bands, shown under the score. */
   distribution?: HealthDistribution | null;
-  /** Rendered under the prose — the host's pillar deep-links. */
+  /**
+   * The figure the map is currently coloured by. It highlights one of the two
+   * and never changes either value: a lens is a way of looking at the repo,
+   * not a different repo.
+   */
+  pillar?: LedePillar;
+  /** Rendered under the prose, for the host's pillar deep-links. */
   action?: React.ReactNode;
 }
 
@@ -48,37 +55,33 @@ function windowLabel(days: number): string {
   return months === 1 ? "month" : `${months} months`;
 }
 
+/** A score as a canonical three-band chip. */
+function bandChip(score: number): { label: string; color: string } {
+  const band = bandForScore(score);
+  return { label: HEALTH_BAND_LABEL[band], color: healthBandColor(band) };
+}
+
 export function CodeHealthLede({
   summary,
   accuracy,
   distribution,
+  pillar = "health",
   action,
 }: CodeHealthLedeProps) {
-  const band = healthBand(summary.average_health);
+  const health = summary.average_health;
   const maint = summary.maintainability_average;
   const perf = summary.performance_average;
   const perfFindings = summary.performance_findings ?? 0;
   const hotspot = summary.hotspot_health;
-
-  // Assembled rather than interpolated inline: a repo can have measured one
-  // pillar and not the other, and the naive version produces "The three are
-  // scored separately" when there are two of them.
-  const pillars: string[] = [];
-  if (maint != null) pillars.push(`maintainability ${maint.toFixed(1)}`);
-  if (perf != null) pillars.push(`static performance risk ${perf.toFixed(1)}`);
+  const structure = summary.structure_average;
+  const healthChip = bandChip(health);
 
   const stats: RibbonStat[] = [
     { label: "Files", value: formatNumber(summary.file_count) },
     {
-      label: "Maintainability",
-      value: maint == null ? "" : `${maint.toFixed(1)}`,
-      valueColor: maint == null ? undefined : scoreTextColor(maint),
-      hint: "Smells that raise change-cost without predicting bugs. Scored on its own, never blended into the defect number.",
-    },
-    {
       label: "Performance risk",
       value: perf == null ? "" : formatNumber(perfFindings),
-      hint: "Open static performance risks: a DB, network, filesystem or subprocess call per loop iteration, found across function boundaries. High precision, low recall.",
+      hint: "Open static performance risks: a DB, network, filesystem or subprocess call per loop iteration, found across function boundaries. High precision, low recall. This is a count of open causes, not a score, so it counts up as the analyzer finds more and falls only when they are fixed.",
     },
     {
       label: "Hotspot health",
@@ -92,21 +95,53 @@ export function CodeHealthLede({
   return (
     <div className="flex flex-col gap-6">
       <PageLede
-        label="Defect risk"
-        value={summary.average_health.toFixed(1)}
-        valueColor={band.color}
+        label="Code health"
+        value={health.toFixed(1)}
+        valueColor={healthChip.color}
         unit="out of 10"
-        band={band}
+        band={healthChip}
         action={action}
         layout="beside"
-        // The one second read that belongs to the score itself: how the repo's
-        // code volume splits across the bands. A 7.5 average hides whether that
-        // is everything-mediocre or mostly-healthy-with-a-bad-corner, and those
-        // are different problems.
+        figureHighlighted={pillar === "health"}
+        // The two second reads that belong to this number: how the repo's code
+        // volume splits across the bands, and which half of the score is
+        // holding it down. The average alone hides whether this is
+        // everything-mediocre or mostly-healthy-with-a-bad-corner, and it hides
+        // that a refactor may not move it at all.
         figureFooter={
-          distribution ? (
-            <HealthDistributionBar distribution={distribution} height="sm" />
-          ) : undefined
+          <>
+            {distribution && <HealthDistributionBar distribution={distribution} height="sm" />}
+            {structure != null && (
+              <p className="mt-3 text-[11px] leading-snug text-[var(--color-text-tertiary)]">
+                Structure{" "}
+                <span className="tabular-nums text-[var(--color-text-secondary)]">
+                  {(10 - structure).toFixed(1)}
+                </span>
+                . History pulls it to{" "}
+                <span className="tabular-nums text-[var(--color-text-secondary)]">
+                  {health.toFixed(1)}
+                </span>
+                .
+              </p>
+            )}
+          </>
+        }
+        figureSecondary={
+          <LedeFigure
+            label="Maintainability"
+            value={maint == null ? "—" : maint.toFixed(1)}
+            valueColor={maint == null ? undefined : bandChip(maint).color}
+            unit={maint == null ? undefined : "out of 10"}
+            band={maint == null ? undefined : bandChip(maint)}
+            highlighted={pillar === "maintainability"}
+            footer={
+              <p className="text-[11px] leading-snug text-[var(--color-text-tertiary)]">
+                {maint == null
+                  ? "Not measured on this index."
+                  : "Code shape only. This is the number that moves when you refactor."}
+              </p>
+            }
+          />
         }
       >
         <p>
@@ -116,17 +151,16 @@ export function CodeHealthLede({
           </strong>
           , this codebase scores{" "}
           <strong className="font-semibold text-[var(--color-text-primary)]">
-            {summary.average_health.toFixed(1)} out of 10
+            {health.toFixed(1)} out of 10
           </strong>{" "}
-          on defect risk, weighted by lines of code and built from complexity,
+          for code health, weighted by lines of code and built from complexity,
           duplication, coverage, churn and ownership. We rate that{" "}
-          {band.label.toLowerCase()}.
-          {pillars.length > 0 && (
+          {healthChip.label.toLowerCase()}.
+          {perf != null && (
             <>
               {" "}
-              It also scores {pillars.join(" and ")} out of 10;{" "}
-              {pillars.length === 1 ? "the two are" : "the three are"} measured
-              separately and never blended into one number.
+              Static performance risk is scored separately at {perf.toFixed(1)} out
+              of 10 and never blended into either figure.
             </>
           )}
         </p>
@@ -157,10 +191,13 @@ export function CodeHealthLede({
         {hotspot != null && (
           <p className="mt-2.5">
             The files you change most average{" "}
-            <strong className="font-semibold" style={{ color: healthBand(hotspot).color }}>
+            <strong
+              className="font-semibold"
+              style={{ color: healthBandColor(bandForScore(hotspot)) }}
+            >
               {hotspot.toFixed(1)}
             </strong>
-            , {describeGap(hotspot, summary.average_health)}
+            , {describeGap(hotspot, health)}
           </p>
         )}
       </PageLede>
@@ -175,7 +212,7 @@ export function CodeHealthLede({
  *
  * Worth a sentence rather than a delta chip: hotspot health below the repo
  * average is the finding that actually changes what someone does next, and
- * "6.2 (−1.1)" does not say which direction is bad.
+ * "6.2 (-1.1)" does not say which direction is bad.
  */
 function describeGap(hotspot: number, average: number): string {
   const gap = hotspot - average;

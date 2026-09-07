@@ -1615,6 +1615,7 @@ async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
             structure_average=kpis.get("structure_average"),
             history_average=kpis.get("history_average"),
             production_average=kpis.get("production_average"),
+            maintainability_average=kpis.get("maintainability_average"),
         )
     except Exception as exc:
         logger.warning("health_snapshot_skipped", error=str(exc))

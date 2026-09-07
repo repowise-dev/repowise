@@ -92,6 +92,13 @@ class HealthTrendKpiRow(BaseModel):
     average_health: float
     worst_performer_path: str | None = None
     worst_performer_score: float | None = None
+    #: The headline's two halves in deduction points, and the maintainability
+    #: pillar, at this snapshot. ``None`` before each was recorded and under a
+    #: narrowed scope, so a series starts partway along the axis rather than
+    #: reading an unrecorded point as a zero.
+    structure_average: float | None = None
+    history_average: float | None = None
+    maintainability_average: float | None = None
 
 
 class HealthTrendSummary(BaseModel):

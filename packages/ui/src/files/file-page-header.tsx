@@ -91,7 +91,7 @@ export function FilePageHeader({
 
       {score != null ? (
         <PageLede
-          label="Defect risk"
+          label="Code health"
           value={score.toFixed(1)}
           valueColor={healthBandInk(bandForScore(score))}
           unit="out of 10"

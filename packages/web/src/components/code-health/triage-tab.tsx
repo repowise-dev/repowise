@@ -25,6 +25,7 @@ import {
   type HealthTrendResponse,
   type HealthMapFeed,
 } from "@/lib/api/code-health";
+import type { HealthScope } from "@repowise-dev/types/health";
 import { HealthFileDrawerHost } from "@/components/health/health-file-drawer-host";
 
 export function TriageTab({
@@ -40,6 +41,7 @@ export function TriageTab({
   highlightPaths,
   hotspotsSlot,
   trendSlot,
+  scope,
 }: {
   repoId: string;
   /** Trend fetched once at the page level. */
@@ -61,16 +63,23 @@ export function TriageTab({
   /** Sections composed by the page and rendered under the map. */
   hotspotsSlot?: ReactNode;
   trendSlot?: ReactNode;
+  /** Which half of the repository every figure here describes. */
+  scope?: HealthScope;
 }) {
   const router = useRouter();
 
   const prefix = `/repos/${id}`;
+  // Scope rides in the cache key as well as the query: the views key their SWR
+  // off it, so narrowing has to make a different key or the first population
+  // stays on screen under the second one's label.
   const adapter: CodeHealthAdapter = {
-    cacheKey: id,
-    getOverview: (limit) => getHealthOverview(id, limit),
-    listFindings: (opts) => listHealthFindings(id, opts),
-    listFiles: (opts) => listHealthFiles(id, opts),
-    getHealthWorkQueue: (opts) => getHealthWorkQueue(id, opts),
+    cacheKey: scope && scope !== "all" ? `${id}:${scope}` : id,
+    getOverview: (limit) => getHealthOverview(id, limit, scope),
+    listFindings: (opts) =>
+      listHealthFindings(id, { ...opts, ...(scope ? { scope } : {}) }),
+    listFiles: (opts) => listHealthFiles(id, { ...opts, ...(scope ? { scope } : {}) }),
+    getHealthWorkQueue: (opts) =>
+      getHealthWorkQueue(id, { ...opts, ...(scope ? { scope } : {}) }),
     updateFindingStatus: (findingId, status) =>
       updateFindingStatus(id, findingId, status),
     getCoverage: (opts) => getHealthCoverage(id, opts),

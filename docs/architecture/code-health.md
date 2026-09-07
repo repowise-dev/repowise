@@ -171,7 +171,6 @@ server/src/repowise/server/
 
 ```
 packages/ui/src/health/             # shared React components (used by web + future hosted frontend)
-├── kpi-cards.tsx
 ├── file-table.tsx
 ├── biomarker-list.tsx
 ├── coverage-bar.tsx

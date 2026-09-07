@@ -21,6 +21,7 @@ import type {
   PerformanceOpportunityQuery,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  HealthScope,
 } from "@repowise-dev/types/health";
 import type { Paginated } from "@repowise-dev/types";
 import { apiGet, apiPatch } from "./client";
@@ -50,6 +51,7 @@ export type {
   HealthMapSelection,
   HealthModuleRow,
   HealthOverviewResponse,
+  HealthScope,
   HealthTrendResponse,
   HealthWorkItem,
   HealthWorkQueueQuery,
@@ -73,10 +75,11 @@ export type {
 export async function getHealthOverview(
   repoId: string,
   limit = 25,
+  scope?: HealthScope,
 ): Promise<HealthOverviewResponse> {
   return apiGet<HealthOverviewResponse>(
     `/api/repos/${repoId}/health/overview`,
-    { limit },
+    { limit, scope },
   );
 }
 
@@ -88,6 +91,7 @@ export async function listHealthFindings(
     min_severity?: string;
     dimension?: string;
     limit?: number;
+    scope?: HealthScope;
   },
 ): Promise<HealthFinding[]> {
   return apiGet<HealthFinding[]>(`/api/repos/${repoId}/health/findings`, opts);
@@ -153,6 +157,7 @@ export async function getHealthMap(
   return apiGet<HealthMapFeed>(`/api/repos/${repoId}/health/map`, {
     cap: opts.cap,
     active: opts.active?.length ? opts.active.join(",") : undefined,
+    scope: opts.scope,
   });
 }
 
@@ -176,8 +181,12 @@ export async function getHealthFileBreakdown(
   );
 }
 
-export async function getHealthTrend(repoId: string, limit = 20): Promise<HealthTrendResponse> {
-  return apiGet<HealthTrendResponse>(`/api/repos/${repoId}/health/trend`, { limit });
+export async function getHealthTrend(
+  repoId: string,
+  limit = 20,
+  scope?: HealthScope,
+): Promise<HealthTrendResponse> {
+  return apiGet<HealthTrendResponse>(`/api/repos/${repoId}/health/trend`, { limit, scope });
 }
 
 export async function updateFindingStatus(

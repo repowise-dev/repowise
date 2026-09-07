@@ -24,20 +24,30 @@ import {
   getFileOpportunity,
   refactoringOpportunityHref,
 } from "@/lib/api/file-opportunity";
+import type { HealthScope } from "@repowise-dev/types/health";
 
-export function FindingsTab({ repoId: id }: { repoId: string }) {
+export function FindingsTab({
+  repoId: id,
+  scope,
+}: {
+  repoId: string;
+  /** Which half of the repository every figure here describes. */
+  scope?: HealthScope;
+}) {
   const router = useRouter();
 
   const prefix = `/repos/${id}`;
   const adapter: CodeHealthAdapter = {
-    cacheKey: id,
-    getOverview: (limit) => getHealthOverview(id, limit),
-    listFindings: (opts) => listHealthFindings(id, opts),
+    cacheKey: scope && scope !== "all" ? `${id}:${scope}` : id,
+    getOverview: (limit) => getHealthOverview(id, limit, scope),
+    listFindings: (opts) =>
+      listHealthFindings(id, { ...opts, ...(scope ? { scope } : {}) }),
     getFileOpportunity: (filePath) => getFileOpportunity(id, filePath),
     refactoringOpportunityHref: (opportunityId) =>
       refactoringOpportunityHref(id, opportunityId),
-    listFiles: (opts) => listHealthFiles(id, opts),
-    getHealthWorkQueue: (opts) => getHealthWorkQueue(id, opts),
+    listFiles: (opts) => listHealthFiles(id, { ...opts, ...(scope ? { scope } : {}) }),
+    getHealthWorkQueue: (opts) =>
+      getHealthWorkQueue(id, { ...opts, ...(scope ? { scope } : {}) }),
     updateFindingStatus: (findingId, status) =>
       updateFindingStatus(id, findingId, status),
     getCoverage: (opts) => getHealthCoverage(id, opts),

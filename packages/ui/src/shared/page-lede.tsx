@@ -44,38 +44,52 @@ export interface PageLedeProps {
    * for another statistic.
    */
   figureFooter?: React.ReactNode;
+  /** Marks the primary figure as the one the current selection describes. */
+  figureHighlighted?: boolean | undefined;
+  /**
+   * A co-equal second figure, built with `LedeFigure` so both share one type
+   * scale. For a page whose subject genuinely has two headline numbers; a
+   * supporting statistic belongs in the ribbon, where it reads as supporting.
+   */
+  figureSecondary?: React.ReactNode;
+}
+
+export interface LedeFigureProps {
+  label: string;
+  value: string;
+  valueColor?: string | undefined;
+  unit?: string | undefined;
+  band?: PageLedeBand | undefined;
+  badge?: React.ReactNode;
+  footer?: React.ReactNode;
+  /** Marks this figure as the one the page's current selection describes. */
+  highlighted?: boolean | undefined;
 }
 
 /**
- * The shape a page leads with: one figure large enough to lead, a band chip
- * where a band exists, and the plain-English sentence that makes the figure
- * readable.
- *
- * Extracted from `HealthLede`, which still composes it — the arrangement was
- * being copied by every surface that adopted the section style, and three
- * hand-rolled copies is how the 44 / 48 / 52 sizes drift apart.
- *
- * The prose is not decoration. "329 risks" reads as alarming; "329 static
- * performance risks across 100% of scanned lines, which we rate 9.9 out of
- * 10" reads as informative. Same number.
+ * One labelled figure at lede weight. Exported so a page with two headline
+ * numbers composes the second from the same source as the first, rather than
+ * re-deriving the 44/48px step and the chip geometry by hand.
  */
-export function PageLede({
+export function LedeFigure({
   label,
   value,
   valueColor,
   unit,
   band,
   badge,
-  children,
-  action,
-  layout = "stacked",
-  figureFooter,
-}: PageLedeProps) {
-  const beside = layout === "beside";
-
-  const figure = (
-    <div className={beside ? "flex shrink-0 flex-col" : "flex flex-col"}>
-      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+  footer,
+  highlighted,
+}: LedeFigureProps) {
+  return (
+    <div className="flex min-w-0 flex-col">
+      <p
+        className={
+          highlighted
+            ? "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-accent-primary)]"
+            : "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
+        }
+      >
         {label}
       </p>
 
@@ -109,14 +123,67 @@ export function PageLede({
         {badge}
       </div>
 
-      {figureFooter && <div className="mt-4">{figureFooter}</div>}
+      {footer && <div className="mt-4">{footer}</div>}
     </div>
+  );
+}
+
+/**
+ * The shape a page leads with: one figure large enough to lead, a band chip
+ * where a band exists, and the plain-English sentence that makes the figure
+ * readable.
+ *
+ * Extracted from `HealthLede`, which still composes it — the arrangement was
+ * being copied by every surface that adopted the section style, and three
+ * hand-rolled copies is how the 44 / 48 / 52 sizes drift apart.
+ *
+ * The prose is not decoration. "329 risks" reads as alarming; "329 static
+ * performance risks across 100% of scanned lines, which we rate 9.9 out of
+ * 10" reads as informative. Same number.
+ */
+export function PageLede({
+  label,
+  value,
+  valueColor,
+  unit,
+  band,
+  badge,
+  children,
+  action,
+  layout = "stacked",
+  figureFooter,
+  figureHighlighted,
+  figureSecondary,
+}: PageLedeProps) {
+  const beside = layout === "beside";
+  const paired = figureSecondary != null;
+
+  const primary = (
+    <LedeFigure
+      label={label}
+      value={value}
+      valueColor={valueColor}
+      unit={unit}
+      band={band}
+      badge={badge}
+      footer={figureFooter}
+      highlighted={figureHighlighted}
+    />
+  );
+
+  const figure = paired ? (
+    <div className="grid gap-x-10 gap-y-6 sm:grid-cols-2">
+      {primary}
+      {figureSecondary}
+    </div>
+  ) : (
+    <div className={beside ? "flex shrink-0 flex-col" : "flex flex-col"}>{primary}</div>
   );
 
   const prose = (
     <div
       className={
-        beside
+        beside && !paired
           ? // Two columns from xl. Three paragraphs in one 62ch column runs tall
             // enough to push the page's actual subject below the fold while
             // leaving half the row empty; flowed into two ~48ch columns it is
@@ -138,7 +205,7 @@ export function PageLede({
       // the number is; without it a 7.5 and a 10.0 indent the paragraph
       // differently and the block looks unaligned between repos.
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-12">
-        <div className="lg:w-[220px]">{figure}</div>
+        <div className={paired ? "lg:w-[420px] lg:shrink-0" : "lg:w-[220px]"}>{figure}</div>
         {prose}
       </div>
     );

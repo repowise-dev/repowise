@@ -62,7 +62,6 @@
     "./wiki/*": "./src/wiki/*.tsx",
     "./chat": "./src/chat/index.ts",
     "./chat/*": "./src/chat/*.tsx",
-    "./dashboard": "./src/dashboard/index.ts",
     "./dashboard/attention-href": "./src/dashboard/attention-href.ts",
     "./dashboard/*": "./src/dashboard/*.tsx",
     "./stats": "./src/stats/index.ts",

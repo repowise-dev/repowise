@@ -187,6 +187,7 @@ export function TriageView({
         summary={overview.summary}
         accuracy={overview.defect_accuracy ?? null}
         distribution={overview.distribution ?? null}
+        pillar={overlay === "maintainability" ? "maintainability" : "health"}
       />
 
       <OverviewSection

@@ -24,11 +24,19 @@ const BAND_FILL: Record<ScoreBand, string> = {
   good: "var(--color-node-good)",
 };
 
+/**
+ * The ramp names its score ranges rather than borrowing band words.
+ *
+ * It has four steps and the canonical band scale has three, so reusing the
+ * words made "Warning" mean 4 to 6 here and 4 to 8 on every other mark on the
+ * page, and invented a fourth band, "Fair", that the product never returns. A
+ * range is unambiguous and needs no glossary.
+ */
 const BAND_LABEL: { band: ScoreBand; label: string }[] = [
-  { band: "critical", label: "Alert" },
-  { band: "poor", label: "Warning" },
-  { band: "fair", label: "Fair" },
-  { band: "good", label: "Healthy" },
+  { band: "critical", label: "Below 4" },
+  { band: "poor", label: "4 to 6" },
+  { band: "fair", label: "6 to 8" },
+  { band: "good", label: "8 and above" },
 ];
 
 /**
@@ -230,7 +238,7 @@ export function performanceSentence(f: CodeHealthMapFile): string {
 
 export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
   health: {
-    label: "Health",
+    label: "Code health",
     caption: "galaxy = module · size = lines of code",
     fill: (f) => BAND_FILL[scoreBand(f.score)],
     legend: BAND_LABEL.map((b) => ({ fill: BAND_FILL[b.band], label: b.label })),

@@ -8,12 +8,46 @@ export interface TrendSeriesPoint {
   hotspot_health: number | null;
   average_health: number;
   worst_performer_score: number | null;
+  /**
+   * The maintainability pillar, and the deduction history costs, at this
+   * snapshot. Both `null` before they were recorded, so each series starts
+   * partway along the axis instead of reading an unrecorded point as a zero.
+   */
+  maintainability_average?: number | null;
+  history_average?: number | null;
 }
 
 export interface TrendChartProps {
   /** Oldest-first list of snapshots. */
   history: TrendSeriesPoint[];
   height?: number;
+}
+
+type LineKey =
+  | "average_health"
+  | "hotspot_health"
+  | "worst_performer_score"
+  | "maintainability_average";
+
+/**
+ * Index ranges over which *has* holds without a gap.
+ *
+ * A line may simply skip a missing point, but an area cannot: filling straight
+ * across a gap would draw a measurement for a snapshot that never recorded one.
+ */
+function runs<T>(items: T[], has: (item: T) => boolean): number[][] {
+  const out: number[][] = [];
+  let current: number[] = [];
+  items.forEach((item, i) => {
+    if (has(item)) {
+      current.push(i);
+      return;
+    }
+    if (current.length > 0) out.push(current);
+    current = [];
+  });
+  if (current.length > 0) out.push(current);
+  return out;
 }
 
 export function TrendChart({ history, height = 220 }: TrendChartProps) {
@@ -39,7 +73,7 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
     history.length === 1 ? padL + plotW / 2 : padL + (i / (history.length - 1)) * plotW;
   const yScale = (v: number) => padT + ((10 - v) / 10) * plotH;
 
-  const path = (key: "average_health" | "hotspot_health" | "worst_performer_score") => {
+  const path = (key: LineKey) => {
     const pts: [number, number][] = [];
     history.forEach((p, i) => {
       const v = p[key];
@@ -49,6 +83,27 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
     return pts.map(([x, y], i) => (i === 0 ? `M${x},${y}` : `L${x},${y}`)).join(" ");
   };
 
+  const hasMaintainability = history.some((p) => p.maintainability_average != null);
+
+  // The band between the score history does not touch and the score itself:
+  // what git history costs, drawn where the lede says it in words. Only over
+  // runs of snapshots that recorded the split.
+  const historyBands = runs(history, (p) => p.history_average != null).map((run) =>
+    [
+      ...run.map((i) => {
+        const p = history[i]!;
+        // Clamped: the two halves are means of deductions while the score is
+        // a mean of clamped scores, so on a repo with a floored file they can
+        // sum past 10 and the edge would leave the plot.
+        return `${run[0] === i ? "M" : "L"}${xScale(i)},${yScale(
+          Math.min(10, p.average_health + (p.history_average as number)),
+        )}`;
+      }),
+      ...[...run].reverse().map((i) => `L${xScale(i)},${yScale(history[i]!.average_health)}`),
+      "Z",
+    ].join(" "),
+  );
+
   return (
     // No card. The chart sits inside a section that already names it, so a
     // border here is a second frame around content that has one.
@@ -57,8 +112,17 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
         <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           KPI trend
         </h3>
-        <div className="flex items-center gap-3 text-xs text-[var(--color-text-tertiary)]">
-          <Legend dot="bg-[var(--color-success)]" label="Average" />
+        <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--color-text-tertiary)]">
+          <Legend dot="bg-[var(--color-success)]" label="Code health" />
+          {hasMaintainability && (
+            <Legend dot="bg-[var(--color-accent-secondary)]" label="Maintainability" />
+          )}
+          {historyBands.length > 0 && (
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-2 w-2 rounded-[1px] bg-current opacity-25" />
+              History drag
+            </span>
+          )}
           <Legend dot="bg-[var(--color-warning)]" label="Hotspot" />
           <Legend dot="bg-[var(--color-error)]" label="Worst" />
         </div>
@@ -73,12 +137,32 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
             </text>
           </g>
         ))}
+        {/* Under the lines: the band is context for them, not a mark of its own. */}
+        {historyBands.map((d, i) => (
+          <path key={i} d={d} fill="currentColor" fillOpacity={0.07} stroke="none" />
+        ))}
         <path d={path("average_health")} stroke="var(--color-success)" strokeWidth={1.8} fill="none" />
+        {hasMaintainability && (
+          <path
+            d={path("maintainability_average")}
+            stroke="var(--color-accent-secondary)"
+            strokeWidth={1.8}
+            fill="none"
+          />
+        )}
         <path d={path("hotspot_health")} stroke="var(--color-warning)" strokeWidth={1.8} fill="none" />
         <path d={path("worst_performer_score")} stroke="var(--color-error)" strokeWidth={1.4} fill="none" strokeDasharray="3 3" />
         {history.map((p, i) => (
           <g key={i}>
             <circle cx={xScale(i)} cy={yScale(p.average_health)} r={2.5} fill="var(--color-success)" />
+            {p.maintainability_average != null ? (
+              <circle
+                cx={xScale(i)}
+                cy={yScale(p.maintainability_average)}
+                r={2.5}
+                fill="var(--color-accent-secondary)"
+              />
+            ) : null}
             {p.hotspot_health != null ? (
               <circle cx={xScale(i)} cy={yScale(p.hotspot_health)} r={2.5} fill="var(--color-warning)" />
             ) : null}

@@ -225,6 +225,7 @@ class AnalysisIndexStore(ABC):
         structure_average: float | None = None,
         history_average: float | None = None,
         production_average: float | None = None,
+        maintainability_average: float | None = None,
         taken_at: datetime | None = None,
     ) -> HealthSnapshot: ...
 

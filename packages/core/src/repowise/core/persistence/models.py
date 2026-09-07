@@ -1860,6 +1860,10 @@ class HealthSnapshot(Base):
     # the line counts that weight them, so a narrowed trend rebuilt at read
     # time would be a differently-weighted number wearing the same name.
     production_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The maintainability pillar at the same instant as ``average_health``, so
+    # the trend can draw the number a refactor is meant to move beside the one
+    # history drags on. NULL on snapshots taken before it was recorded.
+    maintainability_average: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class CoverageFile(Base):

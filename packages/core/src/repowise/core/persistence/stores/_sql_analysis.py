@@ -262,6 +262,7 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
         structure_average: float | None = None,
         history_average: float | None = None,
         production_average: float | None = None,
+        maintainability_average: float | None = None,
         taken_at: datetime | None = None,
     ) -> HealthSnapshot:
         return await crud.save_health_snapshot(
@@ -276,6 +277,7 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
             structure_average=structure_average,
             history_average=history_average,
             production_average=production_average,
+            maintainability_average=maintainability_average,
             taken_at=taken_at,
         )
 
