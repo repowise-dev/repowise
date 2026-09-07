@@ -259,6 +259,9 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
         worst_performer_score: float | None,
         per_file_scores: dict[str, float] | None = None,
         per_file_deductions: dict[str, float] | None = None,
+        structure_average: float | None = None,
+        history_average: float | None = None,
+        production_average: float | None = None,
         taken_at: datetime | None = None,
     ) -> HealthSnapshot:
         return await crud.save_health_snapshot(
@@ -270,6 +273,9 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
             worst_performer_score=worst_performer_score,
             per_file_scores=per_file_scores,
             per_file_deductions=per_file_deductions,
+            structure_average=structure_average,
+            history_average=history_average,
+            production_average=production_average,
             taken_at=taken_at,
         )
 

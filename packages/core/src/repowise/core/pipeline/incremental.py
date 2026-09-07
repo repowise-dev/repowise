@@ -988,7 +988,170 @@ def _carry_forward_kg_enrichment(kg: Any, prior_kg: Any) -> None:
         kg.tour = prior_kg.tour
 
 
-async def persist_partial_health(session: Any, repo_id: str, report: Any) -> None:
+async def refresh_unchanged_history(
+    session: Any, repo_id: str, repo_path: Any, *, skip_paths: set[str]
+) -> int:
+    """Re-score the git-derived markers on files this run did not walk.
+
+    The update refreshes git metadata for the whole repository, so a file the
+    change set never touched can still have moved in every way history
+    measures — new co-change partners, a fix that landed elsewhere in the same
+    commit, an owner who left. Only those markers are re-evaluated; each file
+    keeps the structural findings its last parse produced, so nothing here
+    needs the source.
+
+    Returns the number of files rewritten. Best-effort: the update is not worth
+    failing over a refresh.
+    """
+    from repowise.core.analysis.health.config import HealthConfig
+    from repowise.core.analysis.health.history_refresh import (
+        REFRESHABLE_MARKERS,
+        active_contributors,
+        git_meta_rows_to_map,
+        refresh_history,
+    )
+    from repowise.core.persistence.crud import (
+        get_all_git_metadata,
+        get_file_language_map,
+        get_health_findings,
+        get_health_metrics,
+        upsert_health_findings,
+        upsert_health_metrics,
+    )
+
+    stored = {
+        m.file_path: m
+        for m in await get_health_metrics(session, repo_id)
+        if m.file_path not in skip_paths
+    }
+    if not stored:
+        return 0
+    git_meta = git_meta_rows_to_map((await get_all_git_metadata(session, repo_id)).values())
+    if not git_meta:
+        return 0
+
+    findings_by_path: dict[str, list[Any]] = {}
+    for finding in await get_health_findings(session, repo_id):
+        findings_by_path.setdefault(finding.file_path, []).append(finding)
+
+    cfg = HealthConfig.load(repo_path)
+    refreshed = refresh_history(
+        metrics=list(stored.values()),
+        findings_by_path=findings_by_path,
+        git_meta_by_path=git_meta,
+        languages=await get_file_language_map(session, repo_id),
+        repo_active_contributors_90d=active_contributors(git_meta),
+        severity_overrides=cfg.severity_overrides or None,
+    )
+    if not refreshed:
+        return 0
+
+    # The two writes are scoped separately on purpose. A metric row is cheap to
+    # rewrite and carries no identity, but rewriting findings deletes and
+    # re-inserts them, which means new ids and a reset ``created_at`` — so that
+    # only happens for a file whose history findings actually changed, not for
+    # every file whose stored split was merely never recorded.
+    metric_writes = [
+        _refreshed_metric(r, stored[r.file_path])
+        for r in refreshed
+        if _numbers_moved(r, stored[r.file_path])
+    ]
+    finding_writes = [
+        r for r in refreshed if _history_findings_moved(r, findings_by_path.get(r.file_path, []))
+    ]
+    if not metric_writes and not finding_writes:
+        return 0
+
+    # One savepoint over both: a file whose findings were rewritten but whose
+    # score was not would report a deduction its own findings cannot account
+    # for, and the caller logs this step and carries on to commit the rest.
+    async with session.begin_nested():
+        if finding_writes:
+            await upsert_health_findings(
+                session,
+                repo_id,
+                [f for r in finding_writes for f in r.findings],
+                file_paths=[r.file_path for r in finding_writes],
+            )
+        if metric_writes:
+            await upsert_health_metrics(session, repo_id, metric_writes)
+    logger.debug(
+        "health_history_refreshed",
+        repo_id=repo_id,
+        metric_rows=len(metric_writes),
+        finding_rows=len(finding_writes),
+        markers=len(REFRESHABLE_MARKERS),
+    )
+    return len(finding_writes)
+
+
+def _numbers_moved(refreshed: Any, stored: Any) -> bool:
+    """Whether the stored row's numbers differ from the re-scored ones.
+
+    Includes a row whose split was never recorded, so the first update after
+    the split ships backfills it without touching any finding.
+    """
+    return (
+        round(refreshed.score, 2) != round(float(stored.score), 2)
+        or stored.structure_deduction is None
+        or stored.history_deduction is None
+        or round(refreshed.structure_deduction, 3) != round(float(stored.structure_deduction), 3)
+        or round(refreshed.history_deduction, 3) != round(float(stored.history_deduction), 3)
+    )
+
+
+def _history_findings_moved(refreshed: Any, stored_findings: list[Any]) -> bool:
+    """Whether the git-derived findings themselves changed.
+
+    Compared on what a reader sees — which markers fired, where, and how
+    severely — so a file keeps its finding ids and their ages across an update
+    that re-derived the same history.
+    """
+
+    def key(findings: Any) -> set:
+        return {
+            (
+                getattr(f, "biomarker_type", ""),
+                str(getattr(f, "severity", "")),
+                getattr(f, "function_name", None),
+                round(float(getattr(f, "health_impact", 0.0) or 0.0), 3),
+            )
+            for f in findings
+        }
+
+    return key(refreshed.findings) != key(stored_findings)
+
+
+def _refreshed_metric(refreshed: Any, stored: Any) -> dict:
+    """The stored metric row with the rescored numbers written over it.
+
+    A dict rather than a dataclass so the fields this pass cannot know — the
+    complexity and coverage columns, which need a parse — keep their stored
+    values instead of being reset to a default.
+    """
+    return {
+        "file_path": refreshed.file_path,
+        "score": refreshed.score,
+        "max_ccn": stored.max_ccn,
+        "max_nesting": stored.max_nesting,
+        "nloc": stored.nloc,
+        "duplication_pct": stored.duplication_pct,
+        "has_test_file": stored.has_test_file,
+        "line_coverage_pct": stored.line_coverage_pct,
+        "branch_coverage_pct": stored.branch_coverage_pct,
+        "module": stored.module,
+        "defect_score": refreshed.defect_score,
+        "maintainability_score": refreshed.maintainability_score,
+        "performance_score": refreshed.performance_score,
+        "structure_deduction": refreshed.structure_deduction,
+        "history_deduction": refreshed.history_deduction,
+        "is_test": stored.is_test,
+    }
+
+
+async def persist_partial_health(
+    session: Any, repo_id: str, report: Any, repo_path: Any = None
+) -> None:
     """Upsert health findings + metrics for the changed-files subset.
 
     Unlike ``persist_pipeline_result`` (which delete-then-inserts the
@@ -1078,6 +1241,27 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
         from repowise.core.persistence.crud import upsert_git_function_blame_bulk
 
         await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
+    # Only a full index rewrites the whole population, so rows an older version
+    # scored for prose or configuration go here rather than lingering in the
+    # average, and rows written before ``is_test`` existed get it from their
+    # path. Both before the refresh, which should not re-score a row that is
+    # about to be deleted.
+    from repowise.core.persistence.crud import backfill_is_test, prune_unscored_health_rows
+
+    await prune_unscored_health_rows(session, repo_id)
+    await backfill_is_test(session, repo_id)
+    # Then the files this run did not walk, whose git-derived markers the fresh
+    # metadata may have moved. Before the snapshot, or the trend would describe
+    # the store as it stood one update ago.
+    if repo_path is not None:
+        try:
+            await refresh_unchanged_history(
+                session, repo_id, repo_path, skip_paths=set(changed_paths)
+            )
+        except Exception as exc:
+            # Never fails the run: the next update re-derives the whole thing
+            # from the stored git metadata, so nothing is stranded behind.
+            logger.debug("health_history_refresh_skipped", repo_id=repo_id, error=str(exc))
     # The store now holds the merged repository, so the snapshot describes the
     # whole of it, not this run's changed files.
     from repowise.core.pipeline.persist import snapshot_health_from_store
@@ -1657,7 +1841,9 @@ async def persist_incremental_index(
             if partial_health_report is not None:
                 try:
                     with timed(timings, "persist.health"):
-                        await persist_partial_health(session, repo_id, partial_health_report)
+                        await persist_partial_health(
+                            session, repo_id, partial_health_report, repo_path
+                        )
                 except Exception as exc:
                     _skip("Health persist", exc, range_scoped=True)
 

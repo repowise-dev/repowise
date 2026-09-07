@@ -1562,13 +1562,10 @@ async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
 async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
     """Append a ``HealthSnapshot`` built from the repository's stored rows.
 
-    One writer for the full index and the incremental update. The full path
-    used to snapshot from the in-memory report and the update path never
-    snapshotted at all, so ``health --trend`` and the CLAUDE.md trend only
-    moved on a full re-index however many updates ran in between. A partial
-    report cannot be snapshotted directly, because it holds the changed files
-    and the snapshot has to describe the whole repository; the store after the
-    write holds exactly that, on both paths.
+    One writer for the full index and the incremental update. A partial report
+    cannot be snapshotted directly, because it holds only the changed files and
+    a snapshot has to describe the whole repository; the store after the write
+    holds exactly that, on both paths.
 
     Best-effort: a snapshot that fails to write is logged and never fails the
     run that produced the rows it describes.
@@ -1615,6 +1612,9 @@ async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
             worst_performer_score=kpis.get("worst_performer_score"),
             per_file_scores=scores_map,
             per_file_deductions=deductions_map,
+            structure_average=kpis.get("structure_average"),
+            history_average=kpis.get("history_average"),
+            production_average=kpis.get("production_average"),
         )
     except Exception as exc:
         logger.warning("health_snapshot_skipped", error=str(exc))
@@ -1878,6 +1878,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         from repowise.core.analysis.health.governance import build_governance_findings
         from repowise.core.persistence.crud import (
             get_decision_health_summary,
+            get_scored_file_paths,
             replace_governance_findings,
         )
         from repowise.core.persistence.models import DecisionRecord
@@ -1890,6 +1891,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         _gov_findings = build_governance_findings(
             health_summary=_health_summary,
             decisions=_decisions,
+            scored_paths=await get_scored_file_paths(session, repo_id),
         )
         await replace_governance_findings(session, repo_id, _gov_findings)
         if _gov_findings:

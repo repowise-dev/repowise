@@ -909,6 +909,7 @@ async def _persist_full_update_async(
                 from repowise.core.analysis.health.governance import build_governance_findings
                 from repowise.core.persistence.crud import (
                     get_decision_health_summary,
+                    get_scored_file_paths,
                     replace_governance_findings,
                 )
                 from repowise.core.persistence.models import DecisionRecord
@@ -921,6 +922,7 @@ async def _persist_full_update_async(
                 _gov = build_governance_findings(
                     health_summary=_summary,
                     decisions=_decisions,
+                    scored_paths=await get_scored_file_paths(session, repo_id),
                 )
                 await replace_governance_findings(session, repo_id, _gov)
             except Exception as exc:

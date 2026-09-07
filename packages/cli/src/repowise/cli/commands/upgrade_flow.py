@@ -382,6 +382,9 @@ async def _run_upgrade(
                         worst_performer_score=kpis.get("worst_performer_score"),
                         per_file_scores=scores_map,
                         per_file_deductions=deductions_map,
+                        structure_average=kpis.get("structure_average"),
+                        history_average=kpis.get("history_average"),
+                        production_average=kpis.get("production_average"),
                     )
             console.print(
                 f"Code health recomputed at FULL tier: "

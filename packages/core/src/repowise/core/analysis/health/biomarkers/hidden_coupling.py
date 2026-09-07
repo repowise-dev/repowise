@@ -34,7 +34,7 @@ short-circuit is explicit so backfill behavior is testable.
 from __future__ import annotations
 
 from ....co_change import STRUCTURAL_UNEXPLAINED, parse_partners
-from ....test_paths import is_test_to_production_pair
+from ....test_paths import is_test_related_path, is_test_to_production_pair
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -69,6 +69,11 @@ class HiddenCouplingDetector:
     category = "organizational"
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
+        # A test file has no undeclared coupling worth reporting: its
+        # production partners are expected to co-change, and two tests moving
+        # together is the suite tracking the code, not a hidden dependency.
+        if is_test_related_path(ctx.file_path, ctx.language):
+            return []
         meta = ctx.git_meta or {}
         partners = parse_partners(meta.get("co_change_partners_json"))
         # Explicit ESSENTIAL-tier short-circuit.
