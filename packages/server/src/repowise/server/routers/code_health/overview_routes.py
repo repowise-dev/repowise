@@ -22,6 +22,7 @@ from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._meta import resolve_indexed_commit
 
 from ._router import router
+from .counts import CountsQuery, project
 from .loaders import _attach_symbol_ids
 from .scope import ScopeQuery, narrow
 from .serializers import _finding_to_dict, _leads_by_file, _metric_to_dict
@@ -51,6 +52,7 @@ async def health_overview(
     repo_id: str,
     limit: int = Query(20, ge=1, le=200),
     scope: str = ScopeQuery,
+    counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """KPIs + lowest-scoring files + per-module rollup + meta."""
@@ -65,6 +67,10 @@ async def health_overview(
     metrics = await crud.get_health_metrics(session, repo_id)
     findings = await crud.get_health_findings(session, repo_id)
     metrics, findings = narrow(scope, metrics, findings)
+    # Every figure below is computed from these two lists, so projecting here
+    # is what keeps the headline, the distribution, the hotspot figure and the
+    # work the page lists all describing the same thing.
+    metrics, findings, unscored = project(counts, metrics, findings)
     summary = await crud.get_health_summary(
         session, repo_id, metrics=metrics, findings=findings
     )
@@ -91,6 +97,10 @@ async def health_overview(
         **summary,
         "hotspot_health": hotspot_health_value,
         "severity_breakdown": severity_breakdown(findings),
+        # Echoed so a surface labels what it was sent rather than what it
+        # asked for; the two differ while a request is in flight.
+        "counts": counts,
+        "unscored_files": unscored,
         "band": band_for(float(avg)) if avg is not None else None,
     }
     distribution = health_distribution(metric_dicts)

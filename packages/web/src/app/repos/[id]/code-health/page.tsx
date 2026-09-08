@@ -42,10 +42,22 @@ import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Button } from "@repowise-dev/ui/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@repowise-dev/ui/ui/select";
 import { formatDateTime } from "@repowise-dev/ui/lib/format";
 import type { CodeHealthOverlay } from "@repowise-dev/ui/health";
 import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
-import { HEALTH_SCOPES, type HealthScope } from "@repowise-dev/types/health";
+import {
+  HEALTH_COUNTS,
+  HEALTH_SCOPES,
+  type HealthCounts,
+  type HealthScope,
+} from "@repowise-dev/types/health";
 import { TriageTab } from "@/components/code-health/triage-tab";
 import { HotspotsSection } from "@/components/code-health/hotspots-section";
 import { FindingsTab } from "@/components/code-health/findings-tab";
@@ -141,6 +153,58 @@ const SCOPE_LABEL: Record<HealthScope, string> = {
 };
 
 /**
+ * Tabs whose data honours `counts`. The trend is deliberately absent even
+ * though it sits on the Overview: snapshots recorded the full score, so there
+ * is no code-shape series to draw and inventing one from mean deductions would
+ * disagree with the headline wherever a file sits at the score floor.
+ */
+const COUNTED_TABS: TabId[] = ["triage", "findings"];
+
+/**
+ * A named dropdown for a view control in the page header.
+ *
+ * These are filters over everything on the page, not navigation, so they read
+ * as a question and its current answer rather than as a second row of tabs
+ * competing with the real one.
+ */
+function ViewSelect({
+  label,
+  value,
+  onValueChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onValueChange: (next: string) => void;
+  options: { id: string; label: string }[];
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+        {label}
+      </span>
+      <Select value={value} onValueChange={onValueChange}>
+        <SelectTrigger aria-label={label} className="h-8 w-auto gap-1.5 px-2.5 text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((o) => (
+            <SelectItem key={o.id} value={o.id}>
+              {o.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+const COUNTS_LABEL: Record<HealthCounts, string> = {
+  everything: "Everything",
+  code_shape: "Code shape only",
+};
+
+/**
  * Nodes the map draws. The server chooses which ones: the selected file first,
  * then every file carrying an open performance cause in rank order, then the
  * biggest files fill the rest. Ranking by size alone used to push tens of
@@ -194,6 +258,16 @@ export default function CodeHealthPage() {
   // stays valid and the narrowed one gets its own.
   const scopeKey = scope === "all" ? "" : `:${scope}`;
 
+  const rawCounts = searchParams.get("counts");
+  const counts: HealthCounts = (HEALTH_COUNTS as readonly string[]).includes(rawCounts ?? "")
+    ? (rawCounts as HealthCounts)
+    : "everything";
+  // Same convention as scope, and appended after it: the two suffixes have to
+  // compose in one fixed order or the page-level key and the view-level key
+  // stop matching and the overview is fetched twice.
+  const countsKey = counts === "everything" ? "" : `:${counts}`;
+  const viewKey = `${scopeKey}${countsKey}`;
+
   const rawLens = searchParams.get("lens");
   const overlay: CodeHealthOverlay = (OVERLAYS as readonly string[]).includes(rawLens ?? "")
     ? (rawLens as CodeHealthOverlay)
@@ -209,8 +283,8 @@ export default function CodeHealthPage() {
   // Shares the SWR key with TriageView — the meta line and the findings count
   // cost no extra request.
   const { data: overview } = useSWR<HealthOverviewResponse>(
-    `code-health-overview:${repoId}${scopeKey}`,
-    () => getHealthOverview(repoId, 25, scope),
+    `code-health-overview:${repoId}${viewKey}`,
+    () => getHealthOverview(repoId, 25, scope, counts),
     { revalidateOnFocus: false },
   );
   const meta = overview?.meta;
@@ -267,12 +341,13 @@ export default function CodeHealthPage() {
     [selectedPath, highlightPaths],
   );
   const { data: mapFeed } = useSWR<HealthMapFeed>(
-    `code-health-map:${repoId}${scopeKey}:${activePaths.join(",")}`,
+    `code-health-map:${repoId}${viewKey}:${activePaths.join(",")}`,
     () =>
       getHealthMap(repoId, {
         cap: MAP_CAP,
         ...(activePaths.length ? { active: activePaths } : {}),
         scope,
+        counts,
       }),
     { revalidateOnFocus: false, keepPreviousData: true },
   );
@@ -368,6 +443,17 @@ export default function CodeHealthPage() {
     [router, searchParams],
   );
 
+  const setCounts = useCallback(
+    (next: string) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (next === "everything") sp.delete("counts");
+      else sp.set("counts", next);
+      const qs = sp.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+
   const setOverlay = useCallback(
     (next: CodeHealthOverlay) => {
       const sp = new URLSearchParams(searchParams.toString());
@@ -391,12 +477,25 @@ export default function CodeHealthPage() {
       // goes entirely to the field, which is this page's whole subject.
       maxWidth="wide"
       actions={
-        <div className="flex items-center gap-4">
+        // Two named dropdowns rather than two tab rows. Four choices spelled
+        // out in full overflowed the header on a phone and set the whole page
+        // scrolling sideways; a trigger shows the current answer and spends no
+        // width on the alternative.
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
           {SCOPED_TABS.includes(activeTab) && (
-            <ViewTabs
-              tabs={HEALTH_SCOPES.map((id) => ({ id, label: SCOPE_LABEL[id] }))}
+            <ViewSelect
+              label="Files"
               value={scope}
               onValueChange={setScope}
+              options={HEALTH_SCOPES.map((id) => ({ id, label: SCOPE_LABEL[id] }))}
+            />
+          )}
+          {COUNTED_TABS.includes(activeTab) && (
+            <ViewSelect
+              label="Counts"
+              value={counts}
+              onValueChange={setCounts}
+              options={HEALTH_COUNTS.map((id) => ({ id, label: COUNTS_LABEL[id] }))}
             />
           )}
           <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing}>
@@ -433,6 +532,7 @@ export default function CodeHealthPage() {
       >
         {activeTab === "triage" && (
           <TriageTab
+              counts={counts}
             repoId={repoId}
             trend={trend}
             overlay={overlay}
@@ -450,12 +550,17 @@ export default function CodeHealthPage() {
                 title="Health trend"
                 description="How the scores have moved across indexed snapshots."
               >
-                <TrendSection data={trend} isLoading={trendLoading} error={trendError} />
+                <TrendSection
+                  data={trend}
+                  isLoading={trendLoading}
+                  error={trendError}
+                  counts={counts}
+                />
               </OverviewSection>
             }
           />
         )}
-        {activeTab === "findings" && <FindingsTab repoId={repoId} scope={scope} />}
+        {activeTab === "findings" && <FindingsTab repoId={repoId} scope={scope} counts={counts} />}
         {activeTab === "performance" && <PerformanceTab repoId={repoId} />}
         {activeTab === "coverage" && <CoverageTab repoId={repoId} />}
         {activeTab === "dead-code" && <DeadCodeTab repoId={repoId} />}

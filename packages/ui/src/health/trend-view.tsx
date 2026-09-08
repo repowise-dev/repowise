@@ -19,7 +19,7 @@
  */
 
 import { AlertTriangle } from "lucide-react";
-import type { HealthTrendResponse } from "@repowise-dev/types/health";
+import type { HealthCounts, HealthTrendResponse } from "@repowise-dev/types/health";
 
 import { Skeleton } from "../ui/skeleton";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
@@ -39,10 +39,13 @@ export function TrendView({
   data,
   isLoading,
   error,
+  counts,
 }: {
   data: HealthTrendResponse | undefined;
   isLoading: boolean;
   error: unknown;
+  /** What the page's figures count, so this section cannot claim the other reading. */
+  counts?: HealthCounts;
 }) {
   if (isLoading) return <Skeleton className="h-64 w-full rounded-lg" />;
   if (error || !data) {
@@ -69,27 +72,41 @@ export function TrendView({
   // has dropped. Say so rather than printing one.
   const hotspot = summary.current_hotspot_health;
 
+  // Snapshots recorded the full score, so there is no code-shape series to
+  // read. These two carry the same labels as the lede's figures, and showing
+  // the other reading of them here put two different numbers under one name on
+  // one screen — the exact confusion the single headline exists to end.
+  const otherReading = counts === "code_shape";
+
   const stats: RibbonStat[] = [
     {
       label: "Average health",
-      value: summary.current_average_health.toFixed(1),
-      valueColor: scoreTextColor(summary.current_average_health),
-      sub: deltaSub(summary.average_delta, summary.previous_average_health),
-      ...(Math.abs(summary.average_delta ?? 0) >= 0.05
-        ? { subColor: deltaColor(summary.average_delta) }
-        : {}),
+      value: otherReading ? "—" : summary.current_average_health.toFixed(1),
+      ...(otherReading
+        ? { sub: "recorded on the full score" }
+        : {
+            valueColor: scoreTextColor(summary.current_average_health),
+            sub: deltaSub(summary.average_delta, summary.previous_average_health),
+            ...(Math.abs(summary.average_delta ?? 0) >= 0.05
+              ? { subColor: deltaColor(summary.average_delta) }
+              : {}),
+          }),
     },
     {
       label: "Hotspot health",
-      value: hotspot == null ? "—" : hotspot.toFixed(1),
-      ...(hotspot == null ? {} : { valueColor: scoreTextColor(hotspot) }),
-      sub:
-        hotspot == null
-          ? "not measured for this scope"
-          : deltaSub(summary.hotspot_delta, summary.previous_hotspot_health),
-      ...(hotspot != null && Math.abs(summary.hotspot_delta ?? 0) >= 0.05
-        ? { subColor: deltaColor(summary.hotspot_delta) }
-        : {}),
+      value: otherReading || hotspot == null ? "—" : hotspot.toFixed(1),
+      ...(otherReading
+        ? { sub: "recorded on the full score" }
+        : {
+            ...(hotspot == null ? {} : { valueColor: scoreTextColor(hotspot) }),
+            sub:
+              hotspot == null
+                ? "not measured for this scope"
+                : deltaSub(summary.hotspot_delta, summary.previous_hotspot_health),
+            ...(hotspot != null && Math.abs(summary.hotspot_delta ?? 0) >= 0.05
+              ? { subColor: deltaColor(summary.hotspot_delta) }
+              : {}),
+          }),
     },
     {
       label: "Snapshots",

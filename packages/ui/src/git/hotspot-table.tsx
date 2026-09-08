@@ -2,12 +2,11 @@
 
 import * as React from "react";
 import { useState, useMemo } from "react";
-import { TrendingUp, TrendingDown, Search, Flame, Bug, ArrowUpDown, ArrowUp, ArrowDown, GitBranch, BookOpen, Radius, ChevronRight, ChevronDown } from "lucide-react";
+import { TrendingUp, TrendingDown, Search, Flame, Bug, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, ChevronDown } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
 import { ResultsFooter } from "../shared/results-footer";
-import { RowActions } from "../shared/row-actions";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { ChurnBar } from "./churn-bar";
 import { formatLOC } from "../lib/format";
@@ -15,7 +14,6 @@ import { summarizeFixHistory } from "../lib/fix-history";
 import { cn } from "../lib/cn";
 import { useVirtualRows } from "../shared/virtualized-table";
 import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
-import { docsPagePath, filePageId } from "../shared/entity/routes";
 import type { Hotspot } from "@repowise-dev/types/git";
 
 /**
@@ -27,6 +25,12 @@ const ESTIMATED_ROW_HEIGHT = 44;
 
 interface HotspotTableProps {
   hotspots: Hotspot[];
+  /**
+   * Kept for callers that still pass them. The rows carried a Graph / Docs /
+   * Blast Radius menu built from these; a table already sorted by risk did not
+   * need three links per row competing with the row's own click, so it is
+   * gone and these no longer do anything.
+   */
   repoId?: string;
   linkPrefix?: string;
   /**
@@ -78,8 +82,6 @@ function ariaSortFor(column: SortKey, sortKey: SortKey, sortDir: SortDir): "none
 
 export function HotspotTable({
   hotspots,
-  repoId,
-  linkPrefix,
   onSelect,
   total,
   hasMore,
@@ -98,7 +100,6 @@ export function HotspotTable({
       return next;
     });
   };
-  const prefix = linkPrefix ?? (repoId ? `/repos/${repoId}` : undefined);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("trend");
@@ -418,7 +419,7 @@ export function HotspotTable({
                     )}
                     <td className="px-3 py-2.5 hidden lg:table-cell">
                       <div className="flex items-center gap-2">
-                        <ChurnBar percentile={h.churn_percentile} className="w-16" />
+                        <ChurnBar percentile={h.churn_percentile} className="w-16" tone="neutral" />
                         <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8">
                           {Math.round(h.churn_percentile)}%
                         </span>
@@ -439,13 +440,15 @@ export function HotspotTable({
                       </span>
                     </td>
                     <td className="px-3 py-2.5 hidden md:table-cell">
+                      {/* A number, not a badge. A tinted pill on every row
+                          made a column of ordinary counts look like a column
+                          of alerts; only a sole owner is worth marking, and
+                          the colour alone says it. */}
                       <span
-                        className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
+                        className={`text-xs tabular-nums ${
                           h.bus_factor <= 1
-                            ? "bg-[var(--color-error)]/15 text-[var(--color-error)]"
-                            : h.bus_factor === 2
-                              ? "bg-[var(--color-warning)]/15 text-[var(--color-warning)]"
-                              : "bg-[var(--color-success)]/15 text-[var(--color-success)]"
+                            ? "text-[var(--color-warning)]"
+                            : "text-[var(--color-text-secondary)]"
                         }`}
                       >
                         {h.bus_factor}
@@ -461,28 +464,15 @@ export function HotspotTable({
                     </td>
                     <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center gap-1">
-                        {h.is_hotspot && <Badge variant="outdated">Hot</Badge>}
+                        {/* No "Hot" badge: every row in a hotspot table is
+                            one, so it labelled nothing. "Stable" still earns
+                            its place — it is the row that is not. */}
                         {h.is_stable && <Badge variant="fresh">Stable</Badge>}
                         {onGeneratePrompt && (
                           <AiPromptButton
                             variant="icon"
                             label="AI stabilization prompt"
                             onClick={() => onGeneratePrompt(h)}
-                          />
-                        )}
-                        {prefix && (
-                          <RowActions
-                            actions={[
-                              { icon: GitBranch, label: "Graph", href: `${prefix}/architecture?view=files&node=${encodeURIComponent(h.file_path)}` },
-                              // `?file=` is read by nothing in the docs
-                              // surface, so this used to open the repo
-                              // overview while looking like it had worked.
-                              // `?page=` is the reader's parameter and takes a
-                              // wiki page id; a file with no page gets told so
-                              // by name.
-                              { icon: BookOpen, label: "Docs", href: docsPagePath(prefix, filePageId(h.file_path)) },
-                              { icon: Radius, label: "Blast Radius", href: `${prefix}/code-health?tab=impact&file=${encodeURIComponent(h.file_path)}` },
-                            ]}
                           />
                         )}
                       </div>

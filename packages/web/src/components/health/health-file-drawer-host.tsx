@@ -14,6 +14,7 @@ import {
   refactoringOpportunityHref,
 } from "@/lib/api/file-opportunity";
 import { useFileBreakdown } from "./use-file-breakdown";
+import type { HealthCounts } from "@repowise-dev/types/health";
 
 /** Causes listed for one file. A file with more than this is its own queue. */
 const FILE_CAUSE_LIMIT = 10;
@@ -23,15 +24,18 @@ export function HealthFileDrawerHost({
   filePath,
   onClose,
   lens,
+  counts,
 }: {
   repoId: string;
   filePath: string | null;
   onClose: () => void;
+  /** The reading the row that opened this drawer was scored under. */
+  counts?: HealthCounts;
   /** The surface the file was opened from; drives what the drawer leads with. */
   lens?: string;
 }) {
   const router = useRouter();
-  const { data, isLoading } = useFileBreakdown(repoId, filePath);
+  const { data, isLoading } = useFileBreakdown(repoId, filePath, counts);
   const prefix = `/repos/${repoId}`;
   const filePageHref = filePath ? fileEntityPath(prefix, filePath) : undefined;
 

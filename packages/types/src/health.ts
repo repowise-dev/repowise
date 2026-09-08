@@ -49,6 +49,15 @@ export const HEALTH_DIMENSIONS: readonly HealthDimension[] = [
 ] as const;
 
 /**
+ * What a code-health figure counts. `everything` is the calibrated score;
+ * `code_shape` removes the git-derived half, which rises as a file is worked
+ * on and so answers what a repository has been through rather than what its
+ * code is like.
+ */
+export type HealthCounts = "everything" | "code_shape";
+export const HEALTH_COUNTS: readonly HealthCounts[] = ["everything", "code_shape"] as const;
+
+/**
  * Which half of a repository a health figure describes. Tests score higher
  * than production code, so narrowing lowers every figure without a defect
  * having been found — `all` is the default for that reason.
@@ -544,6 +553,10 @@ export interface HealthOverviewSummary {
    */
   structure_average?: number | null;
   history_average?: number | null;
+  /** What this response counted. Echoed so a label cannot get ahead of its data. */
+  counts?: HealthCounts;
+  /** Files a code-shape reading cannot answer for, having no recorded split. */
+  unscored_files?: number;
 }
 
 export interface HealthOverviewResponse {
@@ -574,6 +587,7 @@ export interface HealthFilesResponse {
 }
 
 export interface HealthFilesQuery {
+  counts?: HealthCounts;
   /** Which half of the repository to describe. Defaults to `"all"`. */
   scope?: HealthScope;
   limit?: number;
@@ -679,6 +693,7 @@ export interface HealthMapFeed {
 }
 
 export interface HealthMapQuery {
+  counts?: HealthCounts;
   cap?: number;
   /** Paths guaranteed a node, admitted before any other band. */
   active?: string[];
@@ -1065,6 +1080,7 @@ export interface HealthWorkQueueResponse {
 }
 
 export interface HealthWorkQueueQuery {
+  counts?: HealthCounts;
   limit?: number;
   module?: string;
   biomarker?: string;

@@ -24,30 +24,35 @@ import {
   getFileOpportunity,
   refactoringOpportunityHref,
 } from "@/lib/api/file-opportunity";
-import type { HealthScope } from "@repowise-dev/types/health";
+import type { HealthCounts, HealthScope } from "@repowise-dev/types/health";
 
 export function FindingsTab({
   repoId: id,
   scope,
+  counts,
 }: {
   repoId: string;
   /** Which half of the repository every figure here describes. */
   scope?: HealthScope;
+  /** Whether those figures count change history or code shape alone. */
+  counts?: HealthCounts;
 }) {
   const router = useRouter();
 
   const prefix = `/repos/${id}`;
   const adapter: CodeHealthAdapter = {
-    cacheKey: scope && scope !== "all" ? `${id}:${scope}` : id,
-    getOverview: (limit) => getHealthOverview(id, limit, scope),
+    cacheKey: `${id}${scope && scope !== "all" ? `:${scope}` : ""}${
+      counts && counts !== "everything" ? `:${counts}` : ""
+    }`,
+    getOverview: (limit) => getHealthOverview(id, limit, scope, counts),
     listFindings: (opts) =>
-      listHealthFindings(id, { ...opts, ...(scope ? { scope } : {}) }),
+      listHealthFindings(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
     getFileOpportunity: (filePath) => getFileOpportunity(id, filePath),
     refactoringOpportunityHref: (opportunityId) =>
       refactoringOpportunityHref(id, opportunityId),
-    listFiles: (opts) => listHealthFiles(id, { ...opts, ...(scope ? { scope } : {}) }),
+    listFiles: (opts) => listHealthFiles(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
     getHealthWorkQueue: (opts) =>
-      getHealthWorkQueue(id, { ...opts, ...(scope ? { scope } : {}) }),
+      getHealthWorkQueue(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
     updateFindingStatus: (findingId, status) =>
       updateFindingStatus(id, findingId, status),
     getCoverage: (opts) => getHealthCoverage(id, opts),
@@ -55,7 +60,12 @@ export function FindingsTab({
     symbolHref: (symbolId) => symbolEntityPath(prefix, symbolId),
     navigate: (href) => router.push(href),
     renderFileDrawer: ({ filePath, onClose }) => (
-      <HealthFileDrawerHost repoId={id} filePath={filePath} onClose={onClose} />
+      <HealthFileDrawerHost
+        repoId={id}
+        filePath={filePath}
+        onClose={onClose}
+        counts={counts}
+      />
     ),
   };
 

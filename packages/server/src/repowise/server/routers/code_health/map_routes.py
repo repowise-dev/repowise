@@ -21,6 +21,7 @@ from repowise.server.services.health_map import (
 )
 
 from ._router import router
+from .counts import CountsQuery
 from .scope import ScopeQuery
 
 
@@ -37,10 +38,11 @@ async def get_health_map(
         ),
     ),
     scope: str = ScopeQuery,
+    counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """One bounded field plus the exact scope of what the cap left out."""
     feed = await HealthMapService(session, repo_id).feed(
-        cap=cap, active=parse_active(active), scope=scope
+        cap=cap, active=parse_active(active), scope=scope, counts=counts
     )
     return feed.payload()

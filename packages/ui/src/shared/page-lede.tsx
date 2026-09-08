@@ -1,4 +1,5 @@
 import * as React from "react";
+import { InfoTip } from "./info-tip";
 
 export interface PageLedeBand {
   label: string;
@@ -10,6 +11,8 @@ export interface PageLedeBand {
 export interface PageLedeProps {
   /** Mono micro-label above the figure. */
   label: string;
+  /** What the figure measures, on an `InfoTip` beside the label. */
+  labelHint?: string | undefined;
   /** The figure itself, pre-formatted. */
   value: string;
   /** Colour for the figure. Same rule as `band.color`. */
@@ -44,53 +47,43 @@ export interface PageLedeProps {
    * for another statistic.
    */
   figureFooter?: React.ReactNode;
-  /** Marks the primary figure as the one the current selection describes. */
-  figureHighlighted?: boolean | undefined;
-  /**
-   * A co-equal second figure, built with `LedeFigure` so both share one type
-   * scale. For a page whose subject genuinely has two headline numbers; a
-   * supporting statistic belongs in the ribbon, where it reads as supporting.
-   */
-  figureSecondary?: React.ReactNode;
 }
 
 export interface LedeFigureProps {
   label: string;
+  /** What the figure measures, on an `InfoTip` beside the label. */
+  labelHint?: string | undefined;
   value: string;
   valueColor?: string | undefined;
   unit?: string | undefined;
   band?: PageLedeBand | undefined;
   badge?: React.ReactNode;
   footer?: React.ReactNode;
-  /** Marks this figure as the one the page's current selection describes. */
-  highlighted?: boolean | undefined;
 }
 
 /**
- * One labelled figure at lede weight. Exported so a page with two headline
- * numbers composes the second from the same source as the first, rather than
- * re-deriving the 44/48px step and the chip geometry by hand.
+ * One labelled figure at lede weight.
+ *
+ * A page carries one. It was exported so a second could be composed at the
+ * same type scale, and the one page that did found the two figures answered
+ * the same question with different numbers; the supporting statistic belongs
+ * in the ribbon, where it reads as supporting.
  */
-export function LedeFigure({
+function LedeFigure({
   label,
+  labelHint,
   value,
   valueColor,
   unit,
   band,
   badge,
   footer,
-  highlighted,
 }: LedeFigureProps) {
   return (
     <div className="flex min-w-0 flex-col">
-      <p
-        className={
-          highlighted
-            ? "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-accent-primary)]"
-            : "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
-        }
-      >
+      <p className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {label}
+        {labelHint && <InfoTip content={labelHint} label={`What ${label} means`} />}
       </p>
 
       <div className="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -101,22 +94,17 @@ export function LedeFigure({
           {value}
         </span>
         {unit && <span className="text-xs text-[var(--color-text-tertiary)]">{unit}</span>}
+        {/* A dot and a word, not a badge. Filled and outlined, this read as a
+            notification demanding action — and the band is a description of
+            where a number sits, which is not news. The colour still carries
+            the reading; it just stops shouting it. */}
         {band && (
-          <span
-            className="rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
-            style={
-              band.color
-                ? {
-                    color: band.color,
-                    borderColor: `color-mix(in srgb, ${band.color} 40%, transparent)`,
-                    background: `color-mix(in srgb, ${band.color} 9%, transparent)`,
-                  }
-                : {
-                    color: "var(--color-text-secondary)",
-                    borderColor: "var(--color-border-hover)",
-                  }
-            }
-          >
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]">
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 rounded-full"
+              style={{ background: band.color ?? "var(--color-text-tertiary)" }}
+            />
             {band.label}
           </span>
         )}
@@ -143,6 +131,7 @@ export function LedeFigure({
  */
 export function PageLede({
   label,
+  labelHint,
   value,
   valueColor,
   unit,
@@ -152,38 +141,29 @@ export function PageLede({
   action,
   layout = "stacked",
   figureFooter,
-  figureHighlighted,
-  figureSecondary,
 }: PageLedeProps) {
   const beside = layout === "beside";
-  const paired = figureSecondary != null;
-
   const primary = (
     <LedeFigure
       label={label}
+      labelHint={labelHint}
       value={value}
       valueColor={valueColor}
       unit={unit}
       band={band}
       badge={badge}
       footer={figureFooter}
-      highlighted={figureHighlighted}
     />
   );
 
-  const figure = paired ? (
-    <div className="grid gap-x-10 gap-y-6 sm:grid-cols-2">
-      {primary}
-      {figureSecondary}
-    </div>
-  ) : (
+  const figure = (
     <div className={beside ? "flex shrink-0 flex-col" : "flex flex-col"}>{primary}</div>
   );
 
   const prose = (
     <div
       className={
-        beside && !paired
+        beside
           ? // Two columns from xl. Three paragraphs in one 62ch column runs tall
             // enough to push the page's actual subject below the fold while
             // leaving half the row empty; flowed into two ~48ch columns it is
@@ -205,7 +185,7 @@ export function PageLede({
       // the number is; without it a 7.5 and a 10.0 indent the paragraph
       // differently and the block looks unaligned between repos.
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-12">
-        <div className={paired ? "lg:w-[420px] lg:shrink-0" : "lg:w-[220px]"}>{figure}</div>
+        <div className="lg:w-[220px]">{figure}</div>
         {prose}
       </div>
     );
