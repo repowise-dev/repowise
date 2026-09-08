@@ -857,6 +857,11 @@ export interface HealthTrendResponse {
     current_history_deduction?: number | null;
   };
   alerts: Array<{
+    /**
+     * `"declining"` and `"predicted_decline"` are regressions. `"history_drag"`
+     * is a fall whose whole cause is git history while the code shape held or
+     * improved: the same numbers with the opposite reading, and nothing to fix.
+     */
     kind: string;
     metric: string;
     current: number;

@@ -18,7 +18,7 @@
  * double-fetched alongside anything else on the page.
  */
 
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Info } from "lucide-react";
 import type { HealthCounts, HealthTrendResponse } from "@repowise-dev/types/health";
 
 import { Skeleton } from "../ui/skeleton";
@@ -34,6 +34,32 @@ import { deltaColor, formatDelta, scoreTextColor } from "./tokens";
  * itself cannot report different numbers.
  */
 const SLOPE_MAX = 18;
+
+/**
+ * Colour, lead phrase and icon per alert kind.
+ *
+ * A `history_drag` fall is not the reader's doing and there is nothing to act
+ * on, so it takes the neutral treatment the drawer gives history findings
+ * rather than the error red. Painting it red is what told a reader their
+ * refactoring had made things worse. An unknown kind falls through to the
+ * warning treatment, which is the safe reading of a signal we cannot classify.
+ */
+function alertTreatment(kind: string): { color: string; label: string; watch: boolean } {
+  if (kind === "declining") {
+    // Not "Declining health.": three different figures raise this alert and the
+    // message names which one, so a lead that named a fourth thing contradicted it.
+    return { color: "var(--color-error)", label: "Declining.", watch: false };
+  }
+  if (kind === "history_drag") {
+    return {
+      color: "var(--color-text-secondary)",
+      label: "Change history, not code.",
+      watch: true,
+    };
+  }
+  return { color: "var(--color-warning)", label: "Predicted decline.", watch: false };
+}
+
 
 export function TrendView({
   data,
@@ -80,7 +106,7 @@ export function TrendView({
 
   const stats: RibbonStat[] = [
     {
-      label: "Average health",
+      label: "Code health",
       value: otherReading ? "—" : summary.current_average_health.toFixed(1),
       ...(otherReading
         ? { sub: "recorded on the full score" }
@@ -122,18 +148,14 @@ export function TrendView({
       {data.alerts.length > 0 && (
         <div className="flex flex-col gap-2">
           {data.alerts.map((a, i) => {
-            const color =
-              a.kind === "declining" ? "var(--color-error)" : "var(--color-warning)";
+            const { color, label, watch } = alertTreatment(a.kind);
+            const Icon = watch ? Info : AlertTriangle;
             return (
               <p key={i} className="flex items-start gap-2 text-sm">
-                <AlertTriangle
-                  className="mt-0.5 h-4 w-4 shrink-0"
-                  style={{ color }}
-                  aria-hidden
-                />
+                <Icon className="mt-0.5 h-4 w-4 shrink-0" style={{ color }} aria-hidden />
                 <span>
                   <strong className="font-semibold" style={{ color }}>
-                    {a.kind === "declining" ? "Declining health." : "Predicted decline."}
+                    {label}
                   </strong>{" "}
                   <span className="text-[var(--color-text-secondary)]">{a.message}</span>
                 </span>

@@ -84,6 +84,13 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
   };
 
   const hasMaintainability = history.some((p) => p.maintainability_average != null);
+  // Maintainability leads wherever it was recorded. It is the series that
+  // answers "is my code getting better", and the composite it sits beside
+  // moves with git history too, so drawing the composite loudest emphasises
+  // the number that misleads. Without a maintainability series the composite
+  // is the only headline there is, and keeps the weight.
+  const leadWidth = 2.4;
+  const supportWidth = hasMaintainability ? 1.4 : 1.8;
 
   // The band between the score history does not touch and the score itself:
   // what git history costs, drawn where the lede says it in words. Only over
@@ -113,10 +120,10 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
           KPI trend
         </h3>
         <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--color-text-tertiary)]">
-          <Legend dot="bg-[var(--color-success)]" label="Code health" />
           {hasMaintainability && (
             <Legend dot="bg-[var(--color-accent-secondary)]" label="Maintainability" />
           )}
+          <Legend dot="bg-[var(--color-success)]" label="Code health" />
           {historyBands.length > 0 && (
             <span className="inline-flex items-center gap-1">
               <span className="inline-block h-2 w-2 rounded-[1px] bg-current opacity-25" />
@@ -137,37 +144,72 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
             </text>
           </g>
         ))}
-        {/* Under the lines: the band is context for them, not a mark of its own. */}
+        {/* Under the lines: the band is context for them, not a mark of its own.
+            Its edges are stroked in the code-health colour because the band
+            belongs to that line — it runs from the score up to where the score
+            would sit with no history against it. Unstroked, it read as bounding
+            whichever line happened to fall inside it. The lower edge lies on the
+            code-health line itself, so only the upper one shows. */}
         {historyBands.map((d, i) => (
-          <path key={i} d={d} fill="currentColor" fillOpacity={0.07} stroke="none" />
+          <path
+            key={i}
+            d={d}
+            fill="currentColor"
+            fillOpacity={0.07}
+            stroke="var(--color-success)"
+            strokeOpacity={0.35}
+            strokeWidth={1}
+            strokeDasharray="2 3"
+          />
         ))}
-        <path d={path("average_health")} stroke="var(--color-success)" strokeWidth={1.8} fill="none" />
+        <path
+          d={path("average_health")}
+          stroke="var(--color-success)"
+          strokeWidth={supportWidth}
+          fill="none"
+        />
+        <path
+          d={path("hotspot_health")}
+          stroke="var(--color-warning)"
+          strokeWidth={supportWidth}
+          fill="none"
+        />
+        <path d={path("worst_performer_score")} stroke="var(--color-error)" strokeWidth={1.4} fill="none" strokeDasharray="3 3" />
+        {/* Last, so the lead series is never crossed out by a support line. */}
         {hasMaintainability && (
           <path
             d={path("maintainability_average")}
             stroke="var(--color-accent-secondary)"
-            strokeWidth={1.8}
+            strokeWidth={leadWidth}
             fill="none"
           />
         )}
-        <path d={path("hotspot_health")} stroke="var(--color-warning)" strokeWidth={1.8} fill="none" />
-        <path d={path("worst_performer_score")} stroke="var(--color-error)" strokeWidth={1.4} fill="none" strokeDasharray="3 3" />
         {history.map((p, i) => (
           <g key={i}>
-            <circle cx={xScale(i)} cy={yScale(p.average_health)} r={2.5} fill="var(--color-success)" />
+            <circle
+              cx={xScale(i)}
+              cy={yScale(p.average_health)}
+              r={hasMaintainability ? 2 : 2.5}
+              fill="var(--color-success)"
+            />
+            {p.hotspot_health != null ? (
+              <circle
+                cx={xScale(i)}
+                cy={yScale(p.hotspot_health)}
+                r={hasMaintainability ? 2 : 2.5}
+                fill="var(--color-warning)"
+              />
+            ) : null}
+            {p.worst_performer_score != null ? (
+              <circle cx={xScale(i)} cy={yScale(p.worst_performer_score)} r={2} fill="var(--color-error)" />
+            ) : null}
             {p.maintainability_average != null ? (
               <circle
                 cx={xScale(i)}
                 cy={yScale(p.maintainability_average)}
-                r={2.5}
+                r={3}
                 fill="var(--color-accent-secondary)"
               />
-            ) : null}
-            {p.hotspot_health != null ? (
-              <circle cx={xScale(i)} cy={yScale(p.hotspot_health)} r={2.5} fill="var(--color-warning)" />
-            ) : null}
-            {p.worst_performer_score != null ? (
-              <circle cx={xScale(i)} cy={yScale(p.worst_performer_score)} r={2} fill="var(--color-error)" />
             ) : null}
           </g>
         ))}

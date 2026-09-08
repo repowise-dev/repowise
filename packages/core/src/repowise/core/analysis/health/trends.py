@@ -7,14 +7,18 @@ Consumed by:
     snapshots' KPIs side-by-side)
   * the MCP ``get_health(include=["trend"])`` response
 
-Two alert kinds are emitted, matching plan §4 Phase 4 P4.1:
+Both detectors run over every metric in ``_ALERT_METRICS``, skipping any a
+snapshot never recorded. Three alert kinds come out:
 
-  * ``declining`` — current ``hotspot_health`` is ≥ ``DECLINE_THRESHOLD``
-    points (default 0.5) below the snapshot N-5 entries ago. This catches
-    sustained drops, not single-snapshot noise.
+  * ``declining`` — the current reading is ≥ ``DECLINE_THRESHOLD`` points
+    (default 0.5) below the snapshot N-5 entries ago. This catches sustained
+    drops, not single-snapshot noise.
   * ``predicted_decline`` — the three most recent snapshots are each
     strictly below the one before them. Magnitude is not required —
     direction is the signal.
+  * ``history_drag`` — either of the above on the composite headline, where
+    the only half that moved down was git history. Same numbers, opposite
+    reading: there is nothing in the code to act on.
 
 The module is intentionally state-free. Callers pass in the snapshot
 history (oldest → newest) and receive a list of alerts back. No DB
@@ -39,13 +43,28 @@ DECLINE_THRESHOLD: float = 0.5
 DECLINE_LOOKBACK: int = 5  # compare current vs snapshot N positions back
 PREDICTED_DECLINE_CONSECUTIVE: int = 3
 
+# Metrics a decline alert watches. ``maintainability_average`` is pure code
+# shape, so it is the one whose fall always answers to editing; it is absent
+# from snapshots taken before it was recorded and from narrowed ones, and a
+# metric a snapshot does not carry is skipped rather than read as zero.
+_ALERT_METRICS = ("hotspot_health", "average_health", "maintainability_average")
+
+_METRIC_LABEL = {
+    "hotspot_health": "Hotspot health",
+    "average_health": "Code health",
+    "maintainability_average": "Maintainability",
+}
+
 
 @dataclass
 class TrendAlert:
     """A single trend signal worth surfacing on the dashboard / CLI."""
 
-    kind: str  # "declining" | "predicted_decline"
-    metric: str  # "hotspot_health" | "average_health"
+    # ``history_drag`` is a decline whose whole cause is git history while the
+    # code shape held or improved. It carries the same numbers as ``declining``
+    # and the opposite reading, so a surface renders it as a watch item.
+    kind: str  # "declining" | "predicted_decline" | "history_drag"
+    metric: str  # one of _ALERT_METRICS
     current: float
     baseline: float | None
     delta: float
@@ -231,80 +250,135 @@ def hotspot_trend(history: list[Any]) -> str | None:
     return "stable"
 
 
+def _metric_value(snap: Any, metric: str) -> float | None:
+    """One metric off a snapshot, ``None`` when it was never recorded."""
+    value = getattr(snap, metric, None)
+    return None if value is None else float(value)
+
+
+def _build_alert(
+    *,
+    kind: str,
+    metric: str,
+    current: float,
+    baseline: float,
+    delta: float,
+    movement: str,
+    attribution: tuple[str | None, float | None, float | None],
+) -> TrendAlert:
+    """One alert, re-read as a watch item when only history moved.
+
+    *movement* names the fall and its window, e.g. "dropped 0.62 points vs.
+    snapshot 5 ago"; what follows depends on what drove it. A decline the code
+    shape did not contribute to is not something to fix, and reporting it in
+    the same red as a real regression tells a reader their refactoring made
+    things worse. Such a decline keeps every number and swaps the reading.
+    """
+    driver, structure, history_share = attribution
+    label = _METRIC_LABEL[metric]
+    window = f"({baseline:.2f} → {current:.2f})"
+    # Both halves are checked, not just the driver. ``driver`` names whichever
+    # moved further, which on a repo with floored files can be a half that
+    # moved *up*: the halves are deduction means and the score is a mean of
+    # clamped scores, so the two can disagree about direction. Claiming a cause
+    # is only honest when history is the one half that actually fell.
+    only_history_fell = (
+        structure is not None and structure >= 0 and history_share is not None and history_share < 0
+    )
+    if driver == "history" and only_history_fell:
+        shape = "held" if round(structure or 0.0, 2) == 0 else f"improved {structure:.2f}"
+        message = (
+            f"{label} {movement} {window}, and code shape {shape} over the same "
+            f"window. Change history is the only half that moved down, and no "
+            f"edit to these files settles it."
+        )
+        kind = "history_drag"
+    else:
+        message = f"{label} {movement} {window}.{_driver_sentence(driver, structure, history_share)}"
+    return TrendAlert(
+        kind=kind,
+        metric=metric,
+        current=round(current, 2),
+        baseline=round(baseline, 2),
+        delta=delta,
+        message=message,
+        driver=driver,
+        structure_delta=structure,
+        history_delta=history_share,
+    )
+
+
 def _declining_alerts(history: list[Any]) -> list[TrendAlert]:
-    """``Declining Health`` — current is ≥ threshold below snapshot N-5."""
+    """Current reading is at least the threshold below snapshot N-5."""
     if len(history) <= DECLINE_LOOKBACK:
         return []
     current = history[-1]
     baseline = history[-1 - DECLINE_LOOKBACK]
     out: list[TrendAlert] = []
-    for metric in ("hotspot_health", "average_health"):
-        cur_val = float(getattr(current, metric))
-        base_val = float(getattr(baseline, metric))
+    for metric in _ALERT_METRICS:
+        cur_val = _metric_value(current, metric)
+        base_val = _metric_value(baseline, metric)
+        if cur_val is None or base_val is None:
+            continue
         delta = round(cur_val - base_val, 3)
-        if delta <= -DECLINE_THRESHOLD:
-            driver, structure, history = (
-                _attribution(current, baseline)
-                if metric == "average_health"
-                else (None, None, None)
+        if delta > -DECLINE_THRESHOLD:
+            continue
+        out.append(
+            _build_alert(
+                kind="declining",
+                metric=metric,
+                current=cur_val,
+                baseline=base_val,
+                delta=delta,
+                movement=f"dropped {abs(delta):.2f} points vs. snapshot {DECLINE_LOOKBACK} ago",
+                attribution=_attribution_for(metric, current, baseline),
             )
-            out.append(
-                TrendAlert(
-                    kind="declining",
-                    metric=metric,
-                    current=round(cur_val, 2),
-                    baseline=round(base_val, 2),
-                    delta=delta,
-                    message=(
-                        f"{metric.replace('_', ' ').title()} dropped "
-                        f"{abs(delta):.2f} points vs. snapshot "
-                        f"{DECLINE_LOOKBACK} ago "
-                        f"({base_val:.2f} → {cur_val:.2f})."
-                        f"{_driver_sentence(driver, structure, history)}"
-                    ),
-                    driver=driver,
-                    structure_delta=structure,
-                    history_delta=history,
-                )
-            )
+        )
     return out
 
 
 def _predicted_decline_alerts(history: list[Any]) -> list[TrendAlert]:
-    """``Predicted Decline`` — N consecutive strict drops, any magnitude."""
+    """N consecutive strict drops, any magnitude."""
     needed = PREDICTED_DECLINE_CONSECUTIVE + 1
     if len(history) < needed:
         return []
     tail = history[-needed:]
     out: list[TrendAlert] = []
-    for metric in ("hotspot_health", "average_health"):
-        vals = [float(getattr(s, metric)) for s in tail]
-        if all(vals[i + 1] < vals[i] for i in range(len(vals) - 1)):
-            delta = round(vals[-1] - vals[0], 3)
-            driver, structure, history = (
-                _attribution(tail[-1], tail[0])
-                if metric == "average_health"
-                else (None, None, None)
+    for metric in _ALERT_METRICS:
+        vals = [_metric_value(s, metric) for s in tail]
+        # One missing reading drops the metric rather than shortening the run:
+        # three drops either side of a gap are not three consecutive drops.
+        if any(v is None for v in vals):
+            continue
+        readings = [v for v in vals if v is not None]  # narrows float | None
+        if not all(readings[i + 1] < readings[i] for i in range(len(readings) - 1)):
+            continue
+        delta = round(readings[-1] - readings[0], 3)
+        out.append(
+            _build_alert(
+                kind="predicted_decline",
+                metric=metric,
+                current=readings[-1],
+                baseline=readings[0],
+                delta=delta,
+                movement=f"declined for {PREDICTED_DECLINE_CONSECUTIVE} consecutive snapshots",
+                attribution=_attribution_for(metric, tail[-1], tail[0]),
             )
-            out.append(
-                TrendAlert(
-                    kind="predicted_decline",
-                    metric=metric,
-                    current=round(vals[-1], 2),
-                    baseline=round(vals[0], 2),
-                    delta=delta,
-                    message=(
-                        f"{metric.replace('_', ' ').title()} declined for "
-                        f"{PREDICTED_DECLINE_CONSECUTIVE} consecutive snapshots "
-                        f"({vals[0]:.2f} → {vals[-1]:.2f})."
-                        f"{_driver_sentence(driver, structure, history)}"
-                    ),
-                    driver=driver,
-                    structure_delta=structure,
-                    history_delta=history,
-                )
-            )
+        )
     return out
+
+
+def _attribution_for(
+    metric: str, current: Any, baseline: Any
+) -> tuple[str | None, float | None, float | None]:
+    """The structure / history split, which only the composite headline has.
+
+    Maintainability is already code shape alone and the hotspot figure never
+    had its halves snapshotted, so neither one splits.
+    """
+    if metric != "average_health":
+        return None, None, None
+    return _attribution(current, baseline)
 
 
 def drop_unscoped_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

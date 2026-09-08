@@ -537,8 +537,9 @@ KPI cards.
 
 ## 8. Trends (`trends.py`)
 
-State-free: callers pass an oldest-first list of snapshot rows. Two
-alerts:
+State-free: callers pass an oldest-first list of snapshot rows. Both alerts
+run over every metric in `_ALERT_METRICS` — hotspot health, the composite
+headline and maintainability — skipping any a snapshot never recorded:
 
 - **Declining Health**: current is ≥ `DECLINE_THRESHOLD` (default 0.5)
   below the snapshot `DECLINE_LOOKBACK` (5) positions back. Fires on the
@@ -546,6 +547,14 @@ alerts:
 - **Predicted Decline**: the three most recent snapshots are each
   strictly below the one before. Magnitude is not required; direction is
   the signal.
+
+Either can come back as a third `kind`, **`history_drag`**: a fall on the
+composite headline where `driver` is `history` and the structure half held or
+improved. It carries the same numbers and the opposite reading, because a
+decline the code shape did not contribute to has nothing to act on and
+reporting it in error red tells a reader their refactoring made things worse.
+Maintainability is code shape already, so it has no halves to split and never
+softens — it is the fall that always deserves the alarm.
 
 `recent_kpis(history, limit=10)` returns a newest-first serialised view
 for the CLI table and MCP `get_health(include=["trend"])` response.

@@ -93,6 +93,170 @@ def test_recent_kpis_orders_newest_first():
 
 
 # --------------------------------------------------------------------------- #
+# Attribution: what a decline is blamed on
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class _Split(_S):
+    """A snapshot carrying the two halves and the maintainability figure."""
+
+    structure_average: float | None = None
+    history_average: float | None = None
+    maintainability_average: float | None = None
+
+
+def _split_series(rows: list[tuple[float, float, float]]) -> list[_Split]:
+    """Snapshots from ``(average_health, structure_deduction, history_deduction)``."""
+    return [
+        _Split(
+            taken_at=_ts(i),
+            hotspot_health=10.0,
+            average_health=avg,
+            structure_average=structure,
+            history_average=history,
+        )
+        for i, (avg, structure, history) in enumerate(rows)
+    ]
+
+
+def test_a_decline_the_code_shape_did_not_cause_is_not_an_alarm():
+    """The founding case: history rises through a week of refactoring."""
+    flat = (8.0, 1.60, 1.20)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 1.30, 2.10)]
+    summary = diff_snapshots(_split_series(rows))
+    alerts = [a for a in summary.alerts if a.metric == "average_health"]
+    assert [a.kind for a in alerts] == ["history_drag"]
+    alert = alerts[0]
+    assert alert.driver == "history"
+    assert alert.structure_delta == 0.3
+    assert "code shape improved 0.30" in alert.message
+    assert "Change history is the only half that moved down" in alert.message
+    assert "dropped 0.60 points" in alert.message
+
+
+def test_a_decline_the_code_shape_shares_stays_an_alarm():
+    """History still leads, but structure fell too — that is a real regression."""
+    flat = (8.0, 1.60, 1.20)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 1.85, 2.10)]
+    summary = diff_snapshots(_split_series(rows))
+    alerts = [a for a in summary.alerts if a.metric == "average_health"]
+    assert [a.kind for a in alerts] == ["declining"]
+    assert alerts[0].driver == "history"
+
+
+def test_a_structure_led_decline_stays_an_alarm():
+    flat = (8.0, 1.60, 1.20)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 2.50, 1.20)]
+    summary = diff_snapshots(_split_series(rows))
+    alerts = [a for a in summary.alerts if a.metric == "average_health"]
+    assert [a.kind for a in alerts] == ["declining"]
+    assert alerts[0].driver == "structure"
+
+
+def test_code_shape_holding_still_reads_as_a_watch_item():
+    flat = (8.0, 1.60, 1.20)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 1.60, 2.10)]
+    alerts = [
+        a for a in diff_snapshots(_split_series(rows)).alerts if a.metric == "average_health"
+    ]
+    assert alerts[0].kind == "history_drag"
+    assert "code shape held" in alerts[0].message
+
+
+def test_a_fall_neither_half_explains_stays_an_alarm():
+    """Both halves improved while the clamped score fell.
+
+    ``driver`` names the half that moved furthest, which is not the same as the
+    half that moved down. Muting the alarm here would blame a fall on a half
+    that had just got better.
+    """
+    flat = (8.0, 1.60, 1.20)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 1.50, 0.70)]
+    alerts = [
+        a for a in diff_snapshots(_split_series(rows)).alerts if a.metric == "average_health"
+    ]
+    assert [a.kind for a in alerts] == ["declining"]
+    assert alerts[0].driver == "history"
+    assert alerts[0].history_delta == 0.5
+
+
+def test_a_shape_gain_too_small_to_show_reads_as_held():
+    """0.004 formats as 0.00, and "improved 0.00" is the held case mislabelled."""
+    flat = (8.0, 1.600, 1.200)
+    rows = [flat] * 6 + [(8.0 - DECLINE_THRESHOLD - 0.1, 1.596, 2.100)]
+    alert = next(
+        a for a in diff_snapshots(_split_series(rows)).alerts if a.metric == "average_health"
+    )
+    assert alert.kind == "history_drag"
+    assert "code shape held" in alert.message
+
+
+def test_a_predicted_decline_is_attributed_the_same_way():
+    rows = [(8.0, 1.60, 1.20), (7.9, 1.55, 1.35), (7.8, 1.50, 1.50), (7.7, 1.45, 1.65)]
+    alerts = [
+        a for a in diff_snapshots(_split_series(rows)).alerts if a.metric == "average_health"
+    ]
+    assert [a.kind for a in alerts] == ["history_drag"]
+
+
+def test_the_headline_is_named_code_health_not_average_health():
+    vals = [8.0] * 6 + [8.0 - DECLINE_THRESHOLD - 0.1]
+    alerts = diff_snapshots(_series(vals)).alerts
+    messages = {a.metric: a.message for a in alerts}
+    assert messages["average_health"].startswith("Code health dropped")
+    assert messages["hotspot_health"].startswith("Hotspot health dropped")
+
+
+# --------------------------------------------------------------------------- #
+# Maintainability
+# --------------------------------------------------------------------------- #
+
+
+def _maintainability_series(values: list[float]) -> list[_Split]:
+    return [
+        _Split(
+            taken_at=_ts(i),
+            hotspot_health=10.0,
+            average_health=10.0,
+            maintainability_average=v,
+        )
+        for i, v in enumerate(values)
+    ]
+
+
+def test_maintainability_declines_are_alerted():
+    """Nothing watched the one figure a refactor is supposed to move."""
+    vals = [8.5] * 6 + [8.5 - DECLINE_THRESHOLD - 0.1]
+    alerts = [
+        a
+        for a in diff_snapshots(_maintainability_series(vals)).alerts
+        if a.metric == "maintainability_average"
+    ]
+    assert [a.kind for a in alerts] == ["declining"]
+    assert alerts[0].message.startswith("Maintainability dropped 0.60 points")
+
+
+def test_a_maintainability_fall_is_never_blamed_on_history():
+    """It is code shape already, so it has no halves to split and never softens."""
+    vals = [8.5] * 6 + [8.5 - DECLINE_THRESHOLD - 0.1]
+    alert = next(
+        a
+        for a in diff_snapshots(_maintainability_series(vals)).alerts
+        if a.metric == "maintainability_average"
+    )
+    assert alert.driver is None
+    assert alert.structure_delta is None
+
+
+def test_snapshots_without_maintainability_raise_no_alert():
+    """Series predating the column must not read a missing figure as zero."""
+    vals = [8.0] * 6 + [8.0 - DECLINE_THRESHOLD - 0.1]
+    alerts = diff_snapshots(_series(vals)).alerts
+    assert not [a for a in alerts if a.metric == "maintainability_average"]
+
+
+# --------------------------------------------------------------------------- #
 # Per-file trajectory
 # --------------------------------------------------------------------------- #
 

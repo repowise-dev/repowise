@@ -117,6 +117,8 @@ class HealthTrendSummary(BaseModel):
 
 
 class HealthTrendAlert(BaseModel):
+    #: ``declining`` and ``predicted_decline`` are regressions; ``history_drag``
+    #: is a fall the code shape did not cause and there is nothing to act on.
     kind: str
     metric: str
     current: float
