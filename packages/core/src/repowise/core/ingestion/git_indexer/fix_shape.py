@@ -39,6 +39,8 @@ from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from repowise.core.support_paths import DOC_EXTENSIONS
+
 from ._constants import _CODE_EXTENSIONS
 
 if TYPE_CHECKING:
@@ -61,7 +63,7 @@ SHAPE_KINDS: tuple[str, ...] = (
 # Path rules
 # ---------------------------------------------------------------------------
 
-_DOC_EXT = frozenset({".md", ".mdx", ".rst", ".txt", ".adoc"})
+_DOC_EXT = DOC_EXTENSIONS
 _DOC_DIRS = frozenset({"docs", "doc", "documentation"})
 
 # Directory components that mean "this is somebody's test suite". Deliberately
