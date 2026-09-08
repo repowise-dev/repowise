@@ -27,15 +27,7 @@ interface FilesTableProps {
 const ROW_HEIGHT = 44;
 const OVERSCAN = 8;
 
-/**
- * The health figure's colour, from the same function the treemap tiles use.
- *
- * This banded at 7 while `healthInk` bands at 8, so the 7.x files — and there
- * are a lot of them — read green in this column, green in the map's tooltip and
- * amber on the tile the tooltip was attached to. Three vocabularies for one
- * number on one page. Match the mark you sit next to; every other mark on this
- * page is on the canonical bands.
- */
+/** The health figure's colour, from the same function the treemap tiles use. */
 function scoreInk(score: number | null): string {
   return score == null ? "var(--color-text-tertiary)" : healthInk(score);
 }

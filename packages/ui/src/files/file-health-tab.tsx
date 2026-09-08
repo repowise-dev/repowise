@@ -173,7 +173,7 @@ export function FileHealthTab({
             <>
               Code health is the calibrated number in the header. Maintainability and performance
               are co-equal signals rather than a blend of it, and they are banded the same way —
-              healthy at 8 and above, alert below 4.{" "}
+              Good from 7.0, at risk below 4.0.{" "}
               {metric.has_test_file
                 ? "This file has a paired test file."
                 : "No paired test file was found for it."}

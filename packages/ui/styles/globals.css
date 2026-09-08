@@ -160,11 +160,14 @@
      Same red / amber / gold / green family, chroma and value pulled back
      together, and the amber and gold steps separated by hue as well as
      lightness. Fill only: pills, badges and text keep the ink vars, so the
-     map's red is deliberately not byte-identical to the pill's. */
-  --color-node-critical: #9e3226;
-  --color-node-poor: #ad5a19;
+     map's red is deliberately not byte-identical to the pill's. Excellent
+     and Good separate here by value, because on a canvas two thousand
+     tiles of one green cannot be told apart by a word. */
+  --color-node-at-risk: #9e3226;
+  --color-node-needs-work: #ad5a19;
   --color-node-fair: #b3872a;
   --color-node-good: #2a7a54;
+  --color-node-excellent: #17603f;
   /* No signal under the active lens. This was mixed a third of the way toward
      the root, which recedes correctly against near-black and washes out to a
      ghost against cream. One value cannot serve both directions. */
@@ -495,10 +498,11 @@
   /* Canvas node ramp (dark) — see the light block for why this is not the ink.
      Deeper and less saturated than the semantic vars so a field of thousands
      reads as pigment rather than as light. */
-  --color-node-critical: #b0544b;
-  --color-node-poor: #bd7c42;
+  --color-node-at-risk: #b0544b;
+  --color-node-needs-work: #bd7c42;
   --color-node-fair: #a89453;
   --color-node-good: #42906f;
+  --color-node-excellent: #5cb389;
   --color-node-neutral: #333336;
 
   /* Refactoring type accents — qualitative palette (dark theme, brighter). */

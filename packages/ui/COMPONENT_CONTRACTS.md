@@ -925,10 +925,9 @@ Two consequences a host must honour:
   click. A tab with nothing behind it is left out of that list rather
   than buying a trip to be shown the same empty state.
 
-Bands come from `bandForScore` (`@repowise-dev/types/health`), never from
-`scoreBadgeClass` — that is a four-step presentation ramp and this page
-sits one click from the treemap and the health map, which both paint the
-canonical three.
+Bands come from `bandForScore` (`@repowise-dev/types/health`), never from a
+threshold of the page's own — this page sits one click from the treemap and
+the health map, and all three paint the same five bands.
 
 **The doors, and who owns each end.** The page had thirty surfaces linking
 into it and almost nothing linking out, and the docs surface — the one that

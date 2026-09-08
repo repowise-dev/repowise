@@ -149,7 +149,7 @@ zoomed on one node. The older `/c4` and `/zoom` URLs redirect here.
 
 **Answers:** which files have the strongest defect indicators, and why?
 
-<img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: the three co-equal pillars, the alert/warning/healthy band distribution, KPI cards and the code health map" width="100%" />
+<img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: the three co-equal pillars, the health band distribution, KPI cards and the code health map" width="100%" />
 
 Tabs behind `?tab=`:
 

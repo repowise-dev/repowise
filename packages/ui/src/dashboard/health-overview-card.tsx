@@ -12,6 +12,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
 import { truncatePath } from "../lib/format";
+import { healthBand } from "../health/tokens";
 import { Sparkline } from "../health/sparkline";
 
 export interface HealthOverviewPoint {
@@ -70,16 +71,6 @@ interface HealthOverviewCardProps {
    */
   defectAccuracy?: HealthOverviewAccuracy | null;
   className?: string;
-}
-
-/* 1–10 health bands — the moat metric, distinct from the 0–100 composite
-   shown in the header badge. */
-function band(v: number): { color: string; label: string } {
-  if (v >= 8) return { color: "var(--color-success)", label: "Excellent" };
-  if (v >= 6.5) return { color: "var(--color-success)", label: "Good" };
-  if (v >= 5) return { color: "var(--color-caution)", label: "Fair" };
-  if (v >= 3.5) return { color: "var(--color-warning)", label: "Needs work" };
-  return { color: "var(--color-error)", label: "Critical" };
 }
 
 const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
@@ -314,7 +305,7 @@ export function HealthOverviewCard({
                 label="Average health"
                 value={avg}
                 delta={averageDelta}
-                band={avg != null ? band(avg) : null}
+                band={avg != null ? healthBand(avg) : null}
                 sparkline={avgSeries}
               />
               <MetricTile
@@ -322,7 +313,7 @@ export function HealthOverviewCard({
                 label="Hotspot health"
                 value={hot}
                 delta={hotspotDelta}
-                band={hot != null ? band(hot) : null}
+                band={hot != null ? healthBand(hot) : null}
                 sparkline={hotSeries}
               />
             </div>
@@ -367,7 +358,7 @@ export function HealthOverviewCard({
                   </span>
                   <span
                     className="shrink-0 text-xs font-bold tabular-nums"
-                    style={{ color: band(data.worst_performer_score).color }}
+                    style={{ color: healthBand(data.worst_performer_score).color }}
                   >
                     {data.worst_performer_score.toFixed(1)}/10
                   </span>
@@ -412,7 +403,7 @@ function PillarStat({
   label: string;
   score: number | null;
 }) {
-  const b = score != null ? band(score) : null;
+  const b = score != null ? healthBand(score) : null;
   return (
     <a
       href={href}

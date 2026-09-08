@@ -14,7 +14,7 @@
  * single neutral hue, thin, faded behind the cards.
  */
 
-import { ALERT_MAX, HEALTHY_MIN } from "@repowise-dev/types/health";
+import { bandForScore, type HealthBand } from "@repowise-dev/types/health";
 
 import type { Rect } from "./camera";
 import { hasRole, KIND_LABEL } from "./node-signals";
@@ -120,16 +120,23 @@ function primaryMetric(node: ZoomNode): string {
   return n > 0 ? `${n} ${n === 1 ? "file" : "files"}` : "";
 }
 
+/** Excellent and Good share the green; the word beside the dot separates them. */
+const HEALTH_SLOT: Record<HealthBand, keyof ZoomPalette> = {
+  excellent: "healthGood",
+  good: "healthGood",
+  fair: "healthFair",
+  needs_work: "healthNeedsWork",
+  at_risk: "healthAtRisk",
+};
+
 /**
- * Traffic-light ink for a node's code-health score, on the same 0-10 bands the
- * /files treemap uses (`bandForScore`: <4 alert, <8 warning, else healthy) so a
- * card and a treemap tile never disagree. Null (unscored, sparse) reads neutral.
+ * Ink for a node's code-health score, on the shared bands, so a card, the
+ * detail panel and a treemap tile never disagree. Null (unscored) reads
+ * neutral.
  */
 function healthColor(score: number | null, palette: ZoomPalette): string {
   if (score === null) return palette.healthNeutral;
-  if (score < ALERT_MAX) return palette.healthAlert;
-  if (score < HEALTHY_MIN) return palette.healthWarning;
-  return palette.healthHealthy;
+  return palette[HEALTH_SLOT[bandForScore(score)]];
 }
 
 /**
@@ -170,7 +177,7 @@ function drawPaperTexture(
  *
  * One hue, deliberately. This used to return a different colour per role from
  * `palette.entry` / `.hotspot` / `.dead` / `.flow`, which collided head-on with
- * the health dot in the footer: `palette.entry` and `palette.healthHealthy` are
+ * the health dot in the footer: `palette.entry` and `palette.healthGood` are
  * both `--color-success`, so a green dot meant "has an entry point" in the
  * top-right corner and "healthy" in the bottom-left one, forty pixels apart on
  * the same card. Green/amber/red carry a band and belong to health.

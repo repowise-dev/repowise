@@ -13,10 +13,17 @@ from sqlalchemy import func, select
 
 from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
+from repowise.core.analysis.health.counts import (
+    DEFAULT_COUNTS,
+    parse_counts,
+)
+from repowise.core.analysis.health.counts import (
+    project as project_counts,
+)
 from repowise.core.analysis.health.coverage import decay_since, measurement_ref
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.finding_identity import finding_public_id
-from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
+from repowise.core.analysis.health.grading import TARGET_SCORE, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
@@ -753,7 +760,7 @@ def _serialize_metric(
         "line_coverage_pct": m.line_coverage_pct,
         "branch_coverage_pct": m.branch_coverage_pct,
         "module": m.module,
-        # Leverage: NLOC-weighted points this file drags below the Healthy band
+        # Leverage: NLOC-weighted points this file drags below the target score
         # (``(8.0 - score) * nloc``, 0 once healthy). This is how much the repo
         # headline recovers if the file reaches 8.0, so ranking by it — not by
         # raw score — points at the files that actually move the average. A tiny
@@ -762,7 +769,7 @@ def _serialize_metric(
         # docstring and ``gap_analysis.weighted_gap_points`` give it a
         # denominator, and every ``high_leverage_files`` row carries the same
         # quantity as ``share_of_repo_gap_pct``.
-        "weighted_deficit": round(max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1)),
+        "weighted_deficit": round(max(TARGET_SCORE - m.score, 0.0) * max(m.nloc, 1)),
         # Per-dimension scores from the three-signal split. ``defect_score`` is
         # deliberately absent: ``engine.py`` sets it and ``score`` from the same
         # ``scores["defect"]`` value, so it was pure duplication on every row of
@@ -868,6 +875,7 @@ def _unresolved_targets(
     matched_modules: set[str],
     resolved_paths: set[str],
     excluded_paths: set[str],
+    unscored_paths: set[str],
     repo_root: Any,
 ) -> list[dict[str, str]]:
     """Name every requested target that produced no rows, with a reason.
@@ -876,7 +884,12 @@ def _unresolved_targets(
     empty ``findings`` list reads as "this file is healthy", which is the most
     damaging default this tool can have. The reason is the actionable part —
     ``not_indexed`` means run ``repowise update``, ``no_such_path`` means the
-    target was a typo, ``excluded`` means the repo config drops it on purpose.
+    target was a typo, ``excluded`` means the repo config drops it on purpose,
+    and ``not_measured`` means the row is indexed but carries no stored split
+    for the reading ``counts`` asked for. That last one is why the projection
+    is passed in rather than inferred: an indexed file it could not answer for
+    would otherwise read as ``not_indexed`` and send the caller to run an
+    update that changes nothing.
     """
     out: list[dict[str, str]] = []
     for t in file_targets:
@@ -884,6 +897,8 @@ def _unresolved_targets(
             continue
         if t in excluded_paths:
             reason = "excluded"
+        elif t in unscored_paths:
+            reason = "not_measured"
         else:
             try:
                 on_disk = (Path(repo_root) / t).exists()
@@ -927,7 +942,7 @@ def _directive(
         (m for m in by_leverage if (leads.get(m.file_path) or {}).get("actionable_biomarker")),
         by_leverage[0],
     )
-    recovers = round(max(HEALTHY_MIN - top.score, 0.0) * max(top.nloc, 1))
+    recovers = round(max(TARGET_SCORE - top.score, 0.0) * max(top.nloc, 1))
     lead = leads.get(top.file_path) or {}
     # Does anything behind ``plan_via`` actually address the cause named in
     # ``reason``? Plans carry the biomarker that produced them, and several
@@ -1267,8 +1282,8 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     kept deliberately distinct:
 
     - ``weighted_gap_points`` — the **net** points the average needs
-      (``8.0 * total_nloc - Σ score*nloc``). Healthy files already sit above 8.0
-      and cushion it, so this is smaller than the gross all-files-healthy
+      (``8.0 * total_nloc - Σ score*nloc``). Files already above the target
+      cushion it, so this is smaller than the gross every-file-at-target
       deficit and is the number that matches the goal "move the average".
       ``files_to_reach_target`` is the punchline: lift the worst-deficit N files
       to 8.0 and the headline crosses 8.0. This can be 0 or negative on a
@@ -1286,19 +1301,19 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     """
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     weighted_sum = sum(m.score * max(m.nloc, 1) for m in metrics)
-    net_gap = HEALTHY_MIN * total_nloc - weighted_sum
+    net_gap = TARGET_SCORE * total_nloc - weighted_sum
     below = sorted(
         (
-            max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1)
+            max(TARGET_SCORE - m.score, 0.0) * max(m.nloc, 1)
             for m in metrics
-            if m.score < HEALTHY_MIN
+            if m.score < TARGET_SCORE
         ),
         reverse=True,
     )
     gross_gap = sum(below)
     if not below:
         return {
-            "target_score": HEALTHY_MIN,
+            "target_score": TARGET_SCORE,
             "weighted_gap_points": 0,
             "weighted_gross_gap_points": 0,
             "files_below_target": 0,
@@ -1320,7 +1335,7 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     # because per-file shares are meaningful whenever any file is below target.
     reachable = max(net_gap, 0)
     return {
-        "target_score": HEALTHY_MIN,
+        "target_score": TARGET_SCORE,
         # Net weighted points the average must recover to reach 8.0.
         "weighted_gap_points": round(max(net_gap, 0)),
         # Gross deficit of all below-target files: the share_of_repo_gap_pct
@@ -1498,6 +1513,7 @@ async def get_health(
     performance_confidence: str | None = None,
     performance_sort: str | None = None,
     scope: str = DEFAULT_SCOPE,
+    counts: str = DEFAULT_COUNTS,
 ) -> dict:
     """Code-health scores and findings from stored analysis.
 
@@ -1506,27 +1522,27 @@ async def get_health(
     Every block and accepted value: docs/agent/MCP_TOOLS.md.
 
     Args:
-        targets: file paths or ``module:<name>``. Empty means dashboard;
+        targets: file paths or ``module:<name>``; empty means dashboard,
             unmatched ones land in ``unresolved``.
-        include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
-            ``accuracy`` | ``signals`` | ``churn_complexity``, or a dimension.
+        include: ``biomarkers``|``refactoring``|``trend``|``coverage``|
+            ``accuracy``|``signals``|``churn_complexity``, or a dimension;
             ``performance`` and ``refactoring`` add their queues.
         only: keys to keep; identity, counts and recovery survive.
-            ``biomarkers``, ``accuracy`` and ``refactoring`` alias their block
-            key. ``performance``, ``defect`` and ``maintainability`` do not:
-            they filter rows and land in ``unknown_only_keys``.
-        repo: usually omitted.
+            ``biomarkers``/``accuracy``/``refactoring`` alias their block key;
+            ``performance``/``defect``/``maintainability`` do not: they filter
+            rows and land in ``unknown_only_keys``.
         limit: max rows per ranked list, ``0`` for none.
         cursor: zero-based offset into a ranked list.
-        finding_id / plan_id: stable ``id`` from a finding or a plan.
-        opportunity_id: ``perf...`` or ``refop...`` id: the unit, its steps or
-            plan, and evidence paged by ``only=["*_evidence"]``.
+        finding_id / plan_id: stable ``id`` from a finding or plan.
+        opportunity_id: ``perf...``/``refop...``: the unit, its steps or
+            plan, evidence paged by ``only=["*_evidence"]``.
         refactoring_view: ``diversified`` (default) | ``canonical`` |
-            ``file_spread``; _type / _confidence / _effort filter.
+            ``file_spread``; _type/_confidence/_effort filter.
         performance_view / _context / _boundary / _confidence / _sort: queue
             projection and filters; the facets list them.
-        scope: ``all`` (default) | ``production``. Narrowing drops test files
-            from every figure; tests score higher, so it lowers them.
+        scope / counts: default ``all``/``everything``. ``production`` drops
+            test files, which score higher; ``code_shape`` drops the
+            git-derived half of the score and its findings.
 
     """
     started = perf_counter()
@@ -1782,11 +1798,30 @@ async def get_health(
             all_metrics = [m for m in all_metrics if not m.is_test]
             scope_paths = {m.file_path for m in all_metrics}
 
+        # ``counts`` composes with the scope: it re-reads the same rows off the
+        # stored structure/history split rather than scoring them again. It
+        # narrows findings by origin and not by path, matching the routes — a
+        # row it cannot answer for is reported in ``unscored_files`` rather
+        # than pulling the findings on that file out of every other block.
+        reported_counts = parse_counts(counts)
+        code_shape = reported_counts == "code_shape"
+        unscored_files = 0
+        unscored_paths: set[str] = set()
+        if code_shape:
+            before = {m.file_path for m in all_metrics}
+            all_metrics, unscored_files = project_counts(counts, all_metrics)
+            unscored_paths = before - {m.file_path for m in all_metrics}
+
         def in_scope_rows(rows: list, attr: str = "file_path") -> list:
             rows = filter_rows_by_attr(rows, attr, exclude_spec)
             if scope_paths is None:
                 return rows
             return [r for r in rows if getattr(r, attr, None) in scope_paths]
+
+        def in_counts_findings(rows: list) -> list:
+            """A history finding cannot explain a score its half was taken out
+            of, so it is not part of the code-shape reading."""
+            return split_by_origin(rows)[0] if code_shape else rows
         matched_modules: set[str] = set()
         if module_targets:
             module_set = set(module_targets)
@@ -1845,7 +1880,7 @@ async def get_health(
         test_finding_rows: list[Any] = []
         test_findings_total = 0
         if scoped:
-            finding_rows = in_scope_rows(
+            finding_rows = in_counts_findings(in_scope_rows(
                 list(
                     (
                         await session.execute(
@@ -1859,7 +1894,7 @@ async def get_health(
                     .all()
                 ),
                 "file_path",
-            )
+            ))
             lead_rows: list[Any] = finding_rows
             emitted = _rank_emitted(
                 [f for f in finding_rows if _in_dimensions(f, ranked_dimensions)]
@@ -1911,7 +1946,7 @@ async def get_health(
             # ``lead_rows`` stays the unfiltered open set: it feeds the per-file
             # leads and the performance KPI, neither of which should change
             # because the caller asked to *see* one dimension.
-            lead_rows = in_scope_rows(lite_rows)
+            lead_rows = in_counts_findings(in_scope_rows(lite_rows))
             emitted = _rank_emitted(
                 [r for r in lead_rows if _in_dimensions(r, ranked_dimensions)]
             )
@@ -2025,6 +2060,10 @@ async def get_health(
         # ignores every finding whose type is not ``prior_defect``. Selecting
         # those directly keeps the honest denominator without re-reading the
         # ~10k rows the narrow pass above exists to avoid.
+        # Not routed through ``in_counts_findings``: ``prior_defect`` is the
+        # ground truth this block scores the number against, not a deduction
+        # the reading includes. Dropping it under ``code_shape`` would leave
+        # the accuracy block with no labels to be accurate about.
         accuracy_rows: list[Any] = []
         if "accuracy" in include_set and not scoped:
             accuracy_rows = in_scope_rows(
@@ -2201,8 +2240,8 @@ async def get_health(
             # one here because fixing it moves the average far more. Computed
             # before the leads so the set of printed files is known.
             by_leverage = sorted(
-                (m for m in all_metrics if m.score < HEALTHY_MIN),
-                key=lambda m: max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1),
+                (m for m in all_metrics if m.score < TARGET_SCORE),
+                key=lambda m: max(TARGET_SCORE - m.score, 0.0) * max(m.nloc, 1),
                 reverse=True,
             )
             printed = {m.file_path for m in metric_rows[:limit]}
@@ -2301,6 +2340,11 @@ async def get_health(
                 "findings",
             ),
             "findings_total": findings_total,
+            # Which reading these scores are on, last so the identity keys keep
+            # the head of the payload. Without it a projected score is
+            # indistinguishable from the calibrated one.
+            "scope": reported_scope,
+            "counts": reported_counts,
         }
         unresolved = _unresolved_targets(
             file_targets=file_targets,
@@ -2308,6 +2352,7 @@ async def get_health(
             matched_modules=matched_modules,
             resolved_paths={m.file_path for m in metric_rows},
             excluded_paths=excluded_paths,
+            unscored_paths=unscored_paths,
             repo_root=ctx.path,
         )
         if unresolved:
@@ -2401,9 +2446,11 @@ async def get_health(
             ),
             "mode": "dashboard",
             "scope": reported_scope,
+            "counts": reported_counts,
+            "unscored_files": unscored_files,
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
-            # Where the gap to Healthy concentrates — the "few files, not the
+            # Where the gap to the target concentrates — the "few files, not the
             # long tail" reframe that turns a repo-wide number into a short list.
             "gap_analysis": gap,
             "worst_files": bounded([
@@ -2424,7 +2471,7 @@ async def get_health(
             # gap does, and it is the unit ``directive`` already speaks. The
             # denominator is the gross deficit of all below-target files, so a
             # share is bounded by 100% and the rows sum to 100% by construction
-            # — the net gap would let healthy files cushion the total and push a
+            # — the net gap would let above-target files cushion the total and push a
             # single large file over 100% (issue #1437).
             "high_leverage_files": bounded([
                 {
@@ -2434,7 +2481,7 @@ async def get_health(
                     "share_of_repo_gap_pct": (
                         round(
                             100.0
-                            * max(HEALTHY_MIN - m.score, 0.0)
+                            * max(TARGET_SCORE - m.score, 0.0)
                             * max(m.nloc, 1)
                             / gap["weighted_gross_gap_points"],
                             1,

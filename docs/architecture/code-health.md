@@ -65,7 +65,7 @@ analysis/health/
 ├── scoring.py                      # weighted aggregation, category caps, KPIs
 ├── ranking.py                      # canonical worst-first key + deduction fold
 ├── aggregation.py                  # module rollups, severity/biomarker/score breakdowns
-├── grading.py                      # 3 defect-backed bands + NLOC-weighted distribution
+├── grading.py                      # the five absolute bands + NLOC-weighted distribution
 ├── defect_accuracy.py              # "does the score find the bugs?" self-validation
 ├── trends.py                       # snapshot diff, Declining/Predicted alerts, per-file score series
 ├── signals.py                      # per-file process/people/topology join (surfacing-only)
@@ -178,8 +178,8 @@ packages/ui/src/health/             # shared React components (used by web + fut
 ├── untested-hotspot-warning.tsx
 ├── refactoring-card.tsx
 ├── refactoring-target-list.tsx
-├── health-badge.tsx               # score pill, colored by the 3 health bands
-├── health-distribution-bar.tsx    # NLOC-weighted Alert/Warning/Healthy split
+├── health-badge.tsx               # score pill, colored by the health band
+├── health-distribution-bar.tsx    # NLOC-weighted split across the five bands
 ├── trend-chart.tsx                # repo KPI history (3 series)
 ├── file-trend-chart.tsx           # single file's score-over-time + delta + declining flag
 ├── sparkline.tsx                  # compact inline series (drawer trend)
@@ -724,7 +724,7 @@ silently re-scored for changed files only.
 Defined in `tool_health.py`. Modes:
 
 - **Dashboard mode** (`targets=None`): returns repo-level KPIs (with the
-  repo `band`) + the NLOC-weighted `distribution` across the 3 bands +
+  repo `band`) + the NLOC-weighted `distribution` across the bands +
   `worst_files` (top N lowest-scoring) + `top_findings` + a per-module
   `modules` rollup.
 - **Targeted mode** (`targets=[...]`): returns full `metrics` +
@@ -939,12 +939,11 @@ phases may revisit; the constraints kept v1 shippable.
   `repowise risk` scores a commit or base..head range with a calibrated
   logistic model.)
 - **No letter grade.** The 1–10 score is the single number. The only
-  categorical layer is the 3 defect-backed bands (Healthy/Warning/Alert,
-  `grading.py`); a letter on top would be a third overlapping scale with
-  arbitrary cliffs. The legacy 4-step `scoreBand` in `ui/health/tokens.ts`
-  is retained only as a finer color ramp for file-table pills, not a
-  labeling scheme: surfaced band labels and the distribution use the 3
-  bands.
+  categorical layer is the five absolute bands (Excellent / Good / Fair /
+  Needs work / At risk, `grading.py`); a letter on top would be a third
+  overlapping scale with arbitrary cliffs. Every surface that shows a band
+  word or a band colour reads that one vocabulary — there is no second
+  ramp.
 
 ---
 

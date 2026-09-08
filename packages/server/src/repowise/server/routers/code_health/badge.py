@@ -5,25 +5,21 @@ from __future__ import annotations
 from fastapi import Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.grading import band_for
+from repowise.core.analysis.health.grading import BAND_BADGE_COLOR, band_for
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.schemas import HealthBadgeResponse
 
 from ._router import router
 
-# Shields-compatible band colors. Named colors for the JSON endpoint (shields
-# resolves them) + hexes for the self-rendered SVG so it matches without a
-# round-trip to img.shields.io.
-_BADGE_COLOR_NAME: dict[str, str] = {
-    "healthy": "brightgreen",
-    "warning": "yellow",
-    "alert": "red",
-    "unknown": "lightgrey",
-}
+# Hexes for the self-rendered SVG, so it matches the JSON endpoint's named
+# colors without a round-trip to img.shields.io. The names themselves come
+# from the shared band vocabulary.
+_UNKNOWN_COLOR = "lightgrey"
 _BADGE_COLOR_HEX: dict[str, str] = {
     "brightgreen": "#4c1",
     "yellow": "#dfb317",
+    "orange": "#fe7d37",
     "red": "#e05d44",
     "lightgrey": "#9f9f9f",
 }
@@ -32,9 +28,9 @@ _BADGE_COLOR_HEX: dict[str, str] = {
 def _badge_fields(average_health: float | None) -> tuple[str, str, str, str]:
     """Return ``(label, message, color_name, band)`` for the health badge."""
     if average_health is None:
-        return "health", "no data", _BADGE_COLOR_NAME["unknown"], "unknown"
+        return "health", "no data", _UNKNOWN_COLOR, "unknown"
     band = band_for(float(average_health))
-    return "health", f"{average_health:.1f}/10", _BADGE_COLOR_NAME[band], band
+    return "health", f"{average_health:.1f}/10", BAND_BADGE_COLOR[band], band
 
 
 def _render_badge_svg(label: str, message: str, color_name: str) -> str:

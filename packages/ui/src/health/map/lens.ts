@@ -5,7 +5,13 @@
  * cannot drift: both call the same spec.
  */
 
-import { scoreBand, type ScoreBand } from "../tokens";
+import {
+  HEALTH_BAND_LABEL,
+  HEALTH_BAND_ORDER,
+  HEALTH_BAND_RANGE_LABEL,
+  bandForScore,
+  type HealthBand,
+} from "@repowise-dev/types/health";
 import type { CodeHealthMapFile, CodeHealthOverlay, PerformanceActionability } from "./types";
 
 /**
@@ -13,31 +19,24 @@ import type { CodeHealthMapFile, CodeHealthOverlay, PerformanceActionability } f
  *
  * The canvas ramp, not the semantic ink the score pills use. Those are tuned
  * to be read as small coloured type against the page; this field is thousands
- * of overlapping filled discs, which is a different job in both themes. The
- * two ramps are the same four severity steps in the same hue family and are
- * deliberately not the same values. See `--color-node-*` in globals.css.
+ * of overlapping filled discs, which is a different job in both themes. Same
+ * bands, deliberately not the same values, and Excellent and Good separate by
+ * value here because a canvas has no room for the word that separates them
+ * elsewhere. See `--color-node-*` in globals.css.
  */
-const BAND_FILL: Record<ScoreBand, string> = {
-  critical: "var(--color-node-critical)",
-  poor: "var(--color-node-poor)",
+const BAND_FILL: Record<HealthBand, string> = {
+  at_risk: "var(--color-node-at-risk)",
+  needs_work: "var(--color-node-needs-work)",
   fair: "var(--color-node-fair)",
   good: "var(--color-node-good)",
+  excellent: "var(--color-node-excellent)",
 };
 
-/**
- * The ramp names its score ranges rather than borrowing band words.
- *
- * It has four steps and the canonical band scale has three, so reusing the
- * words made "Warning" mean 4 to 6 here and 4 to 8 on every other mark on the
- * page, and invented a fourth band, "Fair", that the product never returns. A
- * range is unambiguous and needs no glossary.
- */
-const BAND_LABEL: { band: ScoreBand; label: string }[] = [
-  { band: "critical", label: "Below 4" },
-  { band: "poor", label: "4 to 6" },
-  { band: "fair", label: "6 to 8" },
-  { band: "good", label: "8 and above" },
-];
+/** Worst-first legend rows, each naming its band and the range it covers. */
+const BAND_LEGEND = HEALTH_BAND_ORDER.map((band) => ({
+  fill: BAND_FILL[band],
+  label: `${HEALTH_BAND_LABEL[band]} · ${HEALTH_BAND_RANGE_LABEL[band]}`,
+}));
 
 /**
  * Neutral fill for nodes a lens has no signal for.
@@ -72,7 +71,7 @@ export interface OverlaySpec {
 /** Score band: the health ramp, quiet grey when the pillar is unscored. */
 function scoreFill(score: number | null | undefined): string {
   if (score == null) return NEUTRAL_FILL;
-  return BAND_FILL[scoreBand(score)];
+  return BAND_FILL[bandForScore(score)];
 }
 
 /** Coverage band: green = well covered, red = uncovered, grey = no data. */
@@ -99,10 +98,10 @@ function churnFill(pctile: number | null | undefined): string {
  * The health ramp with its top step removed.
  *
  * This lens is a sibling of the health lens, not a different chart, so it
- * paints with the same four-band ramp, at the same flat opacity, over the same
- * geometry. It uses three of the four bands. A file a detector cleared is a
+ * paints with the same band ramp, at the same flat opacity, over the same
+ * geometry. It uses only the bands below green. A file a detector cleared is a
  * file with no supported pattern in it, not a file measured to be fast, and on
- * this map green means healthy; so performance has no green, and that single
+ * this map green means the code is fine; so performance has no green, and that
  * rule is the whole difference between the two lenses.
  *
  * An earlier cut said the same thing with its own palette and its own opacity
@@ -205,16 +204,16 @@ export function burdenBand(count: number): 0 | 1 | 2 | 3 {
 }
 
 /**
- * The three steps, borrowed whole from the health ramp.
+ * The three steps, borrowed from the health ramp.
  *
  * Same tokens the score pills and the health lens use, so a colour means the
- * same severity wherever it appears on this surface. `BAND_FILL.good` is
- * deliberately absent: it is the only band that would claim a file is fine.
+ * same severity wherever it appears on this surface. The two greens are
+ * deliberately absent: they are the bands that would claim a file is fine.
  */
 const BURDEN_FILL: Record<1 | 2 | 3, string> = {
   1: BAND_FILL.fair,
-  2: BAND_FILL.poor,
-  3: BAND_FILL.critical,
+  2: BAND_FILL.needs_work,
+  3: BAND_FILL.at_risk,
 };
 
 export const PERFORMANCE_STATE_LABEL: Record<PerformanceNodeState, string> = {
@@ -240,15 +239,15 @@ export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
   health: {
     label: "Code health",
     caption: "galaxy = module · size = lines of code",
-    fill: (f) => BAND_FILL[scoreBand(f.score)],
-    legend: BAND_LABEL.map((b) => ({ fill: BAND_FILL[b.band], label: b.label })),
+    fill: (f) => BAND_FILL[bandForScore(f.score)],
+    legend: BAND_LEGEND,
   },
   maintainability: {
     label: "Maintainability",
     caption: "color = maintainability score · grey = not measured",
     fill: (f) => scoreFill(f.maintainability_score),
     legend: [
-      ...BAND_LABEL.map((b) => ({ fill: BAND_FILL[b.band], label: b.label })),
+      ...BAND_LEGEND,
       { fill: NEUTRAL_FILL, label: "not measured" },
     ],
   },

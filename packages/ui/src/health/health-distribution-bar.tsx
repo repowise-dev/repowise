@@ -1,22 +1,11 @@
-import type { HealthBand, HealthDistribution } from "@repowise-dev/types/health";
+import {
+  HEALTH_BAND_LABEL,
+  HEALTH_BAND_ORDER,
+  type HealthBand,
+  type HealthDistribution,
+} from "@repowise-dev/types/health";
 
-/** Worst-first, matching how the surface lists files. */
-const ORDER: HealthBand[] = ["alert", "warning", "healthy"];
-
-const BAND_LABEL: Record<HealthBand, string> = {
-  healthy: "Healthy",
-  warning: "Warning",
-  alert: "Alert",
-};
-
-/* Literal class strings so Tailwind's static scanner keeps them. */
-const BAND_BAR: Record<HealthBand, string> = {
-  healthy: "bg-[var(--color-success)]",
-  warning: "bg-[var(--color-caution)]",
-  alert: "bg-[var(--color-error)]",
-};
-
-const BAND_DOT: Record<HealthBand, string> = BAND_BAR;
+import { HEALTH_BAND_BAR } from "./tokens";
 
 export interface HealthDistributionBarProps {
   distribution: HealthDistribution;
@@ -26,16 +15,20 @@ export interface HealthDistributionBarProps {
 }
 
 /**
- * NLOC-weighted distribution of files across the 3 defect-backed bands
- * (Alert / Warning / Healthy). Mirrors the `SeverityDistribution` idiom so the
- * health surface reads consistently. Widths are by code volume (NLOC), not file
- * count, so a single large unhealthy file isn't hidden behind many tiny ones.
+ * NLOC-weighted distribution of files across the five health bands. Widths are
+ * by code volume (NLOC), not file count, so a single large at-risk file isn't
+ * hidden behind many tiny ones.
  */
 export function HealthDistributionBar({
   distribution,
   showCounts = true,
   height = "sm",
 }: HealthDistributionBarProps) {
+  // A server that predates the five bands still serves the three-band shape,
+  // and the extension and the web app upgrade independently of it. A missing
+  // band reads as absent, not as a crash.
+  const share = (b: HealthBand) => distribution.bands[b]?.pct ?? 0;
+  const files = (b: HealthBand) => distribution.bands[b]?.files ?? 0;
   const total = distribution.total_nloc;
   if (!distribution.total_files || total === 0) {
     return (
@@ -47,31 +40,31 @@ export function HealthDistributionBar({
     <div className="space-y-1.5">
       <div
         className={`flex w-full ${h} overflow-hidden rounded-full bg-[var(--color-bg-inset)]`}
-        title={ORDER.map(
-          (b) => `${BAND_LABEL[b]} ${distribution.bands[b].pct}%`,
+        title={HEALTH_BAND_ORDER.map(
+          (b) => `${HEALTH_BAND_LABEL[b]} ${share(b)}%`,
         ).join(" · ")}
       >
-        {ORDER.map((b) => {
-          const pct = distribution.bands[b].pct;
+        {HEALTH_BAND_ORDER.map((b) => {
+          const pct = share(b);
           if (pct === 0) return null;
           return (
             <div
               key={b}
-              className={BAND_BAR[b]}
+              className={HEALTH_BAND_BAR[b]}
               style={{ width: `${pct}%` }}
-              aria-label={`${BAND_LABEL[b]} ${pct}%`}
+              aria-label={`${HEALTH_BAND_LABEL[b]} ${pct}%`}
             />
           );
         })}
       </div>
       {showCounts && (
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[var(--color-text-tertiary)]">
-          {ORDER.map((b) => (
+          {HEALTH_BAND_ORDER.map((b) => (
             <span key={b} className="inline-flex items-center gap-1 tabular-nums">
-              <span className={`inline-block h-1.5 w-1.5 rounded-full ${BAND_DOT[b]}`} />
-              {distribution.bands[b].pct}% {BAND_LABEL[b].toLowerCase()}
+              <span className={`inline-block h-1.5 w-1.5 rounded-full ${HEALTH_BAND_BAR[b]}`} />
+              {share(b)}% {HEALTH_BAND_LABEL[b].toLowerCase()}
               <span className="text-[var(--color-text-tertiary)]/70">
-                ({distribution.bands[b].files})
+                ({files(b)})
               </span>
             </span>
           ))}

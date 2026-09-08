@@ -36,9 +36,9 @@ import {
   healthBandColor,
   type Severity,
 } from "./tokens";
-// The canonical three bands, never a local threshold: this pill sits beside
-// marks that all derive from `bandForScore`, and two of them disagreeing about
-// where a band starts describes one file two ways in one viewport.
+// The shared bands, never a local threshold: this pill sits beside marks that
+// all derive from `bandForScore`, and two of them disagreeing about where a
+// band starts describes one file two ways in one viewport.
 import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import type {
   FileHealthTrend,

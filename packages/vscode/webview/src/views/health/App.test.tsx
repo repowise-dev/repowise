@@ -6,8 +6,9 @@ import type {
   HealthOverviewResponse,
   HealthTrendResponse,
 } from "@repowise-dev/types/health";
+import { bandForScore } from "@repowise-dev/types/health";
 import { OVERLAY_SPECS } from "@repowise-dev/ui/health/code-health-map";
-import { scoreBand, scoreTextColor } from "@repowise-dev/ui/health/tokens";
+import { scoreTextColor } from "@repowise-dev/ui/health/tokens";
 import type { WebviewHost } from "../../runtime/rpc";
 import { App } from "./App";
 
@@ -27,7 +28,7 @@ const overview: HealthOverviewResponse = {
     worst_performer_path: "src/worst.py",
     worst_performer_score: 2.3,
     open_findings: 42,
-    band: "warning",
+    band: "good",
     maintainability_average: 8.2,
     performance_average: 9.9,
     maintainability_findings: 6,
@@ -37,9 +38,11 @@ const overview: HealthOverviewResponse = {
     total_files: 128,
     total_nloc: 10000,
     bands: {
-      healthy: { files: 80, nloc: 6000, pct: 60 },
-      warning: { files: 40, nloc: 3000, pct: 30 },
-      alert: { files: 8, nloc: 1000, pct: 10 },
+      excellent: { files: 50, nloc: 4000, pct: 40 },
+      good: { files: 30, nloc: 2000, pct: 20 },
+      fair: { files: 40, nloc: 3000, pct: 30 },
+      needs_work: { files: 0, nloc: 0, pct: 0 },
+      at_risk: { files: 8, nloc: 1000, pct: 10 },
     },
   },
   files: [],
@@ -202,9 +205,8 @@ describe("Health dashboard", () => {
     // differ is the band beneath both, which is what this pins: the map fills
     // the node token for this file's band, and the figure carries the ink that
     // the same band function gives the same score.
-    const band = scoreBand(file.score);
-    expect(band).toBe("fair");
-    expect(OVERLAY_SPECS.health.fill(file)).toBe(`var(--color-node-${band})`);
+    expect(bandForScore(file.score)).toBe("good");
+    expect(OVERLAY_SPECS.health.fill(file)).toBe("var(--color-node-good)");
     expect(figure.className).toContain(scoreTextColor(file.score));
   });
 

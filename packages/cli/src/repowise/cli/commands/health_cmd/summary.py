@@ -67,15 +67,22 @@ def _render_split_line(kpis: dict) -> None:
 
 
 def _render_distribution_line(dist: dict) -> None:
-    """One compact line: the NLOC-weighted file split across the 3 bands."""
+    """One compact line: the NLOC-weighted file split across the bands."""
+    from repowise.core.analysis.health.grading import (
+        BAND_LABEL,
+        BAND_ORDER,
+        BAND_TERMINAL_COLOR,
+    )
+
     bands = dist.get("bands") or {}
     if not dist.get("total_files"):
         return
     parts = []
-    for band, color in (("healthy", "green"), ("warning", "yellow"), ("alert", "red")):
+    for band in BAND_ORDER:
+        color = BAND_TERMINAL_COLOR[band]
         share = bands.get(band) or {}
         parts.append(
-            f"[{color}]{share.get('pct', 0)}%[/{color}] {band} "
+            f"[{color}]{share.get('pct', 0)}%[/{color}] {BAND_LABEL[band].lower()} "
             f"([dim]{share.get('files', 0)} files[/dim])"
         )
     console.print("[dim]Distribution (by code volume):[/dim] " + " · ".join(parts) + "\n")
@@ -87,13 +94,12 @@ def _render_badge(average_health: object) -> None:
     Emits a static shields badge for the current score (immediately usable) and
     documents the live endpoint form for a running Repowise server / hosted repo.
     """
-    from repowise.core.analysis.health.grading import band_for
+    from repowise.core.analysis.health.grading import BAND_BADGE_COLOR, band_for
 
     if not isinstance(average_health, (int, float)):
         console.print("[yellow]No health score yet — run `repowise health` first.[/yellow]")
         return
-    band = band_for(float(average_health))
-    color = {"healthy": "brightgreen", "warning": "yellow", "alert": "red"}[band]
+    color = BAND_BADGE_COLOR[band_for(float(average_health))]
     msg = f"{float(average_health):.1f}/10"
     static = f"https://img.shields.io/badge/health-{msg.replace('/', '%2F')}-{color}"
     console.print("[bold]Static badge (current score):[/bold]")

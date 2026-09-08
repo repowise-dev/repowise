@@ -55,11 +55,8 @@ export function hasRole(node: ZoomNode): boolean {
 }
 
 /**
- * The health dot's band as a word, from the canonical 3-band scale in
- * `@repowise-dev/types/health` — the same `bandForScore` the dot itself paints
- * on. Not the 5-step Excellent/Good/Fair ladder the scan surfaces use: a 6.9
- * reads "Good" there and paints amber here, and a label that contradicts the
- * dot it sits beside is worse than no label.
+ * The health dot's band as a word, on the same `bandForScore` the dot itself
+ * paints on, so the label never contradicts the mark it sits beside.
  */
 export function healthBandLabel(score: number | null): string | null {
   if (score === null) return null;

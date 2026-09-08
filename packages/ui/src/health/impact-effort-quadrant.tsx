@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { bandForScore } from "@repowise-dev/types/health";
+import { HEALTH_BAND_FILL } from "./tokens";
 import type { EffortBucket } from "./refactoring-card";
 
 export interface ImpactEffortPoint {
@@ -109,14 +111,7 @@ export function ImpactEffortQuadrant({
             const cx = baseX + jitter(p.file_path);
             const cy = yScale(p.total_impact);
             const isHovered = hovered?.file_path === p.file_path;
-            const fillCls =
-              p.score < 4
-                ? "fill-[var(--color-error)]"
-                : p.score < 6
-                  ? "fill-[var(--color-warning)]"
-                  : p.score < 8
-                    ? "fill-[var(--color-caution)]"
-                    : "fill-[var(--color-success)]";
+            const fillCls = HEALTH_BAND_FILL[bandForScore(p.score)];
             return (
               <circle
                 key={p.file_path}

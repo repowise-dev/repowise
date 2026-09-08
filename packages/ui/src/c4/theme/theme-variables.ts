@@ -1,3 +1,5 @@
+import type { HealthBand } from "@repowise-dev/types/health";
+
 export const THEME = {
   canvas: {
     bg: "var(--color-bg-canvas)",
@@ -48,12 +50,14 @@ export const THEME = {
     dead: "var(--color-text-muted)",
   },
 
-  /** Health-score buckets (≥80 / ≥60 / below). */
+  /** Health band inks, on the shared 1-10 bands read at 0-100. */
   health: {
+    excellent: "var(--color-success)",
     good: "var(--color-success)",
-    fair: "var(--color-warning)",
-    poor: "var(--color-error)",
-  },
+    fair: "var(--color-caution)",
+    needs_work: "var(--color-warning)",
+    at_risk: "var(--color-error)",
+  } satisfies Record<HealthBand, string>,
 
   edge: {
     imports: "var(--color-edge-imports)",

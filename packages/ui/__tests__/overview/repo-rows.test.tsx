@@ -63,14 +63,14 @@ describe("RepoRows", () => {
     expect(screen.getByText("—")).toBeTruthy();
   });
 
-  it("bands the score on the same five-step ladder the repo pages use", () => {
+  it("bands the score on the same ladder the repo pages use", () => {
     render(
       <RepoRows
         repos={[
           row({ id: "a", name: "alpha", health: 9.1 }),
           row({ id: "b", name: "beta", health: 7.4 }),
-          row({ id: "c", name: "gamma", health: 5.0 }),
-          row({ id: "d", name: "delta", health: 3.6 }),
+          row({ id: "c", name: "gamma", health: 6.0 }),
+          row({ id: "d", name: "delta", health: 4.5 }),
           row({ id: "e", name: "epsilon", health: 3.0 }),
         ]}
       />,
@@ -80,16 +80,16 @@ describe("RepoRows", () => {
     expect(screen.getByText("Good")).toBeTruthy();
     expect(screen.getByText("Fair")).toBeTruthy();
     expect(screen.getByText("Needs work")).toBeTruthy();
-    expect(screen.getByText("Critical")).toBeTruthy();
+    expect(screen.getByText("At risk")).toBeTruthy();
   });
 
-  // The bug this guards: 7.4 read amber "Warning" in the workspace list and
-  // green "Good" the moment you opened the same repo.
+  // The bug this guards: 7.4 read amber in the workspace list and green the
+  // moment you opened the same repo.
   it("reads a mid-seven score green, as the repo overview does", () => {
     render(<RepoRows repos={[row({ health: 7.4 })]} />);
 
     expect(screen.getByText("Good")).toBeTruthy();
-    expect(screen.queryByText("Warning")).toBeNull();
+    expect(screen.queryByText("Fair")).toBeNull();
   });
 
   it("does not quote figures for a repo that was never indexed", () => {

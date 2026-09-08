@@ -6,9 +6,8 @@ import { curveBundle, lineRadial } from "d3-shape";
 // Value imports must come from the package root, not the `/coupling` subpath:
 // the vite/rollup base alias clobbers subpath value resolution. Type-only
 // subpath imports are fine (erased before resolution).
-import { bandForScore } from "@repowise-dev/types";
 import type { CouplingEdge, CouplingNode } from "@repowise-dev/types/coupling";
-import type { HealthBand } from "@repowise-dev/types/health";
+import { healthInk } from "../health/tokens";
 import { disambiguateBasenames } from "../lib/format";
 import { isSamePair, pairHas, type CouplingPair } from "./claim";
 
@@ -48,17 +47,12 @@ export interface CouplingGraphProps {
   size?: number;
 }
 
-/* CSS-var ink per canonical health band (the 3-bucket currency). A file with
- * no health metric resolves to neutral. SVG stroke/fill accept `var()`. */
+/* A file with no health metric resolves to neutral. SVG stroke/fill accept
+ * `var()`, so the band ink goes in raw. */
 const NEUTRAL_INK = "var(--color-text-tertiary)";
-const BAND_INK: Record<HealthBand, string> = {
-  alert: "var(--color-error)",
-  warning: "var(--color-caution)",
-  healthy: "var(--color-success)",
-};
 
 function inkFor(score: number | null): string {
-  return score == null ? NEUTRAL_INK : BAND_INK[bandForScore(score)];
+  return score == null ? NEUTRAL_INK : healthInk(score);
 }
 
 /** Shared empty neighbor set so the no-focus path allocates nothing. */

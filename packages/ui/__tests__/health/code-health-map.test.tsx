@@ -138,10 +138,10 @@ describe("CodeHealthMap", () => {
     const { getByText } = render(<CodeHealthMap files={[f("a.py", 30, "core")]} />);
     expect(getByText("Code health")).toBeInTheDocument();
     expect(getByText(/galaxy = module/i)).toBeInTheDocument();
-    // The four-step ramp names score ranges. Band words would claim a
-    // vocabulary the three-band scale beside it does not share.
-    expect(getByText("8 and above")).toBeInTheDocument();
-    expect(getByText("4 to 6")).toBeInTheDocument();
+    // The legend names the band and the range it covers, on the same
+    // vocabulary every other mark on the page uses.
+    expect(getByText("Excellent · 8.5+")).toBeInTheDocument();
+    expect(getByText("Needs work · 4.0 to 5.5")).toBeInTheDocument();
   });
 
   it("renders the coverage legend under the coverage lens", () => {
@@ -183,7 +183,7 @@ describe("CodeHealthMap", () => {
     const { container } = render(<CodeHealthMap files={files} overlay="performance" />);
     const fillOf = (p: string) =>
       container.querySelector(`circle[data-path="${p}"]`)?.getAttribute("fill");
-    expect(fillOf("core/planned.py")).toBe("var(--color-node-critical)");
+    expect(fillOf("core/planned.py")).toBe("var(--color-node-at-risk)");
     expect(fillOf("core/one.py")).toBe("var(--color-node-fair)");
     expect(fillOf("core/clean.py")).toBe(NEUTRAL_FILL);
     // Stored plan earns no mark of its own. It is said in words instead.

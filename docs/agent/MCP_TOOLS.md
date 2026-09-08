@@ -901,7 +901,8 @@ window; `recovers_points_compatibility` names its replacement.
 
 **Nothing is dropped silently.** Any `targets` entry that matched nothing is
 named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
-`no_such_path`, `excluded`, `no_such_module`; a missed module name also returns
+`no_such_path`, `excluded`, `not_measured` → indexed, but carrying no stored
+split for the reading `counts` asked for, `no_such_module`; a missed module name also returns
 `known_modules`). Missing stored analysis is explicitly unavailable rather than
 fabricated as a healthy score. A
 target set that resolves to nothing still answers in targeted mode rather than
@@ -956,7 +957,7 @@ make that actionable rather than a mystery:
   `kpis.average_health_weighting` is `"nloc"`. When the weighted and unweighted
   numbers diverge, the gap is telling you to chase *big* files, not the long tail.
 - `gap_analysis` (dashboard mode) reports the net weighted points the average must
-  recover to reach the Healthy floor (8.0), how many files sit below it, and how
+  recover to reach the target score (8.0), how many files sit below it, and how
   few of them carry the whole gap (`files_to_reach_target`) or half of it
   (`files_for_half_gap`). This reframes a repo-wide number as a short worklist.
 - Every metric row carries `weighted_deficit = (8 - score) x nloc`: how much the

@@ -80,14 +80,14 @@ the root of the app:
   fallback is `ApiError` with a reset retry.
 - **`EmptyState`** — the only sanctioned empty-state rendering. No raw
   `<p>` placeholders.
-- Score colors come from `health/tokens.ts`. The canonical health *buckets*
-  are the 3 defect-backed bands in `@repowise-dev/types/health`
-  (`HealthBand` — Alert/Warning/Healthy at `<4 / 4–8 / ≥8`); use
-  `healthBandSoftBadgeClass` / `healthBandTextColor` for band colors. The
-  `scoreBand` / `scoreBadgeClass` / `scoreSoftBadgeClass` / `scoreTextColor`
-  helpers are an internal 4-step color ramp (`<4 / <6 / <8 / ≥8`) for
-  file-table pills only — not a labeling scheme — mapped to the semantic
-  tokens (`--color-error/warning/caution/success`).
+- Score colors come from `health/tokens.ts`, on the one band vocabulary in
+  `@repowise-dev/types/health` (`HealthBand` — Excellent `≥8.5` / Good
+  `≥7.0` / Fair `≥5.5` / Needs work `≥4.0` / At risk below). Excellent and
+  Good share the green; the word carries the difference. Use
+  `healthBandSoftBadgeClass` / `healthBandTextColor` when you already have a
+  band, and `scoreBadgeClass` / `scoreTextColor` / `healthInk` when you have
+  a score. All of them resolve to the semantic tokens
+  (`--color-error/warning/caution/success`).
 
 ## Peer deps
 

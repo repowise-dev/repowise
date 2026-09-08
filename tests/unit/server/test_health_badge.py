@@ -16,9 +16,11 @@ from repowise.server.routers.code_health import (
 
 
 def test_badge_fields_band_colors() -> None:
-    assert _badge_fields(9.0) == ("health", "9.0/10", "brightgreen", "healthy")
-    assert _badge_fields(6.0) == ("health", "6.0/10", "yellow", "warning")
-    assert _badge_fields(2.0) == ("health", "2.0/10", "red", "alert")
+    assert _badge_fields(9.0) == ("health", "9.0/10", "brightgreen", "excellent")
+    assert _badge_fields(7.5) == ("health", "7.5/10", "brightgreen", "good")
+    assert _badge_fields(6.0) == ("health", "6.0/10", "yellow", "fair")
+    assert _badge_fields(4.5) == ("health", "4.5/10", "orange", "needs_work")
+    assert _badge_fields(2.0) == ("health", "2.0/10", "red", "at_risk")
 
 
 def test_badge_fields_no_data() -> None:

@@ -67,8 +67,8 @@ async def test_the_distribution_is_recomputed_not_carried_over(client, session, 
         await client.get(f"/api/repos/{repo_id}/health/overview?counts=code_shape")
     ).json()
     bands = shaped["distribution"]["bands"]
-    assert bands["healthy"]["files"] == 1
-    assert bands["alert"]["files"] == 0
+    assert bands["excellent"]["files"] == 1
+    assert bands["at_risk"]["files"] == 0
 
 
 async def test_rows_without_a_split_are_reported_not_scored_ten(client, session, tmp_path) -> None:

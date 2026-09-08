@@ -100,9 +100,7 @@ export function ZoomDetailPanel({
 }: ZoomDetailPanelProps) {
   const m = node.metrics;
   const isFile = node.kind === "file";
-  // The canonical 3-band scale, so the panel agrees with the dot on the card
-  // beside it. The 5-step Excellent/Good ladder the scan surfaces use would
-  // call a 6.9 "Good" while the card paints it amber.
+  // The shared bands, so the panel agrees with the dot on the card beside it.
   const band = healthBandLabel(node.health_score);
   const bandClass =
     node.health_score === null ? "" : healthBandTextColor(bandForScore(node.health_score));

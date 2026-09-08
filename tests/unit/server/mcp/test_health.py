@@ -1922,6 +1922,96 @@ async def test_scope_narrows_every_figure_to_production(setup_mcp, session, popu
 
 
 @pytest.mark.asyncio
+async def test_counts_reads_the_code_shape_half_across_the_response(
+    setup_mcp, session, populated_db
+):
+    """``counts`` is the same shape of control as ``scope``: one projection
+    over the whole response, off the stored split rather than a rescore."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "score": 3.0,
+                "nloc": 100,
+                "is_test": False,
+                "structure_deduction": 1.0,
+                "history_deduction": 6.0,
+            },
+        ],
+    )
+    everything = await get_health()
+    assert everything["counts"] == "everything"
+    assert everything["kpis"]["average_health"] == 3.0
+    assert everything["unscored_files"] == 0
+
+    shaped = await get_health(counts="code_shape")
+    assert shaped["counts"] == "code_shape"
+    # 10 - structure, with the history half left out. The score is re-read,
+    # never recomputed.
+    assert shaped["kpis"]["average_health"] == 9.0
+    assert shaped["unscored_files"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_row_the_projection_cannot_read_is_not_reported_as_unindexed(
+    setup_mcp, session, populated_db, tmp_path
+):
+    """``not_indexed`` sends the caller to run an update. An update writes no
+    split for a row that predates it, so that would be a wasted trip."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [{"file_path": "src/auth/service.py", "score": 3.0, "nloc": 100, "is_test": False}],
+    )
+    result = await get_health(targets=["src/auth/service.py"], counts="code_shape")
+    reasons = {row["target"]: row["reason"] for row in result.get("unresolved", [])}
+    assert reasons.get("src/auth/service.py") == "not_measured"
+
+
+@pytest.mark.asyncio
+async def test_counts_and_scope_compose(setup_mcp, session, populated_db):
+    """Both controls narrow the one population, rather than fighting over it."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "score": 3.0,
+                "nloc": 100,
+                "is_test": False,
+                "structure_deduction": 1.0,
+                "history_deduction": 6.0,
+            },
+            {
+                "file_path": "tests/test_auth.py",
+                "score": 5.0,
+                "nloc": 100,
+                "is_test": True,
+                "structure_deduction": 3.0,
+                "history_deduction": 2.0,
+            },
+        ],
+    )
+    result = await get_health(scope="production", counts="code_shape")
+    assert result["scope"] == "production"
+    assert result["counts"] == "code_shape"
+    assert result["kpis"]["file_count"] == 1
+    assert result["kpis"]["average_health"] == 9.0
+
+
+@pytest.mark.asyncio
 async def test_a_narrowed_target_is_not_reported_as_config_excluded(
     setup_mcp, session, populated_db
 ):
@@ -2210,7 +2300,7 @@ def test_only_docstring_does_not_overclaim_the_aliases():
     from repowise.server.mcp_server.tool_health import _ONLY_ALIASES, get_health
 
     doc = get_health.__doc__ or ""
-    only_section = doc.split("only:", 1)[1].split("repo:", 1)[0]
+    only_section = doc.split("only:", 1)[1].split("limit:", 1)[0]
     assert set(_ONLY_ALIASES) == {"biomarkers", "accuracy", "refactoring"}
     for name in _ONLY_ALIASES:
         assert name in only_section

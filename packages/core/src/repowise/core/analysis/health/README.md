@@ -157,9 +157,11 @@ orchestrator (falls back to the top-level directory). The MCP tool
   Protocol from `biomarkers/base.py`. Twenty-six registered (see
   `biomarkers/registry.py` and `biomarkers/README.md` for the full list),
   plus three governance findings written by a separate additive pass.
-- `grading.py` — the presentation "currency" layer over the score: the 3
-  defect-backed bands (`band_for` — Alert `<4` / Warning `4–8` / Healthy `≥8`)
-  and the NLOC-weighted `distribution`. Single source of truth for the cutoffs
+- `grading.py` — the presentation "currency" layer over the score: the five
+  absolute bands (`band_for` — Excellent `≥8.5` / Good `≥7.0` / Fair `≥5.5` /
+  Needs work `≥4.0` / At risk below) and the NLOC-weighted `distribution`.
+  It also owns `TARGET_SCORE`, the refactoring deficit target, which is
+  deliberately not a band edge. Single source of truth for the cutoffs
   (mirrored in `@repowise-dev/types/health`). No letter grade — see
   `docs/architecture/code-health.md` §20.
 

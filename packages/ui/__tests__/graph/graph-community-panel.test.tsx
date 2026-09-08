@@ -156,9 +156,8 @@ describe("GraphCommunityPanel state", () => {
       />,
     );
     expect(screen.getByText("5.2")).toBeTruthy();
-    // Five-band vocabulary, shared with the Code Health lede and the file
-    // health drawer, so one score never gets two sets of words.
-    expect(screen.getByText("Fair")).toBeTruthy();
+    // The shared band vocabulary, so one score never gets two sets of words.
+    expect(screen.getByText("Needs work")).toBeTruthy();
     // The mean is over the scored members, and says so rather than implying it
     // measured all three.
     expect(screen.getByText(/2 of 3 files that are\s+scored/)).toBeTruthy();

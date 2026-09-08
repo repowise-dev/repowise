@@ -4,14 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hierarchy, treemap, treemapSquarify, type HierarchyRectangularNode } from "d3-hierarchy";
 import type { FileRow } from "@repowise-dev/types/files";
 import {
-  ALERT_MAX,
   bandForScore,
   HEALTH_BAND_LABEL,
-  HEALTHY_MIN,
-  type HealthBand,
+  HEALTH_BAND_ORDER,
+  HEALTH_BAND_RANGE_LABEL,
 } from "@repowise-dev/types/health";
 import { ChevronRight, FolderOpen } from "lucide-react";
-import { healthBandInk, healthInk } from "../health/tokens";
+import { healthBandColor, healthInk } from "../health/tokens";
 
 /**
  * `dependents` is the PageRank percentile over the import graph. It is named
@@ -201,18 +200,13 @@ function KeyRow({
 }) {
   const swatches = useMemo<KeySwatch[]>(() => {
     if (colorBy === "health") {
-      // All three bands always, even where one is absent from this level: a
-      // fixed scale showing two steps reads as a scale that has two.
-      const out: KeySwatch[] = (["healthy", "warning", "alert"] as HealthBand[]).map((band) => ({
+      // Every band always, even where one is absent from this level: a fixed
+      // scale showing two steps reads as a scale that has two.
+      const out: KeySwatch[] = HEALTH_BAND_ORDER.map((band) => ({
         key: band,
         label: HEALTH_BAND_LABEL[band],
-        hint:
-          band === "healthy"
-            ? `${HEALTHY_MIN}+`
-            : band === "alert"
-              ? `< ${ALERT_MAX}`
-              : `${ALERT_MAX}–${HEALTHY_MIN}`,
-        ink: healthBandInk(band),
+        hint: HEALTH_BAND_RANGE_LABEL[band],
+        ink: healthBandColor(band),
       }));
       if (level.some((c) => c.avgScore == null)) {
         out.push({
@@ -474,9 +468,7 @@ export function FilesTreemap({
               <p
                 className="mt-0.5 font-medium tabular-nums"
                 // Painted by the same function as the tile underneath the
-                // pointer. It was not: this line banded at 7 while `healthInk`
-                // bands at 8, so every file scoring 7.x was an amber tile with
-                // a green score written on top of it.
+                // pointer, so the word and the tile cannot disagree.
                 style={{ color: healthColor(tip.child.avgScore) }}
               >
                 {HEALTH_BAND_LABEL[bandForScore(tip.child.avgScore)]} ·{" "}

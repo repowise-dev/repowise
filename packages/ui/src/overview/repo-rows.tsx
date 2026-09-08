@@ -1,7 +1,7 @@
 import * as React from "react";
 import type { RepoIndexStatus } from "@repowise-dev/types/repos";
 import { formatNumber, formatRelativeTime } from "../lib/format";
-import { healthBand } from "./health-lede";
+import { healthBand } from "../health/tokens";
 import { RepoAvatar } from "./repo-avatar";
 
 export interface RepoRow {
@@ -100,11 +100,8 @@ function figuresFor(repo: RepoRow): string[] {
  * the ribbon above it.
  *
  * Health leads the right-hand column because it is the figure that decides
- * which repo you open. It is painted on the five-step `healthBand`, the same
- * reading the repo overview and the code health page use, so the number that
- * sends you into a repo means there what it meant here. This row previously
- * used the three-band `bandForScore`, which made one repo read amber in the
- * list and green the moment you opened it.
+ * which repo you open. It is painted on the shared `healthBand`, so the number
+ * that sends you into a repo means there what it meant here.
  */
 export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
   const A = LinkComponent ?? "a";

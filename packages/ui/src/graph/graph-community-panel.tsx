@@ -10,7 +10,8 @@ import { InfoTip } from "../shared/info-tip";
 import { truncatePath } from "../lib/format";
 // Shared band function, never a local threshold: two surfaces disagreeing
 // about where "Good" starts is worse than the import.
-import { healthBand } from "../overview/health-lede";
+import { bandForScore, type HealthBand } from "@repowise-dev/types/health";
+import { healthBand } from "../health/tokens";
 import type { CommunityDetail } from "@repowise-dev/types/graph";
 
 /**
@@ -27,16 +28,16 @@ import type { CommunityDetail } from "@repowise-dev/types/graph";
  * bad file inside a healthy group is exactly the file such a sentence would
  * tell the reader to skip.
  *
- * Keyed on `healthBand`'s label, the same five bands the Code Health lede and
- * the file health drawer show, so one score never gets two vocabularies.
+ * Keyed on the band itself rather than its label, so a wording change to the
+ * band cannot silently drop a reading.
  */
-const HEALTH_READING: Record<string, string> = {
-  Excellent:
+const HEALTH_READING: Record<HealthBand, string> = {
+  excellent:
     "On average this area scores well. A mean hides its worst file, so check the flags below.",
-  Good: "On average this area scores well. A mean hides its worst file, so check the flags below.",
-  Fair: "This area averages into the middle; some files here carry real defect risk.",
-  "Needs work": "This area averages low. Read it before you change it.",
-  Critical: "This area averages into the worst band. Read it before you change it.",
+  good: "On average this area scores well. A mean hides its worst file, so check the flags below.",
+  fair: "This area averages into the middle; some files here carry real defect risk.",
+  needs_work: "This area averages low. Read it before you change it.",
+  at_risk: "This area averages into the worst band. Read it before you change it.",
 };
 
 export interface GraphCommunityPanelProps {
@@ -270,7 +271,7 @@ function HealthLede({
         </span>
       </div>
       <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--color-text-secondary)]">
-        {HEALTH_READING[band.label]}{" "}
+        {HEALTH_READING[bandForScore(score)]}{" "}
         {/* The mean is over the files that have a score, which is rarely all of
             them. Saying how many stops the figure from claiming more coverage
             than it has. */}

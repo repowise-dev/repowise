@@ -87,18 +87,19 @@ describe("FilesIndex", () => {
     expect(headings.map((h) => h.textContent)).toEqual(["Repository map", "Every file"]);
   });
 
-  it("reports the healthy share against the number that carries a score", () => {
+  it("reports the good-or-better share against the number that carries a score", () => {
     renderIndex([
       row({ file_path: "a.ts", defect_score: 9 }),
       row({ file_path: "b.ts", defect_score: 7.5 }),
       row({ file_path: "c.ts", defect_score: null }),
     ]);
 
-    // 2 of 3 files are scored, and only the 9 is Healthy — 7.5 sits in the
-    // Warning band. A local `>= 7` threshold would call this 100%, disagreeing
-    // with the amber tile the map paints for the same file.
-    expect(screen.getByText(/50%/)).toBeInTheDocument();
-    expect(screen.getByText(/carrying a health score are healthy/)).toBeInTheDocument();
+    // 2 of 3 files are scored and both are Good or better. A threshold of its
+    // own here would disagree with the tile the map paints for the same file.
+    expect(screen.getByText(/100%/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/carrying a health score are Good or better/),
+    ).toBeInTheDocument();
   });
 
   it("names the active sort rather than claiming a fixed order", () => {
@@ -144,14 +145,14 @@ describe("FilesTreemap key row", () => {
   it("names every health band, and the thresholds that define them", () => {
     renderIndex([row({ defect_score: 9 })]);
 
-    // All three even though this level only carries one: a fixed scale showing
-    // two steps reads as a scale that has two.
-    for (const band of ["Healthy", "Warning", "Alert"]) {
+    // All of them even though this level only carries one: a fixed scale
+    // showing two steps reads as a scale that has two.
+    for (const band of ["Excellent", "Good", "Fair", "Needs work", "At risk"]) {
       expect(screen.getByText(band)).toBeInTheDocument();
     }
-    expect(screen.getByText("8+")).toBeInTheDocument();
-    expect(screen.getByText("4–8")).toBeInTheDocument();
-    expect(screen.getByText("< 4")).toBeInTheDocument();
+    expect(screen.getByText("8.5+")).toBeInTheDocument();
+    expect(screen.getByText("7.0 to 8.5")).toBeInTheDocument();
+    expect(screen.getByText("under 4.0")).toBeInTheDocument();
   });
 
   it("marks unscored tiles only when there are some", () => {
@@ -175,7 +176,7 @@ describe("FilesTreemap key row", () => {
     expect(within(key).getByText("typescript")).toBeInTheDocument();
     expect(within(key).getByText("python")).toBeInTheDocument();
     // Health bands belong to the other mode and must not linger.
-    expect(within(key).queryByText("Healthy")).not.toBeInTheDocument();
+    expect(within(key).queryByText("Excellent")).not.toBeInTheDocument();
   });
 
   it("says what area means, and it follows the control", () => {

@@ -35,10 +35,9 @@ function metric(score: number) {
 }
 
 describe("FilePageHeader health band", () => {
-  it("bands a 6.9 as Warning, the way every other surface does", () => {
-    // The trap this replaced: `scoreBadgeClass` is a four-step presentation
-    // ramp that calls 6.9 "fair" and paints it caution, while the treemap and
-    // the map that link here paint `bandForScore`. Same file, two readings.
+  it("bands a 6.9 as Fair, the way every other surface does", () => {
+    // The trap this replaced: a presentation ramp of its own, so the same file
+    // read one way here and another on the treemap that links to it.
     render(
       <FilePageHeader
         data={makeData({ health: { ...makeData().health, metric: metric(6.9) } })}
@@ -46,17 +45,17 @@ describe("FilePageHeader health band", () => {
       />,
     );
     expect(screen.getByText("6.9")).toBeTruthy();
-    expect(screen.getByText("Warning")).toBeTruthy();
+    expect(screen.getByText("Fair")).toBeTruthy();
   });
 
-  it("bands an 8.0 as Healthy", () => {
+  it("bands an 8.0 as Good", () => {
     render(
       <FilePageHeader
         data={makeData({ health: { ...makeData().health, metric: metric(8.0) } })}
         linkPrefix="/repos/r1"
       />,
     );
-    expect(screen.getByText("Healthy")).toBeTruthy();
+    expect(screen.getByText("Good")).toBeTruthy();
   });
 
   it("renders the path without truncating it", () => {

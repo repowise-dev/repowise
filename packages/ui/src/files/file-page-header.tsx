@@ -3,7 +3,7 @@ import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
 import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
-import { healthBandInk, coverageTextColor } from "../health/tokens";
+import { healthBandColor, coverageTextColor } from "../health/tokens";
 import { formatLOC, formatNumber } from "../lib/format";
 import { FileMarks } from "./file-marks";
 
@@ -41,12 +41,6 @@ export interface FilePageHeaderProps {
  * the house `font-mono text-[10px] uppercase tracking-[0.12em]`, and whose
  * identity ran `text-lg` against `RepoIdentityHeader`'s `text-xl sm:text-2xl` —
  * a different face and two different sizes from every other surface.
- *
- * The score is banded by `bandForScore`, not `scoreBadgeClass`. The latter is a
- * four-step presentation ramp whose own docstring says it is not a labelling
- * scheme, and it disagrees with the bands the Files index, the treemap and the
- * health map all paint: a 6.9 read one way here and another 200px away on the
- * map that links to this page.
  */
 export function FilePageHeader({
   data,
@@ -93,11 +87,11 @@ export function FilePageHeader({
         <PageLede
           label="Code health"
           value={score.toFixed(1)}
-          valueColor={healthBandInk(bandForScore(score))}
+          valueColor={healthBandColor(bandForScore(score))}
           unit="out of 10"
           band={{
             label: HEALTH_BAND_LABEL[bandForScore(score)],
-            color: healthBandInk(bandForScore(score)),
+            color: healthBandColor(bandForScore(score)),
           }}
           layout="beside"
         >

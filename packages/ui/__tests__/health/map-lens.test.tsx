@@ -92,20 +92,22 @@ describe("burden encoding", () => {
     // own tones toward the page, putting colours on this field that exist
     // nowhere else in the product and going muddy against a dark root.
     const health = (score: number) => OVERLAY_SPECS.health.fill({ ...f("s.py", 1, null), score });
-    expect(at(1)).toBe(health(7)); // the ramp's fair step
-    expect(at(3)).toBe(health(5)); // poor
-    expect(at(9)).toBe(health(1)); // critical
+    expect(at(1)).toBe(health(6)); // fair
+    expect(at(3)).toBe(health(4.5)); // needs work
+    expect(at(9)).toBe(health(1)); // at risk
   });
 
-  it("never paints a file the healthy green, whatever its state", () => {
-    // Green means healthy on this map and no performance verdict is that: a
-    // cleared file is one with no supported pattern in it, not one measured to
-    // be fast. So the lens uses three of the ramp's four bands.
-    const green = OVERLAY_SPECS.health.fill({ ...f("s.py", 1, null), score: 9 });
+  it("never paints a file a green, whatever its state", () => {
+    // Green means the code is fine on this map and no performance verdict is
+    // that: a cleared file is one with no supported pattern in it, not one
+    // measured to be fast. So the lens uses only the bands below green.
+    const greens = [7, 9].map((score) =>
+      OVERLAY_SPECS.health.fill({ ...f("s.py", 1, null), score }),
+    );
     const fills = [0, 1, 3, 9, 40].map((n) =>
       performanceFill(f("a.py", 10, "core", { performance_opportunities: n })),
     );
-    expect(fills).not.toContain(green);
+    for (const green of greens) expect(fills).not.toContain(green);
   });
 
   it("gives every file with no open cause the one neutral", () => {

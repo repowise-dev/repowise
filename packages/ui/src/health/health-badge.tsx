@@ -12,8 +12,7 @@ export interface HealthBadgeProps {
 
 /** Compact health-score pill, designed to inline next to a file path
  * on Hotspot / Ownership / Graph rows without changing those shared
- * components' shapes. Renders nothing when the score is missing.
- * Colored by the 3 defect-backed health bands. */
+ * components' shapes. Renders nothing when the score is missing. */
 export function HealthBadge({ score, band, size = "xs" }: HealthBadgeProps) {
   if (score == null) return null;
   const resolved = band ?? bandForScore(score);

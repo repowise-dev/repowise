@@ -267,7 +267,11 @@ function renderArchNode(n: Node, pal: InkPalette): string {
     if (layer.health_score !== null) {
       const healthBand = healthBand100(layer.health_score);
       const healthColor =
-        healthBand === "healthy" ? pal.success : healthBand === "warning" ? pal.warning : pal.error;
+        healthBand === "excellent" || healthBand === "good"
+          ? pal.success
+          : healthBand === "at_risk"
+            ? pal.error
+            : pal.warning;
       parts.push(`<text x="${w - 14}" y="${h - 12}" font-family="${FONT_FAMILY}" font-size="12" font-weight="600" fill="${healthColor}" text-anchor="end">${Math.round(layer.health_score)}</text>`);
     }
     parts.push(`</g>`);

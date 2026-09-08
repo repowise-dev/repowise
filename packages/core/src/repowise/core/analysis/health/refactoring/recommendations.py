@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.grading import HEALTHY_MIN
+from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.test_reachability import ReachedBy, tests_reaching_by_tier
 
 from .models import RefactoringSuggestion
@@ -494,7 +494,7 @@ def _priority_components(
     dependents: int,
     validation: ValidationPlan,
 ) -> tuple[float, float, float, float, float, int]:
-    weighted_deficit = round(max(HEALTHY_MIN - health_score, 0.0) * max(nloc, 1))
+    weighted_deficit = round(max(TARGET_SCORE - health_score, 0.0) * max(nloc, 1))
     benefit = detector_native_benefit(suggestion)
     entry_bonus = 0.5 if (suggestion.evidence or {}).get("reliable_entry_reachability") else 0.0
     leverage = 0.5 * math.log1p(weighted_deficit) + math.log1p(max(0, dependents)) + entry_bonus
@@ -542,8 +542,8 @@ def build_recommendations(
         enrich_blast_radius(suggestion, centrality)
         metric = metrics.get(suggestion.file_path)
         nloc = int(_attr(metric, "nloc", 0) or 0)
-        raw_health_score = _attr(metric, "score", HEALTHY_MIN)
-        health_score = float(HEALTHY_MIN if raw_health_score is None else raw_health_score)
+        raw_health_score = _attr(metric, "score", TARGET_SCORE)
+        health_score = float(TARGET_SCORE if raw_health_score is None else raw_health_score)
         dependents = int(float(centrality.get(suggestion.file_path, 0.0) or 0.0))
         validation = validations.get(index) or build_validation_plan(suggestion, {}, {})
         benefit, leverage, cost, risk, rank_score, deficit = _priority_components(

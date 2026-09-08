@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { HelpCircle } from "lucide-react";
-import { healthInk100 } from "../health/tokens";
+import { HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import { healthBand100, healthInk100 } from "../health/tokens";
 
 export interface HealthScoreComponent {
   key: string;
@@ -27,11 +28,7 @@ interface HealthScoreRingProps {
 }
 
 function getScoreLabel(score: number): string {
-  if (score >= 80) return "Excellent";
-  if (score >= 65) return "Good";
-  if (score >= 50) return "Fair";
-  if (score >= 30) return "Needs Work";
-  return "Critical";
+  return HEALTH_BAND_LABEL[healthBand100(score)];
 }
 
 export function HealthScoreRing({ score, size = 160, components, note }: HealthScoreRingProps) {

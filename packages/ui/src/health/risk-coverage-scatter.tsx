@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CoverageBasis } from "@repowise-dev/types/health";
+import { bandForScore, type CoverageBasis } from "@repowise-dev/types/health";
+import { HEALTH_BAND_FILL } from "./tokens";
 
 export interface RiskCoveragePoint {
   file_path: string;
@@ -348,12 +349,9 @@ function reachedFill(reached: boolean | undefined): string {
   return reached ? "var(--color-accent-fill)" : "var(--color-accent-secondary)";
 }
 
-/** Fill by health band. The bands are the same ones the rest of health uses. */
+/** Fill by health band. */
 function bandFill(score: number): string {
-  if (score < 4) return "fill-[var(--color-error)]";
-  if (score < 6) return "fill-[var(--color-warning)]";
-  if (score < 8) return "fill-[var(--color-caution)]";
-  return "fill-[var(--color-success)]";
+  return HEALTH_BAND_FILL[bandForScore(score)];
 }
 
 /**

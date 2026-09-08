@@ -375,9 +375,9 @@ describe("HealthFileDrawer metrics", () => {
   it("leads with the file's own score and a canonical band", () => {
     render(<HealthFileDrawer open onClose={() => {}} metric={metric({ score: 1.0 })} />);
     expect(screen.getByText("1.0")).toBeInTheDocument();
-    // One of the three canonical bands, never a five-step word: this pill sits
-    // beside marks that all derive from `bandForScore`.
-    expect(screen.getByText("Alert")).toBeInTheDocument();
+    // The shared band word, never a local one: this pill sits beside marks
+    // that all derive from `bandForScore`.
+    expect(screen.getByText("At risk")).toBeInTheDocument();
   });
 
   it("offers one link to the full page", () => {

@@ -153,18 +153,30 @@ files), and **Worst Performer**.
 
 ### Bands
 
-| Band | Score | Meaning |
-|---|---|---|
-| **Healthy** | `≥ 8.0` | Low-risk, maintainable |
-| **Warning** | `4.0 – 8.0` | Rising complexity or process risk |
-| **Alert** | `< 4.0` | High-risk; concentrates defects |
+| Band | Score | Colour | Meaning |
+|---|---|---|---|
+| **Excellent** | `≥ 8.5` | green | Low-risk, maintainable |
+| **Good** | `7.0 – 8.5` | green | Sound; nothing demanding attention |
+| **Fair** | `5.5 – 7.0` | gold | Rising complexity or process risk |
+| **Needs work** | `4.0 – 5.5` | amber | Worth scheduling |
+| **At risk** | `< 4.0` | red | High-risk; concentrates defects |
 
-The cutoffs are empirical, not arbitrary. On the 2,770-file measured corpus,
-Alert files carry **16.9× the per-file defect rate of Healthy files**
-(95% CI 8.6–29.0), and **2.18×** the defects-per-KLOC once file size is
-normalized out (95% CI 1.00–3.58). Both numbers belong together: the raw ratio
-is the headline, and the size-normalized one is the proof it is not simply an
-artifact of large files being large.
+The bands are **absolute, not percentile**, so a score means the same thing
+behind a firewall as it does against a public corpus. Excellent and Good share
+one green and are told apart by the word; green starts at 7.0 because a 7 is
+not a warning.
+
+The `4.0` cutoff is the empirical one and it has never moved. On the 2,770-file
+measured corpus, files below it carry **16.9× the per-file defect rate of files
+at 8.0 and above** (95% CI 8.6–29.0), and **2.18×** the defects-per-KLOC once
+file size is normalized out (95% CI 1.00–3.58). Both numbers belong together:
+the raw ratio is the headline, and the size-normalized one is the proof it is
+not simply an artifact of large files being large. The boundaries above 4.0 are
+reading points on that same scale rather than separate defect-rate claims.
+
+`8.0` survives as `TARGET_SCORE`, the score a refactoring's leverage is
+measured against. It is deliberately not a band edge — moving it would reorder
+every recommendation.
 
 The bands are defined once in core (`analysis/health/grading.py`) and mirrored
 in `@repowise-dev/types`, with a parity test on each side.
@@ -308,8 +320,8 @@ losses:
 
 - **AUC is not a win.** p = 0.054 is above 0.05. The correct statement is "at
   least as good, consistent small edge," not "significantly better."
-- **CodeScene's precision lead is a real design choice.** It flags **27** Alert
-  files where we flag **132**. That is a deliberately more conservative
+- **CodeScene's precision lead is a real design choice.** It flags **27** files
+  at its most severe level where we flag **132** At risk. That is a deliberately more conservative
   operating point: a short list a team will actually work through, traded
   against recall. If you want a handful of files to fix this quarter rather than
   the ranking that catches the most defects, that operating point is better, and

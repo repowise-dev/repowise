@@ -10,9 +10,9 @@
  *
  * Band cutoffs are the SINGLE TypeScript mirror of the canonical Python source
  * in `packages/core/src/repowise/core/analysis/health/grading.py`. The two are
- * kept in sync by a parity test (`__tests__/health/band-cutoffs.test.ts` here,
- * `tests/unit/health/test_grading.py` in core). Do not hardcode `4`/`8` band
- * cutoffs anywhere else — derive from these consts or read the API `band`.
+ * kept in sync by a parity test (`__tests__/health.test.ts` here,
+ * `tests/unit/health/test_grading.py` in core). Do not hardcode band cutoffs
+ * anywhere else — derive from these consts or read the API `band`.
  */
 
 import type { C4IoKind } from "./external-systems.js";
@@ -93,22 +93,44 @@ export const PERF_BOUNDARY_LABEL: Record<C4IoKind, string> = {
  * ------------------------------------------------------------------ */
 
 /**
- * The 3 defect-backed health buckets. Alert files carry roughly 17x the
- * defect rate of Healthy files on our calibration corpus, so the boundaries
- * are empirically defensible rather than arbitrary. This replaces the legacy
- * ad-hoc 4-band labeling (`critical/poor/fair/good`).
+ * The five absolute health bands. Absolute rather than percentile, so a score
+ * means the same thing behind a firewall as it does against a public corpus.
+ * Excellent and Good share one green and are told apart by the word.
+ *
+ * Mirror of `grading.HealthBand` in core; a parity test on each side locks the
+ * cutoffs.
  */
-export type HealthBand = "healthy" | "warning" | "alert";
+export type HealthBand = "excellent" | "good" | "fair" | "needs_work" | "at_risk";
 
-/** Score at or above this is Healthy. */
-export const HEALTHY_MIN = 8.0;
-/** Score below this is Alert; `[ALERT_MAX, HEALTHY_MIN)` is Warning. */
-export const ALERT_MAX = 4.0;
+export const EXCELLENT_MIN = 8.5;
+export const GOOD_MIN = 7.0;
+export const FAIR_MIN = 5.5;
+export const NEEDS_WORK_MIN = 4.0;
+
+/** Worst-first, matching how the surfaces list files. */
+export const HEALTH_BAND_ORDER: readonly HealthBand[] = [
+  "at_risk",
+  "needs_work",
+  "fair",
+  "good",
+  "excellent",
+] as const;
 
 export const HEALTH_BAND_LABEL: Record<HealthBand, string> = {
-  healthy: "Healthy",
-  warning: "Warning",
-  alert: "Alert",
+  excellent: "Excellent",
+  good: "Good",
+  fair: "Fair",
+  needs_work: "Needs work",
+  at_risk: "At risk",
+};
+
+/** The range each band covers, for keys and legends that show the boundaries. */
+export const HEALTH_BAND_RANGE_LABEL: Record<HealthBand, string> = {
+  excellent: "8.5+",
+  good: "7.0 to 8.5",
+  fair: "5.5 to 7.0",
+  needs_work: "4.0 to 5.5",
+  at_risk: "under 4.0",
 };
 
 /**
@@ -116,9 +138,11 @@ export const HEALTH_BAND_LABEL: Record<HealthBand, string> = {
  * API-provided `band` where available; use this only when deriving locally.
  */
 export function bandForScore(score: number): HealthBand {
-  if (score < ALERT_MAX) return "alert";
-  if (score < HEALTHY_MIN) return "warning";
-  return "healthy";
+  if (score >= EXCELLENT_MIN) return "excellent";
+  if (score >= GOOD_MIN) return "good";
+  if (score >= FAIR_MIN) return "fair";
+  if (score >= NEEDS_WORK_MIN) return "needs_work";
+  return "at_risk";
 }
 
 export interface HealthBandShare {
@@ -131,7 +155,7 @@ export interface HealthBandShare {
 }
 
 /**
- * NLOC-weighted distribution of files across the 3 bands. The repo-level
+ * NLOC-weighted distribution of files across the bands. The repo-level
  * "health distribution" surfaced on the dashboard + badge.
  */
 export interface HealthDistribution {
@@ -561,7 +585,7 @@ export interface HealthOverviewSummary {
 
 export interface HealthOverviewResponse {
   summary: HealthOverviewSummary;
-  /** NLOC-weighted file distribution across the 3 bands. */
+  /** NLOC-weighted file distribution across the health bands. */
   distribution?: HealthDistribution | null;
   defect_accuracy?: DefectAccuracy | null;
   files: HealthFileMetric[];
