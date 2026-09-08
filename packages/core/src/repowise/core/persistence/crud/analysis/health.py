@@ -26,8 +26,8 @@ from ....analysis.health.ranking import (
     worst_metric,
 )
 from ....analysis.health.rows import detail_map
-from ....analysis.health.scoring import nloc_weighted_attr
 from ....analysis.health.scope import scores_language
+from ....analysis.health.scoring import nloc_weighted_attr
 from ....test_paths import is_test_related_path
 from ...models import (
     GraphNode,
