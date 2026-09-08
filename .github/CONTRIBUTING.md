@@ -223,6 +223,7 @@ Adding a new language has a dedicated recipe, see
 - Add tests for new features and bug fixes
 - Place tests in `tests/unit/` or `tests/integration/`
 - Run the full suite with `uv run pytest`
+- A test asserting on a `caplog` record needs `caplog.set_level(logging.INFO, logger="<the module's full logger name>")` (or the level you're asserting on) — setting the root logger's level is not enough when an ancestor logger (e.g. `repowise.core`, `repowise.server`) has its own level raised, since Python resolves the *effective* level from the nearest ancestor that has one set, not from root.
 
 ## Pull Request Guidelines
 
