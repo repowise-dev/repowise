@@ -32,8 +32,6 @@ def test_a_failing_query_compilation_is_reported(monkeypatch: pytest.MonkeyPatch
 
     _compile_query.cache_clear()
 
-    real_query = tree_sitter.Query
-
     def _broken_query(language: object, source: str) -> object:
         raise ValueError("Invalid node type: fake_node")
 
