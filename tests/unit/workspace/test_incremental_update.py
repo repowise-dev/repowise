@@ -372,3 +372,129 @@ def test_read_repo_state_missing_or_malformed(tmp_path):
     (tmp_path / ".repowise").mkdir()
     (tmp_path / ".repowise" / "state.json").write_text("not json{")
     assert read_repo_state(tmp_path) == {}
+
+
+def test_shared_db_indexed_repo_takes_incremental_path(tmp_path, forbid_full_pipeline, monkeypatch):
+    """A repo indexed in the configured shared DB must update incrementally
+    even when no repo-local .repowise/wiki.db exists."""
+    repo = _make_git_repo(tmp_path)
+    base = get_head_commit(repo)
+
+    # Use a file-backed SQLite database as a stand-in for the configured
+    # external/shared database. The routing decision must depend on the
+    # configured DB, not on the presence of repo-local wiki.db.
+    shared_db = tmp_path / "shared.db"
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL",
+        f"sqlite+aiosqlite:///{shared_db}",
+    )
+
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+
+    async def _seed() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{shared_db}")
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(
+                    session,
+                    name=repo.name,
+                    local_path=str(repo),
+                    head_commit=base,
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_seed())
+
+    # Persist the incremental anchor, but deliberately do NOT create
+    # <repo>/.repowise/wiki.db.
+    state_dir = repo / ".repowise"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "state.json").write_text(
+        json.dumps({"last_sync_commit": base}),
+        encoding="utf-8",
+    )
+    assert not (state_dir / "wiki.db").exists()
+
+    _add_commit(repo, "b.py")
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    assert result.error is None
+    assert result.updated is True
+    assert result.file_count >= 2
+    assert result.symbol_count == 2
+
+
+def test_shared_db_config_drift_does_not_crash(tmp_path, stub_full_pipeline, monkeypatch):
+    """Config-fingerprint drift on a shared-DB-indexed repo (no local
+    wiki.db) must still fall back to the full pipeline cleanly.
+
+    Regression test: an earlier version of the shared-DB gate computed
+    ``has_persisted_index`` *after* the config-drift branch already read it,
+    which raised UnboundLocalError the moment config_changed was True for a
+    repo with no local wiki.db (i.e. exactly the shared-DB case). The
+    existing test_config_drift_runs_full_reindex only exercises this branch
+    for the local-SQLite case (wiki.db present via _mark_indexed), so it
+    never caught the ordering bug.
+    """
+    repo = _make_git_repo(tmp_path)
+    base = get_head_commit(repo)
+
+    # Use a file-backed SQLite database as a stand-in for the configured
+    # external/shared database, same as test_shared_db_indexed_repo_takes_incremental_path.
+    shared_db = tmp_path / "shared.db"
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL",
+        f"sqlite+aiosqlite:///{shared_db}",
+    )
+
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+
+    async def _seed() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{shared_db}")
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(
+                    session,
+                    name=repo.name,
+                    local_path=str(repo),
+                    head_commit=base,
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_seed())
+
+    # A stored config fingerprint that will not match the freshly computed
+    # one — this drives config_changed=True. Deliberately do NOT create
+    # <repo>/.repowise/wiki.db: the shared DB is the source of truth here.
+    state_dir = repo / ".repowise"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "state.json").write_text(
+        json.dumps({"last_sync_commit": base, "config_fingerprint": "0" * 64}),
+        encoding="utf-8",
+    )
+    assert not (state_dir / "wiki.db").exists()
+
+    _add_commit(repo, "b.py")
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)

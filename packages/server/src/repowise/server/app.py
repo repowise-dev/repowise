@@ -184,7 +184,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             pass  # Fall back to default
 
-    engine = create_engine(db_url)
+    engine = create_engine(db_url, short_lived=False)
     await init_db(engine)
     session_factory = create_session_factory(engine)
 
@@ -327,6 +327,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     app.state.workspace_fts[repo_id] = fts
                     continue
 
+                # NullPool is irrelevant here since SQLite ignores create_engine()'s
+                # short_lived flag — but this engine is stored in app.state for the
+                # server's lifetime (workspace_engines/workspace_sessions), matching the
+                # long-lived pattern in the two engines above. If this URL is ever made
+                # configurable (e.g. pointed at a shared REPOWISE_DB_URL for workspace
+                # members), it must pass short_lived=False too.
                 repo_engine = create_engine(f"sqlite+aiosqlite:///{db_url_posix}")
                 await init_db(repo_engine)
                 repo_sf = create_session_factory(repo_engine)

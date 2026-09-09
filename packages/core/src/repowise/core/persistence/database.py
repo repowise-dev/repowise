@@ -237,6 +237,7 @@ def create_engine(
     # Pass use_static_pool=True explicitly when creating in-memory test engines.
     use_static_pool: bool = False,
     busy_timeout_ms: int | None = None,
+    short_lived: bool = True,
 ) -> AsyncEngine:
     """Create an AsyncEngine for the given database URL.
 
@@ -249,6 +250,25 @@ def create_engine(
                          small value for best-effort secondary writers that must
                          never stall the primary writer (issue #326). Ignored
                          for non-SQLite backends.
+        short_lived:     Whether this engine is created, used, and disposed
+                         within a single call (the pattern almost every caller
+                         follows: one CLI command, one workspace update, one
+                         background task). Defaults to True, which uses
+                         NullPool for PostgreSQL — one connection per checkout,
+                         closed on dispose, so a short-lived engine can never
+                         hold more than a single Postgres server slot, and an
+                         engine that outlives its creating event loop can never
+                         hand back a dead pooled connection to a later one
+                         (issue #2062's failure class). Pass False only for an
+                         engine stored for a process's lifetime and reused
+                         across many requests — currently just the FastAPI app
+                         and the MCP server — where SQLAlchemy's pooled
+                         AsyncAdaptedQueuePool is the correct choice and
+                         NullPool would open a fresh connection per request.
+                         Ignored for SQLite, which already always uses
+                         NullPool (or StaticPool for :memory:) regardless of
+                         this flag — SQLite has no equivalent long-lived-pool
+                         need since ``aiosqlite`` connections are cheap.
     """
     db_url = get_db_url(url)
     is_sqlite = db_url.startswith("sqlite")
@@ -265,8 +285,21 @@ def create_engine(
         else:
             kwargs["poolclass"] = NullPool
     else:
-        # PostgreSQL — asyncpg handles its own connection pool
+        # PostgreSQL. SQLAlchemy pools these connections with
+        # AsyncAdaptedQueuePool by default — asyncpg does NOT provide its own
+        # pool here (that only happens if something calls asyncpg.create_pool,
+        # which nothing in this codebase does). Every create_engine() call in
+        # this codebase except the long-lived server/MCP engines is
+        # short-lived (create, use, dispose within one async function), so
+        # there's no reuse to gain from pooling and every pooled-but-idle
+        # connection is a Postgres server slot held for no benefit — or,
+        # worse, one that survives past a closed event loop and gets handed
+        # to a later, unrelated caller (#2062's failure class). NullPool caps
+        # a short-lived engine's footprint at exactly one connection instead
+        # of up to 15 (pool_size=5 + max_overflow=10) sitting idle.
         kwargs["pool_pre_ping"] = True
+        if short_lived:
+            kwargs["poolclass"] = NullPool
 
     engine = create_async_engine(db_url, **kwargs)
     if is_sqlite:
