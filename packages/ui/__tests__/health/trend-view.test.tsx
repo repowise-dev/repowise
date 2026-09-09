@@ -85,3 +85,57 @@ describe("TrendView — largest score changes", () => {
     expect(screen.queryByText(/Showing the/)).not.toBeInTheDocument();
   });
 });
+
+describe("TrendView — how a decline is reported", () => {
+  // A fall the code shape did not cause is not the reader's doing. Reporting
+  // it in the same red as a regression is what told someone a week of
+  // refactoring had made things worse.
+
+  const alert = (kind: string) => ({
+    kind,
+    metric: "average_health",
+    current: 7,
+    baseline: 7.6,
+    delta: -0.6,
+    message: "Code health dropped 0.60 points.",
+  });
+
+  // Scoped to the lead element itself. Asserting over the whole tree would
+  // pass or fail on the KPI ribbon's colours, which have nothing to do with
+  // how an alert is reported.
+  const leadColour = (text: string) => screen.getByText(text).getAttribute("style") ?? "";
+
+  it("paints a history-driven fall neutrally, not in the error colour", () => {
+    render(
+      <TrendView data={response({ alerts: [alert("history_drag")] })} isLoading={false} error={null} />,
+    );
+    expect(leadColour("Change history, not code.")).toContain("var(--color-text-secondary)");
+  });
+
+  it("still paints a real regression in the error colour", () => {
+    render(
+      <TrendView data={response({ alerts: [alert("declining")] })} isLoading={false} error={null} />,
+    );
+    expect(leadColour("Declining.")).toContain("var(--color-error)");
+  });
+
+  it("does not name a figure the message contradicts", () => {
+    render(
+      <TrendView
+        data={response({
+          alerts: [{ ...alert("declining"), metric: "maintainability_average" }],
+        })}
+        isLoading={false}
+        error={null}
+      />,
+    );
+    expect(screen.queryByText("Declining health.")).toBeNull();
+  });
+
+  it("treats an unrecognised kind as a warning rather than dropping it", () => {
+    render(
+      <TrendView data={response({ alerts: [alert("something_new")] })} isLoading={false} error={null} />,
+    );
+    expect(screen.getByText("Predicted decline.")).toBeTruthy();
+  });
+});

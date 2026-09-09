@@ -20,7 +20,7 @@ import type {
   RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
 
-import { biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
+import { biomarkerInfo, CATEGORY_LABEL, splitByOrigin } from "./biomarker-glossary";
 import type { HealthWorkItem } from "./refactoring-card";
 import {
   blastFiles,
@@ -130,6 +130,27 @@ function bulletList(items: (string | null | undefined | false)[]): string {
   return items.filter(Boolean).map((s) => `- ${s}`).join("\n");
 }
 
+/**
+ * History findings, stated as context rather than as work.
+ *
+ * They are scored, so leaving them out would not explain the file's number,
+ * but they are measured from the commit log: an agent handed them in a fix
+ * list will either edit the file until it gives up or invent a change that
+ * cannot move them. They get their own section and an explicit instruction.
+ */
+function historyContextBlock(
+  findings: { biomarker_type: string; reason: string; health_impact: number }[],
+): string | null {
+  if (findings.length === 0) return null;
+  const ranked = findings.slice().sort((a, b) => b.health_impact - a.health_impact);
+  const cost = ranked.reduce((sum, f) => sum + f.health_impact, 0);
+  return [
+    bulletList(ranked.map((f) => `**${biomarkerInfo(f.biomarker_type).label}** - ${f.reason}`)),
+    "",
+    `These are measured from this file's git history, not its code, and account for -${cost.toFixed(2)} points of its score. **Do not try to fix them.** No edit to this file will clear one; they move only as its commit history moves. Read them as background on how this code behaves over time, and let them raise your care where the structural work above touches the same regions.`,
+  ].join("\n");
+}
+
 function biomarkerExtraContext(
   biomarkerType: string,
   details: Record<string, unknown> | null | undefined,
@@ -216,7 +237,7 @@ export function buildAiPrompt({
   const t = target;
   const repoLine = repoName ? ` (\`${repoName}\`)` : "";
 
-  const findings = (
+  const allFindings = (
     t.all_findings && t.all_findings.length > 0
       ? t.all_findings
       : [
@@ -234,13 +255,18 @@ export function buildAiPrompt({
     .slice()
     .sort((a, b) => b.health_impact - a.health_impact);
 
+  // History markers are scored but unfixable, so they belong in context, not
+  // in a list titled "issues to fix". The split preserves the ranking above.
+  const { codeShape: fixable, history: historyFindings } = splitByOrigin(allFindings);
+  const historyBlock = historyContextBlock(historyFindings);
+
   // Cap the detailed findings so a file with dozens of hits doesn't produce a
   // multi-thousand-token prompt. The top findings (by impact) are spelled out
   // in full; the long tail is rolled up into a single grouped line so the agent
   // still knows what's left without paying for every description.
   const MAX_DETAILED_FINDINGS = 8;
-  const detailed = findings.slice(0, MAX_DETAILED_FINDINGS);
-  const remainder = findings.slice(MAX_DETAILED_FINDINGS);
+  const detailed = fixable.slice(0, MAX_DETAILED_FINDINGS);
+  const remainder = fixable.slice(MAX_DETAILED_FINDINGS);
 
   const findingsBlock = detailed
     .map((f, i) => {
@@ -317,11 +343,11 @@ export function buildAiPrompt({
       t.module ? `Module: \`${t.module}\`` : null,
     ]),
     "",
-    "## Issues to fix (ranked by impact)",
+    detailed.length > 0
+      ? ["## Issues to fix (ranked by impact)", "", findingsBlock, remainderLine ?? ""].join("\n")
+      : "## Issues to fix\n\nNothing in this file's own code is currently scored. Its deduction is entirely history, listed below; there is no structural work to do here.",
     "",
-    findingsBlock,
-    remainderLine ?? "",
-    "",
+    historyBlock ? ["## How this file behaves over time", "", historyBlock, ""].join("\n") : "",
     t.primary_suggestion
       ? ["## Suggested direction", "", t.primary_suggestion, ""].join("\n")
       : "",
@@ -2006,12 +2032,16 @@ export function buildFileHealthAiPrompt({
   const open = findings.filter(
     (f) => f.status !== "resolved" && f.status !== "false_positive",
   );
-  const ranked = open.slice().sort((a, b) => b.health_impact - a.health_impact);
+  // Split before ranking: history markers are scored but cannot be fixed from
+  // this file, so they go to context rather than into a list of open work.
+  const { codeShape, history: historyFindings } = splitByOrigin(open);
+  const historyBlock = historyContextBlock(historyFindings);
+  const ranked = codeShape.slice().sort((a, b) => b.health_impact - a.health_impact);
   const detailed = ranked.slice(0, MAX_FILE_HEALTH_FINDINGS);
   const remainder = ranked.slice(MAX_FILE_HEALTH_FINDINGS);
 
   const pillars = bulletList([
-    file.defect_score != null ? `Defect risk: **${file.defect_score.toFixed(1)}/10**` : null,
+    file.defect_score != null ? `Code health: **${file.defect_score.toFixed(1)}/10**` : null,
     file.maintainability_score != null
       ? `Maintainability: **${file.maintainability_score.toFixed(1)}/10**`
       : null,
@@ -2196,7 +2226,9 @@ export function buildFileHealthAiPrompt({
     detailed.length > 0 ? `\n## Open findings (ranked by impact)\n\n${findingsBlock}` : "",
     remainderLine ? `\n${remainderLine}` : "",
     causeBlock ? `\n## Open performance causes\n\n${causeBlock}` : "",
-    signalLines ? `\n## How this file behaves over time\n\n${signalLines}` : "",
+    signalLines || historyBlock
+      ? `\n## How this file behaves over time\n\n${[signalLines, historyBlock].filter(Boolean).join("\n\n")}`
+      : "",
     // These carry their own leading blank line, because the filter below that
     // drops absent sections also drops any bare "" used as a separator.
     `\n## Hard constraints\n`,

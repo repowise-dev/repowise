@@ -13,13 +13,12 @@ from sqlalchemy import func, select
 
 from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
-from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
 from repowise.core.analysis.health.coverage import decay_since, measurement_ref
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
-from repowise.core.analysis.health.models import primary_finding
+from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
 from repowise.core.analysis.health.perf.opportunity_rank import observation_rank
 from repowise.core.analysis.health.ranking import deduction_by_path, sort_metrics_worst_first
@@ -28,11 +27,18 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     build_recommendations,
     hydrate_recommendations,
 )
-from repowise.core.analysis.health.scoring import hotspot_health
+from repowise.core.analysis.health.scope import DEFAULT_SCOPE, parse_scope
+from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_attr
 from repowise.core.analysis.health.semantics import health_semantics_contract
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
-from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
+from repowise.core.analysis.health.trends import (
+    diff_snapshots,
+    drop_unscoped_fields,
+    file_trend,
+    project_scope,
+    recent_kpis,
+)
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.crud import (
     get_all_git_metadata,
@@ -707,9 +713,19 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
         primary = primary_finding(fs)
         if primary is None:
             continue
+        # The same rule applied to code shape alone. A file can be led by a
+        # history marker, and a caller told to fix that has been handed
+        # something no edit resolves; ``watch_*`` carries it as context instead.
+        code_shape, history = split_by_origin(fs)
+        actionable = primary_finding(code_shape)
+        watch = primary_finding(history)
         leads[path] = {
             "primary_biomarker": primary.biomarker_type,
             "primary_reason": primary.reason,
+            "actionable_biomarker": actionable.biomarker_type if actionable else None,
+            "actionable_reason": actionable.reason if actionable else None,
+            "watch_biomarker": watch.biomarker_type if watch else None,
+            "watch_reason": watch.reason if watch else None,
             "total_deduction": round(sum(float(x.health_impact or 0.0) for x in fs), 3),
         }
     return leads
@@ -902,7 +918,15 @@ def _directive(
     """
     if not by_leverage:
         return None
-    top = by_leverage[0]
+    # The highest-leverage file that has something an edit can remove. A file
+    # whose whole deficit is history would otherwise be named ``fix_first``
+    # with nothing to fix underneath it, which is the failure this block exists
+    # to prevent. Falls back to the top file when no candidate has one, and
+    # says so rather than inventing a task.
+    top = next(
+        (m for m in by_leverage if (leads.get(m.file_path) or {}).get("actionable_biomarker")),
+        by_leverage[0],
+    )
     recovers = round(max(HEALTHY_MIN - top.score, 0.0) * max(top.nloc, 1))
     lead = leads.get(top.file_path) or {}
     # Does anything behind ``plan_via`` actually address the cause named in
@@ -910,12 +934,15 @@ def _directive(
     # biomarkers have no detector at all — ``coverage_gradient`` above all, which
     # no plan kind can answer because none of them writes tests. Saying so beats
     # routing the caller to plans for a different problem with full confidence.
-    lead_biomarker = lead.get("primary_biomarker")
+    # The cause named here has to be one an edit can remove, or the whole block
+    # recommends something impossible. History is reported alongside, in its own
+    # field, and never as ``reason``.
+    lead_biomarker = lead.get("actionable_biomarker")
     available = (plan_biomarkers_by_path or {}).get(top.file_path, set())
     addresses = bool(lead_biomarker) and lead_biomarker in available
     out = {
         "fix_first": top.file_path,
-        "reason": lead.get("primary_reason") or f"scores {round(top.score, 2)}",
+        "reason": lead.get("actionable_reason") or f"scores {round(top.score, 2)}",
         # Points the repo headline recovers if this one file reaches Healthy,
         # and what share of the total gap that is — the "few files, not the
         # long tail" argument made concrete for a single file. The denominator
@@ -930,7 +957,7 @@ def _directive(
             "equivalent_value": True,
         },
         "share_of_repo_gap_pct": (round(100.0 * recovers / gap_points, 1) if gap_points else None),
-        "then": [m.file_path for m in by_leverage[1:3]],
+        "then": [m.file_path for m in by_leverage if m.file_path != top.file_path][:2],
         # Projected, not bare. ``include`` adds a block without subtracting the
         # dashboard, and five ranked lists at the default ``limit`` compose: the
         # bare ``include=['refactoring']`` measured 70,776 chars on this repo
@@ -942,6 +969,22 @@ def _directive(
         "plan_via": "get_health(include=['refactoring'], only=['refactoring_plans'])",
         "plan_addresses_reason": addresses,
     }
+    # Context, not a task. These move with the repository's history and no edit
+    # to this file settles them.
+    if lead.get("watch_biomarker"):
+        out["watch"] = {
+            "biomarker": lead["watch_biomarker"],
+            "reason": lead.get("watch_reason"),
+            "note": "History-derived. Read it as context; there is nothing here to fix.",
+        }
+    if not lead_biomarker:
+        # Nothing in the repository has a code-shape lead, so the honest answer
+        # is that the deficit is history and no edit here settles it.
+        out["next_action"] = (
+            "No file's leading cause is code shape; the deficit on this one is "
+            "history. Read watch for what is moving and leave it alone."
+        )
+        return out
     # Only speak when there is a named cause to speak about. With no lead the
     # ``reason`` above already falls back to the bare score, and a note reading
     # "No stored plan addresses None" would be worse than silence.
@@ -1216,22 +1259,6 @@ def _write_health_analysis_meta(
     meta["health_analysis"] = analysis
 
 
-def _dimension_average(metrics: list[HealthFileMetric], attr: str) -> float | None:
-    """NLOC-weighted headline over a per-dimension score attribute.
-
-    Skips rows without the attribute (those predating that pillar) so the KPI
-    reads "not measured" rather than a misleading 10.0; ``None`` when no row
-    carries it.
-    """
-    scored = [m for m in metrics if getattr(m, attr, None) is not None]
-    if not scored:
-        return None
-    total_nloc = sum(max(m.nloc, 1) for m in scored)
-    if not total_nloc:
-        return round(sum(getattr(m, attr) for m in scored) / len(scored), 2)
-    return round(sum(getattr(m, attr) * max(m.nloc, 1) for m in scored) / total_nloc, 2)
-
-
 def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     """How few files must reach 8.0 for the *weighted average* to reach 8.0.
 
@@ -1330,17 +1357,10 @@ def _perf_kpis(performance_findings: int, coverage: PerfCoverage | None) -> dict
     }
 
 
-def _code_only(
-    metrics: list[HealthFileMetric], lang_by_path: dict[str, str]
-) -> list[HealthFileMetric]:
-    """The metric rows the complexity walker actually walks.
-
-    ``LANGUAGE_MAPS`` is already the repo's definition of "real code" — the perf
-    pillar uses exactly this filter so docs/config rows never dilute its
-    coverage math (``perf/coverage.py::coverage_for_metrics``). The defect
-    headline never applied it.
-    """
-    return [m for m in metrics if lang_by_path.get(m.file_path, "") in LANGUAGE_MAPS]
+def _avg(metrics: list[HealthFileMetric], attr: str) -> float | None:
+    """NLOC-weighted mean of one metric column, rounded for the wire."""
+    value = nloc_weighted_attr(metrics, attr)
+    return round(value, 2) if value is not None else None
 
 
 def _compute_kpis(
@@ -1349,7 +1369,6 @@ def _compute_kpis(
     hotspot_paths: set[str] | None = None,
     performance_findings: int = 0,
     coverage: PerfCoverage | None = None,
-    lang_by_path: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not metrics:
         return {
@@ -1362,32 +1381,13 @@ def _compute_kpis(
             "worst_performer_score": None,
             "maintainability_average": None,
             "performance_average": None,
+            "structure_average": None,
+            "history_average": None,
             **_perf_kpis(0, None),
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
     worst = min(metrics, key=lambda r: r.score)
-    # What the headline would read over code alone. No biomarker walks a
-    # markdown or JSON file, so those rows carry a mechanical 10.0 that means
-    # "nothing looked at this", exactly the fabricated-10.0 problem the perf
-    # pillar already surfaces rather than hides (``perf/coverage.py``). Measured
-    # on this repo: 233 of 3,314 rows are non-code, 221 of them score exactly
-    # 10.0, they are 7.5% of NLOC, and they lift ``average_health`` 7.31 -> 7.47.
-    # Surfaced rather than subtracted: ``average_health`` is what the badge, the
-    # snapshots, the trend alerts and the web UI all read, and redefining it
-    # here alone would make this tool disagree with every one of them.
-    code_kpis: dict[str, Any] = {}
-    if lang_by_path is not None:
-        code = _code_only(metrics, lang_by_path)
-        code_nloc = sum(max(m.nloc, 1) for m in code)
-        code_kpis = {
-            "non_code_files": len(metrics) - len(code),
-            "average_health_code_only": (
-                round(sum(m.score * max(m.nloc, 1) for m in code) / code_nloc, 2)
-                if code_nloc
-                else None
-            ),
-        }
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
@@ -1396,7 +1396,6 @@ def _compute_kpis(
         # reporting it as a score, the same fabricated-10.0 problem the comment
         # above objects to for non-code rows.
         "hotspot_health": hotspot_health(metrics, hotspot_paths or set()),
-        **code_kpis,
         # NLOC-weighted (``average_health``) vs plain file mean. When these
         # diverge, a few large low-scoring files are holding the headline down —
         # the weighted number is what the dashboard/badge surface, and the gap
@@ -1408,8 +1407,12 @@ def _compute_kpis(
         "worst_performer_score": round(worst.score, 2),
         # Maintainability + performance pillar headlines alongside the
         # defect-backed average. Each is ``None`` until its pillar is measured.
-        "maintainability_average": _dimension_average(metrics, "maintainability_score"),
-        "performance_average": _dimension_average(metrics, "performance_score"),
+        "maintainability_average": _avg(metrics, "maintainability_score"),
+        "performance_average": _avg(metrics, "performance_score"),
+        # The headline's two halves, in deduction points, so a caller can see
+        # whether code shape or history is holding the number down.
+        "structure_average": _avg(metrics, "structure_deduction"),
+        "history_average": _avg(metrics, "history_deduction"),
         # Performance leads with count + density + coverage, not the diluted /10.
         **_perf_kpis(performance_findings, coverage),
     }
@@ -1494,6 +1497,7 @@ async def get_health(
     performance_boundary: str | None = None,
     performance_confidence: str | None = None,
     performance_sort: str | None = None,
+    scope: str = DEFAULT_SCOPE,
 ) -> dict:
     """Code-health scores and findings from stored analysis.
 
@@ -1503,7 +1507,7 @@ async def get_health(
 
     Args:
         targets: file paths or ``module:<name>``. Empty means dashboard;
-            unmatched ones land in ``unresolved``, surviving ``only``.
+            unmatched ones land in ``unresolved``.
         include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
             ``accuracy`` | ``signals`` | ``churn_complexity``, or a dimension.
             ``performance`` and ``refactoring`` add their queues.
@@ -1514,15 +1518,15 @@ async def get_health(
         repo: usually omitted.
         limit: max rows per ranked list, ``0`` for none.
         cursor: zero-based offset into a ranked list.
-        finding_id: stable ``id`` from a health finding.
-        plan_id: stable ``id`` from a refactoring plan.
-        opportunity_id: ``perf...`` or ``refop...`` id from a directive or
-            queue: the unit, its steps or plan, and evidence paged by
-            ``only=["*_evidence"]``. Excludes the two ids above.
+        finding_id / plan_id: stable ``id`` from a finding or a plan.
+        opportunity_id: ``perf...`` or ``refop...`` id: the unit, its steps or
+            plan, and evidence paged by ``only=["*_evidence"]``.
         refactoring_view: ``diversified`` (default) | ``canonical`` |
-            ``file_spread``; refactoring_type / _confidence / _effort filter.
+            ``file_spread``; _type / _confidence / _effort filter.
         performance_view / _context / _boundary / _confidence / _sort: queue
             projection and filters; the facets list them.
+        scope: ``all`` (default) | ``production``. Narrowing drops test files
+            from every figure; tests score higher, so it lowers them.
 
     """
     started = perf_counter()
@@ -1764,8 +1768,25 @@ async def get_health(
         # Paths the index knows about but the exclude config drops. Kept so an
         # unresolved target can report "excluded" (a config decision) rather
         # than "no_such_path" (a typo) — the two need different responses.
+        # Computed before ``scope`` narrows the list, or a test file would be
+        # reported as dropped by a config that says nothing about it.
         excluded_paths = {m.file_path for m in indexed_rows} - {m.file_path for m in all_metrics}
 
+        # Narrowing to production is the same shape of question as the exclude
+        # config: both drop whole files from every block at once. Folding it
+        # into one filter is what keeps a scoped dashboard from ranking a
+        # finding on a file its own file list no longer contains.
+        reported_scope = parse_scope(scope)
+        scope_paths: set[str] | None = None
+        if reported_scope == "production":
+            all_metrics = [m for m in all_metrics if not m.is_test]
+            scope_paths = {m.file_path for m in all_metrics}
+
+        def in_scope_rows(rows: list, attr: str = "file_path") -> list:
+            rows = filter_rows_by_attr(rows, attr, exclude_spec)
+            if scope_paths is None:
+                return rows
+            return [r for r in rows if getattr(r, attr, None) in scope_paths]
         matched_modules: set[str] = set()
         if module_targets:
             module_set = set(module_targets)
@@ -1824,7 +1845,7 @@ async def get_health(
         test_finding_rows: list[Any] = []
         test_findings_total = 0
         if scoped:
-            finding_rows = filter_rows_by_attr(
+            finding_rows = in_scope_rows(
                 list(
                     (
                         await session.execute(
@@ -1838,7 +1859,6 @@ async def get_health(
                     .all()
                 ),
                 "file_path",
-                exclude_spec,
             )
             lead_rows: list[Any] = finding_rows
             emitted = _rank_emitted(
@@ -1891,7 +1911,7 @@ async def get_health(
             # ``lead_rows`` stays the unfiltered open set: it feeds the per-file
             # leads and the performance KPI, neither of which should change
             # because the caller asked to *see* one dimension.
-            lead_rows = filter_rows_by_attr(lite_rows, "file_path", exclude_spec)
+            lead_rows = in_scope_rows(lite_rows)
             emitted = _rank_emitted(
                 [r for r in lead_rows if _in_dimensions(r, ranked_dimensions)]
             )
@@ -1993,8 +2013,6 @@ async def get_health(
         # Dashboard perf headline: coverage (how much of the analyzed code the
         # perf pass ran on) + open performance-finding count. Both feed ``kpis``
         # alone, so a projection that drops kpis skips the language-map read.
-        # The same map answers "how much of this headline is non-code" — one
-        # read, two KPIs.
         if not scoped and wants("kpis"):
             lang_by_path = await get_file_language_map(session, repository.id)
             perf_coverage = coverage_for_metrics(all_metrics, lang_by_path)
@@ -2009,7 +2027,7 @@ async def get_health(
         # ~10k rows the narrow pass above exists to avoid.
         accuracy_rows: list[Any] = []
         if "accuracy" in include_set and not scoped:
-            accuracy_rows = filter_rows_by_attr(
+            accuracy_rows = in_scope_rows(
                 list(
                     (
                         await session.execute(
@@ -2022,7 +2040,6 @@ async def get_health(
                     .all()
                 ),
                 "file_path",
-                exclude_spec,
             )
 
         # Structured refactoring plans (Extract Class, ...) — loaded only when
@@ -2041,14 +2058,13 @@ async def get_health(
             or ({"performance", "refactoring"} <= include_set and wants("recommendation_lede"))
         )
         if plans_requested and not nothing_resolved:
-            refactoring_rows = filter_rows_by_attr(
+            refactoring_rows = in_scope_rows(
                 await get_refactoring_suggestions(
                     session,
                     repository.id,
                     file_paths=list(effective_targets) if scoped else None,
                 ),
                 "file_path",
-                exclude_spec,
             )
             refactoring_recommendations = await hydrate_recommendations(
                 session,
@@ -2098,7 +2114,7 @@ async def get_health(
         coverage_rows: list[Any] = []
         coverage_summary: dict[str, Any] = {}
         if "coverage" in include_set and not nothing_resolved:
-            coverage_rows = filter_rows_by_attr(
+            coverage_rows = in_scope_rows(
                 # ``effective_targets``, not ``targets`` — a raw ``module:foo``
                 # target is not a file path and matched nothing here.
                 #
@@ -2114,11 +2130,15 @@ async def get_health(
                     include_covered_lines=scoped,
                 ),
                 "file_path",
-                exclude_spec,
             )
-            # coverage_summary is a repo-wide stored aggregate, not recomputed
-            # here; the per-file rows above are exclude-filtered.
-            coverage_summary = await get_coverage_summary(session, repository.id)
+            # A repo-wide stored aggregate, not recomputed here, so it cannot
+            # describe a narrowed population. Omitted rather than served beside
+            # per-file rows that no longer match it; the rows themselves stay.
+            coverage_summary = (
+                {}
+                if reported_scope == "production"
+                else await get_coverage_summary(session, repository.id)
+            )
 
         # Per-file process/people/topology signals for targeted files — the
         # same join the file-detail drawer and REST breakdown use, so an agent
@@ -2157,7 +2177,11 @@ async def get_health(
         # file" context for agents).
         snapshots: list[Any] = []
         if "trend" in include_set or (scoped and wants("trends")):
-            snapshots = await list_health_snapshots(session, repository.id, limit=20)
+            # Read through the same scope as the KPIs, or the two halves of one
+            # response would disagree about which files they describe.
+            snapshots = project_scope(
+                await list_health_snapshots(session, repository.id, limit=20), reported_scope
+            )
 
         # Dominant-cause lead per file. Targeted mode wants one per target, so
         # the reduction runs over the whole (small) scoped set. Dashboard mode
@@ -2234,20 +2258,17 @@ async def get_health(
                 if source:
                     plan_biomarkers_by_path.setdefault(path, set()).add(source)
 
-    # KPIs deliberately keep test files in. Excluding them is not a display
-    # choice, it is a scoring change: measured across this workspace, dropping
+    # KPIs keep test files in by default, and ``scope`` is what changes that.
+    # The default is not arbitrary: measured across this workspace, dropping
     # test material moves NLOC-weighted ``average_health`` 7.52 -> 6.87 here,
-    # 7.07 -> 6.27 on the backend repo and 7.59 -> 7.46 on the frontend. Test
-    # files score *better* than production code, so excluding them would make
-    # every repo's headline drop overnight with no defect having been found.
-    # The calibrated numbers stay where they are; the split above is about which
-    # findings compete for a ranked list, not about what the score means.
+    # 7.07 -> 6.27 on the backend repo and 7.59 -> 7.46 on the frontend. Tests
+    # score better than production code, so a narrowed number is a lower number
+    # with no defect having been found — a caller should ask for it knowingly.
     kpis = _compute_kpis(
         metric_rows if scoped else all_metrics,
         hotspot_paths=hotspot_paths,
         performance_findings=perf_findings_count,
         coverage=perf_coverage,
-        lang_by_path=lang_by_path,
     )
 
     if scoped:
@@ -2379,6 +2400,7 @@ async def get_health(
                 else {}
             ),
             "mode": "dashboard",
+            "scope": reported_scope,
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
             # Where the gap to Healthy concentrates — the "few files, not the
@@ -2551,7 +2573,10 @@ async def get_health(
 
     if "trend" in include_set:
         summary = diff_snapshots(snapshots)
+        narrowed = reported_scope == "production"
         recent = recent_kpis(snapshots, limit=10)
+        if narrowed:
+            recent = drop_unscoped_fields(recent)
         alerts = [
             {
                 "kind": a.kind,
@@ -2560,16 +2585,23 @@ async def get_health(
                 "baseline": a.baseline,
                 "delta": a.delta,
                 "message": a.message,
+                "driver": a.driver,
+                "structure_delta": a.structure_delta,
+                "history_delta": a.history_delta,
             }
             for a in summary.alerts
         ]
+        # The hotspot pair describes the whole repository whatever the scope,
+        # since only the average was snapshotted for both populations.
         result["trend"] = {
-            "current_hotspot_health": summary.current_hotspot_health,
+            "current_hotspot_health": None if narrowed else summary.current_hotspot_health,
             "current_average_health": summary.current_average_health,
-            "previous_hotspot_health": summary.previous_hotspot_health,
+            "previous_hotspot_health": None if narrowed else summary.previous_hotspot_health,
             "previous_average_health": summary.previous_average_health,
-            "hotspot_delta": summary.hotspot_delta,
+            "hotspot_delta": None if narrowed else summary.hotspot_delta,
             "average_delta": summary.average_delta,
+            "current_structure_deduction": summary.current_structure_deduction,
+            "current_history_deduction": summary.current_history_deduction,
             "alerts": bounded(alerts, "trend.alerts"),
             "alerts_total": len(alerts),
             "alerts_emitted": min(len(alerts), limit),

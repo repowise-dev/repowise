@@ -541,6 +541,32 @@ _CPP = LanguageNodeMap(
     continue_kinds=frozenset({"continue_statement"}),
 )
 
+_C = LanguageNodeMap(
+    function_kinds=frozenset({"function_definition"}),
+    lambda_kinds=frozenset(),
+    branch_kinds=frozenset({"if_statement", "conditional_expression"}),
+    loop_kinds=frozenset({"for_statement", "while_statement", "do_statement"}),
+    try_kinds=frozenset(),
+    catch_kinds=frozenset(),
+    switch_kinds=frozenset({"switch_statement"}),
+    case_kinds=frozenset({"case_statement"}),
+    boolean_operator_kinds=frozenset(),
+    boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    class_kinds=frozenset(),
+    self_identifiers=frozenset(),
+    member_access_kinds=frozenset(),
+    assert_call_kinds=frozenset({"call_expression"}),
+    call_kinds=frozenset({"call_expression"}),
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"compound_statement"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset(),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
+)
+
 _CSHARP = LanguageNodeMap(
     function_kinds=frozenset(
         {"method_declaration", "constructor_declaration", "local_function_statement"}
@@ -799,6 +825,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "rust": _RUST,
     "kotlin": _KOTLIN,
     "cpp": _CPP,
+    "c": _C,
     "csharp": _CSHARP,
     "dart": _DART,
     "scala": _SCALA,

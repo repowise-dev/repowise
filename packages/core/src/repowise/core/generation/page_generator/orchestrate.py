@@ -110,6 +110,7 @@ class _GenerationRun:
         only_page_ids: set[str] | None = None,
         preserved_page_ids: set[str] | None = None,
         timings: Any | None = None,
+        on_warning: Callable[[str], None] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -142,6 +143,7 @@ class _GenerationRun:
         self.on_page_ready = on_page_ready
         self.on_total_known = on_total_known
         self.on_subphase = on_subphase
+        self.on_warning = on_warning
         self.git_meta_map = git_meta_map
         self.resume = resume
         self.repo_path = repo_path
@@ -734,6 +736,12 @@ class _GenerationRun:
                                 error=str(e),
                                 hint="semantic search will miss these pages; run `repowise reindex` to repair",
                             )
+                            if self.on_warning is not None:
+                                self.on_warning(
+                                    f"Embedding failed for {len(embed_items)} page(s) "
+                                    f"({type(e).__name__}: {e}) — semantic search will "
+                                    "miss them; run `repowise reindex` to repair."
+                                )
                 pages = [r for r in results if isinstance(r, GeneratedPage)]
                 with timed(self.timings, "generation.checkpoint"):
                     if self.job_system is not None and self.job_id is not None:

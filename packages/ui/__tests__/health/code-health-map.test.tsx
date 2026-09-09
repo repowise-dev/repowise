@@ -136,8 +136,12 @@ describe("CodeHealthMap", () => {
 
   it("shows the on-canvas health legend", () => {
     const { getByText } = render(<CodeHealthMap files={[f("a.py", 30, "core")]} />);
-    expect(getByText("Health")).toBeInTheDocument();
+    expect(getByText("Code health")).toBeInTheDocument();
     expect(getByText(/galaxy = module/i)).toBeInTheDocument();
+    // The four-step ramp names score ranges. Band words would claim a
+    // vocabulary the three-band scale beside it does not share.
+    expect(getByText("8 and above")).toBeInTheDocument();
+    expect(getByText("4 to 6")).toBeInTheDocument();
   });
 
   it("renders the coverage legend under the coverage lens", () => {
@@ -264,7 +268,7 @@ describe("map chrome, off canvas", () => {
       <MapLensSwitcher overlay="health" onOverlayChange={onOverlayChange} />,
     );
     expect(getByRole("radiogroup", { name: "Map lens" })).toBeInTheDocument();
-    expect(getByRole("radio", { name: "Health" })).toBeChecked();
+    expect(getByRole("radio", { name: "Code health" })).toBeChecked();
     fireEvent.click(getByRole("radio", { name: "Performance" }));
     expect(onOverlayChange).toHaveBeenCalledWith("performance");
   });

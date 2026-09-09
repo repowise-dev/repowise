@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -909,6 +910,7 @@ async def _persist_full_update_async(
                 from repowise.core.analysis.health.governance import build_governance_findings
                 from repowise.core.persistence.crud import (
                     get_decision_health_summary,
+                    get_scored_file_paths,
                     replace_governance_findings,
                 )
                 from repowise.core.persistence.models import DecisionRecord
@@ -921,6 +923,7 @@ async def _persist_full_update_async(
                 _gov = build_governance_findings(
                     health_summary=_summary,
                     decisions=_decisions,
+                    scored_paths=await get_scored_file_paths(session, repo_id),
                 )
                 await replace_governance_findings(session, repo_id, _gov)
             except Exception as exc:
@@ -1344,7 +1347,15 @@ def _full_rescore_interval_days() -> float:
         try:
             return max(0.0, float(raw))
         except ValueError:
-            pass
+            # Say it where the user will actually see it: a silently-ignored
+            # value makes the rescore cadence look deliberate when it is
+            # actually the default (issue #1370). stderr matches how
+            # build_embedder reports the same class of misconfiguration.
+            print(
+                f"REPOWISE_FULL_RESCORE_INTERVAL_DAYS={raw!r} is not a number; "
+                f"using the default {_FULL_RESCORE_INTERVAL_DAYS} days.",
+                file=sys.stderr,
+            )
     return _FULL_RESCORE_INTERVAL_DAYS
 
 

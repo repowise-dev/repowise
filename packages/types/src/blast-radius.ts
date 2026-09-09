@@ -17,7 +17,7 @@ export interface DirectRiskEntry {
   structural_score: number;
   /** @deprecated Exact alias of structural_score for older clients. */
   risk_score: number;
-  /** 0-1 normalised. */
+  /** Raw decayed churn sum, unbounded; use churn_percentile for 0–1 normalised rank. */
   temporal_hotspot: number;
   /** Raw graph centrality (pagerank); typically well below 1. */
   centrality: number;

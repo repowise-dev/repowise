@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type {
   HealthCoverageResponse,
   HealthFilesQuery,
+  HealthScope,
   HealthFilesResponse,
   HealthFinding,
   HealthOverviewResponse,
@@ -26,6 +27,7 @@ export interface CodeHealthFindingsQuery {
   min_severity?: string;
   dimension?: string;
   limit?: number;
+  scope?: HealthScope;
 }
 
 export type FindingStatusValue =

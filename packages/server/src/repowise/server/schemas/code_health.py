@@ -87,28 +87,48 @@ class HealthTrendKpiRow(BaseModel):
     """One snapshot in the repo-level history, newest first."""
 
     taken_at: str | None = None
-    hotspot_health: float
+    #: ``None`` under a narrowed scope, which recorded only the average.
+    hotspot_health: float | None = None
     average_health: float
     worst_performer_path: str | None = None
     worst_performer_score: float | None = None
+    #: The headline's two halves in deduction points, and the maintainability
+    #: pillar, at this snapshot. ``None`` before each was recorded and under a
+    #: narrowed scope, so a series starts partway along the axis rather than
+    #: reading an unrecorded point as a zero.
+    structure_average: float | None = None
+    history_average: float | None = None
+    maintainability_average: float | None = None
 
 
 class HealthTrendSummary(BaseModel):
-    current_hotspot_health: float
+    #: ``None`` under a narrowed scope: only the average was recorded for both
+    #: populations, and a repo-wide hotspot figure under a production label
+    #: would describe files the rest of the response has dropped.
+    current_hotspot_health: float | None = None
     current_average_health: float
     previous_hotspot_health: float | None = None
     previous_average_health: float | None = None
     hotspot_delta: float | None = None
     average_delta: float | None = None
+    #: The newest reading's two halves, in deduction points.
+    current_structure_deduction: float | None = None
+    current_history_deduction: float | None = None
 
 
 class HealthTrendAlert(BaseModel):
+    #: ``declining`` and ``predicted_decline`` are regressions; ``history_drag``
+    #: is a fall the code shape did not cause and there is nothing to act on.
     kind: str
     metric: str
     current: float
     baseline: float | None = None
     delta: float
     message: str
+    #: Which half of the headline moved, and each half's share of ``delta``.
+    driver: str | None = None
+    structure_delta: float | None = None
+    history_delta: float | None = None
 
 
 class HealthFileDelta(BaseModel):
@@ -129,6 +149,8 @@ class HealthTrendResponse(BaseModel):
     #: The count behind the slice, so the UI can say "N of M".
     file_deltas_total: int = 0
     snapshot_count: int = 0
+    #: Which half of the repository these figures describe.
+    scope: str = "all"
 
 
 class HealthBadgeResponse(BaseModel):

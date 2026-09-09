@@ -1797,6 +1797,19 @@ class HealthFileMetric(Base):
     defect_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     maintainability_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     performance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The defect deduction split into the half a rewrite can move and the half
+    # only time can. They sum to the total deduction, so ``SCORE_MAX`` minus
+    # both is the file's unclamped score — the only way a file held at the
+    # floor can show progress. NULL on rows written before the split.
+    structure_deduction: Mapped[float | None] = mapped_column(Float, nullable=True)
+    history_deduction: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Whether this file is test material, decided by the shared path
+    # classifier and stamped here so every surface that narrows to production
+    # reads a column instead of re-deriving the answer. The performance pillar
+    # stores ``execution_context`` for the same reason. NULL on rows written
+    # before the column existed; derived from the path, so ``backfill_is_test``
+    # fills those in without re-scoring anything.
+    is_test: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Commit this row was scored against. Health is a separate pass from indexing
     # and can lag it, so ``Repository.head_commit`` does not answer "how old is
     # this score". Per-row rather than per-repo because the incremental path
@@ -1837,6 +1850,20 @@ class HealthSnapshot(Base):
     # because that blob's ``{path: score}`` shape is parsed by three readers,
     # two of which would fail quietly if a value became a dict.
     per_file_deductions_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # The repo-wide halves of ``average_health``, in deduction points, so a
+    # trend can attribute a move to code shape or to history without replaying
+    # every finding at every snapshot. NULL on snapshots taken before the split.
+    structure_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    history_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ``average_health`` over production files only, NLOC-weighted the same
+    # way. Stored rather than derived: the per-file map carries scores without
+    # the line counts that weight them, so a narrowed trend rebuilt at read
+    # time would be a differently-weighted number wearing the same name.
+    production_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The maintainability pillar at the same instant as ``average_health``, so
+    # the trend can draw the number a refactor is meant to move beside the one
+    # history drags on. NULL on snapshots taken before it was recorded.
+    maintainability_average: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class CoverageFile(Base):

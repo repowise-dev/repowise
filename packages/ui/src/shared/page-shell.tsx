@@ -69,7 +69,14 @@ export function PageShell({
             </p>
           )}
         </div>
-        {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+        {/* Wraps rather than refusing to shrink. `shrink-0` here sized the
+            block to its contents and let it run off the side of a phone,
+            taking the whole page's horizontal scroll with it. */}
+        {actions && (
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+            {actions}
+          </div>
+        )}
       </header>
       {children}
     </div>

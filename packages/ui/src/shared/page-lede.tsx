@@ -1,4 +1,5 @@
 import * as React from "react";
+import { InfoTip } from "./info-tip";
 
 export interface PageLedeBand {
   label: string;
@@ -10,6 +11,8 @@ export interface PageLedeBand {
 export interface PageLedeProps {
   /** Mono micro-label above the figure. */
   label: string;
+  /** What the figure measures, on an `InfoTip` beside the label. */
+  labelHint?: string | undefined;
   /** The figure itself, pre-formatted. */
   value: string;
   /** Colour for the figure. Same rule as `band.color`. */
@@ -46,6 +49,73 @@ export interface PageLedeProps {
   figureFooter?: React.ReactNode;
 }
 
+export interface LedeFigureProps {
+  label: string;
+  /** What the figure measures, on an `InfoTip` beside the label. */
+  labelHint?: string | undefined;
+  value: string;
+  valueColor?: string | undefined;
+  unit?: string | undefined;
+  band?: PageLedeBand | undefined;
+  badge?: React.ReactNode;
+  footer?: React.ReactNode;
+}
+
+/**
+ * One labelled figure at lede weight.
+ *
+ * A page carries one. It was exported so a second could be composed at the
+ * same type scale, and the one page that did found the two figures answered
+ * the same question with different numbers; the supporting statistic belongs
+ * in the ribbon, where it reads as supporting.
+ */
+function LedeFigure({
+  label,
+  labelHint,
+  value,
+  valueColor,
+  unit,
+  band,
+  badge,
+  footer,
+}: LedeFigureProps) {
+  return (
+    <div className="flex min-w-0 flex-col">
+      <p className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+        {label}
+        {labelHint && <InfoTip content={labelHint} label={`What ${label} means`} />}
+      </p>
+
+      <div className="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span
+          className="text-[44px] font-semibold leading-none tracking-tight tabular-nums sm:text-5xl"
+          style={valueColor ? { color: valueColor } : undefined}
+        >
+          {value}
+        </span>
+        {unit && <span className="text-xs text-[var(--color-text-tertiary)]">{unit}</span>}
+        {/* A dot and a word, not a badge. Filled and outlined, this read as a
+            notification demanding action — and the band is a description of
+            where a number sits, which is not news. The colour still carries
+            the reading; it just stops shouting it. */}
+        {band && (
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]">
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 rounded-full"
+              style={{ background: band.color ?? "var(--color-text-tertiary)" }}
+            />
+            {band.label}
+          </span>
+        )}
+        {badge}
+      </div>
+
+      {footer && <div className="mt-4">{footer}</div>}
+    </div>
+  );
+}
+
 /**
  * The shape a page leads with: one figure large enough to lead, a band chip
  * where a band exists, and the plain-English sentence that makes the figure
@@ -61,6 +131,7 @@ export interface PageLedeProps {
  */
 export function PageLede({
   label,
+  labelHint,
   value,
   valueColor,
   unit,
@@ -72,45 +143,21 @@ export function PageLede({
   figureFooter,
 }: PageLedeProps) {
   const beside = layout === "beside";
+  const primary = (
+    <LedeFigure
+      label={label}
+      labelHint={labelHint}
+      value={value}
+      valueColor={valueColor}
+      unit={unit}
+      band={band}
+      badge={badge}
+      footer={figureFooter}
+    />
+  );
 
   const figure = (
-    <div className={beside ? "flex shrink-0 flex-col" : "flex flex-col"}>
-      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        {label}
-      </p>
-
-      <div className="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span
-          className="text-[44px] font-semibold leading-none tracking-tight tabular-nums sm:text-5xl"
-          style={valueColor ? { color: valueColor } : undefined}
-        >
-          {value}
-        </span>
-        {unit && <span className="text-xs text-[var(--color-text-tertiary)]">{unit}</span>}
-        {band && (
-          <span
-            className="rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
-            style={
-              band.color
-                ? {
-                    color: band.color,
-                    borderColor: `color-mix(in srgb, ${band.color} 40%, transparent)`,
-                    background: `color-mix(in srgb, ${band.color} 9%, transparent)`,
-                  }
-                : {
-                    color: "var(--color-text-secondary)",
-                    borderColor: "var(--color-border-hover)",
-                  }
-            }
-          >
-            {band.label}
-          </span>
-        )}
-        {badge}
-      </div>
-
-      {figureFooter && <div className="mt-4">{figureFooter}</div>}
-    </div>
+    <div className={beside ? "flex shrink-0 flex-col" : "flex flex-col"}>{primary}</div>
   );
 
   const prose = (

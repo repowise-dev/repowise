@@ -222,6 +222,10 @@ class AnalysisIndexStore(ABC):
         worst_performer_score: float | None,
         per_file_scores: dict[str, float] | None = None,
         per_file_deductions: dict[str, float] | None = None,
+        structure_average: float | None = None,
+        history_average: float | None = None,
+        production_average: float | None = None,
+        maintainability_average: float | None = None,
         taken_at: datetime | None = None,
     ) -> HealthSnapshot: ...
 

@@ -328,7 +328,7 @@ function CoverageBody({
     },
     {
       key: "health_score",
-      header: "Health",
+      header: "Code health",
       priority: 2,
       align: "right",
       sortable: true,
@@ -557,7 +557,7 @@ const gapColumns: ResponsiveColumn<ReachedFileRow>[] = [
   },
   {
     key: "health_score",
-    header: "Health",
+    header: "Code health",
     priority: 2,
     align: "right",
     render: (f) =>

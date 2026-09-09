@@ -67,6 +67,29 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     return max(discrete or findings, key=lambda item: float(item.health_impact or 0.0))
 
 
+def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:
+    """Partition findings into ``(code_shape, history)``.
+
+    History markers are derived from git rather than from the file, so a reader
+    cannot act on one: the fix for "changed with 25 other files" is not an edit.
+    Surfaces that instruct rather than describe lead with the first list and
+    report the second as context.
+    """
+    # Deferred: ``scoring`` imports this module for its data classes.
+    from .scoring import HISTORY_CATEGORY, biomarker_category
+
+    code_shape: list[Any] = []
+    history: list[Any] = []
+    for f in findings:
+        target = (
+            history
+            if biomarker_category(getattr(f, "biomarker_type", "")) == HISTORY_CATEGORY
+            else code_shape
+        )
+        target.append(f)
+    return code_shape, history
+
+
 def primary_biomarker_by_file(findings: Iterable[Any]) -> dict[str, str]:
     """Each file's dominant cause, keyed by path. See :func:`primary_finding`."""
     by_file: dict[str, list[Any]] = {}
@@ -98,6 +121,16 @@ class HealthFileMetricData:
     defect_score: float | None = None
     maintainability_score: float | None = None
     performance_score: float | None = None
+    # The defect deduction split into the half a rewrite can move and the half
+    # only time can. They sum to the total deduction, so ``SCORE_MAX`` minus
+    # both is the file's unclamped score — the only way a file held at the
+    # floor can show progress. NULL on rows written before the split.
+    structure_deduction: float | None = None
+    history_deduction: float | None = None
+    # Whether this file is test material, decided at ingestion by the shared
+    # path classifier and carried here so every surface that narrows to
+    # production reads a column instead of re-deriving the answer.
+    is_test: bool = False
 
 
 @dataclass

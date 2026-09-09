@@ -21,7 +21,7 @@ from repowise.core.analysis.security_scan import SecurityScanner
 
 SNIPPY = b"""import pickle
 
-password = 'hunter2'
+password = 'super_secret_password_123'
 data = pickle.loads(blob)
 x = eval(user_input)
 """
@@ -160,10 +160,10 @@ class TestScanFile:
     @pytest.mark.parametrize(
         "source",
         [
-            'const API_KEY = "abc123";\n',
-            "const N8N_API_KEY = 'abc123';\n",
-            'SECRET = "abc123"\n',
-            'PASSWORD = "abc123"\n',
+            'const API_KEY = "abc123456789";\n',
+            "const N8N_API_KEY = 'abc123456789';\n",
+            'SECRET = "abc123456789"\n',
+            'PASSWORD = "abc123456789"\n',
         ],
     )
     def test_secret_patterns_are_case_insensitive(self, source: str) -> None:
@@ -179,6 +179,62 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("config.ts", source, symbols=[]))
         assert {row["kind"] for row in findings} & {"hardcoded_secret", "hardcoded_password"}
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'password = ""\n',
+            "password = 'short'\n",
+            'password = "hunter2"\n',
+            'api_key = "1234567"\n',
+        ],
+    )
+    def test_credential_value_length_gate(self, source: str) -> None:
+        """Credentials shorter than 8 characters yield no findings."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
+        assert not any(f["kind"] in {"hardcoded_password", "hardcoded_secret"} for f in findings)
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'password = "dummy_secret_value_123"\n',
+            'password = "changeme_secret_123"\n',
+            'password = "changeit"\n',
+            'password = "password"\n',
+            'password = "placeholder_secret"\n',
+            'api_key = "sk-..."\n',
+            'api_key = "your-api-key-here"\n',
+            'api_key = "<YOUR_API_KEY>"\n',
+            'password = "fixture-value"\n',
+        ],
+    )
+    def test_credential_placeholder_filtering(self, source: str) -> None:
+        """Values containing placeholder tokens yield no findings."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
+        assert not any(f["kind"] in {"hardcoded_password", "hardcoded_secret"} for f in findings)
+
+    @pytest.mark.parametrize(
+        "file_path",
+        [
+            "tests/unit/test_auth.py",
+            "tests\\unit\\test_auth.py",
+            "test_main.py",
+            "fixtures/keys.py",
+            "spec/helpers.rb",
+            "mocks/auth_mock.ts",
+            "examples/demo.py",
+        ],
+    )
+    def test_credential_path_severity_downgrade(self, file_path: str) -> None:
+        """Valid credentials in test/fixture paths are downgraded to low severity."""
+        source = 'password = "super_secret_real_password_99"\n'
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file(file_path, source, symbols=[]))
+        hits = [f for f in findings if f["kind"] in {"hardcoded_password", "hardcoded_secret"}]
+        assert len(hits) == 1
+        assert hits[0]["severity"] == "low"
 
     def test_single_line_subprocess_shell_true_is_flagged(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]

@@ -1543,15 +1543,21 @@ export interface HealthTrendAlert {
   baseline?: number | null;
   delta: number;
   message: string;
+  driver?: string | null;
+  structure_delta?: number | null;
+  history_delta?: number | null;
 }
 
 /** One snapshot in the repo-level history, newest first. */
 export interface HealthTrendKpiRow {
   taken_at?: string | null;
-  hotspot_health: number;
+  hotspot_health?: number | null;
   average_health: number;
   worst_performer_path?: string | null;
   worst_performer_score?: number | null;
+  structure_average?: number | null;
+  history_average?: number | null;
+  maintainability_average?: number | null;
 }
 
 export interface HealthTrendResponse {
@@ -1561,15 +1567,18 @@ export interface HealthTrendResponse {
   file_deltas?: HealthFileDelta[];
   file_deltas_total?: number;
   snapshot_count?: number;
+  scope?: string;
 }
 
 export interface HealthTrendSummary {
-  current_hotspot_health: number;
+  current_hotspot_health?: number | null;
   current_average_health: number;
   previous_hotspot_health?: number | null;
   previous_average_health?: number | null;
   hotspot_delta?: number | null;
   average_delta?: number | null;
+  current_structure_deduction?: number | null;
+  current_history_deduction?: number | null;
 }
 
 /** One file in the triage queue, ranked by impact over effort. */

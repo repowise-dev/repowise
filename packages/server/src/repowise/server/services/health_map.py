@@ -20,7 +20,10 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.counts import DEFAULT_COUNTS
+from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.perf.coverage import supported_perf_languages
+from repowise.core.analysis.health.scope import DEFAULT_SCOPE, parse_scope
 from repowise.core.persistence import crud
 
 __all__ = [
@@ -57,9 +60,14 @@ class HealthMapFeed:
     recovery: dict[str, Any]
     modules: list[dict[str, Any]] = field(default_factory=list)
     performance: dict[str, Any] | None = None
+    #: Which half of the repository the field describes.
+    scope: str = DEFAULT_SCOPE
+    counts: str = DEFAULT_COUNTS
 
     def payload(self) -> dict[str, Any]:
         return {
+            "scope": self.scope,
+            "counts": self.counts,
             "files": self.files,
             "cap": self.cap,
             "shown": self.shown,
@@ -99,7 +107,12 @@ class HealthMapService:
         self._repository_id = repository_id
 
     async def feed(
-        self, *, cap: int = DEFAULT_MAP_CAP, active: tuple[str, ...] = ()
+        self,
+        *,
+        cap: int = DEFAULT_MAP_CAP,
+        active: tuple[str, ...] = (),
+        scope: str = DEFAULT_SCOPE,
+        counts: str = DEFAULT_COUNTS,
     ) -> HealthMapFeed:
         session, repo_id = self._session, self._repository_id
         metrics = await crud.get_health_metrics(session, repo_id)
@@ -107,6 +120,24 @@ class HealthMapService:
         languages = await crud.get_file_language_map(session, repo_id)
         summary = await crud.get_performance_summary(session, repo_id)
         perf_languages = supported_perf_languages()
+
+        scope_narrowed = parse_scope(scope) == "production"
+        if scope_narrowed:
+            metrics = [m for m in metrics if not m.is_test]
+            kept = {m.file_path for m in metrics}
+            rollups = [r for r in rollups if r.file_path in kept]
+
+        # Re-marks the same field: every node keeps its size and its module,
+        # and only the colour moves. A file with no recorded split cannot be
+        # coloured on this basis, so it leaves the field rather than sitting
+        # there in whatever colour it last had.
+        #
+        # ``rollups`` is deliberately left whole. The page says performance is
+        # scored separately and never blended into health, so its totals must
+        # not move when the health reading does; only the per-node join below
+        # narrows, and a node that is not drawn simply never looks one up.
+        counted = len(metrics)
+        metrics, _ = project_counts(counts, metrics)
 
         by_path = {m.file_path: m for m in metrics}
         # A zero-NLOC file cannot be sized, and the map drops it on arrival.
@@ -161,7 +192,7 @@ class HealthMapService:
             cap=cap,
             shown=len(chosen),
             eligible_total=len(eligible),
-            repository_total=len(metrics),
+            repository_total=counted,
             selection={
                 "basis": "active_then_performance_then_nloc",
                 "active_requested": list(active),
@@ -185,7 +216,16 @@ class HealthMapService:
                 "raise_cap": f"cap accepts up to {MAX_MAP_CAP}.",
             },
             modules=self._modules(drawn, burden),
-            performance=self._performance_block(rollups, summary, len(performance_eligible)),
+            # The stored performance summary is a repo-wide aggregate and there
+            # is no narrowed copy of it, so a narrowed field omits the block
+            # rather than serving repo-wide totals beside production-only rows.
+            performance=(
+                None
+                if scope_narrowed
+                else self._performance_block(rollups, summary, len(performance_eligible))
+            ),
+            scope=DEFAULT_SCOPE if not scope_narrowed else "production",
+            counts=counts,
         )
 
     def _row(

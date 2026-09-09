@@ -23,6 +23,8 @@ from repowise.cli.helpers import (
     run_async,
     silence_logs_for_machine_output,
 )
+from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
+from repowise.core.analysis.health.scoring import compute_kpis
 
 from .codegen import _generate_refactoring_code
 from .persist import _load_persisted_coverage_map, _load_recommendations, _persist_health
@@ -32,6 +34,7 @@ from .summary import (
     _render_defect_accuracy_line,
     _render_distribution_line,
     _render_performance_section,
+    _render_split_line,
 )
 from .trends import _render_trend
 
@@ -88,6 +91,15 @@ from .trends import _render_trend
     help="Restrict the report to files whose path starts with this prefix.",
 )
 @click.option(
+    "--scope",
+    default=DEFAULT_SCOPE,
+    type=click.Choice(list(SCOPES)),
+    help=(
+        "Which files to report on. Tests score higher than production code, "
+        "so 'production' lowers every figure without a defect being found."
+    ),
+)
+@click.option(
     "--trend",
     "trend_view",
     is_flag=True,
@@ -117,6 +129,7 @@ def health_command(
     refactoring_targets: bool,
     generate_code: str | None,
     module_filter: str | None,
+    scope: str,
     trend_view: bool,
     badge_view: bool,
     verbose: bool,
@@ -266,13 +279,24 @@ def health_command(
         metrics = [m for m in metrics if m.file_path == file_filter]
     if module_filter:
         metrics = [m for m in metrics if m.file_path.startswith(module_filter)]
+    if parse_scope(scope) == "production":
+        metrics = [m for m in metrics if not m.is_test]
+        # Every figure, not just the table: the flag says production, so the
+        # headline, the hotspot number, the worst performer and the
+        # distribution all have to describe that population too.
+        report.kpis = compute_kpis(
+            metrics, {p for p, m in git_meta_map.items() if m.get("is_hotspot")}
+        )
     metrics_sorted = sorted(metrics, key=lambda m: m.score)
+    scoped_paths = {m.file_path for m in metrics}
 
     findings = report.findings
     if file_filter:
         findings = [f for f in findings if f.file_path == file_filter]
     if module_filter:
         findings = [f for f in findings if f.file_path.startswith(module_filter)]
+    if parse_scope(scope) == "production":
+        findings = [f for f in findings if f.file_path in scoped_paths]
 
     if generate_code is not None:
         suggestions = getattr(report, "refactoring_suggestions", None) or []
@@ -366,12 +390,13 @@ def health_command(
         band_color = {"healthy": "green", "warning": "yellow", "alert": "red"}[band]
         band_str = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
     console.print(
-        f"\nHotspot: [bold]{kpis.get('hotspot_health', '?')}[/bold]/10 · "
-        f"Average: [bold]{avg if avg is not None else '?'}[/bold]/10{band_str} · "
+        f"\nCode health: [bold]{avg if avg is not None else '?'}[/bold]/10{band_str} · "
+        f"Hotspot: [bold]{kpis.get('hotspot_health', '?')}[/bold]/10 · "
         f"Worst: [bold]{kpis.get('worst_performer_score', '?')}[/bold]/10 "
         f"({kpis.get('worst_performer_path', 'n/a')})"
     )
-    _render_distribution_line(health_distribution(report.metrics))
+    _render_split_line(kpis)
+    _render_distribution_line(health_distribution(metrics))
 
     _render_defect_accuracy_line(report)
 

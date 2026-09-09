@@ -137,7 +137,7 @@ export function InferredTestsView({
     },
     {
       key: "health_score",
-      header: "Health",
+      header: "Code health",
       priority: 2,
       align: "right",
       render: (f) =>

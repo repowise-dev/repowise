@@ -162,8 +162,12 @@ describe("Health dashboard", () => {
       />,
     );
 
-    // The lede leads with the defect score, as the web code-health page does.
-    expect(await screen.findByText("Defect risk")).toBeTruthy();
+    // The lede leads with the health score, as the web code-health page does.
+    // The page title carries the same words, so this asserts the figure's own
+    // label rather than the first match.
+    expect(
+      (await screen.findAllByText("Code health")).length,
+    ).toBeGreaterThan(1);
     // The figure, and again inside the sentence that makes it mean something.
     expect(screen.getAllByText("7.4").length).toBeGreaterThan(0);
 

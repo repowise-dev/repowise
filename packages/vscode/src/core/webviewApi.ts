@@ -229,10 +229,14 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
             openFindings: summary.open_findings,
             band: summary.band ?? null,
             hotspotDelta: trendVal?.summary?.hotspot_delta ?? null,
+            // A snapshot only carries a hotspot figure for the whole
+            // repository, so a reading without one is dropped rather than
+            // plotted at zero.
             history: (trendVal?.history ?? [])
               .slice()
               .reverse()
-              .map((p) => p.hotspot_health),
+              .map((p) => p.hotspot_health)
+              .filter((v): v is number => v !== null),
           }
         : null,
       counts: {

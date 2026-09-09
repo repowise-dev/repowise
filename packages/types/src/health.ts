@@ -48,9 +48,27 @@ export const HEALTH_DIMENSIONS: readonly HealthDimension[] = [
   "performance",
 ] as const;
 
+/**
+ * What a code-health figure counts. `everything` is the calibrated score;
+ * `code_shape` removes the git-derived half, which rises as a file is worked
+ * on and so answers what a repository has been through rather than what its
+ * code is like.
+ */
+export type HealthCounts = "everything" | "code_shape";
+export const HEALTH_COUNTS: readonly HealthCounts[] = ["everything", "code_shape"] as const;
+
+/**
+ * Which half of a repository a health figure describes. Tests score higher
+ * than production code, so narrowing lowers every figure without a defect
+ * having been found — `all` is the default for that reason.
+ */
+export type HealthScope = "all" | "production";
+
+export const HEALTH_SCOPES: readonly HealthScope[] = ["all", "production"] as const;
+
 /** Display labels for the dimensions surfaced today. */
 export const HEALTH_DIMENSION_LABEL: Record<HealthDimension, string> = {
-  defect: "Defect risk",
+  defect: "Code health",
   maintainability: "Maintainability",
   performance: "Performance",
 };
@@ -179,6 +197,20 @@ export interface HealthFileMetric {
   defect_score?: number | null;
   maintainability_score?: number | null;
   performance_score?: number | null;
+  /**
+   * The defect deduction split into the half a rewrite can move (code shape)
+   * and the half only time can (git history). They sum to the total deduction,
+   * so `unclamped_score` is `10 - structure - history` — the only number that
+   * moves for a file held at the score floor. Absent on older payloads.
+   */
+  structure_deduction?: number | null;
+  history_deduction?: number | null;
+  unclamped_score?: number | null;
+  /**
+   * Test material, decided at ingestion. Drives the production/all scope
+   * without re-deriving the answer from the path on every surface.
+   */
+  is_test?: boolean;
   /**
    * Open performance-risk findings on this file. The performance lens on the
    * code-health map colors by this count (+ `performance_analyzed`), not by the
@@ -513,6 +545,18 @@ export interface HealthOverviewSummary {
    *  (a clean repo returns `null` rather than a misleading "worst" at 10.0). */
   worst_performance_path?: string | null;
   worst_performance_score?: number | null;
+  /**
+   * `average_health`'s two halves, in deduction points: what the code's own
+   * shape costs, and what its git history costs. They sum to the total
+   * deduction, so ten minus both is the unclamped score. `null`/absent until
+   * the rows carry the split.
+   */
+  structure_average?: number | null;
+  history_average?: number | null;
+  /** What this response counted. Echoed so a label cannot get ahead of its data. */
+  counts?: HealthCounts;
+  /** Files a code-shape reading cannot answer for, having no recorded split. */
+  unscored_files?: number;
 }
 
 export interface HealthOverviewResponse {
@@ -543,6 +587,9 @@ export interface HealthFilesResponse {
 }
 
 export interface HealthFilesQuery {
+  counts?: HealthCounts;
+  /** Which half of the repository to describe. Defaults to `"all"`. */
+  scope?: HealthScope;
   limit?: number;
   offset?: number;
   sort?: string;
@@ -646,9 +693,12 @@ export interface HealthMapFeed {
 }
 
 export interface HealthMapQuery {
+  counts?: HealthCounts;
   cap?: number;
   /** Paths guaranteed a node, admitted before any other band. */
   active?: string[];
+  /** Which half of the repository to describe. Defaults to `"all"`. */
+  scope?: HealthScope;
 }
 
 /* ------------------------------------------------------------------ *
@@ -779,26 +829,54 @@ export interface FileHealthTrend {
 export interface HealthTrendResponse {
   history: Array<{
     taken_at: string | null;
-    hotspot_health: number;
+    /** `null` under a narrowed scope, which recorded only the average. */
+    hotspot_health: number | null;
     average_health: number;
     worst_performer_path: string | null;
     worst_performer_score: number | null;
+    /**
+     * The headline's two halves in deduction points, and the maintainability
+     * pillar, at this snapshot. `null` before each was recorded and under a
+     * narrowed scope, so a series can start partway along the axis rather than
+     * reading an unrecorded point as a zero.
+     */
+    structure_average?: number | null;
+    history_average?: number | null;
+    maintainability_average?: number | null;
   }>;
   summary: {
-    current_hotspot_health: number;
+    /** `null` under a narrowed scope: only the average covers both populations. */
+    current_hotspot_health: number | null;
     current_average_health: number;
     previous_hotspot_health: number | null;
     previous_average_health: number | null;
     hotspot_delta: number | null;
     average_delta: number | null;
+    /** The newest reading's two halves, in deduction points. */
+    current_structure_deduction?: number | null;
+    current_history_deduction?: number | null;
   };
   alerts: Array<{
+    /**
+     * `"declining"` and `"predicted_decline"` are regressions. `"history_drag"`
+     * is a fall whose whole cause is git history while the code shape held or
+     * improved: the same numbers with the opposite reading, and nothing to fix.
+     */
     kind: string;
     metric: string;
     current: number;
     baseline: number | null;
     delta: number;
     message: string;
+    /**
+     * Which half of the headline moved, and how far each half moved in score
+     * points. These are changes in mean deduction, so they sum to `delta` only
+     * while no file sits at the score floor. `null` on the hotspot metric,
+     * whose halves are not snapshotted, and on histories predating the split.
+     */
+    driver?: "structure" | "history" | null;
+    structure_delta?: number | null;
+    history_delta?: number | null;
   }>;
   /** Largest movements first, in either direction, capped server-side. */
   file_deltas: Array<{
@@ -813,6 +891,8 @@ export interface HealthTrendResponse {
    */
   file_deltas_total?: number;
   snapshot_count: number;
+  /** Which half of the repository these figures describe. */
+  scope?: HealthScope;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1005,12 +1085,15 @@ export interface HealthWorkQueueResponse {
 }
 
 export interface HealthWorkQueueQuery {
+  counts?: HealthCounts;
   limit?: number;
   module?: string;
   biomarker?: string;
   min_severity?: string;
   max_effort?: string;
   sort?: "impact_per_effort" | "total_impact" | "score" | "finding_count";
+  /** Which half of the repository to describe. Defaults to `"all"`. */
+  scope?: HealthScope;
 }
 
 /** @deprecated Use HealthWorkItem; this is a file triage row, not a plan. */

@@ -13,7 +13,9 @@ from repowise.cli.helpers import console, run_async
 from repowise.core.pipeline import PhaseTimings, timed
 
 
-def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
+def _build_update_vector_store(
+    repo_path: Any, cfg: dict, degraded: list[str] | None = None
+) -> Any | None:
     """Build the shared page/decision vector store for the update path.
 
     Phase-2 follow-up + Phase-3 requirement: ``repowise update`` historically
@@ -22,14 +24,19 @@ def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
     runs. We mirror ``init``'s store construction (LanceDB at
     ``.repowise/lancedb`` so previously-embedded decisions are matchable; the
     in-memory store is a degraded fallback that only sees this run's vectors).
-    Returns ``None`` on any failure — the decision upsert still works without it.
+    Returns ``None`` on any failure — the decision upsert still works without
+    it. A failure is recorded in *degraded* (when given) so the run's degraded
+    panel says why semantic dedup is off instead of silently skipping it
+    (issue #1370).
     """
     try:
         from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
         embedder = build_embedder(resolve_embedder(cfg.get("embedder")), repo_path)
         return build_vector_store(repo_path, embedder)
-    except Exception:
+    except Exception as exc:
+        if degraded is not None:
+            degraded.append(f"Decision vector store: {type(exc).__name__}: {exc}")
         return None
 
 

@@ -113,7 +113,23 @@ def _build_embedder():
     if name == "gemini":
         from repowise.core.providers.embedding.gemini import GeminiEmbedder
 
-        dims = int(os.environ.get("REPOWISE_EMBEDDING_DIMS", "768"))
+        dims_raw = os.environ.get("REPOWISE_EMBEDDING_DIMS")
+        dims = 768
+        if dims_raw:
+            try:
+                parsed = int(dims_raw)
+            except (ValueError, OverflowError):
+                parsed = 0
+            if parsed > 0:
+                dims = parsed
+            else:
+                import sys
+
+                print(
+                    f"REPOWISE_EMBEDDING_DIMS={dims_raw!r} is not a positive integer;"
+                    f" using {dims}.",
+                    file=sys.stderr,
+                )
         # Honour the indexed embedding model so serve doesn't silently rebuild
         # the embedder with a different default than init used (issue #426).
         model = os.environ.get("REPOWISE_EMBEDDING_MODEL")

@@ -18,6 +18,8 @@ from repowise.server.deps import get_db_session
 from repowise.server.schemas import HealthWorkQueueResponse
 
 from ._router import router
+from .counts import CountsQuery, project
+from .scope import ScopeQuery, narrow
 
 _SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
@@ -65,6 +67,8 @@ async def health_work_queue(
     sort: str = Query(
         "impact_per_effort", pattern="^(impact_per_effort|total_impact|score|finding_count)$"
     ),
+    scope: str = ScopeQuery,
+    counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Health work items ranked by impact / effort.
@@ -82,8 +86,10 @@ async def health_work_queue(
         raise HTTPException(status_code=404, detail="Repository not found")
 
     metrics = await crud.get_health_metrics(session, repo_id)
-    metric_by_path = {m.file_path: m for m in metrics}
     findings = await crud.get_health_findings(session, repo_id)
+    metrics, findings = narrow(scope, metrics, findings)
+    metrics, findings, _unscored = project(counts, metrics, findings)
+    metric_by_path = {m.file_path: m for m in metrics}
 
     by_file: dict[str, list[Any]] = {}
     for f in findings:
@@ -103,8 +109,14 @@ async def health_work_queue(
         if module and not file_path.startswith(module):
             continue
         m = metric_by_path.get(file_path)
-        nloc = m.nloc if m is not None else 0
-        score = m.score if m is not None else 10.0
+        # No metric row means this reading cannot score the file: under
+        # ``code_shape`` that is a row with no recorded split. Ranking it on a
+        # stand-in 10.0 would put an unmeasured file at the top of a list
+        # ordered by how bad things are.
+        if m is None:
+            continue
+        nloc = m.nloc
+        score = m.score
         primary = primary_finding(fs)
         total_impact = round(sum(x.health_impact for x in fs), 3)
         effort_bucket = _effort_for_nloc(nloc)

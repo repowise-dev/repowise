@@ -222,6 +222,13 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     "god_class": {"defect", "maintainability"},
     "large_method": {"defect", "maintainability"},
     "nested_complexity": {"defect", "maintainability"},
+    # The rest of the pure code-shape markers. Maintainability is the pillar a
+    # refactor is supposed to move, so every marker a reader can fix by
+    # rewriting the code belongs in it - a method too complex to follow is a
+    # maintainability problem whether or not it is also a defect predictor.
+    "complex_method": {"defect", "maintainability"},
+    "complex_conditional": {"defect", "maintainability"},
+    "bumpy_road": {"defect", "maintainability"},
     # Performance-risk detectors contribute to ``performance`` ONLY. They are
     # NOT defect predictors and must never move the surfaced (defect) score -
     # that exclusion is what keeps the defect golden guarantee intact.
@@ -272,6 +279,9 @@ _MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
     "god_class": 1.0,
     "large_method": 1.0,
     "nested_complexity": 1.0,
+    "complex_method": 1.0,
+    "complex_conditional": 1.0,
+    "bumpy_road": 1.0,
     # SQL smells ship advisory (0.7) pending a precision spot-check on a
     # migrations-heavy corpus, mirroring how new perf markers land.
     "sql_high_complexity": 0.7,
@@ -287,6 +297,9 @@ _MAINTAINABILITY_CATEGORY: dict[str, str] = {
     "god_class": "structural_complexity",
     "nested_complexity": "structural_complexity",
     "large_method": "structural_complexity",
+    "complex_conditional": "structural_complexity",
+    "bumpy_road": "structural_complexity",
+    "complex_method": "size_and_complexity",
     "primitive_obsession": "size_and_complexity",
     "dry_violation": "duplication",
     "error_handling": "error_handling",
@@ -642,6 +655,41 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     return scores, defect_deductions
 
 
+# The one defect category derived from git rather than from the code itself.
+# Splitting on it is what lets a surface say which half of the score moved: a
+# refactor changes the structure half, and nothing a reader types today changes
+# the history half.
+HISTORY_CATEGORY = "organizational"
+
+
+def deduction_split(findings: Iterable[Any]) -> tuple[float, float]:
+    """``(structure, history)`` defect deduction over already-scored findings.
+
+    Reads each finding's stored ``health_impact``, so the two halves sum to the
+    file's total deduction and ``SCORE_MAX`` minus that sum is its unclamped
+    score. Governance findings carry no impact and so fall out on their own.
+    """
+    structure = history = 0.0
+    for f in findings:
+        impact = float(field(f, "health_impact", 0.0) or 0.0)
+        if biomarker_category(field(f, "biomarker_type", "")) == HISTORY_CATEGORY:
+            history += impact
+        else:
+            structure += impact
+    return round(structure, 3), round(history, 3)
+
+
+def unclamped_score(structure: float | None, history: float | None) -> float | None:
+    """The score a file would carry without the floor, or ``None`` if unrecorded.
+
+    The floor is lossy: a file 12.9 points deep and one 9.1 points deep both
+    print 1.0, so neither can show progress until it climbs back over the floor.
+    """
+    if structure is None and history is None:
+        return None
+    return round(SCORE_MAX - (structure or 0.0) - (history or 0.0), 2)
+
+
 def attach_impacts(
     results: list[BiomarkerResult], deductions: list[float]
 ) -> list[HealthFindingData]:
@@ -674,7 +722,7 @@ def _row_score(row: Any) -> float:
     return float(field(row, "score", SCORE_MAX))
 
 
-def _wavg_attr(rows: list[HealthFileMetricData], attr: str) -> float | None:
+def nloc_weighted_attr(rows: list[HealthFileMetricData], attr: str) -> float | None:
     """NLOC-weighted average of one metric attribute, skipping ``None`` values.
 
     Returns ``None`` when no row carries the attribute (e.g. a repo whose
@@ -753,6 +801,11 @@ def compute_kpis(
       NLOC-weighted averages over the per-file ``performance_score`` (static
       performance RISK), so the performance pillar surfaces a repo headline too.
       ``None`` when no file carries a performance score.
+    - ``structure_average`` / ``history_average`` and their hotspot pair: the
+      headline's two halves, in deduction points, so a surface can say which
+      one is holding the score down. ``None`` until files carry the split.
+    - ``production_average``: ``average_health`` over non-test files, weighted
+      identically, so a narrowed view and a narrowed trend agree.
     """
     if not metrics:
         return {
@@ -765,14 +818,26 @@ def compute_kpis(
             "maintainability_hotspot": None,
             "performance_average": None,
             "performance_hotspot": None,
+            "structure_average": None,
+            "structure_hotspot": None,
+            "history_average": None,
+            "history_hotspot": None,
+            "production_average": None,
+            "production_file_count": 0,
         }
 
     hotspots = [m for m in metrics if field(m, "file_path") in hotspot_paths]
     worst = min(metrics, key=_row_score)
-    maint_avg = _wavg_attr(metrics, "maintainability_score")
-    maint_hotspot = _wavg_attr(hotspots, "maintainability_score")
-    perf_avg = _wavg_attr(metrics, "performance_score")
-    perf_hotspot = _wavg_attr(hotspots, "performance_score")
+    maint_avg = nloc_weighted_attr(metrics, "maintainability_score")
+    maint_hotspot = nloc_weighted_attr(hotspots, "maintainability_score")
+    perf_avg = nloc_weighted_attr(metrics, "performance_score")
+    perf_hotspot = nloc_weighted_attr(hotspots, "performance_score")
+    production = [m for m in metrics if not field(m, "is_test", False)]
+    splits = {
+        f"{half}_{scope}": nloc_weighted_attr(rows, f"{half}_deduction")
+        for half in ("structure", "history")
+        for scope, rows in (("average", metrics), ("hotspot", hotspots))
+    }
     # Floored to 10.0 when the repo has no hotspot files, because this dict is
     # what ``save_health_snapshot`` persists into a non-nullable column and what
     # the trend alerts diff against. The floor lives here, at the one point that
@@ -789,4 +854,9 @@ def compute_kpis(
         "maintainability_hotspot": round(maint_hotspot, 2) if maint_hotspot is not None else None,
         "performance_average": round(perf_avg, 2) if perf_avg is not None else None,
         "performance_hotspot": round(perf_hotspot, 2) if perf_hotspot is not None else None,
+        **{k: round(v, 2) if v is not None else None for k, v in splits.items()},
+        "production_average": (
+            round(nloc_weighted_score(production), 2) if production else None
+        ),
+        "production_file_count": len(production),
     }

@@ -49,7 +49,7 @@ describe("buildFileHealthAiPrompt", () => {
   it("leads with the file and all three scored dimensions", () => {
     const out = buildFileHealthAiPrompt({ file, findings: [finding()] });
     expect(out).toContain("packages/cli/doctor_cmd.py");
-    expect(out).toContain("Defect risk: **1.0/10**");
+    expect(out).toContain("Code health: **1.0/10**");
     expect(out).toContain("Maintainability: **4.2/10**");
     expect(out).toContain("Performance: **8.1/10**");
   });

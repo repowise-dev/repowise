@@ -40,9 +40,13 @@ async def make_cost_tracker(repo_path: Path, repo_name: str) -> CostTracker:
     """Build a DB-backed :class:`CostTracker` for the repo-local database.
 
     Resolves (or creates) the repository row so every LLM call made during
-    this run is persisted to the ``llm_costs`` table. The engine is
-    intentionally left open: it lives for the duration of generation and is
-    disposed later by the persistence path that reuses the same database.
+    this run is persisted to the ``llm_costs`` table.
+
+    The engine is disposed before returning: this coroutine and ``flush()``
+    each run inside their own ``asyncio.run()``, and a connection left pooled
+    here would be bound to a dead loop by the time ``flush`` runs in a later
+    one. Disposing clears the pool, not ``sf``, so the next checkout opens a
+    fresh connection there instead (issue #2062).
 
     The engine uses a short ``busy_timeout`` so a cost insert that loses the
     write race against the generation writer fails fast and is dropped rather
@@ -50,14 +54,15 @@ async def make_cost_tracker(repo_path: Path, repo_name: str) -> CostTracker:
     """
     from repowise.cli._repo_session import open_repo_db
 
-    _engine, sf, repo_id = await open_repo_db(
+    engine, sf, repo_id = await open_repo_db(
         repo_path,
         repo_name=repo_name,
         busy_timeout_ms=_COST_TRACKER_BUSY_TIMEOUT_MS,
     )
-    # buffered=True defers every per-call INSERT to a single ``flush()`` after
-    # generation, so cost writes never contend with the generation writer
-    # (issue #326). Call ``flush_cost_tracker`` once heavy DB work is done.
+    await engine.dispose()
+    # buffered=True avoids write contention (issue #326) and, just as load
+    # bearing now, keeps the pool empty so nothing refills it before flush
+    # runs and reintroduces the cross-loop reuse from issue #2062.
     return CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
 
 

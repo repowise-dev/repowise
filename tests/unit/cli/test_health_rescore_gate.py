@@ -10,10 +10,33 @@ from __future__ import annotations
 import pytest
 
 from repowise.cli.commands.update_cmd.persistence import (
+    _full_rescore_interval_days,
     full_rescore_due,
     health_analyzer_changed,
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+
+class TestRescoreIntervalEnv:
+    """REPOWISE_FULL_RESCORE_INTERVAL_DAYS parsing (issue #1370)."""
+
+    def test_valid_value_parses(self, monkeypatch, capsys) -> None:
+        monkeypatch.setenv("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "3.5")
+        assert _full_rescore_interval_days() == 3.5
+        assert capsys.readouterr().err == ""
+
+    def test_invalid_value_warns_on_stderr(self, monkeypatch, capsys) -> None:
+        """A malformed value must not silently default — say it out loud."""
+        monkeypatch.setenv("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "soon")
+        assert _full_rescore_interval_days() == 7.0
+        err = capsys.readouterr().err
+        assert "REPOWISE_FULL_RESCORE_INTERVAL_DAYS" in err
+        assert "soon" in err
+
+    def test_unset_uses_default_silently(self, monkeypatch, capsys) -> None:
+        monkeypatch.delenv("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", raising=False)
+        assert _full_rescore_interval_days() == 7.0
+        assert capsys.readouterr().err == ""
 
 
 class TestHealthAnalyzerChanged:

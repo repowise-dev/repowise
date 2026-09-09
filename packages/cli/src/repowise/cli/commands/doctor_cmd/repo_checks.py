@@ -17,6 +17,7 @@ from repowise.cli.helpers import (
     reconcile_schema_best_effort,
     run_async,
 )
+from repowise.core.exclusion import build_exclude_spec, is_excluded
 
 from ._types import DoctorCheck, _check, _status_markup
 from .advisories import _advise_claude_md_stamp
@@ -92,9 +93,9 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
     8900 of them. ``--repair`` deletes what this reports, so what it removed
     was the live index.
 
-    Three columns rather than whole rows: the id to match against the stores,
-    the content for the information floor, and metadata_json for the stub
-    predicate. Nothing downstream reads any other field, and hydrating full
+    Four columns rather than whole rows: the id to match against the stores,
+    the content for the information floor, metadata_json for the stub
+    predicate, and target_path to tell whether the file is excluded. Nothing downstream reads any other field, and hydrating full
     ORM objects for every page only to discard them is what made a cap look
     necessary in the first place.
     """
@@ -103,12 +104,55 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
     from repowise.core.persistence.models import Page
 
     result = await session.execute(  # type: ignore[attr-defined]
-        select(Page.id, Page.content, Page.metadata_json).where(
+        select(Page.id, Page.content, Page.metadata_json, Page.target_path).where(
             Page.repository_id == repo_id
         )
     )
     return list(result.all())
 
+
+def _provider_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
+    """Report provider implementations, configuration errors, and usability.
+
+    These are three distinct claims.  In particular, an empty validation
+    warning list means no configured key is malformed; it does not prove that
+    an LLM provider will resolve for this repository.
+    """
+    checks: list[DoctorCheck] = []
+
+    try:
+        from repowise.core.providers import list_providers
+
+        providers = list_providers()
+        checks.append(
+            _check(
+                "Providers",
+                bool(providers),
+                f"Implementations loaded: {', '.join(providers)}",
+            )
+        )
+    except Exception as exc:
+        checks.append(_check("Providers", False, str(exc)))
+
+    from repowise.cli.helpers import validate_provider_config
+
+    config_warnings = validate_provider_config()
+    config_ok = not config_warnings
+    config_detail = "No misconfigured provider keys" if config_ok else "; ".join(config_warnings)
+    checks.append(_check("Provider config", config_ok, config_detail))
+
+    from repowise.core.providers.llm.registry import provider_available_for_repo
+
+    llm_available = provider_available_for_repo(repo_path)
+    llm_detail = (
+        "Resolves for this repository"
+        if llm_available
+        else "None configured — prose degrades to a structural wiki; set a key or pass --provider"
+    )
+    # Keyless operation is supported, so this is informational rather than a
+    # failing health check.  The detail tells users what init will actually do.
+    checks.append(_check("LLM provider", True, llm_detail))
+    return checks
 
 
 def _repowise_dir_check(repowise_dir: _DoctorPath) -> DoctorCheck:
@@ -255,24 +299,8 @@ def _run_repo_checks(
         except Exception as e:
             checks.append(_check("Store format", True, f"Could not check: {e}"))
 
-    # 5. Provider importable?
-    provider_ok = False
-    try:
-        from repowise.core.providers import list_providers
-
-        providers = list_providers()
-        provider_ok = len(providers) > 0
-        checks.append(_check("Providers", provider_ok, ", ".join(providers)))
-    except Exception as e:
-        checks.append(_check("Providers", False, str(e)))
-
-    # 6. Provider configuration?
-    from repowise.cli.helpers import validate_provider_config
-
-    config_warnings = validate_provider_config()
-    config_ok = len(config_warnings) == 0
-    config_detail = "All required API keys configured" if config_ok else "; ".join(config_warnings)
-    checks.append(_check("Provider config", config_ok, config_detail))
+    # 5-6. Provider implementations, configuration, and repo-level usability.
+    checks.extend(_provider_checks(repo_path))
 
     # 6b. Hosted account (informational: signed out is not a failure).
     try:
@@ -404,8 +432,35 @@ def _run_repo_checks(
                     # excluded for, one line above. It stays on the ORPHAN
                     # side: a stored vector for a page now below the floor is
                     # real drift, and deleting it is a repair that works.
+                    # A page whose FILE the user excluded is absent from both
+                    # indexes because they asked for that, so reporting it as
+                    # missing is drift no action can clear: `--repair`'s only
+                    # remedy is to index content they excluded. Every other read
+                    # path already filters here — `filter_graph_nodes`,
+                    # `_node_id_is_excluded`, `_prose_symbols` — and
+                    # `core/exclusion.py` documents why: rows outlive an
+                    # `exclude_patterns` edit by design, so readers filter rather
+                    # than force a reindex. This check was the one reader that did
+                    # not, and on a repo excluding its generated sources that was
+                    # 5015 of 5049 reported-missing rows.
+                    #
+                    # Matched on the FILE: a symbol page's target_path is
+                    # `path::Name`, which no file pattern matches. Same split
+                    # `_node_id_is_excluded` does, for the same reason.
+                    #
+                    # MISSING side only, like the floor and stub exclusions
+                    # above. Whether a store entry for a newly-excluded file is
+                    # itself drift worth deleting is a separate question, and
+                    # answering it here would make `--repair` delete on a rules
+                    # edit — too sharp an edge to add in passing.
+                    exclude_spec = build_exclude_spec(repo_path)
                     indexable_ids = {
-                        p.id for p in pages if meets_information_floor(p.content or "")
+                        p.id
+                        for p in pages
+                        if meets_information_floor(p.content or "")
+                        and not is_excluded(
+                            (p.target_path or "").split("::", 1)[0], exclude_spec
+                        )
                     }
                     # A stub standing in for a failed model page is held out of
                     # the vector store on purpose: ``_seed_resume`` reads the
@@ -465,8 +520,13 @@ def _run_repo_checks(
             # Held-back stubs are not drift, but they are also not nothing: the
             # wiki has a page there that no model wrote. Say so on the same row
             # rather than letting "in sync" imply the wiki is complete.
+            # Name the command, not just the flag. `--resume` exists only on
+            # `init`, so a reader who takes this advice tries `generate
+            # --resume` first — 0.48.0 answers "No such option '--resume'. Did
+            # you mean '--yes'?" — and has to guess which command was meant. A
+            # health report is the worst place to make someone guess.
             if stub_count:
-                vec_detail += f" · {stub_count} stub(s) awaiting --resume"
+                vec_detail += f" · {stub_count} stub(s) awaiting `repowise init --resume`"
             checks.append(_check("SQL ↔ Vector Store", vec_ok, vec_detail))
 
             fts_ok = not missing_from_fts and not orphaned_fts

@@ -25,6 +25,7 @@ import {
   type HealthTrendResponse,
   type HealthMapFeed,
 } from "@/lib/api/code-health";
+import type { HealthCounts, HealthScope } from "@repowise-dev/types/health";
 import { HealthFileDrawerHost } from "@/components/health/health-file-drawer-host";
 
 export function TriageTab({
@@ -40,6 +41,8 @@ export function TriageTab({
   highlightPaths,
   hotspotsSlot,
   trendSlot,
+  scope,
+  counts,
 }: {
   repoId: string;
   /** Trend fetched once at the page level. */
@@ -61,16 +64,29 @@ export function TriageTab({
   /** Sections composed by the page and rendered under the map. */
   hotspotsSlot?: ReactNode;
   trendSlot?: ReactNode;
+  /** Which half of the repository every figure here describes. */
+  scope?: HealthScope;
+  /** Whether those figures count change history or code shape alone. */
+  counts?: HealthCounts;
 }) {
   const router = useRouter();
 
   const prefix = `/repos/${id}`;
+  // Scope and counts ride in the cache key as well as the query: the views key
+  // their SWR off it, so a re-read has to make a different key or the first
+  // population stays on screen under the second one's label. The suffixes
+  // compose in the same fixed order the page uses, or the two keys diverge and
+  // the overview is fetched twice.
   const adapter: CodeHealthAdapter = {
-    cacheKey: id,
-    getOverview: (limit) => getHealthOverview(id, limit),
-    listFindings: (opts) => listHealthFindings(id, opts),
-    listFiles: (opts) => listHealthFiles(id, opts),
-    getHealthWorkQueue: (opts) => getHealthWorkQueue(id, opts),
+    cacheKey: `${id}${scope && scope !== "all" ? `:${scope}` : ""}${
+      counts && counts !== "everything" ? `:${counts}` : ""
+    }`,
+    getOverview: (limit) => getHealthOverview(id, limit, scope, counts),
+    listFindings: (opts) =>
+      listHealthFindings(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
+    listFiles: (opts) => listHealthFiles(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
+    getHealthWorkQueue: (opts) =>
+      getHealthWorkQueue(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
     updateFindingStatus: (findingId, status) =>
       updateFindingStatus(id, findingId, status),
     getCoverage: (opts) => getHealthCoverage(id, opts),
@@ -82,6 +98,7 @@ export function TriageTab({
         repoId={id}
         filePath={filePath}
         onClose={onClose}
+        counts={counts}
         {...(lens ? { lens } : {})}
       />
     ),

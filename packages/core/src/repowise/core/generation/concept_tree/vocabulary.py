@@ -188,6 +188,17 @@ def _is_useful(term: str) -> bool:
     words = term.split()
     if not (_MIN_TERM_WORDS <= len(words) <= _MAX_TERM_WORDS):
         return False
+    # A term made entirely of separators (hyphens, underscores, spaces) contains
+    # no alphanumeric characters.  term_words() splits on [\s_\-]+ and filters
+    # empty strings, so it returns [] for "---" or "___".  Two things then break:
+    #   • term_words(c.term)[0] in extract_house_terms raises IndexError.
+    #   • phrase_pattern builds \b\b, which matches at every word boundary in the
+    #     repository, making the phantom term corroborated by every source file.
+    # Rejecting here — before either site sees the term — fixes both at once.
+    # \w is not enough: _ is a word character but is also in the word-gap
+    # splitter, so "___" has \w characters and still produces an empty word list.
+    if not any(c.isalnum() for c in term):
+        return False
     if all(w.lower() in _STOPWORDS for w in words):
         return False
     # A heading that is entirely boilerplate ("Getting Started") says nothing

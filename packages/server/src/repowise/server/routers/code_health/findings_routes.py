@@ -6,6 +6,9 @@ from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.counts import parse_counts
+from repowise.core.analysis.health.models import split_by_origin
+from repowise.core.analysis.health.scope import parse_scope
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.schemas import (
@@ -14,7 +17,9 @@ from repowise.server.schemas import (
 )
 
 from ._router import router
+from .counts import CountsQuery
 from .loaders import _attach_symbol_ids
+from .scope import ScopeQuery, narrow
 from .serializers import _finding_to_dict
 
 
@@ -29,6 +34,8 @@ async def list_health_findings(
     min_severity: str | None = Query(None),
     dimension: str | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
+    scope: str = ScopeQuery,
+    counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     """Open findings, ranked by health impact.
@@ -48,6 +55,16 @@ async def list_health_findings(
         dimension=dimension,
         exclude_dimensions=("performance",),
     )
+    # A finding carries a path, not ``is_test``, so narrowing it needs the
+    # metric rows that do. Read them only when the answer depends on them:
+    # the default scope returns the same list either way.
+    if parse_scope(scope) == "production":
+        metrics = await crud.get_health_metrics(session, repo_id)
+        _, findings = narrow(scope, metrics, findings)
+    # A history finding contributes nothing to a code-shape score, so listing
+    # it under one would show work that sums past the figure above it.
+    if parse_counts(counts) == "code_shape":
+        findings = split_by_origin(findings)[0]
     return await _attach_symbol_ids(
         session, repo_id, [_finding_to_dict(f) for f in findings[:limit]]
     )

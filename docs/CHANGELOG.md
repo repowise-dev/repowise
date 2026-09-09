@@ -9,6 +9,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.49.0] - 2026-09-05
+
+The largest language release so far: Elixir, F#, Objective-C, VB.NET and GDScript all move to the Good tier with real ASTs behind them, QML arrives at the import tier, and Razor/Blazor markup enters the graph. Alongside that, the Architecture Map stops being a picture and becomes somewhere you can drill into, `update` learns to size itself by what actually changed and reports which stage took the time, and the MCP tools stop returning bare zeros: every empty answer now says what it was measured against. Workspace mode gains cross-repo test impact and consumer contracts for five more languages.
+
+### Added
+
+- **Five languages reach the Good tier.** Elixir (#2127), F# (#2133) and Objective-C (#2135) each get a full AST parse rather than a regex skim. VB.NET arrives at Good with its own published grammar (#2048), and GDScript joins it (#1620). Symbol extraction and same-file call resolution work in all five.
+- **QML at the lightweight import tier** (#2039), and **Razor/Blazor markup** (`.razor`, `.cshtml`) is indexed into the graph (#1962).
+- **Flutter widget trees are edges.** `build()` bodies emit widget-tree edges, so a widget's children are reachable from the graph rather than buried in a method body (#2049).
+- **Godot scripts are reachable through the project.** Scenes, autoloads and `class_name` declarations connect scripts that no import statement ever linked (#1624).
+- **The Architecture Map is a place you can drill into** (#2104), with the map chrome moved off the canvas and given a ground to sit on (#2102). Communities count production files, read conductance, and name the group that was previously just "ungrouped" (#2112).
+- **File pages render the history they already carried.** The data was indexed and never shown (#2082).
+- **Cross-repo test impact.** Workspace mode works out which tests in other repos a change can break (#2008), and surfaces it on `get_change_risk`, `get_blast_radius`, the API and the contract page (#2123).
+- **HTTP consumer contracts for Go, Ruby, Java, Kotlin and PHP** (#2114), **provider contracts for Flask, Micronaut and Remix** (#2115), and breaking changes on the contracts page behind a contract drawer (#2116).
+- **Branch overlap on `get_risk`**: the other open branches editing the files you are editing (#2131).
+- **`get_change_risk` says when a diff is several changes** the index cannot connect to each other (#2130).
+- **Conventions the import graph proves** are proposed as decisions, rather than waiting for someone to write them down (#2141).
+- **Unresolved Python imports become external nodes.** `resolve_python_import` returned `None` for any absolute import no repo file defines, so a Python file's third-party and stdlib dependencies never became `external:` nodes or import edges, the way every other language resolver already registered them (#2136).
+- **A C complexity node map.** `LANGUAGE_NODE_MAPS` had no `c` entry, so C files got no complexity or maintainability signal at all (#2113).
+
+### Changed
+
+- **`HEALTH_ANALYZER_VERSION` is 9.** The C node map above changes `max_ccn` and the maintainability index for every C file, which were previously computed against an empty node set and persisted that way. A repo containing C re-scores on its next update; a repo without C is unaffected, and neither is asked to re-index.
+- **`PARSER_SCHEMA_VERSION` is 3**, so the Python external-node change reconciles every file's edges once instead of leaving an updated index with new edges on changed files only (#2136). The cost is one reparse per existing index. `STORE_FORMAT_VERSION` is unchanged.
+- **`update` sizes itself by what changed.** A one-file commit no longer pays for a whole-repo shaped update (#2134).
+- **`update` records a phase timing row per stage**, the way `init` has since 0.47.0, so a slow update can say which stage was slow (#2128).
+- **MCP responses account for themselves.** Every zero carries the basis it was measured against, scope hints say what was left out, a completeness line states whether a body was served whole, and no source is served twice in one response (#2125). Tool telemetry carries response size, execution flows carry freshness, and a stale index with a low-confidence answer points at `update` (#2122).
+- `get_answer`, `get_context` and `get_symbol` responses are documented to match the envelope they actually return (#2126).
+
+### Fixed
+
+- **Five places the incremental path knew less than a full index** (#2129), and stale `file_page` rows no longer survive `repowise update` (#1744, #1906).
+- **Page regeneration prioritizes the oldest stale pages** when the budget is constrained, instead of whatever came first (#1845), and `update` warns when the cascade budget truncated regeneration rather than silently skipping pages (#1720).
+- **`doctor` stops reporting excluded files as missing** (#2085).
+- **The MCP server drops to single-repo mode for a nested indexed repo** that is not a workspace member (#2088).
+- **`repowise hook` resolves the hooks directory git actually runs**, including a husky-managed one, rather than assuming `.git/hooks` (#1511, #1512).
+- **Graph hooks are declared above the loading early-return**, which is a rule React does not let you break (#2111).
+- Symbol-only headings no longer crash `init` (#2101).
+- Boolean defaults compile per dialect during persistence (#2087).
+- `REPOWISE_EMBEDDING_DIMS` is validated where it is parsed, not where it fails (#1979).
+- `ingested_commit_sha` for coverage is stamped from the live HEAD rather than a stale stored column (#1800).
+- The `temporal_hotspot` risk-semantics contract is corrected to unbounded (#1971).
+
+### Documentation
+
+- `LANGUAGE_SUPPORT.md` keeps to the support ladder; the parsing mechanics move to the architecture note (#2124).
+
+### Dependencies
+
+- Adds `tree-sitter-gdscript`, `tree-sitter-vb-dotnet`, `tree-sitter-elixir`, `tree-sitter-fsharp` and `tree-sitter-objc`.
+- Bumps `fast-uri` from 3.1.5 to 3.1.7 (#2081).
+
+---
+
 ## [0.48.0] — 2026-09-02
 
 Architectural decisions stop being a passive record and become a review queue. A decision is captured under one policy, keyed by the identity it dedupes on, and acceptance is the only thing that grants it authority — recorded as an event, on a tracked manifest, so every read can say who vouched for what. On top of that sits a queue that leads with the work you can actually finish. The other change you will see first is the repo overview: the front page described a file tree because a file tree was all it was given, and it now reads like a description of a product. Elsewhere: `doctor` stops trusting config files and launches the MCP server for real, the keyless and degraded paths report why they degraded, and a cycle of persistence and generation performance work.

@@ -20,6 +20,40 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _inspect_repository(repo_path: str) -> tuple[str | None, str] | None:
+    """Read the persisted baseline and current HEAD for one repository.
+
+    This helper is intentionally synchronous so the scheduler can offload the
+    complete filesystem + Git inspection as one unit with ``asyncio.to_thread``.
+    """
+    import json
+    import subprocess
+    from pathlib import Path
+
+    state_path = Path(repo_path) / ".repowise" / "state.json"
+    stored_commit = None
+    if state_path.is_file():
+        try:
+            state_data = json.loads(state_path.read_text(encoding="utf-8"))
+            stored_commit = state_data.get("last_sync_commit")
+        except Exception:
+            pass
+
+    try:
+        head_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if head_result.returncode != 0:
+        return None
+    return stored_commit, head_result.stdout.strip()
+
+
 def setup_scheduler(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -76,10 +110,6 @@ def setup_scheduler(
         stored ``last_sync_commit`` in state.json, unless a job is already
         pending or running.
         """
-        import json as _json
-        import subprocess
-        from pathlib import Path as _Path
-
         from sqlalchemy import select
 
         from repowise.core.persistence import crud
@@ -95,30 +125,12 @@ def setup_scheduler(
                     if not repo.local_path:
                         continue
 
-                    # Read last_sync_commit from state.json
-                    state_path = _Path(repo.local_path) / ".repowise" / "state.json"
-                    stored_commit = None
-                    if state_path.is_file():
-                        try:
-                            state_data = _json.loads(state_path.read_text(encoding="utf-8"))
-                            stored_commit = state_data.get("last_sync_commit")
-                        except Exception:
-                            pass
-
-                    # Get current git HEAD
-                    try:
-                        head_result = subprocess.run(
-                            ["git", "rev-parse", "HEAD"],
-                            cwd=repo.local_path,
-                            capture_output=True,
-                            text=True,
-                            timeout=10,
-                        )
-                        if head_result.returncode != 0:
-                            continue
-                        current_head = head_result.stdout.strip()
-                    except Exception:
+                    # Keep each repo sequential, but move its complete
+                    # filesystem + Git inspection off the server event loop.
+                    inspection = await asyncio.to_thread(_inspect_repository, repo.local_path)
+                    if inspection is None:
                         continue
+                    stored_commit, current_head = inspection
 
                     if stored_commit and current_head == stored_commit:
                         continue

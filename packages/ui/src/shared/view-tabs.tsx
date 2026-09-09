@@ -29,6 +29,9 @@ export interface ViewTabsProps {
    *  derived from this value so the host can name them without a callback. */
   panelId?: string;
   className?: string;
+  /** Names the row when a page carries more than one, so the two are
+   *  distinguishable to a screen reader announcing "tab list". */
+  "aria-label"?: string;
 }
 
 /**
@@ -43,6 +46,7 @@ export function ViewTabs({
   children,
   panelId: externalPanelId,
   className,
+  "aria-label": ariaLabel,
 }: ViewTabsProps) {
   // Stable id base so each tab can be aria-labelled to the shared panel and
   // the panel can point back at the active tab.
@@ -85,6 +89,7 @@ export function ViewTabs({
     <div className={cn("space-y-4", className)}>
       <div
         role="tablist"
+        aria-label={ariaLabel}
         onKeyDown={onKeyDown}
         className="flex items-center gap-4 overflow-x-auto border-b border-[var(--color-border-default)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >

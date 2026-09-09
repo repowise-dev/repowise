@@ -18,6 +18,7 @@ from repowise.core.persistence.crud import upsert_generation_job, upsert_reposit
 from repowise.server.job_executor import (
     _build_generation_config,
     _incremental_page_regen,
+    _plan_incremental_page_regen,
     _repo_exclude_patterns,
     execute_job,
 )
@@ -337,6 +338,40 @@ async def test_incremental_page_regen_passes_repo_path(tmp_path):
 
     generator.generate_all.assert_awaited_once()
     assert generator.generate_all.await_args.kwargs["repo_path"] == Path(repo_path)
+
+
+@pytest.mark.asyncio
+async def test_incremental_page_regen_offloads_change_detection(session_factory, tmp_path):
+    """Async stale lookup feeds the offloaded Git and graph planning unit."""
+    result = SimpleNamespace()
+    to_thread = AsyncMock(return_value=None)
+    stale_pages = {"foo.py": 123.0}
+
+    with (
+        patch("repowise.server.job_executor.asyncio.to_thread", to_thread),
+        patch(
+            "repowise.core.persistence.get_stale_file_page_ages",
+            AsyncMock(return_value=stale_pages),
+        ),
+    ):
+        pages = await _incremental_page_regen(
+            tmp_path,
+            result,
+            llm_client=object(),
+            job_config={"before": "base-sha"},
+            progress=None,
+            session_factory=session_factory,
+            repo_id="repo-id",
+        )
+
+    assert pages == []
+    to_thread.assert_awaited_once_with(
+        _plan_incremental_page_regen,
+        tmp_path,
+        result,
+        {"before": "base-sha"},
+        stale_pages,
+    )
 
 
 @pytest.mark.asyncio
@@ -696,4 +731,3 @@ async def test_execute_job_dispatches_generate_mode(session_factory, tmp_path):
         await execute_job(job_id, app_state)
 
     run_generate_mock.assert_awaited_once()
-

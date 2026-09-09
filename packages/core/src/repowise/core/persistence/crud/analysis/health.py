@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ....analysis.health.perf.coverage import PerfCoverage
 
 from ....analysis.health.finding_identity import finding_public_id
+from ....analysis.health.governance import GOVERNANCE_BIOMARKERS
 
 # The comparator is pure and lives with the health read models; only the SQL
 # that feeds it belongs here. Re-imported rather than moved out of reach: the
@@ -25,6 +26,9 @@ from ....analysis.health.ranking import (
     worst_metric,
 )
 from ....analysis.health.rows import detail_map
+from ....analysis.health.scope import scores_language
+from ....analysis.health.scoring import nloc_weighted_attr
+from ....test_paths import is_test_related_path
 from ...models import (
     GraphNode,
     HealthFileMetric,
@@ -104,11 +108,6 @@ async def save_health_findings(
         await session.flush()
 
 
-_GOVERNANCE_BIOMARKER_TYPES = frozenset(
-    {"ungoverned_hotspot", "stale_governance", "contradictory_decision"}
-)
-
-
 async def replace_governance_findings(
     session: AsyncSession,
     repository_id: str,
@@ -140,7 +139,7 @@ async def replace_governance_findings(
     existing = await session.execute(
         select(HealthFinding).where(
             HealthFinding.repository_id == repository_id,
-            HealthFinding.biomarker_type.in_(list(_GOVERNANCE_BIOMARKER_TYPES)),
+            HealthFinding.biomarker_type.in_(list(GOVERNANCE_BIOMARKERS)),
         )
     )
     for row in existing.scalars().all():
@@ -155,6 +154,28 @@ async def replace_governance_findings(
         for f in batch:
             session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
         await session.flush()
+
+
+def _health_metric_row_data(metric: Any) -> dict:
+    """One metric dataclass as column values. Both writers go through here."""
+    return {
+        "file_path": metric.file_path,
+        "score": float(metric.score),
+        "max_ccn": int(metric.max_ccn),
+        "max_nesting": int(metric.max_nesting),
+        "nloc": int(metric.nloc),
+        "duplication_pct": metric.duplication_pct,
+        "has_test_file": bool(metric.has_test_file),
+        "line_coverage_pct": metric.line_coverage_pct,
+        "branch_coverage_pct": metric.branch_coverage_pct,
+        "module": metric.module,
+        "defect_score": getattr(metric, "defect_score", None),
+        "maintainability_score": getattr(metric, "maintainability_score", None),
+        "performance_score": getattr(metric, "performance_score", None),
+        "structure_deduction": getattr(metric, "structure_deduction", None),
+        "history_deduction": getattr(metric, "history_deduction", None),
+        "is_test": bool(getattr(metric, "is_test", False)),
+    }
 
 
 async def save_health_metrics(
@@ -187,24 +208,7 @@ async def save_health_metrics(
     for i in range(0, len(metrics), _BATCH_SIZE):
         batch = metrics[i : i + _BATCH_SIZE]
         for m in batch:
-            if hasattr(m, "file_path"):
-                data = {
-                    "file_path": m.file_path,
-                    "score": float(m.score),
-                    "max_ccn": int(m.max_ccn),
-                    "max_nesting": int(m.max_nesting),
-                    "nloc": int(m.nloc),
-                    "duplication_pct": m.duplication_pct,
-                    "has_test_file": bool(m.has_test_file),
-                    "line_coverage_pct": m.line_coverage_pct,
-                    "branch_coverage_pct": m.branch_coverage_pct,
-                    "module": m.module,
-                    "defect_score": getattr(m, "defect_score", None),
-                    "maintainability_score": getattr(m, "maintainability_score", None),
-                    "performance_score": getattr(m, "performance_score", None),
-                }
-            else:
-                data = dict(m)
+            data = _health_metric_row_data(m) if hasattr(m, "file_path") else dict(m)
             # After the dict-passthrough branch so an explicit per-row value in a
             # raw dict still wins; the sha is a property of the pass, not the row.
             if analyzed_commit is not None:
@@ -222,6 +226,70 @@ async def save_health_metrics(
                 )
             )
         await session.flush()
+
+
+async def get_scored_file_paths(session: AsyncSession, repository_id: str) -> set[str]:
+    """The files health currently scores, read off the stored metric rows."""
+    q = select(HealthFileMetric.file_path).where(
+        HealthFileMetric.repository_id == repository_id
+    )
+    return {path for (path,) in (await session.execute(q)).all()}
+
+
+async def backfill_is_test(session: AsyncSession, repository_id: str) -> int:
+    """Stamp ``is_test`` on rows written before the column existed.
+
+    The answer comes from the path, not from a score, so an existing store gets
+    it on the next update instead of waiting for a re-index. Without this a
+    ``scope=production`` request on an un-rescored store would quietly answer
+    with the whole repository. Returns the number of rows filled.
+    """
+    rows = (
+        await session.execute(
+            select(HealthFileMetric).where(
+                HealthFileMetric.repository_id == repository_id,
+                HealthFileMetric.is_test.is_(None),
+            )
+        )
+    ).scalars().all()
+    if not rows:
+        return 0
+    languages = await get_file_language_map(session, repository_id)
+    for row in rows:
+        row.is_test = is_test_related_path(row.file_path, languages.get(row.file_path))
+    await session.flush()
+    return len(rows)
+
+
+async def prune_unscored_health_rows(session: AsyncSession, repository_id: str) -> int:
+    """Drop metrics and findings for files health no longer scores.
+
+    A full index rewrites the whole population and needs nothing here, but an
+    update only touches the files that changed, so prose and configuration rows
+    written by an older version would otherwise sit in the average forever.
+    Files with no graph node are left alone: no language is not the same answer
+    as a language health does not score. Returns the number of rows removed,
+    which is zero on every update after the first.
+    """
+    languages = await get_file_language_map(session, repository_id)
+    stale = [path for path, language in languages.items() if not scores_language(language)]
+    if not stale:
+        return 0
+    removed = 0
+    for i in range(0, len(stale), _BATCH_SIZE):
+        batch = stale[i : i + _BATCH_SIZE]
+        for model in (HealthFileMetric, HealthFinding):
+            rows = await session.execute(
+                select(model).where(
+                    model.repository_id == repository_id,
+                    model.file_path.in_(batch),
+                )
+            )
+            for row in rows.scalars().all():
+                await session.delete(row)
+                removed += 1
+        await session.flush()
+    return removed
 
 
 async def backfill_module_attribution(
@@ -499,6 +567,11 @@ async def get_perf_coverage(session: AsyncSession, repository_id: str) -> PerfCo
     return coverage_for_metrics(metrics, lang_by_path)
 
 
+def _rounded(value: float | None) -> float | None:
+    """Two-decimal wire value, passing ``None`` through as "not measured"."""
+    return round(value, 2) if value is not None else None
+
+
 async def get_health_summary(
     session: AsyncSession,
     repository_id: str,
@@ -531,6 +604,8 @@ async def get_health_summary(
             "open_findings": 0,
             "maintainability_average": None,
             "performance_average": None,
+            "structure_average": None,
+            "history_average": None,
             "maintainability_findings": 0,
             "performance_findings": 0,
             "performance_findings_density": None,
@@ -625,12 +700,13 @@ async def get_health_summary(
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
         "open_findings": len(findings),
-        "maintainability_average": (
-            round(maintainability_average, 2) if maintainability_average is not None else None
-        ),
-        "performance_average": (
-            round(performance_average, 2) if performance_average is not None else None
-        ),
+        "maintainability_average": _rounded(maintainability_average),
+        "performance_average": _rounded(performance_average),
+        # The headline's two halves, in deduction points. Both come off columns
+        # already on the rows in hand, so this costs no query — and without them
+        # the page can show a score falling without saying which half moved.
+        "structure_average": _rounded(nloc_weighted_attr(metrics, "structure_deduction")),
+        "history_average": _rounded(nloc_weighted_attr(metrics, "history_deduction")),
         "maintainability_findings": by_dim.get("maintainability", 0),
         "performance_findings": performance_findings,
         "performance_findings_density": performance_findings_density,
@@ -689,6 +765,10 @@ async def save_health_snapshot(
     worst_performer_score: float | None,
     per_file_scores: dict[str, float] | None = None,
     per_file_deductions: dict[str, float] | None = None,
+    structure_average: float | None = None,
+    history_average: float | None = None,
+    production_average: float | None = None,
+    maintainability_average: float | None = None,
     taken_at: datetime | None = None,
 ) -> HealthSnapshot:
     """Append a snapshot; prune oldest rows past ``HEALTH_SNAPSHOT_RETENTION``.
@@ -702,6 +782,9 @@ async def save_health_snapshot(
     Build both with ``trends.snapshot_file_maps`` rather than by hand: a repo
     whose writers disagree gets a history that changes depth depending on which
     command last wrote it.
+
+    ``structure_average`` / ``history_average`` are ``average_health``'s two
+    halves in deduction points, so a later trend can name which one moved.
     """
     snap = HealthSnapshot(
         id=_new_uuid(),
@@ -715,6 +798,10 @@ async def save_health_snapshot(
         ),
         per_file_scores_json=json.dumps(per_file_scores or {}, separators=(",", ":")),
         per_file_deductions_json=json.dumps(per_file_deductions or {}, separators=(",", ":")),
+        structure_average=structure_average,
+        history_average=history_average,
+        production_average=production_average,
+        maintainability_average=maintainability_average,
     )
     session.add(snap)
     await session.flush()
@@ -965,24 +1052,7 @@ async def upsert_health_metrics(
     by_path = {row.file_path: row for row in existing.scalars().all()}
 
     for m in metrics:
-        if hasattr(m, "file_path"):
-            data = {
-                "file_path": m.file_path,
-                "score": float(m.score),
-                "max_ccn": int(m.max_ccn),
-                "max_nesting": int(m.max_nesting),
-                "nloc": int(m.nloc),
-                "duplication_pct": m.duplication_pct,
-                "has_test_file": bool(m.has_test_file),
-                "line_coverage_pct": m.line_coverage_pct,
-                "branch_coverage_pct": m.branch_coverage_pct,
-                "module": m.module,
-                "defect_score": getattr(m, "defect_score", None),
-                "maintainability_score": getattr(m, "maintainability_score", None),
-                "performance_score": getattr(m, "performance_score", None),
-            }
-        else:
-            data = dict(m)
+        data = _health_metric_row_data(m) if hasattr(m, "file_path") else dict(m)
         # Only when the caller knows the sha. An unconditional set would push a
         # None over a sha already on the row, so a caller that simply does not
         # track the commit would erase the stamp a caller that does had written.

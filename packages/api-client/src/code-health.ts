@@ -21,6 +21,8 @@ import type {
   PerformanceOpportunityQuery,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  HealthScope,
+  HealthCounts,
 } from "@repowise-dev/types/health";
 import type { Paginated } from "@repowise-dev/types";
 import { apiGet, apiPatch } from "./client";
@@ -50,6 +52,8 @@ export type {
   HealthMapSelection,
   HealthModuleRow,
   HealthOverviewResponse,
+  HealthCounts,
+  HealthScope,
   HealthTrendResponse,
   HealthWorkItem,
   HealthWorkQueueQuery,
@@ -73,10 +77,12 @@ export type {
 export async function getHealthOverview(
   repoId: string,
   limit = 25,
+  scope?: HealthScope,
+  counts?: HealthCounts,
 ): Promise<HealthOverviewResponse> {
   return apiGet<HealthOverviewResponse>(
     `/api/repos/${repoId}/health/overview`,
-    { limit },
+    { limit, scope, counts },
   );
 }
 
@@ -88,6 +94,8 @@ export async function listHealthFindings(
     min_severity?: string;
     dimension?: string;
     limit?: number;
+    scope?: HealthScope;
+    counts?: HealthCounts;
   },
 ): Promise<HealthFinding[]> {
   return apiGet<HealthFinding[]>(`/api/repos/${repoId}/health/findings`, opts);
@@ -153,6 +161,8 @@ export async function getHealthMap(
   return apiGet<HealthMapFeed>(`/api/repos/${repoId}/health/map`, {
     cap: opts.cap,
     active: opts.active?.length ? opts.active.join(",") : undefined,
+    scope: opts.scope,
+    counts: opts.counts,
   });
 }
 
@@ -169,15 +179,20 @@ export async function listHealthFiles(
 export async function getHealthFileBreakdown(
   repoId: string,
   filePath: string,
+  counts?: HealthCounts,
 ): Promise<HealthFileBreakdownResponse> {
   return apiGet<HealthFileBreakdownResponse>(
     `/api/repos/${repoId}/health/files/breakdown`,
-    { file_path: filePath },
+    { file_path: filePath, counts },
   );
 }
 
-export async function getHealthTrend(repoId: string, limit = 20): Promise<HealthTrendResponse> {
-  return apiGet<HealthTrendResponse>(`/api/repos/${repoId}/health/trend`, { limit });
+export async function getHealthTrend(
+  repoId: string,
+  limit = 20,
+  scope?: HealthScope,
+): Promise<HealthTrendResponse> {
+  return apiGet<HealthTrendResponse>(`/api/repos/${repoId}/health/trend`, { limit, scope });
 }
 
 export async function updateFindingStatus(
