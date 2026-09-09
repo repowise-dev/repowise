@@ -59,6 +59,39 @@ def test_every_band_has_a_label_a_range_and_a_colour() -> None:
         assert set(table) == bands
 
 
+def test_range_labels_state_the_real_cutoffs() -> None:
+    # These strings are what legends and keys print. Pinned to the constants
+    # they describe, so moving a cutoff cannot leave a legend telling the user
+    # a boundary that is no longer there.
+    expected = {
+        "excellent": f"{EXCELLENT_MIN}+",
+        "good": f"{GOOD_MIN} to {EXCELLENT_MIN}",
+        "fair": f"{FAIR_MIN} to {GOOD_MIN}",
+        "needs_work": f"{NEEDS_WORK_MIN} to {FAIR_MIN}",
+        "at_risk": f"under {NEEDS_WORK_MIN}",
+    }
+    assert dict(BAND_RANGE_LABEL) == expected
+
+
+def test_terminal_and_badge_colours_are_named_and_ordered() -> None:
+    # A typo reaches a user as a rich markup error or a grey shields badge, and
+    # neither surface is covered by a rendering test.
+    assert dict(BAND_TERMINAL_COLOR) == {
+        "excellent": "green",
+        "good": "green",
+        "fair": "yellow",
+        "needs_work": "dark_orange",
+        "at_risk": "red",
+    }
+    assert dict(BAND_BADGE_COLOR) == {
+        "excellent": "brightgreen",
+        "good": "brightgreen",
+        "fair": "yellow",
+        "needs_work": "orange",
+        "at_risk": "red",
+    }
+
+
 def test_band_order_runs_worst_first() -> None:
     assert BAND_ORDER == ("at_risk", "needs_work", "fair", "good", "excellent")
 

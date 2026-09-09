@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { bandForScore, type CoverageBasis } from "@repowise-dev/types/health";
+import { GOOD_MIN, bandForScore, type CoverageBasis } from "@repowise-dev/types/health";
 import { HEALTH_BAND_FILL } from "./tokens";
 
 export interface RiskCoveragePoint {
@@ -145,7 +145,7 @@ export function RiskCoverageScatter({
       // 60% coverage and a 7.0 score are the quadrant thresholds. On the
       // inferred basis the vertical one is the column divider instead.
       midX: inferred ? padL + plotW * 0.5 : xScale(60),
-      midY: yScale(7),
+      midY: yScale(GOOD_MIN),
     };
   }, [width, height, data, inferred]);
 

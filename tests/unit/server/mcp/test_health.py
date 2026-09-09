@@ -2012,6 +2012,76 @@ async def test_counts_and_scope_compose(setup_mcp, session, populated_db):
 
 
 @pytest.mark.asyncio
+async def test_the_reading_survives_an_only_projection(setup_mcp, session, populated_db):
+    """A projected score with nothing saying so is the failure the echo prevents.
+
+    ``only`` used to drop ``scope`` and ``counts``, so the narrowest useful
+    call — ask for the KPIs and nothing else — returned the code-shape number
+    indistinguishable from the calibrated one.
+    """
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "score": 3.0,
+                "nloc": 100,
+                "is_test": False,
+                "structure_deduction": 1.0,
+                "history_deduction": 6.0,
+            }
+        ],
+    )
+    result = await get_health(counts="code_shape", scope="production", only=["kpis"])
+    assert result["counts"] == "code_shape"
+    assert result["scope"] == "production"
+    assert result["kpis"]["average_health"] == 9.0
+
+
+@pytest.mark.asyncio
+async def test_a_detail_lookup_says_the_controls_do_not_apply(setup_mcp, session, populated_db):
+    """A lookup by id answers about one stored row, always calibrated.
+
+    Accepting the control silently returned that row to a caller who believed
+    they had asked for the other reading.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(plan_id="does-not-exist", counts="code_shape")
+    assert result["ignored_arguments"] == {"counts": "code_shape"}
+
+
+@pytest.mark.asyncio
+async def test_a_misspelled_control_is_named_rather_than_silently_defaulted(
+    setup_mcp, session, populated_db
+):
+    """The routes reject an unknown value and the CLI refuses to run.
+
+    MCP falls back to the default, so the only honest equivalent is to say
+    which value was dropped: without it a caller who asked for code shape gets
+    the churn-contaminated number under the name they asked for.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(counts="code-shape", scope="prod")
+    assert result["counts"] == "everything"
+    assert result["scope"] == "all"
+    assert result["ignored_arguments"] == {"counts": "code-shape", "scope": "prod"}
+
+
+@pytest.mark.asyncio
+async def test_a_valid_control_is_not_reported_as_ignored(setup_mcp, session, populated_db):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(counts="code_shape", scope="production")
+    assert "ignored_arguments" not in result
+
+
+@pytest.mark.asyncio
 async def test_a_narrowed_target_is_not_reported_as_config_excluded(
     setup_mcp, session, populated_db
 ):

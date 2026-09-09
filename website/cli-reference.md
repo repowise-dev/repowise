@@ -517,6 +517,8 @@ repowise health [PATH] [OPTIONS]
 |------|------|---------|-------------|
 | `--file` | string | — | Deep-dive a single file (relative path) |
 | `--module` | string | — | Restrict to files whose path starts with this prefix |
+| `--scope` | choice | all | `all` or `production`. Tests score higher than production code, so narrowing lowers every figure without a defect being found |
+| `--counts` | choice | everything | `everything` or `code_shape`. `code_shape` removes the git-derived half of the score, which rises as a file is worked on |
 | `--refactoring-targets` | flag | false | Ranked refactoring candidates by impact/effort |
 | `--trend` | flag | false | Last health snapshots + declining alerts |
 | `--badge` | flag | false | Ready-to-paste health badge Markdown |

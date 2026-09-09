@@ -10,7 +10,7 @@ import {
   HEALTH_BAND_RANGE_LABEL,
 } from "@repowise-dev/types/health";
 import { ChevronRight, FolderOpen } from "lucide-react";
-import { healthBandColor, healthInk } from "../health/tokens";
+import { healthBandNodeFill, healthNodeFill } from "../health/tokens";
 
 /**
  * `dependents` is the PageRank percentile over the import graph. It is named
@@ -87,10 +87,10 @@ function langInk(rank: number | undefined): string {
   return `color-mix(in srgb, var(--color-accent-fill) ${Math.max(12, 70 - rank * 16)}%, var(--color-bg-inset))`;
 }
 
-/** Health score (0-10) → the canonical band ink. Null reads neutral. */
+/** Health score (0-10) → the canvas band fill. Null reads neutral. */
 function healthColor(score: number | null): string {
   if (score == null) return NO_SCORE_INK;
-  return healthInk(score);
+  return healthNodeFill(score);
 }
 
 function sizeValue(row: FileRow, sizeBy: TreemapSize): number {
@@ -206,7 +206,7 @@ function KeyRow({
         key: band,
         label: HEALTH_BAND_LABEL[band],
         hint: HEALTH_BAND_RANGE_LABEL[band],
-        ink: healthBandColor(band),
+        ink: healthBandNodeFill(band),
       }));
       if (level.some((c) => c.avgScore == null)) {
         out.push({

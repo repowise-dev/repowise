@@ -23,7 +23,6 @@
 
 import {
   bandForScore,
-  HEALTH_BAND_LABEL,
   type DefectAccuracy,
   type HealthDistribution,
   type HealthOverviewSummary,
@@ -214,7 +213,7 @@ export function CodeHealthLede({
           for code health, weighted by lines of code and built from complexity,
           duplication, coverage
           {codeShape ? "" : ", churn and ownership"}.
-          {healthChip ? <> We rate that {healthChip.label}.</> : null}
+          {healthChip ? <> That puts it in the {healthChip.label} band.</> : null}
           {perf != null && (
             <>
               {" "}

@@ -93,12 +93,9 @@ export const PERF_BOUNDARY_LABEL: Record<C4IoKind, string> = {
  * ------------------------------------------------------------------ */
 
 /**
- * The five absolute health bands. Absolute rather than percentile, so a score
- * means the same thing behind a firewall as it does against a public corpus.
- * Excellent and Good share one green and are told apart by the word.
- *
- * Mirror of `grading.HealthBand` in core; a parity test on each side locks the
- * cutoffs.
+ * The five absolute health bands: a score means the same thing behind a
+ * firewall as against a public corpus. Excellent and Good share one green and
+ * are told apart by the word. Mirror of `grading.py`, parity-tested both ways.
  */
 export type HealthBand = "excellent" | "good" | "fair" | "needs_work" | "at_risk";
 

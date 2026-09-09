@@ -113,6 +113,27 @@ export const HEALTH_BAND_BAR: Record<HealthBand, string> = {
   at_risk: "bg-[var(--color-error)]",
 };
 
+/**
+ * The canvas ramp. Dense filled shapes carry no band word, so Excellent and
+ * Good separate by value here rather than sharing the one green.
+ */
+const HEALTH_BAND_NODE_FILL: Record<HealthBand, string> = {
+  excellent: "var(--color-node-excellent)",
+  good: "var(--color-node-good)",
+  fair: "var(--color-node-fair)",
+  needs_work: "var(--color-node-needs-work)",
+  at_risk: "var(--color-node-at-risk)",
+};
+
+export function healthBandNodeFill(band: HealthBand): string {
+  return HEALTH_BAND_NODE_FILL[band];
+}
+
+/** The canvas ramp for a 1-10 score. */
+export function healthNodeFill(score: number): string {
+  return HEALTH_BAND_NODE_FILL[bandForScore(score)];
+}
+
 export function healthBandColor(band: HealthBand): string {
   return HEALTH_BAND_VAR[band];
 }
@@ -156,11 +177,8 @@ export function healthBand100(score100: number): HealthBand {
 }
 
 /**
- * A 1-10 score as the colour and the word together.
- *
- * One function for the same reason `coverageBand()` is one function: a lede
- * prints the label, the figure beside it takes the colour, and two call sites
- * disagreeing about where "Good" starts is exactly the drift this replaces.
+ * A 1-10 score as the colour and the word together, so a lede printing the
+ * label and the figure beside it taking the colour cannot disagree.
  */
 export function healthBand(score: number): { color: string; label: string } {
   const band = bandForScore(score);

@@ -192,8 +192,20 @@ and `search_codebase` (`kind`).
 
 `get_dead_code`'s `min_confidence` additionally accepts the tier names the
 response is organised by — `"high"` (0.8), `"medium"` (0.5), `"low"` (0.0) — as
-well as a float. `get_health` reports the same thing under its own older name,
-`unknown_only_keys`, for the `only` projection.
+well as a float.
+
+`get_health` is the exception to the shape. It reports a misspelled `only` key
+under its own older name, `unknown_only_keys`, and everything else —
+`refactoring_*` and `performance_*` filters, `scope`, `counts` — in
+`ignored_arguments` as a flat map of argument to the value that was dropped:
+
+```jsonc
+"ignored_arguments": { "counts": "code-shape", "refactoring_effort": "tiny" }
+```
+
+A detail lookup (`finding_id`, `plan_id`, `opportunity_id`) reports `scope` and
+`counts` there too: it answers about one stored row, so a population control has
+nothing to act on.
 
 ---
 
@@ -878,6 +890,12 @@ representations of the same work in one response. The `include` **dimension** na
 | `performance_boundary` | string | No | `db` / `network` / `filesystem` / `subprocess` / `lock` / `none`. |
 | `performance_confidence` | string | No | Evidence confidence: `high` / `medium` / `low`. Fix safety and actionability are separate facets. |
 | `performance_sort` | string | No | `rank` (default) / `leverage` / `observations`. |
+| `scope` | string | No | Which files every figure describes: `all` (default) or `production`. Narrowing drops test files from the headline, the distribution and every ranked list. Tests score higher than production code, so `production` lowers the number without a defect having been found. |
+| `counts` | string | No | What the score counts: `everything` (default, the calibrated number) or `code_shape`, which removes the git-derived half. Change history rises as a file is worked on, so it answers what a repository has been through rather than what its code is like — `code_shape` is the reading that answers "is this code getting better". Files with no stored split are reported in `unscored_files` rather than counted. Findings from history are dropped, not re-scored. |
+
+An unrecognized `scope` or `counts` falls back to the default and is named in
+`ignored_arguments`, so a misspelling never answers a different question under
+the name you asked for. Both are echoed on the response.
 
 **Returns:** Dashboard mode (no `targets`) returns a `directive`, repo-level KPIs
 (hotspot health, average health, worst performer, maintainability / performance

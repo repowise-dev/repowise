@@ -30,7 +30,11 @@ export function HealthDistributionBar({
   const share = (b: HealthBand) => distribution.bands[b]?.pct ?? 0;
   const files = (b: HealthBand) => distribution.bands[b]?.files ?? 0;
   const total = distribution.total_nloc;
-  if (!distribution.total_files || total === 0) {
+  // A server predating the five bands serves the three-band shape with correct
+  // totals, which would otherwise render as "we analysed 128 files and none of
+  // them is in any band". No band accounted for is an unknown shape, not zero.
+  const accounted = HEALTH_BAND_ORDER.some((b) => share(b) > 0);
+  if (!distribution.total_files || total === 0 || !accounted) {
     return (
       <p className="text-xs text-[var(--color-text-tertiary)]">No files analyzed.</p>
     );

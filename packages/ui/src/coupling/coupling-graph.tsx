@@ -7,7 +7,12 @@ import { curveBundle, lineRadial } from "d3-shape";
 // the vite/rollup base alias clobbers subpath value resolution. Type-only
 // subpath imports are fine (erased before resolution).
 import type { CouplingEdge, CouplingNode } from "@repowise-dev/types/coupling";
-import { healthInk } from "../health/tokens";
+import {
+  HEALTH_BAND_LABEL,
+  HEALTH_BAND_ORDER,
+  HEALTH_BAND_RANGE_LABEL,
+} from "@repowise-dev/types/health";
+import { healthBandNodeFill, healthNodeFill } from "../health/tokens";
 import { disambiguateBasenames } from "../lib/format";
 import { isSamePair, pairHas, type CouplingPair } from "./claim";
 
@@ -52,7 +57,7 @@ export interface CouplingGraphProps {
 const NEUTRAL_INK = "var(--color-text-tertiary)";
 
 function inkFor(score: number | null): string {
-  return score == null ? NEUTRAL_INK : healthInk(score);
+  return score == null ? NEUTRAL_INK : healthNodeFill(score);
 }
 
 /** Shared empty neighbor set so the no-focus path allocates nothing. */
@@ -472,15 +477,16 @@ export function CouplingGraph({
 
       {/* Legend */}
       <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-[var(--color-success)]" /> healthy
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-[var(--color-caution)]" /> warning
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-[var(--color-error)]" /> alert
-        </span>
+        {HEALTH_BAND_ORDER.map((band) => (
+          <span key={band} className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ backgroundColor: healthBandNodeFill(band) }}
+            />{" "}
+            {HEALTH_BAND_LABEL[band]}{" "}
+            <span className="tabular-nums opacity-70">{HEALTH_BAND_RANGE_LABEL[band]}</span>
+          </span>
+        ))}
         {/* `min-w-0` so this can shrink and wrap rather than force the row
             wider than the viewport; right-aligned only once there is room. */}
         <span className="min-w-0 basis-full sm:basis-auto sm:ml-auto">

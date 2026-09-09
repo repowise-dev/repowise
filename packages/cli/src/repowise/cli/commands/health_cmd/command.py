@@ -199,6 +199,14 @@ def health_command(
     status.print(f"[bold]repowise health[/bold] — {repo_path}")
 
     if trend_view:
+        # The trend reads stored snapshots, which carry the calibrated score
+        # only. Saying so beats printing a projected headline's flag over an
+        # unprojected line.
+        if parse_scope(scope) != DEFAULT_SCOPE or parse_counts(counts) != DEFAULT_COUNTS:
+            status.print(
+                "[dim]The trend reads stored snapshots, so --scope and --counts "
+                "do not apply to it.[/dim]"
+            )
         _render_trend(repo_path, fmt=fmt)
         return
 
@@ -301,21 +309,18 @@ def health_command(
     narrowed = parse_scope(scope) == "production"
     if narrowed:
         metrics = [m for m in metrics if not m.is_test]
-    # The scope narrow's answer, taken before the projection: a row the
-    # projection could not answer for is reported as unscored, not treated as
-    # a file that left the repository.
+    # Taken before the projection, so a row the projection cannot read still
+    # keeps its findings rather than reading as a file that left the repo.
     scoped_paths = {m.file_path for m in metrics}
     code_shape = parse_counts(counts) == "code_shape"
-    unscored = 0
     if code_shape:
-        metrics, unscored = project_counts(counts, metrics)
+        # No `unscored` counterpart to the API's: this command scores live, so
+        # every row carries the split the projection reads.
+        metrics, _ = project_counts(counts, metrics)
     if narrowed or code_shape:
-        # The headline, the hotspot number, the worst performer and the
-        # distribution all describe the population the controls selected. The
-        # defect-accuracy and performance lines below still describe the whole
-        # repo: accuracy scores the number against `prior_defect`, which is the
-        # ground truth rather than a deduction, and narrowing it would leave it
-        # with no labels to be accurate about.
+        # Every figure the controls select for. Defect accuracy below is not
+        # one of them: it scores the ranking against `prior_defect`, and
+        # narrowing leaves it no labels to be accurate about.
         report.kpis = compute_kpis(
             metrics, {p for p, m in git_meta_map.items() if m.get("is_hotspot")}
         )
@@ -366,7 +371,6 @@ def health_command(
                     "kpis": report.kpis,
                     "scope": parse_scope(scope),
                     "counts": parse_counts(counts),
-                    "unscored_files": unscored,
                     "metrics": [
                         {
                             "file_path": m.file_path,
@@ -435,10 +439,7 @@ def health_command(
         f"({kpis.get('worst_performer_path', 'n/a')})"
     )
     if code_shape:
-        note = "Counting code shape only — change history is left out."
-        if unscored:
-            note += f" {unscored} file(s) have no stored split and are not counted."
-        console.print(f"[dim]{note}[/dim]")
+        console.print("[dim]Counting code shape only — change history is left out.[/dim]")
     _render_split_line(kpis)
     _render_distribution_line(health_distribution(metrics))
 

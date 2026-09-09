@@ -1,10 +1,11 @@
 import { bandForScore } from "@repowise-dev/types";
-import type { HealthBand } from "@repowise-dev/types/health";
+import { HEALTH_BAND_ORDER, type HealthBand } from "@repowise-dev/types/health";
 import { healthBandSoftBadgeClass } from "./tokens";
 
 export interface HealthBadgeProps {
   score: number | null | undefined;
-  /** Explicit band from the API; when omitted it is derived from `score`
+  /** Explicit band from the API; when omitted, or when a server predating the
+   * five bands sends one this build does not know, it is derived from `score`
    * via the shared `bandForScore` mirror (no hardcoded cutoffs). */
   band?: HealthBand;
   size?: "xs" | "sm";
@@ -15,8 +16,9 @@ export interface HealthBadgeProps {
  * components' shapes. Renders nothing when the score is missing. */
 export function HealthBadge({ score, band, size = "xs" }: HealthBadgeProps) {
   if (score == null) return null;
-  const resolved = band ?? bandForScore(score);
-  const cls = healthBandSoftBadgeClass(resolved);
+  const cls = healthBandSoftBadgeClass(
+    band && HEALTH_BAND_ORDER.includes(band) ? band : bandForScore(score),
+  );
   const sizing =
     size === "xs"
       ? "text-[10px] px-1.5 py-0.5"

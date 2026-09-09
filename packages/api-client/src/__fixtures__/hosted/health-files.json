@@ -2,7 +2,7 @@
   {
     "file_path": "src/flask/app.py",
     "score": 1.07,
-    "band": "alert",
+    "band": "at_risk",
     "max_ccn": 16,
     "max_nesting": 5,
     "nloc": 1235,
@@ -63,7 +63,7 @@
   {
     "file_path": "src/flask/sansio/app.py",
     "score": 1.35,
-    "band": "alert",
+    "band": "at_risk",
     "max_ccn": 12,
     "max_nesting": 4,
     "nloc": 678,
@@ -124,7 +124,7 @@
   {
     "file_path": "src/flask/cli.py",
     "score": 2.05,
-    "band": "alert",
+    "band": "at_risk",
     "max_ccn": 13,
     "max_nesting": 5,
     "nloc": 822,

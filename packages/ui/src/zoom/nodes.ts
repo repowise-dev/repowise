@@ -175,16 +175,13 @@ function drawPaperTexture(
 /**
  * The role dot's colour, or null when a node carries no role.
  *
- * One hue, deliberately. This used to return a different colour per role from
- * `palette.entry` / `.hotspot` / `.dead` / `.flow`, which collided head-on with
- * the health dot in the footer: `palette.entry` and `palette.healthGood` are
- * both `--color-success`, so a green dot meant "has an entry point" in the
- * top-right corner and "healthy" in the bottom-left one, forty pixels apart on
- * the same card. Green/amber/red carry a band and belong to health.
+ * One hue, deliberately. A per-role palette collides with the health dot in the
+ * footer — `palette.entry` and `palette.healthGood` are both `--color-success`,
+ * so one green would mean "has an entry point" and another "Good", forty pixels
+ * apart on the same card. The band colours belong to health.
  *
- * The role dot now says only "there is something here"; `nodeRoles` in
- * `node-signals.ts` says what, in words, on hover and in the detail panel —
- * where it can name every applicable role rather than a cascade's winner.
+ * The role dot says only "there is something here"; `nodeRoles` in
+ * `node-signals.ts` names every applicable role in words.
  */
 function roleColor(node: ZoomNode, palette: ZoomPalette): string | null {
   return hasRole(node) ? palette.accent : null;

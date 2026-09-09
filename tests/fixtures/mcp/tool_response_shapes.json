@@ -652,17 +652,27 @@
     },
     "distribution": {
       "bands": {
-        "alert": {
+        "at_risk": {
           "files": null,
           "nloc": null,
           "pct": null
         },
-        "healthy": {
+        "excellent": {
           "files": null,
           "nloc": null,
           "pct": null
         },
-        "warning": {
+        "fair": {
+          "files": null,
+          "nloc": null,
+          "pct": null
+        },
+        "good": {
+          "files": null,
+          "nloc": null,
+          "pct": null
+        },
+        "needs_work": {
           "files": null,
           "nloc": null,
           "pct": null
@@ -1305,17 +1315,27 @@
       "band": null,
       "distribution": {
         "bands": {
-          "alert": {
+          "at_risk": {
             "files": null,
             "nloc": null,
             "pct": null
           },
-          "healthy": {
+          "excellent": {
             "files": null,
             "nloc": null,
             "pct": null
           },
-          "warning": {
+          "fair": {
+            "files": null,
+            "nloc": null,
+            "pct": null
+          },
+          "good": {
+            "files": null,
+            "nloc": null,
+            "pct": null
+          },
+          "needs_work": {
             "files": null,
             "nloc": null,
             "pct": null

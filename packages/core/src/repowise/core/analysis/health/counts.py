@@ -50,13 +50,12 @@ class CodeShapeMetric:
     write the projection back to the store on the next flush.
     """
 
-    # ``score`` is the surfaced number every aggregate weights and
-    # ``defect_score`` mirrors it on the wire; both move or the page disagrees
-    # with itself. ``history_deduction`` reads 0.0 because that is what this
-    # reading counts, which keeps every figure derived from the two halves —
-    # the wire row's ``unclamped_score``, the summary's history average — in
-    # step with the score beside it rather than describing the other reading.
-    # Everything else falls through to the row.
+    # ``score`` is the surfaced number every aggregate weights, and
+    # ``defect_score`` mirrors it for the REST serializer, which emits both.
+    # ``history_deduction`` reads 0.0 because that is what this reading counts,
+    # which keeps the figures derived from the two halves — the REST row's
+    # ``unclamped_score``, the summary's history average — in step with the
+    # score beside them. Everything else falls through to the row.
     __slots__ = ("_row", "defect_score", "history_deduction", "score")
 
     def __init__(self, row: Any, score: float) -> None:

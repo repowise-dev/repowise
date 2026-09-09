@@ -23,6 +23,15 @@ def test_badge_fields_band_colors() -> None:
     assert _badge_fields(2.0) == ("health", "2.0/10", "red", "at_risk")
 
 
+def test_every_band_colour_has_a_hex_for_the_self_rendered_svg() -> None:
+    # The JSON endpoint hands shields a colour name; the SVG endpoint has to
+    # resolve it here. A band colour without a hex renders grey.
+    from repowise.core.analysis.health.grading import BAND_BADGE_COLOR
+    from repowise.server.routers.code_health.badge import _BADGE_COLOR_HEX
+
+    assert set(BAND_BADGE_COLOR.values()) <= set(_BADGE_COLOR_HEX)
+
+
 def test_badge_fields_no_data() -> None:
     _label, message, color, band = _badge_fields(None)
     assert message == "no data"

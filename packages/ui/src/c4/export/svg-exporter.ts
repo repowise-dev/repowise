@@ -10,6 +10,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { C4EdgeData, C4NodeData } from "../types";
 import { TONE_STYLES, type ToneName } from "../../graph-primitives/tone-styles";
 import { resolveToken } from "../../shared/use-theme-tokens";
+import type { HealthBand } from "@repowise-dev/types/health";
 import { healthBand100 } from "../../health/tokens";
 
 /**
@@ -35,11 +36,23 @@ function resolveInkPalette() {
     textPrimary: resolveToken("--color-text-primary", "#241b2c"),
     textSecondary: resolveToken("--color-text-secondary", "#5e5360"),
     success: resolveToken("--color-success", "#1d8155"),
+    caution: resolveToken("--color-caution", "#a8821f"),
     warning: resolveToken("--color-warning", "#9a6614"),
     error: resolveToken("--color-error", "#b23a2e"),
   };
 }
 type InkPalette = ReturnType<typeof resolveInkPalette>;
+
+/** The band inks of `THEME.health`, resolved for a standalone SVG. */
+function bandInk(pal: InkPalette): Record<HealthBand, string> {
+  return {
+    excellent: pal.success,
+    good: pal.success,
+    fair: pal.caution,
+    needs_work: pal.warning,
+    at_risk: pal.error,
+  };
+}
 
 interface ArchFileNodeData {
   node: {
@@ -265,13 +278,7 @@ function renderArchNode(n: Node, pal: InkPalette): string {
     parts.push(`<text x="14" y="44" font-family="${FONT_FAMILY}" font-size="11" fill="${pal.inkText}" opacity="0.72">${subtitle}</text>`);
     parts.push(`<text x="14" y="${h - 12}" font-family="${MONO_FONT}" font-size="9" font-weight="600" letter-spacing="1" fill="${pal.inkText}" opacity="0.6">${isGroup ? "GROUP" : "LAYER"} · ${layer.file_count} FILES</text>`);
     if (layer.health_score !== null) {
-      const healthBand = healthBand100(layer.health_score);
-      const healthColor =
-        healthBand === "excellent" || healthBand === "good"
-          ? pal.success
-          : healthBand === "at_risk"
-            ? pal.error
-            : pal.warning;
+      const healthColor = bandInk(pal)[healthBand100(layer.health_score)];
       parts.push(`<text x="${w - 14}" y="${h - 12}" font-family="${FONT_FAMILY}" font-size="12" font-weight="600" fill="${healthColor}" text-anchor="end">${Math.round(layer.health_score)}</text>`);
     }
     parts.push(`</g>`);

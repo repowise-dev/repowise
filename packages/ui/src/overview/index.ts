@@ -23,7 +23,6 @@ export { RepoRows } from "./repo-rows";
 export type { RepoRow, RepoRowsProps } from "./repo-rows";
 
 export { HealthLede } from "./health-lede";
-export { healthBand } from "../health/tokens";
 export type { HealthLedeProps } from "./health-lede";
 
 export { ReadsColumn } from "./reads-column";

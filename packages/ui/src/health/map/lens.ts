@@ -9,32 +9,13 @@ import {
   HEALTH_BAND_LABEL,
   HEALTH_BAND_ORDER,
   HEALTH_BAND_RANGE_LABEL,
-  bandForScore,
-  type HealthBand,
 } from "@repowise-dev/types/health";
+import { healthBandNodeFill, healthNodeFill } from "../tokens";
 import type { CodeHealthMapFile, CodeHealthOverlay, PerformanceActionability } from "./types";
-
-/**
- * Band -> SVG fill var().
- *
- * The canvas ramp, not the semantic ink the score pills use. Those are tuned
- * to be read as small coloured type against the page; this field is thousands
- * of overlapping filled discs, which is a different job in both themes. Same
- * bands, deliberately not the same values, and Excellent and Good separate by
- * value here because a canvas has no room for the word that separates them
- * elsewhere. See `--color-node-*` in globals.css.
- */
-const BAND_FILL: Record<HealthBand, string> = {
-  at_risk: "var(--color-node-at-risk)",
-  needs_work: "var(--color-node-needs-work)",
-  fair: "var(--color-node-fair)",
-  good: "var(--color-node-good)",
-  excellent: "var(--color-node-excellent)",
-};
 
 /** Worst-first legend rows, each naming its band and the range it covers. */
 const BAND_LEGEND = HEALTH_BAND_ORDER.map((band) => ({
-  fill: BAND_FILL[band],
+  fill: healthBandNodeFill(band),
   label: `${HEALTH_BAND_LABEL[band]} · ${HEALTH_BAND_RANGE_LABEL[band]}`,
 }));
 
@@ -71,7 +52,7 @@ export interface OverlaySpec {
 /** Score band: the health ramp, quiet grey when the pillar is unscored. */
 function scoreFill(score: number | null | undefined): string {
   if (score == null) return NEUTRAL_FILL;
-  return BAND_FILL[bandForScore(score)];
+  return healthNodeFill(score);
 }
 
 /** Coverage band: green = well covered, red = uncovered, grey = no data. */
@@ -211,9 +192,9 @@ export function burdenBand(count: number): 0 | 1 | 2 | 3 {
  * deliberately absent: they are the bands that would claim a file is fine.
  */
 const BURDEN_FILL: Record<1 | 2 | 3, string> = {
-  1: BAND_FILL.fair,
-  2: BAND_FILL.needs_work,
-  3: BAND_FILL.at_risk,
+  1: healthBandNodeFill("fair"),
+  2: healthBandNodeFill("needs_work"),
+  3: healthBandNodeFill("at_risk"),
 };
 
 export const PERFORMANCE_STATE_LABEL: Record<PerformanceNodeState, string> = {
@@ -239,7 +220,7 @@ export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
   health: {
     label: "Code health",
     caption: "galaxy = module · size = lines of code",
-    fill: (f) => BAND_FILL[bandForScore(f.score)],
+    fill: (f) => healthNodeFill(f.score),
     legend: BAND_LEGEND,
   },
   maintainability: {

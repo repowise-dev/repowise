@@ -45,7 +45,7 @@ scratch.
 
 The landing view. Repo KPIs (files, symbols, entry points, dead exports, health
 averages), an attention panel that promotes whatever currently deserves it
-(declining health, a stale doc set, an alert-band file), a decisions timeline,
+(declining health, a stale doc set, an at-risk file), a decisions timeline,
 quick actions, and a live banner while an index or generation job is running.
 If a job is in flight, the progress and log stream here.
 

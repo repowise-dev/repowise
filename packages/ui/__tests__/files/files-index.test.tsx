@@ -91,12 +91,14 @@ describe("FilesIndex", () => {
     renderIndex([
       row({ file_path: "a.ts", defect_score: 9 }),
       row({ file_path: "b.ts", defect_score: 7.5 }),
+      row({ file_path: "d.ts", defect_score: 6.9 }),
       row({ file_path: "c.ts", defect_score: null }),
     ]);
 
-    // 2 of 3 files are scored and both are Good or better. A threshold of its
-    // own here would disagree with the tile the map paints for the same file.
-    expect(screen.getByText(/100%/)).toBeInTheDocument();
+    // 3 of 4 files are scored and 2 of those are Good or better. The 6.9 is the
+    // row that discriminates: it is Fair, and any surface bucketing it as good
+    // would print 100% here while the map paints its tile gold.
+    expect(screen.getByText(/67%/)).toBeInTheDocument();
     expect(
       screen.getByText(/carrying a health score are Good or better/),
     ).toBeInTheDocument();
