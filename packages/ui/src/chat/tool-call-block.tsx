@@ -21,12 +21,17 @@ import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 const TOOL_LABELS: Record<string, string> = {
   get_overview: "Getting codebase overview",
   get_context: "Looking up context",
+  get_symbol: "Reading symbol",
   get_risk: "Assessing risk",
   get_change_risk: "Scoring change risk",
+  get_health: "Checking health",
   get_why: "Querying decisions",
   search_codebase: "Searching codebase",
   get_dead_code: "Checking dead code",
 };
+
+/** A step the server took for the page, before the model's first turn. */
+const GROUNDING_LABEL = "Read for this page";
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
@@ -44,12 +49,16 @@ export function ToolCallBlock({
   divided = false,
 }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
-  const label = TOOL_LABELS[toolCall.name] ?? toolCall.name;
+  const label =
+    toolCall.origin === "grounding"
+      ? GROUNDING_LABEL
+      : TOOL_LABELS[toolCall.name] ?? toolCall.name;
   const isRunning = toolCall.status === "running";
   const isError = toolCall.status === "error";
 
   return (
     <div
+      data-tool-origin={toolCall.origin}
       className={cn(
         "text-xs",
         divided && "border-t border-[var(--color-border-default)]",

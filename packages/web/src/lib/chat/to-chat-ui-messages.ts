@@ -39,9 +39,11 @@ export function toChatUiMessages(
           }
         : {}),
       status: "done" as const,
+      ...(toolCall.origin ? { origin: toolCall.origin } : {}),
     })),
     isStreaming: false,
     ...(message.content.provider ? { provider: message.content.provider } : {}),
     ...(message.content.model ? { model: message.content.model } : {}),
+    ...(message.content.truncated ? { truncated: true } : {}),
   }));
 }

@@ -214,3 +214,91 @@ describe("useChat lifecycle", () => {
   });
 
 });
+
+describe("useChat grounding and truncation events", () => {
+  function streamed(events: object[]) {
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+    mocks.postChatMessage.mockImplementationOnce(
+      (_repoId: string, options: { signal?: AbortSignal }) => {
+        mocks.signal = options.signal;
+        return Promise.resolve(new Response(stream));
+      },
+    );
+    return async () => {
+      streamController.enqueue(
+        new TextEncoder().encode(
+          events.map((event) => `data: ${JSON.stringify(event)}\n`).join(""),
+        ),
+      );
+      streamController.close();
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+  }
+
+  const artifact = {
+    id: "art-1",
+    version: 1 as const,
+    type: "context",
+    tool_name: "get_context",
+    presentation: "context",
+    data: { targets: { "src/a.py": {} } },
+  };
+
+  it("records a grounding read as a completed step made for the page", async () => {
+    const push = streamed([
+      {
+        type: "grounding",
+        tool_id: "grounding-1",
+        tool_name: "get_context",
+        input: { targets: ["src/a.py"] },
+        summary: "src/a.py",
+        artifact,
+      },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("What does this do?");
+      await push();
+      await sending;
+    });
+
+    const step = result.current.messages.at(-1)?.toolCalls[0];
+    expect(step).toMatchObject({
+      id: "grounding-1",
+      name: "get_context",
+      status: "done",
+      origin: "grounding",
+      summary: "src/a.py",
+      arguments: { targets: ["src/a.py"] },
+    });
+    expect(step?.artifact?.id).toBe("art-1");
+    expect(result.current.isStreaming).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("flags the answer when the server reports the step ceiling", async () => {
+    const push = streamed([
+      { type: "truncated", loops: 10 },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("loop");
+      await push();
+      await sending;
+    });
+
+    expect(result.current.messages.at(-1)?.truncated).toBe(true);
+    expect(result.current.messages.at(-1)?.isStreaming).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+});

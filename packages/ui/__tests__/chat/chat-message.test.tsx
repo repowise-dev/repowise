@@ -58,3 +58,54 @@ describe("ChatMessage", () => {
     ).toBe(Symbol.for("react.memo"));
   });
 });
+
+describe("ChatMessage truncation", () => {
+  it("shows a quiet row when the answer stopped at the step ceiling", () => {
+    const { container } = render(
+      <ChatMessage message={{ ...ASSISTANT, text: "", truncated: true }} repoId="r1" />,
+    );
+    const row = container.querySelector('[data-chat-truncated="true"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toMatch(/step limit/);
+    expect(row?.className).not.toContain("color-error");
+    expect(row?.className).not.toContain("color-accent-primary");
+  });
+
+  it("holds the row back while the turn is still streaming", () => {
+    const { container } = render(
+      <ChatMessage
+        message={{ ...ASSISTANT, text: "", truncated: true, isStreaming: true }}
+        repoId="r1"
+      />,
+    );
+    expect(container.querySelector('[data-chat-truncated="true"]')).toBeNull();
+  });
+
+  it("renders nothing extra for a completed answer", () => {
+    const { container } = render(<ChatMessage message={ASSISTANT} repoId="r1" />);
+    expect(container.querySelector('[data-chat-truncated="true"]')).toBeNull();
+  });
+
+  it("keeps the working marker while a grounded turn waits for its first token", () => {
+    const { container } = render(
+      <ChatMessage
+        message={{
+          ...ASSISTANT,
+          text: "",
+          isStreaming: true,
+          toolCalls: [
+            {
+              id: "grounding-1",
+              name: "get_context",
+              arguments: {},
+              status: "done",
+              origin: "grounding",
+            },
+          ],
+        }}
+        repoId="r1"
+      />,
+    );
+    expect(container.querySelector('[data-working-orb="true"]')).not.toBeNull();
+  });
+});

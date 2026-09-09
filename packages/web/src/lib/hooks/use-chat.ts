@@ -225,6 +225,24 @@ export function useChat(repoId: string) {
             if (m.id !== asstId) return m;
 
             switch (ev.type) {
+              case "grounding":
+                return {
+                  ...m,
+                  toolCalls: [
+                    ...m.toolCalls,
+                    {
+                      id: ev.tool_id,
+                      name: ev.tool_name,
+                      arguments: ev.input,
+                      result: ev.artifact.data as unknown as Record<string, unknown>,
+                      summary: ev.summary,
+                      artifact: ev.artifact,
+                      status: "done" as const,
+                      origin: "grounding" as const,
+                    },
+                  ],
+                };
+
               case "tool_start":
                 return {
                   ...m,
@@ -254,6 +272,9 @@ export function useChat(repoId: string) {
                       : tc,
                   ),
                 };
+
+              case "truncated":
+                return { ...m, truncated: true };
 
               case "done":
                 return {

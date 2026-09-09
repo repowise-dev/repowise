@@ -63,3 +63,39 @@ describe("ToolCallGroup", () => {
     expect(screen.getAllByText("Searching codebase")).toHaveLength(2);
   });
 });
+
+describe("ToolCallGroup grounding row", () => {
+  const grounding: ChatUIToolCall = {
+    id: "grounding-1",
+    name: "get_context",
+    arguments: { targets: ["src/a.py"] },
+    summary: "src/a.py",
+    status: "done",
+    origin: "grounding",
+    artifact: {
+      id: "art-1",
+      version: 1,
+      type: "context",
+      tool_name: "get_context",
+      presentation: "context",
+      data: { targets: { "src/a.py": {} } },
+    },
+  };
+
+  it("renders a read made for the page as one quiet hairline row naming what was read", () => {
+    const { container } = render(<ToolCallGroup toolCalls={[grounding]} />);
+    expect(shells(container)).toHaveLength(1);
+    expect(screen.getByText("Read for this page")).toBeInTheDocument();
+    expect(screen.getByText(/src\/a\.py/)).toBeInTheDocument();
+    expect(container.querySelector('[data-tool-origin="grounding"]')).not.toBeNull();
+    expect(container.querySelector('[data-working-orb="true"]')).toBeNull();
+    expect(container.innerHTML).not.toContain("color-success");
+  });
+
+  it("keeps the model's own steps under their tool labels", () => {
+    render(<ToolCallGroup toolCalls={[grounding, call("b", "done")]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Activity/ }));
+    expect(screen.getByText("Read for this page")).toBeInTheDocument();
+    expect(screen.getByText("Searching codebase")).toBeInTheDocument();
+  });
+});

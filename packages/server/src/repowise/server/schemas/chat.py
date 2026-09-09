@@ -42,6 +42,7 @@ class ChatPageContext(BaseModel):
             "path",
             "symbol",
             "module",
+            "dependency",
             "commit",
             "person",
             "decision",

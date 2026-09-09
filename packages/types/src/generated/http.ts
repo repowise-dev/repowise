@@ -321,7 +321,7 @@ export interface ChatPageContext {
   kind: "repository" | "overview" | "documentation" | "architecture" | "graph" | "health" | "refactoring" | "file" | "symbol" | "module" | "dependency" | "commit" | "contributor" | "decision" | "risk" | "security" | "usage" | "settings" | "chat";
   label: string;
   target?: string | null;
-  target_kind?: "path" | "symbol" | "module" | "commit" | "person" | "decision" | "documentation" | null;
+  target_kind?: "path" | "symbol" | "module" | "dependency" | "commit" | "person" | "decision" | "documentation" | null;
 }
 
 export interface ChatRequest {
