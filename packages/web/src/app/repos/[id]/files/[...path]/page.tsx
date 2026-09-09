@@ -3,7 +3,6 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { bundledLanguages, getSingletonHighlighter, type BundledLanguage } from "shiki";
 import { getFileContent, getFileDetail } from "@/lib/api/files";
-import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
 import {
   docsPagePath,
   fileEntityPath,
@@ -18,6 +17,7 @@ import {
   type FilePageTab,
 } from "@repowise-dev/ui/files";
 import { FilePageHost } from "@/components/files/file-page-host";
+import { FileDocBody } from "@/components/files/file-doc-body";
 import { FileTestsPanel } from "@/components/files/file-tests-panel";
 import { FileHealthPanel } from "@/components/files/file-health-panel";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
@@ -178,7 +178,7 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
     fileHref: (p) => fileEntityPath(prefix, p),
     symbolHref: (s) => symbolEntityPath(prefix, s),
     ...(detail.wiki_page?.content
-      ? { docSlot: <WikiMarkdown content={detail.wiki_page.content} /> }
+      ? { docSlot: <FileDocBody repoId={id} content={detail.wiki_page.content} /> }
       : {}),
     coverageCodeHtml,
     healthPanel: (

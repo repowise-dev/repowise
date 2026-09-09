@@ -594,7 +594,7 @@ def test_scc_page_renders_german(german_generator):
 
     assert page.title == "Zyklische Abhängigkeit: scc-001"
     assert "**Zyklus-ID:** `scc-001`" in page.content
-    assert "## Dateien im Zyklus" in page.content
+    assert "## Wo sie aufgebrochen werden kann" in page.content
     assert "## Die Schleife" in page.content
     assert "**Symbole insgesamt im Zyklus:** 2" in page.content
 

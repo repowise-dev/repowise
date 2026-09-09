@@ -19,7 +19,10 @@ from repowise.core.generation.context_assembler import (
     SymbolSpotlightContext,
     _TopFile,
 )
-from repowise.core.generation.page_generator.structural import register_filters
+from repowise.core.generation.page_generator.structural import (
+    _rank_cycle_participants,
+    register_filters,
+)
 from repowise.core.generation.structural_labels import resolve_structural_labels
 from repowise.core.ingestion.models import PackageInfo
 
@@ -632,22 +635,100 @@ def scc_page_ctx() -> SccPageContext:
         files=["pkg/a.py", "pkg/b.py"],
         cycle_description="Circular dependency cycle: pkg/a.py → pkg/b.py",
         total_symbols=10,
+        member_symbols=[
+            {"file_path": "pkg/a.py", "symbols": [{"name": "A", "signature": "class A"}]}
+        ],
+        cross_imports=[{"from": "pkg/a.py", "to": "pkg/b.py"}],
     )
 
 
+@pytest.fixture(scope="module")
+def bare_scc_page_ctx() -> SccPageContext:
+    """A cycle the graph knows about and nothing else: no edges, no symbols."""
+    return SccPageContext(
+        scc_id="scc-1",
+        files=["pkg/a.py", "pkg/b.py"],
+        cycle_description="",
+        total_symbols=0,
+    )
+
+
+@pytest.fixture(scope="module")
+def test_scc_page_ctx() -> SccPageContext:
+    return SccPageContext(
+        scc_id="scc-2",
+        files=["tests/unit/parser/conftest.py", "tests/unit/parser/test_go.py"],
+        cycle_description="",
+        total_symbols=1,
+        cross_imports=[
+            {"from": "tests/unit/parser/test_go.py", "to": "tests/unit/parser/conftest.py"}
+        ],
+        test_only=True,
+    )
+
+
+def render_scc(env: jinja2.Environment, ctx: SccPageContext) -> str:
+    """Render with the ranking the generator actually passes.
+
+    The suite used to hand this template ``decouple_ranking=[]``, a shape
+    production never produces - the ranking is derived from the same member
+    list the page exists for - and it hid every defect in the one section
+    that names them.
+    """
+    return render(env, "scc_page.j2", ctx, decouple_ranking=_rank_cycle_participants(ctx))
+
+
 def test_scc_page_renders_without_error(jinja_env, scc_page_ctx):
-    result = render(jinja_env, "scc_page.j2", scc_page_ctx, decouple_ranking=[])
-    assert result
+    assert render_scc(jinja_env, scc_page_ctx)
 
 
 def test_scc_page_has_heading(jinja_env, scc_page_ctx):
-    result = render(jinja_env, "scc_page.j2", scc_page_ctx, decouple_ranking=[])
-    assert "##" in result
+    assert "##" in render_scc(jinja_env, scc_page_ctx)
 
 
-def test_scc_page_contains_cycle_description(jinja_env, scc_page_ctx):
-    result = render(jinja_env, "scc_page.j2", scc_page_ctx, decouple_ranking=[])
-    # The structural page writes its own sentence about the cycle rather than
-    # echoing the assembled description, so assert on the members it names.
+def test_scc_page_names_every_member_exactly_once(jinja_env, scc_page_ctx):
+    # The members were bulleted under a heading of their own and then listed
+    # again as ranking rows. Once, with its edge counts beside it, is the same
+    # information for the index and less of a wall for the reader.
+    result = render_scc(jinja_env, scc_page_ctx)
     for member in scc_page_ctx.files:
-        assert member in result
+        assert result.count(f"| `{member}` |") == 1
+    assert "## Files in the cycle" not in result
+
+
+def test_scc_page_leaves_no_gap_where_a_section_was_dropped(
+    jinja_env, scc_page_ctx, bare_scc_page_ctx, test_scc_page_ctx
+):
+    for ctx in (scc_page_ctx, bare_scc_page_ctx, test_scc_page_ctx):
+        result = render_scc(jinja_env, ctx)
+        assert "\n\n\n" not in result
+        assert not result.startswith("\n")
+
+
+def test_scc_page_keeps_its_table_intact(jinja_env, scc_page_ctx):
+    # A blank line between the delimiter row and the first row is not a table.
+    result = render_scc(jinja_env, scc_page_ctx)
+    assert "| --- | --- | --- | --- |\n| `pkg/a.py` |" in result
+
+
+def test_scc_page_renders_no_bullet_without_a_name(jinja_env, scc_page_ctx):
+    result = render_scc(jinja_env, scc_page_ctx)
+    assert "- ``" not in result
+    assert not any(line.rstrip() == "-" for line in result.splitlines())
+
+
+def test_an_all_test_cycle_is_not_called_a_knot_to_untangle(jinja_env, test_scc_page_ctx):
+    # Every member is a test file reaching a shared fixture, so the generic
+    # sentence ("nothing here can be loaded, tested or extracted without the
+    # rest") tells the reader to go break something that works as intended.
+    result = render_scc(jinja_env, test_scc_page_ctx)
+    assert "Nothing in this group can be loaded" not in result
+    assert "test files import each other" in result
+    assert "## What holds it together" in result
+    assert "## Where to break it" not in result
+
+
+def test_a_production_cycle_keeps_the_sentence_that_names_the_problem(jinja_env, scc_page_ctx):
+    result = render_scc(jinja_env, scc_page_ctx)
+    assert "Nothing in this group can be loaded" in result
+    assert "## Where to break it" in result
