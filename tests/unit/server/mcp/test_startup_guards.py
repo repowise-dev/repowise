@@ -43,6 +43,10 @@ async def test_lifespan_names_the_path_when_the_store_cannot_be_opened(
     message = str(raised.value)
     assert str(tmp_path / ".repowise") in message
     assert "repowise init" in message
+    # The failure path never reaches the teardown, so it has to leave the
+    # warmup event cleared itself. A leaked event stays bound to this test's
+    # loop and makes every later tool call raise inside the failure shield.
+    assert _state._lancedb_ready is None
 
 
 def test_missing_tool_dependency_skips_that_tool_and_keeps_the_rest(

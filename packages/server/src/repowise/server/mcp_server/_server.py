@@ -324,6 +324,19 @@ async def _cancel_task(task: asyncio.Task) -> None:
         await task
 
 
+async def _abort_startup(*tasks: asyncio.Task) -> None:
+    """Undo the startup a lifespan raised out of, before it reached its teardown.
+
+    The success paths cancel the background tasks and clear the warmup event on
+    the way out; a startup failure has to leave the same state behind, or the
+    next lifespan in this process inherits a set-but-never-signalled event bound
+    to a loop that is gone.
+    """
+    for task in tasks:
+        await _cancel_task(task)
+    _state._lancedb_ready = None
+
+
 async def _warm_lancedb() -> None:
     """Import lancedb once, off the event loop, and signal when it is done.
 
@@ -506,12 +519,10 @@ async def _lifespan(server: FastMCP):
         try:
             default_ctx = await registry.get_default()
         except (OSError, OperationalError) as exc:
-            await _cancel_task(_release_task)
-            await _cancel_task(_warm_task)
+            await _abort_startup(_release_task, _warm_task)
             raise _store_unavailable(str(ws_root), str(ws_root), exc) from exc
         except BaseException:
-            await _cancel_task(_release_task)
-            await _cancel_task(_warm_task)
+            await _abort_startup(_release_task, _warm_task)
             raise
 
         _state._registry = registry
@@ -610,8 +621,7 @@ async def _lifespan(server: FastMCP):
             raise
     except (OSError, OperationalError) as exc:
         # A read-only or missing directory, or a .repowise that is a file.
-        await _cancel_task(_release_task)
-        await _cancel_task(_warm_task)
+        await _abort_startup(_release_task, _warm_task)
         raise _store_unavailable(store_location, _state._repo_path, exc) from exc
 
     _state._session_factory = async_sessionmaker(
