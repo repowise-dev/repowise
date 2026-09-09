@@ -76,10 +76,11 @@ def _answer_only(result: dict) -> dict:
     """The tool's own payload, minus the budget envelope the bridge stamps.
 
     A bridged call is budgeted the way the MCP middleware budgets an MCP call,
-    so every response gains ``_meta.response_budget``. What must not change is
-    the answer the tool returned.
+    so every response gains ``_meta.response_budget`` and ``_meta.completeness``.
+    What must not change is the answer the tool returned.
     """
-    meta = {k: v for k, v in (result.get("_meta") or {}).items() if k != "response_budget"}
+    stamped = {"response_budget", "completeness"}
+    meta = {k: v for k, v in (result.get("_meta") or {}).items() if k not in stamped}
     answer = {k: v for k, v in result.items() if k != "_meta"}
     if meta:
         answer["_meta"] = meta

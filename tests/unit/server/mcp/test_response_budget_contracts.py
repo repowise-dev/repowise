@@ -580,3 +580,107 @@ def test_recorded_shapes_cover_the_tools_that_can_be_exercised() -> None:
     # generate_refactoring_code needs a stored plan, which the recorded index
     # had none of. Reported as not measured rather than assumed bounded.
     assert set(shapes) == set(_TOOL_MODULES) - {"generate_refactoring_code"}
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "get_context",
+        "get_risk",
+        "get_change_risk",
+        "get_answer",
+        "get_why",
+        "get_overview",
+        "get_health",
+    ],
+)
+def test_completeness_sums_what_the_budget_dropped(
+    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str
+) -> None:
+    """One stamp answers "is this everything", without walking every counter."""
+    import repowise.server.mcp_server as mcp_mod
+
+    repo = tmp_path / tool
+    (repo / ".repowise").mkdir(parents=True)
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(repo))
+    result = _enforce(tool, _payload(tool, 15_000))
+
+    completeness = result["_meta"]["completeness"]
+    assert completeness["capped"] is True
+    assert completeness["reason"] == "response_budget"
+    assert completeness["shown"] < completeness["total"]
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "get_context",
+        "get_risk",
+        "get_change_risk",
+        "get_answer",
+        "get_why",
+        "get_overview",
+        "get_health",
+    ],
+)
+def test_completeness_reports_an_untouched_response_as_whole(
+    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str
+) -> None:
+    """A response that lost nothing says so, and claims no reason for a loss."""
+    import repowise.server.mcp_server as mcp_mod
+
+    repo = tmp_path / tool
+    (repo / ".repowise").mkdir(parents=True)
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(repo))
+    result = _enforce(tool, _payload(tool, 0))
+
+    completeness = result["_meta"]["completeness"]
+    assert completeness["capped"] is False
+    assert "reason" not in completeness
+
+
+def test_completeness_names_the_pass_that_dropped_the_most() -> None:
+    """Two passes reduced this response; the reason names the heavier one."""
+    payload = {
+        "rows": [{"id": 1}],
+        "rows_total": 5,
+        "rows_emitted": 1,
+        "rows_reduced_reason": "construction_cap_and_response_budget",
+        "others": [{"id": 2}],
+        "others_total": 3,
+        "others_emitted": 1,
+        "others_reduced_reason": "construction_cap",
+    }
+    result = _enforce("get_overview", payload)
+
+    assert result["_meta"]["completeness"] == {
+        "capped": True,
+        "shown": 2,
+        "total": 8,
+        "reason": "construction_cap_and_response_budget",
+    }
+
+
+def test_completeness_claims_no_reason_when_no_pass_recorded_one() -> None:
+    """A tool that flags its own truncation is not the budget's doing."""
+    result = _enforce("get_symbol", {"source": "def f(): ...", "truncated": True})
+
+    assert result["_meta"]["completeness"] == {"capped": True}
+
+
+def test_floor_names_only_the_graph_counts_the_response_carries() -> None:
+    """A count absent from the payload is not claimed as a floor."""
+    payload = {
+        "directive": {"summary": "review"},
+        "targets": [{"target": "src/a.py", "dependents_count": 3, "impact_surface_total": 9}],
+        "_meta": {"contract_version": 1},
+    }
+    result = _enforce("get_risk", payload)
+
+    assert result["_meta"]["floor"] == ["dependents_count", "impact_surface_total"]
+
+
+def test_a_tool_with_no_graph_counts_claims_no_floor() -> None:
+    result = _enforce("get_overview", _payload("get_overview", 0))
+
+    assert "floor" not in result["_meta"]

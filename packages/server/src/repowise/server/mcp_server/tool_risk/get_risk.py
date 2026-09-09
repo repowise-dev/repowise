@@ -116,8 +116,9 @@ async def get_risk(
     Fuses git temporal signals (``hotspot_score``/``owner_pct`` are 0-1; trend;
     bus factor) with graph topology. ``dependents`` are directed structural
     reach (source depends on target), ``consumers`` require typed contract links,
-    and ``co_change_partners`` are historical correlation only. Structural reach
-    is not proof of runtime breakage. The response also includes security
+    and ``co_change_partners`` are historical correlation only. Those counts
+    are a floor over the indexed graph. Structural reach is not proof of
+    runtime breakage. The response also includes security
     findings. Pass changed_files for PR mode: the response leads with a
     directive block (may_break, missing_cochanges, missing_tests,
     tests_to_run) — read it first. Each test_recommendations row carries a

@@ -40,6 +40,11 @@ class ResponseBudgetContract:
     shed_order: tuple[str, ...] = ()
     expansion_argument: str | None = "include"
     protected: tuple[str, ...] = ()
+    #: Counts this tool derives by walking the indexed graph, named in
+    #: ``_meta.floor`` when present. An edge the index failed to resolve is
+    #: uncounted rather than proven absent, so the count is a lower bound.
+    #: A ``<field>_total`` name here is also read as a reduction total.
+    floor_fields: tuple[str, ...] = ()
 
 
 #: What a tool gets when it declares no priority of its own. An empty shed
@@ -49,7 +54,11 @@ class ResponseBudgetContract:
 _DEFAULT_CONTRACT = ResponseBudgetContract("blocks")
 
 _CONTRACTS: dict[str, ResponseBudgetContract] = {
-    "get_context": ResponseBudgetContract("targets", protected=("targets",)),
+    "get_context": ResponseBudgetContract(
+        "targets",
+        protected=("targets",),
+        floor_fields=("callers_total",),
+    ),
     "get_risk": ResponseBudgetContract(
         "blocks",
         (
@@ -62,6 +71,12 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "targets[]",
         ),
         protected=("directive", "targets"),
+        floor_fields=(
+            "dependents_count",
+            "dependents_total",
+            "impact_surface_total",
+            "co_change_partners_total",
+        ),
     ),
     "get_change_risk": ResponseBudgetContract(
         "blocks",
@@ -360,6 +375,75 @@ def _stamp_accounting(result: dict[str, Any], *, limit: int, tier: str) -> None:
         budget["serialized_chars"] = measured
 
 
+def _stamp_completeness(
+    result: dict[str, Any], contract: ResponseBudgetContract
+) -> None:
+    """Roll the per-collection reduction counts up into one ``_meta`` block.
+
+    Every reducing pass already leaves ``<field>_total`` beside
+    ``<field>_emitted`` and a ``<field>_reduced_reason``, and reading them
+    takes a caller a walk of the whole response. The sum spans every counted
+    collection, so it says how much of what this call was going to return
+    survived, not what share of the repository the caller now holds: a tool's
+    own result limit applies before any of these counters exist.
+    """
+    shown = 0
+    total = 0
+    counted = False
+    dropped_by_reason: dict[str, int] = {}
+    floors: set[str] = set()
+    wanted = set(contract.floor_fields)
+
+    def record(field_total: int, emitted: int, reason: Any) -> None:
+        nonlocal shown, total, counted
+        counted = True
+        total += field_total
+        shown += emitted
+        if isinstance(reason, str):
+            dropped_by_reason[reason] = dropped_by_reason.get(reason, 0) + max(
+                0, field_total - emitted
+            )
+
+    def visit(node: dict[str, Any]) -> None:
+        for key, value in node.items():
+            if key in wanted and isinstance(value, int) and not isinstance(value, bool):
+                floors.add(key)
+            if isinstance(value, dict):
+                visit(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        visit(item)
+            elif key.endswith("_total") and isinstance(value, int):
+                stem = key[: -len("_total")]
+                emitted = node.get(f"{stem}_emitted")
+                if isinstance(emitted, int):
+                    record(value, emitted, node.get(f"{stem}_reduced_reason"))
+
+    visit({key: value for key, value in result.items() if key != "_meta"})
+
+    meta = result.setdefault("_meta", {})
+    # A block dropped whole is recorded here instead of as sibling counts.
+    for row in meta.get("reductions") or []:
+        if isinstance(row, dict) and isinstance(row.get("total"), int):
+            record(row["total"], int(row.get("emitted") or 0), row.get("reason"))
+
+    completeness: dict[str, Any] = {
+        "capped": shown < total or bool(result.get("truncated"))
+    }
+    # "0 of 0" is a collection that had nothing to reduce, and reads as
+    # nothing served.
+    if counted and total:
+        completeness["shown"] = shown
+        completeness["total"] = total
+    if completeness["capped"] and dropped_by_reason:
+        # Whichever pass dropped the most rows is the one worth acting on.
+        completeness["reason"] = max(dropped_by_reason.items(), key=lambda row: row[1])[0]
+    meta["completeness"] = completeness
+    if floors:
+        meta["floor"] = sorted(floors)
+
+
 async def resolve_response_budget_repo_root(
     signature: inspect.Signature,
     args: tuple[Any, ...],
@@ -547,6 +631,7 @@ def enforce_response_budget(
 
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True
+    _stamp_completeness(result, contract)
     _stamp_accounting(result, limit=limit, tier=tier)
     if response_chars(result) > limit:
         result.setdefault("_meta", {}).setdefault("response_budget", {})[
