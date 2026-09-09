@@ -28,6 +28,7 @@ import contextlib
 import importlib
 import json
 import os
+import re
 import sqlite3
 import sys
 import traceback
@@ -127,6 +128,55 @@ def _merge_skeleton(into: Any, new: Any) -> Any:
     return new if into is None else into
 
 
+#: The recorded corpus is committed, so what ties it to the machine and the
+#: people it was recorded from has to go: git identities and the checkout path.
+_EMAIL = re.compile(r"[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+")
+
+#: Fields that carry a person. Their values are substituted everywhere they
+#: appear, including inside generated prose, which is why collecting them
+#: first and replacing afterwards beats redacting field by field.
+_IDENTITY_FIELDS = frozenset(
+    {"author", "name", "primary_author", "primary_owner", "recent_owner"}
+)
+
+
+def _identities(payload: Any, found: set[str]) -> None:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in _IDENTITY_FIELDS and isinstance(value, str) and " " in value:
+                found.add(value)
+            _identities(value, found)
+    elif isinstance(payload, list):
+        for item in payload:
+            _identities(item, found)
+
+
+def _redact(payload: Any, repo: str) -> Any:
+    # Longest first, so one root cannot shadow a longer one that contains it.
+    roots = sorted({repo, repo.replace("\\", "/")}, key=len, reverse=True)
+    found: set[str] = set()
+    _identities(payload, found)
+    people = {
+        name: f"Contributor {index}"
+        for index, name in enumerate(sorted(found, key=len, reverse=True), start=1)
+    }
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, str):
+            for root in roots:
+                value = value.replace(root, "/repo")
+            for name, alias in people.items():
+                value = value.replace(name, alias)
+            return _EMAIL.sub("contributor@example.com", value)
+        if isinstance(value, dict):
+            return {clean(key): clean(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+
+    return clean(payload)
+
+
 def _bind(kwargs: dict[str, Any], targets: dict[str, str]) -> dict[str, Any]:
     def sub(value: Any) -> Any:
         if isinstance(value, str):
@@ -146,6 +196,11 @@ async def main() -> int:
     parser.add_argument(
         "--skeletons",
         help="write each tool's nested key shape here, for the shed-path fixture",
+    )
+    parser.add_argument(
+        "--responses",
+        help="write each budgeted payload here, redacted, for the "
+        "token-calibration fixture",
     )
     options = parser.parse_args()
 
@@ -170,6 +225,7 @@ async def main() -> int:
 
     rows: list[dict[str, Any]] = []
     skeletons: dict[str, Any] = {}
+    responses: dict[str, Any] = {}
     async with _server._lifespan(None):
         ready = getattr(_state, "_vector_store_ready", None)
         if ready is not None:
@@ -193,6 +249,8 @@ async def main() -> int:
                     row[f"{label}_trace"] = traceback.format_exc()[-1200:]
                     continue
                 row[f"{label}_chars"] = _size(payload)
+                if label == "wrapped" and isinstance(payload, dict):
+                    responses[f"{tool}:{case}"] = payload
                 if label == "raw" and isinstance(payload, dict):
                     if "error" in payload:
                         row["unexercised"] = payload["error"]
@@ -224,6 +282,15 @@ async def main() -> int:
     if options.skeletons:
         with open(options.skeletons, "w", encoding="utf-8") as handle:
             json.dump(skeletons, handle, indent=2, sort_keys=True)
+    if options.responses:
+        with open(options.responses, "w", encoding="utf-8") as handle:
+            json.dump(
+                _redact(responses, options.repo),
+                handle,
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
+            )
     return 0
 
 

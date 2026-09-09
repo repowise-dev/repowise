@@ -24,10 +24,11 @@ the smallest that DID was 60,718 — consistent with a 25000-token cap at the
 half that line. The residual risk is a user who *lowers*
 ``MAX_MCP_OUTPUT_TOKENS``, which :func:`effective_char_budget` clamps for.
 
-The estimator is intentionally dependency-free: 4 chars/token is the
-widely-quoted average for English + code on BPE tokenizers, and it undercounts
-the compact JSON we emit by roughly 1.7x. ``HOST_CAP_BUDGET_FRACTION`` absorbs
-that gap plus the JSON envelope and ``_meta`` the host counts on top.
+The estimator is dependency-free: it charges each content class of the
+serialised payload at a rate measured against the o200k_base tokenizer. A
+single divisor over the whole response undercounts, worst on the payloads that
+are mostly paths and identifiers. ``HOST_CAP_BUDGET_FRACTION`` absorbs the JSON
+envelope and ``_meta`` the host counts on top of ours.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from repowise.server.mcp_server._budget.collector import OmissionCollector
 logger = logging.getLogger(__name__)
 
 TOKEN_BUDGET = 8000
+#: The char ceiling the truncation path measures against, not an estimate.
 CHARS_PER_TOKEN = 4
 CHAR_BUDGET = TOKEN_BUDGET * CHARS_PER_TOKEN
 
@@ -86,15 +88,59 @@ def effective_char_budget(configured: int = CHAR_BUDGET) -> int:
     return min(configured, host_char_ceiling)
 
 
-def estimate_response_tokens(obj: Any) -> int:
-    """Cheap upper-bound token estimate for an arbitrary JSON-serialisable object.
+# Measured chars/token against the o200k_base tokenizer on recorded tool
+# responses. Paths and identifiers run densest, prose loosest.
+CHARS_PER_TOKEN_JSON_STRUCTURE = 3.7
+CHARS_PER_TOKEN_PATH = 3.4
+CHARS_PER_TOKEN_CODE_BODY = 3.8
+CHARS_PER_TOKEN_PROSE = 4.5
 
-    Serialises to compact JSON (the wire format the MCP layer eventually emits)
-    and divides by ``CHARS_PER_TOKEN``. We use the serialised form — not just
-    raw text fields — because structural JSON overhead (quotes, braces, field
-    names) is non-trivial and is what the downstream tokenizer actually sees.
+_CODE_PUNCTUATION = frozenset("(){}[]<>=;:+-*/%&|!@#$^~`_.")
+
+#: Punctuation share above which a whitespace-bearing string reads as code.
+#: Calibrated so a source body lands on the code side and an English sentence
+#: carrying identifiers does not.
+_CODE_PUNCTUATION_SHARE = 0.05
+
+
+def _content_class(text: str) -> str:
+    """Classify one JSON string leaf by how densely it tokenizes."""
+    if not any(character.isspace() for character in text):
+        return "path"
+    punctuation = sum(1 for character in text if character in _CODE_PUNCTUATION)
+    return "code" if punctuation >= len(text) * _CODE_PUNCTUATION_SHARE else "prose"
+
+
+def _add_leaf_chars(obj: Any, totals: dict[str, int]) -> None:
+    """Accumulate the serialised length of every string leaf, per content class."""
+    if isinstance(obj, str):
+        totals[_content_class(obj)] += len(json.dumps(obj))
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            _add_leaf_chars(value, totals)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            _add_leaf_chars(value, totals)
+
+
+def estimate_response_tokens(obj: Any) -> int:
+    """Token estimate for an arbitrary JSON-serialisable object.
+
+    Measures the compact JSON the MCP layer emits rather than the text fields
+    alone, because field names, quotes, and braces are what the downstream
+    tokenizer sees. Each string leaf is charged at its content class's rate and
+    everything left over (keys, punctuation, numbers, literals) at the
+    structural one.
     """
-    return len(json.dumps(obj, separators=(",", ":"), default=str)) // CHARS_PER_TOKEN
+    leaves = {"path": 0, "code": 0, "prose": 0}
+    _add_leaf_chars(obj, leaves)
+    structure = max(0, response_chars(obj) - sum(leaves.values()))
+    return int(
+        structure / CHARS_PER_TOKEN_JSON_STRUCTURE
+        + leaves["path"] / CHARS_PER_TOKEN_PATH
+        + leaves["code"] / CHARS_PER_TOKEN_CODE_BODY
+        + leaves["prose"] / CHARS_PER_TOKEN_PROSE
+    )
 
 
 # Reserved for what the collector appends after the last fit check: the
