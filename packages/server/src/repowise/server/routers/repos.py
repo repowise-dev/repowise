@@ -213,7 +213,7 @@ async def list_repos(
     # checking for a local .repowise/wiki.db file.
     indexed_repo_ids: set[str] = set()
     if responses:
-        with contextlib.suppress(SQLAlchemyError):
+        with contextlib.suppress(Exception):
             node_result = await session.execute(
                 select(GraphNode.repository_id)
                 .where(
@@ -249,9 +249,9 @@ async def list_repos(
     # whether file-typed graph nodes exist in the database.
     # Reuses the workspace "needs_index" / "missing_dir" contract the sidebar renders.
     for resp in responses:
-        if resp.workspace_status is None and resp.id not in indexed_repo_ids:
+        if resp.workspace_status is None and resp.local_path and resp.id not in indexed_repo_ids:
             try:
-                if resp.local_path and not Path(resp.local_path).is_dir():
+                if not Path(resp.local_path).is_dir():
                     resp.workspace_status = "missing_dir"
                 else:
                     resp.workspace_status = "needs_index"
