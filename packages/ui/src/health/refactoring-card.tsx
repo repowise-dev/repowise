@@ -9,6 +9,7 @@ import { type Severity } from "./tokens";
 import { ImpactFigure } from "./impact-figure";
 import { FindingOpportunityLink } from "./file-opportunity";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { SeverityMark } from "./severity-mark";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
@@ -174,6 +175,17 @@ export function HealthWorkItemCard({
           <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]" title="Total health impact across this file's findings">
             −{target.total_impact.toFixed(2)}
           </span>
+          <AskAboutThis
+            context={{
+              kind: "health",
+              label: target.file_path,
+              target: target.file_path,
+              targetKind: "path",
+            }}
+            question={`Explain the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path} and propose a safe way to address it.`}
+            label={`Ask about the finding in ${target.file_path}`}
+            className="-my-1 h-6 w-6"
+          />
         </div>
         <button
           type="button"

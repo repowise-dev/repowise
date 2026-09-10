@@ -1,6 +1,7 @@
 import * as React from "react";
 import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { healthBandColor, coverageTextColor } from "../health/tokens";
@@ -64,14 +65,27 @@ export function FilePageHeader({
           <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             File
           </p>
-          {wikiHref && (
-            <A
-              href={wikiHref}
-              className="shrink-0 text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
-            >
-              Read in Docs <span aria-hidden>&rarr;</span>
-            </A>
-          )}
+          <div className="flex shrink-0 items-center gap-2">
+            {wikiHref && (
+              <A
+                href={wikiHref}
+                className="text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
+              >
+                Read in Docs <span aria-hidden>&rarr;</span>
+              </A>
+            )}
+            <AskAboutThis
+              context={{
+                kind: "file",
+                label: data.file_path,
+                target: data.file_path,
+                targetKind: "path",
+              }}
+              question={`What is ${data.file_path} responsible for, and what is risky about changing it?`}
+              label="Ask about this file"
+              className="self-center"
+            />
+          </div>
         </div>
         {/* `break-all`, never an ellipsis: a path is the identity of this page
             and rule 6 puts no truncation in the primary column. The directory

@@ -39,6 +39,7 @@ import {
 
 import { ModuleLinkEditor } from "./module-link-editor";
 import { VerificationBadge } from "./verification-badge";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { DecisionStatusMark } from "./decision-status-mark";
 import { DecisionEvidenceDrawer } from "./decision-evidence-drawer";
 import { DecisionLineage } from "./decision-lineage";
@@ -288,6 +289,16 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
             {decision.verification && (
               <VerificationBadge verification={decision.verification} />
             )}
+            <AskAboutThis
+              context={{
+                kind: "decision",
+                label: stripMarkdown(decision.title),
+                target: decision.id,
+                targetKind: "decision",
+              }}
+              question={`Why was this decision made, what evidence supports it, and has later work conflicted with it?`}
+              label="Ask about this decision"
+            />
           </div>
         </div>
 

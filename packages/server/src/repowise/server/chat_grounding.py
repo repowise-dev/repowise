@@ -28,6 +28,11 @@ _PREFETCH_BY_KIND: dict[str, tuple[str, str, bool]] = {
     "module": ("get_context", "targets", True),
     "symbol": ("get_symbol", "symbol_id", False),
     "risk": ("get_risk", "targets", True),
+    # Dead code and blast radius are separate page kinds so their seeded
+    # questions fit, but the evidence a reader needs on both is what depends on
+    # the selected files, which is what get_risk reports.
+    "dead-code": ("get_risk", "targets", True),
+    "blast-radius": ("get_risk", "targets", True),
     "health": ("get_health", "targets", True),
     "decision": ("get_why", "id", False),
     "commit": ("get_change_risk", "revspec", False),
