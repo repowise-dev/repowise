@@ -250,9 +250,12 @@ async def list_repos(
     # Reuses the workspace "needs_index" / "missing_dir" contract the sidebar renders.
     for resp in responses:
         if resp.workspace_status is None and resp.id not in indexed_repo_ids:
-            if resp.local_path and not Path(resp.local_path).is_dir():
-                resp.workspace_status = "missing_dir"
-            else:
+            try:
+                if resp.local_path and not Path(resp.local_path).is_dir():
+                    resp.workspace_status = "missing_dir"
+                else:
+                    resp.workspace_status = "needs_index"
+            except OSError:
                 resp.workspace_status = "needs_index"
 
     # Augment with workspace metadata. We do this in a second pass (rather
