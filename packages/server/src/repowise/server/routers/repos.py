@@ -170,8 +170,23 @@ async def list_repos(
     what powers the web UI sidebar — silently dropping unindexed repos
     used to cause the "I only see the primary" Discord report.
     """
-    result = await session.execute(select(Repository).order_by(Repository.updated_at.desc()))
-    repos = list(result.scalars().all())
+    has_files_subq = (
+        select(GraphNode.repository_id)
+        .where(GraphNode.node_type == "file")
+        .group_by(GraphNode.repository_id)
+        .subquery()
+    )
+    result = await session.execute(
+        select(Repository, has_files_subq.c.repository_id.is_not(None))
+        .outerjoin(has_files_subq, Repository.id == has_files_subq.c.repository_id)
+        .order_by(Repository.updated_at.desc())
+    )
+    repos: list[Repository] = []
+    indexed_repo_ids: set[str] = set()
+    for r, is_indexed in result.all():
+        repos.append(r)
+        if is_indexed:
+            indexed_repo_ids.add(r.id)
     seen_ids = {r.id for r in repos}
 
     # In workspace mode, also fetch repos from other workspace DBs
@@ -182,12 +197,17 @@ async def list_repos(
         try:
             async with ws_factory() as ws_session:
                 ws_result = await ws_session.execute(
-                    select(Repository).where(Repository.id == repo_id)
+                    select(Repository, has_files_subq.c.repository_id.is_not(None))
+                    .outerjoin(has_files_subq, Repository.id == has_files_subq.c.repository_id)
+                    .where(Repository.id == repo_id)
                 )
-                ws_repo = ws_result.scalar_one_or_none()
-                if ws_repo:
+                row = ws_result.first()
+                if row:
+                    ws_repo, ws_is_indexed = row
                     repos.append(ws_repo)
                     seen_ids.add(ws_repo.id)
+                    if ws_is_indexed:
+                        indexed_repo_ids.add(ws_repo.id)
         except Exception:
             pass
 
@@ -206,43 +226,6 @@ async def list_repos(
     for resp in responses:
         if resp.local_path:
             resp.head_commit = resolve_indexed_commit(resp.head_commit, resp.local_path)
-
-    # Collect IDs of repositories that have actually been indexed (i.e. have
-    # at least one file-typed GraphNode). Checking the database directly works
-    # identically across SQLite and PostgreSQL (shared REPOWISE_DB_URL), unlike
-    # checking for a local .repowise/wiki.db file.
-    indexed_repo_ids: set[str] = set()
-    if responses:
-        with contextlib.suppress(Exception):
-            node_result = await session.execute(
-                select(GraphNode.repository_id)
-                .where(
-                    GraphNode.repository_id.in_([r.id for r in responses]),
-                    GraphNode.node_type == "file",
-                )
-                .group_by(GraphNode.repository_id)
-            )
-            indexed_repo_ids.update(row[0] for row in node_result.all())
-
-        # In multi-database workspace mode, secondary workspace sessions may hold
-        # their own graph_nodes tables.
-        for repo_id, ws_factory in ws_sessions.items():
-            if repo_id in indexed_repo_ids:
-                continue
-            try:
-                async with ws_factory() as ws_session:
-                    ws_node_result = await ws_session.execute(
-                        select(GraphNode.repository_id)
-                        .where(
-                            GraphNode.repository_id == repo_id,
-                            GraphNode.node_type == "file",
-                        )
-                        .limit(1)
-                    )
-                    if ws_node_result.first():
-                        indexed_repo_ids.add(repo_id)
-            except Exception:
-                pass
 
     # Flag registered-but-never-indexed repos. head_commit can't signal this
     # (registration stamps it from the live git HEAD), so the honest check is
