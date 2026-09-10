@@ -24,7 +24,8 @@ from repowise.core.persistence.database import (
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
-from repowise.core.providers.embedding.base import KeylessEmbedder
+from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
+from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server.mcp_server import _state
 
 _log = __import__("logging").getLogger("repowise.mcp")
@@ -289,6 +290,23 @@ def _resolve_embedder():
         return KeylessEmbedder()
 
 
+def _query_embedder():
+    """The embedder this server answers queries with.
+
+    Wrapped so a repeated query does not pay the provider round trip again.
+
+    Only this process wraps: a CLI invocation is one-shot and serves a single
+    query, so a per-process cache could never hit there. The HTTP server
+    (``server/app.py``) is long-lived and would benefit, and is left unwrapped
+    only to keep this change to the surface the cost was measured on.
+
+    Keyless is left bare — :func:`is_semantic_embedder` identifies it by type
+    to switch the vector leg off, and a wrapper would defeat that.
+    """
+    embedder = _resolve_embedder()
+    return CachingEmbedder(embedder) if is_semantic_embedder(embedder) else embedder
+
+
 #: How often the running server re-reads release currency. The PyPI fetch
 #: itself is TTL-cached on disk for a day and shared with the CLI advisory, so
 #: this bounds only the in-process refresh, never the network.
@@ -383,7 +401,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
     import asyncio as _asyncio
 
     try:
-        embedder = _resolve_embedder()
+        embedder = _query_embedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
 
         try:
@@ -510,7 +528,7 @@ async def _lifespan(server: FastMCP):
         registry = RepoRegistry(
             workspace_root=ws_root,
             ws_config=ws_config,
-            embedder_factory=lambda: _resolve_embedder(),
+            embedder_factory=_query_embedder,
         )
 
         # Eagerly load the default repo so tools work immediately. A failure
