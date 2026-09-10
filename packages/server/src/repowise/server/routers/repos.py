@@ -207,20 +207,53 @@ async def list_repos(
         if resp.local_path:
             resp.head_commit = resolve_indexed_commit(resp.head_commit, resp.local_path)
 
+    # Collect IDs of repositories that have actually been indexed (i.e. have
+    # at least one file-typed GraphNode). Checking the database directly works
+    # identically across SQLite and PostgreSQL (shared REPOWISE_DB_URL), unlike
+    # checking for a local .repowise/wiki.db file.
+    indexed_repo_ids: set[str] = set()
+    if responses:
+        with contextlib.suppress(SQLAlchemyError):
+            node_result = await session.execute(
+                select(GraphNode.repository_id)
+                .where(
+                    GraphNode.repository_id.in_([r.id for r in responses]),
+                    GraphNode.node_type == "file",
+                )
+                .group_by(GraphNode.repository_id)
+            )
+            indexed_repo_ids.update(row[0] for row in node_result.all())
+
+        # In multi-database workspace mode, secondary workspace sessions may hold
+        # their own graph_nodes tables.
+        for repo_id, ws_factory in ws_sessions.items():
+            if repo_id in indexed_repo_ids:
+                continue
+            try:
+                async with ws_factory() as ws_session:
+                    ws_node_result = await ws_session.execute(
+                        select(GraphNode.repository_id)
+                        .where(
+                            GraphNode.repository_id == repo_id,
+                            GraphNode.node_type == "file",
+                        )
+                        .limit(1)
+                    )
+                    if ws_node_result.first():
+                        indexed_repo_ids.add(repo_id)
+            except Exception:
+                pass
+
     # Flag registered-but-never-indexed repos. head_commit can't signal this
     # (registration stamps it from the live git HEAD), so the honest check is
-    # the repo-local store: since the initial-index path always establishes
-    # <repo>/.repowise/wiki.db, its absence means the first index hasn't run.
-    # Reuses the workspace "needs_index" contract the sidebar already renders.
-    from pathlib import Path as _Path
-
+    # whether file-typed graph nodes exist in the database.
+    # Reuses the workspace "needs_index" / "missing_dir" contract the sidebar renders.
     for resp in responses:
-        if resp.workspace_status is None and resp.local_path:
-            try:
-                if not (_Path(resp.local_path) / ".repowise" / "wiki.db").is_file():
-                    resp.workspace_status = "needs_index"
-            except OSError:
-                pass
+        if resp.workspace_status is None and resp.id not in indexed_repo_ids:
+            if resp.local_path and not Path(resp.local_path).is_dir():
+                resp.workspace_status = "missing_dir"
+            else:
+                resp.workspace_status = "needs_index"
 
     # Augment with workspace metadata. We do this in a second pass (rather
     # than during from_orm) because the workspace context lives on
@@ -233,21 +266,24 @@ async def list_repos(
     import json as _json
 
     ws_root_path = Path(ws_root)
-    # Map local_path → alias entry for quick attach on indexed rows.
+    # Map local_path → alias entry for quick attach on registered rows.
     by_path: dict[str, object] = {
         str((ws_root_path / e.path).resolve()): e for e in ws_config.repos
     }
 
-    # Attach alias + status + docs status to already-indexed rows.
-    indexed_aliases: set[str] = set()
+    # Attach alias + identity + docs status to registered rows.
+    matched_aliases: set[str] = set()
     for resp in responses:
+        if not resp.local_path:
+            continue
         entry = by_path.get(str(Path(resp.local_path).resolve()))
         if entry is None:
             continue
         resp.workspace_alias = entry.alias
         resp.is_primary = bool(entry.is_primary)
-        resp.workspace_status = "indexed"
-        indexed_aliases.add(entry.alias)
+        if resp.id in indexed_repo_ids:
+            resp.workspace_status = "indexed"
+        matched_aliases.add(entry.alias)
 
         # The docs mode and index tier are recorded per-repo in state.json.
         # Read it once per response: cheap, and never failing.
@@ -270,13 +306,13 @@ async def list_repos(
             except Exception:
                 pass
 
-    # Synthesize entries for repos in the workspace that aren't indexed yet.
+    # Synthesize entries for repos in the workspace that aren't registered yet.
     from datetime import UTC as _UTC
     from datetime import datetime
 
     now = datetime.now(_UTC)
     for entry in ws_config.repos:
-        if entry.alias in indexed_aliases:
+        if entry.alias in matched_aliases:
             continue
         abs_path = (ws_root_path / entry.path).resolve()
         status = "needs_index" if abs_path.is_dir() else "missing_dir"
