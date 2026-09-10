@@ -123,6 +123,15 @@ _DF_CACHE_MAX = 2048
 # concatenated. Small enough not to disturb any threshold downstream.
 _SCORE_EPSILON = 1e-6
 
+# Per-column bm25 weights, in ``PAGE_FTS_COLUMNS`` order: title and
+# target_path name the file a page is about, content and summary only mention
+# it. ``page_id`` is UNINDEXED and contributes nothing, but bm25() takes one
+# weight per column, so it still needs one. bm25() ignores a weight past the
+# last column and defaults a missing one to 1.0, so the arity is checked by
+# test_search_fts_columns rather than by anything raising here.
+_BM25_COLUMN_WEIGHTS = (0.0, 4.0, 1.0, 1.0, 3.0)
+_BM25_SCORE = "bm25(page_fts, " + ", ".join(str(w) for w in _BM25_COLUMN_WEIGHTS) + ")"
+
 _log = logging.getLogger(__name__)
 
 
@@ -610,10 +619,10 @@ class FullTextSearch:
     async def _matching_rows(self, conn, fts_query: str, limit: int) -> list:
         rows = await conn.execute(
             text(
-                "SELECT f.page_id, f.title, f.content, f.rank "
+                f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
                 "FROM page_fts f "
                 "WHERE page_fts MATCH :q "
-                "ORDER BY rank "
+                f"ORDER BY {_BM25_SCORE} "
                 "LIMIT :lim"
             ),
             {"q": fts_query, "lim": limit},
@@ -621,7 +630,7 @@ class FullTextSearch:
         return list(rows.fetchall())
 
     async def _search_sqlite(self, query: str, limit: int) -> list[SearchResult]:
-        """FTS5 search.  ``rank`` is negative; we negate it to get a positive score."""
+        """FTS5 search.  bm25 is negative; we negate it to get a positive score."""
         async with self._engine.connect() as conn:
 
             async def df(term: str) -> int:

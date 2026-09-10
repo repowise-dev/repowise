@@ -210,3 +210,47 @@ async def test_a_page_id_repeated_in_one_batch_keeps_its_last_entry(fts):
 async def test_index_many_of_nothing_is_a_no_op(fts):
     await fts.index_many([])
     assert await _indexed_ids(fts) == set()
+
+
+async def test_path_only_match_outranks_content_only_match(fts):
+    """A page the query names by path beats one that only mentions the word.
+
+    Both pages carry the term once, and the path-matching one has the longer
+    body, so bm25's length normalisation ranks it second under uniform column
+    weights. Only weighting target_path above content flips it.
+
+    The fillers keep the corpus off the degenerate case where every page
+    matches and bm25 clamps a non-positive idf to a floor, leaving every score
+    at ~1e-6.
+    """
+    sentence = "This module handles records for the wider system and explains its use. "
+    await fts.index(
+        "path-match",
+        "Collector",
+        sentence * 6,
+        summary="A collector module.",
+        target_path="packages/core/telemetry/collector.py",
+    )
+    await fts.index(
+        "content-match",
+        "Emitter",
+        sentence * 2 + " It forwards each record to telemetry.",
+        summary="An emitter module.",
+        target_path="packages/core/reporting/emitter.py",
+    )
+    await fts.index_many(
+        [
+            (
+                f"filler{i}",
+                f"Filler {i}",
+                "An unrelated module about parsing and graphs. " * 3,
+                "Filler.",
+                f"packages/core/other/mod{i}.py",
+            )
+            for i in range(10)
+        ]
+    )
+
+    results = await fts.search("telemetry")
+
+    assert [r.page_id for r in results] == ["path-match", "content-match"]
