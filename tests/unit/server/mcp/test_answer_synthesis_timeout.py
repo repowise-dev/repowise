@@ -127,6 +127,7 @@ def test_every_builtin_provider_has_a_deliberate_budget():
     expected = {
         "anthropic": 60.0,
         "openai": 60.0,
+        "azure_openai": 60.0,
         "openrouter": 60.0,
         "gemini": 60.0,
         "deepseek": 60.0,
