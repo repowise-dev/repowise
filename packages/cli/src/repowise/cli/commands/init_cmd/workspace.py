@@ -314,6 +314,20 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     )
     ensure_repowise_dir(repo.path)
 
+    # The index phase mines decisions with a model too -- pull requests, git
+    # history and code comments all have a model stage -- so it needs the
+    # provider as much as generation does. Leaving it out made every one of
+    # those sources report "No LLM provider is configured" on a workspace run
+    # that had been given a perfectly good one, while the single-repo path
+    # (which passes its client) mined them normally.
+    #
+    # Bound to this repo rather than reused verbatim: a provider that shells
+    # out with a working directory has to point at the repo being indexed, not
+    # at whichever one resolved the provider first.
+    repo_provider = (
+        None if ctx.dry_run else _workspace_generation_provider_for_repo(ctx.provider, repo.path)
+    )
+
     try:
         with Progress(
             SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
@@ -338,6 +352,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                     exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
                     include_submodules=ctx.include_submodules,
                     generate_docs=False,
+                    llm_client=repo_provider,
                     mode=(
                         OrchestratorMode.FAST
                         if ctx.run_mode == "fast"
@@ -403,7 +418,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         skip_reason = "fast mode"
     elif not index_only and provider is not None:
         try:
-            repo_provider = _workspace_generation_provider_for_repo(provider, repo.path)
+            # Already bound to this repo above, for the index phase.
             generated_pages = _run_workspace_generation(
                 repo_path=repo.path,
                 result=result,
