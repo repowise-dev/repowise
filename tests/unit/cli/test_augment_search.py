@@ -13,7 +13,8 @@ and are exercised end-to-end in integration tests instead.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -748,3 +749,64 @@ class TestWidenedRescueGate:
         session = _FakeSession([])
         out = await _rescue(session, None, 1, "parse_yaml", "parse_yaml", {"src/a.py": 3})
         assert out is None
+
+    async def test_fts_fallback_silent_below_the_score_floor(self) -> None:
+        """A single-token ride (score ~3) must not produce a suggestion.
+
+        The repro from #2092: `bluetooth codec negotiation fallback` rides
+        on the one common token "fallback" at BM25 3.45 and names an
+        unrelated file. Below the floor, silence beats a confident wrong
+        suggestion.
+        """
+        session = _FakeSession([])
+        fake_fts = SimpleNamespace(
+            search=AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        score=3.45,
+                        target_path="config/shared/claude/hooks/prefer-web-tools.py",
+                        page_type="file_page",
+                    )
+                ]
+            )
+        )
+        with patch(
+            "repowise.core.persistence.FullTextSearch",
+            return_value=fake_fts,
+        ):
+            out = await _rescue(
+                session,
+                object(),
+                1,
+                "bluetooth codec negotiation fallback",
+                "bluetooth codec negotiation fallback",
+            )
+        assert out is None
+
+    async def test_fts_fallback_fires_above_the_score_floor(self) -> None:
+        """A genuinely related page (score 2-3x the weak cluster) still fires."""
+        session = _FakeSession([])
+        fake_fts = SimpleNamespace(
+            search=AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        score=16.47,
+                        target_path="config/btrfs/monitor.py",
+                        page_type="file_page",
+                    )
+                ]
+            )
+        )
+        with patch(
+            "repowise.core.persistence.FullTextSearch",
+            return_value=fake_fts,
+        ):
+            out = await _rescue(
+                session,
+                object(),
+                1,
+                "btrfs space monitoring",
+                "btrfs space monitoring",
+            )
+        assert out is not None
+        assert "btrfs/monitor.py" in out
