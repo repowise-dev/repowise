@@ -8,7 +8,7 @@ files match, and how much work sits in them.
 
 from __future__ import annotations
 
-from repowise.core.analysis.health.models import HealthFindingData, HealthFileMetricData
+from repowise.core.analysis.health.models import HealthFileMetricData, HealthFindingData
 from repowise.core.persistence.crud import (
     save_health_findings,
     save_health_metrics,
