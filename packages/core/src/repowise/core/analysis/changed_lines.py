@@ -125,6 +125,33 @@ def _parse_unified_diff(diff: str) -> dict[str, set[int]]:
     return {path: f.new_lines for path, f in parse_unified_diff(diff).items() if f.new_lines}
 
 
+def coverage_intersection(
+    changes: dict[str, set[int]],
+    coverage: dict[str, set[int]],
+) -> dict[str, set[int]]:
+    """Files with at least one changed line that a test exercises.
+
+    *changes* is the ``{file: changed_lines}`` map from :func:`changed_lines`;
+    *coverage* is ``{file: lines a test exercises}``. This is the join the
+    changed-line parser exists to feed: a file whose changed lines intersect
+    coverage has a test that would catch a regression there, so it is the
+    high-value target for focused re-running.
+
+    Files absent from *coverage*, or present but with no overlapping line, are
+    omitted — an uncovered change is exactly what this query is meant to
+    *not* return. Returns a fresh dict; inputs are never mutated.
+    """
+    out: dict[str, set[int]] = {}
+    for path, lines in changes.items():
+        covered = coverage.get(path)
+        if not covered:
+            continue
+        hit = lines & covered
+        if hit:
+            out[path] = hit
+    return out
+
+
 def _verify_ref(repo_path: str, ref: str) -> None:
     # check=False: `rev-parse --verify --quiet` deliberately exits 1 with empty
     # stdout for a missing ref, which is the signal we test for here. Without the
