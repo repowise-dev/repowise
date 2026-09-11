@@ -779,6 +779,7 @@ def _compile_query(lang: str, grammar_tag: str | None = None) -> tuple[object | 
         return None, str(exc)
 
 
+@cache
 def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | None:
     """Process-wide cache of compiled tree-sitter Query objects.
 

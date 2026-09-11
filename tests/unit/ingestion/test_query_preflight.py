@@ -11,7 +11,11 @@ from typing import ClassVar
 
 import pytest
 
-from repowise.core.ingestion.parser import _compile_query, failed_query_languages
+from repowise.core.ingestion.parser import (
+    _compile_query,
+    _load_compiled_query,
+    failed_query_languages,
+)
 
 
 def test_a_language_with_valid_query_is_not_reported() -> None:
@@ -139,4 +143,41 @@ def test_query_preflight_never_breaks_an_index() -> None:
             pass
 
     _report_query_compilation_failures(None, _Progress())
-    _report_query_compilation_failures(_Exploding(), None)
+    _report_query_compilation_failures(_Exploding(), _Progress())
+
+
+def test_load_compiled_query_caches_compilation_and_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_load_compiled_query must be cached process-wide to avoid duplicate warnings per file."""
+    import tree_sitter
+
+    from repowise.core.ingestion import parser
+
+    _compile_query.cache_clear()
+    _load_compiled_query.cache_clear()
+
+    warning_calls: list[dict] = []
+
+    def _broken_query(language: object, source: str) -> object:
+        raise ValueError("Simulated compile failure")
+
+    monkeypatch.setattr(tree_sitter, "Query", _broken_query)
+    monkeypatch.setattr(
+        parser.log, "warning", lambda msg, **kwargs: warning_calls.append({"msg": msg, **kwargs})
+    )
+
+    try:
+        # First call: triggers compilation, returns None, logs warning
+        res1 = _load_compiled_query("python")
+        assert res1 is None
+        assert len(warning_calls) == 1
+        assert warning_calls[0]["msg"] == "Failed to compile query"
+        assert warning_calls[0]["language"] == "python"
+
+        # Second call: must be cached, return None without emitting duplicate warning
+        res2 = _load_compiled_query("python")
+        assert res2 is None
+        assert len(warning_calls) == 1
+    finally:
+        _compile_query.cache_clear()
+        _load_compiled_query.cache_clear()
+
