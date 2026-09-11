@@ -134,7 +134,31 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # flags. A flag here would leave the prefilter case-sensitive and it would
     # reject the line before the pattern ever ran.
     (re.compile(r"(?i:password)\s*=\s*['\"]([^'\"]*)"), "hardcoded_password", "high"),
-    (re.compile(r"(?i:api_?key|secret)\s*=\s*['\"]([^'\"]*)"), "hardcoded_secret", "high"),
+    (
+        re.compile(r"(?i:api_?key|secret|token|access_?key)\s*=\s*['\"]([^'\"]*)"),
+        "hardcoded_secret",
+        "high",
+    ),
+    # Value-shape patterns for common vendor credential formats (gitleaks'
+    # rule set, MIT-licensed, is the reference for these shapes). These fire
+    # regardless of the variable name a key is assigned to, so a vendor key
+    # bound to an unlisted name (``client_id``) or passed inline is still
+    # caught. Each carries a capture group around the credential value itself
+    # so the ``SECRET_KINDS`` gate below (length + placeholder check) applies
+    # to it the same as the keyword patterns above.
+    (re.compile(r"\b((?:AKIA|ASIA)[A-Z2-7]{16})\b"), "aws_access_key", "high"),
+    (
+        re.compile(r"\b(gh[oprsu]_[0-9A-Za-z]{36}|github_pat_\w{82})\b"),
+        "github_token",
+        "high",
+    ),
+    (re.compile(r"(?i:(xox[baprs]-[0-9a-zA-Z-]{10,72}))"), "slack_token", "high"),
+    (re.compile(r"\b(AIza[0-9A-Za-z_-]{35})\b"), "google_api_key", "high"),
+    (
+        re.compile(r"\b((?:sk_(?:live|test)|pk_live)_[0-9A-Za-z]{10,99})\b"),
+        "stripe_key",
+        "high",
+    ),
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
     (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
@@ -207,6 +231,17 @@ _SPANNING_PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "subprocess_shell_true",
         "high",
     ),
+    # A PEM header alone is not a leak: code that assembles PEM text
+    # (``"-----BEGIN " + kind + " PRIVATE KEY-----"``) contains the header
+    # string without ever holding key material. Requiring a base64-looking
+    # body line right after the header is what tells the two apart, and the
+    # capture group around that body line is the value the SECRET_KINDS gate
+    # below checks (length + placeholder), same as every other secret kind.
+    (
+        re.compile(r"(?i:-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----)\r?\n([A-Za-z0-9+/=]{20,})"),
+        "private_key_pem",
+        "high",
+    ),
 ]
 
 # Symbol names that are informational security hotspots
@@ -218,7 +253,18 @@ _SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", r
 # mostly noise, whereas a committed secret is actionable and persists in
 # history. This positions history mode as complementary to gitleaks /
 # trufflehog rather than a noisy replacement.
-SECRET_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secret"})
+SECRET_KINDS: frozenset[str] = frozenset(
+    {
+        "hardcoded_password",
+        "hardcoded_secret",
+        "aws_access_key",
+        "github_token",
+        "slack_token",
+        "google_api_key",
+        "stripe_key",
+        "private_key_pem",
+    }
+)
 
 # Kinds whose ``snippet`` is a symbol *name* rather than the text of the line
 # it sits on (see the symbol-name scan below). Serve-time line verification
@@ -462,6 +508,12 @@ class SecurityScanner:
         # the per-line pass already caught on that line is not duplicated.
         for pattern, kind, severity in _SPANNING_PATTERNS:
             for match in pattern.finditer(source):
+                if kind in SECRET_KINDS:
+                    val = match.group(1) if match.groups() else ""
+                    if not _is_valid_credential_value(val):
+                        continue
+                    if is_low_sev_file:
+                        severity = "low"
                 start_line = source.count("\n", 0, match.start()) + 1
                 if any(f["kind"] == kind and f["line"] == start_line for f in findings):
                     continue

@@ -246,9 +246,24 @@ async def test_history_progress_fires_for_clean_repo(session: AsyncSession) -> N
     assert summary.files_scanned == 1
 
 
-def test_secret_kinds_are_the_two_secret_patterns() -> None:
-    """Guard against the registry drifting away from the history gate."""
-    assert {"hardcoded_password", "hardcoded_secret"} == SECRET_KINDS
+def test_secret_kinds_are_the_genuine_credential_patterns() -> None:
+    """Guard against the registry drifting away from the history gate.
+
+    #2117 added value-shape patterns for vendor credential formats (AWS,
+    GitHub, Slack, Google, Stripe) and a PEM private-key pattern; all are
+    genuine leaked-credential kinds, so history mode's default gate covers
+    them the same as the two keyword-based kinds.
+    """
+    assert {
+        "hardcoded_password",
+        "hardcoded_secret",
+        "aws_access_key",
+        "github_token",
+        "slack_token",
+        "google_api_key",
+        "stripe_key",
+        "private_key_pem",
+    } == SECRET_KINDS
 
 
 # ---------------------------------------------------------------------------
