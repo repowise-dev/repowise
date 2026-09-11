@@ -389,12 +389,29 @@
   --radius-lg: 10px;
   --radius-xl: 14px;
 
+  /*
+   * Stacking order, low to high. Two groups: *surfaces*, which own a region of
+   * the page, and *floating layers*, which are transient and anchored to a
+   * control that already lives on one of those surfaces.
+   *
+   * Floating layers therefore sit above every surface. Radix portals a Select,
+   * Popover and Tooltip to document.body, so inside a Dialog they are siblings
+   * of the dialog portal rather than children of it, and nothing but z-index
+   * decides which paints on top. With --z-dropdown below --z-modal, the wiki
+   * style Select in the Add Repository dialog opened underneath the dialog's
+   * own overlay.
+   *
+   * --z-command is above --z-modal because the command palette opens over
+   * dialogs; note it currently hardcodes calc(var(--z-modal) + 1) instead of
+   * reading this token, so --z-dropdown has to clear that value too.
+   * Toasts stay above everything, floating layers included.
+   */
   --z-base: 0;
   --z-elevated: 10;
-  --z-dropdown: 20;
   --z-sidebar: 30;
   --z-modal: 40;
   --z-command: 50;
+  --z-dropdown: 55;
   --z-toast: 60;
 
   --sidebar-width: 260px;

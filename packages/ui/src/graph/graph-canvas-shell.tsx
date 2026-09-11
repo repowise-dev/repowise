@@ -111,14 +111,22 @@ export function GraphCanvasShell({
             className={cn(
               // Bottom sheet under lg so the canvas keeps its height on a
               // phone; a real grid column from lg up.
-              // `--z-dropdown`, which is the raw `z-20` this used to carry
-              // spelled as the token. Deliberately NOT `--z-sidebar`: Radix
-              // tooltips and popovers portal to `body` at `--z-dropdown`, so a
-              // rail that outranked them would render its own tooltips behind
-              // itself. Equal, and later in the DOM, is what makes them land on
-              // top. It still clears the canvas chrome at `--z-elevated`, and
-              // still yields to the context menu and the help modal.
-              "absolute inset-x-0 bottom-0 z-[var(--z-dropdown)] flex max-h-[70%] flex-col overflow-hidden",
+              // `--z-sidebar`: the rail is a surface, and surfaces sit below
+              // every floating layer. It clears the canvas chrome at
+              // `--z-elevated` and yields to the context menu and the help
+              // modal at `--z-modal`.
+              //
+              // This used to be `--z-dropdown`, to tie with the Radix tooltips
+              // and popovers that portal to `body` — a rail that outranked them
+              // would have rendered its own tooltips behind itself, and equal
+              // plus later in the DOM was what put them on top. That tie is no
+              // longer needed: `--z-dropdown` now outranks every surface, so
+              // those tooltips land in front by the scale rather than by DOM
+              // order. Staying on `--z-dropdown` would instead drag this rail
+              // above `--z-modal`, and an open rail would paint over any dialog
+              // under `lg` (above `lg` it is `lg:static` and z-index stops
+              // applying). See `packages/ui/__tests__/z-layering.test.ts`.
+              "absolute inset-x-0 bottom-0 z-[var(--z-sidebar)] flex max-h-[70%] flex-col overflow-hidden",
               "rounded-t-xl border-t border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shadow-xl shadow-black/20",
               // `h-0 min-h-full`: fill the row without contributing to its
               // height, so a tall panel scrolls instead of stretching the canvas.
