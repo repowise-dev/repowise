@@ -15,6 +15,9 @@ export interface FileWikiPageRef {
   freshness_status: string;
   confidence: number;
   human_notes: string | null;
+  /** Hand-requested doc: regenerated on every reindex so it keeps
+      following the code (issue #812). */
+  pinned: boolean;
   updated_at: string | null;
 }
 

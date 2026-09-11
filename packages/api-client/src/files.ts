@@ -1,5 +1,5 @@
 import type { FileDetailResponse, FilesIndexResponse } from "@repowise-dev/types/files";
-import { apiGet, BASE_URL, buildHeaders } from "./client";
+import { apiGet, apiPost, BASE_URL, buildHeaders } from "./client";
 
 /** Slim per-file rows for the browsable Files index + treemap. */
 export async function getFilesIndex(repoId: string): Promise<FilesIndexResponse> {
@@ -21,6 +21,15 @@ export async function getFileDetail(
   const encoded = filePath.split("/").map(encodeURIComponent).join("/");
   const qs = opts?.fields ? `?fields=${opts.fields}` : "";
   return apiGet<FileDetailResponse>(`/api/repos/${repoId}/files/${encoded}${qs}`);
+}
+
+/** Pin a file's doc so every reindex regenerates it (issue #812). */
+export async function pinFileDoc(
+  repoId: string,
+  filePath: string,
+): Promise<{ file_path: string; pinned: boolean }> {
+  const encoded = filePath.split("/").map(encodeURIComponent).join("/");
+  return apiPost(`/api/repos/${repoId}/files/${encoded}/pin-doc`);
 }
 
 /** Raw file content from the repo checkout (plain text, not JSON). */
