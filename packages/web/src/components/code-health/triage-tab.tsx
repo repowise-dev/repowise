@@ -18,7 +18,6 @@ import { fileEntityPath, symbolEntityPath } from "@repowise-dev/ui/shared/entity
 import {
   getHealthOverview,
   getHealthWorkQueue,
-  listHealthFiles,
   listHealthFindings,
   getHealthCoverage,
   updateFindingStatus,
@@ -84,7 +83,6 @@ export function TriageTab({
     getOverview: (limit) => getHealthOverview(id, limit, scope, counts),
     listFindings: (opts) =>
       listHealthFindings(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
-    listFiles: (opts) => listHealthFiles(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
     getHealthWorkQueue: (opts) =>
       getHealthWorkQueue(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
     updateFindingStatus: (findingId, status) =>

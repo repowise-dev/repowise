@@ -5,7 +5,7 @@ import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react"
 import { InfoTip } from "../shared/info-tip";
 import { biomarkerInfo, biomarkerLabel } from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
-import { type Severity } from "./tokens";
+import { EFFORT_TINT, type Severity } from "./tokens";
 import { ImpactFigure } from "./impact-figure";
 import { FindingOpportunityLink } from "./file-opportunity";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
@@ -41,6 +41,7 @@ export interface HealthWorkItem {
   primary_finding_id?: string;
   total_impact: number;
   finding_count: number;
+  open_finding_count?: number;
   biomarkers: string[];
   effort_bucket: EffortBucket;
   impact_per_effort: number;
@@ -85,13 +86,6 @@ const effortLabel: Record<EffortBucket, string> = {
   M: "Medium",
   L: "Large",
   XL: "Extra large",
-};
-
-const effortColor: Record<EffortBucket, string> = {
-  S: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
-  M: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
-  L: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
-  XL: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
 };
 
 export function HealthWorkItemCard({
@@ -166,7 +160,7 @@ export function HealthWorkItemCard({
             </span>
           ) : null}
           <span
-            className={`inline-block rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${effortColor[target.effort_bucket]}`}
+            className={`inline-block rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${EFFORT_TINT[target.effort_bucket]}`}
             title={`Effort: ${effortLabel[target.effort_bucket]} (NLOC ${target.nloc})`}
           >
             {target.effort_bucket}
@@ -177,6 +171,7 @@ export function HealthWorkItemCard({
         </div>
         <button
           type="button"
+          data-work-item-header=""
           onClick={onSelect ? () => onSelect(target) : undefined}
           className="group/file flex w-full items-center gap-1.5 text-left rounded-md -mx-1 px-1 py-0.5 hover:bg-[var(--color-bg-elevated)] disabled:cursor-default disabled:hover:bg-transparent"
           disabled={!onSelect}
@@ -205,7 +200,13 @@ export function HealthWorkItemCard({
           <span>Score {target.score.toFixed(1)}/10</span>
           <span>· {target.nloc} NLOC</span>
           <span>· {effortLabel[target.effort_bucket]} effort</span>
-          <span>· {target.finding_count} findings</span>
+          <span>
+            {"· "}
+            {target.open_finding_count != null &&
+            target.open_finding_count !== target.finding_count
+              ? `${target.open_finding_count} open of ${target.finding_count} findings`
+              : `${target.finding_count} findings`}
+          </span>
           <span className="ml-auto tabular-nums">leverage {target.impact_per_effort.toFixed(2)}</span>
         </div>
         {onGeneratePrompt ? (
@@ -253,6 +254,7 @@ export function HealthWorkItemCard({
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}
+                    <FindingLine lineStart={f.line_start} />
                     <ImpactFigure impact={f.health_impact} className="ml-auto text-xs" />
                   </div>
                   <p className="text-xs text-[var(--color-text-tertiary)] line-clamp-2">{f.reason}</p>
@@ -283,6 +285,20 @@ export type RefactoringTarget = HealthWorkItem;
 export type RefactoringTargetFinding = HealthWorkItemFinding;
 export type RefactoringCardProps = HealthWorkItemCardProps;
 export const RefactoringCard = HealthWorkItemCard;
+
+/**
+ * Where a finding sits. Not a link: no file view renders a line anchor, so a
+ * "line 412" href would land at the top of the page every time. Silent
+ * without a line, because a marker describing the whole file has none.
+ */
+function FindingLine({ lineStart }: { lineStart: number | null | undefined }) {
+  if (lineStart == null) return null;
+  return (
+    <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
+      line {lineStart}
+    </span>
+  );
+}
 
 function StatusButton({
   current,

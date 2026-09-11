@@ -62,7 +62,7 @@ export function FilterChip({
   );
 }
 
-/** Segmented toggle for a single axis (Queue / All files, prompt target agent). */
+/** Segmented toggle for a single axis (e.g. the prompt's target agent). */
 export function ViewToggle<T extends string>({
   value,
   options,

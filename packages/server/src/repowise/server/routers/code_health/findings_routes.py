@@ -21,6 +21,11 @@ from .counts import CountsQuery
 from .loaders import _attach_symbol_ids
 from .scope import ScopeQuery, narrow
 from .serializers import _finding_to_dict
+from .statuses import (
+    ALLOWED_STATUSES,
+    STATUS_FILTER_DESCRIPTION,
+    parse_status_filter,
+)
 
 
 @router.get(
@@ -31,14 +36,18 @@ async def list_health_findings(
     repo_id: str,
     biomarker_type: str | None = Query(None),
     file_path: str | None = Query(None),
-    min_severity: str | None = Query(None),
+    min_severity: str | None = Query(None, description="Severity floor"),
+    severity: str | None = Query(
+        None, description="Exact severities, comma-separated. Overrides min_severity."
+    ),
     dimension: str | None = Query(None),
+    status: str = Query("open", description=STATUS_FILTER_DESCRIPTION),
     limit: int = Query(100, ge=1, le=1000),
     scope: str = ScopeQuery,
     counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
-    """Open findings, ranked by health impact.
+    """Findings, ranked by health impact. Open work unless ``status`` says otherwise.
 
     Performance is out of the unfiltered list by default. Its findings carry a
     health impact of zero by construction, so ranking them here sorts them
@@ -52,7 +61,9 @@ async def list_health_findings(
         biomarker_type=biomarker_type,
         file_path=file_path,
         min_severity=min_severity,
+        severity=severity,
         dimension=dimension,
+        status=parse_status_filter(status),
         exclude_dimensions=("performance",),
     )
     # A finding carries a path, not ``is_test``, so narrowing it needs the
@@ -74,9 +85,6 @@ class FindingStatusUpdate(BaseModel):
     status: str = Field(..., description="open | acknowledged | resolved | false_positive")
 
 
-_ALLOWED_STATUSES = {"open", "acknowledged", "resolved", "false_positive"}
-
-
 @router.patch(
     "/api/repos/{repo_id}/health/findings/{finding_id}",
     response_model=HealthFindingResponse,
@@ -87,9 +95,9 @@ async def update_finding_status(
     payload: FindingStatusUpdate,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    if payload.status not in _ALLOWED_STATUSES:
+    if payload.status not in ALLOWED_STATUSES:
         raise HTTPException(
-            status_code=400, detail=f"status must be one of {sorted(_ALLOWED_STATUSES)}"
+            status_code=400, detail=f"status must be one of {sorted(ALLOWED_STATUSES)}"
         )
     f = await crud.update_health_finding_status(session, finding_id, payload.status)
     if f is None:

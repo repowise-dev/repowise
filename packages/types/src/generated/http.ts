@@ -1597,6 +1597,7 @@ export interface HealthWorkItem {
   primary_finding_id: string;
   total_impact: number;
   finding_count: number;
+  open_finding_count?: number;
   biomarkers?: string[];
   effort_bucket: string;
   impact_per_effort: number;
@@ -1605,6 +1606,9 @@ export interface HealthWorkItem {
 export interface HealthWorkQueueResponse {
   targets?: HealthWorkItem[];
   total?: number;
+  finding_total?: number;
+  offset?: number;
+  limit?: number;
 }
 
 export interface HotFilesGraphResponse {

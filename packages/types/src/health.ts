@@ -1079,6 +1079,11 @@ export interface HealthWorkItem {
   primary_finding_id?: string;
   total_impact: number;
   finding_count: number;
+  /**
+   * How many of those are still open. Equal to `finding_count` under the
+   * default status filter. Optional: an older backend does not send it.
+   */
+  open_finding_count?: number;
   biomarkers: string[];
   effort_bucket: "S" | "M" | "L" | "XL";
   impact_per_effort: number;
@@ -1102,15 +1107,38 @@ export interface HealthWorkItem {
 
 export interface HealthWorkQueueResponse {
   targets: HealthWorkItem[];
+  /** Files matching the filters, before the page slice. */
   total: number;
+  /**
+   * Findings across those files. The view lists files but triages findings, so
+   * the file count alone leaves the size of the work unsaid. Optional: an older
+   * backend does not send it and the view omits the clause rather than
+   * inventing one.
+   */
+  finding_total?: number;
+  offset?: number;
+  limit?: number;
 }
 
 export interface HealthWorkQueueQuery {
   counts?: HealthCounts;
   limit?: number;
+  offset?: number;
   module?: string;
   biomarker?: string;
+  /** Severity floor. Ignored by the server when `severity` is given. */
   min_severity?: string;
+  /** Exact severities, comma-separated. */
+  severity?: string;
+  dimension?: HealthDimension;
+  /** Comma-separated statuses, or `"all"`. Defaults to open work. */
+  status?: string;
+  /** Substring filter on `file_path`. */
+  search?: string;
+  only_hotspots?: boolean;
+  only_untested?: boolean;
+  /** Files below the score green starts at. */
+  only_failing?: boolean;
   max_effort?: string;
   sort?: "impact_per_effort" | "total_impact" | "score" | "finding_count";
   /** Which half of the repository to describe. Defaults to `"all"`. */
