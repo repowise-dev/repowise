@@ -405,7 +405,9 @@ class TestDecisionTree:
             assert _call("Grep", pattern, output, repowise_cwd) is None
             enrich.assert_not_called()
 
-    def test_focused_result_set_stays_silent_without_parseable_files(self, repowise_cwd) -> None:
+    def test_focused_result_set_stays_silent_without_parseable_files(
+        self, repowise_cwd
+    ) -> None:
         """A result set whose files can't be read means no gate, so no rescue.
 
         The pattern clears the single-token guard on purpose, so this pins the
