@@ -1029,8 +1029,9 @@ def resolve_provider(
         "KIMI_API_KEY / EDENAI_API_KEY / LITELLM_API_KEY. Use "
         "REPOWISE_PROVIDER=claude_cli to use an "
         "authenticated Claude Code subscription, REPOWISE_PROVIDER=codex_cli to use "
-        "an authenticated Codex CLI subscription, or REPOWISE_PROVIDER=opencode "
-        "to use opencode.",
+        "an authenticated Codex CLI subscription, REPOWISE_PROVIDER=opencode "
+        "to use opencode, or REPOWISE_PROVIDER=omp to use a local Oh My Pi "
+        "install.",
         reason="no_provider_configured",
     )
 
@@ -1215,6 +1216,19 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
                     "  Models:   opencode models (list available models)\n"
                     "  More:     https://opencode.ai\n"
                     "  Usage:    repowise init --provider opencode --model opencode/openai/gpt-5"
+                )
+            return warnings
+
+        if provider_name == "omp":
+            import shutil
+
+            if not shutil.which("omp"):
+                warnings.append(
+                    "Provider 'omp' requires the Oh My Pi CLI.\n"
+                    "  Install:  https://github.com/can1357/oh-my-pi\n"
+                    "  Setup:    run 'omp' once to sign in\n"
+                    "  Models:   omp models (list available models)\n"
+                    "  Usage:    repowise init --provider omp --model omp/anthropic/claude-sonnet-4-5"
                 )
             return warnings
 

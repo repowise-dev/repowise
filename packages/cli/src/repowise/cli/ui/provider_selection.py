@@ -44,6 +44,7 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "codex_cli": "codex_cli/default",
     "claude_cli": "claude_cli/claude-haiku-4-5",
     "opencode": "opencode/default",
+    "omp": "omp/default",
     "ollama": "qwen3.5:4b",
     "openrouter": "google/gemini-3.5-flash-lite",
     "litellm": "groq/llama-3.1-70b-versatile",
@@ -59,6 +60,7 @@ _PROVIDER_ENV: dict[str, str] = {
     "codex_cli": "__CODEX_CLI__",
     "claude_cli": "__CLAUDE_CLI__",
     "opencode": "__OPENCODE_CLI__",
+    "omp": "__OMP_CLI__",
     "ollama": "OLLAMA_BASE_URL",
     "openrouter": "OPENROUTER_API_KEY",
     # The picker iterates this map, so a provider missing here never renders a
@@ -77,6 +79,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "codex_cli": "https://developers.openai.com/codex/cli",
     "claude_cli": "https://claude.com/claude-code",
     "opencode": "https://opencode.ai",
+    "omp": "https://github.com/can1357/oh-my-pi",
     "ollama": "https://ollama.com/download",
     "openrouter": "https://openrouter.ai/keys",
     "litellm": "https://docs.litellm.ai/docs/providers",
@@ -91,6 +94,7 @@ _PROVIDER_NOTES: dict[str, str] = {
     "codex_cli": "uses your Codex CLI login",
     "claude_cli": "uses your Claude Code login",
     "opencode": "uses your opencode CLI setup",
+    "omp": "uses your omp CLI login",
     "ollama": "runs on your machine, no key",
     "litellm": "proxy in front of another provider",
 }
@@ -146,6 +150,13 @@ def _detect_opencode_status() -> bool:
     import shutil
 
     return shutil.which("opencode") is not None
+
+
+def _detect_omp_status() -> bool:
+    """Return ``True`` if the omp CLI is installed on PATH."""
+    import shutil
+
+    return shutil.which("omp") is not None
 
 
 def ollama_base_url() -> str:
@@ -223,6 +234,9 @@ def _detect_provider_status() -> dict[str, str]:
         elif prov == "opencode":
             if _detect_opencode_status():
                 status[prov] = "opencode CLI"
+        elif prov == "omp":
+            if _detect_omp_status():
+                status[prov] = "omp CLI"
         elif prov == "ollama":
             if _detect_ollama_status():
                 status[prov] = ollama_base_url()
@@ -288,6 +302,27 @@ def _opencode_setup_lines() -> list[str]:
     ]
 
 
+def _omp_setup_lines() -> list[str]:
+    installed = _detect_omp_status()
+    lines = [
+        "  [bold]omp[/bold] uses the Oh My Pi CLI's own login. No API key here.",
+        f"  Install: [{BRAND}]https://github.com/can1357/oh-my-pi[/]",
+        f"  Set up:  run [{BRAND}]omp[/] once and sign in",
+        "",
+        f"  To pick a specific model: [{BRAND}]repowise init --provider omp "
+        "--model omp/anthropic/claude-sonnet-4-5[/]",
+    ]
+    if not installed:
+        lines.extend(
+            [
+                "",
+                f"  [{WARN}]omp CLI not found on PATH.[/] Install it and retry, "
+                "or select another provider.",
+            ]
+        )
+    return lines
+
+
 def _ollama_setup_lines() -> list[str]:
     base_url = ollama_base_url()
     lines = ["  [bold]ollama[/bold] runs models on your machine. No key needed.", ""]
@@ -318,6 +353,7 @@ _LOCAL_PROVIDER_SETUP: dict[str, Callable[[], list[str]]] = {
     "codex_cli": _codex_cli_setup_lines,
     "claude_cli": _claude_cli_setup_lines,
     "opencode": _opencode_setup_lines,
+    "omp": _omp_setup_lines,
     "ollama": _ollama_setup_lines,
 }
 

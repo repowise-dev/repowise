@@ -269,10 +269,12 @@ Prefer to write the whole wiki as part of a fresh index instead? `repowise init`
 on its own is interactive: it asks which provider to use, shows a cost estimate,
 and waits for you to confirm before spending anything.
 
-Three ways to avoid paying a provider at all:
+Four ways to avoid paying a provider at all:
 
 - **Codex subscription:** `repowise init --provider codex_cli` uses your existing
   Codex CLI login, no API key. Run `codex login` first.
+- **Oh My Pi:** `repowise init --provider omp` uses your existing Oh My Pi
+  login, no API key. Run `omp` once to sign in first.
 - **Fully local:** point it at Ollama with a local embedding model for zero
   external calls. See [Config](../reference/CONFIG.md).
 - **Stay in index-only mode.** The graph, git, health, risk and dead-code layers

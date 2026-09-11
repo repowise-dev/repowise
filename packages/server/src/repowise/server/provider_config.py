@@ -167,6 +167,21 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "env_keys": [],
         "requires_key": False,
     },
+    {
+        "id": "omp",
+        "name": "Oh My Pi (Local CLI)",
+        "default_model": "omp/default",
+        "models": [
+            # Oh My Pi resolves its own model catalog at runtime via
+            # `omp models --json` (see core/providers/llm/omp.py), so this
+            # is a UI hint, not the full catalog; list_provider_status
+            # appends the active model when it isn't cataloged.
+            "omp/default",
+            "omp/anthropic/claude-sonnet-4-5",
+        ],
+        "env_keys": [],
+        "requires_key": False,
+    },
 ]
 
 _CATALOG_BY_ID = {p["id"]: p for p in PROVIDER_CATALOG}

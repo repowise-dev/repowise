@@ -19,7 +19,7 @@ import {
   type SaveState,
 } from "@repowise-dev/ui/settings";
 
-const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "claude_cli", "opencode", "ollama", "litellm", "mock"] as const;
+const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "claude_cli", "opencode", "omp", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "edenai", "ollama"] as const;
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
@@ -31,6 +31,7 @@ const MODEL_PLACEHOLDERS: Record<string, string> = {
   edenai: "mistral/mistral-small-latest",
   claude_cli: "claude_cli/claude-haiku-4-5",
   opencode: "opencode/default",
+  omp: "omp/default",
   ollama: "qwen3.5:4b",
   litellm: "groq/llama-3.1-70b-versatile",
   mock: "mock",
@@ -47,6 +48,7 @@ const PROVIDER_ENV_VARS: Record<string, { vars: string[]; installHint: string }>
   litellm: { vars: ["LITELLM_*"], installHint: "pip install litellm" },
   claude_cli: { vars: [], installHint: "https://claude.com/claude-code, then: claude login" },
   opencode: { vars: [], installHint: "curl -fsSL https://opencode.ai/install | bash" },
+  omp: { vars: [], installHint: "https://github.com/can1357/oh-my-pi, then: omp" },
   mock: { vars: [], installHint: "No key needed" },
 };
 
