@@ -670,6 +670,9 @@ by the dashboard's file table.
 | Column | Notes |
 |---|---|
 | `score` | 1.0–10.0 final |
+| `defect_score`, `maintainability_score`, `performance_score` | per-pillar; nullable |
+| `structure_deduction`, `history_deduction` | the two halves of the total deduction; nullable on rows written before the split. `counts=code_shape` rescores from `structure_deduction` alone, and a null pair is reported as unscored rather than counted as a ten |
+| `is_test` | stored, not re-derived per surface, so `scope` is one row filter everywhere; nullable on rows predating the column |
 | `max_ccn`, `max_nesting`, `nloc` | aggregate function metrics |
 | `duplication_pct` | percent of NLOC covered by clones; nullable |
 | `has_test_file` | paired or heuristic |
@@ -759,8 +762,9 @@ Every response carries the standard `_meta` envelope via `build_meta()`.
 
 ## 13. REST surface
 
-`packages/server/src/repowise/server/routers/code_health.py`. All under
-`/api/repos/{repo_id}/health/`:
+`packages/server/src/repowise/server/routers/code_health/` — a package, one
+module per surface, sharing `scope.py`, `counts.py`, `file_filters.py` and
+`statuses.py`. All routes under `/api/repos/{repo_id}/health/`:
 
 | Route | Returns |
 |---|---|
@@ -771,12 +775,24 @@ Every response carries the standard `_meta` envelope via `build_meta()`.
 | `GET /files/breakdown` | one file's metric + score breakdown + findings + suggestions + per-file `trend` + `signals` |
 | `GET /files/trend` | one file's score-over-time series + current delta + `declining` flag (`?file_path=`) |
 | `GET /trend` | repo KPI history + alerts + last-two-snapshot per-file deltas |
-| `GET /findings` | findings list (filterable by biomarker_type, severity, file_path) |
+| `GET /findings` | findings list, filterable by `biomarker_type`, `file_path`, `dimension`, `status` and severity (`severity` exact, or the `min_severity` floor). Performance is excluded unless asked for by name |
 | `GET /coverage` | coverage summary + per-file rows |
 | `POST /coverage` | ingest a coverage report (used by some CI integrations) |
-| `GET /refactoring-targets` | ranked by `total_impact / effort_bucket` |
+| `GET /refactoring-targets` | the work queue: files carrying findings, ranked by `total_impact / effort_bucket`. Takes the findings filters plus `search`, `module` and the `only_hotspots` / `only_untested` / `only_failing` row filters, pages by `limit` + `offset`, and returns `total` with `finding_total` beside it. Impact counts open findings only, so dismissing work moves a file down |
 | `GET /churn-complexity` | churn × complexity scatter points (one per churned file: `commit_count_90d`, `max_ccn`, `nloc`, `score`, `churn_percentile`) |
 | `GET /modules` | NLOC-weighted module rollup table |
+
+`scope` and `counts` are accepted by every route whose figures they could
+change, parsed by the shared `ScopeQuery` / `CountsQuery`, and echoed back. An
+unrecognized value falls back to the default rather than answering a different
+question under the name that was asked for.
+
+`counts=code_shape` is a projection over the two stored deduction columns, not
+a rescore: it re-derives each score from `structure_deduction`, drops
+history-derived findings from the row sets so a list cannot sum past the figure
+above it, and recomputes `total` and every ranking afterwards. Rows with no
+stored split are removed and counted in `unscored_files`. Nothing is written
+back.
 
 Auth is the standard `verify_api_key` dependency from
 `server/deps.py`.

@@ -1,4 +1,5 @@
 import { Bug } from "lucide-react";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { AgentBadge, NewContributorBadge, isNewContributor } from "./agent-badge";
 import { PriorityBadge } from "./priority-badge";
 import { RiskDriverBreakdown, describeDriver } from "./risk-driver-breakdown";
@@ -51,6 +52,17 @@ export function CommitDetailCard({ commit, reviewCut, className }: CommitDetailC
           {!c.agent_name && isNewContributor(c.author_commit_count) && (
             <NewContributorBadge commitCount={c.author_commit_count as number} />
           )}
+          <AskAboutThis
+            context={{
+              kind: "commit",
+              label: c.short_sha,
+              target: c.sha,
+              targetKind: "commit",
+            }}
+            question={`Summarize the intent and impact of commit ${c.short_sha}, and say which files deserve the closest review.`}
+            label={`Ask about commit ${c.short_sha}`}
+            className="h-6 w-6"
+          />
         </div>
         {/* The subject wraps. It is the one thing on this sheet a reader has to
             be able to read in full, so it never gets an ellipsis. */}

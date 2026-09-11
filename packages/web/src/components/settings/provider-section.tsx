@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { config } from "@/lib/config";
+import { getProviders } from "@/lib/api/providers";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Input } from "@repowise-dev/ui/ui/input";
 import {
@@ -65,7 +66,7 @@ const EMBEDDER_ENV_VARS: Record<string, string[]> = {
  * Model and embedder defaults for init/sync triggered from the UI.
  *
  * This used to render a second card, "Server Connection", with its own Test
- * button against the same `/api/health` that `ConnectionSection` already tests
+ * button against the same `/health` that `ConnectionSection` already tests
  * — a hand-rolled `<button>` painted with `--color-border`, a token defined in
  * no stylesheet, reporting with literal ✓/✗ glyphs. It is gone; what it
  * uniquely showed, the provider the *server* is configured with, is a line
@@ -84,12 +85,17 @@ export function ProviderSection() {
     setProvider(config.getProvider());
     setModel(config.getModel());
     setEmbedder(config.getEmbedder());
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data?.provider) setServerProvider(data.provider);
+    let cancelled = false;
+    void getProviders()
+      .then(({ active }) => {
+        if (!cancelled) setServerProvider(active.provider);
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        console.warn("[settings] Could not load the active server provider", error);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(

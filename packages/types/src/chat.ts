@@ -31,6 +31,8 @@ export type ChatContextKind =
   | "contributor"
   | "decision"
   | "risk"
+  | "dead-code"
+  | "blast-radius"
   | "security"
   | "usage"
   | "settings"
@@ -52,6 +54,33 @@ export interface ChatContext {
   label: string;
   target?: string;
   targetKind?: ChatContextTargetKind;
+}
+
+/** A passage the reader highlighted on the page, carried into the composer. */
+export interface ChatSelection {
+  text: string;
+  path?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/** What a page hands to chat when the reader asks about the thing in front of
+ *  them. `autoSend` skips the composer and asks immediately. */
+export interface ChatHandoff {
+  context: ChatContext;
+  question?: string;
+  selection?: ChatSelection;
+  autoSend?: boolean;
+}
+
+/** Where a composer chip came from, so ranking and telemetry can tell the
+ *  static fallback tier apart from one derived from live page data. */
+export type ChatSuggestionSource = "static" | "page" | "followup";
+
+export interface ChatSuggestion {
+  text: string;
+  source: ChatSuggestionSource;
+  toolHint?: string;
 }
 
 // ---------------------------------------------------------------------------

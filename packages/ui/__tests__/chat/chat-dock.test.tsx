@@ -48,11 +48,17 @@ describe("ChatDock", () => {
     expect(screen.getByRole("button", { name: "Open repository chat" })).toBeInTheDocument();
   });
 
-  it("keeps compact discovery focused on one contextual suggestion", () => {
+  it("offers every suggestion the page has, not only the first", () => {
     render(<ChatDock {...props()} />);
     fireEvent.click(screen.getByRole("button", { name: "Open repository chat" }));
 
-    expect(screen.getAllByRole("button", { name: /^Try / })).toHaveLength(1);
+    for (const suggestion of [
+      "Explain the main architectural boundaries",
+      "Which parts of this repository deserve attention first?",
+      "Where should a new contributor start?",
+    ]) {
+      expect(screen.getByRole("button", { name: suggestion })).toBeVisible();
+    }
   });
 
   it("updates context copy on navigation without losing the conversation", () => {

@@ -43,6 +43,7 @@ import {
 import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 import type { SourceReference } from "./source-citations";
 import { ChatComposer } from "./chat-composer";
+import { CHAT_SHORTCUT_HINT } from "./use-chat-shortcut";
 import { useChatScroll } from "./use-chat-scroll";
 
 const DEFAULT_SUGGESTIONS = [
@@ -118,6 +119,9 @@ export interface ChatInterfaceProps {
   onDraftChange?: (draft: string) => void;
   onContextRemove?: () => void;
   composerRef?: RefObject<HTMLTextAreaElement | null>;
+  /** Focus the composer on mount. The dock and the full page both do; a host
+   *  embedding chat below other content should not. */
+  autoFocus?: boolean;
   onRetry?: (message: ChatUIMessage) => void | Promise<void>;
   onEditAndResend?: (message: ChatUIMessage, text: string) => void | Promise<void>;
   /** Controlled artifact deep links. Hosts own URL and persistence concerns. */
@@ -157,6 +161,7 @@ export function ChatInterface({
   onDraftChange,
   onContextRemove,
   composerRef,
+  autoFocus = false,
   onRetry,
   onEditAndResend,
   activeArtifactId,
@@ -355,6 +360,7 @@ export function ChatInterface({
                     {statusSlot}
                   </p>
                 )}
+                <p className={cn(MICRO_LABEL)}>{CHAT_SHORTCUT_HINT}</p>
               </div>
 
               {/* Hairline rows, not a grid of bordered boxes. A suggestion is
@@ -362,7 +368,7 @@ export function ChatInterface({
               <div>
                 <p className={cn(MICRO_LABEL, "mb-1")}>Start with</p>
                 <ul className="border-t border-[var(--color-border-default)]">
-                  {visibleSuggestions.slice(0, variant === "dock" ? 3 : undefined).map((s) => (
+                  {visibleSuggestions.map((s) => (
                     <li key={s}>
                       <button
                         className="group flex w-full items-center gap-3 border-b border-[var(--color-border-default)] py-3 text-left text-[15px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]"
@@ -476,6 +482,7 @@ export function ChatInterface({
             placeholder={composerPlaceholder}
             disabled={sendDisabled}
             compact={variant === "dock"}
+            autoFocus={autoFocus}
             textareaRef={textareaRef}
             {...(modelSelectorSlot ? { footer: modelSelectorSlot } : {})}
           />

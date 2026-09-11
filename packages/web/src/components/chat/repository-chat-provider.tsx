@@ -6,23 +6,37 @@ import {
   useEffect,
   useContext,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
-import type { ChatContext as PageChatContext } from "@repowise-dev/ui/chat";
+import {
+  ChatHandoffProvider,
+  ChatSelectionAffordance,
+  useChatShortcut,
+  type ChatContext as PageChatContext,
+  type ChatDockCommand,
+  type ChatHandoff,
+} from "@repowise-dev/ui/chat";
 import { useChat } from "@/lib/hooks/use-chat";
+import { setChatDockHidden } from "@/lib/config";
 import { getRepositoryChatContext, getRepositoryChatContextQuery } from "./repository-chat-context";
+import { useChatAffordances } from "./use-chat-dock-hidden";
 
 type ChatController = ReturnType<typeof useChat>;
 
 export interface RepositoryChatValue extends ChatController {
   repoId: string;
   repoName: string;
+  /** The page context, or what a handoff replaced it with on this route. */
   pageContext: PageChatContext;
   selectedProvider: string | null;
   selectedModel: string | null;
   selectModel: (provider: string, model: string) => void;
+  /** One pending imperative request for the dock. */
+  dockCommand: ChatDockCommand | null;
+  clearDockCommand: () => void;
 }
 
 const RepositoryChatContext = createContext<RepositoryChatValue | null>(null);
@@ -69,6 +83,69 @@ export function RepositoryChatProvider({
     () => getRepositoryChatContext(pathname, new URLSearchParams(contextQuery)),
     [contextQuery, pathname],
   );
+  const { dockHidden, askControlsEnabled, selectionAskEnabled } =
+    useChatAffordances();
+  const [dockCommand, setDockCommand] = useState<ChatDockCommand | null>(null);
+  const commandId = useRef(0);
+  // A handoff replaces the route's context until the reader navigates away.
+  // Keyed on the same identity `pageContext` is derived from, query included:
+  // picking a different `?page=` or `?file=` changes what the page is about
+  // without changing the pathname, and the handoff must not outlive that.
+  // Stored alongside that identity rather than cleared by an effect, so there
+  // is no render where the two disagree.
+  const routeIdentity = `${pathname}?${contextQuery}`;
+  const [handoffContext, setHandoffContext] = useState<
+    { routeIdentity: string; context: PageChatContext } | null
+  >(null);
+
+  const issue = useCallback((command: Omit<ChatDockCommand, "id">) => {
+    commandId.current += 1;
+    setDockCommand({ ...command, id: commandId.current });
+  }, []);
+
+  const clearDockCommand = useCallback(() => setDockCommand(null), []);
+
+  const requestHandoff = useCallback(
+    (handoff: ChatHandoff) => {
+      // A deliberate gesture outranks the stored preference: opening chat from
+      // a page must not silently do nothing because the pill was dismissed.
+      setChatDockHidden(false);
+      setHandoffContext({ routeIdentity, context: handoff.context });
+      issue({ type: "handoff", handoff });
+    },
+    [issue, routeIdentity],
+  );
+
+  useChatShortcut(
+    useCallback(() => {
+      // A deliberate keystroke outranks the stored preference.
+      if (dockHidden) {
+        setChatDockHidden(false);
+        issue({ type: "open" });
+        return;
+      }
+      issue({ type: "toggle" });
+    }, [dockHidden, issue]),
+  );
+
+  const activeContext =
+    handoffContext?.routeIdentity === routeIdentity
+      ? handoffContext.context
+      : pageContext;
+
+  // The full chat page mounts no dock, so a handoff made there would lead
+  // nowhere. Its transcript already carries its own follow-up affordance.
+  const onChatPage = pageContext.kind === "chat";
+
+  /** Selections name a file; everything else stays on the page's own context. */
+  const resolveSelectionContext = useCallback(
+    (path?: string): PageChatContext =>
+      path
+        ? { kind: "file", label: path, target: path, targetKind: "path" }
+        : activeContext,
+    [activeContext],
+  );
+
   const {
     messages,
     conversationId,
@@ -85,7 +162,7 @@ export function RepositoryChatProvider({
     () => ({
       repoId,
       repoName,
-      pageContext,
+      pageContext: activeContext,
       selectedProvider: modelSelection?.provider ?? null,
       selectedModel: modelSelection?.model ?? null,
       selectModel,
@@ -99,11 +176,13 @@ export function RepositoryChatProvider({
       reset,
       artifactOverrides,
       replaceArtifact,
+      dockCommand,
+      clearDockCommand,
     }),
     [
       repoId,
       repoName,
-      pageContext,
+      activeContext,
       messages,
       conversationId,
       isStreaming,
@@ -116,12 +195,21 @@ export function RepositoryChatProvider({
       replaceArtifact,
       modelSelection,
       selectModel,
+      dockCommand,
+      clearDockCommand,
     ],
   );
 
   return (
     <RepositoryChatContext.Provider value={value}>
-      {children}
+      <ChatHandoffProvider
+        onHandoff={requestHandoff}
+        askEnabled={askControlsEnabled && !onChatPage}
+        selectionEnabled={selectionAskEnabled && !onChatPage}
+      >
+        {children}
+        <ChatSelectionAffordance resolveContext={resolveSelectionContext} />
+      </ChatHandoffProvider>
     </RepositoryChatContext.Provider>
   );
 }

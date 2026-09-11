@@ -53,6 +53,18 @@ export const SEVERITY_BAR: Record<Severity, string> = {
 };
 
 /**
+ * Effort tint. A ramp, not a judgement: green is the cheap end, red the
+ * expensive one. The badge prints the bucket letter beside it, so it belongs
+ * on the semantic ramp. Here rather than in the card so it has one home.
+ */
+export const EFFORT_TINT: Record<"S" | "M" | "L" | "XL", string> = {
+  S: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
+  M: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
+  L: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
+  XL: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
+};
+
+/**
  * The one health band -> colour vocabulary. Excellent and Good share the
  * green; the band word carries the difference. Every table below is written
  * out in full because Tailwind only sees class names it can read literally.

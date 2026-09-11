@@ -59,7 +59,9 @@ export function FileDocTab({ wikiPage, docSlot }: FileDocTabProps) {
           our tokens, `code::before/::after` prints literal backticks into the
           page, and `prose-invert` is a static class that cannot follow the
           theme. If the markdown needs a style, it gets styled in the renderer. */}
-      <article className="max-w-none overflow-hidden">{docSlot}</article>
+      <article data-chat-selection="" className="max-w-none overflow-hidden">
+        {docSlot}
+      </article>
     </div>
   );
 }

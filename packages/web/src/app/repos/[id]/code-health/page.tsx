@@ -406,7 +406,12 @@ export default function CodeHealthPage() {
   const coveragePct = coverage?.summary.line_coverage_pct;
 
   const badges: Partial<Record<TabId, number | string>> = {};
-  if (overview) badges.findings = overview.summary.open_findings;
+  // Performance has its own tab and is out of the findings list, so counting
+  // it here would put a bigger number on the tab than the tab can show.
+  if (overview) {
+    badges.findings =
+      overview.summary.open_findings - (overview.summary.performance_findings ?? 0);
+  }
   if (deadCode) badges["dead-code"] = deadCode.total_findings;
   if (coveragePct != null) badges.coverage = `${Math.round(coveragePct)}%`;
 

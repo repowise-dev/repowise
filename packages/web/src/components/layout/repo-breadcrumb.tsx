@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { MessageSquare } from "lucide-react";
 import { Breadcrumb } from "@repowise-dev/ui/shared/breadcrumb";
 import type { BreadcrumbSegment } from "@repowise-dev/ui/shared/breadcrumb";
 import { DocsModeBadge, type DocsMode } from "@repowise-dev/ui/docs/docs-mode-badge";
@@ -46,12 +47,26 @@ export function RepoBreadcrumb({
   const showCrumbs = segments.length > 2 && showsRouteBreadcrumb(pathname);
   const showBadge = docsMode !== "none";
   // Nothing to show at the repo root with no docs — stay out of the way.
+  // The Ask entry rides this row rather than earning one of its own: a bar
+  // that exists only to hold a chat link is new permanent chrome.
   if (!showCrumbs && !showBadge) return null;
+  const onChatPage = rest[0] === "chat";
 
   return (
     <div className="flex items-center justify-between gap-3 px-4 sm:px-6 py-2 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
       {showCrumbs ? <Breadcrumb segments={segments} LinkComponent={Link} /> : <span />}
-      {showBadge && <DocsModeBadge mode={docsMode} />}
+      <div className="flex shrink-0 items-center gap-3">
+        {showBadge && <DocsModeBadge mode={docsMode} />}
+        {!onChatPage && (
+          <Link
+            href={`/repos/${repoId}/chat`}
+            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          >
+            <MessageSquare className="h-3.5 w-3.5" aria-hidden />
+            Ask
+          </Link>
+        )}
+      </div>
     </div>
   );
 }

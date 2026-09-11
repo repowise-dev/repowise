@@ -3,11 +3,30 @@
 import React from "react";
 import { render, screen, act, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { config, setChatDockHidden } from "@/lib/config";
-import { useChatDockHidden } from "./use-chat-dock-hidden";
+import {
+  config,
+  setChatAskControlsHidden,
+  setChatDockHidden,
+  setChatSelectionAskHidden,
+} from "@/lib/config";
+import { useChatAffordances, useChatDockHidden } from "./use-chat-dock-hidden";
 
 function Probe() {
   return <span>{useChatDockHidden() ? "hidden" : "shown"}</span>;
+}
+
+function AffordanceProbe() {
+  const { dockHidden, askControlsEnabled, selectionAskEnabled } =
+    useChatAffordances();
+  return (
+    <span>
+      {[
+        dockHidden ? "dock-hidden" : "dock-shown",
+        askControlsEnabled ? "ask-on" : "ask-off",
+        selectionAskEnabled ? "selection-on" : "selection-off",
+      ].join(" ")}
+    </span>
+  );
 }
 
 describe("useChatDockHidden", () => {
@@ -62,5 +81,59 @@ describe("useChatDockHidden", () => {
     expect(config.getChatDockHidden()).toBe(true);
     config.setChatDockHidden(false);
     expect(config.getChatDockHidden()).toBe(false);
+  });
+});
+
+describe("useChatAffordances", () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(cleanup);
+
+  it("defaults both page controls on", () => {
+    render(<AffordanceProbe />);
+    expect(screen.getByText("dock-shown ask-on selection-on")).toBeTruthy();
+  });
+
+  it("switches each control off on its own", () => {
+    render(<AffordanceProbe />);
+
+    act(() => setChatAskControlsHidden(true));
+    expect(screen.getByText("dock-shown ask-off selection-on")).toBeTruthy();
+
+    act(() => setChatSelectionAskHidden(true));
+    expect(screen.getByText("dock-shown ask-off selection-off")).toBeTruthy();
+  });
+
+  it("hides both controls whenever the dock itself is hidden", () => {
+    render(<AffordanceProbe />);
+    act(() => setChatDockHidden(true));
+    expect(screen.getByText("dock-hidden ask-off selection-off")).toBeTruthy();
+  });
+
+  it("restores a control's own choice when the dock comes back", () => {
+    config.setChatAskControlsHidden(true);
+    render(<AffordanceProbe />);
+
+    act(() => setChatDockHidden(true));
+    expect(screen.getByText("dock-hidden ask-off selection-off")).toBeTruthy();
+
+    act(() => setChatDockHidden(false));
+    expect(screen.getByText("dock-shown ask-off selection-on")).toBeTruthy();
+  });
+
+  it("stays off across reloads and across tabs", () => {
+    // A reload is a fresh mount reading the same storage.
+    config.setChatSelectionAskHidden(true);
+    render(<AffordanceProbe />);
+    expect(screen.getByText("dock-shown ask-on selection-off")).toBeTruthy();
+    cleanup();
+
+    render(<AffordanceProbe />);
+    expect(screen.getByText("dock-shown ask-on selection-off")).toBeTruthy();
+
+    act(() => {
+      config.setChatAskControlsHidden(true);
+      window.dispatchEvent(new StorageEvent("storage"));
+    });
+    expect(screen.getByText("dock-shown ask-off selection-off")).toBeTruthy();
   });
 });

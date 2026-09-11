@@ -125,6 +125,22 @@ const PRESENTATIONS: Record<ChatContextKind, ChatContextPresentation> = {
       "Propose the safest order for these changes",
     ],
   },
+  "dead-code": {
+    placeholder: "Ask about this dead-code result",
+    suggestions: [
+      "Is this safe to remove, and what still reaches it?",
+      "Explain the evidence behind this result",
+      "What should I check before deleting it?",
+    ],
+  },
+  "blast-radius": {
+    placeholder: "Ask about the reach of this change",
+    suggestions: [
+      "What breaks if I change this?",
+      "Which dependents deserve the closest review?",
+      "Which tests cover this reach?",
+    ],
+  },
   security: {
     placeholder: "Ask about these security findings",
     suggestions: [

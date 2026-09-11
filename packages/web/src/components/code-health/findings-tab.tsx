@@ -14,7 +14,6 @@ import { fileEntityPath, symbolEntityPath } from "@repowise-dev/ui/shared/entity
 import {
   getHealthOverview,
   getHealthWorkQueue,
-  listHealthFiles,
   listHealthFindings,
   getHealthCoverage,
   updateFindingStatus,
@@ -50,7 +49,6 @@ export function FindingsTab({
     getFileOpportunity: (filePath) => getFileOpportunity(id, filePath),
     refactoringOpportunityHref: (opportunityId) =>
       refactoringOpportunityHref(id, opportunityId),
-    listFiles: (opts) => listHealthFiles(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
     getHealthWorkQueue: (opts) =>
       getHealthWorkQueue(id, { ...opts, ...(scope ? { scope } : {}), ...(counts ? { counts } : {}) }),
     updateFindingStatus: (findingId, status) =>

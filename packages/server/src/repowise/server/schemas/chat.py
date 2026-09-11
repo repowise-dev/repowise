@@ -30,6 +30,8 @@ class ChatPageContext(BaseModel):
         "contributor",
         "decision",
         "risk",
+        "dead-code",
+        "blast-radius",
         "security",
         "usage",
         "settings",

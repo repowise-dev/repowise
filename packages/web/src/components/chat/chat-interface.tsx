@@ -182,6 +182,7 @@ export function ChatInterface({
       error={error}
       onSend={sendWithConversationModel}
       onCancel={cancel}
+      autoFocus
       draft={draft}
       onDraftChange={setDraft}
       buildCitationHref={buildCitationHref}
