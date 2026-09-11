@@ -226,6 +226,11 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
 
     Conditionally emitted:
       * ``live_head``       — current checkout commit whenever readable
+      * ``shallow``         — only when the checkout was a shallow clone, whose
+        graft point caps every history-derived figure in the response. Absent
+        for a full clone and for an index written before the check existed;
+        unlike ``index_behind`` there is no false case, because "nothing to
+        warn about" is not worth a line
       * ``stale_warning``   — only on a real signal (a served target changed,
         HEAD mismatch with real file changes on a repo-level response, OR very
         old with no git)
@@ -251,6 +256,9 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
         ua = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=UTC)
         age_days = max(0, (datetime.now(UTC) - ua).days)
         out["index_age_days"] = age_days
+
+    if getattr(repository, "is_shallow_clone", None) is True:
+        out["shallow"] = True
 
     local_path = getattr(repository, "local_path", None)
     # Prefer state.json's last_sync_commit over a possibly-stale DB head_commit

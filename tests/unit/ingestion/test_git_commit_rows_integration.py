@@ -173,6 +173,32 @@ def test_capture_repo_totals_method(tmp_path) -> None:
     assert totals.total_commit_count == 2
     assert totals.total_contributor_count == 1
     assert totals.first_commit_author == "Grace Hopper"
+    assert totals.is_shallow_clone is False
+
+
+def test_capture_repo_totals_reports_a_shallow_clone(tmp_path) -> None:
+    """A depth-capped clone has to say so, because its totals are capped too.
+
+    The count below is the tell: three commits exist, the clone can see one, and
+    without the flag that 1 is indistinguishable from a repo that genuinely has
+    one commit.
+    """
+    import git as gitpython
+
+    origin_path = tmp_path / "origin"
+    origin_path.mkdir()
+    origin = gitpython.Repo.init(origin_path)
+    _configure_author(origin, "Grace Hopper", "grace@example.com")
+    for i in range(3):
+        _commit(origin, origin_path / f"f{i}.py", f"x = {i}\n", f"feat: add f{i}")
+
+    clone_path = tmp_path / "shallow"
+    gitpython.Repo.clone_from(origin_path.as_uri(), clone_path, depth=1)
+
+    totals = GitIndexer(clone_path, tier=GitIndexTier.FULL).capture_repo_totals()
+
+    assert totals.is_shallow_clone is True
+    assert totals.total_commit_count == 1
 
 
 @pytest.mark.asyncio

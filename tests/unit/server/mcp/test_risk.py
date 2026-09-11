@@ -693,3 +693,20 @@ async def test_get_risk_co_change_rows_carry_direction(setup_mcp):
         assert p["direction"] == "undirected"
         assert "conf_ab" not in p
         assert "conf_ba" not in p
+
+
+
+@pytest.mark.asyncio
+async def test_get_risk_meta_discloses_a_shallow_clone(setup_mcp, session):
+    """The flag has to survive the real tool, not just the envelope builder."""
+    from repowise.core.persistence.crud import update_repo_git_totals
+    from repowise.server.mcp_server import get_risk
+
+    before = await get_risk(["src/auth/service.py"])
+    assert "shallow" not in before["_meta"]
+
+    await update_repo_git_totals(session, "repo1", is_shallow_clone=True)
+    await session.flush()
+
+    after = await get_risk(["src/auth/service.py"])
+    assert after["_meta"]["shallow"] is True

@@ -36,8 +36,13 @@ def _clear_changed_files_cache():
     _meta._changed_files_cache.clear()
 
 
-def _repo(tmp_path, head_commit: str = _INDEXED):
-    return types.SimpleNamespace(updated_at=None, local_path=str(tmp_path), head_commit=head_commit)
+def _repo(tmp_path, head_commit: str = _INDEXED, is_shallow_clone: bool | None = None):
+    return types.SimpleNamespace(
+        updated_at=None,
+        local_path=str(tmp_path),
+        head_commit=head_commit,
+        is_shallow_clone=is_shallow_clone,
+    )
 
 
 def _prime(tmp_path, changed: frozenset[str] | None):
@@ -299,3 +304,21 @@ async def test_execution_flows_targets_name_the_traced_files(setup_mcp, monkeypa
     assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
     assert seen[-1]["repository"] is not None
     assert "src/auth/service.py" in seen[-1]["targets"]
+
+
+def test_a_shallow_clone_is_disclosed(tmp_path, monkeypatch):
+    """Its graft point caps every history-derived figure in the response."""
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _INDEXED)
+    out = _meta.freshness_from_repo(_repo(tmp_path, is_shallow_clone=True), targets=["a.py"])
+    assert out["shallow"] is True
+
+
+@pytest.mark.parametrize("stored", [False, None])
+def test_a_clone_with_no_warning_to_give_stays_silent(tmp_path, monkeypatch, stored):
+    """A complete clone and an index written before the check both say nothing.
+
+    Emitting ``false`` for the second would claim a completeness nobody checked.
+    """
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _INDEXED)
+    out = _meta.freshness_from_repo(_repo(tmp_path, is_shallow_clone=stored), targets=["a.py"])
+    assert "shallow" not in out

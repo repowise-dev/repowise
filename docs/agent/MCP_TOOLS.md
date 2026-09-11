@@ -154,6 +154,7 @@ Resolve refs with `repowise expand <ref>` from a shell, or
 | `indexed_commit` | Short (12-char) SHA the index was built against |
 | `live_head` | Short (12-char) SHA of the current checkout, whenever `.git/HEAD` is readable. Equal to `indexed_commit` when the index is current |
 | `stale_warning` | Only on a real signal: HEAD mismatch **that actually changed files**, or age over ~90 days when git is unreachable. Two commits with identical trees (an empty commit, a no-op merge) report `index_behind` with no warning |
+| `shallow` | Only when the indexed checkout was a shallow clone. Every history-derived figure in the response (commit counts, project age, co-change support) stops at the graft point, so a total here is a floor, not a count. Absent for a full clone and for an index written before the check existed |
 | `index_behind` | Whenever the live-vs-indexed comparison ran: `true` if HEAD has moved (alongside `stale_warning` when served content actually changed), `false` if the commits match. Absent means the comparison could not run (no git, or a repo-level tool that serves no file content) |
 | `embedder_degraded` | Whenever an embedder is resolved, `true` or `false`. Absent means none was initialised |
 | `embedder`, `embedder_warning` | Only when the embedder fell back to a mock/degraded mode |
