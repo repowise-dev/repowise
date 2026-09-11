@@ -106,6 +106,9 @@ wiki_style: comprehensive            # comprehensive | caveman | reference | tut
 language: en                         # Output language for generated pages (en, zh, ru, hi, ...)
 enable_onboarding: true               # Show first-run onboarding prompts
 max_file_pages: 2000                  # Cap file pages (omit = size policy, 0 = one page per file)
+folder_coverage:                      # Documentation floors: 'GLOB=PCT' per folder (repeatable)
+  - "src/core=1.0"
+  - "src/legacy=0.5"
 generation_context:                   # Optional source evidence for synthesis pages
   token_budget: 8000
   files:
@@ -145,7 +148,8 @@ You can edit this file directly. Changes take effect on the next `init`,
 | `wiki_style` | `comprehensive` | `comprehensive`, `caveman`, `reference`, `tutorial`, `custom` |
 | `language` | `en` | Output language for generated wiki pages: `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh` |
 | `enable_onboarding` | `true` | Show first-run onboarding prompts (CLI and web) |
-| `max_file_pages` | unset | Most file pages a run emits, highest importance first. Three states: **unset** lets the size policy decide (untouched below 4,500 documentable files, held to 4,500 above, which is about 1 repo in 100), **0** means one page per eligible file however many that is, and a **positive value** is a hard cap. `repowise init` offers a tighter cap in advanced mode above 2,000 documentable files, and `--max-file-pages N` sets it non-interactively. `update --full` and `generate` honour whatever is recorded. Capping file pages does not reduce model spend: file pages are rendered from structure |
+| `max_file_pages` | unset | Most file pages a run emits, highest importance first. Three states: **unset** lets the size policy decide (untouched below 4,500 documentable files, held to 4,500 above, which is about 1 repo in 100), **0** means one page per eligible file however many that is, and a **positive value** is a hard cap. `repowise init` offers a tighter cap in advanced mode above 2,000 documentable files, and `--max-file-pages N` sets it non-interactively. `update --full` and `generate` honour whatever is recorded. Capping file pages does not reduce model spend: file pages are rendered from structure and cost no tokens. |
+| `folder_coverage` | `[]` | Documentation floors per folder: a list of `"GLOB=PCT"` strings. `"src/core=1.0"` promises every code file under `src/core` a file page whatever its importance score; `"src/legacy=0.5"` promises half. Additive — pins raise the page count (and therefore the estimate) but never displace global picks. `--folder-coverage GLOB=PCT` (repeatable) sets it non-interactively. |
 | `generation_context` | see below | Repository-source evidence appended to model-written overview and onboarding prompts |
 | `distill` | see below | Output distillation config |
 | `mcp` | see below | MCP tool surface config |

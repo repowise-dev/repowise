@@ -52,6 +52,9 @@ class FakeConfig:
     max_file_pages: int | None = None
     file_page_min_symbols: int = 1
     max_pages_pct: float = 0.10
+    # Folder floors (issue #633); duck-typed so the selector reads it via
+    # getattr and tests without it still exercise the unset path.
+    folder_coverage: tuple[tuple[str, float], ...] = ()
 
 
 def _make_graph_builder(files: list[FakeParsedFile]):
@@ -138,6 +141,30 @@ class TestBuildGenerationPlan:
 
         plans = build_generation_plan([pf1, pf2], builder, FakeConfig())
         assert any(p.page_type == "scc_page" and p.count == 1 for p in plans)
+
+    def test_folder_coverage_pin_raises_the_file_page_count(self):
+        """The plan shares select_pages, so folder pins must move the estimate
+        (additive floor, issue #633)."""
+        files = []
+        for i in range(20):
+            fi = FakeFileInfo(path=f"src/core/mod_{i}.py", language="python")
+            files.append(FakeParsedFile(file_info=fi, symbols=[FakeSymbol(name=f"f{i}")]))
+        builder = _make_graph_builder(files)
+
+        # A tight global cap so most files fall outside it; the folder floor
+        # must bring them back regardless of score.
+        unset = build_generation_plan(files, builder, FakeConfig(max_file_pages=5))
+        pinned = build_generation_plan(
+            files,
+            builder,
+            FakeConfig(max_file_pages=5, folder_coverage=(("src/core", 1.0),)),
+        )
+
+        unset_count = next(p.count for p in unset if p.page_type == "file_page")
+        pinned_count = next(p.count for p in pinned if p.page_type == "file_page")
+        assert unset_count == 5
+        assert pinned_count > unset_count
+        assert pinned_count == 20  # every code file under src/core gets a page
 
 
 class TestEstimateCost:
