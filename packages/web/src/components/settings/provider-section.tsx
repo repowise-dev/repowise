@@ -54,6 +54,11 @@ const PROVIDER_ENV_VARS: Record<string, { vars: string[]; installHint: string }>
   litellm: { vars: ["LITELLM_*"], installHint: "pip install litellm" },
   claude_cli: { vars: [], installHint: "https://claude.com/claude-code, then: claude login" },
   opencode: { vars: [], installHint: "curl -fsSL https://opencode.ai/install | bash" },
+  codex_cli: {
+    vars: [],
+    installHint: "npm install -g @openai/codex, then: codex login",
+  },
+  openrouter: { vars: ["OPENROUTER_API_KEY"], installHint: "pip install openai" },
   mock: { vars: [], installHint: "No key needed" },
 };
 
@@ -149,6 +154,12 @@ export function ProviderSection() {
     flashSaved();
   }
 
+  // The catalog is not a superset of what can be selected: `mock` is
+  // flag-only and never appears in it. Without the selected value among the
+  // options, Radix renders a blank trigger the user cannot recover from, so
+  // it is always offered even when the server does not advertise it.
+  const providerOptions = providers.includes(provider) ? providers : [...providers, provider];
+
   const providerInfo = PROVIDER_ENV_VARS[provider];
   const embedderVars = EMBEDDER_ENV_VARS[embedder] ?? [];
 
@@ -169,11 +180,11 @@ export function ProviderSection() {
         >
           <div className="space-y-2">
             <Select value={provider} onValueChange={handleProviderChange}>
-              <SelectTrigger className="w-full sm:w-64">
+              <SelectTrigger aria-label="Provider" className="w-full sm:w-64">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {providers.map((p) => (
+                {providerOptions.map((p) => (
                   <SelectItem key={p} value={p}>
                     {p}
                   </SelectItem>
@@ -208,7 +219,7 @@ export function ProviderSection() {
         >
           <div className="space-y-2">
             <Select value={embedder} onValueChange={handleEmbedderChange}>
-              <SelectTrigger className="w-full sm:w-64">
+              <SelectTrigger aria-label="Embedder" className="w-full sm:w-64">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

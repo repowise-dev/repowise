@@ -91,6 +91,27 @@ describe("ProviderSection provider catalog", () => {
     await waitFor(() => expect(model.placeholder).toBe("codex_cli/gpt-5.6-luna"));
   });
 
+  it("keeps the selected provider selectable when the catalog omits it", async () => {
+    // `mock` is flag-only and is deliberately absent from the server catalog,
+    // so rendering the catalog verbatim would leave a user who has it saved
+    // staring at a picker with no matching option and a blank trigger.
+    mocks.getProvider.mockReturnValue("mock");
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "gemini", model: null },
+      providers: [
+        { id: "gemini", name: "Google Gemini", default_model: "gemini-3.5-flash-lite" },
+        { id: "codex_cli", name: "Codex CLI", default_model: "codex_cli/gpt-5.6-luna" },
+      ],
+    });
+
+    render(<ProviderSection />);
+
+    await waitFor(() => expect(mocks.getProviders).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: /provider/i }).textContent).toContain("mock"),
+    );
+  });
+
   it("lets the server's default model beat a stale built-in placeholder", async () => {
     // The local table is a hardcoded guess that has already drifted once. When
     // the server reports a different default, the server is right.
