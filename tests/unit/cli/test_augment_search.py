@@ -13,6 +13,7 @@ and are exercised end-to-end in integration tests instead.
 
 from __future__ import annotations
 
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -404,9 +405,7 @@ class TestDecisionTree:
             assert _call("Grep", pattern, output, repowise_cwd) is None
             enrich.assert_not_called()
 
-    def test_focused_result_set_stays_silent_without_parseable_files(
-        self, repowise_cwd
-    ) -> None:
+    def test_focused_result_set_stays_silent_without_parseable_files(self, repowise_cwd) -> None:
         """A result set whose files can't be read means no gate, so no rescue.
 
         The pattern clears the single-token guard on purpose, so this pins the
@@ -747,4 +746,128 @@ class TestWidenedRescueGate:
         """A wiki page suggestion is not new information against real hits."""
         session = _FakeSession([])
         out = await _rescue(session, None, 1, "parse_yaml", "parse_yaml", {"src/a.py": 3})
+        assert out is None
+
+
+class _FtsRow:
+    """Shape of ``SearchResult`` as the rescue's FTS fallback reads it."""
+
+    def __init__(self, target_path, page_type="file_page", title="", snippet=""):
+        self.target_path = target_path
+        self.page_type = page_type
+        self.title = title
+        self.snippet = snippet
+        self.score = 0.0  # never read: the gate is coverage, not score (#2092)
+
+
+class _FakeFTS:
+    """Stands in for ``FullTextSearch``; returns the canned rows."""
+
+    rows: ClassVar[list] = []
+
+    def __init__(self, engine) -> None:
+        pass
+
+    async def search(self, query, limit=10):
+        return list(self.rows)
+
+
+@pytest.fixture
+def fts_rows(monkeypatch):
+    """Route the rescue's FTS fallback to canned rows; yields the setter.
+
+    ``_rescue`` imports ``FullTextSearch`` from ``repowise.core.persistence``
+    inside the function body, so the patch lands on the source module.
+    """
+    import repowise.core.persistence as persistence
+
+    monkeypatch.setattr(persistence, "FullTextSearch", _FakeFTS)
+
+    def _set(rows):
+        _FakeFTS.rows = rows
+
+    yield _set
+    _FakeFTS.rows = []
+
+
+class TestRescueFtsCoverageGate:
+    """#2092: the FTS fallback must not fire on a single-token ride.
+
+    The gate is query-token coverage, not a score floor — SQLite BM25 and
+    PostgreSQL ts_rank are on incompatible scales, so any constant floor
+    silently kills the fallback on one dialect.
+    """
+
+    WEAK = "bluetooth codec negotiation fallback"
+
+    async def test_single_token_ride_is_silent(self, fts_rows) -> None:
+        """The #2092 repro: only "fallback" matches an unrelated hook file."""
+        fts_rows(
+            [
+                _FtsRow(
+                    "config/shared/claude/hooks/prefer-web-tools.py",
+                    title="prefer-web-tools.py",
+                    snippet="falls back to the web fetch tool as a fallback",
+                )
+            ]
+        )
+        out = await _rescue(_FakeSession([]), None, 1, self.WEAK, "bluetooth")
+        assert out is None
+
+    async def test_covered_row_fires(self, fts_rows) -> None:
+        fts_rows(
+            [
+                _FtsRow(
+                    "config/audio/bluetooth.conf",
+                    snippet="bluetooth codec selection and profile switching",
+                )
+            ]
+        )
+        out = await _rescue(_FakeSession([]), None, 1, self.WEAK, "bluetooth")
+        assert out == (
+            f"[repowise] No literal match for `{self.WEAK}`. "
+            "Wiki suggests `config/audio/bluetooth.conf` (file_page)."
+        )
+
+    async def test_gate_scans_past_a_weak_row(self, fts_rows) -> None:
+        """A weak first row must not mask a covered later row."""
+        fts_rows(
+            [
+                _FtsRow("src/unrelated.py", snippet="a fallback path"),
+                _FtsRow(
+                    "config/audio/bluetooth.conf",
+                    snippet="bluetooth codec negotiation",
+                ),
+            ]
+        )
+        out = await _rescue(_FakeSession([]), None, 1, self.WEAK, "bluetooth")
+        assert out is not None
+        assert "config/audio/bluetooth.conf" in out
+
+    async def test_single_token_pattern_still_fires(self, fts_rows) -> None:
+        """Zero-result rescue allows generic single-token patterns; the gate
+        requires all available terms when there are fewer than two."""
+        fts_rows(
+            [
+                _FtsRow(
+                    "scripts/containerd-gc.sh",
+                    snippet="containerd image cleanup schedule",
+                )
+            ]
+        )
+        out = await _rescue(_FakeSession([]), None, 1, "containerd", "containerd")
+        assert out is not None
+        assert "scripts/containerd-gc.sh" in out
+
+    async def test_non_code_page_is_still_skipped(self, fts_rows) -> None:
+        fts_rows(
+            [
+                _FtsRow(
+                    "docs/overview",
+                    page_type="repo_overview",
+                    snippet="bluetooth codec negotiation fallback",
+                )
+            ]
+        )
+        out = await _rescue(_FakeSession([]), None, 1, self.WEAK, "bluetooth")
         assert out is None

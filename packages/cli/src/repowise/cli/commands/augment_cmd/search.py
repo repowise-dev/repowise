@@ -21,6 +21,7 @@ and are not billed to the savings ledger; only the *served* digest
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -50,6 +51,14 @@ _RESCUE_TOP_N = 2
 # answer depend on row order; this is small enough to stay one indexed lookup
 # and large enough that the ranking, not the LIMIT, picks the winner.
 _RESCUE_EXACT_FETCH = 8
+# Distinct query tokens (per ``_pattern_terms``) that must appear in an FTS
+# row's title/path/snippet before the zero-result rescue names it (#2092). A
+# multi-token pattern where one common token matches still returns rows, so
+# the fallback needs a quality gate — and it cannot be a score floor: SQLite
+# BM25 is unbounded while PostgreSQL ts_rank is ~0-1, so any constant is
+# wrong on one dialect. Token coverage is dialect- and corpus-independent.
+# Patterns with fewer content tokens require all of them.
+_RESCUE_FTS_MIN_TERMS = 2
 # Files the triage ranker considers. Ranking is over the grep's own matches,
 # so this only bites on floods wider than 200 files, where the tail is taken
 # by match count, the one signal available before any index lookup.
@@ -156,9 +165,7 @@ def _handle_search_post(
     if enrichment is _ORM:
         import asyncio
 
-        enrichment = asyncio.run(
-            _search_enrich(repo_path, pattern, mode, result_count, matched)
-        )
+        enrichment = asyncio.run(_search_enrich(repo_path, pattern, mode, result_count, matched))
     if enrichment:
         _log_search_firing(repo_path, session_id, mode, enrichment)
     return HookResult(context=enrichment or None)
@@ -213,8 +220,7 @@ def _digest_result(
     return HookResult(context=digest, on_emitted=on_emitted)
 
 
-def _log_search_firing(
-    repo_path: Path, session_id: str, category: str, text: str) -> None:
+def _log_search_firing(repo_path: Path, session_id: str, category: str, text: str) -> None:
     """Record one search enrichment in the shared ledger; measurement only.
 
     All hook surfaces share the sessions.db efficacy ledger so the miner can
@@ -382,9 +388,7 @@ def _order_by_pagerank(
     if not by_node:
         return None
     rank = {
-        normalized[node_id]: pr or 0.0
-        for node_id, pr in by_node.items()
-        if node_id in normalized
+        normalized[node_id]: pr or 0.0 for node_id, pr in by_node.items() if node_id in normalized
     }
     ranked = sorted(rank, key=lambda p: -rank[p])
     rest = [p for p in paths if p not in rank]
@@ -464,9 +468,7 @@ def _fast_search_enrich(
                 return None
             paths = _triage_candidates(matched)
             symbol_names: dict[str, list[str]] = {}
-            for file_path, name in fast_lookup.symbols_matching(
-                conn, repository_id, paths, clean
-            ):
+            for file_path, name in fast_lookup.symbols_matching(conn, repository_id, paths, clean):
                 if file_path and name:
                     symbol_names.setdefault(file_path, []).append(name)
             pagerank = fast_lookup.pagerank(conn, repository_id, paths)
@@ -747,10 +749,7 @@ async def _rescue(
     lowered = {v.lower() for v in variants}
     if matched is None:
         name_clause = or_(
-            *[
-                WikiSymbol.name.ilike(f"%{escape_like(v)}%", escape=LIKE_ESCAPE)
-                for v in variants
-            ]
+            *[WikiSymbol.name.ilike(f"%{escape_like(v)}%", escape=LIKE_ESCAPE) for v in variants]
         )
     else:
         # Exactness enforced in SQL, not by filtering the fetched page. The
@@ -792,8 +791,20 @@ async def _rescue(
         fts_rows = await fts.search(pattern, limit=3)
     except Exception:
         fts_rows = []
+    # Coverage gate (#2092): a multi-token pattern where only one common
+    # token matches ("fallback") still returns rows, and a confident wrong
+    # suggestion is worse than silence. The score is unusable as a gate — the
+    # two dialects return incompatible scales — so require the row itself to
+    # carry the query's tokens. Same guard family as the widened path's
+    # ``_pattern_terms`` check in ``_handle_search_post``.
+    terms = _pattern_terms(pattern)
+    # A pattern whose subtokens are all <3 chars has no terms, so ``needed``
+    # is 0 and the gate stays open — the pre-gate behaviour, deliberately:
+    # there is nothing to measure coverage against.
+    needed = min(_RESCUE_FTS_MIN_TERMS, len(terms))
     for r in fts_rows:
-        target = getattr(r, "target_path", None) or ""
+        raw_target = getattr(r, "target_path", None) or ""
+        target = raw_target
         page_type = getattr(r, "page_type", "") or ""
         if "::" in target:
             target = target.split("::")[0]
@@ -804,6 +815,24 @@ async def _rescue(
             "api_contract",
             "infra_page",
         ):
+            haystack = " ".join(
+                (
+                    getattr(r, "title", "") or "",
+                    raw_target,
+                    getattr(r, "snippet", "") or "",
+                )
+            ).lower()
+            covered = sum(1 for t in terms if t in haystack)
+            if covered < needed:
+                # Not a break: rows are few and a later one may cover.
+                logging.getLogger(__name__).debug(
+                    "rescue FTS near-miss: `%s` covers %d/%d terms of `%s`",
+                    target,
+                    covered,
+                    needed,
+                    pattern,
+                )
+                continue
             return (
                 f"[repowise] No literal match for `{pattern}`. "
                 f"Wiki suggests `{target}` ({page_type})."
@@ -880,9 +909,7 @@ async def _triage(
         GraphNode.node_id.in_(paths),
     )
     pagerank = {
-        node_id: pr or 0.0
-        for node_id, pr in (await session.execute(pr_stmt)).all()
-        if node_id
+        node_id: pr or 0.0 for node_id, pr in (await session.execute(pr_stmt)).all() if node_id
     }
     return _triage_text(pattern, result_count, matched, symbol_names, pagerank)
 
@@ -960,9 +987,7 @@ def _rescue_rank(rows: list, lowered: set[str]) -> list:
     return sorted(rows, key=_key)[:_RESCUE_TOP_N]
 
 
-def _rescue_wide_text(
-    pattern: str, clean: str, matched: dict[str, int], rows: list
-) -> str | None:
+def _rescue_wide_text(pattern: str, clean: str, matched: dict[str, int], rows: list) -> str | None:
     """The widened rescue's line, or None when it has nothing new to say.
 
     The gate is a set difference, not a count: the top exact-name match has to
