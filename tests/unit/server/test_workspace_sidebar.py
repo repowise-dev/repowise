@@ -208,7 +208,7 @@ async def workspace_app_with_workspace_router(workspace_app):
 
     # Including the same router twice is harmless — FastAPI dedupes by
     # path, but to keep the test isolation tidy we check membership.
-    if not any(r.path.startswith("/api/workspace") for r in app.routes):
+    if not any(getattr(r, "path", "").startswith("/api/workspace") for r in app.routes):
         app.include_router(ws_router.router)
     return (app, *rest)
 

@@ -272,6 +272,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.cross_repo_enricher = None
     app.state.repo_registry = None  # RepoRegistry, workspace mode only
     app.state.workspace_sessions = {}  # repo_id → session_factory
+    app.state.workspace_path_to_repo_id = {}  # local_path → repo_id
     app.state.workspace_engines = []  # engines to dispose on shutdown
     # Per-repo FTS instances keyed by repo_id, used by the search router
     # to fan out across every workspace repo (single-repo FTS lives on
@@ -298,54 +299,80 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.workspace_config = ws_config
             app.state.workspace_root = str(ws_root)
 
-            # Create per-repo DB engines so all workspace repos are accessible
-            # via the same REST API (sidebar, repo-specific pages, etc.)
-            import sqlite3 as _sqlite3
+            from repowise.core.persistence.database import get_configured_db_url
 
-            for repo_entry in ws_config.repos:
-                repo_path = (_Path(ws_root) / repo_entry.path).resolve()
-                repo_db = repo_path / ".repowise" / "wiki.db"
-                if not repo_db.exists():
-                    continue
-                # Read repo_id from this DB
-                try:
-                    conn = _sqlite3.connect(str(repo_db))
-                    row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
-                    conn.close()
-                    if not row:
+            configured_db_url = get_configured_db_url()
+            if configured_db_url is not None:
+                # Shared database mode (e.g. PostgreSQL, REPOWISE_DB_URL).
+                # Member repos are registered in the shared database and do not
+                # have per-repo .repowise/wiki.db files.
+                from repowise.core.persistence.crud import get_repository_by_path
+
+                async with get_session(session_factory) as session:
+                    for repo_entry in ws_config.repos:
+                        repo_path = (_Path(ws_root) / repo_entry.path).resolve()
+                        try:
+                            repo = await get_repository_by_path(session, str(repo_path))
+                            if repo is not None:
+                                app.state.workspace_sessions[repo.id] = session_factory
+                                app.state.workspace_fts[repo.id] = fts
+                                app.state.workspace_path_to_repo_id[str(repo_path)] = repo.id
+                        except Exception:
+                            logger.debug(
+                                "workspace_shared_db_repo_lookup_failed",
+                                extra={"path": str(repo_path)},
+                                exc_info=True,
+                            )
+            else:
+                # Create per-repo DB engines so all workspace repos are accessible
+                # via the same REST API (sidebar, repo-specific pages, etc.)
+                import sqlite3 as _sqlite3
+
+                for repo_entry in ws_config.repos:
+                    repo_path = (_Path(ws_root) / repo_entry.path).resolve()
+                    repo_db = repo_path / ".repowise" / "wiki.db"
+                    if not repo_db.exists():
                         continue
-                    repo_id = row[0]
-                except Exception:
-                    continue
+                    # Read repo_id from this DB
+                    try:
+                        conn = _sqlite3.connect(str(repo_db))
+                        row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
+                        conn.close()
+                        if not row:
+                            continue
+                        repo_id = row[0]
+                        app.state.workspace_path_to_repo_id[str(repo_path)] = repo_id
+                    except Exception:
+                        continue
 
-                # Skip if this is the primary DB we already connected to
-                # (the main engine already serves this repo) — but still
-                # register the primary's FTS under its repo_id so the
-                # search fan-out can include it.
-                db_url_posix = repo_db.as_posix()
-                if db_url and db_url_posix in db_url.replace("\\", "/"):
-                    app.state.workspace_fts[repo_id] = fts
-                    continue
+                    # Skip if this is the primary DB we already connected to
+                    # (the main engine already serves this repo) — but still
+                    # register the primary's FTS under its repo_id so the
+                    # search fan-out can include it.
+                    db_url_posix = repo_db.as_posix()
+                    if db_url and db_url_posix in db_url.replace("\\", "/"):
+                        app.state.workspace_fts[repo_id] = fts
+                        continue
 
-                repo_engine = create_engine(f"sqlite+aiosqlite:///{db_url_posix}")
-                await init_db(repo_engine)
-                repo_sf = create_session_factory(repo_engine)
-                app.state.workspace_sessions[repo_id] = repo_sf
-                app.state.workspace_engines.append(repo_engine)
+                    repo_engine = create_engine(f"sqlite+aiosqlite:///{db_url_posix}")
+                    await init_db(repo_engine)
+                    repo_sf = create_session_factory(repo_engine)
+                    app.state.workspace_sessions[repo_id] = repo_sf
+                    app.state.workspace_engines.append(repo_engine)
 
-                # Build a per-repo FTS instance so the search router can
-                # fan out queries across every workspace repo. Without
-                # this, full-text search only ever sees the primary DB.
-                try:
-                    repo_fts = FullTextSearch(repo_engine)
-                    await repo_fts.ensure_index()
-                    app.state.workspace_fts[repo_id] = repo_fts
-                except Exception:
-                    logger.debug(
-                        "workspace_fts_init_failed",
-                        extra={"repo_id": repo_id},
-                        exc_info=True,
-                    )
+                    # Build a per-repo FTS instance so the search router can
+                    # fan out queries across every workspace repo. Without
+                    # this, full-text search only ever sees the primary DB.
+                    try:
+                        repo_fts = FullTextSearch(repo_engine)
+                        await repo_fts.ensure_index()
+                        app.state.workspace_fts[repo_id] = repo_fts
+                    except Exception:
+                        logger.debug(
+                            "workspace_fts_init_failed",
+                            extra={"repo_id": repo_id},
+                            exc_info=True,
+                        )
 
             if app.state.workspace_sessions:
                 logger.info(
