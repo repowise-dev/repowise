@@ -920,6 +920,13 @@ block ranks and describes; this one recommends. Same role as `get_risk`'s
 `recovers_points` remains an exact deprecated alias during the compatibility
 window; `recovers_points_compatibility` names its replacement.
 
+**`watch` is context, not a task.** When the leading cause is history-derived —
+churn, ownership, co-change, prior fixes — the directive carries it under
+`watch` rather than in the fix path, because no edit to the file settles it.
+If *no* file has a code-shape lead, `next_action` says so instead of naming a
+file to change, so an agent is never sent to refactor a file whose deficit is
+its history.
+
 **Nothing is dropped silently.** Any `targets` entry that matched nothing is
 named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
 `no_such_path`, `excluded`, `not_measured` → indexed, but carrying no stored
