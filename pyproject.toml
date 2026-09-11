@@ -65,7 +65,7 @@ dependencies = [
     "tree-sitter-svelte>=1,<2",
     "tree-sitter-html>=0.23,<1",
     # SQL parsing (multi-dialect, error-tolerant, pure Python)
-    "sqlglot>=26,<28",
+    "sqlglot>=26,<31",
     # Dependency graph
     "networkx>=3.3,<4",
     "scipy>=1.11,<2",
