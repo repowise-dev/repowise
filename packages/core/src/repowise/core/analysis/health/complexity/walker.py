@@ -33,6 +33,8 @@ drives the individual passes, each of which lives in its own sibling module:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import structlog
 
 from .assertions import _collect_assertion_blocks
@@ -43,8 +45,11 @@ from .ast_utils import (
 )
 from .class_analysis import _collect_classes
 from .cyclomatic import _walk_function_body
-from .error_handling import _collect_error_handling
+from .error_handling import _collect_error_handling, _eh_rust_attr_is_test
 from .languages import get_language_map
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 # Re-exported so the package façade (``__init__``) and downstream consumers
 # keep importing the output schema from ``complexity.walker`` unchanged.
@@ -159,6 +164,7 @@ def walk_file(
         io_boundary_names=io_boundary_names,
         perf_fn_facts=perf_fn_facts,
         has_inline_tests=_detect_inline_tests(source, language),
+        rust_test_line_ranges=_rust_test_line_ranges(tree.root_node, language),
     )
 
 
@@ -191,3 +197,56 @@ def _detect_inline_tests(source: bytes, language: str) -> bool:
     if language != "rust":
         return False
     return any(marker in source for marker in _RUST_INLINE_TEST_MARKERS)
+
+
+# ``function_item`` / ``mod_item`` / ``impl_item`` are the Rust item kinds a
+# ``#[cfg(test)]`` (or ``#[test]`` / ``#[tokio::test]`` / ``#[rstest]``, for a
+# bare fn) attribute can gate. ``mod``/``impl`` are containers: their whole
+# span is test-only once gated, including any nested fn that carries no
+# attribute of its own — the same reason ``#[cfg(test)] mod tests { .. }``
+# hides ordinary-looking helper fns from the file-level heuristic above.
+_RUST_TEST_ITEM_KINDS = ("function_item", "mod_item", "impl_item")
+
+
+def _rust_test_line_ranges(root: Node, language: str) -> tuple[tuple[int, int], ...]:
+    """1-indexed ``(start_line, end_line)`` spans of Rust test-only code.
+
+    Walks the SAME tree ``walk_file`` already parsed (no extra parse). Marks a
+    ``mod_item`` / ``impl_item`` / ``function_item`` whose immediately
+    preceding attribute siblings include a test marker
+    (:func:`repowise.core.analysis.health.complexity.error_handling._eh_rust_attr_is_test`,
+    shared with the error-handling walker so both passes recognize the
+    identical attribute grammar), and does not descend into a marked node —
+    its span already covers everything nested inside. Rust-only; every other
+    language gets ``()``, so :func:`repowise.core.analysis.health.perf.gated._in_rust_test_range`
+    is a no-op for it.
+    """
+    if language != "rust":
+        return ()
+
+    ranges: list[tuple[int, int]] = []
+
+    def _text(node: Node) -> str:
+        return (node.text or b"").decode("utf-8", errors="replace")
+
+    def _is_marked(node: Node) -> bool:
+        sib = node.prev_sibling
+        while sib is not None and sib.type in (
+            "attribute_item",
+            "line_comment",
+            "block_comment",
+        ):
+            if sib.type == "attribute_item" and _eh_rust_attr_is_test(_text(sib)):
+                return True
+            sib = sib.prev_sibling
+        return False
+
+    def _walk(node: Node) -> None:
+        if node.type in _RUST_TEST_ITEM_KINDS and _is_marked(node):
+            ranges.append((node.start_point[0] + 1, node.end_point[0] + 1))
+            return  # span already covers every nested item; don't descend
+        for child in node.children:
+            _walk(child)
+
+    _walk(root)
+    return tuple(ranges)
