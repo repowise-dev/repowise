@@ -277,7 +277,7 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
         1
         for p in parsed_files
         if _is_code_file(p)
-        and _passes_importance_floor(p.file_info.path, getattr(p.file_info, "language", None))
+        and _passes_importance_floor(p.file_info.path, p.file_info.language)
     )
 
 
@@ -316,7 +316,7 @@ def _build_file_candidates(
         if not _is_code_file(p):
             continue
         path = p.file_info.path
-        if not _passes_importance_floor(path, getattr(p.file_info, "language", None)):
+        if not _passes_importance_floor(path, p.file_info.language):
             continue
         is_hotspot = bool(git.get(path, {}).get("is_hotspot", False))
         s = score_file(

@@ -90,7 +90,7 @@ def score_file(
     if fi.is_test:
         from repowise.core.test_paths import is_test_support_path
 
-        if not is_test_support_path(fi.path, getattr(fi, "language", None)):
+        if not is_test_support_path(fi.path, fi.language):
             base *= _PENALTY_TEST
     if (
         n_symbols <= _PENALTY_TRIVIAL_SYMBOL_CAP
