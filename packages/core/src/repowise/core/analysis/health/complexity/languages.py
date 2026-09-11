@@ -806,56 +806,27 @@ _PASCAL = LanguageNodeMap(
 )
 
 
-# Elixir has NO entry, deliberately. tree-sitter-elixir has no ``def`` node:
-# ``defmodule``, ``def``, ``defp`` and an ordinary function call are all
-# ``call`` nodes, told apart only by the identifier text of the target. So
-# ``function_kinds={"call"}`` matches the module too, and because the walker
-# takes the outermost match, every file collapses to a single function named
-# ``defmodule`` at ccn 1 with the real functions invisible. Every field on
-# ``LanguageNodeMap`` is a set of node *types*, so "a ``call`` whose target
-# identifier is ``def`` or ``defp``" cannot be said here at all.
-#
-# No entry means no rows: ``get_language_map`` returns None and ``walk_file``
-# returns an empty ``FileComplexity``, which is the degrade its docstring
-# promises. A map that reports a keyword as a function at a fixed ccn of 1 is
-# a confident wrong answer instead, and health scores are persisted from it.
-# Restoring Elixir needs a text predicate for function kinds first.
+# Elixir has no entry on purpose. tree-sitter-elixir gives ``defmodule``,
+# ``def``, ``defp`` and an ordinary call the same ``call`` node, told apart
+# only by the target's identifier text, which a set of node types cannot
+# express. Mapping ``call`` reports the module as the file's only function, so
+# until function kinds can carry a text predicate, no entry and no rows.
 
 
-# Known undercount, and NOT a fault of this map. ``walk_file`` takes
-# ``body = fn_node.child_by_field_name("body")`` and ``_walk_function_body``
-# then walks that node's *children*, so the body node itself is never visited.
-# For a block-bodied language the body is a wrapper and skipping it is right.
-# F# hands back the expression itself, so a function whose whole body is one
-# construct loses it: ``let f x = if x > 0 then 1 else 2`` scores 1, not 2.
-#
-# It is one root cause, not a family. The same dropped node is why a ``match``
-# that IS the whole body cannot be recognised as flat, so before ``case_kinds``
-# named the wrapper its arms were counted one by one. Fixing it properly means
-# moving the traversal root for every language, which needs its own
-# measurement rather than riding along here.
+# Known undercount, in the walker rather than this map: ``walk_file`` walks the
+# body node's children, so a body that IS one expression loses it and
+# ``let f x = if x > 0 then 1 else 2`` scores 1.
 _FSHARP = LanguageNodeMap(
     function_kinds=frozenset({"function_or_value_defn", "member_defn"}),
     lambda_kinds=frozenset(),
     branch_kinds=frozenset({"if_expression"}),
     loop_kinds=frozenset({"for_expression", "while_expression"}),
     try_kinds=frozenset({"try_expression"}),
-    # ``catch_kinds`` stays empty and ``case_kinds`` names the WRAPPER, and the
-    # two have to be decided together: a ``try ... with`` handler and a
-    # ``match`` arm are the same node types here, ``rules`` holding ``rule``,
-    # so whatever either field names lands on both constructs.
-    #
-    # ``rules`` rather than ``rule``, measured across eight shapes. Naming the
-    # arm counts each one, which takes a flat three-arm match to 4 where Rust
-    # scores 2. Naming the wrapper counts the dispatch once: a flat match of
-    # any width scores 2, matching Rust and the "flat arms count once for the
-    # dispatch" rule in this module's docstring, and ``try``/``with`` picks up
-    # its branch instead of scoring as no error handling.
-    #
-    # The one place this still departs from the docstring: CATCH is meant to
-    # add 1 per clause, and a multi-handler ``with`` counts 1, because the
-    # wrapper is a single node however many handlers hang off it. Under-
-    # counting a rare shape beats inflating every match in the language.
+    # A ``with`` handler and a ``match`` arm are the same node types here, so
+    # one field has to serve both. ``case_kinds`` names ``rules``, the wrapper,
+    # which counts the dispatch once; naming ``rule``, the arm, would score a
+    # flat three-arm match 4 against Rust's 2. So a multi-handler ``with``
+    # counts 1 rather than one per clause.
     catch_kinds=frozenset(),
     switch_kinds=frozenset({"match_expression"}),
     case_kinds=frozenset({"rules"}),
@@ -870,33 +841,20 @@ _FSHARP = LanguageNodeMap(
 
 
 _OBJC = LanguageNodeMap(
-    # ``declaration`` is NOT a function kind: in this grammar it covers every
-    # file-scope global (``static int gCounter = 0;``) and every prototype, so
-    # including it turned each one into a function of complexity 1. It belongs
-    # in ``local_decl_kinds`` only, which is where the C map at ``_C`` puts it.
-    #
-    # Two effects, and the second is the larger one. Spurious ccn-1 rows stop
-    # being emitted, which raises a file's average complexity back to the
-    # truth. And because ``_recurse`` returns early on any function kind, the
-    # walker used to refuse to descend INTO a declaration: a ternary in an
-    # initialiser counted nothing, and a block literal's body never reached its
-    # enclosing method. Both count now, so an Objective-C file's stored
-    # ``max_ccn`` generally RISES on the next re-score rather than falling.
+    # ``declaration`` covers every file-scope global and prototype here, so it
+    # is a local decl rather than a function kind, as in ``_C``. It is also a
+    # recursion boundary: as a function kind it stopped the walker descending
+    # into a declaration, so a ternary in an initialiser counted nothing.
     function_kinds=frozenset({"function_definition", "method_definition"}),
-    # A block assigned at file scope is a ``declaration``, so dropping
-    # ``declaration`` above would have taken its body's complexity with it.
-    # Naming the block itself keeps that row without bringing the globals back.
-    # A block nested inside a method still rolls into that method rather than
-    # splitting off, which is what ``lambda_kinds`` means everywhere else.
+    # A file-scope block is a ``declaration``, so name the block itself to keep
+    # its complexity now that ``declaration`` is not a function kind.
     lambda_kinds=frozenset({"block_literal"}),
     branch_kinds=frozenset({"if_statement", "conditional_expression"}),
-    # ``for (NSString *k in keys)`` parses as ``for_statement`` here, not as a
-    # distinct ``for_in_statement``, so naming the latter matched nothing.
+    # Fast enumeration parses as ``for_statement``; there is no
+    # ``for_in_statement`` node in this grammar.
     loop_kinds=frozenset({"for_statement", "while_statement", "do_statement"}),
     try_kinds=frozenset({"try_statement"}),
-    # TRY only opens a nesting level; CATCH is what adds to CCN (see the module
-    # docstring). Leaving this empty scored ``@try``/``@catch`` the same as no
-    # error handling at all.
+    # TRY only opens a nesting level; CATCH is what adds to CCN.
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_statement"}),
     case_kinds=frozenset({"case_statement"}),

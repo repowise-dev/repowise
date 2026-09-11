@@ -99,18 +99,10 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: F# and Objective-C gained working complexity node maps, and
-# Elixir deliberately lost its one. Both languages previously reached the
-# walker with no usable map, so their files scored as if they had no branches,
-# the same defect the C entry below describes. Objective-C additionally counted
-# every file-scope global as a function of complexity 1. Stored complexity
-# metrics and the findings keyed off them change for files in those languages
-# on the next update; repos without them are unaffected.
-#
-# Note the cache, which is the other reason this has to move: ``HealthWalkCache``
-# keys a cached walk on the analyzer version and the file's bytes. A node-map
-# change alters neither, so an index built against the previous maps keeps
-# serving their results until this number does move.
+# Current stamp: F# and Objective-C gained working complexity node maps and
+# Elixir lost its broken one, so stored complexity changes for files in those
+# languages. It has to move for the cache too: ``HealthWalkCache`` keys on this
+# stamp and the file's bytes, neither of which a node-map change alters.
 #
 # v10: non-code files stopped being scored and the deduction was split into its
 # structure and history halves, stored per file.
