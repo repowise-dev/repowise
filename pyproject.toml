@@ -74,7 +74,7 @@ dependencies = [
     # File filtering
     "pathspec>=0.12,<1",
     # Structured logging
-    "structlog>=24,<25",
+    "structlog>=24,<27",
     # Database (async)
     "sqlalchemy[asyncio]>=2.0,<3",
     "aiosqlite>=0.20,<1",
