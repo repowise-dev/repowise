@@ -64,6 +64,11 @@ _PRICING: dict[str, dict[str, float]] = {
     # DeepSeek
     "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
     "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
+    # Mistral — https://mistral.ai/pricing
+    "mistral-large-latest": {"input": 2.0, "output": 6.0},
+    "mistral-small-latest": {"input": 0.20, "output": 0.60},
+    "ministral-8b-latest": {"input": 0.15, "output": 0.40},
+    "ministral-3b-latest": {"input": 0.15, "output": 0.40},
 }
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
