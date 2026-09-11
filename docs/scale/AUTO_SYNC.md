@@ -253,6 +253,21 @@ repowise watch --workspace             # auto-update all workspace repos on file
 
 ---
 
+## Inter-Process Update Locking
+
+When multiple processes or background mechanisms trigger `repowise update` concurrently (e.g., git post-commit hooks firing during rapid commits, active file watchers, and manual CLI runs), repowise uses single-flight process locking to prevent database corruption, race conditions, and duplicate LLM generation work.
+
+### Lock files and coordination
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `.update.lock` | `.repowise/.update.lock` (per-repo) or `.repowise-workspace/.update.lock` (workspace) | Single-flight lock written atomically with the owner's PID, process creation token, target commit, and timestamp. If another update is already running, new invocations inspect the lock owner's PID liveness before deciding to wait, coalesce, or clear a dead lock |
+| `.update.queued` | `.repowise/.update.queued` | Written by the post-commit hook *before* spawning `repowise update` in the background. Lets hooks and agent integrations suppress redundant "stale wiki" notices instantly before the background update process finishes Python imports |
+| `.update.pending` | `.repowise/.update.pending` | Written when a new commit arrives while an update is already in progress. The running update reads this marker upon completion and automatically rolls forward to the newest HEAD in an extra pass rather than stopping at an obsolete commit |
+| `.update.log` | `.repowise/.update.log` | Log of background hook execution and update runs. Automatically rotated and capped (`256 KB` max size with `64 KB` tail retention) so background updates can be diagnosed without filling `.repowise/` |
+
+---
+
 ## Environment Variables Reference
 
 | Variable | Used by | Description |
