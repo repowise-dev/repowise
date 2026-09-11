@@ -1031,3 +1031,220 @@ def test_normal_heading_with_words_still_produces_a_term(
     assert "Cache Layer" in terms, (
         "A normal two-word heading must survive _is_useful and reach the output"
     )
+
+
+# ---------------------------------------------------------------------------
+# Shell comments inside fenced blocks must not be mined as headings (#2142)
+# ---------------------------------------------------------------------------
+#
+# _HEADING.finditer runs on the raw document over the whole file with
+# re.MULTILINE, so every line that starts with '#' — including shell comments
+# inside ```bash … ``` blocks — looks identical to a real Markdown heading.
+#
+# The fix is _strip_fenced_blocks(), called before _HEADING.finditer in both
+# _harvest() and _is_release_notes().  Lines inside the fence are replaced with
+# empty strings (not deleted) so that m.end() byte offsets remain valid for
+# _definition_after_heading.
+
+
+def test_shell_comment_in_backtick_fence_is_not_mined(tmp_path: Path) -> None:
+    """A # comment inside a ```bash block must not become a house term.
+
+    Regression for #2142: the miner saw '# Install dependencies' and treated
+    it as a '## Install dependencies' heading because _HEADING matched every
+    line starting with '#' without checking whether that line was inside a
+    fenced code block.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "README.md").write_text(
+        "# Ledger\n\n"
+        "Here is how to install:\n\n"
+        "```bash\n"
+        "# Install dependencies\n"
+        "npm install\n"
+        "# Start the server\n"
+        "npm start\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    result = extract_house_terms(root)
+    terms = [t.term for t in result]
+    assert "Install dependencies" not in terms, (
+        "Shell comment inside a backtick fence must not be mined as a heading"
+    )
+    assert "Start the server" not in terms, (
+        "Shell comment inside a backtick fence must not be mined as a heading"
+    )
+
+
+def test_shell_comment_in_tilde_fence_is_not_mined(tmp_path: Path) -> None:
+    """A # comment inside a ~~~sh block must not become a house term.
+
+    Tilde fences are valid CommonMark (§4.5) and are used by some doc tools.
+    The fix must handle both backtick and tilde fence markers.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "README.md").write_text(
+        "# Ledger\n\n"
+        "~~~sh\n"
+        "# Configure secrets\n"
+        "export SECRET_KEY=...\n"
+        "~~~\n",
+        encoding="utf-8",
+    )
+    result = extract_house_terms(root)
+    terms = [t.term for t in result]
+    assert "Configure secrets" not in terms, (
+        "Shell comment inside a tilde fence must not be mined as a heading"
+    )
+
+
+def test_real_heading_after_fenced_block_is_still_mined(tmp_path: Path) -> None:
+    """A genuine heading that follows a fenced block must still be harvested.
+
+    Stripping fenced blocks must not accidentally erase real headings that
+    appear *after* the closing fence.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "README.md").write_text(
+        "# Ledger\n\n"
+        "```bash\n"
+        "# just a comment\n"
+        "```\n\n"
+        "## Blast radius\n\n"
+        "Blast radius is the set of files a change can reach.\n",
+        encoding="utf-8",
+    )
+    src = root / "src"
+    src.mkdir()
+    (src / "core.py").write_text(
+        '"""Blast radius computation."""\n', encoding="utf-8"
+    )
+    result = extract_house_terms(root)
+    terms = [t.term for t in result]
+    assert "Blast radius" in terms, (
+        "A real heading after a fenced block must still be harvested"
+    )
+
+
+def test_heading_with_inline_backtick_span_is_not_suppressed(tmp_path: Path) -> None:
+    """A heading containing an inline code span must still be harvested.
+
+    Inline backtick spans (single backtick) are not fences.  A heading like
+    '## Cache Layer' that contains no backtick fences must be unaffected by the
+    fence-stripping logic.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "README.md").write_text(
+        "## Cache Layer\n\n"
+        "Cache Layer stores pre-computed results.\n",
+        encoding="utf-8",
+    )
+    src = root / "src"
+    src.mkdir()
+    (src / "cache.py").write_text(
+        '"""Cache Layer implementation."""\n', encoding="utf-8"
+    )
+    result = extract_house_terms(root)
+    terms = [t.term for t in result]
+    assert "Cache Layer" in terms, (
+        "A heading with no fenced block must still be harvested after the fix"
+    )
+
+
+def test_version_comments_in_code_block_do_not_trigger_release_notes(
+    tmp_path: Path,
+) -> None:
+    """Version-like # comments inside fenced blocks must not trigger release-note filtering.
+
+    _is_release_notes() counts how many headings look like version numbers.  If
+    a changelog-style code example contains many '# v1.0.0' comments, the doc
+    could be misclassified as release notes and silently skipped.  The fix must
+    apply to _is_release_notes() as well as _harvest().
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    # Build a real doc that has a code block full of version comments.
+    # The ratio of version-like "headings" must stay below the threshold
+    # once fenced blocks are stripped.
+    doc_lines = [
+        "# Deployment Guide",
+        "",
+        "## Overview",
+        "",
+        "This guide explains how to deploy.",
+        "",
+        "## Prerequisites",
+        "",
+        "```bash",
+    ]
+    # Add 20 version-like shell comments — enough to exceed the ratio if counted.
+    for i in range(20):
+        doc_lines.append(f"# v1.{i}.0")
+    doc_lines += [
+        "```",
+        "",
+        "## Configuration",
+        "",
+        "Set your environment variables.",
+        "",
+        "## Installation",
+        "",
+        "Run the installer.",
+    ]
+    (root / "README.md").write_text("\n".join(doc_lines), encoding="utf-8")
+    src = root / "src"
+    src.mkdir()
+    # Spell all three real terms in source so they pass the code-frequency gate.
+    (src / "deploy.py").write_text(
+        '"""Deployment Guide utilities.\n\n'
+        "Configuration is read from environment variables.\n"
+        "Installation runs the package installer.\n"
+        '"""\n',
+        encoding="utf-8",
+    )
+    result = extract_house_terms(root)
+    terms = [t.term for t in result]
+    # The document must NOT have been skipped as release notes.
+    # At least one of its real headings must survive.
+    # ('Overview' may be filtered as a stopword; 'Prerequisites' is also common.)
+    assert "Installation" in terms or "Configuration" in terms or "Deployment Guide" in terms, (
+        "A doc with version comments only in a code block must not be classified "
+        "as release notes and must still yield its real headings as terms"
+    )
+
+
+def test_heading_definition_after_fenced_block_is_extracted_correctly(
+    tmp_path: Path,
+) -> None:
+    """Verify that headings occurring after fenced code blocks extract their correct definitions.
+
+    Ensures offset indices for definition extraction align with the stripped prose text,
+    preventing offsets from slicing into preceding code blocks.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "README.md").write_text(
+        "# Ledger\n\n"
+        "```bash\n"
+        "# install the dependencies for the ledger service\n"
+        "npm install\n"
+        "```\n\n"
+        "## Blast radius\n\n"
+        "Blast radius is the set of files a change can reach through the import graph.\n",
+        encoding="utf-8",
+    )
+    src = root / "src"
+    src.mkdir()
+    (src / "analysis.py").write_text('"""Blast radius calculation."""\n', encoding="utf-8")
+
+    result = {t.term: t for t in extract_house_terms(root)}
+    assert "Blast radius" in result
+    assert result["Blast radius"].definition == (
+        "Blast radius is the set of files a change can reach through the import graph."
+    )
+

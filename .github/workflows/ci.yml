@@ -44,6 +44,41 @@ jobs:
         run: uv run pytest tests/unit/ -v --tb=short
 
   # ---------------------------------------------------------------------------
+  # tree-sitter floor — installs the declared minimum tree-sitter version and
+  # compiles every language's query against it. `uv sync` alone always
+  # resolves the newest tree-sitter, which is why #2165 (13 of 27 language
+  # queries failing to compile against tree-sitter 0.23.x/0.24.x, with each
+  # failure silently indexing the language at zero symbols) went uncaught.
+  # Deliberately narrow: only tree-sitter itself is pinned down to the floor,
+  # not `--resolution lowest-direct` for the whole dependency set, which
+  # would fail on unrelated loose floors elsewhere in this repo.
+  # ---------------------------------------------------------------------------
+  test-tree-sitter-floor:
+    name: tree-sitter floor (query compilation)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-packages
+
+      - name: Pin tree-sitter to the declared floor
+        run: uv pip install "tree-sitter==0.25.0"
+
+      - name: Run query-compilation test
+        # --no-sync: plain `uv run` re-syncs the venv from uv.lock before
+        # running, which would silently reinstall the newest tree-sitter and
+        # undo the pin above.
+        run: uv run --no-sync pytest tests/unit/ingestion/parser/test_query_compilation.py -v --tb=short
+
+  # ---------------------------------------------------------------------------
   # Python lint — ruff. Deliberately its own job rather than a step inside the
   # test matrix: the result is identical on 3.11/3.12/3.13 (target-version is
   # pinned in pyproject.toml), so running it there would burn three runners to

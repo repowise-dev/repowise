@@ -1,7 +1,6 @@
 export * from "./tokens";
 export * from "./biomarker-glossary";
 export * from "./biomarker-chip";
-export * from "./file-table";
 export * from "./biomarker-list";
 export * from "./biomarker-details";
 export * from "./coverage-bar";

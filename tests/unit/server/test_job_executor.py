@@ -706,6 +706,43 @@ async def test_execute_job_defaults_to_sync_when_mode_empty_string(session_facto
 
 
 @pytest.mark.asyncio
+async def test_execute_job_resolves_the_provider_the_ui_picked_for_this_repo(
+    session_factory, tmp_path
+):
+    """The dashboard's provider picker persists its choice per repo, keyed by
+    repo id. Resolving on path alone skipped that entry -- the most specific
+    step in the resolver, and the only one carrying a deliberate user decision
+    -- so a repo whose settings named a provider still indexed with whatever
+    auto-detection guessed from the server's own environment.
+    """
+    async with session_factory() as session:
+        repo = await upsert_repository(session, name="test-repo", local_path=str(tmp_path))
+        job = await upsert_generation_job(
+            session,
+            repository_id=repo.id,
+            config={"mode": "sync"},
+        )
+        await session.commit()
+        job_id, repo_id = job.id, repo.id
+
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+
+    get_provider_mock = MagicMock(side_effect=RuntimeError("no provider"))
+    with (
+        patch("repowise.server.job_executor.run_pipeline", AsyncMock(return_value=_fake_result())),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch(
+            "repowise.server.provider_config.get_chat_provider_instance",
+            get_provider_mock,
+        ),
+    ):
+        await execute_job(job_id, app_state)
+
+    get_provider_mock.assert_called_once()
+    assert get_provider_mock.call_args.kwargs.get("repo_id") == repo_id
+
+
+@pytest.mark.asyncio
 async def test_execute_job_dispatches_generate_mode(session_factory, tmp_path):
     """A job with mode='generate' passes validation and dispatches to _run_generate_job."""
     async with session_factory() as session:

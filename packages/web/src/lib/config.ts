@@ -12,6 +12,9 @@ const KEYS = {
   embedder: "repowise_embedder",
   weekend: "repowise_weekend",
   chatDockHidden: "repowise_chat_dock_hidden",
+  chatAskControlsHidden: "repowise_chat_ask_controls_hidden",
+  chatSelectionAskHidden: "repowise_chat_selection_ask_hidden",
+  chatHintSeen: "repowise_chat_hint_seen",
 } as const;
 
 function read(key: string): string {
@@ -54,16 +57,47 @@ export const config = {
    *  shown, so an unset value reads as false. */
   getChatDockHidden: () => read(KEYS.chatDockHidden) === "1",
   setChatDockHidden: (v: boolean) => write(KEYS.chatDockHidden, v ? "1" : ""),
+
+  /** Whether the per-object "Ask about this" controls are hidden. Same
+   *  default-shown encoding as the dock. */
+  getChatAskControlsHidden: () => read(KEYS.chatAskControlsHidden) === "1",
+  setChatAskControlsHidden: (v: boolean) =>
+    write(KEYS.chatAskControlsHidden, v ? "1" : ""),
+
+  /** Whether the control that appears beside a text selection is hidden. */
+  getChatSelectionAskHidden: () => read(KEYS.chatSelectionAskHidden) === "1",
+  setChatSelectionAskHidden: (v: boolean) =>
+    write(KEYS.chatSelectionAskHidden, v ? "1" : ""),
+
+  /** Whether the pill has already introduced itself once in this browser. */
+  getChatHintSeen: () => read(KEYS.chatHintSeen) === "1",
+  setChatHintSeen: () => write(KEYS.chatHintSeen, "1"),
 };
 
-/** Fires when the dock's visibility changes in this tab. `localStorage` only
- *  notifies OTHER tabs via `storage`, so without this the dock and the settings
- *  toggle would not agree until a reload. */
+/** Fires when any chat affordance's visibility changes in this tab.
+ *  `localStorage` only notifies OTHER tabs via `storage`, so without this the
+ *  affordance and the settings toggle would not agree until a reload. One
+ *  event for all three: every reader of one reads the others too, because
+ *  hiding the dock hides the page controls with it. */
 export const CHAT_DOCK_VISIBILITY_EVENT = "repowise:chat-dock-visibility";
 
-export function setChatDockHidden(hidden: boolean): void {
-  config.setChatDockHidden(hidden);
+function announce(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_DOCK_VISIBILITY_EVENT));
   }
+}
+
+export function setChatDockHidden(hidden: boolean): void {
+  config.setChatDockHidden(hidden);
+  announce();
+}
+
+export function setChatAskControlsHidden(hidden: boolean): void {
+  config.setChatAskControlsHidden(hidden);
+  announce();
+}
+
+export function setChatSelectionAskHidden(hidden: boolean): void {
+  config.setChatSelectionAskHidden(hidden);
+  announce();
 }

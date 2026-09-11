@@ -34,7 +34,7 @@ dependencies = [
     # HTTP client
     "httpx>=0.27,<1",
     # AST parsing
-    "tree-sitter>=0.23,<1",
+    "tree-sitter>=0.25,<1",
     "tree-sitter-python>=0.23,<1",
     "tree-sitter-typescript>=0.23,<1",
     "tree-sitter-javascript>=0.23,<1",

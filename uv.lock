@@ -3179,7 +3179,7 @@ requires-dist = [
     { name = "structlog", specifier = ">=24,<25" },
     { name = "tenacity", specifier = ">=9,<10" },
     { name = "time-machine", marker = "extra == 'dev'", specifier = ">=2.14,<3" },
-    { name = "tree-sitter", specifier = ">=0.23,<1" },
+    { name = "tree-sitter", specifier = ">=0.25,<1" },
     { name = "tree-sitter-bash", specifier = ">=0.23,<1" },
     { name = "tree-sitter-c-sharp", specifier = ">=0.23,<1" },
     { name = "tree-sitter-cpp", specifier = ">=0.23,<1" },

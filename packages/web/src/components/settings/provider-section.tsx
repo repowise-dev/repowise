@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { config } from "@/lib/config";
+import { getProviders } from "@/lib/api/providers";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Input } from "@repowise-dev/ui/ui/input";
 import {
@@ -69,7 +70,7 @@ const EMBEDDER_ENV_VARS: Record<string, string[]> = {
  * Model and embedder defaults for init/sync triggered from the UI.
  *
  * This used to render a second card, "Server Connection", with its own Test
- * button against the same `/api/health` that `ConnectionSection` already tests
+ * button against the same `/health` that `ConnectionSection` already tests
  * — a hand-rolled `<button>` painted with `--color-border`, a token defined in
  * no stylesheet, reporting with literal ✓/✗ glyphs. It is gone; what it
  * uniquely showed, the provider the *server* is configured with, is a line
@@ -90,29 +91,32 @@ export function ProviderSection() {
     setProvider(config.getProvider());
     setModel(config.getModel());
     setEmbedder(config.getEmbedder());
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data?.provider) setServerProvider(data.provider);
-      })
-      .catch(() => {});
-    // The catalog the server will actually resolve against. Reading it here
-    // means a provider added on the Python side appears in this picker with no
-    // change to this file -- which is how `codex_cli` and `openrouter` came to
-    // be selectable everywhere except here.
-    fetch("/api/providers")
-      .then((r) => r.json())
-      .then((data) => {
-        const catalog: Array<{ id?: string; default_model?: string }> = data?.providers ?? [];
-        const ids = catalog.map((p) => p?.id).filter((id): id is string => Boolean(id));
+    let cancelled = false;
+    void getProviders()
+      .then(({ active, providers: catalog }) => {
+        if (cancelled) return;
+        setServerProvider(active.provider);
+        // Same response already carries the catalog the server resolves
+        // against, so the picker can render it instead of a second copy
+        // compiled into this file. That copy is how `codex_cli` and
+        // `openrouter` came to be selectable everywhere except here.
+        const entries = catalog ?? [];
+        const ids = entries.map((entry) => entry.id).filter(Boolean);
         if (ids.length) setProviders(ids);
         setCatalogModels(
           Object.fromEntries(
-            catalog.flatMap((p) => (p?.id && p?.default_model ? [[p.id, p.default_model]] : [])),
+            entries.flatMap((entry) =>
+              entry.default_model ? [[entry.id, entry.default_model]] : [],
+            ),
           ),
         );
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        console.warn("[settings] Could not load the active server provider", error);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(

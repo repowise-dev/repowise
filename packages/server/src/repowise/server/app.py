@@ -35,7 +35,9 @@ from repowise.core.persistence.database import (
 )
 from repowise.core.persistence.models import GenerationJob
 from repowise.core.persistence.search import FullTextSearch
+from repowise.core.providers.embedding import is_semantic_embedder
 from repowise.core.providers.embedding.base import KeylessEmbedder
+from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server import __version__
 from repowise.server.routers import (
     blast_radius,
@@ -158,6 +160,16 @@ def _build_embedder():
     return KeylessEmbedder()
 
 
+def _build_query_embedder():
+    """Build the HTTP server's long-lived, query-side embedder.
+
+    Keyless is left bare because semantic-search routing identifies it by type;
+    wrapping it would incorrectly enable a vector leg with no signal.
+    """
+    embedder = _build_embedder()
+    return CachingEmbedder(embedder) if is_semantic_embedder(embedder) else embedder
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup: create DB engine, session factory, FTS, vector store, scheduler.
@@ -231,7 +243,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Reuse the repo-local LanceDB index written by CLI init/update. A fresh
     # in-memory store is used only when this database cannot be associated with
     # a repository or the optional LanceDB runtime is unavailable.
-    embedder = _build_embedder()
+    embedder = _build_query_embedder()
     from repowise.server.search_helpers import build_primary_vector_store
 
     vector_store, primary_vector_repo_id = await build_primary_vector_store(
@@ -369,7 +381,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             repo_registry = RepoRegistry(
                 workspace_root=_Path(ws_root),
                 ws_config=ws_config,
-                embedder_factory=_build_embedder,
+                embedder_factory=_build_query_embedder,
             )
             app.state.repo_registry = repo_registry
             set_tool_workspace(registry=repo_registry, workspace_root=str(ws_root))

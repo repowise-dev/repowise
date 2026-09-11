@@ -82,6 +82,15 @@ async def _build_repo_engine(repo_path: Path):
         repo = await upsert_repository(
             session, name=repo_path.name, local_path=str(repo_path)
         )
+        from repowise.core.persistence.models import GraphNode
+
+        session.add(
+            GraphNode(
+                repository_id=repo.id,
+                node_id="src/main.py",
+                node_type="file",
+            )
+        )
         await session.commit()
     fts = FullTextSearch(engine)
     await fts.ensure_index()
@@ -106,10 +115,16 @@ async def workspace_app(tmp_path, app):
     backend_path = ws_root / "backend"
     engine, sf, fts, repo_id = await _build_repo_engine(backend_path)
 
-    # The primary engine in the conftest fixture has no repository row;
-    # for these tests we want the primary list_repos query to return the
-    # backend repo. Simplest fix: swap the primary session_factory for
-    # the backend's, so /api/repos sees the seeded backend repo.
+    orig_sf = app.state.session_factory
+    orig_engine = app.state.engine
+    orig_fts = app.state.fts
+    orig_config = getattr(app.state, "workspace_config", None)
+    orig_root = getattr(app.state, "workspace_root", None)
+    orig_sessions = getattr(app.state, "workspace_sessions", {})
+    orig_engines = getattr(app.state, "workspace_engines", [])
+    orig_wf_fts = getattr(app.state, "workspace_fts", {})
+    orig_vs = getattr(app.state, "workspace_vector_stores", {})
+
     app.state.session_factory = sf
     app.state.engine = engine
     app.state.fts = fts
@@ -121,7 +136,19 @@ async def workspace_app(tmp_path, app):
     app.state.workspace_fts = {repo_id: fts}
     app.state.workspace_vector_stores = {}
 
-    yield app, ws_root, ws_config, repo_id
+    try:
+        yield app, ws_root, ws_config, repo_id
+    finally:
+        app.state.session_factory = orig_sf
+        app.state.engine = orig_engine
+        app.state.fts = orig_fts
+        app.state.workspace_config = orig_config
+        app.state.workspace_root = orig_root
+        app.state.workspace_sessions = orig_sessions
+        app.state.workspace_engines = orig_engines
+        app.state.workspace_fts = orig_wf_fts
+        app.state.workspace_vector_stores = orig_vs
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +235,7 @@ async def workspace_app_with_workspace_router(workspace_app):
 
     # Including the same router twice is harmless — FastAPI dedupes by
     # path, but to keep the test isolation tidy we check membership.
-    if not any(r.path.startswith("/api/workspace") for r in app.routes):
+    if not any(getattr(r, "path", "").startswith("/api/workspace") for r in app.routes):
         app.include_router(ws_router.router)
     return (app, *rest)
 

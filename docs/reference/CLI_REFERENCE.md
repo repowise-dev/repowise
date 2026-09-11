@@ -926,6 +926,8 @@ Compute per-file code-health scores from 49 deterministic detectors (McCabe comp
 |------|-------------|
 | `--file <path>` | Deep-dive a single file (relative path) |
 | `--module <prefix>` | Restrict the report to files whose path starts with this prefix |
+| `--scope` | `all` (default) or `production`. Which files every figure describes. Tests score higher than production code, so narrowing lowers the number without a defect being found. |
+| `--counts` | `everything` (default) or `code_shape`. `code_shape` drops the git-derived half of the deduction, which rises as a file is worked on — the reading that answers whether the code itself is improving. |
 | `--refactoring-targets` | Print structured, graph-aware refactoring plans (Extract Class / Helper / Move Method / Break Cycle), ranked `impact × centrality × blast radius`. See [REFACTORING.md](../layers/REFACTORING.md) |
 | `--generate-code <selector>` | Generate an actual refactoring patch for one target. The only `health` flag that calls an LLM; needs a configured provider. |
 | `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
@@ -942,6 +944,7 @@ repowise health --module packages/server              # restrict to a directory
 repowise health --refactoring-targets                 # ranked by impact / effort
 repowise health --generate-code packages/server/app.py::handler   # LLM patch for one target
 repowise health --trend                               # snapshot history + alerts
+repowise health --counts code_shape                   # ignore the git-derived half
 repowise coverage add coverage.lcov   # ingest coverage, then:
 repowise health
 repowise health --format json | jq .kpis              # machine-readable

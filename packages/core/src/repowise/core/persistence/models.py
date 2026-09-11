@@ -836,8 +836,10 @@ class GitFunctionBlame(Base):
     repository_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
-    # "{path}::{name}" — mirrors WikiSymbol.symbol_id.
-    symbol_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    # "{path}::{name}" — mirrors WikiSymbol.symbol_id. Text, not a bounded
+    # VARCHAR: a deeply-nested generated file (protobuf/OpenAPI bindings)
+    # routinely produces a path::name past any fixed width (#2162).
+    symbol_id: Mapped[str] = mapped_column(Text, nullable=False)
     file_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
     function_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
     start_line: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

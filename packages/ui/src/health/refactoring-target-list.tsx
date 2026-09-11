@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import {
   HealthWorkItemCard,
@@ -10,13 +10,10 @@ import {
 } from "./refactoring-card";
 
 /**
- * Cards rendered per page. Matches the files view's `PAGE_SIZE`, deliberately:
- * the queue's "Load more" raises the *fetch* to `QUEUE_MAX = 500`, and every one
- * of those was previously mounted as a full `RefactoringCard` — tens of
- * thousands of DOM nodes in one commit, on top of the payload they arrived in.
- * Paging here rather than in the caller fixes it for every consumer of this
- * list at once, and it works per *group* when the queue is grouped, which a cap
- * applied to the fetched array could not do.
+ * Cards mounted per page. The queue now pages server-side at the same size, so
+ * this is inert for that caller and stays as the guard for any consumer that
+ * hands over a longer array: every target used to mount as a full card, which
+ * was tens of thousands of DOM nodes in one commit.
  */
 const CARD_PAGE = 50;
 
@@ -72,6 +69,23 @@ export function HealthWorkQueueList({
     highlightIndex >= 0 ? Math.ceil((highlightIndex + 1) / CARD_PAGE) * CARD_PAGE : 0,
   );
 
+  // Arrow keys walk the queue. Each card's path button is the row's focus
+  // anchor, so this moves between files without stealing Tab from the controls
+  // inside an expanded card.
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const onArrowKey = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const grid = gridRef.current;
+    if (!grid) return;
+    const headers = [...grid.querySelectorAll<HTMLButtonElement>("[data-work-item-header]")];
+    const here = headers.findIndex((h) => h.contains(e.target as Node));
+    if (here === -1) return;
+    // Swallowed at either end too: an arrow that scrolls the page away from
+    // the list reads as the key having done nothing.
+    e.preventDefault();
+    headers[here + (e.key === "ArrowDown" ? 1 : -1)]?.focus();
+  }, []);
+
   if (targets.length === 0) {
     return (
       <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-6 text-sm text-[var(--color-text-secondary)]">
@@ -82,7 +96,7 @@ export function HealthWorkQueueList({
   const remaining = targets.length - shown;
   return (
     <>
-      <div className="grid gap-3">
+      <div className="grid gap-3" onKeyDown={onArrowKey} ref={gridRef}>
         {targets.slice(0, shown).map((t) => (
           <HealthWorkItemCard
             key={t.file_path}

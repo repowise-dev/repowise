@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { bandForScore } from "@repowise-dev/types/health";
-import { HEALTH_BAND_FILL } from "./tokens";
+// A dot carries no band word, so it takes the canvas ramp, where Excellent
+// and Good are told apart by value rather than by a label beside them.
+import { healthNodeFill } from "./tokens";
 import type { EffortBucket } from "./refactoring-card";
 
 export interface ImpactEffortPoint {
@@ -74,7 +75,7 @@ export function ImpactEffortQuadrant({
           Impact × effort
         </h3>
         <span className="text-xs text-[var(--color-text-tertiary)]">
-          {data.length} targets · click a dot to open
+          {data.length} on this page · click a dot to open
         </span>
       </div>
       <div className="relative">
@@ -111,7 +112,7 @@ export function ImpactEffortQuadrant({
             const cx = baseX + jitter(p.file_path);
             const cy = yScale(p.total_impact);
             const isHovered = hovered?.file_path === p.file_path;
-            const fillCls = HEALTH_BAND_FILL[bandForScore(p.score)];
+            const fillCls = healthNodeFill(p.score);
             return (
               <circle
                 key={p.file_path}

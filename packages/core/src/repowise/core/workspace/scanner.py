@@ -88,7 +88,10 @@ def scan_for_repos(
     - If *root* itself is a git repo, returns a single-element result.
     - Stops descending once a ``.git`` boundary is found (no nested repos).
     - Skips common junk directories (``node_modules``, ``.venv``, etc.).
-    - Submodules (``.git`` is a file) are excluded unless *include_submodules* is True.
+    - Submodules (``.git`` is a file) found *during the walk* are excluded
+      unless *include_submodules* is True. The flag never applies to *root*
+      itself: that is the repo the caller explicitly pointed at, not something
+      discovery turned up, so it is always eligible.
     """
     root = Path(root).resolve()
 
@@ -134,17 +137,21 @@ def scan_for_repos(
 
     # If root is a git repo and no sub-repos found → single-repo result
     # If root is a git repo AND sub-repos found → include root in the list
+    #
+    # Neither branch consults ``include_submodules``. That flag decides whether
+    # the walk descends into submodules it *discovers*; the root is not a
+    # discovery, it is the path the caller named. Gating it here meant that
+    # running `repowise init` inside a submodule that itself contains ordinary
+    # nested clones built a workspace out of the clones and silently left the
+    # targeted repo unindexed and unselectable.
     if root_is_repo:
         if not found:
             # Pure single-repo — no sub-repos
-            if root_is_sub and not include_submodules:
-                return ScanResult(repos=[], root=root)
             aliases = _generate_aliases([(root, root)])
             repo = _make_repo(root, root, aliases[root], root_is_sub)
             return ScanResult(repos=[repo], root=root)
         # Root + sub-repos → workspace mode; add root to the list
-        if not root_is_sub or include_submodules:
-            found.insert(0, (root, root_is_sub))
+        found.insert(0, (root, root_is_sub))
 
     # Sort by relative path for deterministic ordering
     found.sort(key=lambda item: item[0].relative_to(root).as_posix())

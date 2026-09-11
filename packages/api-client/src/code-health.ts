@@ -92,7 +92,11 @@ export async function listHealthFindings(
     biomarker_type?: string;
     file_path?: string;
     min_severity?: string;
+    /** Exact severities, comma-separated. Overrides `min_severity`. */
+    severity?: string;
     dimension?: string;
+    /** Comma-separated statuses, or `"all"`. Defaults to open work. */
+    status?: string;
     limit?: number;
     scope?: HealthScope;
     counts?: HealthCounts;

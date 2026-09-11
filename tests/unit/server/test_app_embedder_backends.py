@@ -14,8 +14,10 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.providers.embedding.base import KeylessEmbedder
+from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.core.providers.embedding.edenai import EdenAIEmbedder
-from repowise.server.app import _build_embedder
+from repowise.server import app as app_module
+from repowise.server.app import _build_embedder, _build_query_embedder
 
 
 @pytest.fixture(autouse=True)
@@ -46,3 +48,33 @@ def test_an_unknown_backend_still_degrades_to_the_keyless_mock(
 ) -> None:
     monkeypatch.setenv("REPOWISE_EMBEDDER", "not-a-backend")
     assert isinstance(_build_embedder(), KeylessEmbedder)
+
+
+@pytest.mark.asyncio
+async def test_query_embedder_caches_repeated_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    class SpyEmbedder:
+        dimensions = 2
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            self.calls += 1
+            return [[1.0, 2.0] for _ in texts]
+
+    inner = SpyEmbedder()
+    monkeypatch.setattr(app_module, "_build_embedder", lambda: inner)
+
+    embedder = _build_query_embedder()
+    assert isinstance(embedder, CachingEmbedder)
+
+    assert await embedder.embed(["same query"]) == [[1.0, 2.0]]
+    assert await embedder.embed(["same query"]) == [[1.0, 2.0]]
+    assert inner.calls == 1
+
+
+def test_query_embedder_leaves_keyless_embedder_bare(monkeypatch: pytest.MonkeyPatch) -> None:
+    inner = KeylessEmbedder()
+    monkeypatch.setattr(app_module, "_build_embedder", lambda: inner)
+
+    assert _build_query_embedder() is inner
