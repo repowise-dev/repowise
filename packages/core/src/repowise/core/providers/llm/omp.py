@@ -247,6 +247,7 @@ def _parse_events(stdout: str) -> tuple[str, dict[str, Any]]:
     cost = 0.0
     observed = False
     stop_reason: Any = None
+    error_message = ""
     resolved_model = ""
 
     for raw_line in stdout.splitlines():
@@ -283,6 +284,8 @@ def _parse_events(stdout: str) -> tuple[str, dict[str, Any]]:
 
         if message.get("stopReason"):
             stop_reason = message.get("stopReason")
+        if message.get("errorMessage"):
+            error_message = str(message.get("errorMessage"))
         provider, model = message.get("provider"), message.get("model")
         if provider and model:
             resolved_model = f"{provider}/{model}"
@@ -294,6 +297,7 @@ def _parse_events(stdout: str) -> tuple[str, dict[str, Any]]:
         "cost": cost,
         "observed": observed,
         "stop_reason": stop_reason,
+        "error_message": error_message,
         "resolved_model": resolved_model,
     }
 
@@ -582,6 +586,15 @@ class OmpProvider(BaseProvider):
             raise ProviderError("omp", _error_message(stderr, stdout, proc.returncode))
 
         content, usage = _parse_events(stdout)
+
+        # A turn Oh My Pi gave up on still exits 0 -- print mode reports the
+        # outcome in the stream's stop reason, not the exit status, and says so
+        # deliberately (oh-my-pi#7635). Whatever prose it emitted before the
+        # abort is a fragment, so accepting it would file a half-written page as
+        # a finished one.
+        if str(usage.get("stop_reason") or "").lower() == "aborted":
+            detail = usage.get("error_message") or _tail(stderr) or "no reason given"
+            raise ProviderError("omp", f"omp aborted the turn ({detail}).")
         if not content.strip():
             # A clean exit that produced no prose and said nothing on stderr is
             # what an install that was never signed into looks like, and that is

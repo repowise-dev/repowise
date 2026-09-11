@@ -9,6 +9,7 @@ production. No real ``omp`` process is ever spawned.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -476,3 +477,20 @@ def test_a_catalog_listing_becomes_picker_options(omp_on_path, monkeypatch):
     assert by_model["omp/default"].recommended is True
     assert by_model["omp/ccs/claude-opus-5"].reasoning_modes == REASONING_MODES
     assert by_model["omp/x/plain-1"].reasoning_modes == ("auto",)
+
+
+def test_an_aborted_turn_is_a_failure_not_a_half_written_page(omp_on_path, monkeypatch):
+    """Print mode exits 0 on a deadline abort by design (oh-my-pi#7635): the
+    outcome is in the stream's stop reason, not the exit status. The prose that
+    arrived before the abort is a fragment, so returning it would file a
+    half-written page as a finished one.
+    """
+    aborted = _assistant_message("# Overview\n\nThe module par", stop_reason="aborted")
+    aborted["errorMessage"] = "Deadline exceeded"
+    _spawn(
+        monkeypatch,
+        FakeOmpProcess(stdout=_stream({"type": "session", "version": 3}, _message_end(aborted))),
+    )
+
+    with pytest.raises(ProviderError, match=r"aborted the turn.*Deadline exceeded"):
+        asyncio.run(OmpProvider().generate("system rules", "user context"))
