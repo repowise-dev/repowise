@@ -58,7 +58,7 @@ produce meaningful output.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** (10) | C · Swift · PHP · Dart · Object Pascal · GDScript · VB.NET · Elixir · F# · Objective-C | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift, PHP, GDScript, VB.NET, Elixir, F# and Objective-C don't yet. GDScript has a dedicated import resolver and Godot-specific framework edges but no named bindings (see [Known gaps](../architecture/language-support.md#gdscript--godot)) |
+| **Good** (10) | C · Swift · PHP · Dart · Object Pascal · GDScript · VB.NET · Elixir · F# · Objective-C | Everything above except the full health suite. Dart and Object Pascal *do* get health markers, and C, F# and Objective-C get the complexity-derived ones; Swift, PHP, GDScript, VB.NET and Elixir don't yet. GDScript has a dedicated import resolver and Godot-specific framework edges but no named bindings (see [Known gaps](../architecture/language-support.md#gdscript--godot)) |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo / `.luaurc` aware), no health markers yet. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers; no import resolution yet |
 | | | ⎯⎯ *tree-sitter parsing stops here. The rungs below are derived from git and imports, not from an AST.* ⎯⎯ |
 | **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, no symbol-level claims |
@@ -413,8 +413,8 @@ Per-language mechanics behind these:
 | Object Pascal | Good | Assertion and performance markers, a dedicated `uses` resolver |
 | VB.NET | Good | Health markers, project-level `<Import Include=...>` as implicit imports |
 | Elixir | Good | Health markers, and a call-resolution strategy beyond same-file |
-| F# | Good | Health markers, and a resolver that reads the AST index instead of the declared-name regex |
-| Objective-C | Good | Health markers, a resolver that reads the Xcode project rather than file stems, and pairing a header with its implementation across files |
+| F# | Good | The health markers beyond complexity, and a resolver that reads the AST index instead of the declared-name regex |
+| Objective-C | Good | The health markers beyond complexity, a resolver that reads the Xcode project rather than file stems, and pairing a header with its implementation across files |
 | SQL / dbt | — | Column-level blast radius |
 | Shell | — | Shebang detection for extensionless executables |
 | HTML | Lightweight | A regex import tier for template dialects, gated on a framework manifest |

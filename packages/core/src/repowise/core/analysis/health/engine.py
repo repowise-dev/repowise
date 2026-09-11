@@ -99,7 +99,23 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: C gained a complexity node map. ``LANGUAGE_NODE_MAPS`` had no
+# Current stamp: F# and Objective-C gained working complexity node maps, and
+# Elixir deliberately lost its one. Both languages previously reached the
+# walker with no usable map, so their files scored as if they had no branches,
+# the same defect the C entry below describes. Objective-C additionally counted
+# every file-scope global as a function of complexity 1. Stored complexity
+# metrics and the findings keyed off them change for files in those languages
+# on the next update; repos without them are unaffected.
+#
+# Note the cache, which is the other reason this has to move: ``HealthWalkCache``
+# keys a cached walk on the analyzer version and the file's bytes. A node-map
+# change alters neither, so an index built against the previous maps keeps
+# serving their results until this number does move.
+#
+# v10: non-code files stopped being scored and the deduction was split into its
+# structure and history halves, stored per file.
+#
+# v9: C gained a complexity node map. ``LANGUAGE_NODE_MAPS`` had no
 # ``c`` entry, so every C file scored as if it had no branches: ``max_ccn`` and
 # the maintainability index were computed off an empty node set and persisted
 # that way. The map is present now, so a C file's stored complexity metrics and
@@ -113,7 +129,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 10
+HEALTH_ANALYZER_VERSION = 11
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
