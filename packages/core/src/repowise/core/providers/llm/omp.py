@@ -568,7 +568,14 @@ class OmpProvider(BaseProvider):
 
         content, usage = _parse_events(stdout)
         if not content.strip():
-            detail = _tail(stderr) or "the event stream carried no assistant text"
+            # A clean exit that produced no prose and said nothing on stderr is
+            # what an install that was never signed into looks like, and that is
+            # the likeliest first failure for a provider whose whole premise is
+            # "no API key". Say so rather than reporting an empty stream.
+            detail = _tail(stderr) or (
+                "no assistant text and nothing on stderr -- if you have not "
+                "signed in yet, run 'omp' once"
+            )
             raise ProviderError("omp", f"omp -p succeeded but returned no result text ({detail}).")
 
         input_tokens = int(usage.get("input", 0) or 0)
