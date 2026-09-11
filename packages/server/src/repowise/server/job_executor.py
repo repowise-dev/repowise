@@ -393,10 +393,14 @@ async def execute_job(
             try:
                 from repowise.server.provider_config import get_chat_provider_instance
 
-                # Pass the repo path so the job reuses the provider/model/key the
-                # repo was configured with (``.repowise/config.yaml`` + ``.env``)
-                # rather than the server-global default.
-                llm_client = get_chat_provider_instance(repo_path=repo_path)
+                # Pass the repo id *and* path so the job resolves exactly what
+                # the UI's provider picker chose. The picker persists its choice
+                # per repo, under ``repos[repo_id]`` — the most specific step in
+                # the resolver and the only one that carries a deliberate user
+                # decision. Resolving on path alone skipped it entirely, so a
+                # repo whose settings named a provider still fell through to the
+                # auto-detect step and indexed with whatever it guessed.
+                llm_client = get_chat_provider_instance(repo_path=repo_path, repo_id=repo_id)
             except Exception as exc:
                 docs_skip_reason = f"no provider configured: {exc}"
                 logger.warning("no_provider_configured", error=str(exc))
