@@ -784,59 +784,66 @@ async def _rescue(
             f"{first[1]} `{first[0]}` in {first[2]}{line}{extras}"
         )
 
-    # Fall back to FTS on wiki content. Only return if the FTS row actually
-    # points at a code page (file/module/api), not a generic doc page.
+    # Fall back to FTS on wiki content.
     fts = FullTextSearch(engine)
     try:
         fts_rows = await fts.search(pattern, limit=3)
     except Exception:
         fts_rows = []
-    # Coverage gate (#2092): a multi-token pattern where only one common
-    # token matches ("fallback") still returns rows, and a confident wrong
-    # suggestion is worse than silence. The score is unusable as a gate — the
-    # two dialects return incompatible scales — so require the row itself to
-    # carry the query's tokens. Same guard family as the widened path's
-    # ``_pattern_terms`` check in ``_handle_search_post``.
+    return _rescue_fts_text(pattern, fts_rows)
+
+
+def _rescue_fts_text(pattern: str, fts_rows: list) -> str | None:
+    """The FTS-fallback line, or ``None`` when no row earns it.
+
+    Only a row pointing at a code page (file/module/api), not a generic doc
+    page, qualifies — and it must pass the coverage gate (#2092): a
+    multi-token pattern where only one common token matches ("fallback")
+    still returns rows, and a confident wrong suggestion is worse than
+    silence. The score is unusable as a gate — the two dialects return
+    incompatible scales — so the row itself must carry the query's tokens.
+    Same guard family as the widened path's ``_pattern_terms`` check in
+    ``_handle_search_post``.
+
+    A pattern whose subtokens are all <3 chars has no terms, so ``needed``
+    is 0 and the gate stays open — the pre-gate behaviour, deliberately:
+    there is nothing to measure coverage against.
+    """
     terms = _pattern_terms(pattern)
-    # A pattern whose subtokens are all <3 chars has no terms, so ``needed``
-    # is 0 and the gate stays open — the pre-gate behaviour, deliberately:
-    # there is nothing to measure coverage against.
     needed = min(_RESCUE_FTS_MIN_TERMS, len(terms))
     for r in fts_rows:
         raw_target = getattr(r, "target_path", None) or ""
-        target = raw_target
+        target = raw_target.split("::")[0]
         page_type = getattr(r, "page_type", "") or ""
-        if "::" in target:
-            target = target.split("::")[0]
-        if target and page_type in (
+        if not target or page_type not in (
             "file",
             "file_page",
             "module_page",
             "api_contract",
             "infra_page",
         ):
-            haystack = " ".join(
-                (
-                    getattr(r, "title", "") or "",
-                    raw_target,
-                    getattr(r, "snippet", "") or "",
-                )
-            ).lower()
-            covered = sum(1 for t in terms if t in haystack)
-            if covered < needed:
-                # Not a break: rows are few and a later one may cover.
-                logging.getLogger(__name__).debug(
-                    "rescue FTS near-miss: `%s` covers %d/%d terms of `%s`",
-                    target,
-                    covered,
-                    needed,
-                    pattern,
-                )
-                continue
-            return (
-                f"[repowise] No literal match for `{pattern}`. "
-                f"Wiki suggests `{target}` ({page_type})."
+            continue
+        haystack = " ".join(
+            (
+                getattr(r, "title", "") or "",
+                raw_target,
+                getattr(r, "snippet", "") or "",
             )
+        ).lower()
+        covered = sum(1 for t in terms if t in haystack)
+        if covered < needed:
+            # Not a break: rows are few and a later one may cover.
+            logging.getLogger(__name__).debug(
+                "rescue FTS near-miss: `%s` covers %d/%d terms of `%s`",
+                target,
+                covered,
+                needed,
+                pattern,
+            )
+            continue
+        return (
+            f"[repowise] No literal match for `{pattern}`. Wiki suggests `{target}` ({page_type})."
+        )
     return None
 
 
