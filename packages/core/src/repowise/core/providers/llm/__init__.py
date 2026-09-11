@@ -21,6 +21,7 @@ Built-in providers:
     codex_cli  — local authenticated Codex CLI via codex exec
     claude_cli — local authenticated Claude Code CLI via claude -p
     opencode   — local opencode CLI via opencode run
+    omp        — local Oh My Pi CLI over its RPC protocol, no API key
     mock       — deterministic test provider
 """
 

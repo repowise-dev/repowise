@@ -43,7 +43,14 @@ export interface ProviderValidationState {
 
 /** Providers that authenticate without an API key (local runtimes / CLIs).
  *  For these the key affordance is hidden — only reachability is validated. */
-const KEYLESS_PROVIDERS = new Set(["ollama", "opencode", "codex_cli", "claude_cli", "mock"]);
+const KEYLESS_PROVIDERS: Record<string, true> = {
+  ollama: true,
+  opencode: true,
+  codex_cli: true,
+  claude_cli: true,
+  omp: true,
+  mock: true,
+};
 
 export interface ProviderSettingsProps {
   providers: ProviderOption[];
@@ -117,7 +124,7 @@ function ProviderRow({
   const [keyDraft, setKeyDraft] = useState("");
   const [busy, setBusy] = useState<null | "save" | "remove" | "activate">(null);
 
-  const keyless = KEYLESS_PROVIDERS.has(provider.id);
+  const keyless = Boolean(KEYLESS_PROVIDERS[provider.id]);
   const status = validation?.status ?? "idle";
 
   async function saveKey() {

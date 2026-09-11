@@ -16,6 +16,7 @@ Built-in providers:
     - codex_cli   → CodexCliProvider
     - claude_cli  → ClaudeCliProvider
     - opencode    → OpenCodeProvider
+    - omp         → OmpProvider
     - mock        → MockProvider (testing only)
 
 Custom provider registration:
@@ -56,6 +57,7 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "codex_cli": ("repowise.core.providers.llm.codex_cli", "CodexCliProvider"),
     "claude_cli": ("repowise.core.providers.llm.claude_cli", "ClaudeCliProvider"),
     "opencode": ("repowise.core.providers.llm.opencode", "OpenCodeProvider"),
+    "omp": ("repowise.core.providers.llm.omp", "OmpProvider"),
     "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
 }
 
@@ -96,7 +98,9 @@ PROVIDER_BASE_URL_ENVS: dict[str, tuple[str, ...]] = {
 # proxy the user secured elsewhere). Resolution must never reject one of these
 # for a "missing" key, and must never fall through to a different provider
 # because it could not find one.
-KEYLESS_PROVIDERS = frozenset({"codex_cli", "claude_cli", "opencode", "ollama", "litellm", "mock"})
+KEYLESS_PROVIDERS = frozenset(
+    {"codex_cli", "claude_cli", "opencode", "omp", "ollama", "litellm", "mock"}
+)
 
 # Providers that shell out to a CLI and therefore need to be told which repo
 # they are reasoning about: they pass it as the subprocess working directory.
@@ -310,6 +314,7 @@ def get_provider(
             "codex_cli": "@openai/codex",
             "claude_cli": "@anthropic-ai/claude-code",
             "opencode": "opencode",
+            "omp": "oh-my-pi",
         }
         package = _missing.get(name, name)
         raise ImportError(

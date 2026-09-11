@@ -246,6 +246,7 @@ def test_the_keyless_providers_get_setup_help_instead_of_a_key_prompt() -> None:
         "codex_cli",
         "claude_cli",
         "opencode",
+        "omp",
         "ollama",
     }
     for name, lines in provider_selection._LOCAL_PROVIDER_SETUP.items():

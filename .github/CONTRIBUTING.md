@@ -206,14 +206,18 @@ repowise/
 3. **Wire up configuration** in these files:
    - `rate_limiter.py`, add `RateLimitConfig` to `PROVIDER_DEFAULTS`
    - `provider_config.py`, add entry to `PROVIDER_CATALOG`
-   - `provider_selection.py`, add to `_PROVIDER_DEFAULTS`, `_PROVIDER_ENV`, `_PROVIDER_SIGNUP`, and detection
+   - `provider_selection.py`, add to `_PROVIDER_DEFAULTS`, `_PROVIDER_ENV`, `_PROVIDER_SIGNUP`, `_PROVIDER_NOTES`, and (for a keyless CLI/local provider) `_LOCAL_PROVIDER_SETUP`, plus detection
    - `helpers.py`, add validation in `validate_provider_config()`
+   - `pricing.py`, add the provider's label prefix to `_COST_TABLE_PREFIX` and to the prefix guard in `_lookup_cost` if it prices at $0.00 — otherwise the `/` in a routed label gets stripped to a bare model name before the table ever sees it
+   - `generation/cost_tracker.py`, add the label prefix to the passthrough tuple in `is_local_model()` so the cost ledger and the savings estimate agree with `pricing.py`
 
-4. **Update the web UI**: add to `PROVIDERS`, `MODEL_PLACEHOLDERS`, and `PROVIDER_ENV_VARS` in `provider-section.tsx` and `run-config-form.tsx`
+4. **Update the web UI**: add to `PROVIDERS`, `MODEL_PLACEHOLDERS`, and `PROVIDER_ENV_VARS` in `packages/web/src/components/settings/provider-section.tsx`, and to `KEYLESS_PROVIDERS` in `packages/ui/src/settings/provider-settings.tsx` if it authenticates without an API key
 
 5. **Add tests** in `tests/unit/test_providers/`: mock the subprocess, test success/error/timeout paths (see `test_codex_cli_provider.py` for the pattern)
 
-6. **Write docs**: `docs/<NAME>.md` and `website/<name>.md`, following `docs/agent/CODEX.md` and `docs/agent/OPENCODE.md`.
+6. **Update the drift-gate tests**, which fail on purpose until a new provider gets a deliberate decision instead of an accidental default: `tests/providers/test_registry.py` (asserts the exact builtin provider count) and `tests/unit/server/mcp/test_answer_synthesis_timeout.py` (asserts every provider's `interactive_timeout_s` budget by name)
+
+7. **Write docs**: `docs/agent/<NAME>.md` and `website/<name>.md`, following `docs/agent/CODEX.md` and `docs/agent/OPENCODE.md`.
 
 Adding a new language has a dedicated recipe, see
 [docs/architecture/language-support.md](../docs/architecture/language-support.md).

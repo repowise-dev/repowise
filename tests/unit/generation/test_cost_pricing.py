@@ -47,6 +47,7 @@ def test_subscription_cli_models_are_zero_cost() -> None:
         "codex_cli/gpt-5.5",
         "claude_cli/claude-haiku-4-5",
         "opencode/anthropic/claude-sonnet-4-6",
+        "omp/anthropic/claude-sonnet-4-5",
     ):
         assert get_model_pricing(model) == {"input": 0.0, "output": 0.0}
 
