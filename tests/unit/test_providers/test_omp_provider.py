@@ -17,10 +17,12 @@ import pytest
 from repowise.core.providers.llm.base import ProviderError
 from repowise.core.providers.llm.omp import (
     OmpProvider,
+    _load_omp_model_catalog,
     _model_label,
     _normalize_model,
     _parse_events,
 )
+from repowise.core.reasoning import REASONING_MODES
 
 # Usage exactly as a real run reports it: flat token counts alongside a nested
 # per-bucket cost breakdown whose `total` is the only figure the provider keeps.
@@ -412,3 +414,65 @@ def test_subscription_usage_is_priced_at_zero():
     assert _lookup_cost("omp/anthropic/claude-sonnet-4-5") == (0.0, 0.0)
     # The keyed API path for the same underlying model is unaffected.
     assert _lookup_cost("claude-sonnet-4-5") != (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Model catalog
+# ---------------------------------------------------------------------------
+
+
+def test_a_catalog_with_undecodable_bytes_still_loads(tmp_path):
+    """Real bytes through a real subprocess, because the decode is the contract.
+
+    `text=True` alone decodes with the process locale and with `errors="strict"`,
+    so one non-ASCII byte in that JSON -- a model's display name is enough --
+    raises UnicodeDecodeError. That is a ValueError, which neither OSError nor
+    SubprocessError catches, so it escaped the loader's own degradation and took
+    the provider picker down with it (#2186, same shape in codex_cli).
+
+    Mocking `subprocess.run` cannot test this: the bug lives in how `run` itself
+    decodes the child's bytes, so the child has to be real.
+    """
+    fake = tmp_path / "omp"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        # Lone 0xe9 -- latin-1 'é', invalid as UTF-8.
+        'sys.stdout.buffer.write(b\'{"models":[{"selector":"x/y","name":"caf\\xe9"}]}\')\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+    catalog = _load_omp_model_catalog(str(fake))
+
+    assert catalog is not None, "undecodable bytes must not empty the catalog"
+    assert catalog[0]["selector"] == "x/y"
+    # The unreadable byte is replaced, not fatal.
+    assert "caf" in catalog[0]["name"]
+
+
+def test_a_catalog_listing_becomes_picker_options(omp_on_path, monkeypatch):
+    """A reasoning-capable model offers every level; a non-reasoning one only auto."""
+    payload = json.dumps(
+        {
+            "models": [
+                {"selector": "ccs/claude-opus-5", "name": "Claude Opus 5", "reasoning": True},
+                {"selector": "x/plain-1", "name": "Plain", "reasoning": False},
+            ]
+        }
+    )
+
+    class _Done:
+        returncode = 0
+        stdout = payload
+
+    _load_omp_model_catalog.cache_clear()
+    monkeypatch.setattr("repowise.core.providers.llm.omp.subprocess.run", lambda *a, **k: _Done())
+    try:
+        by_model = {o.model: o for o in OmpProvider().available_model_options()}
+    finally:
+        _load_omp_model_catalog.cache_clear()
+
+    assert by_model["omp/default"].recommended is True
+    assert by_model["omp/ccs/claude-opus-5"].reasoning_modes == REASONING_MODES
+    assert by_model["omp/x/plain-1"].reasoning_modes == ("auto",)

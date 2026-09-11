@@ -305,6 +305,19 @@ def _load_omp_model_catalog(omp_cmd: str) -> tuple[dict[str, Any], ...] | None:
     ``omp models --json`` lists the models the local install can actually reach,
     which is narrower than every model Oh My Pi knows about: it reflects the
     providers the user is authenticated for.
+
+    Decoding is pinned to UTF-8 rather than left to ``text=True``, which uses
+    the process locale: on a default Windows console any non-ASCII byte in that
+    JSON (a model's display name is enough) raises ``UnicodeDecodeError``. That
+    is a ``ValueError``, so neither handler below would catch it and it would
+    escape the degradation this function exists to provide -- the picker would
+    traceback instead of falling back to the default option. Same defect as
+    #2186 against ``codex_cli``'s catalog loader.
+
+    ``ValueError`` is deliberately *not* caught. With the encoding pinned the
+    decode can no longer raise, so catching it would only be able to swallow a
+    future regression that removed the encoding again -- turning the loud
+    failure this fix exists to prevent back into a silent empty catalog.
     """
     try:
         completed = subprocess.run(
@@ -312,6 +325,8 @@ def _load_omp_model_catalog(omp_cmd: str) -> tuple[dict[str, Any], ...] | None:
             capture_output=True,
             check=False,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_CATALOG_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError):
