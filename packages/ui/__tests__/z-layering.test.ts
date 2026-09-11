@@ -97,4 +97,36 @@ describe("z-index layering", () => {
     // Overlay and content both, or the listbox clears one and not the other.
     expect(dialog.match(/z-\[var\(--z-modal\)\]/g) ?? []).toHaveLength(2);
   });
+
+  /**
+   * The mirror of the test above, and the one the ordering test cannot do on
+   * its own: SURFACES lists the tokens, not the elements wearing them. A panel
+   * that reaches for a FLOATING token inherits its rank, and `--z-dropdown` at
+   * 55 puts that panel above the dialogs and the command palette it should sit
+   * under.
+   *
+   * `graph-canvas-shell.tsx` is why this exists. The rail was pinned to
+   * `--z-dropdown` so it would tie with the tooltips that portal past it —
+   * harmless while `--z-dropdown` was 20 and below `--z-modal`, and an open
+   * rail painting over every dialog under `lg` once it was 55.
+   */
+  it("keeps surfaces off the floating tokens", () => {
+    const surfaces: Array<[string, string]> = [
+      ["graph/graph-canvas-shell.tsx", "--z-sidebar"],
+      ["graph/graph-context-menu.tsx", "--z-modal"],
+    ];
+
+    for (const [file, token] of surfaces) {
+      const text = readFileSync(join(UI_SRC, file), "utf8");
+      expect(text, `${file} should position itself with ${token}`).toContain(
+        `z-[var(${token})]`,
+      );
+      for (const float of FLOATING) {
+        expect(
+          text,
+          `${file} is a surface and must not sit on ${float}, which outranks every surface`,
+        ).not.toContain(`z-[var(${float})]`);
+      }
+    }
+  });
 });
