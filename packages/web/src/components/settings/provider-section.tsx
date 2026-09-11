@@ -191,7 +191,10 @@ export function ProviderSection() {
         >
           <Input
             id="model"
-            placeholder={MODEL_PLACEHOLDERS[provider] ?? catalogModels[provider] ?? "model name"}
+            // Catalog first: it is what the server will actually default to.
+            // The local table is the cold-load stand-in, and a stale entry in
+            // it winning would reintroduce the drift this catalog read fixes.
+            placeholder={catalogModels[provider] ?? MODEL_PLACEHOLDERS[provider] ?? "model name"}
             value={model}
             onChange={(e) => setModel(e.target.value)}
             onBlur={handleModelBlur}

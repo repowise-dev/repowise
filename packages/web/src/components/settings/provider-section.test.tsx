@@ -6,12 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
+  getProvider: vi.fn(() => "gemini"),
 }));
 
 vi.mock("@/lib/api/providers", () => ({ getProviders: mocks.getProviders }));
 vi.mock("@/lib/config", () => ({
   config: {
-    getProvider: () => "gemini",
+    getProvider: mocks.getProvider,
     getModel: () => "",
     getEmbedder: () => "mock",
     setProvider: vi.fn(),
@@ -62,5 +63,59 @@ describe("ProviderSection server provider", () => {
     expect(
       screen.getByText("Used when you trigger init or sync from this dashboard."),
     ).toBeTruthy();
+  });
+});
+
+describe("ProviderSection provider catalog", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getProvider.mockReturnValue("gemini");
+  });
+
+  it("takes the model placeholder from a provider it has no local entry for", async () => {
+    // codex_cli is the real case: it reached the server catalog and was never
+    // added to this file's tables, so before the catalog was read here it was
+    // unselectable and had no placeholder.
+    mocks.getProvider.mockReturnValue("codex_cli");
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "codex_cli", model: null },
+      providers: [
+        { id: "codex_cli", name: "Codex CLI", default_model: "codex_cli/gpt-5.6-luna" },
+        { id: "openrouter", name: "OpenRouter", default_model: "openrouter/auto" },
+      ],
+    });
+
+    render(<ProviderSection />);
+
+    const model = await screen.findByLabelText<HTMLInputElement>("Model");
+    await waitFor(() => expect(model.placeholder).toBe("codex_cli/gpt-5.6-luna"));
+  });
+
+  it("lets the server's default model beat a stale built-in placeholder", async () => {
+    // The local table is a hardcoded guess that has already drifted once. When
+    // the server reports a different default, the server is right.
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "gemini", model: null },
+      providers: [{ id: "gemini", name: "Google Gemini", default_model: "gemini-4-pro" }],
+    });
+
+    render(<ProviderSection />);
+
+    const model = await screen.findByLabelText<HTMLInputElement>("Model");
+    await waitFor(() => expect(model.placeholder).toBe("gemini-4-pro"));
+  });
+
+  it("falls back to the built-in placeholder when the catalog has no default", async () => {
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "gemini", model: null },
+      providers: [{ id: "gemini", name: "Google Gemini", default_model: null }],
+    });
+
+    render(<ProviderSection />);
+
+    await waitFor(() => expect(mocks.getProviders).toHaveBeenCalledOnce());
+    expect(screen.getByLabelText<HTMLInputElement>("Model").placeholder).toBe(
+      "gemini-3.5-flash-lite",
+    );
   });
 });
