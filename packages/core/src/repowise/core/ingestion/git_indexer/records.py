@@ -22,6 +22,7 @@ __all__ = [
     "_parse_commit_record",
     "_should_skip_index",
     "capture_repo_totals",
+    "is_shallow_repo",
 ]
 
 # Git log record/field separators (NUL byte + US 0x1f) — chosen so they can't
@@ -228,6 +229,20 @@ def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | 
     return None, None
 
 
+def is_shallow_repo(repo: Any) -> bool | None:
+    """Whether git calls *repo* a shallow clone, or ``None`` if it would not say.
+
+    Three-valued because the answers are not interchangeable. A shallow clone
+    stops at its graft point, so every whole-history figure taken from it is a
+    floor rather than a count; a clone git could not classify is simply unknown,
+    and reporting that as "complete" would invent the one fact worth having.
+    """
+    try:
+        return repo.git.rev_parse("--is-shallow-repository").strip() == "true"
+    except Exception:
+        return None
+
+
 @dataclass
 class RepoTotals:
     """Whole-history git facts, captured independently of ``commit_limit``.
@@ -250,6 +265,9 @@ class RepoTotals:
     # anchors. Doubles as this capture's *prior* record — see
     # :func:`capture_repo_totals`.
     churn_anchor_sha: str | None = None
+    # Whether the clone was shallow, and so whether every total above stops at
+    # the graft point rather than at the root. See :func:`is_shallow_repo`.
+    is_shallow_clone: bool | None = None
 
 
 # Lifetime churn walks every commit's shortstat, so unlike the other totals it
@@ -448,6 +466,8 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
     # An unresolvable HEAD (unborn, no repo) leaves every call below on the name,
     # exactly as before; the anchor is simply not stored for such a capture.
     rev = head_sha or "HEAD"
+
+    totals.is_shallow_clone = is_shallow_repo(repo)
 
     with contextlib.suppress(Exception):
         totals.total_commit_count = int(repo.git.rev_list("--count", rev).strip())

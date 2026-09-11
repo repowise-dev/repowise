@@ -1341,6 +1341,7 @@ async def persist_incremental_commits(
         total_lines_added=totals.total_lines_added,
         total_lines_deleted=totals.total_lines_deleted,
         churn_anchor_sha=totals.churn_anchor_sha,
+        is_shallow_clone=totals.is_shallow_clone,
     )
 
     with timed(timings, "persist.commits.fix_events"):

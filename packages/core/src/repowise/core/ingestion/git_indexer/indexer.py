@@ -38,6 +38,7 @@ from .records import (
     _should_skip_index,
     _tz_offset_minutes,
     capture_repo_totals,
+    is_shallow_repo,
 )
 from .tiers import GitIndexTier
 
@@ -709,7 +710,10 @@ class GitIndexer:
         if repo is None:
             return None
         try:
-            if repo.git.rev_parse("--is-shallow-repository").strip() == "true":
+            # Only a definite "not shallow" is safe to prune on. An unknown
+            # answer is treated like a shallow one, since the rows this would
+            # delete are real.
+            if is_shallow_repo(repo) is not False:
                 return None
             out = repo.git.rev_list("--no-merges", "HEAD")
         except Exception as exc:

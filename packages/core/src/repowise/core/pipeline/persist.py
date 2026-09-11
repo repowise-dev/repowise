@@ -1535,6 +1535,7 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
             total_lines_added=totals.total_lines_added,
             total_lines_deleted=totals.total_lines_deleted,
             churn_anchor_sha=getattr(totals, "churn_anchor_sha", None),
+            is_shallow_clone=getattr(totals, "is_shallow_clone", None),
         )
 
 
