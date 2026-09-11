@@ -328,6 +328,36 @@ def process_name(pid: int) -> str | None:
         return None
 
 
+def ancestor_pids(pid: int) -> list[int]:
+    """Chain of ancestor PIDs from *pid* up to the root process.
+
+    Walks :func:`parent_pid` until it reaches a process with no parent (a
+    parent of ``0`` / ``None``) or a self-parent, returning ``[pid, …,
+    root]``. Used by the MCP stdio watchdog, which walks the ancestor chain
+    at startup to exit when its client dies — a helper keeps that walk in one
+    tested place instead of an inline loop per caller.
+
+    Cycle-guarded: a corrupted process table (or a PID that claims its parent
+    is itself, or points back into the chain) can never turn this into an
+    infinite loop — the walk stops the first time it revisits a PID or sees a
+    self-parent. ``None`` / non-positive *pid* yields ``[]``.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return []
+    chain: list[int] = []
+    seen: set[int] = set()
+    current = pid
+    while current > 0 and current not in seen:
+        seen.add(current)
+        chain.append(current)
+        parent = parent_pid(current)
+        if parent is None or parent == current:
+            break
+        current = parent
+    return chain
+
+
+
 @dataclass(frozen=True)
 class ProcInfo:
     """Identity snapshot of one process: PID plus name and creation token."""
