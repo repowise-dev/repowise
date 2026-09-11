@@ -37,7 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from ...co_change import canonical_pair, parse_partners
+from ...co_change import canonical_pair, confidence_ratio, parse_partners
 
 
 class MetricLike(Protocol):
@@ -131,13 +131,6 @@ class _Pair:
         )
 
 
-def _ratio(support: int, commits: int) -> float | None:
-    """Share of *commits* that also touched the partner, or ``None`` if unknown."""
-    if support <= 0 or commits <= 0:
-        return None
-    return round(min(support / commits, 1.0), 3)
-
-
 @dataclass
 class CouplingGraph:
     """The assembled graph: nodes referenced by the (possibly capped) edges."""
@@ -206,8 +199,8 @@ def coupling_graph(
             strength=round(pair.strength, 4),
             last_co_change=pair.last,
             support=pair.support,
-            confidence_ab=_ratio(pair.support, pair.commits_a),
-            confidence_ba=_ratio(pair.support, pair.commits_b),
+            confidence_ab=confidence_ratio(pair.support, pair.commits_a),
+            confidence_ba=confidence_ratio(pair.support, pair.commits_b),
             structural=pair.structural,
             dependency_kind=pair.dependency_kind,
         )
