@@ -284,6 +284,46 @@ describe("useChat grounding and truncation events", () => {
     expect(result.current.error).toBeNull();
   });
 
+  it("carries the turn's next steps onto the answer", async () => {
+    const followUps = [
+      { text: "Which decisions govern a.py?", source: "followup", toolHint: "get_why" },
+    ];
+    const push = streamed([
+      { type: "suggestions", suggestions: followUps },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("Is a.py risky?");
+      await push();
+      await sending;
+    });
+
+    expect(result.current.messages.at(-1)?.followUps).toEqual(followUps);
+  });
+
+  it("drops the last turn's next steps when a new conversation starts", async () => {
+    const push = streamed([
+      {
+        type: "suggestions",
+        suggestions: [{ text: "Which decisions govern a.py?", source: "followup" }],
+      },
+      { type: "done", conversation_id: "c1", message_id: "m1" },
+    ]);
+    const { result } = renderHook(() => useChat("r1"));
+
+    await act(async () => {
+      const sending = result.current.sendMessage("Is a.py risky?");
+      await push();
+      await sending;
+    });
+    expect(result.current.messages.at(-1)?.followUps).toHaveLength(1);
+
+    act(() => result.current.reset());
+    expect(result.current.messages).toEqual([]);
+  });
+
   it("flags the answer when the server reports the step ceiling", async () => {
     const push = streamed([
       { type: "truncated", loops: 10 },

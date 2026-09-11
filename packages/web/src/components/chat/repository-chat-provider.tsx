@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
+import useSWR from "swr";
 import {
   ChatHandoffProvider,
   ChatSelectionAffordance,
@@ -19,6 +20,8 @@ import {
   type ChatDockCommand,
   type ChatHandoff,
 } from "@repowise-dev/ui/chat";
+import type { ChatSuggestion } from "@repowise-dev/types/chat";
+import { getChatSuggestions } from "@/lib/api/chat";
 import { useChat } from "@/lib/hooks/use-chat";
 import { setChatDockHidden } from "@/lib/config";
 import { getRepositoryChatContext, getRepositoryChatContextQuery } from "./repository-chat-context";
@@ -37,6 +40,9 @@ export interface RepositoryChatValue extends ChatController {
   /** One pending imperative request for the dock. */
   dockCommand: ChatDockCommand | null;
   clearDockCommand: () => void;
+  /** Questions derived from this page's own data, or undefined while the
+   *  request is in flight and whenever the page has nothing measured. */
+  suggestions: ChatSuggestion[] | undefined;
 }
 
 const RepositoryChatContext = createContext<RepositoryChatValue | null>(null);
@@ -133,6 +139,29 @@ export function RepositoryChatProvider({
       ? handoffContext.context
       : pageContext;
 
+  // Without a target the server has nothing to prefetch and would answer with
+  // the static tier the chips already fall back to, so that request is skipped
+  // rather than made and discarded.
+  const suggestionKey = activeContext.target
+    ? `chat-suggestions:${repoId}:${activeContext.kind}:${activeContext.target}`
+    : null;
+  const { data: suggestionData } = useSWR(
+    suggestionKey,
+    () =>
+      getChatSuggestions(repoId, {
+        kind: activeContext.kind,
+        ...(activeContext.target ? { target: activeContext.target } : {}),
+      }),
+    // The key already isolates each page. Stated anyway so a future global
+    // default cannot start offering the previous file's questions.
+    { keepPreviousData: false },
+  );
+  // An empty list means the page measured nothing, which is the static tier's
+  // cue, not an instruction to show no chips at all.
+  const suggestions = suggestionData?.suggestions?.length
+    ? suggestionData.suggestions
+    : undefined;
+
   // The full chat page mounts no dock, so a handoff made there would lead
   // nowhere. Its transcript already carries its own follow-up affordance.
   const onChatPage = pageContext.kind === "chat";
@@ -178,6 +207,7 @@ export function RepositoryChatProvider({
       replaceArtifact,
       dockCommand,
       clearDockCommand,
+      suggestions,
     }),
     [
       repoId,
@@ -197,6 +227,7 @@ export function RepositoryChatProvider({
       selectModel,
       dockCommand,
       clearDockCommand,
+      suggestions,
     ],
   );
 

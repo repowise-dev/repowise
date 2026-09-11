@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from repowise.core.providers.llm.base import ChatStreamEvent, ChatToolCall
+from repowise.core.providers.llm.base import ChatStreamEvent, ChatToolCall, ProviderError
 from repowise.server.chat_tools import get_tool_catalog
 from repowise.server.routers.chat import _MAX_AGENTIC_LOOPS, _build_system_prompt
 from repowise.server.schemas.chat import ChatPageContext
@@ -140,7 +140,7 @@ async def test_file_page_grounds_before_the_first_model_turn():
             await _post(app, {"message": "What does this file do?", "context": _FILE_PAGE})
         )
 
-    assert _types(events) == ["grounding", "text_delta", "done"]
+    assert _types(events) == ["grounding", "text_delta", "suggestions", "done"]
     grounding = events[0]
     assert grounding["tool_name"] == "get_context"
     assert grounding["input"] == {"targets": ["src/a.py"]}
@@ -233,7 +233,13 @@ async def test_an_unrelated_question_still_calls_tools_normally():
     with patch(_PROVIDER, return_value=provider), patch(_EXECUTE, execute):
         events = _data_events(await _post(app, {"message": "Is b.py risky?"}))
 
-    assert _types(events) == ["tool_start", "tool_result", "text_delta", "done"]
+    assert _types(events) == [
+        "tool_start",
+        "tool_result",
+        "text_delta",
+        "suggestions",
+        "done",
+    ]
     assert events[1]["tool_name"] == "get_risk"
     execute.assert_awaited_once()
 
@@ -255,8 +261,8 @@ async def test_exhausting_the_loop_ceiling_is_reported_before_done():
         events = _data_events(await _post(app, {"message": "loop forever"}))
 
     types = _types(events)
-    assert types[-2:] == ["truncated", "done"]
-    assert events[-2]["loops"] == _MAX_AGENTIC_LOOPS
+    assert types[-3:] == ["truncated", "suggestions", "done"]
+    assert events[-3]["loops"] == _MAX_AGENTIC_LOOPS
     assert types.count("tool_result") == _MAX_AGENTIC_LOOPS
     assert len(provider.calls) == _MAX_AGENTIC_LOOPS
 
@@ -279,3 +285,247 @@ async def test_a_turn_that_finishes_with_text_is_not_truncated():
     assert "truncated" not in _types(events)
     stored = await _stored_messages(app, events[-1]["conversation_id"])
     assert "truncated" not in stored[-1]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Suggestions: the endpoint, the follow-ups, and the refined title
+# ---------------------------------------------------------------------------
+
+
+_RISK_RESULT = {
+    "targets": {
+        "src/a.py": {
+            "defect_profile": {"fix_count": 28, "bug_magnet": True},
+            "hotspot_score": 0.96,
+        }
+    }
+}
+
+
+async def _suggestions(app, **params) -> dict:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            f"/api/repos/{_REPO_ID}/chat/suggestions", params=params
+        )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+@pytest.mark.asyncio
+async def test_a_page_with_findings_gets_chips_that_name_them():
+    app = await _make_app()
+    execute = AsyncMock(return_value=_RISK_RESULT)
+
+    with patch(_EXECUTE, execute):
+        body = await _suggestions(app, kind="risk", target="src/a.py")
+
+    texts = [entry["text"] for entry in body["suggestions"]]
+    assert "Explain the 28 bug fixes in a.py" in texts
+    assert all(entry["source"] == "page" for entry in body["suggestions"])
+    execute.assert_awaited_once_with(
+        "get_risk", {"targets": ["src/a.py"]}, repo_path="/tmp/repo", repo=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_route_with_no_target_leaves_the_static_tier_standing():
+    app = await _make_app()
+    execute = AsyncMock(return_value=_RISK_RESULT)
+
+    with patch(_EXECUTE, execute):
+        body = await _suggestions(app, kind="repository")
+
+    assert body == {"suggestions": []}
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_page_kind_the_server_does_not_serve_is_not_an_error():
+    app = await _make_app()
+    assert await _suggestions(app, kind="not-a-page", target="x") == {"suggestions": []}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_prefetch_yields_no_chips_rather_than_a_broken_one():
+    app = await _make_app()
+
+    with patch(_EXECUTE, AsyncMock(return_value={"error": "no index"})):
+        assert await _suggestions(app, kind="risk", target="src/a.py") == {
+            "suggestions": []
+        }
+
+
+@pytest.mark.asyncio
+async def test_the_suggestions_endpoint_maps_pages_through_grounding():
+    """The endpoint must not carry a second page-kind table of its own."""
+    app = await _make_app()
+    execute = AsyncMock(return_value=_CONTEXT_RESULT)
+
+    with patch(_EXECUTE, execute):
+        await _suggestions(app, kind="file", target="src/a.py")
+
+    assert execute.await_args.args[0] == "get_context"
+
+
+@pytest.mark.asyncio
+async def test_a_tool_using_answer_ends_with_next_steps():
+    app = await _make_app()
+    provider = _ScriptedProvider(
+        [[_tool("t1", "get_risk", {"targets": ["src/a.py"]})], [_text("Risky.")]]
+    )
+
+    with patch(_PROVIDER, return_value=provider), patch(
+        _EXECUTE, AsyncMock(return_value=_RISK_RESULT)
+    ):
+        events = _data_events(await _post(app, {"message": "Is a.py risky?"}))
+
+    suggestions = events[-2]
+    assert suggestions["type"] == "suggestions"
+    assert [entry["source"] for entry in suggestions["suggestions"]] == [
+        "followup",
+        "followup",
+    ]
+    assert "Which decisions govern a.py?" in [
+        entry["text"] for entry in suggestions["suggestions"]
+    ]
+
+    stored = await _stored_messages(app, events[-1]["conversation_id"])
+    assert stored[-1]["content"]["follow_ups"] == suggestions["suggestions"]
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_read_nothing_proposes_nothing():
+    app = await _make_app()
+    provider = _ScriptedProvider([[_text("From memory.")]])
+
+    with patch(_PROVIDER, return_value=provider):
+        events = _data_events(await _post(app, {"message": "hello"}))
+
+    assert "suggestions" not in _types(events)
+    stored = await _stored_messages(app, events[-1]["conversation_id"])
+    assert "follow_ups" not in stored[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_proposes_nothing():
+    app = await _make_app()
+
+    class _Failing:
+        provider_name = "test"
+        model_name = "test-model"
+
+        async def stream_chat(self, **_kwargs):
+            raise ProviderError("provider refused")
+            yield  # pragma: no cover
+
+    with patch(_PROVIDER, return_value=_Failing()):
+        events = _data_events(await _post(app, {"message": "hello"}))
+
+    types = _types(events)
+    assert "suggestions" not in types
+    assert types[-1] == "error"
+
+
+@pytest.mark.asyncio
+async def test_the_opening_turn_names_the_conversation_after_what_it_read():
+    app = await _make_app()
+    provider = _ScriptedProvider(
+        [[_tool("t1", "get_risk", {"targets": ["src/a.py"]})], [_text("Risky.")]]
+    )
+
+    with patch(_PROVIDER, return_value=provider), patch(
+        _EXECUTE, AsyncMock(return_value=_RISK_RESULT)
+    ):
+        events = _data_events(
+            await _post(app, {"message": "What are the highest-risk files to modify?"})
+        )
+
+    conversation_id = events[-1]["conversation_id"]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        detail = await client.get(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}"
+        )
+    assert detail.json()["conversation"]["title"] == "Risk: highest-risk files modify"
+
+
+@pytest.mark.asyncio
+async def test_a_later_turn_never_overwrites_a_renamed_conversation():
+    app = await _make_app()
+    provider = _ScriptedProvider(lambda _index: [_text("Fine.")])
+
+    with patch(_PROVIDER, return_value=provider):
+        first = _data_events(await _post(app, {"message": "opening question"}))
+    conversation_id = first[-1]["conversation_id"]
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.patch(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}",
+            json={"title": "Chosen by hand"},
+        )
+
+    with patch(_PROVIDER, return_value=provider):
+        await _post(app, {"message": "second question", "conversation_id": conversation_id})
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        detail = await client.get(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}"
+        )
+    assert detail.json()["conversation"]["title"] == "Chosen by hand"
+
+
+@pytest.mark.asyncio
+async def test_a_tool_that_failed_mid_turn_does_not_propose_a_next_step():
+    """The answer still arrives; it just has nothing measured to build on."""
+    app = await _make_app()
+    provider = _ScriptedProvider(
+        [[_tool("t1", "get_risk", {"targets": ["src/a.py"]})], [_text("No index.")]]
+    )
+
+    with patch(_PROVIDER, return_value=provider), patch(
+        _EXECUTE, AsyncMock(return_value={"error": "no index"})
+    ):
+        events = _data_events(await _post(app, {"message": "Is a.py risky?"}))
+
+    types = _types(events)
+    assert types[-1] == "done"
+    assert "suggestions" not in types
+
+    conversation_id = events[-1]["conversation_id"]
+    stored = await _stored_messages(app, conversation_id)
+    assert "follow_ups" not in stored[-1]["content"]
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        detail = await client.get(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}"
+        )
+    # The question alone, with no "Risk:" prefix: nothing was read.
+    assert detail.json()["conversation"]["title"] == "a.py risky"
+
+
+@pytest.mark.asyncio
+async def test_a_chip_without_a_tool_hint_omits_the_field_rather_than_nulling_it():
+    """No generator omits a hint today, so the shape is pinned from the outside.
+
+    The schema allows a null, which the TypeScript contract does not, and a
+    future derivation that drops the hint must not be what discovers that.
+    """
+    app = await _make_app()
+    hintless = [{"text": "A question with no next tool", "source": "page"}]
+
+    transport = ASGITransport(app=app)
+    with patch(_EXECUTE, AsyncMock(return_value=_RISK_RESULT)), patch(
+        "repowise.server.routers.chat.page_suggestions", return_value=hintless
+    ):
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                f"/api/repos/{_REPO_ID}/chat/suggestions",
+                params={"kind": "risk", "target": "src/a.py"},
+            )
+
+    assert response.status_code == 200, response.text
+    assert "toolHint" not in response.text
+    assert response.json()["suggestions"] == hintless

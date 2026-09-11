@@ -122,6 +122,8 @@ export interface ChatMessage {
     model?: string;
     /** The step ceiling was reached before a final answer. */
     truncated?: boolean;
+    /** Next steps derived from the artifacts this turn produced. */
+    follow_ups?: ChatSuggestion[];
   };
   created_at: string;
 }
@@ -153,6 +155,8 @@ export interface ChatUIMessage {
   model?: string;
   /** The step ceiling was reached before a final answer. */
   truncated?: boolean;
+  /** Next steps this turn earned. Absent on a turn that called no tool. */
+  followUps?: ChatSuggestion[];
 }
 
 // ---------------------------------------------------------------------------
@@ -643,5 +647,8 @@ export type ChatSSEEvent =
     }
   /** Every turn ended in a tool call; `done` still follows. */
   | { type: "truncated"; loops: number }
+  /** Next steps for the turn that just finished, sent just before `done`.
+   *  A turn that failed or called no tool sends none. */
+  | { type: "suggestions"; suggestions: ChatSuggestion[] }
   | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
   | { type: "error"; message: string };

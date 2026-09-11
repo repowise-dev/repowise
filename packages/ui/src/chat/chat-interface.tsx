@@ -27,7 +27,7 @@ import {
   type RefObject,
   type ReactNode,
 } from "react";
-import { ArrowDown, Send, PanelRight } from "lucide-react";
+import { ArrowDown, PanelRight } from "lucide-react";
 import { Button } from "../ui/button";
 import { ActivityDot } from "../ui/activity-dot";
 import { ScrollArea } from "../ui/scroll-area";
@@ -40,20 +40,25 @@ import {
   getChatContextPresentation,
   type ChatContext,
 } from "./chat-context";
-import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
+import type {
+  ChatArtifact,
+  ChatSuggestion,
+  ChatUIMessage,
+} from "@repowise-dev/types/chat";
 import type { SourceReference } from "./source-citations";
 import { ChatComposer } from "./chat-composer";
+import { ChatSuggestions } from "./chat-suggestions";
 import { CHAT_SHORTCUT_HINT } from "./use-chat-shortcut";
 import { useChatScroll } from "./use-chat-scroll";
 
-const DEFAULT_SUGGESTIONS = [
+const DEFAULT_SUGGESTIONS: readonly ChatSuggestion[] = [
   "Give me an overview of this codebase",
   "What are the highest-risk files to modify?",
   "Score the change risk of HEAD",
   "What dead code can be safely removed?",
   "What architectural decisions have been made?",
   "Search for authentication-related code",
-];
+].map((text) => ({ text, source: "static" as const }));
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
@@ -100,8 +105,8 @@ export interface ChatInterfaceProps {
   linkPrefix?: string;
   /** Logo shown above the empty-state heading. */
   emptyStateLogoSrc?: string;
-  /** Override default suggestion chips. */
-  suggestions?: readonly string[];
+  /** Override the static tier with suggestions derived from live page data. */
+  suggestions?: readonly ChatSuggestion[];
   /** Override the context-derived composer placeholder. */
   placeholder?: string;
   /** Orientation line under the empty-state subtitle — index status, page
@@ -201,6 +206,13 @@ export function ChatInterface({
   const visibleSuggestions =
     suggestions ?? (context ? contextPresentation.suggestions : DEFAULT_SUGGESTIONS);
   const composerPlaceholder = placeholder ?? contextPresentation.placeholder;
+  const lastMessage = messages[messages.length - 1];
+  // An errored turn never carries follow-ups: the server sends them only on a
+  // turn that completed and called a tool.
+  const followUps =
+    !error && lastMessage?.role === "assistant" && !lastMessage.isStreaming
+      ? lastMessage.followUps ?? []
+      : [];
   const showContext =
     context !== undefined &&
     context.kind !== "repository" &&
@@ -301,8 +313,8 @@ export function ChatInterface({
     return undefined;
   }, [totalArtifactCount, artifactPanelOpen]);
 
-  function handleSuggestion(text: string) {
-    setInput(text);
+  function handleSuggestion(suggestion: ChatSuggestion) {
+    setInput(suggestion.text);
     textareaRef.current?.focus();
   }
 
@@ -363,24 +375,12 @@ export function ChatInterface({
                 <p className={cn(MICRO_LABEL)}>{CHAT_SHORTCUT_HINT}</p>
               </div>
 
-              {/* Hairline rows, not a grid of bordered boxes. A suggestion is
-                  not a discrete object you act on repeatedly; it is a list. */}
-              <div>
-                <p className={cn(MICRO_LABEL, "mb-1")}>Start with</p>
-                <ul className="border-t border-[var(--color-border-default)]">
-                  {visibleSuggestions.map((s) => (
-                    <li key={s}>
-                      <button
-                        className="group flex w-full items-center gap-3 border-b border-[var(--color-border-default)] py-3 text-left text-[15px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]"
-                        onClick={() => handleSuggestion(s)}
-                      >
-                        <span className="flex-1 min-w-0">{s}</span>
-                        <Send className="h-3.5 w-3.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              <ChatSuggestions
+                suggestions={visibleSuggestions}
+                onSelect={handleSuggestion}
+                layout="rows"
+                label="Start with"
+              />
             </div>
           </ScrollArea>
         ) : (
@@ -427,6 +427,17 @@ export function ChatInterface({
                 />
                 );
               })}
+              {followUps.length > 0 && input.length === 0 && (
+                /* Newest answer only, and only while the composer is empty: a
+                   chip that overwrote a half-written question costs more than
+                   it saves. */
+                <ChatSuggestions
+                  suggestions={followUps}
+                  onSelect={handleSuggestion}
+                  layout="chips"
+                  ariaLabel="Next steps"
+                />
+              )}
               {error && (
                 <div className="rounded-lg border border-[var(--color-error)]/30 bg-[var(--color-error)]/10 px-4 py-2.5 text-sm text-[var(--color-error)]">
                   {error}

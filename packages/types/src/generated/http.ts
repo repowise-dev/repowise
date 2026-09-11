@@ -333,6 +333,24 @@ export interface ChatRequest {
 }
 
 /**
+ * One composer chip. ``source`` lets a client rank a measured question
+ * above the static tier it already ships.
+ */
+export interface ChatSuggestion {
+  text: string;
+  source: "static" | "page" | "followup";
+  toolHint?: string | null;
+}
+
+/**
+ * Only the measured tier. An empty list means the page had nothing to
+ * measure, and the client's own static tier stands.
+ */
+export interface ChatSuggestionsResponse {
+  suggestions?: ChatSuggestion[];
+}
+
+/**
  * One file on the churn-vs-complexity scatter.
  *
  * Every figure is coerced by the producer, so none is nullable here: a zero
