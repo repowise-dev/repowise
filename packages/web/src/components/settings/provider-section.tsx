@@ -19,7 +19,13 @@ import {
   type SaveState,
 } from "@repowise-dev/ui/settings";
 
-const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "claude_cli", "opencode", "ollama", "litellm", "mock"] as const;
+/**
+ * Fallback only, for a cold load and for an API that never answers. The server
+ * owns the catalog; this is not a second source of truth. It had already
+ * drifted -- `codex_cli` and `openrouter` are in the server catalog and were
+ * never added here, so neither could be picked from this page.
+ */
+const FALLBACK_PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "claude_cli", "opencode", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "edenai", "ollama"] as const;
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
@@ -74,6 +80,8 @@ export function ProviderSection() {
   const [model, setModel] = useState("");
   const [embedder, setEmbedder] = useState("mock");
   const [serverProvider, setServerProvider] = useState<string | null>(null);
+  const [providers, setProviders] = useState<readonly string[]>(FALLBACK_PROVIDERS);
+  const [catalogModels, setCatalogModels] = useState<Record<string, string>>({});
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -86,6 +94,23 @@ export function ProviderSection() {
       .then((r) => r.json())
       .then((data) => {
         if (data?.provider) setServerProvider(data.provider);
+      })
+      .catch(() => {});
+    // The catalog the server will actually resolve against. Reading it here
+    // means a provider added on the Python side appears in this picker with no
+    // change to this file -- which is how `codex_cli` and `openrouter` came to
+    // be selectable everywhere except here.
+    fetch("/api/providers")
+      .then((r) => r.json())
+      .then((data) => {
+        const catalog: Array<{ id?: string; default_model?: string }> = data?.providers ?? [];
+        const ids = catalog.map((p) => p?.id).filter((id): id is string => Boolean(id));
+        if (ids.length) setProviders(ids);
+        setCatalogModels(
+          Object.fromEntries(
+            catalog.flatMap((p) => (p?.id && p?.default_model ? [[p.id, p.default_model]] : [])),
+          ),
+        );
       })
       .catch(() => {});
   }, []);
@@ -144,7 +169,7 @@ export function ProviderSection() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {PROVIDERS.map((p) => (
+                {providers.map((p) => (
                   <SelectItem key={p} value={p}>
                     {p}
                   </SelectItem>
@@ -162,7 +187,7 @@ export function ProviderSection() {
         >
           <Input
             id="model"
-            placeholder={MODEL_PLACEHOLDERS[provider] ?? "model name"}
+            placeholder={MODEL_PLACEHOLDERS[provider] ?? catalogModels[provider] ?? "model name"}
             value={model}
             onChange={(e) => setModel(e.target.value)}
             onBlur={handleModelBlur}
