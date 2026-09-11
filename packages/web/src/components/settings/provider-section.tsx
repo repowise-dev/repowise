@@ -29,6 +29,12 @@ import {
 const FALLBACK_PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "claude_cli", "opencode", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "edenai", "ollama"] as const;
 
+// Real, registerable providers the server catalog deliberately leaves out.
+// `mock` is a keyless test provider (`KEYLESS_PROVIDERS` in the registry) that
+// this page has always offered; it is flag-only, so it is absent from
+// PROVIDER_CATALOG and would otherwise vanish the moment the catalog loads.
+const FLAG_ONLY_PROVIDERS = ["mock"] as const;
+
 const MODEL_PLACEHOLDERS: Record<string, string> = {
   gemini: "gemini-3.5-flash-lite",
   openai: "gpt-5.6-luna",
@@ -154,11 +160,11 @@ export function ProviderSection() {
     flashSaved();
   }
 
-  // The catalog is not a superset of what can be selected: `mock` is
-  // flag-only and never appears in it. Without the selected value among the
-  // options, Radix renders a blank trigger the user cannot recover from, so
-  // it is always offered even when the server does not advertise it.
-  const providerOptions = providers.includes(provider) ? providers : [...providers, provider];
+  // The catalog is not a superset of what can be selected, so rendering it
+  // verbatim silently takes options away: the flag-only providers never
+  // appear in it, and a saved provider the server has since stopped
+  // advertising would leave a blank trigger with nothing to recover with.
+  const providerOptions = [...new Set([...providers, ...FLAG_ONLY_PROVIDERS, provider])];
 
   const providerInfo = PROVIDER_ENV_VARS[provider];
   const embedderVars = EMBEDDER_ENV_VARS[embedder] ?? [];

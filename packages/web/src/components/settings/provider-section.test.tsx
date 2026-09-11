@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -70,6 +70,39 @@ describe("ProviderSection provider catalog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getProvider.mockReturnValue("gemini");
+    // Radix needs these to open its listbox; jsdom implements none of them.
+    Element.prototype.hasPointerCapture = vi.fn(() => false);
+    Element.prototype.releasePointerCapture = vi.fn();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  /** Opens the provider listbox and returns the option labels it offers. */
+  async function openProviderOptions(): Promise<string[]> {
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Provider" }), {
+      key: "Enter",
+      code: "Enter",
+    });
+    await waitFor(() => expect(screen.queryAllByRole("option").length).toBeGreaterThan(0));
+    return screen.queryAllByRole("option").map((option) => option.textContent ?? "");
+  }
+
+  it("still offers a flag-only provider the catalog leaves out", async () => {
+    // `mock` is registerable and keyless but never appears in the server
+    // catalog, so rendering the catalog verbatim took away a choice the page
+    // has always offered -- silently, since the user is on gemini and the
+    // trigger still looks right.
+    mocks.getProviders.mockResolvedValue({
+      active: { provider: "gemini", model: null },
+      providers: [
+        { id: "gemini", name: "Google Gemini", default_model: "gemini-3.5-flash-lite" },
+        { id: "codex_cli", name: "Codex CLI", default_model: "codex_cli/gpt-5.6-luna" },
+      ],
+    });
+
+    render(<ProviderSection />);
+    await waitFor(() => expect(mocks.getProviders).toHaveBeenCalledOnce());
+
+    expect(await openProviderOptions()).toEqual(["gemini", "codex_cli", "mock"]);
   });
 
   it("takes the model placeholder from a provider it has no local entry for", async () => {
