@@ -7,6 +7,7 @@ public model is re-exported here so existing
 
 from __future__ import annotations
 
+from ._datetime import UTCDateTime
 from .architecture import (
     ArchEdgeResponse,
     ArchitectureViewResponse,
@@ -471,6 +472,7 @@ __all__ = [
     "SymbolNodeSummary",
     "SymbolResponse",
     "TransitiveEntry",
+    "UTCDateTime",
     "UnclusteredFiles",
     "UpdateMcpToolsRequest",
     "VersionResponse",

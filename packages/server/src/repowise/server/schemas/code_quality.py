@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 
 from pydantic import BaseModel
 
@@ -11,6 +10,7 @@ from repowise.core.analysis.dead_code.risk_factors import (
     effective_safe_to_delete,
     path_risk_factors,
 )
+from repowise.server.schemas._datetime import UTCDateTime
 
 
 class DeadCodeFindingResponse(BaseModel):
@@ -40,7 +40,7 @@ class DeadCodeFindingResponse(BaseModel):
     # confidence ladder. Deliberately not ``age_days``: that is measured from
     # the *first* commit, so it answers "how old is this file", not "how long
     # has this been dead", and the two disagree on 75% of findings.
-    last_commit_at: datetime | None
+    last_commit_at: UTCDateTime | None
     # Commits to the file in the last 90 days. Top rung of the confidence
     # ladder (0 commits is what earns the high tiers), so surfacing it is what
     # makes a low confidence score legible: the file is still being worked on.
@@ -98,7 +98,7 @@ class SecurityFindingResponse(BaseModel):
     kind: str
     severity: str
     snippet: str | None
-    detected_at: datetime
+    detected_at: UTCDateTime
     # Where in the file. Checked against the live tree before serving, so a
     # line that drifted is either corrected or withdrawn — see
     # ``services/security_lines.py``. ``None`` means the snippet is gone from
@@ -110,7 +110,7 @@ class SecurityFindingResponse(BaseModel):
     # Present when the finding was sourced from git history (full-history
     # scan). ``None`` for working-tree findings produced during indexing.
     commit_sha: str | None
-    commit_at: datetime | None
+    commit_at: UTCDateTime | None
     found_in_history: bool
 
 

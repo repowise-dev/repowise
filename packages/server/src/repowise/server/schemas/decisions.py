@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from repowise.core.analysis.decisions.policy import DISCOVERY_BOUNDS
 from repowise.core.analysis.decisions.scope import derive_decision_scope
+from repowise.server.schemas._datetime import UTCDateTime
 
 
 class EvidencePreview(BaseModel):
@@ -46,9 +46,9 @@ class DecisionRecordResponse(BaseModel):
     # the linkage fields, so old records get it too.
     scope: str | None = None
     superseded_by: str | None
-    last_code_change: datetime | None
-    created_at: datetime
-    updated_at: datetime
+    last_code_change: UTCDateTime | None
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
     # List-row evidence preview: the top-ranked evidence row's verbatim quote
     # plus how many evidence rows back the record. Populated by the list
     # endpoint only (None on detail/graph responses, which have the full
@@ -280,7 +280,9 @@ class DecisionLineageResponse(BaseModel):
 #: Sourced from the policy registry so the wire bounds cannot drift from the
 #: ones the resolver enforces.
 _DISCOVERY_DEFAULTS = {key: bounds[2] for key, bounds in DISCOVERY_BOUNDS.items()}
-_DISCOVERY_RANGE = {key: {"ge": bounds[0], "le": bounds[1]} for key, bounds in DISCOVERY_BOUNDS.items()}
+_DISCOVERY_RANGE = {
+    key: {"ge": bounds[0], "le": bounds[1]} for key, bounds in DISCOVERY_BOUNDS.items()
+}
 
 
 class DecisionSourceState(BaseModel):
