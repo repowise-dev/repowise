@@ -64,6 +64,38 @@ def _schema(request=None, response=None):
     )
 
 
+def test_schema_diff_waits_until_source_declares_comparison_ready():
+    before = ContractSchema(
+        source="openapi",
+        request_fields=[SchemaField("id", "string", required=True)],
+        comparison_ready=False,
+    )
+    after = ContractSchema(source="openapi", comparison_ready=False)
+
+    report = detect_breaking_changes(
+        _store([_provider("http::POST::/orders", schema=before)]),
+        _store([_provider("http::POST::/orders", schema=after)]),
+    )
+
+    assert report.changes == []
+
+
+def test_schema_diff_requires_matching_comparison_fidelity():
+    before = ContractSchema(
+        source="openapi",
+        comparison_key="openapi-wire-v1",
+        request_fields=[SchemaField("id", "string", required=True)],
+    )
+    after = ContractSchema(source="openapi", comparison_key="openapi-wire-v2")
+
+    report = detect_breaking_changes(
+        _store([_provider("http::POST::/orders", schema=before)]),
+        _store([_provider("http::POST::/orders", schema=after)]),
+    )
+
+    assert report.changes == []
+
+
 def _kinds(report):
     return sorted(c.kind for c in report.changes)
 

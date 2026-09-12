@@ -6,6 +6,7 @@ from __future__ import annotations
 from .data import DataExtractor, normalize_table_name
 from .grpc_extractor import GrpcExtractor
 from .http_extractor import HttpExtractor, normalize_http_path
+from .openapi import OpenApiExtractor, merge_openapi_providers
 from .service_boundary import (
     ServiceBoundary,
     assign_service,
@@ -18,11 +19,13 @@ __all__ = [
     "DataExtractor",
     "GrpcExtractor",
     "HttpExtractor",
+    "OpenApiExtractor",
     "ServiceBoundary",
     "SocketExtractor",
     "TopicExtractor",
     "assign_service",
     "detect_service_boundaries",
+    "merge_openapi_providers",
     "normalize_http_path",
     "normalize_table_name",
 ]

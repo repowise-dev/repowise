@@ -50,7 +50,8 @@ CONTRACTS_FILENAME = "contracts.json"
 #: Java, Kotlin and PHP client calls resolved from URL expressions.
 #: A store written under an older version is readable but not reusable: its
 #: rows carry no identity, and nothing short of re-extraction can give them one.
-CONTRACTS_VERSION = 7
+# Version 8 adds bounded OpenAPI 3.x schemas and their extraction diagnostics.
+CONTRACTS_VERSION = 8
 
 
 # ---------------------------------------------------------------------------
@@ -891,10 +892,12 @@ async def run_contract_extraction(
         DataExtractor,
         GrpcExtractor,
         HttpExtractor,
+        OpenApiExtractor,
         SocketExtractor,
         TopicExtractor,
         assign_service,
         detect_service_boundaries,
+        merge_openapi_providers,
     )
     from .extractors.base import iter_source_files, make_exclude_predicate
     from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
@@ -1004,6 +1007,7 @@ async def run_contract_extraction(
         extractors = []
         if contract_config.detect_http:
             extractors.append(HttpExtractor())
+            extractors.append(OpenApiExtractor())
         if contract_config.detect_grpc:
             extractors.append(GrpcExtractor())
         if contract_config.detect_socket:
@@ -1043,11 +1047,12 @@ async def run_contract_extraction(
         stats["walks"] = 1
 
         for extractor in extractors:
-            kwargs = (
-                {"repo_index": repo_index, "stats": stats}
-                if isinstance(extractor, HttpExtractor)
-                else {}
-            )
+            if isinstance(extractor, HttpExtractor):
+                kwargs = {"repo_index": repo_index, "stats": stats}
+            elif isinstance(extractor, OpenApiExtractor):
+                kwargs = {"stats": stats}
+            else:
+                kwargs = {}
             found = await asyncio.to_thread(
                 lambda e=extractor, kw=kwargs: e.extract(
                     repo_path, alias, exclude, files, **kw
@@ -1064,6 +1069,11 @@ async def run_contract_extraction(
             c.service = assign_service(c.file_path, boundaries)
         contracts.extend(code_rows)
         stats.update(code_surface.stats.get(alias, {}))
+
+        # The OpenAPI document and a framework route describe one provider.
+        # Keep the code-backed identity and enrich it with the spec's wire shape;
+        # unmatched spec operations remain first-class providers.
+        contracts = merge_openapi_providers(contracts, stats)
 
         stats.update(bind_symbol_ids(contracts, repo_index))
         stats.update(attach_signature_schemas(contracts, repo_index))

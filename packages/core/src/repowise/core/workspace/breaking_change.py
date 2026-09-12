@@ -551,7 +551,10 @@ def detect_breaking_changes(
             if (
                 prev_schema is not None
                 and curr_schema is not None
+                and prev_schema.comparison_ready
+                and curr_schema.comparison_ready
                 and prev_schema.source == curr_schema.source
+                and prev_schema.comparison_key == curr_schema.comparison_key
             ):
                 raws.extend(_diff_schemas(prev_schema, curr_schema))
 
