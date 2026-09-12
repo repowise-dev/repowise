@@ -30,6 +30,8 @@ class ChatPageContext(BaseModel):
         "contributor",
         "decision",
         "risk",
+        "dead-code",
+        "blast-radius",
         "security",
         "usage",
         "settings",
@@ -144,6 +146,22 @@ class ChatArtifactEnvelope(BaseModel):
     #: Absent on rows written before the envelope carried one; the legacy
     #: normalizer backfills every other key but not this.
     created_at: str | None = None
+
+
+class ChatSuggestion(BaseModel):
+    """One composer chip. ``source`` lets a client rank a measured question
+    above the static tier it already ships."""
+
+    text: str
+    source: Literal["static", "page", "followup"]
+    toolHint: str | None = None  # noqa: N815 - wire shape is camelCase
+
+
+class ChatSuggestionsResponse(BaseModel):
+    """Only the measured tier. An empty list means the page had nothing to
+    measure, and the client's own static tier stands."""
+
+    suggestions: list[ChatSuggestion] = []
 
 
 class ConversationDetailResponse(BaseModel):

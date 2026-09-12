@@ -63,6 +63,31 @@ def _find_name(node: Node) -> str:
             leaf = _pascal_unwrap_name(name)
             if leaf.text is not None:
                 return leaf.text.decode("utf-8", errors="replace")
+    # F#: ``function_or_value_defn`` carries no ``name`` field and no direct
+    # identifier child — the name sits one hop down, under
+    # ``function_declaration_left`` (``let f x = ...`` → ``f``). Without this
+    # every F# row reported ``<anonymous>``, which is not much use in a report.
+    if node.type == "function_or_value_defn":
+        for child in node.children:
+            if child.type == "function_declaration_left":
+                for leaf in child.children:
+                    if leaf.type == "identifier" and leaf.text is not None:
+                        return leaf.text.decode("utf-8", errors="replace")
+    # F# members nest one level deeper again and qualify the name with the
+    # self identifier: ``member_defn → method_or_prop_defn → property_or_ident``
+    # holds ``this`` and ``M`` for ``member this.M(x)``. The method name is the
+    # last identifier, which also reads correctly for an unqualified ``member
+    # M(x)``, where it is the only one.
+    if node.type == "member_defn":
+        for child in node.children:
+            if child.type != "method_or_prop_defn":
+                continue
+            for grandchild in child.children:
+                if grandchild.type != "property_or_ident":
+                    continue
+                names = [c for c in grandchild.children if c.type == "identifier" and c.text]
+                if names:
+                    return names[-1].text.decode("utf-8", errors="replace")
     # C / C++: the function name is not a direct child but nested inside a
     # ``declarator`` chain (``function_definition → function_declarator →
     # field_identifier``). Languages with a ``name`` field never reach here.

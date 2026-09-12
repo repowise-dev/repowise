@@ -33,7 +33,9 @@ describe("getChatContextPresentation", () => {
       label: "Symbols",
       target: "useChat",
     });
-    expect(presentation.suggestions).toContain("Explain what this symbol does");
+    expect(presentation.suggestions.map((s) => s.text)).toContain(
+      "Explain what this symbol does",
+    );
   });
 
   it("distinguishes a collection route from a selected entity", () => {

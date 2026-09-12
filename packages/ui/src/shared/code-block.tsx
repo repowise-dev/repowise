@@ -55,7 +55,15 @@ export function CodeFrame({ code, language, children, compact = false }: CodeFra
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      <div className={cn("min-w-0 overflow-x-auto", compact ? "text-[11px]" : "text-sm")}>{children}</div>
+      {/* Selectable region for the chat selection control. No line numbers:
+          a fenced snippet's third line is not the third line of any file, and
+          a wrong range is worse than none. */}
+      <div
+        data-chat-selection=""
+        className={cn("min-w-0 overflow-x-auto", compact ? "text-[11px]" : "text-sm")}
+      >
+        {children}
+      </div>
     </div>
   );
 }

@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.grading import BAND_LABEL, band_for
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
 from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
@@ -450,6 +451,7 @@ class EditorFileDataFetcher:
         return CodeHealthBlock(
             hotspot_health=round(hotspot_for_claude_md, 2),
             average_health=round(avg, 2),
+            band=BAND_LABEL[band_for(round(avg, 2))],
             worst_score=round(worst.score, 2),
             worst_path=worst.file_path,
             hotspot_trend=hotspot_trend(history),

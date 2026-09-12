@@ -110,7 +110,12 @@ export interface HealthFileDrawerProps {
   /** Process / people / topology signals; the panel is silent when absent. */
   signals?: FileSignals | null;
   fileViewHref?: string;
-  /** Build a per-line deep-link from the drawer's function:line span. */
+  /**
+   * Build a per-line deep-link from the drawer's function:line span. Unbound
+   * until a file view renders line anchors: no `#L<n>` resolves today, so a
+   * host that supplies one only adds a fragment that goes nowhere. Without
+   * it the label falls back to `fileViewHref`, the file page itself.
+   */
   fileViewHrefFor?: ((lineStart: number) => string) | undefined;
   permalinkHref?: string;
   onPartnerSelect?: ((path: string) => void) | undefined;

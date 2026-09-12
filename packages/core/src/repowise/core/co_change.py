@@ -36,6 +36,7 @@ __all__ = [
     "STRUCTURAL_UNEXPLAINED",
     "CoChangePartner",
     "canonical_pair",
+    "confidence_ratio",
     "parse_partners",
 ]
 
@@ -157,3 +158,15 @@ def parse_partners(raw: object) -> list[CoChangePartner]:
 def canonical_pair(a: str, b: str) -> tuple[str, str]:
     """The two paths in a stable order, so an undirected pair deduplicates."""
     return (a, b) if a < b else (b, a)
+
+
+def confidence_ratio(support: int, commits: int) -> float | None:
+    """Share of *commits* that also touched the partner, or ``None`` if unknown.
+
+    Lives here rather than beside either caller because the coupling graph and
+    the risk tools must agree on what a confidence means; a second copy of the
+    formula is how the two drift apart.
+    """
+    if support <= 0 or commits <= 0:
+        return None
+    return round(min(support / commits, 1.0), 3)

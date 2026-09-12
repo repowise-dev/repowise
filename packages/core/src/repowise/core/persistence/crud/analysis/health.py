@@ -381,21 +381,30 @@ async def get_health_findings(
     *,
     biomarker_type: str | None = None,
     min_severity: str | None = None,
+    severity: str | None = None,
     file_path: str | None = None,
     dimension: str | None = None,
     exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
 ) -> list[HealthFinding]:
-    """Open findings for one repository, ordered by health impact.
+    """Findings for one repository, ordered by health impact.
 
     ``exclude_dimensions`` is how a general queue keeps a dimension out of a
     ranking it does not share units with. It is ignored when ``dimension``
     names one explicitly, so asking for a dimension always returns it.
+
+    ``severity`` is an exact comma-separated selection and wins over the
+    ``min_severity`` threshold when both are given.
+
+    ``status`` defaults to open work. It also accepts a comma-separated list of
+    ``open`` / ``acknowledged`` / ``resolved`` / ``false_positive``, or ``all``
+    to drop the filter, so a triage surface can show what it has already
+    reviewed without a second read.
     """
-    q = select(HealthFinding).where(
-        HealthFinding.repository_id == repository_id,
-        HealthFinding.status == status,
-    )
+    q = select(HealthFinding).where(HealthFinding.repository_id == repository_id)
+    statuses = [s.strip() for s in status.split(",") if s.strip()]
+    if "all" not in statuses:
+        q = q.where(HealthFinding.status.in_(statuses or ["open"]))
     if dimension is None and exclude_dimensions:
         q = q.where(
             or_(
@@ -419,7 +428,12 @@ async def get_health_findings(
             q = q.where(or_(HealthFinding.dimension == "defect", HealthFinding.dimension.is_(None)))
         else:
             q = q.where(HealthFinding.dimension == dimension)
-    if min_severity is not None:
+    exact = [v.strip().lower() for v in (severity or "").split(",") if v.strip()]
+    if exact:
+        # An exact selection answers the same question the queue's chips do, so
+        # the two levels of the list agree on which findings a row holds.
+        q = q.where(HealthFinding.severity.in_(exact))
+    elif min_severity is not None:
         # Severity order: low < medium < high < critical
         order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
         threshold = order.get(min_severity, 0)

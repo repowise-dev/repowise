@@ -6,6 +6,8 @@ test data, mirroring the conftest pattern from the REST API tests.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -616,3 +618,78 @@ async def test_missing_tests_totals_use_full_precap_changed_file_population(setu
     assert directive["missing_tests_reduced_reason"] == "construction_cap"
     assert directive["missing_tests_truncated"] is True
     assert directive["missing_tests_omitted"] == 2
+
+
+def _co_change_row(**partner):
+    """The single row ``_build_co_changes`` makes from one stored partner record."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_risk.assessment import _build_co_changes
+
+    meta = SimpleNamespace(
+        co_change_partners_json=json.dumps([{"file_path": "b.py", **partner}])
+    )
+    rows, total = _build_co_changes(meta, {}, None)
+    assert total == 1
+    return rows[0]
+
+
+def test_co_change_direction_target_leads():
+    """The target seldom moves without the partner, so it is the antecedent."""
+    row = _co_change_row(count=2.0, frequency=8, self_commits=10, partner_commits=20)
+
+    assert row["direction"] == "a_to_b"
+    assert row["conf_ab"] == 0.8
+    assert row["conf_ba"] == 0.4
+
+
+def test_co_change_direction_partner_leads():
+    """The mirror case: the partner is the side that cannot move alone."""
+    row = _co_change_row(count=2.0, frequency=8, self_commits=20, partner_commits=10)
+
+    assert row["direction"] == "b_to_a"
+    assert row["conf_ab"] == 0.4
+    assert row["conf_ba"] == 0.8
+
+
+def test_co_change_direction_tie_is_undirected():
+    """Equal confidences report a tie rather than breaking the lead arbitrarily."""
+    row = _co_change_row(count=2.0, frequency=5, self_commits=10, partner_commits=10)
+
+    assert row["direction"] == "undirected"
+    assert row["conf_ab"] == 0.5
+    assert row["conf_ba"] == 0.5
+
+
+def test_co_change_direction_without_commit_totals():
+    """An index written before the commit totals existed stays undirected.
+
+    ``self_commits``/``partner_commits`` are absent from such a record, so there
+    is no denominator to divide by; the confidences are omitted rather than
+    emitted as a guessed zero.
+    """
+    row = _co_change_row(count=2.0, frequency=8)
+
+    assert row["direction"] == "undirected"
+    assert "conf_ab" not in row
+    assert "conf_ba" not in row
+
+
+@pytest.mark.asyncio
+async def test_get_risk_co_change_rows_carry_direction(setup_mcp):
+    """The field survives the whole pipeline, and says nothing it cannot back.
+
+    The seeded records carry no commit totals, so every row must come back
+    ``undirected`` with no confidence beside it -- a guessed ``0.0`` here would
+    read as "these files never change together", the opposite of unknown.
+    """
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/service.py"])
+    partners = result["targets"]["src/auth/service.py"]["co_change_partners"]
+
+    assert partners
+    for p in partners:
+        assert p["direction"] == "undirected"
+        assert "conf_ab" not in p
+        assert "conf_ba" not in p

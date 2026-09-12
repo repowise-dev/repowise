@@ -45,5 +45,8 @@ export function toChatUiMessages(
     ...(message.content.provider ? { provider: message.content.provider } : {}),
     ...(message.content.model ? { model: message.content.model } : {}),
     ...(message.content.truncated ? { truncated: true } : {}),
+    ...(message.content.follow_ups?.length
+      ? { followUps: message.content.follow_ups }
+      : {}),
   }));
 }

@@ -48,6 +48,7 @@ export function ChatInterface({
     selectModel,
     artifactOverrides,
     replaceArtifact,
+    suggestions,
   } = useRepositoryChat();
   const pathname = usePathname();
   const router = useRouter();
@@ -182,6 +183,8 @@ export function ChatInterface({
       error={error}
       onSend={sendWithConversationModel}
       onCancel={cancel}
+      {...(suggestions ? { suggestions } : {})}
+      autoFocus
       draft={draft}
       onDraftChange={setDraft}
       buildCitationHref={buildCitationHref}

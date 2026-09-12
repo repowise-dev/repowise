@@ -1,4 +1,8 @@
-import type { ChatContext, ChatContextKind } from "@repowise-dev/types/chat";
+import type {
+  ChatContext,
+  ChatContextKind,
+  ChatSuggestion,
+} from "@repowise-dev/types/chat";
 
 export type {
   ChatContext,
@@ -8,10 +12,39 @@ export type {
 
 export interface ChatContextPresentation {
   placeholder: string;
+  suggestions: readonly ChatSuggestion[];
+}
+
+/** The copy tables below stay plain strings so they read as copy. This is the
+ *  one place they become the static tier. */
+interface PresentationCopy {
+  placeholder: string;
   suggestions: readonly string[];
 }
 
-const PRESENTATIONS: Record<ChatContextKind, ChatContextPresentation> = {
+function toPresentation(copy: PresentationCopy): ChatContextPresentation {
+  return {
+    placeholder: copy.placeholder,
+    suggestions: copy.suggestions.map((text) => ({
+      text,
+      source: "static" as const,
+    })),
+  };
+}
+
+// Homomorphic so a partial copy table stays partial: the collection tier
+// deliberately covers only the kinds that read differently without a target.
+function toPresentations<T extends Record<string, PresentationCopy | undefined>>(
+  table: T,
+): { [K in keyof T]: ChatContextPresentation } {
+  return Object.fromEntries(
+    Object.entries(table)
+      .filter((entry): entry is [string, PresentationCopy] => entry[1] !== undefined)
+      .map(([kind, copy]) => [kind, toPresentation(copy)]),
+  ) as { [K in keyof T]: ChatContextPresentation };
+}
+
+const PRESENTATION_COPY: Record<ChatContextKind, PresentationCopy> = {
   repository: {
     placeholder: "Ask about this repository, or paste a file path",
     suggestions: [
@@ -125,6 +158,22 @@ const PRESENTATIONS: Record<ChatContextKind, ChatContextPresentation> = {
       "Propose the safest order for these changes",
     ],
   },
+  "dead-code": {
+    placeholder: "Ask about this dead-code result",
+    suggestions: [
+      "Is this safe to remove, and what still reaches it?",
+      "Explain the evidence behind this result",
+      "What should I check before deleting it?",
+    ],
+  },
+  "blast-radius": {
+    placeholder: "Ask about the reach of this change",
+    suggestions: [
+      "What breaks if I change this?",
+      "Which dependents deserve the closest review?",
+      "Which tests cover this reach?",
+    ],
+  },
   security: {
     placeholder: "Ask about these security findings",
     suggestions: [
@@ -160,8 +209,8 @@ const PRESENTATIONS: Record<ChatContextKind, ChatContextPresentation> = {
   },
 };
 
-const COLLECTION_PRESENTATIONS: Partial<
-  Record<ChatContextKind, ChatContextPresentation>
+const COLLECTION_PRESENTATION_COPY: Partial<
+  Record<ChatContextKind, PresentationCopy>
 > = {
   documentation: {
     placeholder: "Ask about this repository's documentation",
@@ -220,6 +269,9 @@ const COLLECTION_PRESENTATIONS: Partial<
     ],
   },
 };
+
+const PRESENTATIONS = toPresentations(PRESENTATION_COPY);
+const COLLECTION_PRESENTATIONS = toPresentations(COLLECTION_PRESENTATION_COPY);
 
 export function getChatContextPresentation(
   context?: ChatContext,

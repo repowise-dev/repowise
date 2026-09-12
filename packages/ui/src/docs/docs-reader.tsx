@@ -603,7 +603,10 @@ function DocsReaderBody({
                 two things — a hardcoded `prose-invert` that fed dark variables
                 to light mode, and `code::before/::after { content: "`" }`, which
                 printed literal backticks around every unresolved inline ref. */}
-            <article className="max-w-none leading-relaxed overflow-hidden">
+            <article
+              data-chat-selection=""
+              className="max-w-none leading-relaxed overflow-hidden"
+            >
               <WikiMarkdown
                 content={visibleContent}
                 wikiLinks={wikiLinks}

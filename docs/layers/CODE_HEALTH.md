@@ -147,6 +147,15 @@ rather than truncated, so each finding's reported impact stays linear and
 attributable — you can always explain exactly why a file scored what it scored.
 The final score is clamped to `[1.0, 10.0]`.
 
+**Organizational is the largest cap, and it is the git-derived one.** Churn,
+ownership, co-change, congestion and prior fixes describe what a file has been
+*through*, not what its code is like — and they rise as a file is worked on. So
+a week of genuine refactoring can lower a file's structural deduction while its
+history deduction climbs, and the headline barely moves. Each file therefore
+stores its deduction as two numbers, `structure_deduction` and
+`history_deduction`, which sum to the total. Nothing is hidden: the split is on
+every metric row, and the Counts control below reads it back.
+
 Three repo-level KPIs: **Hotspot Health** (NLOC-weighted average over files the
 git layer classifies as hotspots), **Average Health** (NLOC-weighted over all
 files), and **Worst Performer**.
@@ -180,6 +189,42 @@ every recommendation.
 
 The bands are defined once in core (`analysis/health/grading.py`) and mirrored
 in `@repowise-dev/types`, with a parity test on each side.
+
+### What the score counts
+
+Two controls decide which files a figure describes and which half of the
+deduction it counts. Both reach the CLI, MCP and every page, and both are
+echoed on the response, so a number always states what it is.
+
+| Control | Values | What it does |
+|---|---|---|
+| **Scope** | `all` (default) · `production` | Which files are in the population. Non-code files are never scored. |
+| **Counts** | `everything` (default) · `code_shape` | Whether the git-derived half of the deduction counts. |
+
+```bash
+repowise health --scope production     # exclude tests
+repowise health --counts code_shape    # the code-shape reading
+```
+
+```python
+get_health(scope="production", counts="code_shape")
+```
+
+**`code_shape` answers "is my code getting better".** It subtracts
+`history_deduction` and rescores from what is left, so a week of refactoring
+shows up as the improvement it was rather than being masked by the churn that
+the work itself created. It is arithmetic over the two stored columns, not a
+second scoring pass: history findings are dropped rather than re-weighted, and
+a file with no stored split is reported in `unscored_files` rather than counted
+as a ten.
+
+**`production` lowers the headline**, which surprises people: test files
+generally score higher than the code they cover, so removing them removes the
+easy end of the distribution. Nothing was found; the population changed.
+
+`everything` remains the calibrated number every accuracy claim on this page is
+about, and the health badge always reports it — so a projected reading can
+never be mistaken for the published one.
 
 ## How the weights were calibrated
 
@@ -523,36 +568,6 @@ never silently change what those numbers mean.
 
 `repowise update` re-scores only changed files. Findings and metrics for
 unchanged files stay put; no nightly full re-index.
-
-## Comparison
-
-The honest dividing line: each tool below has a rules engine and a definitional
-rating. Repowise predicts which files harbor the next bug and validates that
-forward in time against a labeled corpus.
-
-| Capability | Repowise | CodeScene | SonarQube | Qlty¹ | Codacy |
-|---|---|---|---|---|---|
-| Per-file health score | ✅ 1-10 | ✅ 1-10 | ⚠️ A-E from rule counts | ✅ A-F | ✅ A-F |
-| Score uses git / behavioral signals | ✅ | ✅ its core | ❌ static rules only | ⚠️ churn vs complexity | ❌ |
-| Cross-file / call-graph analysis | ✅ interprocedural | ⚠️ git temporal coupling | ⚠️ taint, security only | ❌ file-local | ❌ file-local |
-| Defect-validated against a bug corpus | ✅ AUC 0.737, held-out 0.76-0.78 | ⚠️ "Code Red" study, no per-file AUC | ❌ | ❌ | ❌ |
-| Static performance risk across the call graph | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Test-coverage ingestion | ✅ | ✅ | ⚠️ imports reports | ✅ | ✅ |
-| Cross-file refactoring plans | ✅ + opt-in codegen | ⚠️ 5 in-function smells | ❌ | ❌ | ❌ |
-| Trend tracking + declining alerts | ✅ | ✅ | ✅ quality gates | ✅ | ✅ |
-| MCP / agent integration | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Security scanning | ⚠️ separate layer | ⚠️ secondary | ✅ strong | ❌ | ✅ full suite |
-| License | ✅ AGPL-3.0 | ⚠️ proprietary, on-prem Docker | ⚠️ Community free, paid by LOC | ⚠️ free OSS, paid teams | ⚠️ free OSS, paid per dev |
-
-¹ Code Climate Quality was spun out as Qlty Software in November 2024.
-
-**What each does that we do not.** **SonarQube** has the broadest security
-scanning, the widest language coverage, and the most adopted merge-gate model.
-**CodeScene** is the most mature behavioral-analysis product — knowledge maps,
-off-boarding simulation, 28+ languages — and holds the only published business-
-impact study in this group, which we could not replicate on open data.
-**Qlty** defined the churn-vs-complexity quadrant. **Codacy** has the widest
-security suite of the four and polished PR automation.
 
 ## See also
 

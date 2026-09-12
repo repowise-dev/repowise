@@ -2,7 +2,7 @@
 
 repowise exposes a curated set of tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence: dependency graph, git history, documentation, and architectural decisions.
 
-17 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 6 specialist tools are opt-in where eligible. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
+18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
 
 **Start the MCP server:**
 
@@ -35,13 +35,14 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 **Workspace discovery utility (default in workspace mode, 1)**
 [list_repos](#list_repos)
 
-**Opt-in specialists (6; workspace eligibility still applies)**
+**Opt-in specialists (7; workspace eligibility still applies)**
 [get_architecture](#get_architecture) &middot;
 [get_blast_radius](#get_blast_radius) &middot;
 [get_dependency_path](#get_dependency_path) &middot;
 [get_execution_flows](#get_execution_flows) &middot;
 [generate_refactoring_code](#generate_refactoring_code) &middot;
-[get_conformance](#get_conformance)
+[get_conformance](#get_conformance) &middot;
+[set_finding_status](#set_finding_status)
 
 Also see [Configuring the tool surface](#configuring-the-tool-surface), [Reversible truncation](#reversible-truncation-_metaomitted) and [Unrecognised arguments](#unrecognised-arguments-ignored_arguments).
 
@@ -502,7 +503,7 @@ Modification risk assessment for files or a set of changed files.
 | `include` | list[string] | No | Opt-in blocks: `graph` (typed `dependents`, `consumers`, `cross_repo_links`, structural `impact_surface`, `direct_risks`), `churn` (`change_magnitude`, `risk_type`, `change_pattern`) |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
-**Returns:** Per-file `hotspot_score` (0-1 churn percentile), `health_score` (0-10), hotspot status, direct directed `dependents_count`, historical `co_change_partners` (each with a recency-decayed `weight`, not an integer count), blast radius, recommended reviewers, test gap analysis, and security signals. With `include=["graph"]`, `dependents` preserves direct versus transitive structural reach, `consumers` contains typed contract consumers only, and `cross_repo_links` retains both repository identities, direction, relationship type, evidence kind, and file- or repository-level granularity. Package-manifest links are repository-level and never invent a target file. Every typed relationship collection carries matching total/emitted/truncated fields. `relationship_analysis` distinguishes available-empty analysis from unavailable, degraded, partial, and source-truncated artifacts and retains artifact generation/provenance fields. Structural reach is not proof of runtime breakage.
+**Returns:** Per-file `hotspot_score` (0-1 churn percentile), `health_score` (0-10), hotspot status, direct directed `dependents_count`, historical `co_change_partners` (each with a recency-decayed `weight`, not an integer count, and a `direction` of `a_to_b`, `b_to_a` or `undirected`, where `a` is the assessed file and `b` the partner; `conf_ab` and `conf_ba` are the share of each file's own commits that touched the other, and both are omitted on an index written before those commit totals were recorded, which also reads as `undirected`), blast radius, recommended reviewers, test gap analysis, and security signals. With `include=["graph"]`, `dependents` preserves direct versus transitive structural reach, `consumers` contains typed contract consumers only, and `cross_repo_links` retains both repository identities, direction, relationship type, evidence kind, and file- or repository-level granularity. Package-manifest links are repository-level and never invent a target file. Every typed relationship collection carries matching total/emitted/truncated fields. `relationship_analysis` distinguishes available-empty analysis from unavailable, degraded, partial, and source-truncated artifacts and retains artifact generation/provenance fields. Structural reach is not proof of runtime breakage.
 
 > **Opt-in blocks.** `impact_surface` and `direct_risks` are pagerank floats an agent cannot rank; `change_magnitude`, `risk_type` and `change_pattern` restate numbers printed beside them. All five are computed regardless and feed `risk_summary`; `include` only decides whether they ship. `global_hotspots` accompanies a multi-target call only, being ambient orientation that a single named file does not need; it ranks by fix history the same way `defect_profile` does.
 
@@ -920,6 +921,13 @@ block ranks and describes; this one recommends. Same role as `get_risk`'s
 `recovers_points` remains an exact deprecated alias during the compatibility
 window; `recovers_points_compatibility` names its replacement.
 
+**`watch` is context, not a task.** When the leading cause is history-derived —
+churn, ownership, co-change, prior fixes — the directive carries it under
+`watch` rather than in the fix path, because no edit to the file settles it.
+If *no* file has a code-shape lead, `next_action` says so instead of naming a
+file to change, so an agent is never sent to refactor a file whose deficit is
+its history.
+
 **Nothing is dropped silently.** Any `targets` entry that matched nothing is
 named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
 `no_such_path`, `excluded`, `not_measured` → indexed, but carrying no stored
@@ -1301,6 +1309,28 @@ Turns one structured refactoring plan from `get_health(include=["refactoring"])`
 
 ```
 generate_refactoring_code(suggestion_id="a1b2c3d4")
+```
+
+#### `set_finding_status`
+
+Records a durable disposition on one refactoring plan — the write half of the findings triage loop. `get_health(include=["refactoring"])` and the generated task prompts ask an agent to flag false positives, but until this tool there was nowhere to record that verdict from inside the agent loop. The status is stored on the plan row, and the analyzer's finalizer never re-emits a `false_positive` plan, so the triage survives every later run.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `suggestion_id` | string | Yes | The `id` or `public_id` of a plan from `get_health(include=["refactoring"])` |
+| `status` | string | Yes | One of `open`, `acknowledged`, `resolved`, `false_positive` |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+| `reason` | string | No | Free-text audit note stored on the row (defaults to `"agent"`) |
+
+- `false_positive` — the plan is wrong for this repository; it is never re-emitted on future runs.
+- `acknowledged` — real, but the team is consciously not acting now; stays visible, stops counting as unheard.
+- `resolved` — the change landed (or the code moved on); a person-resolved plan stays resolved even if the detector still fires.
+- `open` — reset a prior decision.
+
+**When to use:** After `get_health(include=["refactoring"])` surfaces a plan you have judged, so the verdict becomes durable state instead of a one-off remark.
+
+```
+set_finding_status(suggestion_id="a1b2c3d4", status="false_positive", reason="false alarm: the class is a DTO")
 ```
 
 ---

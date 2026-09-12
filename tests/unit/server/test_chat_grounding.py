@@ -45,6 +45,8 @@ def _context(kind: str, target: str | None = None, target_kind: str | None = Non
         ("module", "src/pkg", "get_context", {"targets": ["src/pkg"]}),
         ("symbol", "src/a.py::run", "get_symbol", {"symbol_id": "src/a.py::run"}),
         ("risk", "src/a.py", "get_risk", {"targets": ["src/a.py"]}),
+        ("dead-code", "src/a.py", "get_risk", {"targets": ["src/a.py"]}),
+        ("blast-radius", "src/a.py", "get_risk", {"targets": ["src/a.py"]}),
         ("health", "src/a.py", "get_health", {"targets": ["src/a.py"]}),
         ("decision", "d13e820c", "get_why", {"id": "d13e820c"}),
         ("commit", "abc1234", "get_change_risk", {"revspec": "abc1234"}),

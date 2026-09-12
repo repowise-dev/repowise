@@ -318,7 +318,7 @@ export interface ChatMessageResponse {
 
 /** Navigation metadata supplied by a product chat surface. */
 export interface ChatPageContext {
-  kind: "repository" | "overview" | "documentation" | "architecture" | "graph" | "health" | "refactoring" | "file" | "symbol" | "module" | "dependency" | "commit" | "contributor" | "decision" | "risk" | "security" | "usage" | "settings" | "chat";
+  kind: "repository" | "overview" | "documentation" | "architecture" | "graph" | "health" | "refactoring" | "file" | "symbol" | "module" | "dependency" | "commit" | "contributor" | "decision" | "risk" | "dead-code" | "blast-radius" | "security" | "usage" | "settings" | "chat";
   label: string;
   target?: string | null;
   target_kind?: "path" | "symbol" | "module" | "dependency" | "commit" | "person" | "decision" | "documentation" | null;
@@ -330,6 +330,24 @@ export interface ChatRequest {
   provider?: string | null;
   model?: string | null;
   context?: ChatPageContext | null;
+}
+
+/**
+ * One composer chip. ``source`` lets a client rank a measured question
+ * above the static tier it already ships.
+ */
+export interface ChatSuggestion {
+  text: string;
+  source: "static" | "page" | "followup";
+  toolHint?: string | null;
+}
+
+/**
+ * Only the measured tier. An empty list means the page had nothing to
+ * measure, and the client's own static tier stands.
+ */
+export interface ChatSuggestionsResponse {
+  suggestions?: ChatSuggestion[];
 }
 
 /**
@@ -1597,6 +1615,7 @@ export interface HealthWorkItem {
   primary_finding_id: string;
   total_impact: number;
   finding_count: number;
+  open_finding_count?: number;
   biomarkers?: string[];
   effort_bucket: string;
   impact_per_effort: number;
@@ -1605,6 +1624,9 @@ export interface HealthWorkItem {
 export interface HealthWorkQueueResponse {
   targets?: HealthWorkItem[];
   total?: number;
+  finding_total?: number;
+  offset?: number;
+  limit?: number;
 }
 
 export interface HotFilesGraphResponse {

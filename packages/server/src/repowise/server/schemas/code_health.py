@@ -186,6 +186,9 @@ class HealthWorkItem(BaseModel):
     #: Pre-clamp deduction magnitude over the findings that passed the filters.
     total_impact: float
     finding_count: int
+    #: How many of those are still open. Equal to ``finding_count`` under
+    #: the default status filter; lower once dismissed work is shown.
+    open_finding_count: int = 0
     biomarkers: list[str] = []
     #: S | M | L | XL
     effort_bucket: str
@@ -194,4 +197,10 @@ class HealthWorkItem(BaseModel):
 
 class HealthWorkQueueResponse(BaseModel):
     targets: list[HealthWorkItem] = []
+    #: Files matching the filters, before the page slice.
     total: int = 0
+    #: Findings across those files, so the page can size the work, not just
+    #: the file count it is paging through.
+    finding_total: int = 0
+    offset: int = 0
+    limit: int = 0

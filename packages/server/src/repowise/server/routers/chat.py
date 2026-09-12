@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
 from repowise.core.persistence import crud
@@ -21,6 +22,12 @@ from repowise.server.chat_artifacts import (
     set_artifact_pinned,
 )
 from repowise.server.chat_grounding import plan_grounding, run_grounding
+from repowise.server.chat_suggestions import (
+    conversation_title,
+    follow_up_suggestions,
+    page_suggestions,
+    tool_names,
+)
 from repowise.server.chat_tools import (
     ChatToolContract,
     execute_tool,
@@ -41,6 +48,7 @@ from repowise.server.schemas import (
     ChatArtifactEnvelope,
     ChatMessageResponse,
     ChatRequest,
+    ChatSuggestionsResponse,
     ConversationDetailResponse,
     ConversationForkRequest,
     ConversationResponse,
@@ -265,6 +273,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
         conv_id = body.conversation_id
         msg_id = ""
         user_msg_id = ""
+        opened_conversation = False
 
         try:
             # Emit retry interval
@@ -287,11 +296,14 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
                         )
                         return
                 else:
-                    title = " ".join(body.message.split()[:6])
+                    # Placeholder; refined once the turn's tools are known.
                     conv = await crud.create_conversation(
-                        session, repository_id=repo_id, title=title
+                        session,
+                        repository_id=repo_id,
+                        title=" ".join(body.message.split()[:6]),
                     )
                     conv_id = conv.id
+                    opened_conversation = True
 
                 # Save user message
                 user_msg = await crud.create_chat_message(
@@ -534,6 +546,11 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
             }
             if truncated:
                 content["truncated"] = True
+            # A turn that read nothing, or read only failures, has no next
+            # step to propose.
+            follow_ups = follow_up_suggestions(tool_calls_made)
+            if follow_ups:
+                content["follow_ups"] = follow_ups
             async with get_session(factory) as session:
                 msg = await crud.create_chat_message(
                     session,
@@ -543,6 +560,18 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
                 )
                 msg_id = msg.id
                 await crud.touch_conversation(session, conv_id)
+                # Opening turn only, so a later rename is never overwritten.
+                if opened_conversation:
+                    await crud.update_conversation_title(
+                        session,
+                        conv_id,
+                        conversation_title(body.message, tool_names(tool_calls_made)),
+                    )
+
+            if follow_ups:
+                yield _sse_event(
+                    "data", {"type": "suggestions", "suggestions": follow_ups}
+                )
 
             yield _sse_event(
                 "data",
@@ -577,6 +606,55 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
             "Connection": "keep-alive",
         },
     )
+
+
+@router.get(
+    "/api/repos/{repo_id}/chat/suggestions",
+    response_model=ChatSuggestionsResponse,
+    # `toolHint` is absent, never null: the TypeScript contract declares it
+    # optional, and a serialized null would be a value the clients do not type.
+    response_model_exclude_none=True,
+)
+async def chat_suggestions(
+    repo_id: str,
+    request: Request,
+    kind: str,
+    target: str | None = None,
+):
+    """Questions this page has earned, from the read a first question makes.
+
+    Goes through the same two grounding functions ``chat_messages`` uses, so the
+    two can never map a page kind differently, and makes no model call. Returns
+    the measured tier only: an empty list leaves the client's static tier
+    standing rather than restating copy the UI already ships.
+    """
+    factory = resolve_request_session_factory(request)
+    repo_name, repo_path = await _get_repo_info(factory, repo_id)
+    repo_alias = _workspace_alias(request, repo_path, repo_name)
+
+    try:
+        context = ChatPageContext(kind=kind, label=kind, target=target)
+    except ValidationError:
+        # A page kind this server does not serve yet, not an error worth a
+        # banner over a composer.
+        return {"suggestions": []}
+
+    tool_catalog = get_tool_catalog(repo_path)
+    plan = plan_grounding(context, (tool.entry for tool in tool_catalog))
+    if plan is None:
+        return {"suggestions": []}
+
+    async def _execute(name: str, args: dict) -> dict:
+        return await execute_tool(name, args, repo_path=repo_path, repo=repo_alias)
+
+    grounding = await run_grounding(plan, _execute)
+    if grounding is None:
+        return {"suggestions": []}
+    return {
+        "suggestions": page_suggestions(
+            grounding.tool_name, grounding.summary, grounding.result
+        )
+    }
 
 
 # ---------------------------------------------------------------------------

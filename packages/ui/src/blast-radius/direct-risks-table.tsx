@@ -1,6 +1,7 @@
 "use client";
 
 import type { DirectRiskEntry } from "@repowise-dev/types/blast-radius";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 
 interface DirectRisksTableProps {
@@ -40,11 +41,24 @@ const COLUMNS: ResponsiveColumn<DisplayDirectRisk>[] = [
     key: "path",
     header: "File",
     render: (r) => (
-      <span
-        className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-secondary)]"
-        title={r.path}
-      >
-        {r.path}
+      <span className="flex min-w-0 items-center gap-1">
+        <span
+          className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-secondary)]"
+          title={r.path}
+        >
+          {r.path}
+        </span>
+        <AskAboutThis
+          context={{
+            kind: "blast-radius",
+            label: r.path,
+            target: r.path,
+            targetKind: "path",
+          }}
+          question={`What breaks if I change ${r.path}, and which dependents deserve the closest review?`}
+          label={`Ask about ${r.path}`}
+          className="h-6 w-6"
+        />
       </span>
     ),
   },

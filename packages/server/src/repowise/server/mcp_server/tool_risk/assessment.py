@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.engine import _has_paired_test_file, _path_basenames
-from repowise.core.co_change import parse_partners
+from repowise.core.co_change import confidence_ratio, parse_partners
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphNode,
@@ -347,6 +347,19 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
         return []
 
 
+def _co_change_direction(conf_ab: float | None, conf_ba: float | None) -> str:
+    """Which side of a pair leads, where ``a`` is the target and ``b`` the partner.
+
+    A higher ``conf_ab`` means the target seldom changes without the partner, so
+    the target is the antecedent. Equal confidences, or an index written before
+    the two commit totals were recorded, stay ``undirected`` rather than having
+    a lead broken arbitrarily.
+    """
+    if conf_ab is None or conf_ba is None or conf_ab == conf_ba:
+        return "undirected"
+    return "a_to_b" if conf_ab > conf_ba else "b_to_a"
+
+
 def _build_co_changes(
     meta: Any, structural_related: Any, exclude_spec: Any
 ) -> tuple[list[dict], int]:
@@ -358,6 +371,9 @@ def _build_co_changes(
     The strength field is emitted as ``weight``, not ``count``: the stored value
     is a recency-decayed sum (``exp(-age_days / tau)`` per shared commit), so it
     is fractional. Named ``count`` it read as "5.52 co-changes" to every agent.
+
+    ``conf_ab`` and ``conf_ba`` are the two directional confidences behind
+    ``direction``, omitted when the commit totals are unknown.
     """
     partners_sorted = parse_partners(meta.co_change_partners_json)
     relation_types = structural_related if isinstance(structural_related, dict) else {}
@@ -366,12 +382,14 @@ def _build_co_changes(
     for partner in partners_sorted:
         path = partner.file_path
         types = sorted(relation_types.get(path, ()))
+        conf_ab = confidence_ratio(partner.support, partner.self_commits)
+        conf_ba = confidence_ratio(partner.support, partner.partner_commits)
         row = {
             "file_path": path,
             "weight": partner.weight,
             "last_co_change": partner.last_co_change,
             "relationship_type": "co_change",
-            "direction": "undirected",
+            "direction": _co_change_direction(conf_ab, conf_ba),
             "evidence_kind": "historical",
             "provenance": "git_history",
             "has_structural_link": path in related_paths,
@@ -383,6 +401,10 @@ def _build_co_changes(
             row["structural_relationship_types"] = types
         if partner.support:
             row["support"] = partner.support
+        if conf_ab is not None:
+            row["conf_ab"] = conf_ab
+        if conf_ba is not None:
+            row["conf_ba"] = conf_ba
         rows.append(row)
     population = filter_dicts_by_key(rows, "file_path", exclude_spec)
     return population, len(population)

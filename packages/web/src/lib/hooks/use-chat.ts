@@ -276,6 +276,9 @@ export function useChat(repoId: string) {
               case "truncated":
                 return { ...m, truncated: true };
 
+              case "suggestions":
+                return { ...m, followUps: ev.suggestions };
+
               case "done":
                 return {
                   ...m,

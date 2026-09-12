@@ -31,6 +31,8 @@ export type ChatContextKind =
   | "contributor"
   | "decision"
   | "risk"
+  | "dead-code"
+  | "blast-radius"
   | "security"
   | "usage"
   | "settings"
@@ -52,6 +54,33 @@ export interface ChatContext {
   label: string;
   target?: string;
   targetKind?: ChatContextTargetKind;
+}
+
+/** A passage the reader highlighted on the page, carried into the composer. */
+export interface ChatSelection {
+  text: string;
+  path?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/** What a page hands to chat when the reader asks about the thing in front of
+ *  them. `autoSend` skips the composer and asks immediately. */
+export interface ChatHandoff {
+  context: ChatContext;
+  question?: string;
+  selection?: ChatSelection;
+  autoSend?: boolean;
+}
+
+/** Where a composer chip came from, so ranking and telemetry can tell the
+ *  static fallback tier apart from one derived from live page data. */
+export type ChatSuggestionSource = "static" | "page" | "followup";
+
+export interface ChatSuggestion {
+  text: string;
+  source: ChatSuggestionSource;
+  toolHint?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +122,8 @@ export interface ChatMessage {
     model?: string;
     /** The step ceiling was reached before a final answer. */
     truncated?: boolean;
+    /** Next steps derived from the artifacts this turn produced. */
+    follow_ups?: ChatSuggestion[];
   };
   created_at: string;
 }
@@ -124,6 +155,8 @@ export interface ChatUIMessage {
   model?: string;
   /** The step ceiling was reached before a final answer. */
   truncated?: boolean;
+  /** Next steps this turn earned. Absent on a turn that called no tool. */
+  followUps?: ChatSuggestion[];
 }
 
 // ---------------------------------------------------------------------------
@@ -614,5 +647,8 @@ export type ChatSSEEvent =
     }
   /** Every turn ended in a tool call; `done` still follows. */
   | { type: "truncated"; loops: number }
+  /** Next steps for the turn that just finished, sent just before `done`.
+   *  A turn that failed or called no tool sends none. */
+  | { type: "suggestions"; suggestions: ChatSuggestion[] }
   | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
   | { type: "error"; message: string };
