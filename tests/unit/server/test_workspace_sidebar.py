@@ -82,6 +82,15 @@ async def _build_repo_engine(repo_path: Path):
         repo = await upsert_repository(
             session, name=repo_path.name, local_path=str(repo_path)
         )
+        from repowise.core.persistence.models import GraphNode
+
+        session.add(
+            GraphNode(
+                repository_id=repo.id,
+                node_id="src/main.py",
+                node_type="file",
+            )
+        )
         await crud.upsert_page(
             session,
             page_id="p1",
