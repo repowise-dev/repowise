@@ -58,6 +58,10 @@ class GlossaryEntry:
     #: Whether the codebase defines a symbol by this name, so the template
     #: knows whether backticks would survive a grounding pass.
     is_indexed_symbol: bool
+    #: Nearest authoritative prose for bounded provider synthesis. It may be a
+    #: non-definition, which is why it is separate from ``definition``.
+    definition_evidence: str | None = None
+    definition_evidence_source: str | None = None
 
 
 @dataclass
@@ -89,6 +93,8 @@ def _entry(selected: SelectedTerm) -> GlossaryEntry:
         source_path=selected.source_path,
         used_in=used_in,
         is_indexed_symbol=selected.is_indexed_symbol,
+        definition_evidence=selected.definition_evidence,
+        definition_evidence_source=selected.definition_evidence_source,
     )
 
 

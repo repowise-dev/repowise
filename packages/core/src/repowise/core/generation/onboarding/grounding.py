@@ -37,6 +37,7 @@ from typing import Any
 
 # Backticked span: `...` with no backtick or newline inside.
 _BACKTICK = re.compile(r"`([^`\n]+)`")
+_MARKDOWN_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)")
 
 # Source-code file extensions. A backticked token ending in one of these
 # (optionally with a member suffix) is treated as a path citation.
@@ -285,7 +286,6 @@ def _collect_token(token: str, known_paths: set[str], known_symbols: set[str]) -
         head = token.split("::", 1)[0].split("#", 1)[0].strip()
         known_paths.add(token)
         known_paths.add(head)
-        known_paths.add(head.rsplit("/", 1)[-1])
     if _looks_like_symbol(token):
         known_symbols.add(token)
         for part in re.split(_QUALIFIER, token):
@@ -296,11 +296,11 @@ def _collect_token(token: str, known_paths: set[str], known_symbols: set[str]) -
 def collect_known(ctx: Any) -> tuple[set[str], set[str]]:
     """Collect the known paths and symbols from a subkind context object.
 
-    Returns ``(known_paths, known_symbols)``. ``known_paths`` includes each
-    path plus its basename so a page that cites ``builder.py`` still matches a
-    payload path of ``.../builder.py``. ``known_symbols`` also includes the
-    last dotted / ``::`` segment of each identifier so ``Foo.bar`` grounds a
-    citation of ``bar``.
+    Returns ``(known_paths, known_symbols)``. ``known_paths`` retains canonical
+    paths; suffix matching separately allows a page that cites ``builder.py``
+    to match ``.../builder.py`` without turning the basename into a link target.
+    ``known_symbols`` also includes the last dotted / ``::`` segment of each
+    identifier so ``Foo.bar`` grounds a citation of ``bar``.
     """
     known_paths: set[str] = set()
     known_symbols: set[str] = set()
@@ -354,6 +354,61 @@ def _symbol_grounded(token: str, known_symbols: set[str]) -> bool:
     return token in known_symbols
 
 
+def _canonical_repository_path(destination: str, known_paths: set[str]) -> str | None:
+    """Resolve a Markdown destination to a known repository-relative path.
+
+    This intentionally accepts an absolute/worktree-prefixed suffix only as
+    input to repair. The returned value is always the canonical path already
+    present in the grounding context.
+    """
+    target = destination.strip().strip("<>").split("#", 1)[0].replace("\\", "/")
+    if not target:
+        return None
+    candidates = sorted(
+        (path for path in known_paths if path and path != "." and ":" not in path),
+        key=lambda path: (-len(path), path),
+    )
+    for path in candidates:
+        normalized = path.replace("\\", "/")
+        if target == normalized or target.endswith("/" + normalized):
+            return normalized
+    return None
+
+
+def _rewrite_file_markdown_links(
+    content: str,
+    known_paths: set[str],
+) -> tuple[str, list[str]]:
+    """Turn local Markdown URLs into inline-code paths the wiki can resolve."""
+    repaired: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        label = match.group(1).strip()
+        destination = match.group(2).strip()
+        lowered = destination.lower()
+        if lowered.startswith(("http://", "https://", "mailto:")) or destination.startswith("#"):
+            return match.group(0)
+
+        canonical = _canonical_repository_path(destination, known_paths)
+        file_shaped = (
+            _looks_like_path(destination.replace("\\", "/"))
+            or "../" in destination.replace("\\", "/")
+            or bool(re.match(r"^[A-Za-z]:[\\/]", destination))
+            or destination.startswith(("/", "file:"))
+        )
+        if not file_shaped:
+            return match.group(0)
+        repaired.append(destination)
+        if canonical is None:
+            return label
+        plain_label = re.sub(r"[`*_]", "", label).strip()
+        if plain_label == canonical or plain_label == canonical.rsplit("/", 1)[-1]:
+            return f"`{canonical}`"
+        return f"{label} (`{canonical}`)"
+
+    return _MARKDOWN_LINK.sub(replace, content), repaired
+
+
 def check_grounding(
     content: str,
     ctx: Any,
@@ -369,8 +424,14 @@ def check_grounding(
     if not content:
         return content, []
     known_paths, known_symbols = collect_known(ctx)
+    content, repaired_links = _rewrite_file_markdown_links(content, known_paths)
     ungrounded: list[str] = []
     seen: set[str] = set()
+
+    for destination in repaired_links:
+        if destination not in seen:
+            seen.add(destination)
+            ungrounded.append(destination)
 
     def replace(match: re.Match[str]) -> str:
         token = match.group(1).strip()

@@ -28,8 +28,9 @@ from typing import Any
 import structlog
 
 from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
+from ...entry_points import orientation_entry_points
 from ..registry import SubkindSpec, register
-from ..signals import OnboardingSignals
+from ..signals import OnboardingSignals, file_layer_map
 from ..slots import SLOT_KEY_CONCEPTS, SLOT_TITLES
 
 log = structlog.get_logger(__name__)
@@ -142,6 +143,8 @@ class KeyConceptsContext:
     community_labels: list[str] = field(default_factory=list)
     decision_titles: list[str] = field(default_factory=list)
     layer_order: list[str] = field(default_factory=list)
+    purpose_terms: list[str] = field(default_factory=list)
+    lifecycle_entry_points: list[str] = field(default_factory=list)
 
 
 def _resolve_community_labels(graph_builder: Any) -> dict[int, str]:
@@ -164,15 +167,7 @@ def _file_to_layer(signals: OnboardingSignals) -> dict[str, str]:
     Empty when the repo has no curated knowledge graph; callers fall back
     to community labels, then to the file's directory.
     """
-    out: dict[str, str] = {}
-    for layer in signals.kg_layers:
-        name = str(layer.get("name", "")).strip()
-        if not name:
-            continue
-        for nid in layer.get("nodeIds", []) or []:
-            if isinstance(nid, str) and nid.startswith("file:"):
-                out[nid[len("file:") :]] = name
-    return out
+    return file_layer_map(signals)
 
 
 @dataclass
@@ -503,9 +498,11 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
     candidates: list[ConceptSymbol] = []
     id_by_name: dict[str, str] = {}
     seen_names: set[str] = set()
-    scored: list[tuple[int, int, int, float, int, int, ConceptSymbol]] = []
+    scored: list[tuple[int, int, int, int, float, int, int, ConceptSymbol]] = []
     any_symbol_signal = False
     document_frequency = _document_frequency(signals)
+    lifecycle_entry_points = orientation_entry_points(signals.repo_structure, limit=8)
+    entry_paths = set(lifecycle_entry_points)
     written_about = 0
     scaffolding = 0
     for raw in _iter_raw_symbols(signals, gs):
@@ -534,6 +531,7 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
             cross_file_callers=xcallers,
         )
         prose_hits = _prose_hits(name, document_frequency)
+        lifecycle_hit = 1 if path in entry_paths else 0
         if prose_hits:
             written_about += 1
         is_scaffolding = _is_scaffolding(concept.docstring)
@@ -543,6 +541,7 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
             (
                 0 if is_scaffolding else 1,
                 prose_hits,
+                lifecycle_hit,
                 xcallers,
                 spr,
                 1 if raw["is_exported"] else 0,
@@ -571,14 +570,20 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
     if any_symbol_signal:
         # Then cross-file callers, symbol PageRank, export marker, and the
         # presence of a docstring (a deliberate public surface).
-        scored.sort(key=lambda t: t[:6], reverse=True)
+        scored.sort(key=lambda t: t[:-1], reverse=True)
     else:
         # No resolved symbol edges (thin / rehydrated graph): fall back to the
         # file's PageRank so a page still generates on small repos. The two
         # prose signals still lead — a thin graph is the case where they carry
         # the most, because everything they sit above is close to noise.
         scored.sort(
-            key=lambda t: (t[0], t[1], signals.pagerank.get(t[6].file_path, 0.0), t[5]),
+            key=lambda t: (
+                t[0],
+                t[1],
+                t[2],
+                signals.pagerank.get(t[-1].file_path, 0.0),
+                t[-2],
+            ),
             reverse=True,
         )
 
@@ -616,6 +621,8 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
         chosen_written_about=sum(
             1 for c in concept_symbols if _prose_hits(c.name, document_frequency)
         ),
+        chosen_entry_points=sum(1 for c in concept_symbols if c.file_path in entry_paths),
+        chosen_clusters=sorted({c.cluster for c in concept_symbols}),
         chosen=[c.name for c in concept_symbols],
     )
 
@@ -635,6 +642,8 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
         community_labels=community_labels,
         decision_titles=decision_titles,
         layer_order=list(signals.layer_order),
+        purpose_terms=[term.term for term in signals.house_terms[:8]],
+        lifecycle_entry_points=lifecycle_entry_points,
     )
 
 
