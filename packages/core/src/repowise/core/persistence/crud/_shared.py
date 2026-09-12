@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -21,6 +21,43 @@ _VALID_JOB_STATUSES = frozenset(
 )
 
 _BATCH_SIZE = 500  # max rows per INSERT to stay under SQLite's parameter limit
+
+# A running/pending GenerationJob's `updated_at` is a liveness heartbeat, and
+# these two constants are the single source of truth for it — named together
+# because one is meaningless without the other:
+#
+# - JOB_HEARTBEAT_INTERVAL is how often JobProgressCallback
+#   (server/job_executor.py) writes the heartbeat on an independent
+#   wall-clock timer, decoupled from item/phase progress. It cannot be
+#   derived from progress events alone: some pipeline phases (e.g.
+#   knowledge_graph.skeleton / knowledge_graph.enrich in
+#   core/pipeline/orchestrator.py) run a single unit of work — one
+#   on_phase_start, then a long synchronous call or an awaited task, with
+#   no on_item_done in between and no on_phase_done write at all — so a
+#   heartbeat tied only to progress events can go stale for that whole
+#   phase's duration even though the job is genuinely alive.
+# - JOB_HEARTBEAT_STALE_AFTER is derived from it with a fixed safety margin:
+#   large enough to absorb a missed tick or two under DB lock contention or
+#   event-loop scheduling delay, never a guess about how long any
+#   particular phase runs. Raise the margin if ticks prove flaky in
+#   practice; do not raise it to paper over a phase that runs long — fix
+#   the phase's own progress reporting instead.
+#
+# A row that hasn't been touched in longer than the cutoff is presumed
+# abandoned by a crashed or killed process. Both the startup stale-job sweep
+# and the active-job concurrency guard key off this instead of trusting
+# `status` alone (issue: a second server process's restart, in a
+# multi-worker deployment sharing one DB, must not be able to invalidate a
+# job another live process is still actually running).
+JOB_HEARTBEAT_INTERVAL = timedelta(seconds=30)
+_JOB_HEARTBEAT_MARGIN = 10  # ticks of slack before a live job is presumed dead
+JOB_HEARTBEAT_STALE_AFTER = JOB_HEARTBEAT_INTERVAL * _JOB_HEARTBEAT_MARGIN
+
+
+def job_heartbeat_cutoff(*, now: datetime | None = None) -> datetime:
+    """Timestamp before which a running/pending job's `updated_at` means the
+    process that owned it is presumed dead, not merely between writes."""
+    return (now or datetime.now(UTC)) - JOB_HEARTBEAT_STALE_AFTER
 
 
 def _finding_file_path(finding: Any) -> str | None:
