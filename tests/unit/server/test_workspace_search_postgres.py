@@ -24,7 +24,7 @@ from repowise.server.app import create_app, lifespan
 @pytest.fixture(autouse=True)
 def restore_tool_globals():
     """The real lifespan writes process-global MCP tool state — put it back."""
-    saved = (
+    saved_mcp = (
         getattr(mcp_mod, "_registry", None),
         getattr(mcp_mod, "_workspace_root", None),
         getattr(mcp_mod, "_cross_repo_enricher", None),
@@ -40,7 +40,7 @@ def restore_tool_globals():
         mcp_mod._session_factory,
         mcp_mod._fts,
         mcp_mod._vector_store,
-    ) = saved
+    ) = saved_mcp
 
 
 @pytest.fixture
@@ -150,7 +150,10 @@ async def test_workspace_lifespan_registers_members_on_shared_db(shared_db_works
     db_url = shared_db_workspace["db_url"]
 
     monkeypatch.setenv("REPOWISE_DB_URL", db_url)
-    with patch("repowise.core.workspace.config.find_workspace_root", return_value=ws_root):
+    with (
+        patch("repowise.core.workspace.config.find_workspace_root", return_value=ws_root),
+        patch("repowise.server.app.setup_scheduler"),
+    ):
         app = create_app()
         async with lifespan(app):
             assert app.state.workspace_config is not None
@@ -164,71 +167,137 @@ async def test_workspace_lifespan_registers_members_on_shared_db(shared_db_works
 
 
 @pytest.mark.asyncio
-async def test_workspace_search_fanout_shared_db(shared_db_workspace, monkeypatch):
+async def test_workspace_search_fanout_shared_db(shared_db_workspace):
     """Workspace search finds hits in non-primary member repos on a shared DB without wiki.db."""
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+    from tests.unit.server.conftest import _create_test_app
+
     ws_root = shared_db_workspace["ws_root"]
-    db_url = shared_db_workspace["db_url"]
+    repo_a = shared_db_workspace["repo_a"]
+    repo_b = shared_db_workspace["repo_b"]
 
-    monkeypatch.setenv("REPOWISE_DB_URL", db_url)
-    with patch("repowise.core.workspace.config.find_workspace_root", return_value=ws_root):
-        app = create_app()
-        async with lifespan(app), AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-            headers={"X-API-Key": "test"},
-        ) as client:
-            # Fulltext search fan-out across workspace returns hits from all member repos
-            resp = await client.get(
-                "/api/search",
-                params={"query": "queue", "search_type": "fulltext"},
-            )
-            assert resp.status_code == 200
-            hits = resp.json()
-            assert len(hits) == 2
-            page_ids = {h["page_id"] for h in hits}
-            assert page_ids == {"file_page:repo-a/worker.py", "file_page:repo-b/service.py"}
+    app = _create_test_app()
+    vector_store = InMemoryVectorStore(embedder=MockEmbedder())
 
-            # Scoped search to repo-b returns only repo-b's page
-            resp_b = await client.get(
-                "/api/search",
-                params={"query": "queue", "search_type": "fulltext", "repo_id": "repo-b-id"},
-            )
-            assert resp_b.status_code == 200
-            hits_b = resp_b.json()
-            assert len(hits_b) == 1
-            assert hits_b[0]["page_id"] == "file_page:repo-b/service.py"
+    app.state.engine = shared_db_workspace["engine"]
+    app.state.session_factory = shared_db_workspace["session_factory"]
+    app.state.fts = shared_db_workspace["fts"]
+    app.state.vector_store = vector_store
+    app.state.background_tasks = set()
+    app.state.workspace_root = str(ws_root)
+    app.state.workspace_config = WorkspaceConfig(
+        repos=[
+            RepoEntry(alias="repo-a", path="repo-a", is_primary=True),
+            RepoEntry(alias="repo-b", path="repo-b", is_primary=False),
+        ],
+    )
+    app.state.workspace_path_to_repo_id = {
+        str(repo_a.resolve()): "repo-a-id",
+        str(repo_b.resolve()): "repo-b-id",
+    }
+    app.state.workspace_sessions = {
+        "repo-a-id": shared_db_workspace["session_factory"],
+        "repo-b-id": shared_db_workspace["session_factory"],
+    }
+    app.state.workspace_fts = {
+        "repo-a-id": shared_db_workspace["fts"],
+        "repo-b-id": shared_db_workspace["fts"],
+    }
 
-            # Scoped search to repo-a returns only repo-a's page
-            resp_a = await client.get(
-                "/api/search",
-                params={"query": "queue", "search_type": "fulltext", "repo_id": "repo-a-id"},
-            )
-            assert resp_a.status_code == 200
-            hits_a = resp_a.json()
-            assert len(hits_a) == 1
-            assert hits_a[0]["page_id"] == "file_page:repo-a/worker.py"
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "test"},
+    ) as client:
+        # Fulltext search fan-out across workspace returns hits from all member repos
+        resp = await client.get(
+            "/api/search",
+            params={"query": "queue", "search_type": "fulltext"},
+        )
+        assert resp.status_code == 200
+        hits = resp.json()
+        assert len(hits) == 2
+        page_ids = {h["page_id"] for h in hits}
+        assert page_ids == {"file_page:repo-a/worker.py", "file_page:repo-b/service.py"}
+
+        # Scoped search to repo-b returns only repo-b's page
+        resp_b = await client.get(
+            "/api/search",
+            params={"query": "queue", "search_type": "fulltext", "repo_id": "repo-b-id"},
+        )
+        assert resp_b.status_code == 200
+        hits_b = resp_b.json()
+        assert len(hits_b) == 1
+        assert hits_b[0]["page_id"] == "file_page:repo-b/service.py"
+
+        # Scoped search to repo-a returns only repo-a's page
+        resp_a = await client.get(
+            "/api/search",
+            params={"query": "queue", "search_type": "fulltext", "repo_id": "repo-a-id"},
+        )
+        assert resp_a.status_code == 200
+        hits_a = resp_a.json()
+        assert len(hits_a) == 1
+        assert hits_a[0]["page_id"] == "file_page:repo-a/worker.py"
+
+    await vector_store.close()
 
 
 @pytest.mark.asyncio
-async def test_workspace_semantic_search_fanout_fallback(shared_db_workspace, monkeypatch):
+async def test_workspace_semantic_search_fanout_fallback(shared_db_workspace):
     """Semantic search fans out across member repos without wiki.db and falls back to FTS."""
-    ws_root = shared_db_workspace["ws_root"]
-    db_url = shared_db_workspace["db_url"]
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+    from tests.unit.server.conftest import _create_test_app
 
-    monkeypatch.setenv("REPOWISE_DB_URL", db_url)
-    with patch("repowise.core.workspace.config.find_workspace_root", return_value=ws_root):
-        app = create_app()
-        async with lifespan(app), AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-            headers={"X-API-Key": "test"},
-        ) as client:
-            resp = await client.get(
-                "/api/search",
-                params={"query": "queue", "search_type": "semantic"},
-            )
-            assert resp.status_code == 200
-            hits = resp.json()
-            assert len(hits) == 2
-            page_ids = {h["page_id"] for h in hits}
-            assert page_ids == {"file_page:repo-a/worker.py", "file_page:repo-b/service.py"}
+    ws_root = shared_db_workspace["ws_root"]
+    repo_a = shared_db_workspace["repo_a"]
+    repo_b = shared_db_workspace["repo_b"]
+
+    app = _create_test_app()
+    vector_store = InMemoryVectorStore(embedder=MockEmbedder())
+
+    app.state.engine = shared_db_workspace["engine"]
+    app.state.session_factory = shared_db_workspace["session_factory"]
+    app.state.fts = shared_db_workspace["fts"]
+    app.state.vector_store = vector_store
+    app.state.background_tasks = set()
+    app.state.workspace_root = str(ws_root)
+    app.state.workspace_config = WorkspaceConfig(
+        repos=[
+            RepoEntry(alias="repo-a", path="repo-a", is_primary=True),
+            RepoEntry(alias="repo-b", path="repo-b", is_primary=False),
+        ],
+    )
+    app.state.workspace_path_to_repo_id = {
+        str(repo_a.resolve()): "repo-a-id",
+        str(repo_b.resolve()): "repo-b-id",
+    }
+    app.state.workspace_sessions = {
+        "repo-a-id": shared_db_workspace["session_factory"],
+        "repo-b-id": shared_db_workspace["session_factory"],
+    }
+    app.state.workspace_fts = {
+        "repo-a-id": shared_db_workspace["fts"],
+        "repo-b-id": shared_db_workspace["fts"],
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "test"},
+    ) as client:
+        resp = await client.get(
+            "/api/search",
+            params={"query": "queue", "search_type": "semantic"},
+        )
+        assert resp.status_code == 200
+        hits = resp.json()
+        assert len(hits) == 2
+        page_ids = {h["page_id"] for h in hits}
+        assert page_ids == {"file_page:repo-a/worker.py", "file_page:repo-b/service.py"}
+
+    await vector_store.close()
+
+

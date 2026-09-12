@@ -158,7 +158,6 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
     all_results = []
     workspace_fts = getattr(request.app.state, "workspace_fts", {}) or {}
     path_to_rid = getattr(request.app.state, "workspace_path_to_repo_id", None) or {}
-    seen_fts_in_fallback = set()
 
     for entry in ws_config.repos:
         repo_path = (ws_root_path / entry.path).resolve()
@@ -199,12 +198,10 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
         # built LanceDB indexes yet.
         if not per_repo and rid in workspace_fts:
             fts_inst = workspace_fts[rid]
-            if fts_inst not in seen_fts_in_fallback:
-                seen_fts_in_fallback.add(fts_inst)
-                try:
-                    per_repo = await fts_inst.search(query, limit=limit, repository_id=rid)
-                except Exception:
-                    per_repo = []
+            try:
+                per_repo = await fts_inst.search(query, limit=limit, repository_id=rid)
+            except Exception:
+                per_repo = []
         all_results.extend(per_repo)
 
     unique_results: dict[str, SearchResult] = {}
