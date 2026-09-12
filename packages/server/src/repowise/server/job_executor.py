@@ -9,6 +9,7 @@ duplication.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from pathlib import Path
@@ -24,6 +25,7 @@ from repowise.core.cancellation import (
 )
 from repowise.core.docs_mode import DocsMode, docs_mode_state_fields, resolve_docs_mode
 from repowise.core.persistence.crud import (
+    JOB_HEARTBEAT_INTERVAL,
     get_generation_job,
     get_repository,
     update_job_status,
@@ -146,6 +148,8 @@ class JobProgressCallback:
         job_id: str,
         session_factory: Any,
         events: JobEventBuffer | None = None,
+        *,
+        heartbeat_interval_s: float | None = None,
     ) -> None:
         self._job_id = job_id
         self._session_factory = session_factory
@@ -167,6 +171,41 @@ class JobProgressCallback:
         self._min_write_interval_s = 1.0
         self._last_write_at: float = 0.0
         self._inflight: bool = False
+        # Independent wall-clock heartbeat, decoupled from on_item_done /
+        # on_phase_start. Some phases report no progress events at all for
+        # their whole duration (a single on_phase_start, then one long
+        # synchronous call or awaited task, no on_item_done, no
+        # on_phase_done) — see JOB_HEARTBEAT_INTERVAL's docstring in
+        # core/persistence/crud/_shared.py for why the liveness heartbeat
+        # that the stale-job sweep and the active-job guard both read
+        # cannot be derived from progress events alone.
+        self._heartbeat_interval_s = (
+            heartbeat_interval_s
+            if heartbeat_interval_s is not None
+            else JOB_HEARTBEAT_INTERVAL.total_seconds()
+        )
+        self._heartbeat_task: asyncio.Task | None = None  # type: ignore[type-arg]
+
+    def start_heartbeat(self) -> None:
+        """Start the independent wall-clock heartbeat loop.
+
+        Call once a running event loop is available (i.e. from inside
+        ``execute_job()``); a no-op if already started or already stopped.
+        """
+        if self._heartbeat_task is not None or self._stopped:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._heartbeat_task = loop.create_task(self._heartbeat_loop())
+
+    async def _heartbeat_loop(self) -> None:
+        while not self._stopped:
+            await asyncio.sleep(self._heartbeat_interval_s)
+            if self._stopped:
+                return
+            self._sync_job_status(force=True)
 
     def on_phase_start(self, phase: str, total: int | None) -> None:
         self._phase = phase
@@ -232,12 +271,21 @@ class JobProgressCallback:
         Must be called before writing the final job status to avoid a race
         where a late progress update overwrites ``completed`` with ``running``.
 
-        We do NOT cancel tasks — a cancelled task whose DB write is already
-        past the ``await`` will leave the session in a dirty state.  Instead
-        we set the stopped flag (preventing new tasks) and let existing ones
-        finish naturally.
+        We do NOT cancel the progress-update tasks in ``_pending_tasks`` — a
+        cancelled task whose DB write is already past the ``await`` will
+        leave the session in a dirty state.  Instead we set the stopped flag
+        (preventing new tasks) and let existing ones finish naturally.
+
+        The heartbeat loop task is different: its only await point is
+        ``asyncio.sleep``, never mid-write, so cancelling it is always safe
+        and is how its otherwise-infinite loop is told to stop.
         """
         self._stopped = True
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._heartbeat_task
+            self._heartbeat_task = None
         if self._pending_tasks:
             await asyncio.gather(*self._pending_tasks, return_exceptions=True)
         self._pending_tasks.clear()
@@ -409,6 +457,12 @@ async def execute_job(
         # ---- Run pipeline --------------------------------------------------
         events = create_event_buffer(app_state, job_id)
         progress = JobProgressCallback(job_id, session_factory, events)
+        # Independent of whatever progress events the pipeline itself
+        # reports — some phases report none for their whole duration — so
+        # the stale-job sweep and active-job guard never mistake a live job
+        # for an abandoned one. Stopped by drain_and_stop() on every exit
+        # path below (success, cancel, and the failure handler).
+        progress.start_heartbeat()
 
         # ---- Scoped generation mode ---------------------------------------
         # `repowise generate` over HTTP: write an explicit subset of pages via

@@ -23,6 +23,7 @@ from ..models import (
     _now_utc,
 )
 from ._shared import _VALID_JOB_STATUSES, job_heartbeat_cutoff
+from ._shared import JOB_HEARTBEAT_INTERVAL as JOB_HEARTBEAT_INTERVAL
 
 # ---------------------------------------------------------------------------
 # Repository CRUD
