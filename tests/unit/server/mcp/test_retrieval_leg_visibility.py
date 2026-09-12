@@ -29,7 +29,8 @@ class _Store:
         self._embed_hangs = embed_hangs
         self._search_hangs = search_hangs
 
-    async def embed_texts(self, texts):
+    async def embed_texts(self, texts, *, kind="document"):
+        del kind
         if self._embed_hangs:
             await asyncio.sleep(60)
         return [[0.1, 0.2, 0.3]]

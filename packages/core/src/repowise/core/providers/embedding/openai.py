@@ -32,7 +32,7 @@ import math
 import os
 from typing import Any, ClassVar
 
-from repowise.core.providers.embedding.base import resolve_embedding_timeout
+from repowise.core.providers.embedding.base import resolve_embed_prefix, resolve_embedding_timeout
 
 
 class OpenAIEmbedder:
@@ -123,7 +123,7 @@ class OpenAIEmbedder:
     def dimensions(self) -> int:
         return self._dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
         """Embed a batch of texts using OpenAI.
 
         Runs the synchronous SDK call in a thread pool to avoid blocking the
@@ -131,12 +131,23 @@ class OpenAIEmbedder:
 
         Args:
             texts: Non-empty list of strings to embed.
+            kind: ``"query"`` or ``"document"``. Prepends
+                ``REPOWISE_EMBED_QUERY_PREFIX`` / ``REPOWISE_EMBED_DOC_PREFIX``
+                (empty by default) to every text before sending — see
+                :func:`repowise.core.providers.embedding.base.resolve_embed_prefix`.
+                Inert against a model that doesn't need directional framing;
+                required for one (like Nemotron-3-Embed) that does and never
+                applies it server-side.
 
         Returns:
             List of L2-normalized float vectors.
         """
         if not texts:
             return []
+
+        prefix = resolve_embed_prefix(kind)
+        if prefix:
+            texts = [f"{prefix}{t}" for t in texts]
 
         model = self._model
         timeout = self._timeout
