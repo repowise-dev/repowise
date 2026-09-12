@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from repowise.core.persistence.search import SearchResult
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.server.deps import (
     get_fts,
@@ -65,18 +66,11 @@ async def search(
       - Workspace mode without ``repo_id``: fans out across every loaded
         repo's index and merges results by score.
     """
-    # A keyless index has no semantic vectors, so a semantic request is served
-    # lexically rather than refused. Returning nothing would read as "not in the
-    # codebase"; returning that store's nearest neighbours would be worse still,
-    # because on it they are noise. Full-text is what the mode actually offers,
-    # and what the docs already promise it offers.
     if search_type == "fulltext" or not store_has_semantic_vectors(vector_store):
         results = await _fulltext(request, query, limit, repo_id=repo_id, primary_fts=fts)
     else:
         results = await _semantic(request, query, limit, repo_id=repo_id, primary_vs=vector_store)
         if results is None:
-            # The scoped repo turned out to be keyless even though the primary
-            # store is not. Serve it lexically, same as the whole-index case.
             results = await _fulltext(request, query, limit, repo_id=repo_id, primary_fts=fts)
 
     return [_to_response(r) for r in results]
@@ -93,7 +87,7 @@ async def _fulltext(request: Request, query: str, limit: int, *, repo_id, primar
 
     # Single-repo mode (no workspace_fts registry) → use the primary FTS.
     if not ws_fts:
-        return await primary_fts.search(query, limit=limit)
+        return await primary_fts.search(query, limit=limit, repository_id=repo_id)
 
     # Workspace mode with explicit repo_id.
     if repo_id is not None:
@@ -106,8 +100,8 @@ async def _fulltext(request: Request, query: str, limit: int, *, repo_id, primar
         if target_fts is None:
             # Unknown repo_id — fall back to primary so callers don't
             # silently get nothing.
-            return await primary_fts.search(query, limit=limit)
-        return await target_fts.search(query, limit=limit)
+            return await primary_fts.search(query, limit=limit, repository_id=repo_id)
+        return await target_fts.search(query, limit=limit, repository_id=repo_id)
 
     # Workspace mode, no filter → fan out across every loaded FTS,
     # merge by score, and cap at limit.
@@ -208,12 +202,12 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
             if fts_inst not in seen_fts_in_fallback:
                 seen_fts_in_fallback.add(fts_inst)
                 try:
-                    per_repo = await fts_inst.search(query, limit=limit)
+                    per_repo = await fts_inst.search(query, limit=limit, repository_id=rid)
                 except Exception:
                     per_repo = []
         all_results.extend(per_repo)
 
-    unique_results: dict[str, object] = {}
+    unique_results: dict[str, SearchResult] = {}
     for r in all_results:
         if r.page_id not in unique_results or r.score > unique_results[r.page_id].score:
             unique_results[r.page_id] = r

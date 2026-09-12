@@ -71,7 +71,7 @@ async def shared_db_workspace(tmp_path: Path):
 
     # Register both repos in the shared DB
     async with get_session(session_factory) as session:
-        await crud.upsert_repository(
+        r_a = await crud.upsert_repository(
             session,
             name="repo-a",
             local_path=str(repo_a.resolve()),
@@ -85,7 +85,20 @@ async def shared_db_workspace(tmp_path: Path):
             default_branch="main",
             repo_id="repo-b-id",
         )
-        # Add a wiki page for repo-b
+        # Add wiki pages for repo-a and repo-b
+        await crud.upsert_page(
+            session,
+            page_id="file_page:repo-a/worker.py",
+            repository_id=r_a.id,
+            page_type="file_page",
+            title="worker.py",
+            content="# Worker Module\n\nHandles background queue jobs in repo-a.",
+            summary="Worker for queue jobs",
+            target_path="worker.py",
+            source_hash="hash-a",
+            model_name="mock",
+            provider_name="mock",
+        )
         await crud.upsert_page(
             session,
             page_id="file_page:repo-b/service.py",
@@ -102,6 +115,13 @@ async def shared_db_workspace(tmp_path: Path):
 
     fts = FullTextSearch(engine)
     await fts.ensure_index()
+    await fts.index(
+        "file_page:repo-a/worker.py",
+        "worker.py",
+        "Handles background queue jobs in repo-a",
+        summary="Worker for queue jobs",
+        target_path="worker.py",
+    )
     await fts.index(
         "file_page:repo-b/service.py",
         "service.py",
@@ -157,25 +177,36 @@ async def test_workspace_search_fanout_shared_db(shared_db_workspace, monkeypatc
             base_url="http://test",
             headers={"X-API-Key": "test"},
         ) as client:
-            # Fulltext search fan-out across workspace
+            # Fulltext search fan-out across workspace returns hits from all member repos
             resp = await client.get(
                 "/api/search",
                 params={"query": "queue", "search_type": "fulltext"},
             )
             assert resp.status_code == 200
             hits = resp.json()
-            assert len(hits) >= 1
-            assert hits[0]["page_id"] == "file_page:repo-b/service.py"
+            assert len(hits) == 2
+            page_ids = {h["page_id"] for h in hits}
+            assert page_ids == {"file_page:repo-a/worker.py", "file_page:repo-b/service.py"}
 
-            # Scoped search to repo-b
+            # Scoped search to repo-b returns only repo-b's page
             resp_b = await client.get(
                 "/api/search",
                 params={"query": "queue", "search_type": "fulltext", "repo_id": "repo-b-id"},
             )
             assert resp_b.status_code == 200
             hits_b = resp_b.json()
-            assert len(hits_b) >= 1
+            assert len(hits_b) == 1
             assert hits_b[0]["page_id"] == "file_page:repo-b/service.py"
+
+            # Scoped search to repo-a returns only repo-a's page
+            resp_a = await client.get(
+                "/api/search",
+                params={"query": "queue", "search_type": "fulltext", "repo_id": "repo-a-id"},
+            )
+            assert resp_a.status_code == 200
+            hits_a = resp_a.json()
+            assert len(hits_a) == 1
+            assert hits_a[0]["page_id"] == "file_page:repo-a/worker.py"
 
 
 @pytest.mark.asyncio
@@ -198,5 +229,6 @@ async def test_workspace_semantic_search_fanout_fallback(shared_db_workspace, mo
             )
             assert resp.status_code == 200
             hits = resp.json()
-            assert len(hits) >= 1
-            assert hits[0]["page_id"] == "file_page:repo-b/service.py"
+            assert len(hits) == 2
+            page_ids = {h["page_id"] for h in hits}
+            assert page_ids == {"file_page:repo-a/worker.py", "file_page:repo-b/service.py"}

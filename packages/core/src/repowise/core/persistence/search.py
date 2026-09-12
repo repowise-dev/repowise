@@ -551,12 +551,15 @@ class FullTextSearch:
             rows = await conn.execute(text("SELECT id FROM wiki_pages"))
             return {r[0] for r in rows.fetchall()}
 
-    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+    async def search(
+        self, query: str, limit: int = 10, repository_id: str | None = None
+    ) -> list[SearchResult]:
         """Search for pages matching *query*.
 
         Args:
             query: Natural-language search query.
             limit: Maximum number of results to return.
+            repository_id: Optional repository ID to narrow the search scope.
 
         Returns:
             List of SearchResult objects sorted by relevance (descending).
@@ -565,8 +568,8 @@ class FullTextSearch:
             return []
 
         if self._dialect == "sqlite":
-            return await self._search_sqlite(query, limit)
-        return await self._search_postgresql(query, limit)
+            return await self._search_sqlite(query, limit, repository_id=repository_id)
+        return await self._search_postgresql(query, limit, repository_id=repository_id)
 
     async def _document_frequency(self, conn, term: str) -> int:
         """How many indexed pages *term* matches. ``""`` is the corpus size.
@@ -616,20 +619,37 @@ class FullTextSearch:
                 counts[term] = await df(term)
         return _build_fts5_query(query, counts.__getitem__)
 
-    async def _matching_rows(self, conn, fts_query: str, limit: int) -> list:
-        rows = await conn.execute(
-            text(
-                f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
-                "FROM page_fts f "
-                "WHERE page_fts MATCH :q "
-                f"ORDER BY {_BM25_SCORE} "
-                "LIMIT :lim"
-            ),
-            {"q": fts_query, "lim": limit},
-        )
+    async def _matching_rows(
+        self, conn, fts_query: str, limit: int, repository_id: str | None = None
+    ) -> list:
+        if repository_id is not None:
+            rows = await conn.execute(
+                text(
+                    f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
+                    "FROM page_fts f "
+                    "JOIN wiki_pages p ON p.id = f.page_id "
+                    "WHERE page_fts MATCH :q AND p.repository_id = :repo_id "
+                    f"ORDER BY {_BM25_SCORE} "
+                    "LIMIT :lim"
+                ),
+                {"q": fts_query, "lim": limit, "repo_id": repository_id},
+            )
+        else:
+            rows = await conn.execute(
+                text(
+                    f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
+                    "FROM page_fts f "
+                    "WHERE page_fts MATCH :q "
+                    f"ORDER BY {_BM25_SCORE} "
+                    "LIMIT :lim"
+                ),
+                {"q": fts_query, "lim": limit},
+            )
         return list(rows.fetchall())
 
-    async def _search_sqlite(self, query: str, limit: int) -> list[SearchResult]:
+    async def _search_sqlite(
+        self, query: str, limit: int, repository_id: str | None = None
+    ) -> list[SearchResult]:
         """FTS5 search.  bm25 is negative; we negate it to get a positive score."""
         async with self._engine.connect() as conn:
 
@@ -637,7 +657,7 @@ class FullTextSearch:
                 return await self._document_frequency(conn, term)
 
             fts_query = await self._build_selective_query(query, df)
-            raw = await self._matching_rows(conn, fts_query, limit)
+            raw = await self._matching_rows(conn, fts_query, limit, repository_id=repository_id)
 
             # The frequency ceiling can cut a question down to terms that
             # nothing carries together. Retrying with every term is the prior
@@ -649,7 +669,9 @@ class FullTextSearch:
                     seen = {r[0] for r in raw}
                     extra = [
                         r
-                        for r in await self._matching_rows(conn, widened, limit)
+                        for r in await self._matching_rows(
+                            conn, widened, limit, repository_id=repository_id
+                        )
                         if r[0] not in seen
                     ]
                     if extra:
@@ -757,7 +779,9 @@ class FullTextSearch:
             kept = selective
         return " | ".join(_pg_term(t) for t in kept)
 
-    async def _search_postgresql(self, query: str, limit: int) -> list[SearchResult]:
+    async def _search_postgresql(
+        self, query: str, limit: int, repository_id: str | None = None
+    ) -> list[SearchResult]:
         """PostgreSQL tsvector search with ts_rank scoring.
 
         The query used to be handed to ``plainto_tsquery`` whole, which strips
@@ -777,17 +801,31 @@ class FullTextSearch:
             ts_query = await self._build_ts_query(conn, query)
             if not ts_query:
                 return []
-            rows = await conn.execute(
-                text(
-                    f"SELECT id, title, content, page_type, target_path, "
-                    f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
-                    f"FROM wiki_pages "
-                    f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
-                    f"ORDER BY rank DESC "
-                    f"LIMIT :lim",
-                ),
-                {"q": ts_query, "lim": limit},
-            )
+            if repository_id is not None:
+                rows = await conn.execute(
+                    text(
+                        f"SELECT id, title, content, page_type, target_path, "
+                        f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
+                        f"FROM wiki_pages "
+                        f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
+                        f"  AND repository_id = :repo_id "
+                        f"ORDER BY rank DESC "
+                        f"LIMIT :lim",
+                    ),
+                    {"q": ts_query, "lim": limit, "repo_id": repository_id},
+                )
+            else:
+                rows = await conn.execute(
+                    text(
+                        f"SELECT id, title, content, page_type, target_path, "
+                        f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
+                        f"FROM wiki_pages "
+                        f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
+                        f"ORDER BY rank DESC "
+                        f"LIMIT :lim",
+                    ),
+                    {"q": ts_query, "lim": limit},
+                )
             raw = rows.fetchall()
 
         return [
