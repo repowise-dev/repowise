@@ -154,6 +154,34 @@ def test_inherited_dependency_management_resolves_version(tmp_path: Path) -> Non
     assert deps[0].source_manifest == "app/pom.xml"
 
 
+def test_parent_artifact_builtin_resolves_dependency_coordinate(tmp_path: Path) -> None:
+    producer = tmp_path / "producer"
+    consumer = tmp_path / "consumer"
+    _write(producer, "pom.xml", _project("org.openmrs.module", "module-api"))
+    _write(
+        consumer,
+        "pom.xml",
+        """<project><groupId>org.openmrs.module</groupId><artifactId>module</artifactId>
+  <version>1</version><packaging>pom</packaging><modules><module>omod</module></modules></project>""",
+    )
+    _write(
+        consumer,
+        "omod/pom.xml",
+        """<project><parent><groupId>org.openmrs.module</groupId><artifactId>module</artifactId>
+  <version>1</version><relativePath>../pom.xml</relativePath></parent><artifactId>omod</artifactId>
+  <dependencies><dependency><groupId>org.openmrs.module</groupId>
+  <artifactId>${project.parent.artifactId}-api</artifactId><version>1</version>
+  </dependency></dependencies></project>""",
+    )
+
+    deps, diagnostics, _total = detect_package_dependencies_with_diagnostics(
+        {"producer": producer, "consumer": consumer}
+    )
+
+    assert [dep.target_package for dep in deps] == ["org.openmrs.module:module-api"]
+    assert "unresolved_dependency_coordinate" not in {diagnostic.code for diagnostic in diagnostics}
+
+
 def test_inherited_dependency_is_attributed_to_each_effective_consumer(
     tmp_path: Path,
 ) -> None:

@@ -418,12 +418,18 @@ def load_maven_reactor(
         properties = dict(raw_properties)
 
         parent_group = parent.project.group_id if parent is not None else raw.parent_group_id
+        parent_artifact = (
+            parent.project.artifact_id if parent is not None else raw.parent_artifact_id
+        )
         parent_version = (
             (parent.project.version or "") if parent is not None else raw.parent_version
         )
         if parent_group:
             properties.setdefault("project.parent.groupId", parent_group)
             properties.setdefault("pom.parent.groupId", parent_group)
+        if parent_artifact:
+            properties.setdefault("project.parent.artifactId", parent_artifact)
+            properties.setdefault("pom.parent.artifactId", parent_artifact)
         if parent_version:
             properties.setdefault("project.parent.version", parent_version)
             properties.setdefault("pom.parent.version", parent_version)
