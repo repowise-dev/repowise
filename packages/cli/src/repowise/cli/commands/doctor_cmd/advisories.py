@@ -70,7 +70,7 @@ def _print_cli_version_status() -> None:
     Runs once per invocation (the CLI version is global, not per-repo).
     """
     try:
-        from repowise.cli.update_check import get_cli_update_check
+        from repowise.cli.update_check import get_cli_update_check, windows_upgrade_caveat
 
         check = get_cli_update_check()
     except Exception:
@@ -106,5 +106,8 @@ def _print_cli_version_status() -> None:
     console.print(table)
 
     if check.update_available:
+        caveat = windows_upgrade_caveat()
+        if caveat:
+            console.print(f"  [dim]{caveat}[/dim]")
         console.print(f"  [yellow]Update available:[/yellow] {check.suggested_command}")
         console.print("  [dim]Restart Claude/Codex/Cursor or any MCP client after updating.[/dim]")

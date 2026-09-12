@@ -27,6 +27,7 @@ from repowise.core.upgrade.changelog import (
 from repowise.core.upgrade.release import BUNDLED_CHANGELOG_PATH
 
 from .helpers import user_global_dir
+from .update_check import windows_upgrade_caveat
 
 RELEASES_URL = "https://github.com/repowise-dev/repowise/releases"
 
@@ -160,13 +161,22 @@ def render_whats_new(
 
 
 def render_update_advisory(console: Console, check) -> bool:
-    """Print a one-line, non-blocking advisory when a newer release exists.
+    """Print a non-blocking advisory when a newer release exists.
 
     *check* is an :class:`~repowise.cli.update_check.UpdateCheck`. Returns
     ``True`` if an advisory was printed (i.e. an update is available).
     """
     if not check.update_available or not check.latest_version:
         return False
+    caveat = windows_upgrade_caveat()
+    if caveat:
+        console.print(
+            f"[yellow]repowise {check.latest_version} is available[/yellow] "
+            f"[dim](you have {check.current_version}).[/dim]"
+        )
+        console.print(f"[dim]{caveat}[/dim]")
+        console.print(f"Upgrade: [bold]{check.suggested_command}[/bold]")
+        return True
     console.print(
         f"[yellow]repowise {check.latest_version} is available[/yellow] "
         f"[dim](you have {check.current_version}).[/dim] "
