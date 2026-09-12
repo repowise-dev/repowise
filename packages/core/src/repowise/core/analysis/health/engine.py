@@ -121,7 +121,14 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 11
+#
+# v12: Pascal's ``foreach`` (``for x in collection do``) was absent from its
+# ``loop_kinds``, so a for-in loop contributed no CCN and opened no nesting
+# level -- stored complexity / nesting for any Pascal function using one
+# understates both. Pascal also gained a ``PerfDialect`` (filesystem /
+# subprocess sinks by RTL/VCL/FPC name), so ``io_in_loop`` / ``hot_path_sync_io``
+# now fire for it instead of the pass silently skipping every Pascal file.
+HEALTH_ANALYZER_VERSION = 12
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.

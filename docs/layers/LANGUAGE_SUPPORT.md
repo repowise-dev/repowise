@@ -356,7 +356,7 @@ map before markers fire. This table is why a language is Full rather than Good.
 | Scala | ✅ | ✅ | ✅ | later | ✅ |
 | Ruby | ✅ | ✅ | ✅ | later | ✅ |
 | Dart | ✅ | n/a | ✅ | later | ✅ |
-| Object Pascal | ✅ | n/a | later | later | n/a |
+| Object Pascal | ✅ | n/a | later | later | ✅ |
 | Razor | ✅ | n/a | n/a | later | ✅ |
 | Shell | ✅ | n/a | n/a | n/a | n/a |
 
@@ -383,6 +383,11 @@ cannot check.
 - **Razor has no import edges**, and an attribute-bound handler carries none.
 - **Object Pascal's `extends`/`implements` split is a naming heuristic**,
   inferred from the `I`-prefix convention rather than a language guarantee.
+- **Object Pascal's performance risk covers filesystem and subprocess sinks
+  only**, matched by RTL/VCL/FPC call name. DB and network calls (`TDataSet`,
+  `THTTPClient`) are not covered: the `uses` clause lists bare unit names with
+  no import-classification table behind it yet, so there is no evidence to
+  disambiguate `Open` / `Get` / `Post` from an ordinary method of the same name.
 - **GDScript resolves no `uid://` path and no string dispatch**, and a script
   without `class_name` gets no class symbol.
 - **A Godot `addons/` tree is exempt from dead-code reporting** only when a
@@ -410,7 +415,7 @@ Per-language mechanics behind these:
 | C# | Full (health) | Dataflow dialect |
 | Dart | Good | riverpod / get_it dynamic hints, dataflow dialect |
 | GDScript | Good | The health dialects (complexity, performance, dataflow) that would take it to Full; the grammar supports all three |
-| Object Pascal | Good | Assertion and performance markers, a dedicated `uses` resolver |
+| Object Pascal | Good | Assertion markers, DB/network performance sinks (needs `uses`-clause import classification), a dedicated `uses` resolver |
 | VB.NET | Good | Health markers, project-level `<Import Include=...>` as implicit imports |
 | Elixir | Good | Health markers, and a call-resolution strategy beyond same-file |
 | F# | Good | The health markers beyond complexity, and a resolver that reads the AST index instead of the declared-name regex |

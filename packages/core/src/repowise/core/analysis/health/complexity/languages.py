@@ -761,7 +761,10 @@ _PASCAL = LanguageNodeMap(
     # recursive walker already counts one branch per level without special
     # casing.
     branch_kinds=frozenset({"if", "ifElse"}),
-    loop_kinds=frozenset({"for", "while", "repeat"}),
+    # ``for`` is the counted ``for i := a to b do`` loop; ``foreach`` is the
+    # distinct ``for x in collection do`` grammar node (its own node type,
+    # not a variant of ``for``) -- both are loops and must both count.
+    loop_kinds=frozenset({"for", "foreach", "while", "repeat"}),
     try_kinds=frozenset({"try"}),
     # A bound handler (``on E: Exception do``) is an ``exceptionHandler``
     # node; a bare ``except ... end`` with no ``on`` clauses has no such
@@ -803,6 +806,11 @@ _PASCAL = LanguageNodeMap(
     break_kinds=frozenset(),
     continue_kinds=frozenset(),
     with_kinds=frozenset({"with"}),
+    # ``exprCall`` is the one call-expression node, covering both a bare
+    # ``Foo(x)`` (``entity`` is an ``identifier``) and a method call
+    # ``Obj.Foo(x)`` (``entity`` is an ``exprDot``). Feeds the perf pass
+    # (``perf/dialects/pascal.py``).
+    call_kinds=frozenset({"exprCall"}),
 )
 
 

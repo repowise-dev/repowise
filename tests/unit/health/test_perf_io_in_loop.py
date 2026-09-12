@@ -183,6 +183,49 @@ _CASES = [
         [],
         "sync helpers on an imported I/O pkg (isCancel/create) are not sinks",
     ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Names: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Names.Count - 1 do\n"
+        b"    CopyFile(PChar(Names[I]), PChar('dest'), False);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "bare CopyFile in a data-dependent loop",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Names: TStringList; FS: TFileStream);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Names.Count - 1 do\n"
+        b"    FS.SaveToFile(Names[I]);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "attribute-call stream I/O (SaveToFile) in a loop",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Items: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"    WinExec(PAnsiChar(Items[I]), 0);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "subprocess")],
+        "process spawn per iteration",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(S: string; Items: TStringList);\nvar I: Integer; T: string;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"  begin\n"
+        b"    T := Copy(S, 1, I);\n"
+        b"    DoNormalWork(T);\n"
+        b"  end;\n"
+        b"end;\nend.\n",
+        [],
+        "built-in substring Copy() is not TFile.Copy -- ordinary computation",
+    ),
 ]
 
 
