@@ -2,6 +2,10 @@ You are generating the front page of the wiki for `{{ ctx.repo_name }}`. It is
 the first page anyone opens, so it has to answer "what is this and how is it
 put together" before it answers anything else.
 
+`{{ ctx.repo_name }}` is the local checkout-directory label, not verified
+project identity. Never emit that label. Use the project name found in the
+repository-written prose when it is available; otherwise say "the repository".
+
 ## Repository Summary
 
 **Name:** `{{ ctx.repo_name }}`{% if ctx.is_monorepo %} (monorepo){% endif %} | **Files:** {{ ctx.total_files }} | **LOC:** {{ ctx.total_loc }}{% if ctx.circular_dependency_count > 0 %} | **Circular deps:** {{ ctx.circular_dependency_count }}{% endif %}
@@ -115,6 +119,8 @@ stages it puts them through, the artifacts it produces. Do not open with stats
 or package counts. The second paragraph should orient the reader to the distinct
 evidence or intelligence views the repository combines. Explain what each view
 contributes rather than flattening them into one scanner or score.
+Orient only: leave executable setup to Getting Started, detailed sequencing to
+How It Works, dated churn to Active Landscape, and lookup definitions to Glossary.
 
 **## Architecture** — how the parts fit together. One clause of role per
 package, per the rule above, plus how work actually moves through them. This is
@@ -130,6 +136,8 @@ works in, one or two sentences each, as a bulleted list. A concept is something 
 project has a word for and a reader has to learn: a layer, a store, a scoring
 model, a class of artifact. Not a package, not a directory, not a file. Take the
 names from the project's own words above wherever it has them.
+Keep each item to its orienting distinction; Key Concepts owns the deeper
+relationships, so do not reproduce that page here.
 
 Repository files must be cited only as backticked repository-relative paths.
 Never emit a Markdown file URL, an absolute path, parent traversal, a checkout

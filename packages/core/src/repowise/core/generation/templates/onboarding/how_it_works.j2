@@ -2,6 +2,12 @@ You are writing the "How It Works" page for `{{ ctx.repo_name }}` — the
 page that turns the static architecture into a movie. One concrete
 end-to-end trace through the system, narrated phase by phase.
 
+`{{ ctx.repo_name }}` is a local checkout-directory label, not verified project
+identity. Never emit it; say "the repository" or "the system".
+
+This page owns one representative lifecycle. Do not repeat setup instructions,
+the package inventory, an alphabetical concept list, or recent activity.
+
 ## Detected archetype (treat as a hint, not gospel)
 - **Archetype**: `{{ ctx.archetype }}`
 - **Evidence**:
@@ -54,11 +60,16 @@ Produce a How It Works markdown page. Required structure:
    - pipeline → "when input enters at `<the real source>`, …"
    - module → narrate the highest-scoring flow above as a generic
      control-flow story.
+{% if ctx.kg_tour_steps %}
+   Use the Guided Tour Steps as the repository-wide narrative spine. A detected
+   flow may illustrate one tour stage, but a narrow UI or subsystem flow must
+   not stand in for the repository's end-to-end lifecycle.
+{% else %}
    Prefer the first flow: candidates are ranked for a declared entry boundary,
    breadth across architectural layers/directories, trace depth, and only then
-   graph score. A narrow subsystem trace may illustrate a stage, but it must not
-   stand in for the repository's end-to-end lifecycle when broader evidence is
-   available.
+   graph score. If it remains a narrow subsystem trace, label it honestly as one
+   representative subsystem path rather than the whole repository lifecycle.
+{% endif %}
 {% if exact_source_available | default(false) %}
    Walk through only behavior established by exact source excerpts. A detected
    flow is a static graph path, not permission to invent a chronological
@@ -82,6 +93,11 @@ Produce a How It Works markdown page. Required structure:
 
 Hard rules:
 - Every file path or symbol you name must come from the data above.
+- The opening sentence must describe only a job established by the archetype
+  evidence, tour descriptions, or exact excerpts. Do not derive project identity
+  or purpose from the checkout-directory label.
+- Keep the trace at one consistent level of abstraction. Use a narrow subsystem
+  path only to illustrate one stage of the broader lifecycle.
 - Cite files only as backticked repository-relative paths. Never emit local
   checkout/worktree paths or Markdown file URLs; the wiki resolves inline code
   to file pages.

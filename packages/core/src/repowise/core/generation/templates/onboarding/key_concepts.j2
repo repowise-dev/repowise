@@ -3,6 +3,13 @@ narrative that gives the reader the mental model needed to read the
 code. Not a glossary dump. Identify 3–6 load-bearing concepts and
 explain how they fit together.
 
+`{{ ctx.repo_name }}` is a local checkout-directory label, not verified project
+identity. Never emit it; say "the repository" unless repository evidence below
+supplies the product name independently.
+
+This page owns the conceptual model. Do not restate package inventories,
+setup commands, a step-by-step execution trace, or repository activity.
+
 {% if ctx.purpose_terms %}
 ## Repository purpose vocabulary
 These terms come from the repository's own authoritative prose. Use them to
@@ -91,9 +98,15 @@ Hard rules:
   concept feels missing, it isn't — say so explicitly rather than
   fabricating it.
 - Do not include code listings. Names + file paths are enough.
+- Define a concept only deeply enough to explain its role and relationships;
+  leave alphabetical lookup definitions to the Glossary.
 - The chosen set should represent the repository purpose and lifecycle above,
   not six variations of one graph-dominant subsystem. Preserve structural
   diversity across layers/clusters when the candidates permit it.
+- Do not turn layer order or cluster membership into a runtime sequence. Words
+  such as "then", "before", "reaches", "passes to", or "flows through" require
+  an explicit listed dependency edge. Without an edge, say only that concepts
+  occupy distinct layers or clusters.
 - Cite files only as backticked repository-relative paths. Never emit local
   checkout/worktree paths or Markdown file URLs; the wiki resolves inline code
   to file pages.
