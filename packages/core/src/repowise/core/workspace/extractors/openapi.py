@@ -8,6 +8,7 @@ whole request or response side when a construct cannot be represented faithfully
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -110,10 +111,7 @@ def _is_candidate(rel_path: str) -> bool:
         "swagger.json",
         "swagger.yaml",
         "swagger.yml",
-    } or any(
-        name.endswith(suffix)
-        for suffix in (".openapi.json", ".openapi.yaml", ".openapi.yml")
-    )
+    } or any(name.endswith(suffix) for suffix in (".openapi.json", ".openapi.yaml", ".openapi.yml"))
 
 
 def _load_document(content: str, suffix: str, rel_path: str) -> Mapping[str, Any]:
@@ -220,7 +218,11 @@ def _value_matches_type(value: Any, type_name: str) -> bool:
     if type_name == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
     if type_name == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and (not isinstance(value, float) or math.isfinite(value))
+        )
     return False
 
 
@@ -237,6 +239,8 @@ def _enum_values(
     for value in raw:
         if value is None and nullable:
             continue
+        if type_name == "number" and isinstance(value, float) and not math.isfinite(value):
+            raise _Refusal("openapi_enum_number_non_finite", "unresolved", pointer)
         if not _value_matches_type(value, type_name):
             raise _Refusal("openapi_enum_mixed_types", "unsupported", pointer)
     return list(raw)
@@ -364,6 +368,41 @@ def _parameter_entries(
     return list(merged.values())
 
 
+def _validate_parameter_serialization(
+    parameter: Mapping[str, Any], location: str, pointer: str
+) -> None:
+    """Accept only OpenAPI's default parameter serialization, which we model."""
+    default_style = "form" if location in {"query", "cookie"} else "simple"
+    style = parameter.get("style", default_style)
+    if not isinstance(style, str):
+        raise _Refusal("openapi_parameter_style_invalid", "unresolved", pointer)
+    if style != default_style:
+        raise _Refusal("openapi_parameter_serialization_unsupported", "unsupported", pointer, style)
+
+    default_explode = style == "form"
+    explode = parameter.get("explode", default_explode)
+    if not isinstance(explode, bool):
+        raise _Refusal("openapi_parameter_explode_invalid", "unresolved", pointer)
+    if explode != default_explode:
+        raise _Refusal(
+            "openapi_parameter_serialization_unsupported",
+            "unsupported",
+            pointer,
+            f"explode={str(explode).lower()}",
+        )
+
+    allow_reserved = parameter.get("allowReserved", False)
+    if not isinstance(allow_reserved, bool):
+        raise _Refusal("openapi_parameter_allow_reserved_invalid", "unresolved", pointer)
+    if allow_reserved:
+        raise _Refusal(
+            "openapi_parameter_serialization_unsupported",
+            "unsupported",
+            pointer,
+            "allowReserved=true",
+        )
+
+
 def _build_request(
     document: Mapping[str, Any],
     path_item: Mapping[str, Any],
@@ -387,6 +426,7 @@ def _build_request(
             )
         if "schema" not in parameter:
             raise _Refusal("openapi_parameter_schema_missing", "unresolved", parameter_pointer)
+        _validate_parameter_serialization(parameter, location, parameter_pointer)
         required = bool(parameter.get("required", False))
         if location == "path" and not required:
             raise _Refusal("openapi_path_parameter_optional", "unresolved", parameter_pointer)
@@ -546,7 +586,7 @@ def _operation_contract(
             response_fields=response_fields,
             source_version=version,
             comparison_key=OPENAPI_COMPARISON_KEY,
-            comparison_ready=False,
+            comparison_ready=True,
             request_state=request_state,
             response_state=response_state,
             request_media_type=request_media_type,
@@ -667,7 +707,7 @@ def merge_openapi_providers(contracts: list[Any], stats: dict[str, int]) -> list
                     source=OPENAPI_SCHEMA_SOURCE,
                     source_version=selected.schema.source_version,
                     comparison_key=OPENAPI_COMPARISON_KEY,
-                    comparison_ready=False,
+                    comparison_ready=True,
                     request_state="unresolved",
                     response_state="unresolved",
                     issues=[
@@ -699,9 +739,7 @@ def merge_openapi_providers(contracts: list[Any], stats: dict[str, int]) -> list
             continue
         target.schema = selected.schema
         target.meta["schema_source_file"] = selected.file_path
-        target.meta["schema_operation_pointer"] = selected.meta.get(
-            "schema_operation_pointer", ""
-        )
+        target.meta["schema_operation_pointer"] = selected.meta.get("schema_operation_pointer", "")
         target.meta["openapi_version"] = selected.meta.get("openapi_version", "")
         _increment(stats, "openapi_schemas_merged")
     return source_rows + retained_specs

@@ -859,7 +859,6 @@ class TestQueryRepoStats:
 
         assert stats["hotspot_count"] == 0
 
-    
     def test_file_count_excludes_symbol_nodes(self, tmp_path: Path) -> None:
         """Regression: graph_nodes stores file *and* symbol rows.
 
@@ -1155,6 +1154,28 @@ def _make_breaking_enricher(tmp_path: Path) -> CrossRepoEnricher:
 
 
 class TestGetBreakingChanges:
+    def test_response_model_preserves_comparison_evidence(self) -> None:
+        from repowise.server.schemas.workspace import WorkspaceBreakingChange
+
+        payload = WorkspaceBreakingChange(
+            kind="field_enum_changed",
+            severity="breaking",
+            contract_id="http::POST::/orders",
+            contract_type="http",
+            provider_repo="api",
+            provider_file="openapi.yaml",
+            provider_symbol="openapi:POST /orders",
+            detail="request enum narrowed",
+            side="request",
+            comparison_source="openapi",
+            comparison_key="openapi-wire-v1",
+            field_name="body.priority",
+        ).model_dump(exclude_none=True)
+
+        assert payload["side"] == "request"
+        assert payload["comparison_source"] == "openapi"
+        assert payload["comparison_key"] == "openapi-wire-v1"
+
     @pytest.mark.asyncio
     async def test_not_workspace_mode(self) -> None:
         app = _make_workspace_app()
@@ -1373,9 +1394,7 @@ class TestRepoQueryBudget:
         return statements, connections
 
     @pytest.mark.asyncio
-    async def test_per_repo_cost_does_not_grow_with_repo_count(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_per_repo_cost_does_not_grow_with_repo_count(self, tmp_path: Path) -> None:
         two_stmts, two_conns = await self._measure(tmp_path, 2)
         six_stmts, six_conns = await self._measure(tmp_path, 6)
 
@@ -1456,9 +1475,7 @@ class TestGetTestImpact:
             return None
 
         self._install_helper(monkeypatch, _none)
-        app = _make_workspace_app(
-            ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path)
-        )
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             resp = await c.get(
@@ -1480,9 +1497,7 @@ class TestGetTestImpact:
             return WorkspaceTestImpactResult()
 
         self._install_helper(monkeypatch, _capture)
-        app = _make_workspace_app(
-            ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path)
-        )
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             resp = await c.get(
@@ -1555,9 +1570,7 @@ class TestGetTestImpact:
             return result
 
         self._install_helper(monkeypatch, _result)
-        app = _make_workspace_app(
-            ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path)
-        )
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             resp = await c.get(

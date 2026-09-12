@@ -369,11 +369,11 @@ The map appears once the workspace has at least two indexed repositories with de
 
 ## Cross-Repo Blast Radius
 
-Blast radius answers a single question: **if I change this service, what downstream services and repos break?** It walks the [system graph](#system-graph) *against* its edge direction, a `consumer → provider` edge means changing the provider impacts the consumer, and returns every reachable service ranked by an impact score.
+Blast radius answers a single question: **if I change this service, which downstream services and repos are structurally exposed?** It walks the [system graph](#system-graph) *against* its edge direction, a `consumer → provider` edge means changing the provider may impact the consumer, and returns every reachable service ranked by an impact score.
 
 Two edge classes are weighted and labelled distinctly:
 
-- **Structural** edges (http / grpc / event / package / db) assert a real dependency, a contract or an import. They propagate impact at full weight and surface as **will break**.
+- **Structural** edges (http / grpc / event / package / db) assert a real dependency, a contract or an import. They propagate impact at full weight and surface under the compatibility-named **will break** field, but mean structural reach rather than certain runtime failure.
 - **Behavioral** co-change edges only assert that two files historically *changed together*. They are correlation, not a call, so they propagate at half weight (one named constant, `BEHAVIORAL_EDGE_WEIGHT`) and surface as **may drift**.
 
 Each impacted service carries its `distance` (hops from the change) and `score` (0-1, with distance decay and the behavioral weighting baked in). Nearer, structural impact ranks highest.
@@ -388,7 +388,7 @@ Use it three ways:
 
 ## Breaking-Change Guard
 
-Where blast radius answers *what could be affected*, the breaking-change guard answers a sharper question: **did a provider change in a way that actually breaks its consumers?** On every `repowise update --workspace`, the freshly-extracted contracts are diffed against the previously-indexed set and each incompatible provider change is reported with the exact consumer files that call it.
+Where blast radius answers *what could be affected*, the breaking-change guard answers a sharper question: **did a provider contract change incompatibly?** On every `repowise update --workspace`, freshly extracted contracts are diffed against the previously indexed set. Each finding carries the consumer files linked to the endpoint, but that link proves endpoint exposure only. It does not prove use of the changed field, a runtime failure, or deployment safety.
 
 Detected change kinds (a registry, adding a kind is one new rule, never an `if/elif`):
 
@@ -398,23 +398,31 @@ Detected change kinds (a registry, adding a kind is one new rule, never an `if/e
 | `removed_field` | breaking (response) / warning (request) | A request or response field disappeared |
 | `field_type_changed` | breaking | A field's type changed (e.g. `string → int64`) |
 | `field_number_changed` | breaking | A proto field's wire number changed |
-| `field_required` | breaking | A field became required, or a new required field was added |
+| `field_required` | breaking | A request field became required, or a new required request field was added; legacy proto/signature behavior is preserved |
+| `field_required_relaxed` | breaking | A required OpenAPI response field became optional |
+| `field_nullability_changed` | breaking | An OpenAPI request stopped accepting null, or a response started allowing null |
+| `field_enum_changed` | breaking | An OpenAPI request enum lost values, or a response enum gained values |
+| `schema_comparison_uncertain` | warning | Schema source/fidelity, completeness, or selected response changed, so field compatibility was not inferred |
 
-**Non-breaking changes never flag**, an added *optional* field, a widened set, or a brand-new endpoint produces no record. Field-level diffs need a contract *schema*; today only gRPC carries one (proto message fields, recovered by the existing proto parser), so field-level checks are gRPC-only. HTTP contracts have no schema, and OpenAPI specs are not read. Route-level removal is detected for every transport from the contract id alone, HTTP included.
+OpenAPI comparison covers the common supported subset of `3.0.x`, `3.1.x`, and `3.2.x`: JSON/YAML documents; path/query/header/cookie parameters using OpenAPI's default `style`, `explode`, and `allowReserved` behavior; one `application/json` request body; exactly one explicit JSON 2xx response; recursive objects and arrays; exact primitive types; requiredness; normalized nullability; finite homogeneous scalar enums; and bounded same-document JSON Pointer references. Request rules describe values the provider accepts; response rules describe values consumers may receive, so requiredness, nullability, enum values, and constrained/unconstrained enum transitions reverse between the two sides. Operation removal remains the transport-neutral contract rule.
 
-Impacted consumers are resolved from the matched contract links, the same provider↔consumer evidence the [system graph](#system-graph)'s edges are built from, so impact is endpoint-precise (the consumer file that calls the changed contract) and direct (the first reachability hop, which is exactly what a contract break endangers; transitive ripple stays the job of blast radius).
+Only complete sides with the same schema source and comparison-fidelity key are field-diffed. Unsupported/unresolved nodes, extraction-strategy changes, and response-selection changes become warning-level uncertainty rather than shortened schemas or false removals. Remote/cross-file references, composition, additional-properties semantics, arbitrary JSON Schema constraints, non-JSON or ambiguous media, multiple materially different success responses, and OpenAPI 2.0 are outside this boundary. No network dereferencing occurs.
+
+**Compatible changes stay quiet**: examples include an optional request addition, a request enum widening, a request becoming nullable, a response enum narrowing, a response becoming non-nullable, an additional response field in the supported open-object subset, and a brand-new endpoint. A rename remains a removal plus an addition; no rename inference is attempted.
+
+Endpoint-exposed consumers are resolved from the matched contract links, the same provider↔consumer evidence the [system graph](#system-graph)'s edges are built from. The evidence is direct and endpoint-level: it identifies a consumer file linked to the changed contract, but not the exact field it uses. Transitive structural reach stays the job of blast radius.
 
 Use it three ways:
 
 - **REST**, `GET /api/workspace/breaking-changes` returns the report from the most recent update (filterable by `repo` or `severity`). Each change carries its provider, detail, and impacted consumers with both code sides.
-- **MCP**, the `get_risk` PR-mode directive gains a `breaking_changes` block listing the provider contracts that changed incompatibly in the diff's repo and the consumers they endanger, across repos.
-- **System Map**, toggle **Breaking changes** above the map: changed providers are badged with their breaking count, the consumers they endanger are badged *at risk*, and the seams between them are highlighted (additive overlay, the map stays whole). A side panel lists each change with both the provider and consumer files.
+- **MCP**, the `get_risk` PR-mode directive's compatibility-named `breaking_changes` block lists provider incompatibilities and comparison warnings with side, source/fidelity, and endpoint-exposed consumers across repos.
+- **System Map**, toggle **Breaking changes** above the map: changed providers are badged by severity. Consumers and seams are marked *exposed* only for provider incompatibilities; warning-only uncertainty is never rendered as a consumer failure claim. A side panel lists each finding with both code sides.
 
 ---
 
 ## Cross-Repo Test Impact
 
-Where the breaking-change guard answers *did this change break a consumer*, test impact answers the question you ask before you push: **I changed this provider file, which tests in the other repos should I run?** It starts from the matched contract links, so the answer is scoped to the consumers that actually call the changed code, and then walks each consumer's own index to find the tests that exercise the call site.
+Where the breaking-change guard identifies provider incompatibility and endpoint exposure, test impact answers the question you ask before you push: **I changed this provider file, which tests in the other repos should I run?** It starts from the same matched contract links and then walks each consumer's own index to find tests that exercise the call site. A recommended test validates the exposed consumer path; it is not proof that the changed field is used or that a deployment will fail.
 
 ```bash
 repowise workspace impacted-tests backend:app/routers/users.py

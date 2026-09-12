@@ -99,9 +99,8 @@ class SchemaIssue:
 class ContractSchema:
     """The structured request/response shape of a contract, when recoverable.
 
-    The source names the producing parser. comparison_ready is false for newly
-    extracted OpenAPI schemas until the direction-aware Phase 3 rules are
-    enabled, preventing the legacy flat-field rules from overstating changes.
+    The source names the producing parser. ``comparison_ready`` lets an extractor
+    opt into the registry only when rules understand its fidelity and direction.
     """
 
     source: str

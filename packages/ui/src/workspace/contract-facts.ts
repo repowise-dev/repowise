@@ -137,13 +137,75 @@ export function contractMetaString(
  */
 export function asContractSchema(raw: Record<string, unknown> | null): ContractSchema | null {
   if (!raw) return null;
-  return {
+  const text = (key: string) => (typeof raw[key] === "string" ? raw[key] : undefined);
+  const state = (key: string): ContractSchema["request_state"] => {
+    const value = raw[key];
+    return value === "complete" ||
+      value === "partial" ||
+      value === "unsupported" ||
+      value === "unresolved"
+      ? value
+      : undefined;
+  };
+  const schema: ContractSchema = {
     source: typeof raw.source === "string" ? raw.source : "unknown",
     request_fields: Array.isArray(raw.request_fields) ? (raw.request_fields as SchemaField[]) : [],
     response_fields: Array.isArray(raw.response_fields)
       ? (raw.response_fields as SchemaField[])
       : [],
   };
+  const sourceVersion = text("source_version");
+  const comparisonKey = text("comparison_key");
+  const requestState = state("request_state");
+  const responseState = state("response_state");
+  const requestMediaType = text("request_media_type");
+  const responseMediaType = text("response_media_type");
+  const responseStatusCode = text("response_status_code");
+  if (sourceVersion !== undefined) schema.source_version = sourceVersion;
+  if (comparisonKey !== undefined) schema.comparison_key = comparisonKey;
+  if (typeof raw.comparison_ready === "boolean") schema.comparison_ready = raw.comparison_ready;
+  if (requestState !== undefined) schema.request_state = requestState;
+  if (responseState !== undefined) schema.response_state = responseState;
+  if (requestMediaType !== undefined) schema.request_media_type = requestMediaType;
+  if (responseMediaType !== undefined) schema.response_media_type = responseMediaType;
+  if (responseStatusCode !== undefined) schema.response_status_code = responseStatusCode;
+  if (Array.isArray(raw.issues)) {
+    schema.issues = raw.issues as NonNullable<ContractSchema["issues"]>;
+  }
+  return schema;
+}
+
+export interface SchemaFieldRow {
+  field: SchemaField;
+  path: string;
+}
+
+/** Flatten a bounded recursive schema for the existing list/table surfaces. */
+export function flattenSchemaFields(fields: SchemaField[]): SchemaFieldRow[] {
+  const rows: SchemaFieldRow[] = [];
+  const visit = (field: SchemaField, parent: string) => {
+    let segment = field.name;
+    if (segment === "$body") segment = "body";
+    else if (segment === "$response") segment = "response";
+    else if (segment === "$items") segment = "[]";
+    else if (field.location && field.location !== "body") {
+      segment = `${field.location}:${segment}`;
+    }
+    const path = segment === "[]" ? `${parent}[]` : parent ? `${parent}.${segment}` : segment;
+    rows.push({ field, path });
+    for (const child of field.children ?? []) visit(child, path);
+    if (field.items) visit(field.items, path);
+  };
+  for (const field of fields) visit(field, "");
+  return rows;
+}
+
+export function schemaFieldConstraints(field: SchemaField): string {
+  const values = [field.required ? "Required" : "Optional"];
+  if (field.nullable === true) values.push("Nullable");
+  if (field.enum_values?.length) values.push(`Enum: ${field.enum_values.join(", ")}`);
+  if (field.repeated) values.push("Repeated");
+  return values.join(" · ");
 }
 
 /**

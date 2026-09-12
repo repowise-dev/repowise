@@ -2,8 +2,8 @@
 
 /**
  * Breaking changes as a page section rather than a map rail: the provider
- * contracts that changed in the last workspace update and the consumers they
- * endanger, breaking first.
+ * contracts that changed in the last workspace update and their endpoint-exposed
+ * consumers, breaking first.
  *
  * The empty states are two different facts and are worded as two: a report that
  * never ran is silence, and only a report with a timestamp can say "nothing
@@ -62,8 +62,8 @@ export function BreakingChangesView({
     return (
       <EmptyState
         className="p-6"
-        title="No breaking changes in the most recent update"
-        description="Every provider contract that changed still matches the consumers linked to it."
+        title="No contract compatibility findings in the most recent update"
+        description="No provider incompatibility or comparison uncertainty was found."
       />
     );
   }

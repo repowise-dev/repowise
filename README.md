@@ -402,16 +402,17 @@ change, and the architecture rule the new dependency violates before it ships.
 | Workspace intelligence | What it answers |
 |---|---|
 | **Contract map** | Which services provide and consume each HTTP, gRPC, event, socket, and data contract? Links retain exact/candidate confidence and the source evidence. |
-| **Cross-repo blast radius** | If this provider changes, which downstream services **will break** through structural dependencies, and which ones **may drift** through historical co-change? |
-| **Breaking-change guard** | Was an endpoint removed or a typed contract changed incompatibly, and which exact consumer files call it? |
+| **Cross-repo blast radius** | If this provider changes, which downstream services are in structural reach, and which ones may drift through historical co-change? |
+| **Breaking-change guard** | Was an endpoint removed or a supported OpenAPI / proto / signature shape changed incompatibly, and which consumer files are linked to that contract? |
 | **Test impact** | Which tests in the consumer repos should run for this provider change, measured from coverage or inferred from the call graph, and which links could not be determined? |
 | **Architecture as code** | Does the live system graph violate declared dependency rules or contain cycles? `repowise workspace check` gates CI. |
 | **Architecture health** | How coupled is the estate? Track propagation cost, the cyclic core, service roles, and a deterministic 1–10 architecture score. |
 | **Federated context** | One dashboard and one MCP server answer across every repository while preserving repo-level evidence. |
 
 The system map models **services**, not merely repository boxes, and never conflates a
-real contract with “these files often changed together.” Field-level breaking diffs
-currently require a gRPC schema; HTTP supports endpoint-level removal detection.
+real contract with “these files often changed together.” HTTP field-level comparison
+supports the bounded OpenAPI 3.x JSON subset documented in the workspace guide;
+matched consumers prove endpoint exposure, not field use or runtime failure.
 
 **[Workspace guide and exact support matrix →](docs/scale/WORKSPACES.md)**
 

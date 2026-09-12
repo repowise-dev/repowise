@@ -336,6 +336,9 @@ class WorkspaceBreakingChange(BaseModel):
     provider_service: str | None = None
     provider_node_id: str = ""
     detail: str
+    side: str | None = None
+    comparison_source: str | None = None
+    comparison_key: str | None = None
     field_name: str | None = None
     old_value: str | None = None
     new_value: str | None = None

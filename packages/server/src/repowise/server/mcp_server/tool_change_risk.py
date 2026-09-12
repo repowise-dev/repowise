@@ -115,6 +115,7 @@ _CHANGE_SHAPE_FIELDS = (
     "is_fix",
 )
 
+
 @mcp.tool(
     surface_order=60,
     artifact_type="change_risk",
@@ -354,13 +355,17 @@ async def _attach_health_references(ctx: Any, delta: Any) -> None:
         async with get_session(session_factory) as session:
             repository = await _get_repo(session)
             rows = (
-                await session.execute(
-                    select(HealthFinding).where(
-                        HealthFinding.repository_id == repository.id,
-                        HealthFinding.file_path.in_(paths),
+                (
+                    await session.execute(
+                        select(HealthFinding).where(
+                            HealthFinding.repository_id == repository.id,
+                            HealthFinding.file_path.in_(paths),
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
     except SQLAlchemyError:
         return
     if not rows:
@@ -426,9 +431,7 @@ def _change_shape(
 
 def _drill_down(payload: dict, delta: Any, finding_id: str, revspec: str | None) -> dict:
     """Expand one ephemeral change finding, or say why it is not there."""
-    match = next(
-        (f for f in delta.findings if f.change_finding_id == finding_id), None
-    )
+    match = next((f for f in delta.findings if f.change_finding_id == finding_id), None)
     if match is None:
         return {
             "error": f"No change finding {finding_id!r} in {payload.get('ref', 'this change')}.",
@@ -560,6 +563,7 @@ def _cross_repo_block(
 
         breaking: list[dict[str, Any]] = []
         breaking_total = 0
+        breaking_incompatible_total = 0
         has_breaking_report = bool(getattr(enricher, "has_breaking_changes", False))
         if has_breaking_report:
             for change in enricher.get_breaking_changes_for_repo(alias):
@@ -569,6 +573,8 @@ def _cross_repo_block(
                 if not cross:
                     continue
                 breaking_total += 1
+                if change.get("severity") == "breaking":
+                    breaking_incompatible_total += 1
                 if len(breaking) >= _CROSS_REPO_BREAKING_LIMIT:
                     continue
                 breaking.append(
@@ -579,6 +585,20 @@ def _cross_repo_block(
                         "severity": change.get("severity"),
                         "detail": change.get("detail"),
                         "provider_file": change.get("provider_file"),
+                        **({"side": side} if (side := change.get("side")) else {}),
+                        **(
+                            {"comparison_source": source}
+                            if (source := change.get("comparison_source"))
+                            else {}
+                        ),
+                        **(
+                            {"comparison_key": key} if (key := change.get("comparison_key")) else {}
+                        ),
+                        **(
+                            {"field_name": field_name}
+                            if (field_name := change.get("field_name"))
+                            else {}
+                        ),
                         "impacted_repos": sorted({c.get("repo") or "" for c in cross}),
                         **(
                             {"provider_symbol_id": psid}
@@ -602,7 +622,11 @@ def _cross_repo_block(
             f"files this change edits"
         )
         if breaking_total:
-            summary += f"; {breaking_total} of the changed contracts broke them."
+            warnings = breaking_total - breaking_incompatible_total
+            summary += (
+                f"; {breaking_incompatible_total} provider incompatibility finding(s) and "
+                f"{warnings} comparison warning(s) have endpoint-exposed consumers."
+            )
         elif has_breaking_report:
             summary += "; the last workspace update found no break in them."
         else:
@@ -858,15 +882,11 @@ async def _independent_changes_block(
         return None
     # Returns [] without a git call for anything that is not a range, so the
     # range test lives in one place rather than here as well.
-    sets = await asyncio.to_thread(
-        commit_file_sets, str(ctx.path), _normalize_revspec(revspec)
-    )
+    sets = await asyncio.to_thread(commit_file_sets, str(ctx.path), _normalize_revspec(revspec))
     try:
         async with get_session(session_factory) as session:
             repo_id = (await _get_repo(session)).id
-            result = await independent_changes(
-                session, repo_id, list(changed), commit_sets=sets
-            )
+            result = await independent_changes(session, repo_id, list(changed), commit_sets=sets)
     except (LookupError, SQLAlchemyError):
         return None
     if result is None:
@@ -879,8 +899,7 @@ async def _independent_changes_block(
         _UNGROUPED_FILES_LIMIT,
         collector,
         label=(
-            "change_shape.independent_changes.ungrouped_files "
-            f"beyond cap={_UNGROUPED_FILES_LIMIT}"
+            f"change_shape.independent_changes.ungrouped_files beyond cap={_UNGROUPED_FILES_LIMIT}"
         ),
     )
     return block

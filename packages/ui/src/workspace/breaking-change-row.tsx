@@ -55,7 +55,7 @@ export function breakingChangeSummary(report: BreakingChangeReport): string {
 
 /** Stable key for a change inside a report. */
 export function breakingChangeKey(change: BreakingChange): string {
-  return `${change.contract_id}:${change.kind}:${change.field_name ?? ""}`;
+  return `${change.contract_id}:${change.kind}:${change.side ?? ""}:${change.field_name ?? ""}`;
 }
 
 /** Prefer the symbol page, fall back to the file page, then to plain text. */
@@ -104,6 +104,13 @@ export function BreakingChangeRow({
         </button>
       </div>
       <div className="mt-[3px] text-[var(--color-text-secondary)]">{change.detail}</div>
+      {(change.side || change.comparison_source || change.comparison_key) && (
+        <div className="mt-0.5 text-[10px] text-[var(--color-text-tertiary)]">
+          {[change.side, change.comparison_source, change.comparison_key]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+      )}
       <div className="mt-0.5 text-[10px] text-[var(--color-text-tertiary)]">
         {change.provider_repo} ·{" "}
         {providerHref ? (
@@ -122,8 +129,8 @@ export function BreakingChangeRow({
         <div className="mt-1.5">
           <div className="text-[10px] font-bold text-[var(--color-text-tertiary)]">
             {change.impacted_consumers.length === 1
-              ? "Endangers 1 consumer"
-              : `Endangers ${change.impacted_consumers.length} consumers`}
+              ? "1 endpoint-exposed consumer"
+              : `${change.impacted_consumers.length} endpoint-exposed consumers`}
           </div>
           {change.impacted_consumers.map((c) => (
             <ConsumerLine

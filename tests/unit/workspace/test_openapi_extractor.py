@@ -41,7 +41,7 @@ def test_openapi_30_recovers_recursive_shapes_enums_and_provenance() -> None:
     assert row.meta["schema_operation_pointer"] == "#/paths/~1orders/post"
     assert row.schema is not None
     assert row.schema.source_version == "3.0.4"
-    assert row.schema.comparison_ready is False
+    assert row.schema.comparison_ready is True
     assert row.schema.request_state == row.schema.response_state == "complete"
 
     body = row.schema.request_fields[0]
@@ -85,6 +85,64 @@ def test_parameters_merge_by_location_and_operation_overrides_path_item() -> Non
     assert _field(response.items.children, "id").type == "integer"
 
 
+@pytest.mark.parametrize(
+    ("serialization", "expected_state"),
+    [
+        ("style: form\n          explode: true\n          allowReserved: false", "complete"),
+        ("style: pipeDelimited", "unsupported"),
+        ("style: form\n          explode: false", "unsupported"),
+        ("style: form\n          allowReserved: true", "unsupported"),
+    ],
+)
+def test_parameter_serialization_is_complete_only_for_modeled_defaults(
+    serialization: str, expected_state: str
+) -> None:
+    document = f"""
+openapi: 3.0.4
+paths:
+  /search:
+    get:
+      parameters:
+        - in: query
+          name: tags
+          {serialization}
+          schema:
+            type: array
+            items: {{type: string}}
+      responses:
+        '204': {{description: empty}}
+"""
+    rows = OpenApiExtractor().extract(Path("."), "api", files=[("openapi.yaml", ".yaml", document)])
+
+    assert rows[0].schema is not None
+    assert rows[0].schema.request_state == expected_state
+    if expected_state == "unsupported":
+        assert rows[0].schema.issues[0].code == "openapi_parameter_serialization_unsupported"
+
+
+@pytest.mark.parametrize("value", [".nan", ".inf", "-.inf"])
+def test_non_finite_numeric_enums_are_unresolved(value: str) -> None:
+    document = f"""
+openapi: 3.0.4
+paths:
+  /numbers:
+    get:
+      parameters:
+        - in: query
+          name: value
+          schema:
+            type: number
+            enum: [{value}]
+      responses:
+        '204': {{description: empty}}
+"""
+    rows = OpenApiExtractor().extract(Path("."), "api", files=[("openapi.yaml", ".yaml", document)])
+
+    assert rows[0].schema is not None
+    assert rows[0].schema.request_state == "unresolved"
+    assert rows[0].schema.issues[0].code == "openapi_enum_number_non_finite"
+
+
 def test_unsupported_constructs_refuse_only_the_affected_side() -> None:
     rows, stats = _extract("unresolved-3.2.yaml")
 
@@ -95,12 +153,7 @@ def test_unsupported_constructs_refuse_only_the_affected_side() -> None:
     assert by_path["http::POST::/choice"].response_state == "unresolved"
     assert by_path["http::GET::/tree"].response_state == "unresolved"
     assert by_path["http::GET::/xml"].response_state == "unsupported"
-    assert {
-        issue.code
-        for schema in by_path.values()
-        if schema
-        for issue in schema.issues
-    } == {
+    assert {issue.code for schema in by_path.values() if schema for issue in schema.issues} == {
         "openapi_remote_ref",
         "openapi_composition_unsupported",
         "openapi_response_content_missing",

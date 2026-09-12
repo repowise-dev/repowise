@@ -18,6 +18,8 @@ import {
   contractLede,
   contractMetaEntries,
   contractMetaLabel,
+  flattenSchemaFields,
+  schemaFieldConstraints,
 } from "@repowise-dev/ui/workspace/contract-facts";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
@@ -408,6 +410,7 @@ function noSchemaProse(type: string): string {
 }
 
 function FieldTable({ caption, fields }: { caption: string; fields: SchemaField[] }) {
+  const rows = flattenSchemaFields(fields);
   return (
     <TableScroll>
       <table className="w-full border-collapse text-left">
@@ -422,17 +425,14 @@ function FieldTable({ caption, fields }: { caption: string; fields: SchemaField[
           </tr>
         </thead>
         <tbody>
-          {fields.map((f, i) => (
+          {rows.map(({ field: f, path }, i) => (
             <tr
-              key={`${f.name}|${f.number ?? i}`}
+              key={`${path}|${f.number ?? i}`}
               className="border-t border-[var(--color-border-default)]"
             >
               <Td>
                 <span className="font-mono text-xs text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
-                  {f.name}
-                  {f.repeated && (
-                    <span className="text-[var(--color-text-tertiary)]"> (repeated)</span>
-                  )}
+                  {path}
                 </span>
               </Td>
               <Td>
@@ -442,7 +442,7 @@ function FieldTable({ caption, fields }: { caption: string; fields: SchemaField[
               </Td>
               <Td>
                 <span className="text-xs text-[var(--color-text-tertiary)]">
-                  {f.required ? "Required" : "Optional"}
+                  {schemaFieldConstraints(f)}
                 </span>
               </Td>
             </tr>

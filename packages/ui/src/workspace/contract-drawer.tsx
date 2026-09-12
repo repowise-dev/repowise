@@ -36,6 +36,8 @@ import {
   contractMetaEntries,
   contractMetaLabel,
   contractMetaString,
+  flattenSchemaFields,
+  schemaFieldConstraints,
   type ContractEntry,
 } from "./contract-facts";
 
@@ -311,26 +313,24 @@ function CounterpartRow({
 }
 
 function FieldList({ caption, fields }: { caption: string; fields: SchemaField[] }) {
+  const rows = flattenSchemaFields(fields);
   return (
     <div>
       <div className="mb-1 text-xs font-medium text-[var(--color-text-secondary)]">{caption}</div>
       <ul className="flex flex-col">
-        {fields.map((f, i) => (
+        {rows.map(({ field: f, path }, i) => (
           <li
-            key={`${f.name}|${f.number ?? i}`}
+            key={`${path}|${f.number ?? i}`}
             className="flex flex-wrap items-baseline gap-x-2 border-t border-[var(--color-border-default)] py-1"
           >
             <span className="font-mono text-xs text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
-              {f.name}
-              {f.repeated ? (
-                <span className="text-[var(--color-text-tertiary)]"> (repeated)</span>
-              ) : null}
+              {path}
             </span>
             <span className="font-mono text-xs text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
               {f.type}
             </span>
             <span className="text-[11px] text-[var(--color-text-tertiary)]">
-              {f.required ? "Required" : "Optional"}
+              {schemaFieldConstraints(f)}
             </span>
           </li>
         ))}
