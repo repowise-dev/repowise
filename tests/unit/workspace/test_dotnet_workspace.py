@@ -53,7 +53,9 @@ class TestAspNetHttpExtraction:
             )
         )
         contracts = HttpExtractor().extract(tmp_path, repo_alias="api")
-        provider_paths = {(c.meta["method"], c.meta["path"]) for c in contracts if c.role == "provider"}
+        provider_paths = {
+            (c.meta["method"], c.meta["path"]) for c in contracts if c.role == "provider"
+        }
         assert ("GET", "/api/users/{param}") in provider_paths
         assert ("POST", "/api/users") in provider_paths
 
@@ -155,8 +157,9 @@ class TestGrpcDotnetExtraction:
 # ---------------------------------------------------------------------------
 
 
-def _csproj(deps: list[str] = (), assembly_name: str | None = None,
-            packages: list[str] = ()) -> str:
+def _csproj(
+    deps: list[str] = (), assembly_name: str | None = None, packages: list[str] = ()
+) -> str:
     refs = "\n".join(f'    <ProjectReference Include="{p}" />' for p in deps)
     pkgs = "\n".join(f'    <PackageReference Include="{p}" Version="1.0.0" />' for p in packages)
     asm = f"<AssemblyName>{assembly_name}</AssemblyName>" if assembly_name else ""
@@ -195,9 +198,7 @@ class TestScanCsproj:
         )
         deps = _scan_csproj(repos["api"], repos, alias="api")
         assert any(
-            d.source_repo == "api"
-            and d.target_repo == "shared"
-            and d.kind == "dotnet_project_ref"
+            d.source_repo == "api" and d.target_repo == "shared" and d.kind == "dotnet_project_ref"
             for d in deps
         )
 
@@ -205,9 +206,7 @@ class TestScanCsproj:
         repos = self._two_repo_workspace(tmp_path)
         # api consumes the published Acme.Common NuGet package whose
         # AssemblyName lives in `shared-libs`.
-        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(
-            _csproj(packages=["Acme.Common"])
-        )
+        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(_csproj(packages=["Acme.Common"]))
         deps = _scan_csproj(repos["api"], repos, alias="api")
         assert any(
             d.source_repo == "api"
@@ -244,27 +243,39 @@ class TestScanCsproj:
         to be found once.
         """
         repos = self._two_repo_workspace(tmp_path)
-        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(
-            _csproj(packages=["Acme.Common"])
-        )
+        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(_csproj(packages=["Acme.Common"]))
 
         walked: list[Path] = []
-        real_iter_glob = fs_walk.iter_glob
+        real_walk_repo = fs_walk.walk_repo
 
-        def counting_iter_glob(root, patterns, **kwargs):
-            if patterns == "*.csproj":
-                walked.append(Path(root))
-            return real_iter_glob(root, patterns, **kwargs)
+        def counting_walk_repo(root, **kwargs):
+            walked.append(Path(root))
+            return real_walk_repo(root, **kwargs)
 
-        monkeypatch.setattr(fs_walk, "iter_glob", counting_iter_glob)
+        monkeypatch.setattr(fs_walk, "walk_repo", counting_walk_repo)
 
         deps = detect_package_dependencies(repos)
 
         assert len(walked) == len(repos), (
-            f"expected one *.csproj walk per repo ({len(repos)}), got {len(walked)}: {walked}"
+            f"expected one project-manifest walk per repo ({len(repos)}), "
+            f"got {len(walked)}: {walked}"
         )
         # The saving must not have cost us the dependency itself.
         assert any(d.kind == "dotnet_nuget_internal" for d in deps)
+
+    def test_shared_walk_ignores_csproj_files_in_packages_cache(self, tmp_path: Path) -> None:
+        repos = self._two_repo_workspace(tmp_path)
+        cached = repos["api"] / "packages" / "cached"
+        cached.mkdir(parents=True)
+        (cached / "Cached.csproj").write_text(
+            _csproj(assembly_name="Acme.Cached", packages=["Acme.Common"])
+        )
+
+        index = _index_csproj_files(repos)
+        deps = detect_package_dependencies(repos)
+
+        assert all("packages" not in path.parts for path in index.by_repo["api"])
+        assert all(dep.source_manifest != "packages/cached/Cached.csproj" for dep in deps)
 
     def test_shared_index_matches_standalone_scan(self, tmp_path: Path) -> None:
         """A shared index must produce exactly what an isolated scan produces."""
@@ -294,12 +305,8 @@ class TestScanCsproj:
         repos = self._two_repo_workspace(tmp_path)
         rival = tmp_path / "rival-libs"
         (rival / "src" / "Common").mkdir(parents=True)
-        (rival / "src" / "Common" / "Rival.csproj").write_text(
-            _csproj(assembly_name="Acme.Common")
-        )
-        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(
-            _csproj(packages=["Acme.Common"])
-        )
+        (rival / "src" / "Common" / "Rival.csproj").write_text(_csproj(assembly_name="Acme.Common"))
+        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(_csproj(packages=["Acme.Common"]))
         # "shared" then "rival": last one to claim the name owns it.
         ordered = {"api": repos["api"], "shared": repos["shared"], "rival": rival}
 
@@ -316,12 +323,8 @@ class TestScanCsproj:
         repos = self._two_repo_workspace(tmp_path)
         other = tmp_path / "other-api"
         (other / "src" / "Api").mkdir(parents=True)
-        (other / "src" / "Api" / "Other.csproj").write_text(
-            _csproj(packages=["Acme.Common"])
-        )
+        (other / "src" / "Api" / "Other.csproj").write_text(_csproj(packages=["Acme.Common"]))
         # repo_paths["api"] holds no .csproj at all; the scanned tree does.
-        deps = _scan_csproj(
-            other, repos, alias="api", csproj_index=_index_csproj_files(repos)
-        )
+        deps = _scan_csproj(other, repos, alias="api", csproj_index=_index_csproj_files(repos))
         assert [d.target_repo for d in deps] == ["shared"]
         assert deps[0].source_manifest == "src/Api/Other.csproj"

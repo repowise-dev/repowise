@@ -29,6 +29,8 @@ class CrossRepoEnricher:
         self._co_changes: list[dict] = []
         self._total_co_changes: int = 0
         self._package_deps: list[dict] = []
+        self._package_diagnostics: list[dict] = []
+        self._total_package_diagnostics: int = 0
         self._repo_summaries: dict[str, dict] = {}
         self._cross_repo_analysis: dict = {
             "status": "unavailable",
@@ -122,10 +124,20 @@ class CrossRepoEnricher:
         # above. Equal to len(self._co_changes) when nothing was dropped.
         self._total_co_changes = data.get("total_co_changes", len(self._co_changes))
         self._package_deps = data.get("package_deps", [])
+        self._package_diagnostics = data.get("package_diagnostics", [])
+        self._total_package_diagnostics = data.get(
+            "total_package_diagnostics",
+            len(self._package_diagnostics),
+        )
         self._repo_summaries = data.get("repo_summaries", {})
         self._cross_repo_analysis = {
             "status": (
-                "partial" if self._total_co_changes > len(self._co_changes) else "available"
+                "partial"
+                if (
+                    self._total_co_changes > len(self._co_changes)
+                    or self._total_package_diagnostics > len(self._package_diagnostics)
+                )
+                else "available"
             ),
             "contract_version": data.get("version", 1),
             "generated_at": data.get("generated_at"),
@@ -137,6 +149,10 @@ class CrossRepoEnricher:
             "source_co_changes_total": self._total_co_changes,
             "source_co_changes_emitted": len(self._co_changes),
             "source_truncated": self._total_co_changes > len(self._co_changes),
+            "package_diagnostics_total": self._total_package_diagnostics,
+            "package_diagnostics_emitted": len(self._package_diagnostics),
+            "package_diagnostics_truncated": self._total_package_diagnostics
+            > len(self._package_diagnostics),
         }
 
         # Build co-change index: (repo, file) -> list of partner dicts
@@ -193,6 +209,11 @@ class CrossRepoEnricher:
                     "target_repo": tgt_repo,
                     "source_manifest": pd.get("source_manifest", ""),
                     "kind": pd.get("kind", ""),
+                    "target_package": pd.get("target_package", ""),
+                    "target_manifest": pd.get("target_manifest", ""),
+                    "requested_version": pd.get("requested_version"),
+                    "scope": pd.get("scope", ""),
+                    "resolution_basis": pd.get("resolution_basis", ""),
                 }
             )
             # Reverse: who depends on target_repo
@@ -203,6 +224,11 @@ class CrossRepoEnricher:
                     "target_repo": tgt_repo,
                     "source_manifest": pd.get("source_manifest", ""),
                     "kind": pd.get("kind", ""),
+                    "target_package": pd.get("target_package", ""),
+                    "target_manifest": pd.get("target_manifest", ""),
+                    "requested_version": pd.get("requested_version"),
+                    "scope": pd.get("scope", ""),
+                    "resolution_basis": pd.get("resolution_basis", ""),
                 }
             )
         if malformed_co_changes or malformed_package_deps:
@@ -349,6 +375,8 @@ class CrossRepoEnricher:
         self._co_changes = []
         self._total_co_changes = 0
         self._package_deps = []
+        self._package_diagnostics = []
+        self._total_package_diagnostics = 0
         self._repo_summaries = {}
         self._cross_repo_analysis = {
             "status": "unavailable",
@@ -394,7 +422,12 @@ class CrossRepoEnricher:
     @property
     def has_data(self) -> bool:
         """True if any cross-repo signals are available."""
-        return bool(self._co_changes or self._package_deps or self._contract_links)
+        return bool(
+            self._co_changes
+            or self._package_deps
+            or self._package_diagnostics
+            or self._contract_links
+        )
 
     @property
     def has_contract_data(self) -> bool:
@@ -522,7 +555,8 @@ class CrossRepoEnricher:
     def get_package_deps(self, repo_alias: str) -> list[dict]:
         """Return package dependencies where *repo_alias* depends on other repos.
 
-        Each dict: ``{target_repo, source_manifest, kind}``.
+        Maven rows also carry coordinate, version, scope, target manifest,
+        and resolution-basis evidence.
         """
         return self._package_dep_index.get(repo_alias, [])
 
@@ -556,6 +590,15 @@ class CrossRepoEnricher:
         return {
             "co_change_count": len(self._co_changes),
             "package_dep_count": len(self._package_deps),
+            "package_diagnostic_count": self._total_package_diagnostics,
+            "package_diagnostics_emitted": len(self._package_diagnostics),
+            "package_diagnostic_codes": sorted(
+                {
+                    diagnostic.get("code", "")
+                    for diagnostic in self._package_diagnostics
+                    if diagnostic.get("code")
+                }
+            ),
             "top_connections": top_connections,
         }
 

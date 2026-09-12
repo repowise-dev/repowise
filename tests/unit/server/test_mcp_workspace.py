@@ -801,6 +801,61 @@ def test_enricher_get_cross_repo_summary(enricher_data):
     assert len(summary["top_connections"]) >= 1
 
 
+def test_enricher_serves_maven_evidence_and_bounded_diagnostics(tmp_path):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    path = tmp_path / "cross_repo_edges.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "package_deps": [
+                    {
+                        "source_repo": "consumer",
+                        "target_repo": "producer",
+                        "source_manifest": "app/pom.xml",
+                        "target_manifest": "shared/pom.xml",
+                        "target_package": "com.acme:shared",
+                        "requested_version": "1.2.0",
+                        "scope": "compile",
+                        "resolution_basis": "unique_workspace_coordinate",
+                        "kind": "maven_coordinate",
+                    }
+                ],
+                "package_diagnostics": [
+                    {
+                        "repo": "consumer",
+                        "source_manifest": "pom.xml",
+                        "code": "external_coordinate",
+                        "detail": "org.example:outside",
+                    }
+                ],
+                "total_package_diagnostics": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    enricher = CrossRepoEnricher(path)
+
+    assert enricher.get_package_deps("consumer") == [
+        {
+            "target_repo": "producer",
+            "source_manifest": "app/pom.xml",
+            "kind": "maven_coordinate",
+            "target_package": "com.acme:shared",
+            "target_manifest": "shared/pom.xml",
+            "requested_version": "1.2.0",
+            "scope": "compile",
+            "resolution_basis": "unique_workspace_coordinate",
+        }
+    ]
+    summary = enricher.get_cross_repo_summary()
+    assert summary["package_diagnostic_count"] == 4
+    assert summary["package_diagnostics_emitted"] == 1
+    assert summary["package_diagnostic_codes"] == ["external_coordinate"]
+
+
 # ---------------------------------------------------------------------------
 # MCP tool enrichment with cross-repo data
 # ---------------------------------------------------------------------------

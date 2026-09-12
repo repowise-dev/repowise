@@ -20,6 +20,9 @@ export interface RepoStats {
 export interface WorkspaceCrossRepoSummary {
   co_change_count: number;
   package_dep_count: number;
+  package_diagnostic_count?: number;
+  package_diagnostics_emitted?: number;
+  package_diagnostic_codes?: string[];
   top_connections: Array<{ repos: string[]; edge_count: number }>;
 }
 
@@ -72,6 +75,11 @@ export interface WorkspacePackageDepEntry {
   target_repo: string;
   target_package: string;
   kind: string;
+  /** Maven evidence; absent for path-based ecosystems. */
+  target_manifest?: string;
+  requested_version?: string | null;
+  scope?: string;
+  resolution_basis?: string;
 }
 
 // ---------------------------------------------------------------------------

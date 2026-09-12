@@ -2832,6 +2832,9 @@ export interface WorkspaceContractsResponse {
 export interface WorkspaceCrossRepoSummary {
   co_change_count?: number;
   package_dep_count?: number;
+  package_diagnostic_count?: number;
+  package_diagnostics_emitted?: number;
+  package_diagnostic_codes?: string[];
   top_connections?: Record<string, unknown>[];
 }
 

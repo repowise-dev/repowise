@@ -209,6 +209,29 @@ def test_package_dep_edge_points_dependent_to_dependency():
     assert edge.confidence == 1.0
 
 
+def test_maven_package_edge_keeps_coordinate_evidence():
+    overlay = CrossRepoOverlay(
+        package_deps=[
+            CrossRepoPackageDep(
+                source_repo="consumer",
+                target_repo="producer",
+                source_manifest="app/pom.xml",
+                target_manifest="shared/pom.xml",
+                target_package="com.acme:shared",
+                requested_version="1.2.0",
+                scope="compile",
+                resolution_basis="unique_workspace_coordinate",
+                kind="maven_coordinate",
+            )
+        ]
+    )
+
+    graph = build_system_graph([], [], overlay, {})
+    edge = _edges_by_key(graph)[("consumer", "producer", "package")]
+
+    assert edge.contract_refs == ["maven_coordinate:com.acme:shared:app/pom.xml"]
+
+
 def test_cochange_edge_is_behavioral_and_undirected():
     overlay = CrossRepoOverlay(
         co_changes=[

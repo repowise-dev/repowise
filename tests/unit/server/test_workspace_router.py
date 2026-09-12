@@ -329,6 +329,9 @@ class TestGetWorkspace:
         data = resp.json()
         assert data["cross_repo_summary"]["co_change_count"] == 1
         assert data["cross_repo_summary"]["package_dep_count"] == 1
+        assert data["cross_repo_summary"]["package_diagnostic_count"] == 0
+        assert data["cross_repo_summary"]["package_diagnostics_emitted"] == 0
+        assert data["cross_repo_summary"]["package_diagnostic_codes"] == []
 
     @pytest.mark.asyncio
     async def test_contract_summary(self, tmp_path: Path) -> None:

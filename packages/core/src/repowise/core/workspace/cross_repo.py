@@ -67,6 +67,10 @@ _MAX_EDGES_PER_REPO_PAIR: int = 50
 # Per-session cap on files paired per side, guarding the O(N*M) cross-product
 # against sprawling release/codemod sessions.
 _MAX_FILES_PER_SESSION_SIDE: int = 20
+# Package non-matches are useful evidence but ordinary workspaces can declare
+# thousands of external libraries. Persist a deterministic sample plus the
+# uncapped total so diagnostics cannot make the overlay unbounded.
+_MAX_PACKAGE_DIAGNOSTICS: int = 200
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +181,20 @@ class CrossRepoPackageDep:
     source_repo: str
     target_repo: str
     source_manifest: str
-    kind: str  # npm_local_path, pip_path, cargo_path, go_replace
+    kind: str  # npm_local_path, pip_path, cargo_path, go_replace, maven_coordinate
+    target_package: str = ""
+    target_manifest: str = ""
+    requested_version: str | None = None
+    scope: str = ""
+    resolution_basis: str = ""
+
+
+@dataclass
+class CrossRepoPackageDiagnostic:
+    repo: str
+    source_manifest: str
+    code: str
+    detail: str = ""
 
 
 @dataclass
@@ -186,6 +203,7 @@ class CrossRepoOverlay:
     generated_at: str = ""
     co_changes: list[CrossRepoCoChange] = field(default_factory=list)
     package_deps: list[CrossRepoPackageDep] = field(default_factory=list)
+    package_diagnostics: list[CrossRepoPackageDiagnostic] = field(default_factory=list)
     repo_summaries: dict[str, dict] = field(default_factory=dict)
     #: How many pairs cleared the strength/session thresholds before
     #: ``_MAX_EDGES`` / ``_MAX_EDGES_PER_REPO_PAIR`` trimmed ``co_changes``.
@@ -194,6 +212,7 @@ class CrossRepoOverlay:
     #: session before pairing, so pairs involving an evicted file are in
     #: neither number.
     total_co_changes: int = 0
+    total_package_diagnostics: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -201,8 +220,11 @@ class CrossRepoOverlay:
             "generated_at": self.generated_at,
             "co_changes": [asdict(c) for c in self.co_changes],
             "package_deps": [asdict(d) for d in self.package_deps],
+            "package_diagnostics": [asdict(d) for d in self.package_diagnostics],
             "repo_summaries": self.repo_summaries,
             "total_co_changes": self.total_co_changes or len(self.co_changes),
+            "total_package_diagnostics": self.total_package_diagnostics
+            or len(self.package_diagnostics),
         }
 
     @classmethod
@@ -213,8 +235,15 @@ class CrossRepoOverlay:
             generated_at=data.get("generated_at", ""),
             co_changes=co_changes,
             package_deps=[CrossRepoPackageDep(**d) for d in data.get("package_deps", [])],
+            package_diagnostics=[
+                CrossRepoPackageDiagnostic(**d) for d in data.get("package_diagnostics", [])
+            ],
             repo_summaries=data.get("repo_summaries", {}),
             total_co_changes=data.get("total_co_changes", len(co_changes)),
+            total_package_diagnostics=data.get(
+                "total_package_diagnostics",
+                len(data.get("package_diagnostics", [])),
+            ),
         )
 
 
@@ -529,9 +558,7 @@ def detect_cross_repo_co_changes(
             continue
         last_ts = pair_last_ts.get((src_repo, src_file, tgt_repo, tgt_file), 0)
         last_date = (
-            datetime.fromtimestamp(last_ts, tz=UTC).strftime("%Y-%m-%d")
-            if last_ts > 0
-            else ""
+            datetime.fromtimestamp(last_ts, tz=UTC).strftime("%Y-%m-%d") if last_ts > 0 else ""
         )
         results.append(
             CrossRepoCoChange(
@@ -582,10 +609,20 @@ def _resolve_target_repo(
     """Resolve a relative path reference to a repo alias, or None."""
     try:
         target_abs = (source_repo_path / relative_ref).resolve()
-        for alias, repo_path in repo_paths.items():
-            if target_abs == repo_path.resolve() or str(target_abs).startswith(
-                str(repo_path.resolve())
-            ):
+        # Most-specific root first makes physically nested selected repos
+        # deterministic. Path.relative_to supplies the separator-aware
+        # containment check that string prefixes (``lib`` vs ``lib-old``) do not.
+        roots = sorted(
+            repo_paths.items(),
+            key=lambda item: len(item[1].parts),
+            reverse=True,
+        )
+        for alias, repo_path in roots:
+            try:
+                target_abs.relative_to(repo_path)
+            except ValueError:
+                continue
+            else:
                 return alias
     except Exception:
         # A manifest reference that cannot be resolved to a path is the one
@@ -801,11 +838,12 @@ def _scan_go_mod(
 _CSPROJ_SKIP_DIRS = frozenset(
     {"bin", "obj", ".vs", "packages", "node_modules", ".git", "TestResults"}
 )
+_CSPROJ_SKIP_DIRS_LOWER = frozenset(name.lower() for name in _CSPROJ_SKIP_DIRS)
 
 
 @dataclass
 class _CsprojIndex:
-    """Every ``.csproj`` in the workspace, walked and parsed exactly once.
+    """Project manifests in the workspace, walked and parsed exactly once.
 
     ``_scan_csproj`` needs two things: the assembly-name → repo-alias map
     (built from *all* repos) and the current repo's own project files. Built
@@ -819,27 +857,53 @@ class _CsprojIndex:
     # Parsed once and shared; ElementTree instances are only ever read.
     trees: dict[Path, Any] = field(default_factory=dict)
     by_repo: dict[str, list[Path]] = field(default_factory=dict)
+    poms_by_repo: dict[str, list[Path]] = field(default_factory=dict)
     assembly_to_repo: dict[str, str] = field(default_factory=dict)
 
 
-def _walk_csproj(repo_root: Path, index: _CsprojIndex) -> list[Path]:
-    """Walk one repo for ``.csproj`` files, parsing each into *index.trees*."""
+def _walk_project_manifests(
+    repo_root: Path,
+    index: _CsprojIndex,
+) -> tuple[list[Path], list[Path]]:
+    """Collect Maven and .NET project manifests in one pruned repo walk."""
     from xml.etree import ElementTree as ET
 
-    from repowise.core.fs_walk import iter_glob
+    from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 
-    found: list[Path] = []
-    # Each *selected* workspace repo is walked from its own root; iter_glob's
-    # nested-git pruning keeps any physically-nested unselected repo out.
-    for csproj in iter_glob(repo_root, "*.csproj"):
-        if any(part in _CSPROJ_SKIP_DIRS for part in csproj.parts):
-            continue
-        try:
-            index.trees[csproj] = ET.parse(csproj)
-        except (ET.ParseError, OSError):
-            continue
-        found.append(csproj)
-    return found
+    csprojects: list[Path] = []
+    poms: list[Path] = []
+    # ``packages`` is a .NET package cache convention but also a legitimate
+    # Maven module directory, so it cannot be pruned for the shared walk.
+    prune = PRUNED_DIRS | {
+        "target",
+        "dist",
+        "build",
+        "bin",
+        "obj",
+        ".vs",
+        "TestResults",
+    }
+    for dirpath, _dirnames, filenames in walk_repo(repo_root, prune_dirs=prune):
+        for filename in sorted(filenames):
+            path = dirpath / filename
+            if filename == "pom.xml":
+                poms.append(path)
+            elif filename.lower().endswith(".csproj"):
+                relative_dirs = path.relative_to(repo_root).parts[:-1]
+                if any(part.lower() in _CSPROJ_SKIP_DIRS_LOWER for part in relative_dirs):
+                    continue
+                try:
+                    index.trees[path] = ET.parse(path)
+                except (ET.ParseError, OSError):
+                    continue
+                csprojects.append(path)
+    return csprojects, poms
+
+
+def _walk_csproj(repo_root: Path, index: _CsprojIndex) -> list[Path]:
+    """Compatibility wrapper for a standalone .NET project scan."""
+    projects, _poms = _walk_project_manifests(repo_root, index)
+    return projects
 
 
 def _assembly_name(tree: Any, csproj: Path) -> str:
@@ -857,10 +921,11 @@ def _index_csproj_files(repo_paths: dict[str, Path]) -> _CsprojIndex:
     # Insertion order matches the previous per-alias rebuild, so a name
     # defined in two repos still resolves to the last repo in repo_paths.
     for alias, path in repo_paths.items():
-        found = _walk_csproj(path, index)
+        found, poms = _walk_project_manifests(path, index)
         for csproj in found:
             index.assembly_to_repo[_assembly_name(index.trees[csproj], csproj)] = alias
         index.by_repo[alias] = found
+        index.poms_by_repo[alias] = poms
     return index
 
 
@@ -950,34 +1015,123 @@ def detect_package_dependencies(
     repo_paths: dict[str, Path],
 ) -> list[CrossRepoPackageDep]:
     """Scan all repos for manifest-based cross-repo dependencies."""
+    dependencies, _diagnostics, _total_diagnostics = detect_package_dependencies_with_diagnostics(
+        repo_paths
+    )
+    return dependencies
+
+
+def detect_package_dependencies_with_diagnostics(
+    repo_paths: dict[str, Path],
+) -> tuple[
+    list[CrossRepoPackageDep],
+    list[CrossRepoPackageDiagnostic],
+    int,
+]:
+    """Scan package manifests and retain bounded Maven non-match evidence."""
+
     results: list[CrossRepoPackageDep] = []
-    seen: set[tuple[str, str, str]] = set()  # (source, target, kind)
+    seen: set[tuple[str, str, str, str, str]] = set()
+    resolved_repo_paths = {alias: path.resolve() for alias, path in repo_paths.items()}
 
     # One walk per repo, shared across every alias. The .csproj scan is the
-    # only manifest scanner that walks the tree rather than reading a fixed
-    # root file, and it needs a workspace-wide view, so building its index
-    # per repo re-walked every tree once per repo.
-    csproj_index = _index_csproj_files(repo_paths)
+    # only existing manifest scanner that walks the tree rather than reading
+    # a fixed root file. The same pass now inventories Maven POMs as well.
+    project_index = _index_csproj_files(resolved_repo_paths)
 
-    for alias, path in repo_paths.items():
+    for alias, path in resolved_repo_paths.items():
         for scanner in (
             _scan_package_json,
             _scan_pyproject_toml,
             _scan_cargo_toml,
             _scan_go_mod,
         ):
-            for dep in scanner(path, repo_paths, alias):
-                key = (dep.source_repo, dep.target_repo, dep.kind)
+            for dep in scanner(path, resolved_repo_paths, alias):
+                key = (
+                    dep.source_repo,
+                    dep.target_repo,
+                    dep.source_manifest,
+                    dep.kind,
+                    dep.target_package,
+                )
                 if key not in seen:
                     seen.add(key)
                     results.append(dep)
-        for dep in _scan_csproj(path, repo_paths, alias, csproj_index=csproj_index):
-            key = (dep.source_repo, dep.target_repo, dep.kind)
+        for dep in _scan_csproj(
+            path,
+            resolved_repo_paths,
+            alias,
+            csproj_index=project_index,
+        ):
+            key = (
+                dep.source_repo,
+                dep.target_repo,
+                dep.source_manifest,
+                dep.kind,
+                dep.target_package,
+            )
             if key not in seen:
                 seen.add(key)
                 results.append(dep)
 
-    return results
+    from .maven_dependencies import detect_maven_dependencies
+
+    maven_links, maven_diagnostics = detect_maven_dependencies(
+        resolved_repo_paths,
+        project_index.poms_by_repo,
+    )
+    for link in maven_links:
+        dep = CrossRepoPackageDep(
+            source_repo=link.source_repo,
+            target_repo=link.target_repo,
+            source_manifest=link.source_manifest,
+            kind="maven_coordinate",
+            target_package=link.target_package,
+            target_manifest=link.target_manifest,
+            requested_version=link.requested_version,
+            scope=link.scope,
+            resolution_basis=link.resolution_basis,
+        )
+        key = (
+            dep.source_repo,
+            dep.target_repo,
+            dep.source_manifest,
+            dep.kind,
+            dep.target_package,
+        )
+        if key not in seen:
+            seen.add(key)
+            results.append(dep)
+
+    results.sort(
+        key=lambda dep: (
+            dep.source_repo,
+            dep.target_repo,
+            dep.source_manifest,
+            dep.kind,
+            dep.target_package,
+        )
+    )
+    diagnostics = sorted(
+        (
+            CrossRepoPackageDiagnostic(
+                repo=item.repo,
+                source_manifest=item.manifest,
+                code=item.code,
+                detail=item.detail,
+            )
+            for item in maven_diagnostics
+        ),
+        key=lambda item: (
+            item.code == "external_coordinate",
+            item.repo,
+            item.source_manifest,
+            item.code,
+            item.detail,
+        ),
+    )
+    total_diagnostics = len(diagnostics)
+    return results, diagnostics[:_MAX_PACKAGE_DIAGNOSTICS], total_diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -989,6 +1143,7 @@ def _build_repo_summaries(
     repo_paths: dict[str, Path],
     co_changes: list[CrossRepoCoChange],
     package_deps: list[CrossRepoPackageDep],
+    package_diagnostics: list[CrossRepoPackageDiagnostic] | None = None,
 ) -> dict[str, dict]:
     """Build per-repo summary stats."""
     summaries: dict[str, dict] = {}
@@ -1002,9 +1157,17 @@ def _build_repo_summaries(
         edge_counts[pd.source_repo] += 1
         edge_counts[pd.target_repo] += 1
 
+    diagnostic_counts: dict[str, int] = defaultdict(int)
+    diagnostic_codes: dict[str, set[str]] = defaultdict(set)
+    for diagnostic in package_diagnostics or []:
+        diagnostic_counts[diagnostic.repo] += 1
+        diagnostic_codes[diagnostic.repo].add(diagnostic.code)
+
     for alias in repo_paths:
         summaries[alias] = {
             "cross_repo_edge_count": edge_counts.get(alias, 0),
+            "package_diagnostics_emitted": diagnostic_counts.get(alias, 0),
+            "package_diagnostic_codes": sorted(diagnostic_codes.get(alias, set())),
         }
 
     return summaries
@@ -1021,9 +1184,7 @@ def save_overlay(overlay: CrossRepoOverlay, workspace_root: Path) -> Path:
     out_path = data_dir / CROSS_REPO_EDGES_FILENAME
     # Atomic: the MCP enricher reads these artifacts from a separate
     # process and must never observe a half-written file.
-    atomic_write_text(
-        out_path, json.dumps(overlay.to_dict(), indent=2, ensure_ascii=False)
-    )
+    atomic_write_text(out_path, json.dumps(overlay.to_dict(), indent=2, ensure_ascii=False))
     return out_path
 
 
@@ -1097,23 +1258,31 @@ async def run_cross_repo_analysis(
     # Co-change detection (CPU-bound git subprocess calls)
     import asyncio
 
-    co_changes, total_co_changes = await asyncio.to_thread(
-        detect_cross_repo_co_changes, repo_paths
-    )
+    co_changes, total_co_changes = await asyncio.to_thread(detect_cross_repo_co_changes, repo_paths)
 
     # Package dependency detection (file I/O)
-    package_deps = await asyncio.to_thread(detect_package_dependencies, repo_paths)
+    package_deps, package_diagnostics, total_package_diagnostics = await asyncio.to_thread(
+        detect_package_dependencies_with_diagnostics,
+        repo_paths,
+    )
 
     # Build summaries
-    repo_summaries = _build_repo_summaries(repo_paths, co_changes, package_deps)
+    repo_summaries = _build_repo_summaries(
+        repo_paths,
+        co_changes,
+        package_deps,
+        package_diagnostics,
+    )
 
     overlay = CrossRepoOverlay(
         version=_OVERLAY_VERSION,
         generated_at=datetime.now(UTC).isoformat(),
         co_changes=co_changes,
         package_deps=package_deps,
+        package_diagnostics=package_diagnostics,
         repo_summaries=repo_summaries,
         total_co_changes=total_co_changes,
+        total_package_diagnostics=total_package_diagnostics,
     )
 
     # Persist

@@ -41,6 +41,9 @@ class WorkspaceRepoEntry(BaseModel):
 class WorkspaceCrossRepoSummary(BaseModel):
     co_change_count: int = 0
     package_dep_count: int = 0
+    package_diagnostic_count: int = 0
+    package_diagnostics_emitted: int = 0
+    package_diagnostic_codes: list[str] = []
     top_connections: list[dict] = []
 
 

@@ -289,7 +289,24 @@ excluded from matching and reported under the `external_host` diagnostics reason
 
 ### Package Dependency Scanning
 
-Reads package manifests (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `.csproj`) to detect when one repo depends on another as a package. Maven `pom.xml` is not scanned, so a Maven repo gets no package edges.
+Reads package manifests (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`,
+`.csproj`, and Maven `pom.xml`) to detect when one repo depends on another as a
+package or project.
+
+Maven matching is filesystem-only and coordinate-based. Repowise resolves local
+reactor modules, local parents, properties, and dependency-management versions,
+then links an active direct compile/runtime dependency only when exactly one
+selected workspace project publishes that `groupId:artifactId`. Test, provided,
+system, optional, profile-only, ambiguous, and external dependencies do not create
+production package edges. Bounded diagnostics retain the reason for Maven
+non-matches. When a repository has a root `pom.xml`, only that declared reactor is
+eligible; unrelated nested example or fixture POMs are not treated as producers.
+
+This does **not** execute Maven, read user settings, download artifacts, resolve
+plugins/transitive dependencies/imported BOMs, or infer generated sources. A Maven
+package edge is also not a published symbol-level code API or a runnable Maven
+target recommendation; those capabilities are reported separately and remain
+unsupported.
 
 ---
 
