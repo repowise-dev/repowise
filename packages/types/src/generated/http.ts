@@ -2710,6 +2710,9 @@ export interface WorkspaceBreakingChange {
   provider_service?: string | null;
   provider_node_id?: string;
   detail: string;
+  side?: string | null;
+  comparison_source?: string | null;
+  comparison_key?: string | null;
   field_name?: string | null;
   old_value?: string | null;
   new_value?: string | null;
