@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 
 from pydantic import BaseModel
+
+from repowise.server.schemas._datetime import UTCDateTime
 
 
 def _layer_stamp(obj: object, metadata: dict | None) -> tuple[str | None, str | None]:
@@ -148,8 +149,8 @@ class PageSummaryResponse(BaseModel):
     display_order: int = 0
     section_number: str | None = None
     structural_key: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
 
     @classmethod
     def from_orm(cls, obj: object) -> PageSummaryResponse:
@@ -185,7 +186,7 @@ class PageVersionResponse(BaseModel):
     input_tokens: int
     output_tokens: int
     confidence: float
-    archived_at: datetime
+    archived_at: UTCDateTime
 
     @classmethod
     def from_orm(cls, obj: object) -> PageVersionResponse:
@@ -218,10 +219,10 @@ class JobResponse(BaseModel):
     current_level: int
     error_message: str | None
     config: dict
-    created_at: datetime
-    updated_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
+    started_at: UTCDateTime | None
+    finished_at: UTCDateTime | None
     # Short-lived token for the SSE progress stream (an EventSource can't send
     # the bearer header). Only minted while the job is live; ``None`` once it
     # reaches a terminal state, since there's nothing left to stream. Any client

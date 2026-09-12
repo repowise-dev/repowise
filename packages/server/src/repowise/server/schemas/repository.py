@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 
 from pydantic import BaseModel, field_validator
 
 from repowise.core.docs_mode import DocsMode
+from repowise.server.schemas._datetime import UTCDateTime
 
 
 class RepoCreate(BaseModel):
@@ -50,8 +50,8 @@ class RepoResponse(BaseModel):
     default_branch: str
     head_commit: str | None
     settings: dict
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
     # Workspace context — populated when the server is running in
     # workspace mode. ``status`` indicates whether the repo has been
     # indexed yet; the web UI uses it to render "needs index" CTA cards
@@ -121,7 +121,7 @@ class RepoSummaryRow(BaseModel):
     id: str
     name: str
     local_path: str
-    updated_at: datetime | None = None
+    updated_at: UTCDateTime | None = None
     #: "indexed" | "needs_index" | "missing_dir" — same vocabulary as
     #: ``RepoResponse.workspace_status``, which the sidebar already renders.
     status: str = "indexed"
@@ -147,7 +147,7 @@ class RepoSummaryRow(BaseModel):
     #: distinct from a score of 0, which would mean "analysed, and terrible".
     average_health: float | None = None
     hotspot_health: float | None = None
-    health_taken_at: datetime | None = None
+    health_taken_at: UTCDateTime | None = None
 
     #: Index-vs-checkout freshness. ``index_behind`` is ``None`` when the
     #: comparison could not run (no git checkout on disk, unreadable HEAD)
