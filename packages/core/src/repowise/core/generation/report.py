@@ -24,7 +24,7 @@ from .prose import prose_word_count
 # words while saying what four hundred and fifty say.  The prompt asks for the
 # same number; the check below reports whether the run honoured it.  Warn-only
 # on purpose — a long overview is worth seeing, never worth failing a run over.
-ORIENTATION_PROSE_WORD_BUDGET = 450
+ORIENTATION_PROSE_WORD_BUDGET = 850
 
 # The heading the deterministic templates put their question-shaped text under.
 # Counted rather than asserted: the block is conditional by design, so a page

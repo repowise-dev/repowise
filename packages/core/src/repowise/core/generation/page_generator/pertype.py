@@ -455,6 +455,29 @@ class PerTypeGenerationMixin:
                 overview_mermaid,
             )
             return self._attach_source_evidence(page, "repo_overview", evidence)
+        overview_grounding_evidence: dict[str, str] = {}
+        for item in evidence.included:
+            overview_grounding_evidence[item.path] = "\n".join(
+                filter(None, (overview_grounding_evidence.get(item.path), item.text))
+            )
+        repository_paths = tuple(
+            parsed.file_info.path
+            for parsed in parsed_files or ()
+            if getattr(getattr(parsed, "file_info", None), "path", None)
+        ) + tuple((source_map or {}).keys())
+        cleaned, ungrounded = _onboarding.check_grounding(
+            response.content,
+            (ctx, repository_paths),
+            overview_grounding_evidence,
+        )
+        if cleaned != response.content:
+            response = replace(response, content=cleaned)
+        if ungrounded:
+            log.info(
+                "repo_overview.grounding_stripped",
+                count=len(ungrounded),
+                tokens=ungrounded[:20],
+            )
         # The overview carries its own enumerable facts: the package table and
         # the KG-derived architecture map are built from the run, not drawn by
         # the model, and both embeds are idempotent so a reused page picks them

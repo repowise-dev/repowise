@@ -107,25 +107,36 @@ diagram are inserted after you write — what this repository calls its own
 capabilities, the package table, and the architecture map — so leave room for
 them by not writing them yourself.
 
-**## Project Summary** — one paragraph. What this is, what it is for, and who
+**## Project Summary** — two short paragraphs. What this is, what it is for, and who
 uses it, in the project's own vocabulary. The first sentence is what every
 downstream agent (RAG, semantic search, onboarding) anchors on, so make it
 answer "what does this repository do, end-to-end?": the inputs it consumes, the
 stages it puts them through, the artifacts it produces. Do not open with stats
-or package counts.
+or package counts. The second paragraph should orient the reader to the distinct
+evidence or intelligence views the repository combines. Explain what each view
+contributes rather than flattening them into one scanner or score.
 
 **## Architecture** — how the parts fit together. One clause of role per
 package, per the rule above, plus how work actually moves through them. This is
 where the structural facts earn their place: name the clusters, say what the
 cycles mean, say where the weight sits. Name no more than a handful of paths,
-and only where the path *is* the point.
+and only where the path *is* the point. Distinguish the maintenance path that
+builds or updates stored evidence from the use path that queries and presents
+it. Explain how the main interfaces consume the shared index when the supplied
+facts support that relationship.
 
 **## Key concepts** — five to seven of them, each a named idea this project
-works in, one sentence each, as a bulleted list. A concept is something the
+works in, one or two sentences each, as a bulleted list. A concept is something the
 project has a word for and a reader has to learn: a layer, a store, a scoring
 model, a class of artifact. Not a package, not a directory, not a file. Take the
 names from the project's own words above wherever it has them.
 
-LENGTH: at most 450 words of prose across the whole page. Say each thing once:
-the reader has the architecture page and the per-module pages for depth, and a
-sentence that restates a heading is a sentence they read twice.
+Repository files must be cited only as backticked repository-relative paths.
+Never emit a Markdown file URL, an absolute path, parent traversal, a checkout
+name, or a worktree name. The wiki turns resolvable backticked paths into links
+to their file pages.
+
+LENGTH: aim for 650–850 words of prose across the whole page when the supplied
+evidence supports that depth. Say each thing once: the reader has per-module
+pages for implementation detail, but this page must still leave them able to
+explain the product, its evidence layers, its lifecycle, and its main surfaces.
