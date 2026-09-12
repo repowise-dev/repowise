@@ -20,6 +20,7 @@ from . import dart as _dart
 from . import go as _go
 from . import java as _java
 from . import kotlin as _kotlin
+from . import pascal as _pascal
 from . import python as _python
 from . import ruby as _ruby
 from . import rust as _rust
@@ -56,6 +57,7 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     # on purpose: no perf dialect has been written for it, and the coverage
     # report names it as an unsupported language rather than pretending a
     # detector ran.
+    ("pascal", _pascal.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:

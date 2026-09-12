@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **`HEALTH_ANALYZER_VERSION` is 22.** Pascal's `for x in collection do` parses as its own `foreach` node, distinct from the counted `for`, and was missing from `loop_kinds` — the walker skipped it entirely, so any Pascal function using a for-in loop understated both CCN and nesting depth. Pascal also gained a `PerfDialect` (filesystem and subprocess sinks by RTL/VCL/FPC call name, e.g. `CopyFile` / `TFileStream.SaveToFile` / `ShellExecute`), so `io_in_loop` / `hot_path_sync_io` now fire for it instead of the performance pass silently skipping every Pascal file. Existing indexes re-score on their next update; `STORE_FORMAT_VERSION` and `PARSER_SCHEMA_VERSION` are unchanged.
+
 ## [0.52.0] - 2026-09-20
 
 A wide cycle. Documentation makes assertions about code, and this repository has the graph to check them, so a fourth deterministic analysis joins the pipeline: it reads the repository's own markdown, extracts the claims each document makes, resolves them against the real tree, and reports the ones the tree refutes. No model is involved, findings refresh on every update, and the reverse view answers which documents name a given file.
