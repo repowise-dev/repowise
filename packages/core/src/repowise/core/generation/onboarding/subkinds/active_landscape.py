@@ -1,9 +1,8 @@
 """Onboarding subkind: Active Landscape.
 
-Where work is actually happening right now. The page that says
-"don't refactor auth/ this week, three people are in there." Driven by
-git churn signals — hot files, hot directories, dead-code findings in
-hot areas, and stable counter-balance.
+A dated, descriptive view of recent repository activity. Git churn can show
+where changes accumulated and how many people contributed; it cannot establish
+current ownership, intent, coordination duties, or whether an area is safe.
 
 Gate: ≥ 50 commits in the last 90 days across the indexed corpus AND
 ≥ 10 distinct files touched. Without that floor the page reads like
@@ -14,8 +13,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 
+from ....ingestion.git_indexer.enrich import count_active_contributors
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals
 from ..slots import SLOT_ACTIVE_LANDSCAPE, SLOT_TITLES
@@ -30,7 +31,7 @@ _TOP_HOT_DIRS = 6
 class HotFile:
     path: str
     commit_count_90d: int
-    primary_owner: str = ""
+    historical_contributor_count: int = 0
     is_hotspot: bool = False
     age_days: int = 0
 
@@ -48,10 +49,13 @@ class ActiveLandscapeContext:
     repo_name: str
     total_commits_90d: int
     files_touched_90d: int
+    activity_window_start: str | None = None
+    activity_window_end: str | None = None
+    active_contributor_count_90d: int | None = None
     hot_files: list[HotFile] = field(default_factory=list)
     hot_dirs: list[HotDir] = field(default_factory=list)
-    # Dead-code findings localized to currently-hot files. Often the most
-    # actionable callout a reader can get on day one.
+    # Dead-code findings localized to currently-hot files. This is only an
+    # evidence overlap: it does not by itself justify deletion or other action.
     dead_code_in_hot_files: list[dict] = field(default_factory=list)
     stable_file_count: int = 0
 
@@ -59,6 +63,32 @@ class ActiveLandscapeContext:
 def _top_level_dir(path: str) -> str:
     parts = PurePosixPath(path).parts
     return parts[0] if len(parts) > 1 else "(root)"
+
+
+def _as_datetime(value: object) -> datetime | None:
+    """Normalize a persisted or freshly-indexed commit timestamp."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    return None
+
+
+def _activity_window(git_meta_map: dict[str, dict]) -> tuple[str | None, str | None]:
+    """Return the exact trailing window dates when the git snapshot exposes them."""
+    commits = [
+        parsed
+        for meta in git_meta_map.values()
+        if (parsed := _as_datetime(meta.get("last_commit_at"))) is not None
+    ]
+    if not commits:
+        return None, None
+    window_end = max(commits)
+    return (window_end - timedelta(days=90)).date().isoformat(), window_end.date().isoformat()
 
 
 def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
@@ -75,18 +105,18 @@ def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
             files_touched += 1
             total_commits_90d += commits
 
-    if (
-        total_commits_90d < _GATE_MIN_COMMITS_90D
-        or files_touched < _GATE_MIN_FILES_TOUCHED
-    ):
+    if total_commits_90d < _GATE_MIN_COMMITS_90D or files_touched < _GATE_MIN_FILES_TOUCHED:
         return None
+
+    activity_window_start, activity_window_end = _activity_window(git_meta_map)
+    active_contributor_count = count_active_contributors(list(git_meta_map.values()))
 
     # Build hot files — sorted by 90d churn, then commit recency proxy (age).
     hot_files_all = [
         HotFile(
             path=path,
             commit_count_90d=int(meta.get("commit_count_90d", 0) or 0),
-            primary_owner=str(meta.get("primary_owner_name", "") or ""),
+            historical_contributor_count=int(meta.get("contributor_count", 0) or 0),
             is_hotspot=bool(meta.get("is_hotspot", False)),
             age_days=int(meta.get("age_days", 0) or 0),
         )
@@ -144,6 +174,9 @@ def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
         repo_name=signals.repo_name,
         total_commits_90d=total_commits_90d,
         files_touched_90d=files_touched,
+        activity_window_start=activity_window_start,
+        activity_window_end=activity_window_end,
+        active_contributor_count_90d=active_contributor_count,
         hot_files=hot_files,
         hot_dirs=hot_dirs,
         dead_code_in_hot_files=dead_code_in_hot[:15],

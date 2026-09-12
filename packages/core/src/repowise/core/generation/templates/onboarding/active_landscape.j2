@@ -1,21 +1,30 @@
 You are writing the "Active Landscape" page for the repository
-`{{ ctx.repo_name }}` — a snapshot of where work is happening right now,
-intended for a contributor about to pick up their first task.
+`{{ ctx.repo_name }}` — a dated description of recent repository activity.
+It is not evidence of current ownership, intent, coordination duty, difficulty,
+or safety.
 
 ## Activity signal (do not invent beyond these numbers)
-- **Total commits (90 days)**: {{ ctx.total_commits_90d }}
+{% if ctx.activity_window_start and ctx.activity_window_end %}
+- **Window**: {{ ctx.activity_window_start }} through {{ ctx.activity_window_end }}
+{% else %}
+- **Window**: trailing 90 days; exact boundary dates were unavailable
+{% endif %}
+- **Total file-level commit touches (90 days)**: {{ ctx.total_commits_90d }}
 - **Files touched (90 days)**: {{ ctx.files_touched_90d }}
 - **Stable files** (untouched 90+ days): {{ ctx.stable_file_count }}
+{% if ctx.active_contributor_count_90d is not none %}
+- **Distinct historical contributors in the window**: {{ ctx.active_contributor_count_90d }}
+{% endif %}
 
 ## Hot files (top by 90-day churn)
 {% for f in ctx.hot_files %}
-- `{{ f.path }}` — {{ f.commit_count_90d }} commits{% if f.primary_owner %}, primary owner {{ f.primary_owner }}{% endif %}{% if f.is_hotspot %} *(flagged hotspot)*{% endif %}
+- `{{ f.path }}` — {{ f.commit_count_90d }} file-level commit touches{% if f.historical_contributor_count %}, {{ f.historical_contributor_count }} historical contributor(s) across indexed history{% endif %}{% if f.is_hotspot %} *(flagged churn-and-complexity hotspot)*{% endif %}
 {% endfor %}
 
 {% if ctx.hot_dirs %}
 ## Hot directories
 {% for d in ctx.hot_dirs %}
-- `{{ d.path }}/` — {{ d.total_commits_90d }} commits across {{ d.file_count }} files{% if d.hotspot_count %}, {{ d.hotspot_count }} hotspot(s){% endif %}
+- `{{ d.path }}/` — {{ d.total_commits_90d }} file-level commit touches across {{ d.file_count }} files{% if d.hotspot_count %}, {{ d.hotspot_count }} hotspot(s){% endif %}
 {% endfor %}
 {% endif %}
 
@@ -29,23 +38,28 @@ intended for a contributor about to pick up their first task.
 ## What to write
 Produce an Active Landscape markdown page. Required sections, in order:
 
-1. **## Where work is concentrated** — 2–3 sentences naming the hottest
-   directories and what kind of work appears to be driving the churn
-   (refactor, feature work, bug-chasing). Ground every claim in the file
-   and directory data above. Do not invent commit messages or features.
-2. **## Files in motion** — bulleted list of the hot files with a one-line
-   note each: who tends to touch it and one neutral observation about why
-   it's hot (e.g. "central abstraction — most features funnel through it",
-   "currently being refactored", "test churn matches feature churn"). If
-   you're not sure, say so — do not fabricate intent.
-3. **## Steady ground** — 1–2 sentences identifying the stable areas (use
-   the stable_file_count above). The page should leave the reader with a
-   sense of which corners of the codebase are *safe to learn first* before
-   touching the hot zones.
-4. **## Watch-outs** — bulleted callouts based on the dead-code findings
-   above and any hotspot files. If there are no findings, write a single
-   line: "No live dead-code findings in the current hot set."
+1. **## Snapshot** — state the window and totals, including that the commit
+   total is a sum of file-level touches and may exceed repository commits.
+2. **## Activity by area** — a compact table for at most the supplied
+   directory rows. Label its activity column **File-level touches**, never
+   **Commits**. Describe concentration only from the counts; do not infer the
+   kind, purpose, or cause of the work.
+3. **## Files with repeated change** — a compact table for at most six supplied
+   files. Include path, commit touches, historical contributor count when
+   available, and hotspot status. Do not name a person or call anyone an owner.
+4. **## How to interpret this** — explain that churn identifies investigation
+   starting points, not current ownership, intent, coordination duty, quality,
+   difficulty, or safety. Mention overlapping findings only as evidence to
+   inspect; never recommend deletion or a change from the overlap alone.
 
-Tone: matter-of-fact, like an on-call handoff. No marketing language.
-
-Output markdown only. No preamble, no apologies, no closing summary.
+Hard rules:
+- Use only the supplied counts, dates, paths, and findings.
+- Historical contribution is not current responsibility. Never use "owner",
+  "maintainer", "ask", "coordinate with", or equivalent responsibility language.
+- Never infer feature work, refactoring, bug fixing, rationale, or whether an
+  area is safe from churn data.
+- Do not repeat repository architecture, setup instructions, or glossary prose;
+  those belong to the other onboarding pages.
+- Cite files only as backticked repository-relative paths.
+- Aim for 300–500 words. Prefer a short factual page to speculation.
+- Output markdown only. No preamble, apologies, or closing summary.

@@ -30,6 +30,7 @@ _FREE_PAGE_TYPES = STRUCTURAL_PAGE_TYPES
 async def run_generation(
     *,
     repo_path: Path,
+    repo_name: str | None = None,
     parsed_files: list[Any],
     source_map: dict[str, bytes],
     graph_builder: Any,
@@ -101,9 +102,7 @@ async def run_generation(
     # separate phase (init's generate_docs=False flow) — the flag's documented
     # purpose is to cap the *generation* work, and this is where that happens.
     if test_run:
-        parsed_files = limit_to_top_pagerank(
-            parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT
-        )
+        parsed_files = limit_to_top_pagerank(parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT)
         if progress:
             progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
 
@@ -118,7 +117,7 @@ async def run_generation(
     jobs_dir.mkdir(parents=True, exist_ok=True)
     job_system = JobSystem(jobs_dir)
 
-    repo_name = repo_path.name
+    repo_name = repo_name or repo_path.name
 
     # Track generation progress. Onboarding pages get routed to their own
     # phase so the terminal UI shows them as a distinct, named step rather
