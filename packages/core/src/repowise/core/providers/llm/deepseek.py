@@ -52,16 +52,26 @@ _DEFAULT_BASE_URL = "https://api.deepseek.com"
 _DEEPSEEK_REASONING_MODES: tuple[ReasoningMode, ...] = (
     "off",
     "none",
+    "minimal",
     "low",
     "medium",
     "high",
     "xhigh",
     "max",
 )
+_DEEPSEEK_REASONING_MODELS = frozenset(
+    {
+        "deepseek-flash",
+        "deepseek-v4-pro",
+        # Retired aliases remain accepted and are routed to V4.1 Flash.
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+    }
+)
 
 
 def _deepseek_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
-    if model.startswith("deepseek-v4-"):
+    if model in _DEEPSEEK_REASONING_MODELS:
         return _DEEPSEEK_REASONING_MODES
     return ()
 
@@ -78,7 +88,7 @@ def _resolve_deepseek_reasoning_mode(
         _deepseek_supported_reasoning_modes(model),
         detail=(
             "DeepSeek /models lists IDs only; reasoning controls are enabled "
-            "for the documented V4 model family."
+            "for the documented DeepSeek Flash and V4 model families."
         ),
     )
 
@@ -89,8 +99,11 @@ def _deepseek_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
         return {}
     if mode in ("off", "none"):
         return {"extra_body": {"thinking": {"type": "disabled"}}}
-    effort = "max" if mode in ("xhigh", "max") else "high"
-    return {"extra_body": {"thinking": {"type": "enabled", "reasoning_effort": effort}}}
+    effort = "low" if mode in ("minimal", "low") else "max" if mode == "max" else "high"
+    return {
+        "reasoning_effort": effort,
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
 
 
 def _deepseek_model_options(
@@ -132,7 +145,7 @@ def _deepseek_model_options(
                 recommended=model_id == fallback_model,
                 source="api",
                 notes=(
-                    "reasoning controls documented for DeepSeek V4"
+                    "thinking toggle and graded effort documented by DeepSeek"
                     if len(reasoning_modes) > 1
                     else ""
                 ),
@@ -334,6 +347,12 @@ class DeepSeekProvider(BaseProvider):
             "temperature": temperature,
             "messages": full_messages,
             "stream": True,
+            # Thinking tool calls require reasoning_content from every prior
+            # assistant turn. Repowise's shared chat history intentionally
+            # does not retain hidden reasoning, so use DeepSeek's documented
+            # non-thinking mode for this protocol instead of producing an
+            # invalid follow-up request after the first tool call.
+            "extra_body": {"thinking": {"type": "disabled"}},
         }
         if tools:
             kwargs["tools"] = tools
