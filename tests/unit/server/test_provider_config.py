@@ -89,6 +89,28 @@ def test_get_chat_provider_passes_repo_key_model_and_base_url(clean_env, tmp_pat
     assert captured["base_url"] == "http://localhost:4000/v1"
 
 
+@pytest.mark.parametrize("provider_id", ["codex_cli", "opencode"])
+def test_get_chat_provider_passes_path_to_repo_aware_provider(
+    clean_env, tmp_path, monkeypatch, provider_id
+):
+    repo = _make_repo(tmp_path / "repo")
+    captured: dict = {}
+
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.registry.get_provider",
+        lambda selected, **kwargs: captured.update({"id": selected, **kwargs}) or object(),
+    )
+
+    pc.get_chat_provider_instance(
+        repo_path=repo,
+        provider_override=provider_id,
+        model_override="",
+    )
+
+    assert captured["id"] == provider_id
+    assert captured["repo_path"] == repo
+
+
 def test_kimi_repo_config_passes_key_model_and_base_url(clean_env, tmp_path, monkeypatch):
     repo = _make_repo(
         tmp_path / "repo",
