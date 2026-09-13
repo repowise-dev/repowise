@@ -20,8 +20,17 @@ def test_available_model_options_uses_litellm_model_list(monkeypatch):
     )
     monkeypatch.setattr(
         litellm,
-        "supports_reasoning",
-        lambda *, model: model == "vendor/reasoner",
+        "model_cost",
+        {
+            "vendor/plain": {},
+            "vendor/reasoner": {"supports_reasoning": True},
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        litellm,
+        "get_model_info",
+        lambda _model: pytest.fail("catalog enumeration must stay local"),
         raising=False,
     )
 
@@ -33,6 +42,56 @@ def test_available_model_options_uses_litellm_model_list(monkeypatch):
     assert reasoner.source == "local"
     assert reasoner.reasoning_modes == ("auto", "low", "medium", "high")
     assert "reasoning support" in reasoner.notes
+
+
+def test_available_model_options_uses_exact_litellm_effort_metadata(monkeypatch):
+    litellm = pytest.importorskip("litellm", reason="litellm SDK not installed")
+    monkeypatch.setattr(litellm, "model_list", ["vendor/reasoner"], raising=False)
+    metadata = {
+        "supports_reasoning": True,
+        "supports_none_reasoning_effort": True,
+        "supports_minimal_reasoning_effort": True,
+        "supports_low_reasoning_effort": False,
+        "supports_xhigh_reasoning_effort": True,
+        "supports_max_reasoning_effort": True,
+    }
+    monkeypatch.setattr(litellm, "model_cost", {"vendor/reasoner": metadata}, raising=False)
+    monkeypatch.setattr(
+        litellm,
+        "get_model_info",
+        lambda _model: pytest.fail("catalog enumeration must stay local"),
+        raising=False,
+    )
+
+    option = LiteLLMProvider(model="vendor/reasoner").available_model_options()[0]
+
+    assert option.reasoning_modes == (
+        "auto",
+        "none",
+        "minimal",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
+
+
+def test_explicit_empty_effort_metadata_is_authoritative(monkeypatch):
+    litellm = pytest.importorskip("litellm", reason="litellm SDK not installed")
+    monkeypatch.setattr(
+        litellm,
+        "get_model_info",
+        lambda _model: {"reasoning_effort_levels": []},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        litellm,
+        "supports_reasoning",
+        lambda **_kwargs: pytest.fail("explicit metadata must win"),
+        raising=False,
+    )
+
+    assert LiteLLMProvider(model="vendor/plain").supported_reasoning_modes() == ("auto",)
 
 
 async def test_generate_rejects_explicit_reasoning_before_litellm_call(monkeypatch):
@@ -81,3 +140,45 @@ async def test_generate_forwards_reasoning_effort(monkeypatch):
     assert completion.call_args.kwargs["reasoning_effort"] == "high"
     assert result.stop_reason == "max_tokens"
     assert result.provider_stop_reason == "length"
+
+
+async def test_discovery_and_execution_accept_the_same_effort_flags(monkeypatch):
+    litellm = pytest.importorskip("litellm", reason="litellm SDK not installed")
+    metadata = {
+        "supports_reasoning": None,
+        "supports_none_reasoning_effort": False,
+        "supports_minimal_reasoning_effort": True,
+        "supports_low_reasoning_effort": None,
+        "supports_xhigh_reasoning_effort": False,
+    }
+    fake_response = type(
+        "Response",
+        (),
+        {
+            "choices": [
+                type(
+                    "Choice",
+                    (),
+                    {
+                        "message": type("Message", (), {"content": "ok"})(),
+                        "finish_reason": "stop",
+                    },
+                )()
+            ],
+            "usage": None,
+        },
+    )()
+    completion = AsyncMock(return_value=fake_response)
+    monkeypatch.setattr(litellm, "model_list", ["gpt-5-search-api"], raising=False)
+    monkeypatch.setattr(litellm, "model_cost", {"gpt-5-search-api": metadata}, raising=False)
+    monkeypatch.setattr(litellm, "get_model_info", lambda _model: metadata, raising=False)
+    monkeypatch.setattr(litellm, "supports_reasoning", lambda **_kwargs: False, raising=False)
+    monkeypatch.setattr(litellm, "acompletion", completion, raising=False)
+    provider = LiteLLMProvider(model="gpt-5-search-api")
+
+    option = provider.available_model_options()[0]
+    assert provider.supported_reasoning_modes() == option.reasoning_modes
+
+    await provider.generate("sys", "user", reasoning="minimal")
+
+    assert completion.call_args.kwargs["reasoning_effort"] == "minimal"
