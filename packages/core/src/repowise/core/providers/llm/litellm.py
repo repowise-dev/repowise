@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -54,22 +54,109 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_LITELLM_REASONING_MODES: tuple[ReasoningMode, ...] = ("low", "medium", "high")
+_NON_TEXT_MODEL_MODES = {
+    "embedding",
+    "image_generation",
+    "image_edit",
+    "audio_transcription",
+    "audio_speech",
+    "rerank",
+    "video_generation",
+    "search",
+    "ocr",
+    "moderation",
+    "realtime",
+    "vector_store",
+}
 
 
-def _litellm_supports_reasoning(model: str) -> bool:
-    try:
-        import litellm  # type: ignore[import-untyped]
+def _litellm_reasoning_modes_from_metadata(metadata: object) -> tuple[ReasoningMode, ...]:
+    """Map LiteLLM's model metadata to the exact portable effort choices."""
 
-        return bool(litellm.supports_reasoning(model=model))
-    except Exception:
+    if not isinstance(metadata, dict):
+        return ()
+
+    explicit = metadata.get("reasoning_effort_levels")
+    effort_flags = (
+        "supports_none_reasoning_effort",
+        "supports_minimal_reasoning_effort",
+        "supports_low_reasoning_effort",
+        "supports_xhigh_reasoning_effort",
+        "supports_max_reasoning_effort",
+    )
+    if (
+        metadata.get("supports_reasoning") is not True
+        and not isinstance(explicit, list)
+        and not any(metadata.get(flag) is True for flag in effort_flags)
+    ):
+        return ()
+
+    if isinstance(explicit, list):
+        return tuple(
+            mode
+            for mode in ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+            if mode in explicit and not (mode == "none" and metadata.get("thinking_always_on"))
+        )
+
+    modes: list[ReasoningMode] = []
+    if metadata.get("supports_none_reasoning_effort") is True and not metadata.get(
+        "thinking_always_on"
+    ):
+        modes.append("none")
+    if metadata.get("supports_minimal_reasoning_effort") is True:
+        modes.append("minimal")
+    if metadata.get("supports_low_reasoning_effort") is not False:
+        modes.append("low")
+    modes.extend(("medium", "high"))
+    if metadata.get("supports_xhigh_reasoning_effort") is True:
+        modes.append("xhigh")
+    if metadata.get("supports_max_reasoning_effort") is True:
+        modes.append("max")
+    return tuple(modes)
+
+
+def _litellm_metadata_decides_reasoning(metadata: object) -> bool:
+    if not isinstance(metadata, dict):
         return False
+    if isinstance(metadata.get("reasoning_effort_levels"), list):
+        return True
+    fields = (
+        "supports_reasoning",
+        "supports_none_reasoning_effort",
+        "supports_minimal_reasoning_effort",
+        "supports_low_reasoning_effort",
+        "supports_xhigh_reasoning_effort",
+        "supports_max_reasoning_effort",
+    )
+    return any(metadata.get(field) is not None for field in fields)
 
 
 def _litellm_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
-    if _litellm_supports_reasoning(model):
-        return _LITELLM_REASONING_MODES
-    return ()
+    try:
+        import litellm  # type: ignore[import-untyped]
+
+        catalog = getattr(litellm, "model_cost", {}) or {}
+        if isinstance(catalog, Mapping) and model in catalog:
+            catalog_metadata = catalog[model]
+            modes = _litellm_reasoning_modes_from_metadata(catalog_metadata)
+            if modes or _litellm_metadata_decides_reasoning(catalog_metadata):
+                return modes
+
+        try:
+            metadata: object = litellm.get_model_info(model)
+        except Exception:
+            metadata = {}
+        modes = _litellm_reasoning_modes_from_metadata(metadata)
+        if modes:
+            return modes
+        if _litellm_metadata_decides_reasoning(metadata):
+            return ()
+        if not bool(litellm.supports_reasoning(model=model)):
+            return ()
+    except Exception:
+        return ()
+
+    return _litellm_reasoning_modes_from_metadata({"supports_reasoning": True})
 
 
 def _litellm_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, object]:
@@ -80,42 +167,43 @@ def _litellm_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, object]:
 
 
 def _litellm_model_options(fallback_model: str) -> tuple[ProviderModelOption, ...]:
-    fallback = fallback_model_option(
-        fallback_model,
-        reasoning_modes=("auto", *_litellm_supported_reasoning_modes(fallback_model)),
-    )
     try:
         import litellm  # type: ignore[import-untyped]
 
+        raw_catalog = getattr(litellm, "model_cost", {}) or {}
+        catalog = raw_catalog if isinstance(raw_catalog, Mapping) else {}
         model_ids = sorted(
             {
                 model
                 for model in getattr(litellm, "model_list", []) or []
-                if isinstance(model, str) and model
+                if isinstance(model, str)
+                and model
+                and (
+                    not isinstance(catalog.get(model), dict)
+                    or catalog[model].get("mode") not in _NON_TEXT_MODEL_MODES
+                )
             }
         )
     except Exception:
-        return (fallback,)
+        return (fallback_model_option(fallback_model),)
+
+    fallback = fallback_model_option(
+        fallback_model,
+        reasoning_modes=(
+            "auto",
+            *_litellm_reasoning_modes_from_metadata(catalog.get(fallback_model)),
+        ),
+    )
 
     if not model_ids:
         return (fallback,)
 
     options: list[ProviderModelOption] = []
     for model_id in model_ids:
-        try:
-            supports_reasoning = bool(litellm.supports_reasoning(model=model_id))
-        except Exception:
-            supports_reasoning = False
-        reasoning_modes = (
-            (
-                "auto",
-                *_LITELLM_REASONING_MODES,
-            )
-            if supports_reasoning
-            else ("auto",)
-        )
+        model_modes = _litellm_reasoning_modes_from_metadata(catalog.get(model_id))
+        reasoning_modes = ("auto", *model_modes)
         notes = ""
-        if supports_reasoning:
+        if model_modes:
             notes = "LiteLLM reports reasoning support"
         options.append(
             ProviderModelOption(
