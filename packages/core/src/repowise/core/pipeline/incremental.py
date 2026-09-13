@@ -138,6 +138,12 @@ def build_repo_graph(
     # persisted repo-wide, so an update that could not see the skipped source
     # files would re-derive and write back the verdicts init had clamped.
     graph_builder.traversal_stats = traverser.stats
+    # Reconciliation authority is the successful traversal, not the successful
+    # parse set. A transient read/parser failure must not make an existing
+    # in-scope file look deleted and prune its persisted rows.
+    graph_builder.traversed_file_paths = {
+        file_info.path for file_info in file_infos
+    }
 
     # Parse the misses in process and serially: on the update path they are
     # change-sized. (Ceiling: a wiped/stale cache re-parses everything on one
@@ -251,6 +257,8 @@ async def rebuild_graph_and_git(
     include_submodules: bool = False,
     include_nested_repos: bool = False,
     idle_decay_sink: dict[str, dict] | None = None,
+    force_full_git: bool = False,
+    git_summary_sink: list[Any] | None = None,
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
@@ -276,6 +284,12 @@ async def rebuild_graph_and_git(
     state.json: a repo indexed with ``init --include-submodules`` must not
     silently drop its submodule files on every incremental update. Missing
     keys fall back to False (legacy behavior).
+
+    ``force_full_git`` is reserved for changes to Git-history/traversal
+    configuration.  Those settings invalidate every per-file row, not merely
+    files in the commit diff.  The optional sink carries the resulting summary
+    to persistence so per-commit/fix-event rows can be replaced from the same
+    walk.
 
     Returns ``(parsed_files, source_map, graph_builder, repo_structure,
     file_count, git_meta_map)``.
@@ -317,39 +331,49 @@ async def rebuild_graph_and_git(
             exclude_patterns=exclude_patterns or None,
             tier=tier,
         )
-        changed_paths = build_filtered_changed_paths(file_diffs, exclude_patterns)
-        # The full tracked-file set lets the indexer re-run the repo-wide
-        # co-change walk so partners aren't wiped to "[]" for changed files.
-        # The sink captures that walk's FULL per-file partner map: the graph
-        # was just rebuilt from scratch, so co_changes edges must be re-added
-        # for every file (not only the changed ones) or the update graph
-        # diverges from the init graph and the centrality cache can't hit.
-        co_change_full: dict[str, list[dict]] = {}
-        updated_meta = await git_indexer.index_changed_files(
-            changed_paths,
-            all_files=set(source_map.keys()),
-            co_change_sink=co_change_full,
-            idle_decay_sink=idle_decay_sink,
-            on_warning=log,
-            timings=timings,
-        )
-        git_meta_map = {m["file_path"]: m for m in updated_meta}
-        label_co_change_structure(graph_builder, git_meta_map)
-        if idle_decay_sink:
-            # Idle rows carry the same column and are persisted on their own
-            # path, having been serialized before the graph existed.
-            label_co_change_structure(graph_builder, idle_decay_sink)
-        if co_change_full:
-            graph_builder.update_co_change_edges(
-                {
-                    fp: {"co_change_partners_json": partners}
-                    for fp, partners in co_change_full.items()
-                }
-            )
-        else:
+        if force_full_git:
+            summary, updated_meta = await git_indexer.index_repo(repo_path.name, on_warning=log)
+            if git_summary_sink is not None:
+                git_summary_sink.append(summary)
+            git_meta_map = {m["file_path"]: m for m in updated_meta}
+            label_co_change_structure(graph_builder, git_meta_map)
             graph_builder.update_co_change_edges(git_meta_map)
+        else:
+            changed_paths = build_filtered_changed_paths(file_diffs, exclude_patterns)
+            # The full tracked-file set lets the indexer re-run the repo-wide
+            # co-change walk so partners aren't wiped to "[]" for changed files.
+            # The sink captures that walk's FULL per-file partner map: the graph
+            # was just rebuilt from scratch, so co_changes edges must be re-added
+            # for every file (not only the changed ones) or the update graph
+            # diverges from the init graph and the centrality cache can't hit.
+            co_change_full: dict[str, list[dict]] = {}
+            updated_meta = await git_indexer.index_changed_files(
+                changed_paths,
+                all_files=set(source_map.keys()),
+                co_change_sink=co_change_full,
+                idle_decay_sink=idle_decay_sink,
+                on_warning=log,
+                timings=timings,
+            )
+            git_meta_map = {m["file_path"]: m for m in updated_meta}
+            label_co_change_structure(graph_builder, git_meta_map)
+            if idle_decay_sink:
+                # Idle rows carry the same column and are persisted on their own
+                # path, having been serialized before the graph existed.
+                label_co_change_structure(graph_builder, idle_decay_sink)
+            if co_change_full:
+                graph_builder.update_co_change_edges(
+                    {
+                        fp: {"co_change_partners_json": partners}
+                        for fp, partners in co_change_full.items()
+                    }
+                )
+            else:
+                graph_builder.update_co_change_edges(git_meta_map)
     except Exception as exc:
         log(f"[yellow]Git re-index skipped: {exc}[/yellow]")
+        if force_full_git:
+            raise
     finally:
         if timings is not None:
             timings.stop("rebuild.git")
@@ -540,9 +564,7 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
         return None
 
 
-async def load_stored_coverage_map(
-    repo_path: Any, *, log: LogFn | None = None
-) -> dict[str, dict]:
+async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) -> dict[str, dict]:
     """Load the persisted coverage map for health scoring on an incremental run.
 
     The incremental health pass re-scores changed files only, but if it builds
@@ -587,9 +609,7 @@ async def load_stored_coverage_map(
         coverage_map: dict[str, dict] = {}
         for row in rows:
             try:
-                covered = (
-                    json.loads(row.covered_lines_json) if row.covered_lines_json else []
-                )
+                covered = json.loads(row.covered_lines_json) if row.covered_lines_json else []
             except (ValueError, TypeError):
                 covered = []
             coverage_map[row.file_path] = {
@@ -1231,9 +1251,7 @@ async def persist_partial_health(
         # Repository-wide, like the queue above and for the same reason: an
         # opportunity folds a file's plans, and a file this run did not touch
         # can still lose one when a cross-file plan elsewhere resolves.
-        await finalize_refactoring_opportunities(
-            session, repo_id, analyzed_commit=analyzed_commit
-        )
+        await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
     # Per-function blame rollup for the changed files (keeps git_function_blame
     # current between full indexes; FULL git tier only — empty otherwise).
     fn_blame_rows = getattr(report, "function_blame_rows", None)
@@ -1664,6 +1682,10 @@ async def persist_incremental_index(
     knowledge_graph_result: Any | None = None,
     parsed_files: list[Any] | None = None,
     git_decay_map: dict | None = None,
+    full_git_summary: Any | None = None,
+    reconcile_full_scope: bool = False,
+    full_generation_page_ids: set[str] | None = None,
+    vector_store: Any | None = None,
     log: LogFn | None = None,
     degraded: list[str] | None = None,
     failed_steps: list[str] | None = None,
@@ -1738,6 +1760,42 @@ async def persist_incremental_index(
                 )
             repo_id = repo.id
 
+            if reconcile_full_scope:
+                try:
+                    from repowise.core.pipeline.persist import (
+                        reconcile_full_index_scope,
+                    )
+
+                    current_graph_paths = set(
+                        getattr(
+                            graph_builder,
+                            "traversed_file_paths",
+                            {pf.file_info.path for pf in parsed_files or []},
+                        )
+                    )
+                    current_git_paths = set(git_meta_map)
+                    with timed(timings, "persist.scope_reconcile"):
+                        tombstoned_page_ids = await reconcile_full_index_scope(
+                            session,
+                            repo_id,
+                            current_graph_paths,
+                            current_git_paths,
+                        )
+                except Exception as exc:
+                    _skip("Config scope reconciliation", exc)
+
+            if full_generation_page_ids is not None:
+                try:
+                    from repowise.core.pipeline.persist import (
+                        tombstone_pages_outside_generation,
+                    )
+
+                    tombstoned_page_ids += await tombstone_pages_outside_generation(
+                        session, repo_id, full_generation_page_ids
+                    )
+                except Exception as exc:
+                    _skip("Generation scope reconciliation", exc)
+
             # Delete rows of pages retired since this index was built. This
             # path never regenerates a repo-wide page, so nothing else here
             # would ever visit one to notice it should be gone, and for a user
@@ -1773,7 +1831,7 @@ async def persist_incremental_index(
                     )
 
                     with timed(timings, "persist.tombstones"):
-                        tombstoned_page_ids = await mark_tombstone_pages(
+                        tombstoned_page_ids += await mark_tombstone_pages(
                             session, repo_id, tombstone_candidates(file_diffs)
                         )
                 except Exception as exc:
@@ -1789,31 +1847,27 @@ async def persist_incremental_index(
             except Exception as exc:
                 _skip("Page tree rebuild", exc)
 
-            if git_meta_map or git_decay_map:
+            if git_meta_map or git_decay_map or full_git_summary is not None:
                 try:
-                    from repowise.core.persistence.crud import (
-                        recompute_git_percentiles,
-                        upsert_git_metadata_bulk,
-                    )
-
-                    # Idle files' decay-only rows upsert alongside the changed
-                    # files' full rows; the percentile re-rank then runs over
-                    # every row against the freshly decayed scores (#728).
                     with timed(timings, "persist.git"):
-                        await upsert_git_metadata_bulk(
+                        from repowise.core.pipeline.persist import persist_git_refresh
+
+                        await persist_git_refresh(
                             session,
                             repo_id,
-                            [*git_meta_map.values(), *(git_decay_map or {}).values()],
+                            git_meta_map,
+                            git_decay_map,
+                            full_git_summary,
                         )
-                        await recompute_git_percentiles(session, repo_id)
                 except Exception as exc:
                     _skip("Git persist", exc, range_scoped=True)
 
                 try:
                     with timed(timings, "persist.commits"):
-                        await persist_incremental_commits(
-                            session, repo_id, repo_path, timings=timings
-                        )
+                        if full_git_summary is None:
+                            await persist_incremental_commits(
+                                session, repo_id, repo_path, timings=timings
+                            )
                 except Exception as exc:
                     _skip("Commit capture", exc)
 
@@ -1870,9 +1924,7 @@ async def persist_incremental_index(
                 from repowise.core.pipeline.persist import persist_incremental_symbols
 
                 with timed(timings, "persist.symbols"):
-                    await persist_incremental_symbols(
-                        session, repo_id, parsed_files, changed_paths
-                    )
+                    await persist_incremental_symbols(session, repo_id, parsed_files, changed_paths)
             except Exception as exc:
                 _skip("Symbol persist", exc, range_scoped=True)
 
@@ -1942,6 +1994,10 @@ async def persist_incremental_index(
                 )
 
                 await purge_proposed_decisions_by_source(session, repo_id, "code_comment")
+                if full_git_summary is not None:
+                    await purge_proposed_decisions_by_source(
+                        session, repo_id, "git_archaeology"
+                    )
             except Exception as exc:
                 _skip("Decision purge", exc)
 
@@ -2021,9 +2077,7 @@ async def persist_incremental_index(
                         session,
                         repo_id,
                         analyzed_commit=analyzed_commit,
-                        plan_policy=getattr(
-                            partial_health_report, "performance_plan_policy", None
-                        ),
+                        plan_policy=getattr(partial_health_report, "performance_plan_policy", None),
                     )
                     await finalize_refactoring_opportunities(
                         session, repo_id, analyzed_commit=analyzed_commit
@@ -2042,17 +2096,25 @@ async def persist_incremental_index(
         # A swept page's FTS row is worse than a tombstone: search hydrates
         # title and snippet from the FTS copy itself, so an orphan answers in
         # full while the page it names 404s.
-        if tombstoned_page_ids or swept_page_ids:
+        from repowise.core.pipeline.cleanup_debt import (
+            clear_cleanup_debt,
+            load_cleanup_debt,
+            record_cleanup_debt,
+        )
+
+        cleanup_debt = load_cleanup_debt(Path(repo_path))
+        fts_cleanup_ids = (
+            set(tombstoned_page_ids) | set(swept_page_ids) | cleanup_debt["fts"]
+        )
+        if fts_cleanup_ids:
             try:
                 from repowise.core.persistence.search import FullTextSearch
 
                 fts = FullTextSearch(engine)
                 with timed(timings, "persist.fts"):
                     await fts.ensure_index()
-                    if tombstoned_page_ids:
-                        await fts.delete_many(tombstoned_page_ids)
-                    if swept_page_ids:
-                        await fts.delete_many(swept_page_ids)
+                    await fts.delete_many(sorted(fts_cleanup_ids))
+                clear_cleanup_debt(Path(repo_path), "fts", fts_cleanup_ids)
             except Exception as exc:
                 # Range-scoped for the tombstone half: mark_tombstone_pages
                 # re-marks and re-returns pages that are already tombstones, so
@@ -2060,9 +2122,38 @@ async def persist_incremental_index(
                 # The swept half is not repairable this way, because the sweeps
                 # deleted those rows and a later run finds nothing to sweep.
                 # Tagging still recovers strictly more than not tagging.
+                record_cleanup_debt(Path(repo_path), "fts", fts_cleanup_ids)
                 _skip("Tombstone full-text removal", exc, range_scoped=True)
 
-        # Ceiling: the swept pages' *vector* embeddings survive this path.
+        vector_cleanup_ids = set(tombstoned_page_ids) | cleanup_debt["vectors"]
+        if vector_cleanup_ids and vector_store is None:
+            lance_dir = Path(repo_path) / ".repowise" / "lancedb"
+            if lance_dir.exists():
+                try:
+                    from repowise.core.persistence.vector_store import LanceDBVectorStore
+                    from repowise.core.providers.embedding.base import MockEmbedder
+
+                    # Delete-only access never embeds or checks dimensions.
+                    vector_store = LanceDBVectorStore(str(lance_dir), embedder=MockEmbedder())
+                except Exception as exc:
+                    record_cleanup_debt(
+                        Path(repo_path), "vectors", vector_cleanup_ids
+                    )
+                    _skip("Tombstone vector-store open", exc, range_scoped=True)
+            else:
+                # No store means there are no vector rows left to clean.
+                clear_cleanup_debt(Path(repo_path), "vectors", vector_cleanup_ids)
+
+        if vector_cleanup_ids and vector_store is not None:
+            try:
+                with timed(timings, "persist.vectors"):
+                    await vector_store.delete_many(sorted(vector_cleanup_ids))
+                clear_cleanup_debt(Path(repo_path), "vectors", vector_cleanup_ids)
+            except Exception as exc:
+                record_cleanup_debt(Path(repo_path), "vectors", vector_cleanup_ids)
+                _skip("Tombstone vector removal", exc)
+
+        # Ceiling: retired non-file pages' *vector* embeddings survive this path.
         # There is no store here to delete them from, and building one would
         # pull the lancedb import onto the post-commit hook, which
         # ``deterministic.py`` avoids on purpose — and with the default mock

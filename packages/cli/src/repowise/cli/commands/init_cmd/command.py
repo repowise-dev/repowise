@@ -80,6 +80,7 @@ from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
+from repowise.core.repo_config import config_dependency_fingerprints
 
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import (
@@ -1794,6 +1795,7 @@ def init_command(
         )
         # Fingerprint after config writes so the first update doesn't false-positive.
         base_state["config_fingerprint"] = config_fingerprint(repo_path)
+        base_state["config_dependency_fingerprints"] = config_dependency_fingerprints(repo_path)
         # Index-only is the keyless default, so this is where most installs get
         # their stamp. Without it `health_analyzer_changed` reads absent-as-
         # unchanged and the version trigger never fires for them.

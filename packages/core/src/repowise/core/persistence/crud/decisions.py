@@ -1344,6 +1344,7 @@ async def purge_proposed_decisions_by_source(
             DecisionRecord.repository_id == repository_id,
             DecisionRecord.source == source,
             DecisionRecord.status == "proposed",
+            ~accepted_predicate(),
         )
     )
     ids = [row[0] for row in result.all()]
@@ -1363,6 +1364,39 @@ async def purge_proposed_decisions_by_source(
     await session.execute(delete(DecisionRecord).where(DecisionRecord.id.in_(ids)))
     await session.flush()
     structlog.get_logger(__name__).info("decision_purge_by_source", source=source, deleted=len(ids))
+    return len(ids)
+
+
+async def purge_proposed_decisions_outside_files(
+    session: AsyncSession,
+    repository_id: str,
+    current_file_paths: set[str],
+) -> int:
+    """Delete unreviewed extracted decisions whose evidence file left scope."""
+    result = await session.execute(
+        select(DecisionRecord.id, DecisionRecord.evidence_file).where(
+            DecisionRecord.repository_id == repository_id,
+            DecisionRecord.status == "proposed",
+            DecisionRecord.evidence_file.is_not(None),
+            ~accepted_predicate(),
+        )
+    )
+    ids = [row[0] for row in result.all() if row[1] not in current_file_paths]
+    if not ids:
+        return 0
+
+    await session.execute(delete(DecisionEvidence).where(DecisionEvidence.decision_id.in_(ids)))
+    await session.execute(
+        delete(DecisionEdge).where(
+            or_(
+                DecisionEdge.src_decision_id.in_(ids),
+                DecisionEdge.dst_decision_id.in_(ids),
+            )
+        )
+    )
+    await session.execute(delete(DecisionNodeLink).where(DecisionNodeLink.decision_id.in_(ids)))
+    await session.execute(delete(DecisionRecord).where(DecisionRecord.id.in_(ids)))
+    await session.flush()
     return len(ids)
 
 

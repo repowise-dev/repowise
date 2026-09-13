@@ -19,6 +19,7 @@ from repowise.core.persistence.crud import (
     list_decision_evidence,
     list_decisions,
     purge_proposed_decisions_by_source,
+    purge_proposed_decisions_outside_files,
     update_decision_status,
 )
 from repowise.core.persistence.crud.authority import latest_acceptance
@@ -184,3 +185,24 @@ async def test_purge_drains_proposed_rows_of_source_only(async_session):
         .where(DecisionRecord.id.is_(None))
     )
     assert list(orphan_evidence.scalars().all()) == []
+
+
+async def test_scope_prune_removes_only_unreviewed_decisions(async_session):
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_decision("Excluded proposal"), _decision("Accepted history")],
+    )
+    rows = await list_decisions(async_session, repo.id)
+    accepted = next(row for row in rows if row.title == "Accepted history")
+    await update_decision_status(async_session, accepted.id, "active")
+
+    deleted = await purge_proposed_decisions_outside_files(
+        async_session, repo.id, {"kept.py"}
+    )
+
+    assert deleted == 1
+    assert {row.title for row in await list_decisions(async_session, repo.id)} == {
+        "Accepted history"
+    }

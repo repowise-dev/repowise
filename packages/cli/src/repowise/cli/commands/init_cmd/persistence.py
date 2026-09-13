@@ -29,6 +29,7 @@ from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.models import count_stub_fallbacks
+from repowise.core.repo_config import config_dependency_fingerprints
 
 logger = structlog.get_logger(__name__)
 
@@ -423,6 +424,7 @@ def save_full_state_and_config(
 
     # Re-save state with the fingerprint now that config.yaml is written.
     state["config_fingerprint"] = config_fingerprint(repo_path)
+    state["config_dependency_fingerprints"] = config_dependency_fingerprints(repo_path)
     # This index's health rows were written by the current analyzer, so start
     # tracking it here — otherwise a fresh install carries no stamp and the
     # first analyzer change after it cannot tell it needs a re-score.

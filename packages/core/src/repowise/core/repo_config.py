@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,32 @@ CONFIG_FILENAME = "config.yaml"
 #: Named here rather than imported from the manifest module, which imports yaml
 #: and the analysis package; this file is on the cheap config path.
 MANIFEST_BASENAME = "decisions.yaml"
+
+# Persisted config consumers.  Keep this matrix here, beside the canonical
+# loader, so CLI and workspace update paths do not grow competing ideas of what
+# a setting invalidates.  Unknown keys get their own conservative bucket: they
+# are never silently folded into an unrelated health-only refresh.
+CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
+    "traversal": frozenset({"exclude_patterns"}),
+    "git_history": frozenset({"commit_limit", "follow_renames"}),
+    "health": frozenset({"coverage", "refactoring"}),
+    "generation": frozenset(
+        {
+            "provider",
+            "model",
+            "embedder",
+            "embedding_model",
+            "reasoning",
+            "max_tokens",
+            "wiki_style",
+            "language",
+            "max_file_pages",
+            "generation_context",
+            "enable_onboarding",
+        }
+    ),
+    "state_only": frozenset({"distill", "mcp"}),
+}
 
 
 class RepoConfigError(ValueError):
@@ -65,9 +93,7 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
         # A broken config must never be silently treated as "no config": the
         # user's provider/model/coverage settings would silently vanish and
         # every run would use defaults. Name the file and the parse error.
-        raise RepoConfigError(
-            f"Could not parse {config_path}: {exc}"
-        ) from exc
+        raise RepoConfigError(f"Could not parse {config_path}: {exc}") from exc
 
 
 def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
@@ -117,8 +143,6 @@ def config_fingerprint(repo_path: Path | str) -> str:
     timestamps. Missing files are skipped, so an absent config still yields a
     stable hash.
     """
-    import hashlib
-
     rw_dir = get_repowise_dir(repo_path)
     h = hashlib.sha256()
     for name in ("config.yaml", "health-rules.json"):
@@ -127,6 +151,59 @@ def config_fingerprint(repo_path: Path | str) -> str:
             h.update(name.encode())
             h.update(p.read_bytes())
     return h.hexdigest()
+
+
+def config_dependency_fingerprints(
+    repo_path: Path | str, *, config: dict[str, Any] | None = None
+) -> dict[str, str]:
+    """Return semantic fingerprints grouped by their persisted consumers.
+
+    ``config_fingerprint`` intentionally hashes raw bytes and remains the cheap
+    broad change detector.  These hashes answer the next question: which layer
+    actually became stale?  Formatting-only YAML edits therefore advance the
+    broad fingerprint without paying for an analysis rebuild.
+
+    ``health-rules.json`` belongs to the health bucket.  Its bytes are retained
+    rather than parsed here because the health loader owns its validation and
+    fallback semantics.
+    """
+    if config is None:
+        config = load_repo_config(repo_path)
+    known = set().union(*CONFIG_DEPENDENCY_KEYS.values())
+    grouped: dict[str, Any] = {
+        name: {key: config[key] for key in sorted(keys) if key in config}
+        for name, keys in CONFIG_DEPENDENCY_KEYS.items()
+    }
+    grouped["other"] = {key: config[key] for key in sorted(config) if key not in known}
+
+    rules_path = get_repowise_dir(repo_path) / "health-rules.json"
+    grouped["health"] = {
+        "config": grouped["health"],
+        "health_rules_sha256": (
+            hashlib.sha256(rules_path.read_bytes()).hexdigest() if rules_path.exists() else None
+        ),
+    }
+
+    return {
+        name: hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+        for name, value in grouped.items()
+    }
+
+
+def changed_config_dependencies(previous: Any, current: dict[str, str]) -> set[str] | None:
+    """Return changed dependency classes, or ``None`` for legacy state.
+
+    A state file without the grouped hashes cannot safely identify which key
+    moved.  Callers treat that one-time case conservatively rather than guessing
+    from the new config alone.
+    """
+    if not isinstance(previous, dict):
+        return None
+    return {
+        name for name in set(previous) | set(current) if previous.get(name) != current.get(name)
+    }
 
 
 def _read_flat_scalar(text: str, key: str) -> str | None:
@@ -302,9 +379,7 @@ def ensure_manifest_tracked(repo_path: Path | str) -> bool:
         "/.repowise/*",
         f"!/.repowise/{MANIFEST_BASENAME}",
     ]
-    atomic_write_text(
-        gitignore, newline.join([*lines, *addition]) + newline, newline=""
-    )
+    atomic_write_text(gitignore, newline.join([*lines, *addition]) + newline, newline="")
     return True
 
 
