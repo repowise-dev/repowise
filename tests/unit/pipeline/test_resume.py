@@ -297,3 +297,37 @@ async def test_a_successful_checkpoint_says_nothing(sf, monkeypatch):
     )
 
     assert progress.messages == []
+
+
+async def test_failed_symbol_analysis_reconciliation_keeps_analysis_retryable(sf, monkeypatch):
+    """ANALYSIS cannot complete while post-health symbol state is stale."""
+    repo_id = await _make_repo(sf)
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("symbol write failed")
+
+    async def _ok(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr("repowise.core.pipeline.resume.controller.persist_symbol_analysis", _boom)
+    monkeypatch.setattr("repowise.core.pipeline.resume.controller.persist_analysis", _ok)
+
+    progress = _RecordingProgress()
+    ctrl = ResumeController(sf, repo_id, resume=False)
+    await ctrl.checkpoint_analysis(
+        parsed_files=[],
+        dead_code_report=None,
+        health_report=None,
+        decision_report=None,
+        git_metadata_list=[],
+        progress=progress,
+    )
+
+    assert ResumePhase.ANALYSIS not in await ResumeLedger(sf, repo_id).completed_phases()
+    assert progress.messages == [
+        (
+            "warning",
+            "Analysis checkpoint not saved (symbol write failed); "
+            "a resumed run will have to recompute dead code, health and decisions.",
+        )
+    ]

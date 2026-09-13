@@ -136,6 +136,7 @@ async def persist_result(
         timed,
         tombstone_absent_file_pages,
     )
+    from repowise.core.pipeline.persist import persist_symbol_analysis
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
 
@@ -174,6 +175,15 @@ async def persist_result(
             repo.settings_json = _json.dumps(existing)
         swept_page_ids: list[str] = []
         if index_done:
+            # Health runs after the INDEX checkpoint and mutates the in-memory
+            # symbol complexities. Reconcile them again in this final required
+            # transaction: it heals a best-effort checkpoint failure, and if
+            # this write also fails the ledger below cannot claim ANALYSIS is
+            # complete with parser-default complexity still on disk.
+            if getattr(result, "health_report", None) is not None:
+                await persist_symbol_analysis(
+                    session, repo.id, getattr(result, "parsed_files", None)
+                )
             await persist_analysis(result, session, repo.id)
             await persist_generation(result, session, repo.id)
             # persist_generation has already upserted the current pages, so the

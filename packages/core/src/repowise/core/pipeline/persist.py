@@ -589,6 +589,33 @@ async def persist_incremental_symbols(
     await reconcile_symbols_for_files(session, repo_id, reconcile_paths, symbols)
 
 
+async def persist_symbol_analysis(
+    session: Any,
+    repo_id: str,
+    parsed_files: list[Any] | None,
+) -> None:
+    """Reconcile symbol rows after analysis mutates their derived fields.
+
+    Health analysis computes ``complexity_estimate`` on the in-memory symbols
+    after the resumable INDEX checkpoint has already persisted the parser
+    defaults.  Re-upsert just those symbol records before ANALYSIS is marked
+    complete; graph construction, Git analysis, and the rest of ingestion stay
+    untouched.  The upsert preserves each persisted row's database identity.
+    """
+    if not parsed_files:
+        return
+    from repowise.core.persistence.crud import batch_upsert_symbols
+
+    symbols: list[Any] = []
+    for pf in parsed_files:
+        for sym in pf.symbols:
+            if not getattr(sym, "file_path", None):
+                sym.file_path = pf.file_info.path
+            symbols.append(sym)
+    if symbols:
+        await batch_upsert_symbols(session, repo_id, symbols)
+
+
 def _changed_file_edges(
     graph_builder: Any,
     parsed_files: list[Any] | None,
