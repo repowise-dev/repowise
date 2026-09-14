@@ -2273,6 +2273,7 @@ export interface RepoResponse {
   docs_skip_reason?: string | null;
   run_mode?: string | null;
   git_tier?: string | null;
+  index_scope?: Record<string, unknown> | null;
   initial_job_id?: string | null;
 }
 
