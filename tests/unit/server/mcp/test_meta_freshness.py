@@ -63,6 +63,22 @@ def test_no_git_signal_omits_index_behind_entirely(tmp_path, monkeypatch):
     assert "index_behind" not in out
 
 
+def test_build_meta_exposes_the_persisted_index_scope(tmp_path, monkeypatch):
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "state.json").write_text(
+        '{"run_mode":"fast","git_tier":"essential","docs_mode":"none"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
+
+    out = _meta.build_meta(repository=_repo(tmp_path))
+
+    assert out["index_scope"]["run_mode"] == "fast"
+    assert out["index_scope"]["content_provenance"] == "none"
+    assert out["index_scope"]["git_history_coverage"] is None
+
+
 def test_served_target_changed_warns(tmp_path, monkeypatch):
     monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset({"src/a.py"}))

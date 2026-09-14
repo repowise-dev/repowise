@@ -314,7 +314,8 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
         "Upgrade an index with a model: backfill the git tier ESSENTIAL -> "
         "FULL if it was built with `--mode fast`, and write the subsystem pages "
         "with a provider on a wiki that has none yet. Incremental: reuses the "
-        "persisted graph instead of re-parsing and re-resolving it. "
+        "persisted graph, records resumable stage progress, reuses persisted "
+        "provider/embedder choices, and previews model cost before generation. "
         "Single-repo only."
     ),
 )
@@ -436,12 +437,15 @@ def _render_full_upgrade_dry_run(
     """Describe a full upgrade without resolving providers or touching the store."""
     state = load_state(repo_path)
     config = load_config(repo_path)
+    from repowise.core.index_scope import resolve_index_scope
+
+    scope = resolve_index_scope(state, config)
 
     planned_provider = (
         provider_name or config.get("provider") or state.get("provider") or "auto-detect"
     )
     planned_model = model or config.get("model") or state.get("model") or "provider default"
-    current_git_tier = str(state.get("git_tier") or "essential").upper()
+    current_git_tier = scope["git_tier"].upper()
     recorded_pages = state.get("total_pages")
     page_label = f"{recorded_pages:,}" if isinstance(recorded_pages, int) else "unknown"
 
@@ -449,7 +453,13 @@ def _render_full_upgrade_dry_run(
     console.print(f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]")
     console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
-    console.print("  The whole-repository wiki would be generated. No changes made.")
+    console.print(
+        f"  Persisted scope: [cyan]{scope['run_mode']} / {scope['content_provenance']}[/cyan]"
+    )
+    console.print(
+        "  The whole-repository wiki would be generated after an explicit cost preview; "
+        "completed stages are resumable. No changes made."
+    )
 
 
 def _renderer_inputs(repo_path):

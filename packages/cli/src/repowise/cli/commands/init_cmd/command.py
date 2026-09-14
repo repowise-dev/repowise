@@ -1713,12 +1713,9 @@ def init_command(
     # One flag, one meaning: --no-editor-setup now suppresses the project-local
     # writes as well as the global registration. The paths come back so the
     # completion panel can name what landed in the working tree.
-    files_written = write_editor_project_files(
-        console,
-        repo_path,
-        options=editor_options,
-        no_editor_setup=not editor_setup,
-    )
+    # Render after state persistence below so generated guidance reads the same
+    # canonical index_scope that status/API/MCP expose.
+    files_written: list[Path] = []
     register_editor_clients(console, repo_path, no_editor_setup=not editor_setup)
 
     # Inherit the workspace's distill rewrite-hook verdict NOW, before the
@@ -1758,6 +1755,59 @@ def init_command(
     base_state["run_mode"] = run_mode
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
     apply_git_history_coverage_state(base_state, result)
+    from repowise.core.generation.selection import count_documentable_files
+    from repowise.core.index_scope import file_page_scope, stamp_index_scope
+
+    _scope_embedder = embedder_name_resolved if not effective_index_only else _index_only_embedder
+    _unavailable = []
+    if getattr(result, "health_report", None) is None:
+        _unavailable.append("health")
+    _skipped = ["generation"] if run_mode == "fast" else []
+    stamp_index_scope(
+        base_state,
+        {"commit_limit": resolved_commit_limit, "max_file_pages": max_file_pages},
+        run_mode=run_mode,
+        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[
+            _docs_mode
+        ],
+        git_tier=git_tier_for_run_mode(run_mode),
+        git_commit_cap=resolved_commit_limit,
+        file_pages={
+            "configured_cap": max_file_pages,
+            **(
+                result.generation_scope
+                if getattr(result, "generation_scope", None)
+                else file_page_scope(
+                    configured_cap=max_file_pages,
+                    eligible=count_documentable_files(result.parsed_files),
+                    generated_pages=result.generated_pages,
+                )
+            ),
+        },
+        analysis={"unavailable": _unavailable, "skipped": _skipped},
+        provider={
+            "name": provider.provider_name if provider is not None else None,
+            "model": provider.model_name if provider is not None else None,
+            "embedder": _scope_embedder,
+            "reused": False,
+            "model_cost_possible": _docs_mode == "llm",
+        },
+        search={
+            "full_text": "available" if result.generated_pages else "unavailable",
+            "semantic": (
+                "available"
+                if result.generated_pages and _scope_embedder and _scope_embedder != "mock"
+                else "unavailable"
+            ),
+            "next_command": "repowise reindex" if result.generated_pages else None,
+        },
+        upgrade={
+            "status": "pending" if _docs_mode != "llm" else "not_applicable",
+            "retryable": _docs_mode != "llm",
+            "completed_stages": [],
+            "next_stage": "git_backfill" if run_mode == "fast" else "generation",
+        },
+    )
     # Record whether submodules were indexed so `repowise update` rebuilds
     # the graph with the same boundary semantics (same pattern as git_tier:
     # missing → False keeps legacy behavior for old state files).
@@ -1835,9 +1885,17 @@ def init_command(
             commit_limit=commit_limit,
             resolved_commit_limit=resolved_commit_limit,
             resolved_reasoning=resolved_reasoning,
+            max_file_pages=max_file_pages,
             include_submodules=include_submodules,
             save_key=save_key,
         )
+
+    files_written = write_editor_project_files(
+        console,
+        repo_path,
+        options=editor_options,
+        no_editor_setup=not editor_setup,
+    )
 
     _record_init_outcome(
         result=result,

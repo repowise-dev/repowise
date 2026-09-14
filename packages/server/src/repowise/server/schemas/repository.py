@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, field_validator
 
 from repowise.core.docs_mode import DocsMode
+from repowise.core.index_scope import load_index_scope
 
 
 class RepoCreate(BaseModel):
@@ -70,22 +71,27 @@ class RepoResponse(BaseModel):
     # built at.
     run_mode: str | None = None
     git_tier: str | None = None
+    # Canonical versioned projection shared with CLI status and MCP metadata.
+    index_scope: dict | None = None
     # Set on POST /api/repos responses when registration auto-enqueued the
     # first index; clients attach to /api/jobs/{id}/stream with it.
     initial_job_id: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> RepoResponse:
+        local_path = obj.local_path  # type: ignore[attr-defined]
+        scope = load_index_scope(local_path) if local_path else None
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             name=obj.name,  # type: ignore[attr-defined]
             url=obj.url,  # type: ignore[attr-defined]
-            local_path=obj.local_path,  # type: ignore[attr-defined]
+            local_path=local_path,
             default_branch=obj.default_branch,  # type: ignore[attr-defined]
             head_commit=obj.head_commit,  # type: ignore[attr-defined]
             settings=json.loads(obj.settings_json),  # type: ignore[attr-defined]
             created_at=obj.created_at,  # type: ignore[attr-defined]
             updated_at=obj.updated_at,  # type: ignore[attr-defined]
+            index_scope=scope,
         )
 
 

@@ -330,6 +330,8 @@ def run_repo_generation(
     # is what persistence reads however the block exits.
     preserved_page_ids: set[str] = set()
     result.preserved_page_ids = preserved_page_ids
+    generation_scope: dict[str, int | None] = {}
+    result.generation_scope = generation_scope
 
     with Progress(*columns, console=console) as gen_progress:
         gen_callback: Any = RichProgressCallback(gen_progress, console)
@@ -368,6 +370,7 @@ def run_repo_generation(
                     else None
                 ),
                 test_run=test_run,
+                selection_out=generation_scope,
             )
         )
         if warnings is not None:

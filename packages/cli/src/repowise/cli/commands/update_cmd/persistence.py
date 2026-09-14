@@ -17,7 +17,7 @@ from typing import Any
 
 import structlog
 
-from repowise.cli.helpers import console, head_commit_ts, run_async, save_state
+from repowise.cli.helpers import console, head_commit_ts, load_config, run_async, save_state
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.pipeline import PhaseTimings, timed
 
@@ -508,6 +508,20 @@ def _persist_index_only_update(
     if timings is not None:
         timings.stop("run")
         new_state["phase_timings"] = timings.totals
+    from repowise.core.index_scope import resolve_index_scope, stamp_index_scope
+
+    scope = resolve_index_scope(new_state, load_config(repo_path))
+    unavailable = set(scope["analysis"]["unavailable"])
+    unavailable.update(str(step) for step in failed_steps)
+    stamp_index_scope(
+        new_state,
+        load_config(repo_path),
+        git_history_coverage=new_state.get("git_history_coverage"),
+        analysis={
+            "unavailable": sorted(unavailable),
+            "skipped": scope["analysis"]["skipped"],
+        },
+    )
     save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
     from .reporting import show_index_only_completion
@@ -992,9 +1006,7 @@ async def _persist_full_update_async(
                         purge_proposed_decisions_by_source,
                     )
 
-                    await purge_proposed_decisions_by_source(
-                        session, repo_id, "git_archaeology"
-                    )
+                    await purge_proposed_decisions_by_source(session, repo_id, "git_archaeology")
 
                 decision_dicts: list[dict] = []
                 if new_decision_markers:
@@ -1516,6 +1528,11 @@ def _run_full_health_rescore(
     if timings is not None:
         timings.stop("run")
         new_state["phase_timings"] = timings.totals
+    from repowise.core.index_scope import stamp_index_scope
+
+    stamp_index_scope(
+        new_state, load_config(repo_path), analysis={"unavailable": [], "skipped": []}
+    )
     save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
     console.print(f"[green]Config-triggered health re-score complete[/green] in {elapsed:.1f}s")

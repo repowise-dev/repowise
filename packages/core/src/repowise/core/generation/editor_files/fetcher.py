@@ -21,6 +21,7 @@ from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_
 from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
 from repowise.core.generation.entry_points import rank_entry_points
+from repowise.core.index_scope import load_index_scope, resolve_index_scope
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -92,7 +93,11 @@ class EditorFileDataFetcher:
             code_health=await self._get_code_health(),
             kg_layers=kg_layers,
             kg_tour=kg_tour,
+            index_scope=self._get_index_scope(),
         )
+
+    def _get_index_scope(self) -> dict:
+        return load_index_scope(self._repo_path) or resolve_index_scope({})
 
     # ------------------------------------------------------------------
     # Private helpers

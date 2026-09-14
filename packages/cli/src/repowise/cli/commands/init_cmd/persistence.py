@@ -29,6 +29,7 @@ from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.models import count_stub_fallbacks
+from repowise.core.index_scope import file_page_scope, stamp_index_scope
 from repowise.core.repo_config import config_dependency_fingerprints
 
 logger = structlog.get_logger(__name__)
@@ -339,6 +340,54 @@ def apply_git_history_coverage_state(state: dict[str, Any], result: Any) -> None
         state["git_history_coverage"] = coverage.to_dict()
 
 
+def _stamp_full_init_scope(
+    state: dict[str, Any],
+    result: Any,
+    provider: Any,
+    *,
+    resolved_commit_limit: int,
+    max_file_pages: int | None,
+    embedder_name_resolved: str,
+) -> None:
+    """Attach the canonical scope receipt for a successful model-backed init."""
+    from repowise.core.generation.selection import count_documentable_files
+
+    unavailable = [] if getattr(result, "health_report", None) is not None else ["health"]
+    if getattr(result, "generation_scope", None):
+        pages = result.generation_scope
+    elif hasattr(result, "parsed_files"):
+        pages = file_page_scope(
+            configured_cap=max_file_pages,
+            eligible=count_documentable_files(result.parsed_files),
+            generated_pages=result.generated_pages,
+        )
+    else:
+        pages = {"effective_cap": None, "eligible": None, "generated": None, "omitted": None}
+    stamp_index_scope(
+        state,
+        {"commit_limit": resolved_commit_limit, "max_file_pages": max_file_pages},
+        run_mode="standard",
+        content_provenance="model",
+        git_tier="full",
+        git_commit_cap=resolved_commit_limit,
+        file_pages={"configured_cap": max_file_pages, **pages},
+        analysis={"unavailable": unavailable, "skipped": []},
+        provider={
+            "name": provider.provider_name,
+            "model": provider.model_name,
+            "embedder": embedder_name_resolved,
+            "reused": False,
+            "model_cost_possible": True,
+        },
+        search={
+            "full_text": "available",
+            "semantic": "unavailable" if embedder_name_resolved == "mock" else "available",
+            "next_command": "repowise reindex" if embedder_name_resolved == "mock" else None,
+        },
+        upgrade={"status": "not_applicable", "retryable": False, "completed_stages": []},
+    )
+
+
 def save_full_state_and_config(
     *,
     repo_path: Path,
@@ -351,6 +400,7 @@ def save_full_state_and_config(
     commit_limit: int | None,
     resolved_commit_limit: int,
     resolved_reasoning: str,
+    max_file_pages: int | None = None,
     include_submodules: bool = False,
     save_key: bool = True,
 ) -> None:
@@ -393,6 +443,14 @@ def save_full_state_and_config(
     state["run_mode"] = "standard"
     state["git_tier"] = "full"
     apply_git_history_coverage_state(state, result)
+    _stamp_full_init_scope(
+        state,
+        result,
+        provider,
+        resolved_commit_limit=resolved_commit_limit,
+        max_file_pages=max_file_pages,
+        embedder_name_resolved=embedder_name_resolved,
+    )
     # Same pattern as git_tier: `repowise update` reads this back so its
     # graph rebuild keeps the init run's submodule boundary semantics.
     state["include_submodules"] = include_submodules

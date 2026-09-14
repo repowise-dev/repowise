@@ -363,7 +363,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                     derive_environment_facts=True,
                 )
             )
-            console.print(
+        console.print(
             f"    [{OK}]✓[/] {result.file_count:,} files, {result.symbol_count:,} symbols"
         )
     except Exception as exc:
@@ -504,6 +504,75 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     if repo_phase_timings:
         state["phase_timings"] = repo_phase_timings
     apply_git_history_coverage_state(state, result)
+    from repowise.core.generation.selection import count_documentable_files
+    from repowise.core.index_scope import file_page_scope, stamp_index_scope
+
+    scope_config = load_config(repo.path)
+    configured_cap = resolve_max_file_pages(config=scope_config)
+    scope_embedder = (
+        det_embedder
+        if docs_mode == "deterministic"
+        else ctx.embedder_name_resolved
+        if docs_mode == "llm"
+        else None
+    )
+    state["run_mode"] = ctx.run_mode
+    state["git_tier"] = "essential" if ctx.run_mode == "fast" else "full"
+    unavailable = [] if getattr(result, "health_report", None) is not None else ["health"]
+    stamp_index_scope(
+        state,
+        {**scope_config, "commit_limit": ctx.resolved_commit_limit},
+        run_mode=ctx.run_mode,
+        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[docs_mode],
+        git_tier=state["git_tier"],
+        git_commit_cap=ctx.resolved_commit_limit,
+        file_pages={
+            "configured_cap": configured_cap,
+            **(
+                result.generation_scope
+                if getattr(result, "generation_scope", None)
+                else (
+                    file_page_scope(
+                        configured_cap=configured_cap,
+                        eligible=count_documentable_files(result.parsed_files),
+                        generated_pages=result.generated_pages,
+                    )
+                    if hasattr(result, "parsed_files")
+                    else {
+                        "effective_cap": None,
+                        "eligible": None,
+                        "generated": None,
+                        "omitted": None,
+                    }
+                )
+            ),
+        },
+        analysis={
+            "unavailable": unavailable,
+            "skipped": ["generation"] if ctx.run_mode == "fast" else [],
+        },
+        provider={
+            "name": repo_provider.provider_name if repo_provider is not None else None,
+            "model": repo_provider.model_name if repo_provider is not None else None,
+            "embedder": scope_embedder,
+            "reused": False,
+            "model_cost_possible": docs_mode == "llm",
+        },
+        search={
+            "full_text": "available" if result.generated_pages else "unavailable",
+            "semantic": (
+                "available"
+                if result.generated_pages and scope_embedder not in {None, "mock"}
+                else "unavailable"
+            ),
+            "next_command": "repowise reindex" if result.generated_pages else None,
+        },
+        upgrade={
+            "status": "pending" if docs_mode != "llm" else "not_applicable",
+            "retryable": docs_mode != "llm",
+            "completed_stages": [],
+        },
+    )
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)

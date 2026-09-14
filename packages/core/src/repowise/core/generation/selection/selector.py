@@ -141,6 +141,10 @@ class Selection:
     # so the cost estimator and scope resolution keep costing nothing.
     concept_groups: list[ConceptGroup] = field(default_factory=list)
     layer_labels: dict[str, str] = field(default_factory=dict)
+    # File-page volume ledger: candidate population before the cap, and the
+    # cap that actually sliced it. These are reporting facts, not selectors.
+    eligible_file_pages: int = 0
+    effective_file_page_cap: int | None = None
 
     def counts(self) -> dict[str, int]:
         """Per-page-type counts of the pages this run will emit.
@@ -305,7 +309,7 @@ def _passes_importance_floor(path: str) -> bool:
 
 def _build_file_candidates(
     inputs: SelectionInputs,
-) -> list[tuple[float, str]]:
+) -> tuple[list[tuple[float, str]], int, int | None]:
     """Return ``[(score, file_path), ...]`` for code files, descending."""
     max_pr = max(inputs.pagerank.values(), default=0.0)
     max_bet = max(inputs.betweenness.values(), default=0.0)
@@ -346,9 +350,11 @@ def _build_file_candidates(
     cap = getattr(inputs.config, "max_file_pages", None)
     if cap is None:
         cap = auto_file_page_cap(len(scored))
+    eligible = len(scored)
+    effective_cap = cap or None
     if not cap:  # None (nothing to do) or 0 (explicitly unlimited)
-        return scored
-    return scored[: max(1, cap)]
+        return scored, eligible, effective_cap
+    return scored[: max(1, cap)], eligible, effective_cap
 
 
 def _build_symbol_candidates(
@@ -773,7 +779,7 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     Deterministic given identical inputs. Safe to call from both the generator
     and the cost estimator.
     """
-    files = _build_file_candidates(inputs)
+    files, eligible_file_pages, effective_file_page_cap = _build_file_candidates(inputs)
     symbols = _build_symbol_candidates(inputs)
     concepts = _build_module_groups(inputs)
     modules = concepts.scored
@@ -791,6 +797,8 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         infra_paths=[p for _, p in infras],
         scc_groups=[g for _, g in sccs],
         emit_repo_overview=True,
+        eligible_file_pages=eligible_file_pages,
+        effective_file_page_cap=effective_file_page_cap,
     )
     log.info("page_selection.complete", counts=sel.counts())
     return sel
