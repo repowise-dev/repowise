@@ -18,6 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.server.schemas.files import PinDocResponse
+
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
 from repowise.core.ids import is_external
@@ -216,6 +218,53 @@ async def files_index(
     }
 
 
+@router.post("/{repo_id}/files/{file_path:path}/pin-doc", response_model=PinDocResponse)
+async def pin_file_doc(
+    repo_id: str,
+    file_path: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> PinDocResponse:
+    """Pin a file's doc so every reindex regenerates it (issue #812).
+
+    Called from the Doc tab's "Generate doc" action. A file with no page
+    yet gets a lightweight template row marked pinned, so the next
+    generation phase knows to produce (and keep) its doc. Returns the
+    pinned state for the UI to render.
+    """
+    from datetime import UTC, datetime
+
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    page_id = f"file_page:{file_path}"
+    page = await crud.get_page(session, page_id)
+    if page is None:
+        # Lightweight "wanted" row: template provenance means it reads as
+        # unwritten (so the heuristics know there is nothing yet), and the
+        # pin is what makes selection always include it.
+        page = await crud.upsert_page(
+            session,
+            page_id=page_id,
+            repository_id=repo_id,
+            page_type="file_page",
+            title=file_path.rsplit("/", 1)[-1],
+            content="",
+            summary="",
+            target_path=file_path,
+            source_hash="",
+            model_name="template",
+            provider_name="template",
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+    page = await crud.set_page_pinned(session, page_id, True)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Page not found")
+    await session.commit()
+    return PinDocResponse(file_path=file_path, pinned=page.pinned)
+
+
 @router.get("/{repo_id}/files/{file_path:path}")
 async def file_detail(
     repo_id: str,
@@ -281,6 +330,7 @@ async def file_detail(
             "freshness_status": page_row.freshness_status,
             "confidence": page_row.confidence,
             "human_notes": page_row.human_notes,
+            "pinned": page_row.pinned,
             "updated_at": page_row.updated_at.isoformat() if page_row.updated_at else None,
         }
         if page_row
