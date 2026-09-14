@@ -230,6 +230,47 @@ def test_batch_recovery_never_reembeds_persistence_failure() -> None:
     assert {stage for _item, stage, _exc in terminal} == {"persistence"}
 
 
+async def test_single_recovery_adaptively_truncates_confirmed_oversized_input() -> None:
+    from repowise.core.persistence.vector_store._base import EMBED_TEXT_MAX_CHARS
+
+    class _TooLong(Exception):
+        status_code = 400
+
+    class _Store:
+        def __init__(self) -> None:
+            self.text_lengths: list[int] = []
+
+        async def embed_and_upsert(self, _page_id: str, text: str, _metadata: dict) -> None:
+            self.text_lengths.append(len(text))
+            if len(text) > EMBED_TEXT_MAX_CHARS // 2:
+                raise _TooLong("maximum input length is 8192 tokens")
+
+    store = _Store()
+    await reindex_cmd._embed_one_with_input_recovery(
+        store,
+        ("oversized", "x" * (EMBED_TEXT_MAX_CHARS * 3), {}),
+    )
+
+    assert store.text_lengths == [EMBED_TEXT_MAX_CHARS, EMBED_TEXT_MAX_CHARS // 2]
+
+
+async def test_single_recovery_does_not_retry_other_bad_requests() -> None:
+    class _BadRequest(Exception):
+        status_code = 400
+
+    class _Store:
+        calls = 0
+
+        async def embed_and_upsert(self, _page_id: str, _text: str, _metadata: dict) -> None:
+            self.calls += 1
+            raise _BadRequest("invalid dimensions")
+
+    store = _Store()
+    with pytest.raises(_BadRequest, match="invalid dimensions"):
+        await reindex_cmd._embed_one_with_input_recovery(store, ("bad", "text", {}))
+    assert store.calls == 1
+
+
 async def test_reindex_auto_honours_the_repo_pinned_embedder(
     monkeypatch,
     tmp_path: Path,

@@ -25,6 +25,7 @@ __all__ = [
     "BatchChunkFailure",
     "BatchEmbeddingError",
     "VectorStore",
+    "cap_embed_text",
     "cosine_similarity",
     "embed_item",
     "iter_embed_chunks",
@@ -75,9 +76,14 @@ logger = logging.getLogger(__name__)
 # (a 16-page chunk measured at 0.6s against OpenAI).
 EMBED_BATCH_MAX_ITEMS = 16
 
-# Per-input cap (~7.5k tokens): embedding models reject a single input past
-# ~8,192 tokens, and one oversized page must not sink its whole chunk.
-EMBED_TEXT_MAX_CHARS = 30_000
+# Per-input cap sized conservatively for code-heavy text. The old 30,000-char
+# cap assumed roughly four characters per token, but generated SCC pages in a
+# real repository exceeded OpenAI's 8,192-token input limit even after that
+# cut. Code and punctuation tokenize more densely than prose. Keep enough of
+# each page for useful semantic coverage while leaving substantial headroom
+# across providers and tokenizers; confirmed provider rejections can still be
+# recovered by a bounded, smaller retry in the reindex command.
+EMBED_TEXT_MAX_CHARS = 16_000
 
 # How much of a page's content a vector row keeps for its evidence snippet.
 #
@@ -88,6 +94,28 @@ EMBED_TEXT_MAX_CHARS = 30_000
 # store raised its ceiling while the recipe still handed it 600 characters,
 # and on the paths that passed no content at all, an empty string.
 STORED_SNIPPET_CHARS = 2_000
+
+
+def cap_embed_text(page_id: str, text: str) -> str:
+    """Return text bounded for one embedding input and report any loss.
+
+    Both batch and single-item writers use this helper. Previously only the
+    batch path applied the cap, so a page could succeed during generation but
+    fail during ``doctor --repair`` or reindex's per-item isolation depending
+    solely on which writer happened to touch it.
+    """
+    if len(text) <= EMBED_TEXT_MAX_CHARS:
+        return text
+    logger.error(
+        # ``page_id`` is empty for the raw ``embed_texts`` path, which embeds
+        # loose strings belonging to no page.
+        "embed_text_truncated page_id=%s chars=%d chars_dropped=%d cap=%d",
+        page_id,
+        len(text),
+        len(text) - EMBED_TEXT_MAX_CHARS,
+        EMBED_TEXT_MAX_CHARS,
+    )
+    return text[:EMBED_TEXT_MAX_CHARS]
 
 
 def embed_item(
@@ -182,18 +210,7 @@ def iter_embed_chunks(
     """
     for start in range(0, len(items), EMBED_BATCH_MAX_ITEMS):
         chunk = items[start : start + EMBED_BATCH_MAX_ITEMS]
-        for page_id, text, _meta in chunk:
-            if len(text) > EMBED_TEXT_MAX_CHARS:
-                logger.error(
-                    # ``page_id`` is empty for the raw ``embed_texts`` path,
-                    # which embeds loose strings belonging to no page.
-                    "embed_text_truncated page_id=%s chars=%d chars_dropped=%d cap=%d",
-                    page_id,
-                    len(text),
-                    len(text) - EMBED_TEXT_MAX_CHARS,
-                    EMBED_TEXT_MAX_CHARS,
-                )
-        yield chunk, [text[:EMBED_TEXT_MAX_CHARS] for _, text, _ in chunk]
+        yield chunk, [cap_embed_text(page_id, text) for page_id, text, _ in chunk]
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

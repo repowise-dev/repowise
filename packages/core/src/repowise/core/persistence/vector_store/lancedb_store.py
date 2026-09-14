@@ -10,6 +10,7 @@ from ._base import (
     BatchChunkFailure,
     BatchEmbeddingError,
     VectorStore,
+    cap_embed_text,
     iter_embed_chunks,
 )
 
@@ -195,7 +196,7 @@ class LanceDBVectorStore(VectorStore):
 
     async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
         await self._ensure_connected()
-        vectors = await self._embedder.embed([text])
+        vectors = await self._embedder.embed([cap_embed_text(page_id, text)])
         vector = vectors[0]
         await self._ensure_table(vector)
         meta = {"content": text, **metadata}

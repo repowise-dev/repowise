@@ -30,6 +30,7 @@ from ._base import (
     BatchChunkFailure,
     BatchEmbeddingError,
     VectorStore,
+    cap_embed_text,
     cosine_similarity,
     embed_item,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "LanceDBVectorStore",
     "PgVectorStore",
     "VectorStore",
+    "cap_embed_text",
     "cosine_similarity",
     "embed_item",
 ]

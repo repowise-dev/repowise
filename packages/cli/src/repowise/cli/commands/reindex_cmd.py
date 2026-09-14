@@ -15,6 +15,7 @@ from repowise.cli.helpers import (
 from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
 
 _PROVIDER_FAILURE_CIRCUIT_SLICES = 2
+_INPUT_TOO_LONG_RETRIES = 4
 
 
 @click.command("reindex")
@@ -182,7 +183,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
             for page_id, text, meta in retry_items:
                 try:
-                    await vector_store.embed_and_upsert(page_id, text, meta)
+                    await _embed_one_with_input_recovery(vector_store, (page_id, text, meta))
                     indexed += 1
                 except Exception as exc:
                     failed += 1
@@ -351,6 +352,52 @@ def _is_input_specific_error(exc: Exception) -> bool:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if getattr(current, "status_code", None) in {400, 413, 422}:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+async def _embed_one_with_input_recovery(
+    vector_store: object,
+    item: tuple[str, str, dict],
+) -> None:
+    """Retry one confirmed oversized input with bounded adaptive truncation."""
+
+    from repowise.core.persistence.vector_store import cap_embed_text
+
+    page_id, text, metadata = item
+    candidate = cap_embed_text(page_id, text)
+    for attempt in range(_INPUT_TOO_LONG_RETRIES + 1):
+        try:
+            await vector_store.embed_and_upsert(page_id, candidate, metadata)  # type: ignore[attr-defined]
+            return
+        except Exception as exc:
+            if (
+                attempt >= _INPUT_TOO_LONG_RETRIES
+                or len(candidate) <= 1
+                or not _is_input_too_long_error(exc)
+            ):
+                raise
+            candidate = candidate[: max(1, len(candidate) // 2)]
+
+
+def _is_input_too_long_error(exc: Exception) -> bool:
+    """Whether a provider explicitly rejected one input for token length."""
+
+    markers = (
+        "maximum input length",
+        "maximum context length",
+        "input is too long",
+        "too many tokens",
+        "token limit",
+    )
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status = getattr(current, "status_code", None)
+        message = str(current).lower()
+        if status in {400, 413, 422} and any(marker in message for marker in markers):
             return True
         current = current.__cause__ or current.__context__
     return False

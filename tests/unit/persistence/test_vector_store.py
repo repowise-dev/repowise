@@ -462,6 +462,19 @@ async def test_in_memory_embed_batch_caps_text_length():
 
 
 @pytest.mark.asyncio
+async def test_in_memory_single_upsert_caps_text_length():
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.persistence.vector_store._base import EMBED_TEXT_MAX_CHARS
+
+    emb = _RecordingEmbedder()
+    store = InMemoryVectorStore(emb)
+    await store.embed_and_upsert(
+        "p0", "x" * (EMBED_TEXT_MAX_CHARS + 5_000), {"target_path": "f0.py"}
+    )
+    assert len(emb.calls[0][0]) == EMBED_TEXT_MAX_CHARS
+
+
+@pytest.mark.asyncio
 async def test_lancedb_embed_batch_isolates_failed_chunk(tmp_path):
     # One failing chunk must not sink the rest of the level, but the loss
     # must surface as an error (the old code swallowed it entirely).
