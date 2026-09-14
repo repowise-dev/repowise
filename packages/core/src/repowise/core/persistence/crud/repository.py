@@ -141,6 +141,7 @@ async def update_repo_git_totals(
     total_lines_added: int | None = None,
     total_lines_deleted: int | None = None,
     churn_anchor_sha: str | None = None,
+    is_shallow_clone: bool | None = None,
 ) -> None:
     """Store a repo's whole-history git totals, captured at index time (#730).
 
@@ -163,6 +164,7 @@ async def update_repo_git_totals(
         # anchor and totals moving together rather than letting one advance
         # past the other.
         "churn_anchor_sha": churn_anchor_sha,
+        "is_shallow_clone": is_shallow_clone,
     }
     if all(v is None for v in updates.values()):
         return
