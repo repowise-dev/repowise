@@ -5,7 +5,13 @@ from __future__ import annotations
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import _SNIPPET_LEN, SearchResult, snippet_around
-from ._base import STORED_SNIPPET_CHARS, VectorStore, iter_embed_chunks
+from ._base import (
+    STORED_SNIPPET_CHARS,
+    BatchChunkFailure,
+    BatchEmbeddingError,
+    VectorStore,
+    iter_embed_chunks,
+)
 
 __all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore"]
 
@@ -207,24 +213,24 @@ class LanceDBVectorStore(VectorStore):
         if not items:
             return
         await self._ensure_connected()
-        failed = 0
-        last_exc: Exception | None = None
+        failures: list[BatchChunkFailure] = []
         for chunk, texts in iter_embed_chunks(items):
             try:
                 vectors = await self._embedder.embed(texts)
+            except Exception as exc:  # isolate per provider request
+                failures.append(BatchChunkFailure(tuple(chunk), "embedding", exc))
+                continue
+            try:
                 await self._ensure_table(vectors[0])
                 rows = [
                     self._row(page_id, vector, {"content": text, **metadata})
                     for (page_id, text, metadata), vector in zip(chunk, vectors, strict=True)
                 ]
                 await self._upsert_rows(rows)
-            except Exception as exc:  # isolate per chunk
-                failed += len(chunk)
-                last_exc = exc
-        if failed:
-            raise RuntimeError(
-                f"embed_batch: {failed}/{len(items)} items failed to embed"
-            ) from last_exc
+            except Exception as exc:  # preserve vectors' failure stage for callers
+                failures.append(BatchChunkFailure(tuple(chunk), "persistence", exc))
+        if failures:
+            raise BatchEmbeddingError(failures=failures, total_items=len(items))
 
     async def _search_by_vector(
         self, q_vec: list[float], limit: int, query: str | None = None

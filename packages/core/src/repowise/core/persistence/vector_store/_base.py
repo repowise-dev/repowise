@@ -12,6 +12,8 @@ import logging
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Literal
 
 from ..information_floor import count_page_denied_a_vector, meets_information_floor
 from ..search import SearchResult
@@ -20,11 +22,47 @@ __all__ = [
     "EMBED_BATCH_MAX_ITEMS",
     "EMBED_TEXT_MAX_CHARS",
     "STORED_SNIPPET_CHARS",
+    "BatchChunkFailure",
+    "BatchEmbeddingError",
     "VectorStore",
     "cosine_similarity",
     "embed_item",
     "iter_embed_chunks",
 ]
+
+EmbeddingItem = tuple[str, str, dict]
+
+
+@dataclass(frozen=True)
+class BatchChunkFailure:
+    """One request-sized chunk that a batch vector write could not persist."""
+
+    items: tuple[EmbeddingItem, ...]
+    stage: Literal["embedding", "persistence"]
+    cause: Exception
+
+
+class BatchEmbeddingError(RuntimeError):
+    """Partial batch failure with enough detail for bounded caller recovery.
+
+    Stores used to raise only an aggregate count. A caller could not tell which
+    chunks had already committed, so reindex retried the entire outer slice one
+    item at a time. Under a provider timeout that multiplied one failed request
+    into minutes of duplicate work.
+    """
+
+    def __init__(self, *, failures: list[BatchChunkFailure], total_items: int) -> None:
+        self.failures = tuple(failures)
+        self.total_items = total_items
+        self.failed_items = tuple(item for failure in failures for item in failure.items)
+        self.successful_count = total_items - len(self.failed_items)
+        last = failures[-1]
+        detail = f"{type(last.cause).__name__}: {last.cause}"
+        super().__init__(
+            f"embed_batch: {len(self.failed_items)}/{total_items} items failed during "
+            f"{last.stage} ({detail})"
+        )
+
 
 logger = logging.getLogger(__name__)
 
