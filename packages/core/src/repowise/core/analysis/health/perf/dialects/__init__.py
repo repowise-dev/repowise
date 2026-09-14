@@ -20,6 +20,7 @@ from . import dart as _dart
 from . import go as _go
 from . import java as _java
 from . import kotlin as _kotlin
+from . import pascal as _pascal
 from . import python as _python
 from . import ruby as _ruby
 from . import rust as _rust
@@ -51,6 +52,7 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("ruby", _ruby.DIALECT),
     ("kotlin", _kotlin.DIALECT),
     ("cpp", _cpp.DIALECT),
+    ("pascal", _pascal.DIALECT),
     # NB: "c" shares the C++ grammar and now has its own ``LanguageNodeMap``,
     # so it does reach the health pass for complexity. It is still absent here
     # on purpose: no perf dialect has been written for it, and the coverage

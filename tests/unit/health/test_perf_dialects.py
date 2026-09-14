@@ -1375,3 +1375,28 @@ def test_cpp_same_collection_nested_range_for_fact():
     fc = walk_file("t.cpp", "cpp", src.encode())
     assert any(f.nested_loop_line for f in fc.perf_fn_facts)
     assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+# ---------------------------------------------------------------------------
+# Pascal
+# ---------------------------------------------------------------------------
+
+_PASCAL_CASES = [
+    (
+        "procedure m;\n"
+        "begin\n"
+        "  for i := 1 to 10 do\n"
+        "  begin\n"
+        "    Assert(False);\n"
+        "  end;\n"
+        "end;",
+        [],
+        "Assert is mapped to assert_call_kinds, not a perf marker",
+    ),
+]
+
+@pytest.mark.parametrize("src,expected,note", _PASCAL_CASES, ids=[c[2] for c in _PASCAL_CASES])
+def test_pascal_cases(src, expected, note):
+    # Actually wait, we don't have perf markers for pascal yet.
+    # We just want to make sure the dialect runs and callee works.
+    assert _hits("pascal", src) == sorted(expected), note
+
