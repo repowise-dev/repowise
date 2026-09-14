@@ -517,7 +517,7 @@ def get_chat_provider_instance(
 
     Returns a provider that implements both BaseProvider and ChatProvider.
     """
-    from repowise.core.providers.llm.registry import get_provider
+    from repowise.core.providers.llm.registry import get_provider, provider_kwargs
 
     repo_cfg, repo_env = _load_repo_context(repo_path)
 
@@ -542,7 +542,11 @@ def get_chat_provider_instance(
     base_url = _get_base_url_for_provider(provider_id, repo_env, repo_cfg)
     catalog = _CATALOG_BY_ID[provider_id]
 
-    kwargs: dict[str, Any] = {"model": model or catalog["default_model"]}
+    kwargs = provider_kwargs(
+        provider_id,
+        model=model or catalog["default_model"],
+        repo_path=repo_path,
+    )
     if api_key:
         kwargs["api_key"] = api_key
     if base_url:
