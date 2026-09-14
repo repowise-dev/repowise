@@ -95,13 +95,13 @@ export function AiPromptModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-[var(--color-model)]" />
-            {title}
+      <DialogContent className="min-w-0 w-[calc(100vw-2rem)] max-w-3xl overflow-hidden">
+        <DialogHeader className="min-w-0">
+          <DialogTitle className="flex min-w-0 items-center gap-2 pr-6">
+            <Sparkles className="h-4 w-4 shrink-0 text-[var(--color-model)]" />
+            <span className="min-w-0 truncate">{title}</span>
             {filePath ? (
-              <span className="ml-2 text-xs font-mono font-normal text-[var(--color-text-tertiary)] truncate max-w-[260px]">
+              <span className="ml-2 min-w-0 max-w-[260px] flex-1 truncate font-mono text-xs font-normal text-[var(--color-text-tertiary)]">
                 {filePath}
               </span>
             ) : null}
@@ -109,7 +109,7 @@ export function AiPromptModal({
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           {/* Full-bleed hairlines rather than a bordered, filled well. The
               prompt is the thing you opened this to read, not an object you
               can select or act on, so it does not earn a container — and a
@@ -117,12 +117,12 @@ export function AiPromptModal({
               rules run to the modal's edge (`-mx-6` against its `p-6`) so they
               read as the page's section dividers do, rather than as a box that
               happens to have lost its sides. */}
-          <div className="-mx-6 divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
-            <div className="space-y-2 px-6 py-4">
+          <div className="-mx-6 min-w-0 divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
+            <div className="min-w-0 space-y-2 px-6 py-4">
               <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
                 Target agent
               </p>
-              <div className="w-fit">
+              <div className="max-w-full overflow-x-auto">
                 <ViewToggle
                   value={flavor}
                   options={FLAVORS.map((f) => ({ value: f.value, label: f.label }))}
@@ -134,15 +134,15 @@ export function AiPromptModal({
               </p>
             </div>
 
-            <div className="max-h-[420px] overflow-y-auto px-6 py-4">
-              <pre className="font-mono text-xs leading-relaxed text-[var(--color-text-primary)] whitespace-pre-wrap break-words">
+            <div className="min-w-0 max-w-full max-h-[420px] overflow-x-hidden overflow-y-auto px-6 py-4">
+              <pre className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-xs leading-relaxed text-[var(--color-text-primary)]">
                 {prompt}
               </pre>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
-            <span className="tabular-nums">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
+            <span className="min-w-0 tabular-nums">
               {prompt.length.toLocaleString()} chars, approx{" "}
               {Math.round(prompt.length / 4).toLocaleString()} tokens
             </span>
@@ -151,7 +151,7 @@ export function AiPromptModal({
               onClick={handleCopy}
               disabled={!prompt}
               className={
-                "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors " +
+                "inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors " +
                 (copied
                   ? "bg-[var(--color-success)] text-[var(--color-text-inverse)]"
                   : "bg-[var(--color-model)] text-[var(--color-text-on-model)] hover:bg-[var(--color-model-hover)]")
