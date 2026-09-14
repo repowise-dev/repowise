@@ -2,10 +2,9 @@
  * Breaking-change overlay — turns a `BreakingChangeReport` (computed by the core
  * / REST layer) into a `SystemMapOverlay` the Live System Map renders without any
  * component change. Changed provider services are badged with their breaking
- * count, the consumers they endanger are badged "at risk", and the edges between
- * them are highlighted. This is additive (no dimming): the whole map stays
- * legible, with the at-risk seams called out. The Phase 4 attach point promised
- * by the Phase 2 overlay API.
+ * count, endpoint-exposed consumers of incompatible changes are badged "exposed",
+ * and the edges between them are highlighted. Warning-only uncertainty never
+ * becomes a claim that a consumer will fail. This is additive (no dimming).
  */
 
 import type { BreakingChangeReport, SystemGraph } from "@repowise-dev/types";
@@ -36,6 +35,7 @@ export function buildBreakingChangeOverlay(
     providerCount.set(pid, (providerCount.get(pid) ?? 0) + 1);
     if (change.severity === "breaking") providerSeverity.set(pid, "breaking");
     else if (!providerSeverity.has(pid)) providerSeverity.set(pid, "warning");
+    if (change.severity !== "breaking") continue;
     for (const consumer of change.impacted_consumers) {
       consumerNodeIds.add(consumer.node_id);
       atRiskPairs.add(`${consumer.node_id}->${pid}`);
@@ -51,7 +51,7 @@ export function buildBreakingChangeOverlay(
     };
   }
   for (const nid of consumerNodeIds) {
-    if (!nodeBadges[nid]) nodeBadges[nid] = { label: "at risk", tone: "warning" };
+    if (!nodeBadges[nid]) nodeBadges[nid] = { label: "exposed", tone: "warning" };
   }
 
   const highlightEdgeIds = new Set<string>();
@@ -59,7 +59,7 @@ export function buildBreakingChangeOverlay(
   for (const edge of graph.edges) {
     if (atRiskPairs.has(`${edge.source}->${edge.target}`)) {
       highlightEdgeIds.add(edge.id);
-      edgeBadges[edge.id] = { label: "breaking", tone: "danger" };
+      edgeBadges[edge.id] = { label: "incompatible", tone: "danger" };
     }
   }
 

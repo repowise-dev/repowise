@@ -527,7 +527,7 @@ When `changed_files` is passed, the exact serialized response starts with a `dir
 
 - `will_break_consumers`: deprecated compatibility name for services in *other* repos that structurally depend on this one. Rows carry `claim: structural_reach`, `runtime_breakage_claim: false`, both repository roles, direction, distance, and aggregated edge kinds; the sibling `will_break_consumers_semantics` is `structural_reach_only`. Matching total/emitted/truncated fields describe the exact pre-cap structural population, while `cross_repo_relationship_analysis` labels unavailable or partial edge provenance.
 - `missing_cross_repo_cochanges`: services in other repos that historically co-change with this one but aren't in the diff.
-- `breaking_changes`: provider contracts in this repo that changed *incompatibly* since the last index (a removed route or field, a type or field-number change, a newly-required field), each with the changed `contract_id`, the change `kind`/`severity`, and the `impacted_consumers` (repo, service, file) it endangers across repos. Schema-level truth, distinct from the topology-level `will_break_consumers`; non-breaking changes (added optional field, new endpoint) never appear. See [Breaking-Change Guard](../scale/WORKSPACES.md#breaking-change-guard).
+- `breaking_changes`: compatibility-named list of provider incompatibilities and comparison warnings since the last index. Entries carry `contract_id`, `kind`/`severity`, optional request/response `side`, `comparison_source`/`comparison_key`, and endpoint-exposed `impacted_consumers` (repo, service, file). OpenAPI findings require complete sides with matching fidelity; unsupported or changed extraction evidence becomes uncertainty, not field removals. Consumer links do not prove field use or runtime failure. See [Breaking-Change Guard](../scale/WORKSPACES.md#breaking-change-guard).
 - `conformance_violations`: declared dependency-rule breaches the diff's repo participates in, each with the offending `source`/`target` services, the `rule` (e.g. `frontend !-> db`), and `edge_kind`. See [Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance).
 - `dependency_cycles`: circular service dependencies involving this repo, each with the participating `nodes` and `length`.
 
@@ -681,14 +681,16 @@ on an index with no fix history.
 In workspace mode the response also holds `cross_repo`, built from the artifacts
 of the last `repowise update --workspace` rather than from a graph traversal. It
 appears when the commit touches a file that provides a contract some other repo
-consumes, or when the breaking-change report attributes a break to one of the
+consumes, or when the compatibility report attributes a finding to one of the
 changed files. `consumers[]` names each link with its `provider_file`, the
 consumer's `repo`, `file` and `contract_id`, the `contract_type` and the
 `match_type` that joined them, plus `provider_symbol_id` and `symbol_id` when the
 link is symbol-level; `consumer_repos` lists the other repos in one place.
 `breaking_changes[]` carries the `contract_id`, `type`, `kind`, `severity`,
-`detail`, `provider_file` and `impacted_repos` of each contract that changed
-incompatibly. `breaking_changes_available` says whether a detection pass ran at
+`detail`, `provider_file` and `impacted_repos` of each incompatibility or
+comparison warning, together with side/source/key evidence when available.
+Impacted repositories are directly linked endpoint exposure, not proof of a
+runtime failure. `breaking_changes_available` says whether a detection pass ran at
 all, so an empty list reads as silence rather than as an all-clear, and
 `breaking_changes_as_of` stamps that half only. `consumers` is capped at ten and
 `breaking_changes` at five, with `consumers_truncated` and
@@ -1348,7 +1350,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 - **API contract links** (HTTP, gRPC, topics) between repos
 - **Package dependencies** between repos
 - **Cross-repo blast radius** via the workspace-only `get_blast_radius` tool, and a cross-repo `directive` in `get_risk` PR-mode
-- **Breaking-change guard**: incompatible provider-contract changes and the consumers they endanger, in the `get_risk` PR-mode `breaking_changes` directive
+- **Breaking-change guard**: provider incompatibilities and explicit comparison uncertainty, plus endpoint-exposed consumers, in the `get_risk` PR-mode `breaking_changes` directive
 - **Architecture conformance**: declared dependency-rule violations and dependency cycles via the workspace-only, opt-in `get_conformance` tool, and `conformance_violations` / `dependency_cycles` in the `get_risk` PR-mode directive
 - **Architecture metrics**: whole-system coupling (propagation cost), the cyclic core, per-service roles, and a deterministic 1-10 architecture score via the workspace-only `get_architecture` tool
 

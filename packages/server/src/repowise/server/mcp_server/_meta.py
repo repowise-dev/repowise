@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.index_scope import load_index_scope
+
 MCP_CONTRACT_VERSION = 1
 
 # Only warn about age when we have no other signal AND the index is genuinely
@@ -99,6 +101,13 @@ def read_state_sync_commit(local_path: str | None) -> str | None:
         return None
     commit = data.get("last_sync_commit")
     return commit if isinstance(commit, str) and commit else None
+
+
+def read_index_scope(local_path: str | None) -> dict[str, Any] | None:
+    """Read the canonical persisted scope, or a conservative legacy projection."""
+    if not local_path:
+        return None
+    return load_index_scope(local_path)
 
 
 def resolve_indexed_commit(head_commit: str | None, local_path: str | None) -> str | None:
@@ -347,6 +356,9 @@ def build_meta(
         out["cached"] = True
     if repository is not None:
         out.update(freshness_from_repo(repository, targets=targets))
+        scope = read_index_scope(getattr(repository, "local_path", None))
+        if scope is not None:
+            out["index_scope"] = scope
     out.update(_embedder_meta())
     out.update(_release_meta())
     if extra:

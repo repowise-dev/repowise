@@ -66,6 +66,28 @@ def test_render_contains_repo_name(gen):
     assert "test-repo" in result
 
 
+def test_render_contains_machine_readable_index_scope(gen):
+    import dataclasses
+
+    data = dataclasses.replace(
+        _minimal_data(),
+        index_scope={
+            "run_mode": "fast",
+            "content_provenance": "none",
+            "git_tier": "essential",
+            "file_pages": {"eligible": 5, "generated": 0, "omitted": 5},
+            "analysis": {"unavailable": [], "skipped": ["generation"]},
+            "upgrade": {"status": "pending"},
+        },
+    )
+    result = gen.render(data)
+    assert "Scope: fast index · none content · essential Git" in result
+    assert "5 eligible file pages omitted" in result
+    assert '"eligible": 5' in result
+    assert '"generated": 0' in result
+    assert "repowise update --full" in result
+
+
 def _health_block(
     maintainability_average: float | None,
     performance_average: float | None = None,

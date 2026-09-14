@@ -66,10 +66,11 @@ export function GenerationProgress({
   onRetry,
   settingsHref,
 }: GenerationProgressProps) {
-  const progress = job
-    ? job.total_pages > 0
-      ? Math.round((job.completed_pages / job.total_pages) * 100)
-      : 0
+  const rawProgress = job?.total_pages && job.total_pages > 0
+    ? Math.round((job.completed_pages / job.total_pages) * 100)
+    : 0;
+  const progress = Number.isFinite(rawProgress)
+    ? Math.max(0, Math.min(100, rawProgress))
     : 0;
 
   const elapsedStr = `${Math.floor(elapsed / 60000)}m ${Math.floor((elapsed % 60000) / 1000)}s`;

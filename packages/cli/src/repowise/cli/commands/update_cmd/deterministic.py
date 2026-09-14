@@ -91,6 +91,7 @@ def regenerate_deterministic_pages(
     degraded: list[str],
     dead_code_report: Any = None,
     prior_page_ids: dict | None = None,
+    full_scope: bool = False,
 ) -> list:
     """Re-render the template pages for *regenerate_paths*. Never raises.
 
@@ -117,6 +118,7 @@ def regenerate_deterministic_pages(
         dead_code_report=dead_code_report,
         prior_page_ids=prior_page_ids,
         degrade_label="Template page refresh",
+        full_scope=full_scope,
     )
 
 
@@ -135,6 +137,7 @@ def _render_pages(
     dead_code_report: Any,
     prior_page_ids: dict | None,
     degrade_label: str,
+    full_scope: bool = False,
 ) -> list:
     """Render the changed files' pages from structure (free, no LLM).
 
@@ -145,8 +148,16 @@ def _render_pages(
     from repowise.core.providers.llm.template import TemplateProvider
 
     regen_set = set(regenerate_paths)
-    affected_parsed = [pf for pf in parsed_files if pf.file_info.path in regen_set]
-    affected_source = {p: s for p, s in source_map.items() if p in regen_set}
+    affected_parsed = (
+        list(parsed_files)
+        if full_scope
+        else [pf for pf in parsed_files if pf.file_info.path in regen_set]
+    )
+    affected_source = (
+        dict(source_map)
+        if full_scope
+        else {p: s for p, s in source_map.items() if p in regen_set}
+    )
     if not affected_parsed:
         return []
 
@@ -154,7 +165,7 @@ def _render_pages(
         config = GenerationConfig.from_repo_config(
             cfg,
             deterministic=True,
-            file_pages_only=True,
+            file_pages_only=not full_scope,
             max_concurrency=concurrency,
             language=cfg.get("language", "en"),
             enable_onboarding=bool(cfg.get("enable_onboarding", True)),

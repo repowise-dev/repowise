@@ -743,20 +743,15 @@ def _cpp_export_macro_parent(node: Node, parent_names: dict[int, str]) -> str | 
 
 
 @cache
-def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | None:
-    """Process-wide cache of compiled tree-sitter Query objects.
+def _compile_query(lang: str, grammar_tag: str | None = None) -> tuple[object | None, str | None]:
+    """Compile and return (Query, None) or (None, error_str).
 
-    Compiling `.scm` queries is non-trivial; in process-pool parsing each worker
-    would otherwise recompile per file. ``grammar_tag`` may differ from
-    ``lang`` when a language reuses another's grammar at a different
-    variant — e.g. ``.tsx`` files reuse ``typescript.scm`` but must bind
-    to the JSX-aware ``tsx`` grammar so React components don't drown in
-    ERROR nodes.
+    Cached process-wide so preflight and parsing workers never recompile the same query.
     """
     grammar = grammar_tag or lang
     language = _get_language(grammar)
     if language is None:
-        return None
+        return None, None
 
     # The spec names the query file, so a language can reuse another's
     # queries wholesale (svelte -> typescript.scm). Every other spec declares
@@ -766,7 +761,7 @@ def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | 
     scm_path = QUERIES_DIR / scm_name
     if not scm_path.exists():
         log.debug("No .scm query file found", language=lang, path=str(scm_path))
-        return None
+        return None, None
 
     scm_text = scm_path.read_text(encoding="utf-8")
     # Grammar-variant-specific additions (e.g. JSX node captures that are
@@ -779,10 +774,26 @@ def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | 
     try:
         from tree_sitter import Query  # type: ignore[attr-defined]
 
-        return Query(language, scm_text)
+        return Query(language, scm_text), None
     except Exception as exc:
-        log.warning("Failed to compile query", language=lang, error=str(exc))
-        return None
+        return None, str(exc)
+
+
+@cache
+def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | None:
+    """Process-wide cache of compiled tree-sitter Query objects.
+
+    Compiling `.scm` queries is non-trivial; in process-pool parsing each worker
+    would otherwise recompile per file. ``grammar_tag`` may differ from
+    ``lang`` when a language reuses another's grammar at a different
+    variant — e.g. ``.tsx`` files reuse ``typescript.scm`` but must bind
+    to the JSX-aware ``tsx`` grammar so React components don't drown in
+    ERROR nodes.
+    """
+    query, err = _compile_query(lang, grammar_tag)
+    if err is not None:
+        log.warning("Failed to compile query", language=lang, error=err)
+    return query
 
 
 # Languages that intentionally have no AST parser.  Derived from the
@@ -819,7 +830,10 @@ def _build_language_registry() -> dict[str, Language]:
         try:
             mod = __import__(spec.grammar_package)
             loader_fn = getattr(mod, spec.grammar_loader)
-            lang_obj = Language(loader_fn())
+            loaded = loader_fn(*spec.grammar_loader_args)
+            # Standalone grammar wheels return a PyCapsule; shared grammar
+            # packs may return the fully constructed Language directly.
+            lang_obj = loaded if isinstance(loaded, Language) else Language(loaded)
             registry[spec.tag] = lang_obj
         except Exception as exc:
             log.debug(
@@ -892,6 +906,34 @@ def missing_grammar_languages(language_tags: Iterable[str]) -> list[str]:
         except (ImportError, ValueError):
             missing.append(tag)
     return sorted(missing)
+
+
+def failed_query_languages(language_tags: Iterable[str]) -> list[tuple[str, str]]:
+    """Of *language_tags*, those whose tree-sitter queries fail to compile.
+
+    Scoped to what traversal discovered in the repo. Only checks languages with
+    a registered LanguageConfig and query file. Best-effort and bounded.
+    """
+    failed: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for tag in language_tags:
+        if tag in seen or tag not in LANGUAGE_CONFIGS:
+            continue
+        seen.add(tag)
+
+        _, err = _compile_query(tag)
+        if err is not None:
+            failed.append((tag, err))
+            continue
+
+        # Check grammar variants if applicable (e.g. tsx for typescript)
+        if tag == "typescript":
+            _, tsx_err = _compile_query("typescript", grammar_tag="tsx")
+            if tsx_err is not None:
+                failed.append((tag, f"tsx variant: {tsx_err}"))
+
+    return sorted(failed, key=lambda x: x[0])
 
 
 def _get_language(tag: str) -> Language | None:
@@ -1261,7 +1303,7 @@ class ASTParser:
                 continue
 
             def_node = def_nodes[0]
-            name = _node_text(name_nodes[0], src)
+            name = config.symbol_name_fn(_node_text(name_nodes[0], src), def_node.type)
             if not name:
                 continue
 
@@ -1395,6 +1437,8 @@ class ASTParser:
             # the trailing body sibling or call-site attribution stops at the
             # signature line.
             end_line = def_node.end_point[0] + 1
+            if config.symbol_end_line_fn is not None:
+                end_line = config.symbol_end_line_fn(def_node, end_line)
             if export_type is not None:
                 end_line = export_type.range_node.end_point[0] + 1
             # F#: the captured node is the binding's left-hand side, so its
@@ -2066,7 +2110,10 @@ class ASTParser:
                 continue
 
             site_node = site_nodes[0]
-            target_name = _node_text(target_nodes[0], src).strip()
+            target_node = target_nodes[0]
+            target_name = config.call_target_name_fn(
+                _node_text(target_node, src).strip(), target_node.type
+            )
             if not target_name:
                 continue
 

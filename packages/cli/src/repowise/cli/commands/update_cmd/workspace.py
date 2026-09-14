@@ -78,6 +78,7 @@ def _workspace_update(
     """
     from repowise.cli.helpers import load_state
     from repowise.core.docs_mode import resolve_docs_mode
+    from repowise.core.repo_config import config_fingerprint
     from repowise.core.workspace import (
         check_repo_staleness,
         reconcile_repo_head_commit,
@@ -115,8 +116,19 @@ def _workspace_update(
         stored = entry.last_commit_at_index
         is_stale, head, behind = check_repo_staleness(abs_path, stored)
         indexed = (abs_path / ".repowise").is_dir()
+        repo_state = load_state(abs_path) if indexed else {}
+        config_stale = bool(
+            indexed
+            and (
+                repo_state.get("config_fingerprint") is None
+                or repo_state.get("config_fingerprint") != config_fingerprint(abs_path)
+            )
+        )
+        is_stale = is_stale or config_stale
         if not indexed:
             status = "[dim]not indexed[/dim]"
+        elif config_stale and not behind:
+            status = "[yellow]config changed[/yellow]"
         elif is_stale:
             status = f"[yellow]{behind} new commit(s)[/yellow]"
         else:
@@ -126,7 +138,6 @@ def _workspace_update(
         if is_stale:
             stale_count += 1
             if indexed:
-                repo_state = load_state(abs_path)
                 if not _resolve_index_only_mode(
                     index_only=index_only, docs_flag=docs_flag, state=repo_state
                 ):

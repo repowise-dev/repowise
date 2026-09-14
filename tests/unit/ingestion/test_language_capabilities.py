@@ -239,6 +239,9 @@ class TestImportSupportTiers:
     def test_unknown_language_reports_none(self) -> None:
         assert REGISTRY.import_support_for("klingon") == "none"
 
+    def test_cobol_is_exempt_from_static_dead_code_claims(self) -> None:
+        assert REGISTRY.dead_code_exempt_languages() == frozenset({"cobol"})
+
 
 class TestLanguageTagParity:
     def test_every_spec_tag_is_a_language_tag(self) -> None:

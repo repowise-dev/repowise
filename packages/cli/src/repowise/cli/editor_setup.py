@@ -197,6 +197,48 @@ def resolve_editor_setup_options(
     )
 
 
+def _resolve_configured_project_file_optouts(
+    repo_path: Path,
+    options: EditorSetupOptions,
+) -> EditorSetupOptions:
+    """Merge explicit ``editor_files: <id>: false`` values into *options*.
+
+    The project-file preference belongs to the setup layer, not to an editor
+    integration. Resolving it here gives every write path the same view and
+    lets a newly registered target reuse the descriptor's ``project_file_id``
+    without adding another config reader beside its writer.
+
+    An explicit per-run project-file override remains stronger than the
+    persisted preference. This preserves ``--agents`` / ``--no-agents`` as
+    command-line overrides while still treating a missing key as "let the
+    integration apply its own default" (notably, ``agents_md`` defaults off on
+    the update path).
+    """
+    from repowise.cli.agent_targets.registry import all_targets
+    from repowise.cli.helpers import load_config
+
+    editor_files = load_config(repo_path).get("editor_files")
+    if not isinstance(editor_files, Mapping):
+        return options
+
+    configured_disabled = {
+        target.project_file_id
+        for target in all_targets()
+        if editor_files.get(target.project_file_id) is False
+    }
+    disabled_project_files = (
+        options.disabled_project_files | frozenset(configured_disabled)
+    ) - options.project_file_overrides.keys()
+    if disabled_project_files == options.disabled_project_files:
+        return options
+
+    return EditorSetupOptions(
+        disabled_project_files=frozenset(disabled_project_files),
+        project_file_overrides=dict(options.project_file_overrides),
+        integration_overrides=dict(options.integration_overrides),
+    )
+
+
 def select_agents_interactively(
     console_obj: Any,
     repo_path: Path,
@@ -322,6 +364,8 @@ def write_editor_project_files(
         _persist_project_file_optouts(repo_path, resolved_options)
         return []
 
+    resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
+
     written: list[Path] = []
     for integration in _resolve_integrations(integrations):
         # ``or []`` rather than a required return: an integration that has
@@ -380,5 +424,6 @@ def refresh_editor_project_files(
     """Refresh editor-managed project files without rewriting common MCP config."""
 
     resolved_options = options or EditorSetupOptions()
+    resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
     for integration in _resolve_integrations(integrations):
         integration.refresh_project_files(console_obj, repo_path, resolved_options)

@@ -1,7 +1,7 @@
 # Language Support
 
-**25 languages parsed to a full AST · 39 on the five-rung ladder ·
-framework-aware across all of them.** "Do you support X" has five useful answers
+**26 languages parsed to a full AST · 40 on the five-rung ladder ·
+framework-aware where an ecosystem handler exists.** "Do you support X" has five useful answers
 rather than two, so every language lands on a rung and the rung says what it
 buys you. Everything else in your repo still appears in the wiki and is tracked
 through git history. This page is the "what works for my language today"
@@ -30,6 +30,7 @@ reference.
   <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
   <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" />
+  <img src="https://img.shields.io/badge/COBOL-005CA5?style=flat-square" alt="COBOL" />
   <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" />
   <img src="https://img.shields.io/badge/VB.NET-945DB7?style=flat-square&logo=dotnet&logoColor=white" alt="VB.NET" />
   <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" />
@@ -58,14 +59,14 @@ produce meaningful output.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** (10) | C · Swift · PHP · Dart · Object Pascal · GDScript · VB.NET · Elixir · F# · Objective-C | Everything above except the full health suite. Dart and Object Pascal *do* get health markers, and C, F# and Objective-C get the complexity-derived ones; Swift, PHP, GDScript, VB.NET and Elixir don't yet. GDScript has a dedicated import resolver and Godot-specific framework edges but no named bindings (see [Known gaps](../architecture/language-support.md#gdscript--godot)) |
+| **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | Everything above except the full health suite. Dart and Object Pascal *do* get health markers, and C, F# and Objective-C get the complexity-derived ones; Swift, PHP, COBOL, GDScript, VB.NET and Elixir don't yet. GDScript has a dedicated import resolver and Godot-specific framework edges but no named bindings (see [Known gaps](../architecture/language-support.md#gdscript--godot)) |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo / `.luaurc` aware), no health markers yet. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers; no import resolution yet |
 | | | ⎯⎯ *tree-sitter parsing stops here. The rungs below are derived from git and imports, not from an AST.* ⎯⎯ |
 | **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-The first three rungs are the **25 languages parsed to a full AST**; all five are
-the **39** on the ladder. Both numbers are worth stating and neither is worth
+The first three rungs are the **26 languages parsed to a full AST**; all five are
+the **40** on the ladder. Both numbers are worth stating and neither is worth
 stating alone, so if you only take one thing from this page, take the rung your
 language sits on rather than either count.
 
@@ -89,7 +90,7 @@ meaningless for a script invoked by name. See
 | Heritage (extends / implements) | ✅ | ✅ | — | — | — |
 | Named bindings | ✅ | ✅ | — | — | — |
 | Code-health markers | ✅ | Dart, Pascal | Razor | — | — |
-| Dead code detection | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Dead code detection | ✅ | ✅* | ✅ | ✅ | ✅ |
 | Semantic search & wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 Scala's import resolution is partial: it shares the JVM index with Java and
@@ -97,6 +98,9 @@ Kotlin and falls back to parsing SBT / Mill build files. Every other Full and
 Good language resolves imports outright. On the Partial rung the two languages
 split: Luau resolves `require()` and has no health markers, Razor has C#
 health markers and no import edges yet.
+
+\* COBOL is excluded from dead-code claims: JCL, schedulers and dynamic program
+calls are external entry paths that the repository graph cannot observe.
 
 ---
 
@@ -242,15 +246,24 @@ directives are blanked, so a Razor file carries no import edges yet.
 
 ## Good tier
 
-AST parsing, symbol extraction, import resolution, call resolution, named
-bindings and heritage, with a dedicated workspace resolver per language.
+AST parsing, symbol extraction and static call resolution, plus the
+language-appropriate dependency surface. Languages with imports add named
+bindings, heritage and a workspace resolver where their syntax supports them.
 
-| Language | Extensions | Import resolution |
+| Language | Extensions | Dependency resolution |
 |----------|-----------|--------------|
 | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
 | **Swift** | `.swift` | SPM `Package.swift` target → directory mapping, intra-module type references, `@main` entry points |
 | **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs, `package:` via every `pubspec.yaml`, Flutter route tables and `runApp()` edges. **Health markers included** |
+| **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | Program IDs, sections, paragraphs and data levels; literal `CALL` and `PERFORM` targets resolve to program/procedure symbols. Dynamic calls and `COPY` edges are deliberately silent |
+
+COBOL is Good rather than Full because it has no code-health walker. Its static
+dependency surface is narrower than a module language's: literal program calls
+and local procedure transfers resolve, while copybook resolution, dynamic
+`CALL data-item`, dialect-specific syntax and source-format preprocessing are
+explicitly deferred. Dead-code findings are also suppressed because JCL and
+scheduler entry points usually live outside the indexed source graph.
 | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` `.inc` | `uses` clauses via the generic unit-name → file-stem fallback; project files as entry points. **Health markers included** |
 | **GDScript** | `.gd` | `preload(...)` / `load(...)` / `extends "res://..."` resolved as absolute paths from the nearest `project.godot`, so a repo holding many Godot projects keeps each project's `res://` namespace separate, plus scene, autoload and `class_name` edges (see [GDScript / Godot](../architecture/language-support.md#gdscript--godot)) |
 | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses: `.vbproj` / `.sln` parsing, `<RootNamespace>`-aware namespace lookup, NuGet package references |
@@ -379,7 +392,18 @@ cannot check.
 - **Template dialects are invisible.** Django/Jinja, Go templates, ERB,
   Handlebars, Blade and Thymeleaf parse as HTML and yield nothing.
 - **Svelte and Vue binding forms are skipped.** `{#each x as y}` and
-  `v-for="x in xs"` parse as JS but mean something else.
+  `v-for="x in xs"` *parse* as JS but mean something else, so they are skipped: a
+  parse that succeeds with the wrong meaning is worse than a skip. Component
+  props are set by the parent as markup attributes and never imported by name, so
+  the unused-export pass is suppressed for both.
+- **Object Pascal type kinds collapse.** `record` / `interface` / class-helper /
+  enum / type alias all report as `kind="class"`, and its `extends` vs
+  `implements` split is inferred from the `I`-prefix naming convention rather
+  than guaranteed by the language.
+- **COBOL support is intentionally COBOL-85 shaped.** Literal `CALL` and
+  `PERFORM` resolve, and `.cpy` files are parsed when indexed directly, but
+  `COPY` does not create an edge. Dynamic program names, dialect extensions and
+  fixed/free-format preprocessing beyond what the grammar accepts stay silent.
 - **Razor has no import edges**, and an attribute-bound handler carries none.
 - **Object Pascal's `extends`/`implements` split is a naming heuristic**,
   inferred from the `I`-prefix convention rather than a language guarantee.
@@ -416,6 +440,7 @@ Per-language mechanics behind these:
 | Dart | Good | riverpod / get_it dynamic hints, dataflow dialect |
 | GDScript | Good | The health dialects (complexity, performance, dataflow) that would take it to Full; the grammar supports all three |
 | Object Pascal | Good | Assertion markers, DB/network performance sinks (needs `uses`-clause import classification), a dedicated `uses` resolver |
+| COBOL | Good | Copybook resolution, source-format normalization, dialect coverage, health markers |
 | VB.NET | Good | Health markers, project-level `<Import Include=...>` as implicit imports |
 | Elixir | Good | Health markers, and a call-resolution strategy beyond same-file |
 | F# | Good | The health markers beyond complexity, and a resolver that reads the AST index instead of the declared-name regex |

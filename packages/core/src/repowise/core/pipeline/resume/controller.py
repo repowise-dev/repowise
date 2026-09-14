@@ -25,7 +25,7 @@ from typing import Any
 
 import structlog
 
-from ..persist import persist_analysis, persist_git, persist_ingestion
+from ..persist import persist_analysis, persist_git, persist_ingestion, persist_symbol_analysis
 from ..progress import emit_warning
 from .ledger import ResumeLedger
 from .phases import RESUME_PHASE_ORDER, ResumePhase
@@ -188,6 +188,7 @@ class ResumeController:
     async def checkpoint_analysis(
         self,
         *,
+        parsed_files: list[Any],
         dead_code_report: Any | None,
         health_report: Any | None,
         decision_report: Any | None,
@@ -217,6 +218,7 @@ class ResumeController:
         await self._ledger.mark_started(ResumePhase.ANALYSIS)
         try:
             async with get_session(self._sf) as session:
+                await persist_symbol_analysis(session, self._repo_id, parsed_files)
                 await persist_analysis(view, session, self._repo_id)
         except Exception as exc:
             logger.warning("resume_checkpoint_analysis_failed", error=str(exc))

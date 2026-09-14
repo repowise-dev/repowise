@@ -308,11 +308,21 @@ async def load_prior_pages(
     """
     # Import lazily — keeps persistence independent of generation models at
     # module-load time.
+    from repowise.core.generation.models import STUB_FALLBACK_ERROR
     from repowise.core.generation.page_generator import PriorPage
 
     result = await session.execute(select(Page).where(Page.repository_id == repository_id))
     prior: dict[str, Any] = {}
     for row in result.scalars():
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        # A failed provider response is unfinished paid work, not a cache hit.
+        # Reusing it drops the failure marker when GeneratedPage is rebuilt and
+        # can let a resumed upgrade stamp placeholder prose as model-written.
+        if STUB_FALLBACK_ERROR in metadata:
+            continue
         prior[row.id] = PriorPage(
             source_hash=row.source_hash,
             model_name=row.model_name,

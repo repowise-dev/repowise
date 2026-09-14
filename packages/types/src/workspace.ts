@@ -20,6 +20,9 @@ export interface RepoStats {
 export interface WorkspaceCrossRepoSummary {
   co_change_count: number;
   package_dep_count: number;
+  package_diagnostic_count?: number;
+  package_diagnostics_emitted?: number;
+  package_diagnostic_codes?: string[];
   top_connections: Array<{ repos: string[]; edge_count: number }>;
 }
 
@@ -72,6 +75,11 @@ export interface WorkspacePackageDepEntry {
   target_repo: string;
   target_package: string;
   kind: string;
+  /** Maven evidence; absent for path-based ecosystems. */
+  target_manifest?: string;
+  requested_version?: string | null;
+  scope?: string;
+  resolution_basis?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +269,19 @@ export interface SchemaField {
   required?: boolean;
   number?: number | null;
   repeated?: boolean;
+  nullable?: boolean | null;
+  enum_values?: Array<string | number | boolean> | null;
+  location?: "path" | "query" | "header" | "cookie" | "body" | null;
+  source_pointer?: string | null;
+  children?: SchemaField[];
+  items?: SchemaField | null;
+}
+
+export interface ContractSchemaIssue {
+  code: string;
+  side: "request" | "response" | "both" | string;
+  source_pointer: string;
+  detail?: string;
 }
 
 export interface ContractSchema {
@@ -268,6 +289,15 @@ export interface ContractSchema {
   source: string;
   request_fields: SchemaField[];
   response_fields: SchemaField[];
+  source_version?: string | null;
+  comparison_key?: string | null;
+  comparison_ready?: boolean;
+  request_state?: "complete" | "partial" | "unsupported" | "unresolved" | null;
+  response_state?: "complete" | "partial" | "unsupported" | "unresolved" | null;
+  request_media_type?: string | null;
+  response_media_type?: string | null;
+  response_status_code?: string | null;
+  issues?: ContractSchemaIssue[];
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +309,7 @@ export interface ContractSchema {
 /** How a breaking change ranks. `breaking` = wire-incompatible; `warning` = source risk. */
 export type BreakingChangeSeverity = "breaking" | "warning";
 
-/** A consumer endangered by a provider's breaking change (from a matched link). */
+/** A consumer exposed to a provider finding through a matched contract link. */
 export interface BreakingChangeConsumer {
   repo: string;
   service: string | null;
@@ -310,6 +340,11 @@ export interface BreakingChange {
   provider_node_id: string;
   /** Human-readable one-liner. */
   detail: string;
+  /** Request/response side when the finding is side-specific. */
+  side?: "request" | "response" | null;
+  /** Parser family and fidelity key used for the comparison. */
+  comparison_source?: string | null;
+  comparison_key?: string | null;
   field_name?: string | null;
   old_value?: string | null;
   new_value?: string | null;
@@ -327,9 +362,9 @@ export interface BreakingChangeReport {
   total: number;
   breaking_count: number;
   warning_count: number;
-  /** Distinct repos with an endangered consumer. */
+  /** Distinct repos with an endpoint-exposed consumer. */
   impacted_repos: string[];
-  /** Distinct system-graph node ids with an endangered consumer. */
+  /** Distinct system-graph node ids with an endpoint-exposed consumer. */
   impacted_services: string[];
   total_impacted_consumers: number;
 }

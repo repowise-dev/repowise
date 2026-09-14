@@ -155,7 +155,7 @@ local, all deterministic, no extra LLM calls.
 
 | Foundation | What it contributes |
 |---|---|
-| **Graph** | File + symbol dependencies across 25 AST-parsed languages, confidence-stamped call resolution, communities, centrality, cycles, and execution flows |
+| **Graph** | File + symbol dependencies across 26 AST-parsed languages, confidence-stamped call resolution, communities, centrality, cycles, and execution flows |
 | **Git** | Hotspots, ownership, co-change, bus factor, and bug-fix history: behavioral signals static analysis cannot see |
 | **Docs** | A wiki for every module and file, rebuilt incrementally with freshness and confidence scoring plus hybrid search |
 | **Decisions** | Architectural rationale mined from five index-time sources plus human and agent capture, each claim traced to evidence |
@@ -402,16 +402,17 @@ change, and the architecture rule the new dependency violates before it ships.
 | Workspace intelligence | What it answers |
 |---|---|
 | **Contract map** | Which services provide and consume each HTTP, gRPC, event, socket, and data contract? Links retain exact/candidate confidence and the source evidence. |
-| **Cross-repo blast radius** | If this provider changes, which downstream services **will break** through structural dependencies, and which ones **may drift** through historical co-change? |
-| **Breaking-change guard** | Was an endpoint removed or a typed contract changed incompatibly, and which exact consumer files call it? |
+| **Cross-repo blast radius** | If this provider changes, which downstream services are in structural reach, and which ones may drift through historical co-change? |
+| **Breaking-change guard** | Was an endpoint removed or a supported OpenAPI / proto / signature shape changed incompatibly, and which consumer files are linked to that contract? |
 | **Test impact** | Which tests in the consumer repos should run for this provider change, measured from coverage or inferred from the call graph, and which links could not be determined? |
 | **Architecture as code** | Does the live system graph violate declared dependency rules or contain cycles? `repowise workspace check` gates CI. |
 | **Architecture health** | How coupled is the estate? Track propagation cost, the cyclic core, service roles, and a deterministic 1–10 architecture score. |
 | **Federated context** | One dashboard and one MCP server answer across every repository while preserving repo-level evidence. |
 
 The system map models **services**, not merely repository boxes, and never conflates a
-real contract with “these files often changed together.” Field-level breaking diffs
-currently require a gRPC schema; HTTP supports endpoint-level removal detection.
+real contract with “these files often changed together.” HTTP field-level comparison
+supports the bounded OpenAPI 3.x JSON subset documented in the workspace guide;
+matched consumers prove endpoint exposure, not field use or runtime failure.
 
 **[Workspace guide and exact support matrix →](docs/scale/WORKSPACES.md)**
 
@@ -480,8 +481,8 @@ the orchestrators. Full matrix and the contributor recipe:
 
 ## Supported languages
 
-**25 languages parsed to AST · 39 on a five-rung ladder · framework-aware across
-all of them.**
+**26 languages parsed to AST · 40 on a five-rung ladder · framework-aware where
+an ecosystem handler exists.**
 
 "Do you support X" has five useful answers, not two, so languages land on a
 ladder and every rung says what it buys you.
@@ -512,6 +513,7 @@ ladder and every rung says what it buys you.
   <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
   <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" />
+  <img src="https://img.shields.io/badge/COBOL-005CA5?style=flat-square" alt="COBOL" />
   <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" />
   <img src="https://img.shields.io/badge/VB.NET-945DB7?style=flat-square&logo=dotnet&logoColor=white" alt="VB.NET" />
   <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" />
@@ -528,15 +530,15 @@ still doing real work rather than being ignored:
 | Rung | Languages | What you get |
 |---|---|---|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** (10) | C · Swift · PHP · Dart · Object Pascal · GDScript · VB.NET · Elixir · F# · Objective-C | All of the above except the full health suite |
+| **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | All of the above except the full health suite, subject to the language-specific ceilings in the full matrix |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution, Rojo and `.luaurc` aware. Razor: component symbols, `@code` and component-tag call edges, C# health markers; no import resolution yet |
 | | | ⎯⎯ *tree-sitter parsing stops here; the rungs below come from git and imports* ⎯⎯ |
 | **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, and no symbol-level claims |
 | **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history: blame, hotspots, co-change, ownership, bug history |
 
 **Every language ships in the open-source distribution.** None is gated behind
-the commercial licence, and none will be. Languages on the way up the ladder,
-including **COBOL**, are on the
+the commercial licence, and none will be. COBOL now ships at the Good tier;
+languages still moving up the ladder are tracked on the
 **[roadmap →](ROADMAP.md#languages)**.
 
 SQL and dbt projects get real `ref()` / `source()` lineage, shell scripts get

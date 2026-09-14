@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,22 @@ log = structlog.get_logger(__name__)
 #: is what upgrades an early "ignored" to the truth. Re-classification is
 #: idempotent (the ledger id is a hash of the firing's own text).
 _EFFICACY_LOOKBACK_SECONDS = 7 * 86400.0
+
+
+def _generation_warning_handler(
+    degraded: list[str], *, require_embedding_success: bool
+) -> Callable[[str], None]:
+    """Record generation warnings and make required embedding writes fatal."""
+
+    def _handle(message: str) -> None:
+        degraded.append(message)
+        if require_embedding_success:
+            raise RuntimeError(
+                "Configuration-triggered page embedding failed; the previous "
+                "fingerprint was retained so the next update retries."
+            )
+
+    return _handle
 
 
 def _docs_provider_prompt_allowed(emitter: Any) -> bool:
@@ -297,7 +314,8 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
         "Upgrade an index with a model: backfill the git tier ESSENTIAL -> "
         "FULL if it was built with `--mode fast`, and write the subsystem pages "
         "with a provider on a wiki that has none yet. Incremental: reuses the "
-        "persisted graph instead of re-parsing and re-resolving it. "
+        "persisted graph, records resumable stage progress, reuses persisted "
+        "provider/embedder choices, and previews model cost before generation. "
         "Single-repo only."
     ),
 )
@@ -419,24 +437,29 @@ def _render_full_upgrade_dry_run(
     """Describe a full upgrade without resolving providers or touching the store."""
     state = load_state(repo_path)
     config = load_config(repo_path)
+    from repowise.core.index_scope import resolve_index_scope
+
+    scope = resolve_index_scope(state, config)
 
     planned_provider = (
         provider_name or config.get("provider") or state.get("provider") or "auto-detect"
     )
     planned_model = model or config.get("model") or state.get("model") or "provider default"
-    current_git_tier = str(state.get("git_tier") or "essential").upper()
+    current_git_tier = scope["git_tier"].upper()
     recorded_pages = state.get("total_pages")
     page_label = f"{recorded_pages:,}" if isinstance(recorded_pages, int) else "unknown"
 
     console.print("[yellow]Dry run — full upgrade plan:[/yellow]")
-    console.print(
-        f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]"
-    )
-    console.print(
-        f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]"
-    )
+    console.print(f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]")
+    console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
-    console.print("  The whole-repository wiki would be generated. No changes made.")
+    console.print(
+        f"  Persisted scope: [cyan]{scope['run_mode']} / {scope['content_provenance']}[/cyan]"
+    )
+    console.print(
+        "  The whole-repository wiki would be generated after an explicit cost preview; "
+        "completed stages are resumable. No changes made."
+    )
 
 
 def _renderer_inputs(repo_path):
@@ -586,12 +609,10 @@ def run_update(
     a no-op until you committed.
     """
     start = time.monotonic()
-    # Per-stage wall clock for this run, written to ``state.json`` as
-    # ``phase_timings`` by the paths that rebuild the index. ``run`` is the
-    # denominator; stages nest and overlap, so compare each against it and
-    # never against their sum. The fast paths (already up to date, no changed
-    # files, config-only re-score) do not record: they do no stage work and
-    # would overwrite the last real run's numbers with nothing.
+    # Per-stage wall clock for this run, written to ``state.json`` by every path
+    # that mutates state. ``run`` is the denominator; stages nest and overlap,
+    # so compare each against it and never against their sum. Retaining an older
+    # run's table makes a cheap config/no-op update claim work it did not do.
     timings = PhaseTimings()
     timings.start("run")
 
@@ -825,10 +846,53 @@ def run_update(
     # even when git is unchanged. A missing prior fingerprint is backfilled, not
     # treated as a change. ``config_changed`` gates every "nothing to do" path.
     from repowise.cli.helpers import config_fingerprint
+    from repowise.core.repo_config import (
+        changed_config_dependencies,
+        config_dependency_fingerprints,
+    )
 
     prev_config_fp = state.get("config_fingerprint")
     curr_config_fp = config_fingerprint(repo_path)
     config_changed = prev_config_fp is not None and prev_config_fp != curr_config_fp
+    # Use the CLI's tolerant loader once. A malformed file has historically
+    # warned and fallen back to defaults; semantic invalidation must not turn
+    # that established recovery path into an early hard crash.
+    cfg = load_config(repo_path)
+    curr_dependency_fps = config_dependency_fingerprints(repo_path, config=cfg)
+    changed_dependencies = (
+        changed_config_dependencies(
+            state.get("config_dependency_fingerprints"), curr_dependency_fps
+        )
+        if config_changed
+        else set()
+    )
+    legacy_config_change = config_changed and changed_dependencies is None
+    dependency_changes = changed_dependencies or set()
+    traversal_config_changed = (
+        legacy_config_change
+        or "traversal" in dependency_changes
+        or "other" in dependency_changes
+    )
+    git_config_changed = (
+        legacy_config_change or traversal_config_changed or "git_history" in dependency_changes
+    )
+    health_config_changed = (
+        legacy_config_change
+        or traversal_config_changed
+        or git_config_changed
+        or "health" in dependency_changes
+        or "other" in dependency_changes
+    )
+    generation_config_changed = (
+        legacy_config_change
+        or traversal_config_changed
+        or git_config_changed
+        or "generation" in dependency_changes
+    )
+    config_rebuild_required = config_changed and bool(
+        legacy_config_change
+        or dependency_changes - {"state_only"}
+    )
 
     # A structural renderer upgrade is not a code change and not a config
     # change, but it still leaves every file page a release behind, because
@@ -909,7 +973,11 @@ def run_update(
         # would make the very next renderer upgrade look like the first stamp
         # rather than a change, silently skipping the regeneration it should
         # trigger.
-        needs_backfill = prev_config_fp is None or prev_renderer_fp is None
+        needs_backfill = (
+            prev_config_fp is None
+            or prev_renderer_fp is None
+            or not isinstance(state.get("config_dependency_fingerprints"), dict)
+        )
         # Self-heal a row a pre-fix run left behind: state.json can already be
         # current here while the DB head_commit is still the last full index.
         #
@@ -926,12 +994,15 @@ def run_update(
             else:
                 try:
                     if needs_backfill:
+                        timings.stop("run")
                         save_state(
                             repo_path,
                             {
                                 **state,
                                 "config_fingerprint": curr_config_fp,
+                                "config_dependency_fingerprints": curr_dependency_fps,
                                 "renderer_fingerprint": curr_renderer_fp,
+                                "phase_timings": timings.totals,
                             },
                         )
                     stamp_head_commit(repo_path, head)
@@ -1142,6 +1213,7 @@ def run_update(
             **state,
             "last_sync_commit": head,
             "config_fingerprint": curr_config_fp,
+            "config_dependency_fingerprints": curr_dependency_fps,
             "renderer_fingerprint": curr_renderer_fp,
         }
         # base_ref has already been widened to any unrepaired range by this
@@ -1155,6 +1227,8 @@ def run_update(
             persisted.pop("pending_repair", None)
         if not resolved_index_only and head:
             persisted["last_docs_commit"] = head
+        timings.stop("run")
+        persisted["phase_timings"] = timings.totals
         save_state(repo_path, persisted)
         # Keep the DB freshness stamp in lockstep with state.json: the server's
         # /repos endpoint reads head_commit from the row, not the state file.
@@ -1176,7 +1250,7 @@ def run_update(
             )
         return UpdateOutcome.NOOP
 
-    if config_changed:
+    if health_config_changed:
         # Full re-score (not the partial update) so unchanged files pick up the
         # new rules/excludes instead of being left stale.
         console.print("[yellow]Config files changed — re-running health analysis.[/yellow]")
@@ -1190,9 +1264,17 @@ def run_update(
     # changed files present we fall through to the normal incremental path and
     # force the full re-score at its existing hook, which reuses the graph that
     # path already builds — same re-score, no second traverse.
-    if config_changed and not file_diffs:
+    if (
+        config_changed
+        and not file_diffs
+        and not git_config_changed
+        and not generation_config_changed
+    ):
         if dry_run:
-            console.print("[yellow]Dry run — health would be re-scored. No changes made.[/yellow]")
+            action = (
+                "health would be re-scored" if health_config_changed else "state would be updated"
+            )
+            console.print(f"[yellow]Dry run — {action}. No changes made.[/yellow]")
             if emitter is not None:
                 emitter.done(
                     ok=True,
@@ -1202,16 +1284,35 @@ def run_update(
                     outcome=UpdateOutcome.DRY_RUN.value,
                 )
             return UpdateOutcome.DRY_RUN
-        cfg = load_config(repo_path)
-        exclude_patterns = list(cfg.get("exclude_patterns") or [])
-        if emitter is not None:
-            emitter.stage("rescore_health")
-        try:
-            _run_full_health_rescore(repo_path, exclude_patterns, state, head, curr_config_fp)
-        except Exception as exc:
+        if health_config_changed:
+            cfg = load_config(repo_path)
+            exclude_patterns = list(cfg.get("exclude_patterns") or [])
             if emitter is not None:
-                emitter.error(str(exc))
-            raise
+                emitter.stage("rescore_health")
+            try:
+                _run_full_health_rescore(
+                    repo_path,
+                    exclude_patterns,
+                    state,
+                    head,
+                    curr_config_fp,
+                    dependency_fingerprints=curr_dependency_fps,
+                    timings=timings,
+                )
+            except Exception as exc:
+                if emitter is not None:
+                    emitter.error(str(exc))
+                raise
+        else:
+            updated_state = {
+                **state,
+                "last_sync_commit": head,
+                "config_fingerprint": curr_config_fp,
+                "config_dependency_fingerprints": curr_dependency_fps,
+            }
+            timings.stop("run")
+            updated_state["phase_timings"] = timings.totals
+            save_state(repo_path, updated_state)
         # No stamp_head_commit here, which is the behaviour this branch has
         # always had: the re-score's `upsert_repository` re-reads HEAD from
         # disk and advances the row itself. It re-reads rather than being told,
@@ -1237,8 +1338,6 @@ def run_update(
     degraded: list[str] = []
 
     # Re-parse changed files and rebuild graph for affected pages
-    cfg = load_config(repo_path)
-
     # Read exclude patterns from config (set during init or via web UI)
     exclude_patterns: list[str] = list(cfg.get("exclude_patterns") or [])
 
@@ -1251,6 +1350,7 @@ def run_update(
     # repo-wide aggregates are unaffected. ``head_ts`` anchors the periodic
     # idle-file health re-score gate.
     git_decay_map: dict[str, dict] = {}
+    full_git_summaries: list[Any] = []
     head_ts = _head_commit_ts(repo_path)
     parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map = (
         _rebuild_graph_and_git(
@@ -1262,6 +1362,8 @@ def run_update(
             include_submodules=bool(state.get("include_submodules", False)),
             include_nested_repos=bool(state.get("include_nested_repos", False)),
             idle_decay_sink=git_decay_map,
+            force_full_git=git_config_changed,
+            git_summary_sink=full_git_summaries,
             timings=timings,
         )
     )
@@ -1310,6 +1412,11 @@ def run_update(
     stale_extra = list(dict.fromkeys([*stale_renderer_paths, *stale_db_paths]))
     if stale_extra:
         affected.regenerate = list(dict.fromkeys([*affected.regenerate, *stale_extra]))
+    if generation_config_changed:
+        # Generation settings affect selection and repo-wide synthesis, not
+        # merely the files touched by this commit. Recreate the same complete
+        # page set a clean init would choose.
+        affected.regenerate = [pf.file_info.path for pf in parsed_files]
 
     if affected.stale_due_to_budget > 0:
         console.print(
@@ -1380,6 +1487,20 @@ def run_update(
             dead_code_report,
             (state.get("knowledge_graph") or {}).get("fingerprint"),
         )
+    if generation_config_changed and knowledge_graph_result is not None:
+        # Repo-wide pages (especially onboarding's guided tour) read the
+        # persisted KG context during generation. Publish the freshly rebuilt
+        # structure before rendering so an exclude change cannot regenerate
+        # those pages from the previous traversal's tour.
+        from repowise.cli.state_persistence import save_knowledge_graph_json
+
+        try:
+            save_knowledge_graph_json(repo_path, knowledge_graph_result)
+        except Exception as exc:
+            raise RuntimeError(
+                "Configuration-driven knowledge-graph refresh failed; the previous "
+                "fingerprint was retained so the next update retries."
+            ) from exc
 
     if index_only:
         # A repo whose wiki was rendered from templates keeps it current here.
@@ -1406,6 +1527,7 @@ def run_update(
             # keep separate: a file page can no longer be model-written, so a
             # page that predates the single-renderer change re-renders to its
             # structural form here, which is the shape it now has.
+            degraded_before_render = len(degraded)
             with timed(timings, "render"):
                 det_pages = regenerate_deterministic_pages(
                     repo_path=repo_path,
@@ -1420,6 +1542,12 @@ def run_update(
                     degraded=degraded,
                     dead_code_report=dead_code_report,
                     prior_page_ids=prior_ids,
+                    full_scope=generation_config_changed,
+                )
+            if generation_config_changed and len(degraded) > degraded_before_render:
+                raise RuntimeError(
+                    "Configuration-driven page generation failed; the previous "
+                    "fingerprint was retained so the next update retries."
                 )
 
             if det_pages:
@@ -1443,6 +1571,46 @@ def run_update(
         if emitter is not None:
             emitter.stage("persist")
         try:
+            persisted_changed_paths = (
+                [pf.file_info.path for pf in parsed_files]
+                if traversal_config_changed
+                else [fd.path for fd in file_diffs]
+            )
+            config_vector_store = (
+                _build_update_vector_store(
+                    repo_path,
+                    cfg,
+                    degraded,
+                    required=(config_rebuild_required and docs_mode == "deterministic"),
+                )
+                if traversal_config_changed or generation_config_changed
+                else None
+            )
+            if generation_config_changed and det_pages and config_vector_store is not None:
+                from repowise.core.persistence.vector_store import embed_item
+
+                embed_items = [
+                    item
+                    for page in det_pages
+                    if (
+                        item := embed_item(
+                            page.page_id,
+                            title=page.title,
+                            page_type=page.page_type,
+                            target_path=page.target_path,
+                            summary=page.summary,
+                            content=page.content,
+                        )
+                    )
+                    is not None
+                ]
+                try:
+                    run_async(config_vector_store.embed_batch(embed_items))
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Configuration-driven vector refresh failed; the previous "
+                        "fingerprint was retained so the next update retries."
+                    ) from exc
             _persist_index_only_update(
                 repo_path,
                 graph_builder,
@@ -1452,7 +1620,7 @@ def run_update(
                 state,
                 head,
                 start,
-                [fd.path for fd in file_diffs],
+                persisted_changed_paths,
                 file_diffs=file_diffs,
                 knowledge_graph_result=knowledge_graph_result,
                 parsed_files=parsed_files,
@@ -1465,7 +1633,17 @@ def run_update(
                 git_decay_map=git_decay_map,
                 exclude_patterns=exclude_patterns,
                 head_ts=head_ts,
-                force_full_rescore=config_changed,
+                force_full_rescore=health_config_changed,
+                full_git_summary=(full_git_summaries[0] if full_git_summaries else None),
+                reconcile_full_scope=traversal_config_changed,
+                full_generation_page_ids=(
+                    {page.page_id for page in det_pages}
+                    if generation_config_changed and docs_mode == "deterministic"
+                    else None
+                ),
+                dependency_fingerprints=curr_dependency_fps,
+                vector_store=config_vector_store,
+                require_config_rebuild_success=config_rebuild_required,
                 timings=timings,
             )
         except Exception as exc:
@@ -1512,6 +1690,7 @@ def run_update(
         # Honor the wiki style chosen at init (or via `repowise restyle`) so pages
         # regenerated for changed files match the rest of the wiki's voice.
         wiki_style=cfg.get("wiki_style", "comprehensive"),
+        cache_enabled=not generation_config_changed,
         # An incremental update regenerates only the changed files' pages, and
         # it feeds generate_all a parsed_files filtered to those files. Levels 3
         # and up describe the whole repository from parsed_files, so without
@@ -1521,7 +1700,7 @@ def run_update(
         # leave the repo-wide pages for a full run — the same guard the
         # deterministic index-only update already uses. `repowise generate`
         # refreshes the repo-wide pages correctly, from the complete view.
-        file_pages_only=True,
+        file_pages_only=not generation_config_changed,
     )
 
     # Resolve the generation provider. If the repo wants docs but was never
@@ -1561,6 +1740,42 @@ def run_update(
 
     decision_policy = resolve_policy(cfg).policy
     new_decision_markers: list = []
+
+    # A wider/different history window changes the evidence available to the
+    # Git archaeology source even when no source file changed. Re-run that
+    # source against the freshly rebuilt full metadata map so update converges
+    # with a clean index. Treat a source failure as a required config-rebuild
+    # failure; otherwise the new fingerprint would suppress the only retry.
+    if git_config_changed and decision_policy.source_enabled("git_archaeology"):
+        try:
+            from repowise.core.analysis.decision_extractor import DecisionExtractor
+
+            history_extractor = DecisionExtractor(
+                repo_path=repo_path,
+                provider=provider,
+                graph=graph_builder.graph(),
+                git_meta_map=git_meta_map,
+                parsed_files=parsed_files,
+                source_map=source_map,
+                policy=decision_policy,
+            )
+            with cost_tracker.record_as("decision_extraction"):
+                history_report = run_async(
+                    history_extractor.extract_all(enabled_sources={"git_archaeology"})
+                )
+            if history_report.failures:
+                details = "; ".join(
+                    f"{source}: {error}"
+                    for source, error in sorted(history_report.failures.items())
+                )
+                raise RuntimeError(details)
+            new_decision_markers.extend(history_report.decisions)
+        except Exception as exc:
+            raise RuntimeError(
+                "Configuration-triggered Git decision extraction failed; the previous "
+                "fingerprint was retained so the next update retries."
+            ) from exc
+
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
@@ -1578,8 +1793,8 @@ def run_update(
             # Label these calls as decision extraction so the Costs page can
             # tell them apart from page regeneration (both ride this provider).
             with cost_tracker.record_as("decision_extraction"):
-                new_decision_markers = run_async(
-                    extractor.scan_inline_markers(restrict_to_files=changed_paths)
+                new_decision_markers.extend(
+                    run_async(extractor.scan_inline_markers(restrict_to_files=changed_paths))
                 )
             if new_decision_markers and verbose:
                 console.print(
@@ -1712,7 +1927,12 @@ def run_update(
 
     # Build the shared vector store once: reused by the supersession detector
     # below and by the decision upsert in _persist (semantic dedup + search).
-    decision_vector_store = _build_update_vector_store(repo_path, cfg, degraded)
+    decision_vector_store = _build_update_vector_store(
+        repo_path,
+        cfg,
+        degraded,
+        required=(traversal_config_changed or generation_config_changed),
+    )
 
     # --- Two-pass decision evolution (Phase 3C), BEFORE page regeneration ----
     # Cross-reference the diff + new commit bodies against existing decisions
@@ -1907,6 +2127,12 @@ def run_update(
                 git_meta_map=git_meta_map,
                 repo_path=repo_path,
                 on_page_ready=checkpointer.on_page_ready,
+                on_warning=_generation_warning_handler(
+                    degraded,
+                    require_embedding_success=(
+                        traversal_config_changed or generation_config_changed
+                    ),
+                ),
             )
         finally:
             await checkpointer.close()
@@ -1998,6 +2224,11 @@ def run_update(
                 decay_paths=affected.decay_only,
                 parsed_files=parsed_files,
                 git_decay_map=git_decay_map,
+                full_git_summary=(full_git_summaries[0] if full_git_summaries else None),
+                reconcile_full_scope=traversal_config_changed,
+                reconcile_full_generation=generation_config_changed,
+                require_config_rebuild_success=config_rebuild_required,
+                require_decision_persist_success=git_config_changed,
                 timings=timings,
             )
     except Exception as exc:
@@ -2019,7 +2250,7 @@ def run_update(
     # update only reaches the changed files. Reusing this hook is what makes
     # falling through cost nothing extra — the graph is already built.
     rescored = False
-    if config_changed or full_rescore_due(state, head_ts):
+    if health_config_changed or full_rescore_due(state, head_ts):
         with timed(timings, "rescore"):
             rescored = run_decay_health_rescore(
                 repo_path, graph_builder, parsed_files, exclude_patterns
@@ -2032,6 +2263,11 @@ def run_update(
         if head_ts is not None:
             state["last_full_rescore_at"] = head_ts
         state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+    if health_config_changed and not rescored:
+        raise RuntimeError(
+            "Configuration-triggered health re-score failed; the previous "
+            "fingerprint was retained so the next update retries."
+        )
 
     # ---- Editor project files (best-effort) ----
     with timed(timings, "editor_files"):
@@ -2056,11 +2292,18 @@ def run_update(
     # so adding len(generated_pages) every run inflated the count forever.
     state["total_pages"] = db_total_pages
     state["config_fingerprint"] = config_fingerprint(repo_path)
+    state["config_dependency_fingerprints"] = curr_dependency_fps
     state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
     # Closed at the state write, as the index-only path does, so the two
     # paths' ``run`` rows measure the same span.
     timings.stop("run")
     state["phase_timings"] = timings.totals
+    if full_git_summaries:
+        coverage = getattr(full_git_summaries[0], "history_coverage", None)
+        if coverage is not None:
+            state["git_history_coverage"] = coverage.to_dict()
+        else:
+            state.pop("git_history_coverage", None)
     save_state(repo_path, state)
 
     # --- Pending-marker cleanup --------------------------------------------

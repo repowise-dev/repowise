@@ -53,6 +53,7 @@ async def run_generation(
     only_page_ids: set[str] | None = None,
     preserved_page_ids: set[str] | None = None,
     test_run: bool = False,
+    selection_out: dict[str, Any] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -101,9 +102,7 @@ async def run_generation(
     # separate phase (init's generate_docs=False flow) — the flag's documented
     # purpose is to cap the *generation* work, and this is where that happens.
     if test_run:
-        parsed_files = limit_to_top_pagerank(
-            parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT
-        )
+        parsed_files = limit_to_top_pagerank(parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT)
         if progress:
             progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
 
@@ -214,6 +213,17 @@ async def run_generation(
         timings=getattr(progress, "table", None),
         on_warning=on_warning,
     )
+    selection = getattr(generator, "selection", None)
+    if selection_out is not None and selection is not None:
+        selection_out.update(
+            eligible=selection.eligible_file_pages,
+            effective_cap=selection.effective_file_page_cap,
+            # A resumed run may reuse already-persisted file pages rather than
+            # returning them in ``generated_pages``.  Selection is the durable
+            # contract: after a successful phase every selected file has a page.
+            generated=len(selection.file_page_paths),
+        )
+        selection_out["omitted"] = max(0, selection_out["eligible"] - selection_out["generated"])
 
     # Onboarding summary — count generated slots and surface which ones
     # were gated out so the user can see the curated collection's state.

@@ -54,16 +54,17 @@ def normalize_target_path(target: str, repo_root: str | None = None) -> str:
     # root when we know it. Uses a prefix check on the normalized forms, so a
     # path that is already repo-relative is left untouched.
     if repo_root:
-        root_norm = str(Path(repo_root).resolve()).replace("\\", "/")
+        root_path = Path(repo_root).resolve()
         try:
             # Resolve against the repo root, not the process cwd: the MCP
             # server's cwd is not the repo, so a relative path that happens
             # to exist there could resolve somewhere unrelated.
-            resolved = Path(repo_root, normalized).resolve()
-            if str(resolved).startswith(root_norm.rstrip("/") + "/"):
-                normalized = str(resolved).replace("\\", "/")[len(root_norm.rstrip("/")) + 1 :]
+            candidate = Path(normalized)
+            resolved = (candidate if candidate.is_absolute() else root_path / candidate).resolve()
+            normalized = resolved.relative_to(root_path).as_posix()
         except (OSError, ValueError):
-            # resolve() can raise ValueError on a malformed Windows path.
+            # Resolution can fail for malformed paths; relative_to() also
+            # rejects absolute paths outside the selected repository.
             pass
     # Strip a leading cwd-relative prefix and any leading slash left over.
     # A prefix strip, not lstrip: lstrip takes a character set, so it would

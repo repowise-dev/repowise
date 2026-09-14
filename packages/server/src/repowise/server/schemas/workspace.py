@@ -41,6 +41,9 @@ class WorkspaceRepoEntry(BaseModel):
 class WorkspaceCrossRepoSummary(BaseModel):
     co_change_count: int = 0
     package_dep_count: int = 0
+    package_diagnostic_count: int = 0
+    package_diagnostics_emitted: int = 0
+    package_diagnostic_codes: list[str] = []
     top_connections: list[dict] = []
 
 
@@ -336,6 +339,9 @@ class WorkspaceBreakingChange(BaseModel):
     provider_service: str | None = None
     provider_node_id: str = ""
     detail: str
+    side: str | None = None
+    comparison_source: str | None = None
+    comparison_key: str | None = None
     field_name: str | None = None
     old_value: str | None = None
     new_value: str | None = None

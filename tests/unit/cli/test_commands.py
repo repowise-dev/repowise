@@ -448,13 +448,26 @@ class TestRescoreFailureFingerprint:
         monkeypatch.setattr(update_cmd.persistence, "run_async", _boom)
         (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
 
-        update_cmd._run_full_health_rescore(
-            tmp_path, [], {"last_sync_commit": "base"}, "head1", "NEWFP"
-        )
+        with pytest.raises(RuntimeError, match="db down"):
+            update_cmd._run_full_health_rescore(
+                tmp_path, [], {"last_sync_commit": "base"}, "head1", "NEWFP"
+            )
 
         state_file = tmp_path / ".repowise" / "state.json"
         if state_file.exists():
             assert json.loads(state_file.read_text()).get("config_fingerprint") != "NEWFP"
+
+
+def test_config_generation_embedding_warning_is_fatal():
+    from repowise.cli.commands.update_cmd.command import _generation_warning_handler
+
+    degraded: list[str] = []
+    callback = _generation_warning_handler(degraded, require_embedding_success=True)
+
+    with pytest.raises(RuntimeError, match="page embedding failed"):
+        callback("Embedding failed for 2 page(s)")
+
+    assert degraded == ["Embedding failed for 2 page(s)"]
 
 
 class TestBuildRepoGraph:
@@ -488,11 +501,14 @@ class TestBuildRepoGraph:
         # it looks up console — patch the name there.
         monkeypatch.setattr(update_cmd.incremental, "console", _FakeConsole())
 
-        parsed_files, _src, _gb, _struct, _count = update_cmd._build_repo_graph(tmp_path, [])
+        parsed_files, _src, graph_builder, _struct, _count = update_cmd._build_repo_graph(
+            tmp_path, []
+        )
 
         paths = [pf.file_info.path for pf in parsed_files]
         assert any(p.endswith("good.py") for p in paths)
         assert not any(p.endswith("bad.py") for p in paths)
+        assert "bad.py" in graph_builder.traversed_file_paths
         assert any("Skipped" in line for line in printed)
 
     def test_includes_framework_edge_step(self, tmp_path, monkeypatch):
@@ -520,3 +536,21 @@ class TestBuildRepoGraph:
         update_cmd._build_repo_graph(tmp_path, [])
 
         assert calls, "framework-edge step must run in the shared rebuild path"
+
+
+def test_required_vector_refresh_rejects_incompatible_existing_store(
+    tmp_path, monkeypatch
+):
+    import repowise.cli.providers as providers
+    from repowise.cli.commands.update_cmd.incremental import _build_update_vector_store
+
+    (tmp_path / ".repowise" / "lancedb").mkdir(parents=True)
+    monkeypatch.setattr(providers, "build_embedder", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(providers, "resolve_embedder", lambda *_args, **_kwargs: "mock")
+    monkeypatch.setattr(providers, "build_vector_store", lambda *_args, **_kwargs: None)
+    degraded: list[str] = []
+
+    with pytest.raises(RuntimeError, match="cannot safely refresh"):
+        _build_update_vector_store(tmp_path, {"embedder": "mock"}, degraded, required=True)
+
+    assert degraded and "cannot safely refresh" in degraded[0]

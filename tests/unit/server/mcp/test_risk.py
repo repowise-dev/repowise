@@ -92,11 +92,11 @@ async def test_get_risk_normalizes_target_path(setup_mcp):
 
 
 @pytest.mark.asyncio
-async def test_get_risk_repo_absolute_target_path(setup_mcp):
+async def test_get_risk_repo_absolute_target_path(setup_mcp, tmp_path):
     """A repo-absolute target is made repo-relative before the lookup (#1279)."""
     from repowise.server.mcp_server import get_risk
 
-    abs_target = "/tmp/test-repo/src/auth/service.py"
+    abs_target = str(tmp_path / "src" / "auth" / "service.py")
     result = await get_risk([abs_target])
     t = result["targets"][abs_target]
     assert t["hotspot_score"] == 0.92

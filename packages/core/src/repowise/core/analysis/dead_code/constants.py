@@ -25,6 +25,12 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 # languages plus "unknown".
 _NON_CODE_LANGUAGES: frozenset[str] = _LANG_REGISTRY.unparseable_or_unknown_languages()
 
+# Code languages whose files/symbols are entered through an external runtime
+# that the static graph cannot observe (COBOL via JCL/schedulers, for example).
+_DEAD_CODE_EXEMPT_LANGUAGES: frozenset[str] = (
+    _NON_CODE_LANGUAGES | _LANG_REGISTRY.dead_code_exempt_languages()
+)
+
 # Patterns that should never be flagged as dead.
 _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # Shell scripts are invoked by name from CI configs, Makefiles, and humans

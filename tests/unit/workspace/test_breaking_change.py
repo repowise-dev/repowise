@@ -64,7 +64,7 @@ def _schema(request=None, response=None):
     )
 
 
-def test_schema_diff_waits_until_source_declares_comparison_ready():
+def test_schema_diff_reports_uncertainty_until_source_declares_comparison_ready():
     before = ContractSchema(
         source="openapi",
         request_fields=[SchemaField("id", "string", required=True)],
@@ -77,10 +77,11 @@ def test_schema_diff_waits_until_source_declares_comparison_ready():
         _store([_provider("http::POST::/orders", schema=after)]),
     )
 
-    assert report.changes == []
+    assert _kinds(report) == ["schema_comparison_uncertain"]
+    assert report.changes[0].severity == SEVERITY_WARNING
 
 
-def test_schema_diff_requires_matching_comparison_fidelity():
+def test_schema_diff_reports_uncertainty_for_mismatched_comparison_fidelity():
     before = ContractSchema(
         source="openapi",
         comparison_key="openapi-wire-v1",
@@ -93,7 +94,8 @@ def test_schema_diff_requires_matching_comparison_fidelity():
         _store([_provider("http::POST::/orders", schema=after)]),
     )
 
-    assert report.changes == []
+    assert _kinds(report) == ["schema_comparison_uncertain"]
+    assert report.changes[0].comparison_key == "openapi-wire-v2"
 
 
 def _kinds(report):
@@ -301,6 +303,33 @@ def test_report_round_trips_through_dict():
     assert _kinds(restored) == _kinds(report)
     assert restored.changes[0].impacted_consumers[0].node_id == "web"
     assert restored.changes[0].provider_node_id == "api"
+
+
+def test_comparison_evidence_round_trips_through_report() -> None:
+    change = BreakingChangeReport.from_dict(
+        {
+            "changes": [
+                {
+                    "kind": "field_enum_changed",
+                    "severity": "breaking",
+                    "contract_id": "http::POST::/orders",
+                    "contract_type": "http",
+                    "provider_repo": "api",
+                    "provider_file": "openapi.yaml",
+                    "provider_symbol": "openapi:POST /orders",
+                    "provider_service": None,
+                    "detail": "request enum narrowed",
+                    "side": "request",
+                    "comparison_source": "openapi",
+                    "comparison_key": "openapi-wire-v1",
+                }
+            ]
+        }
+    ).to_dict()["changes"][0]
+
+    assert change["side"] == "request"
+    assert change["comparison_source"] == "openapi"
+    assert change["comparison_key"] == "openapi-wire-v1"
 
 
 def test_save_and_load_report(tmp_path):

@@ -19,6 +19,7 @@ input file, not retro-fittable from a repo-wide log.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,16 +31,44 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-def load_git_ai_note_agents(repo: object, commit_limit: int) -> dict[str, str]:
+@dataclass
+class HistorySample:
+    """One monotonic per-file history sample and its achieved coverage.
+
+    Every eligible file keeps its newest
+    ``min(per_file_limit, available_non_merge_history)`` commits. The recent and deep
+    repo-wide walks are only optimisations for satisfying that contract;
+    files they cannot prove complete use the per-file fallback.
+    """
+
+    commits: dict[str, list[_CommitRec]] = field(default_factory=dict)
+    fallback_files: set[str] = field(default_factory=set)
+    recent_files: set[str] = field(default_factory=set)
+    deep_files: set[str] = field(default_factory=set)
+    global_commits: int = 0
+    deep_commits: int = 0
+    history_complete_through_depth: int = 0
+
+
+def _count_non_merge_commits(repo: object) -> int | None:
+    """Return reachable non-merge commits, or ``None`` when unavailable."""
+    try:
+        return int(repo.git.rev_list("--count", "--no-merges", "HEAD").strip())  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
+def load_git_ai_note_agents(repo: object, commit_limit: int | None) -> dict[str, str]:
     """Map ``commit_sha → agent`` from git-ai authorship notes (``refs/notes/ai``).
 
     Returns an empty dict when the ref is absent — the common case, gated by a
     single cheap ``for-each-ref`` so 99.9% of repos pay nothing and add no git
-    pass. Only repos actually using git-ai incur the one bounded
-    ``git log --notes=ai`` walk here, whose ``sha → agent`` result the commit
-    walk then reads by-key (no re-parse per touched file). Any failure returns
-    ``{}`` — a notes read must never break the git index. See the git-ai
-    standard v3.0.0 for the note format.
+    pass. Only repos actually using git-ai incur a ``git log --notes=ai`` walk
+    here, whose ``sha → agent`` result the commit walk then reads by-key (no
+    re-parse per touched file). The walk is bounded when *commit_limit* is an
+    integer; ``None`` covers the complete history for the rare per-file
+    fallback lane. Any failure returns ``{}`` — a notes read must never break
+    the git index. See the git-ai standard v3.0.0 for the note format.
     """
     from .git_indexer import _FIELD_SEP, _RECORD_SEP
     from .git_indexer.agent_provenance import _agent_from_git_ai_note
@@ -53,12 +82,10 @@ def load_git_ai_note_agents(repo: object, commit_limit: int) -> dict[str, str]:
     try:
         # ``%N`` is the note body; the leading ``%x00``/``%x1f`` mirror the main
         # walk's record/field separators so multi-line notes parse unambiguously.
-        raw = repo.git.log(  # type: ignore[attr-defined]
-            f"-{commit_limit}",
-            "--no-merges",
-            "--notes=ai",
-            "--format=%x00%H%x1f%N",
-        )
+        args = ["--no-merges", "--notes=ai", "--format=%x00%H%x1f%N"]
+        if commit_limit is not None:
+            args.insert(0, f"-{commit_limit}")
+        raw = repo.git.log(*args)  # type: ignore[attr-defined]
     except Exception as exc:
         logger.warning("git_ai_notes_load_failed", error=str(exc))
         return {}
@@ -191,6 +218,7 @@ def load_commit_index(
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
     cache_dir: Path | None = None,
+    stats_sink: dict[str, int | bool] | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
@@ -247,6 +275,8 @@ def load_commit_index(
 
     if provenance_classifier is None:
         provenance_classifier = AgentProvenanceClassifier()
+    if stats_sink is not None:
+        stats_sink.update(succeeded=False, commits=0)
 
     # With *since_ts* the walk still asked git for the whole window's numstat
     # and threw almost all of it away in the loop below — 1.5s per update on a
@@ -273,6 +303,8 @@ def load_commit_index(
             except ValueError:  # unparseable stamp: keep it in the window
                 depth = position + 1
         if depth == 0:
+            if stats_sink is not None:
+                stats_sink.update(succeeded=True, commits=0)
             logger.debug(
                 "repo_commit_index_built",
                 commits_parsed=0,
@@ -288,6 +320,8 @@ def load_commit_index(
         return {}
 
     if not records:
+        if stats_sink is not None:
+            stats_sink.update(succeeded=True, commits=0)
         return {}
 
     # git-ai authorship notes for this window (``{}`` unless the repo uses them).
@@ -420,6 +454,8 @@ def load_commit_index(
         files_with_history=len(bucket),
         indexable_files=len(indexable_files),
     )
+    if stats_sink is not None:
+        stats_sink.update(succeeded=True, commits=commits_parsed)
     return bucket
 
 
@@ -432,6 +468,7 @@ def load_deep_commit_index(
     deep_limit: int,
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
+    stats_sink: dict[str, int | bool] | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket commits OLDER than the recent window for *wanted_files* only.
 
@@ -448,11 +485,10 @@ def load_deep_commit_index(
     repos whose history is much deeper than the window (a 9k-commit
     monorepo left 3,295 of 4,857 files to the fallback).
 
-    The records differ from the per-file fallback in one documented way:
-    churn comes from the repo-wide diff (rename rows attribute edit churn
-    through the rename) rather than the pathspec-limited diff (which
-    shows a rename as a whole-file addition), and simplification-rare
-    merge commits never appear (``--no-merges``, like the window walk).
+    Churn comes from the repo-wide diff (rename rows attribute edit churn
+    through the rename) rather than the pathspec-limited fallback diff (which
+    shows a rename as a whole-file addition). All three rename-free lanes use
+    ``--no-merges`` so changing lanes cannot change the retained commit set.
     That makes deep-bucketed files CONSISTENT with window-indexed files,
     which always had repo-walk semantics. Files absent from this bucket
     (pre-rename names the marker parser cannot resolve, or history deeper
@@ -472,6 +508,8 @@ def load_deep_commit_index(
 
     if not wanted_files:
         return {}
+    if stats_sink is not None:
+        stats_sink.update(succeeded=False, commits=0)
     if provenance_classifier is None:
         provenance_classifier = AgentProvenanceClassifier()
 
@@ -488,6 +526,8 @@ def load_deep_commit_index(
         return {}
 
     if not raw:
+        if stats_sink is not None:
+            stats_sink.update(succeeded=True, commits=0)
         return {}
 
     # git-ai notes across the deep region (``{}`` unless the repo uses them).
@@ -589,4 +629,113 @@ def load_deep_commit_index(
         wanted_files=len(wanted_files),
         skip=skip,
     )
+    if stats_sink is not None:
+        stats_sink.update(succeeded=True, commits=commits_parsed)
     return bucket
+
+
+def load_sampled_commit_index(
+    repo: object,
+    per_file_limit: int,
+    indexable_files: set[str],
+    *,
+    deep_limit: int,
+    deep_threshold: int,
+    commit_sink: list[dict] | None = None,
+    provenance_classifier: object | None = None,
+    trace_index: object | None = None,
+    cache_dir: Path | None = None,
+) -> HistorySample:
+    """Resolve the recent, deep, and fallback sampling lanes once.
+
+    Increasing ``per_file_limit`` can only add retained commits for a file.
+    A recent-window hit never makes a file complete by itself: the deep walk
+    tops it up, and a per-file walk remains required when the shared walks
+    neither fill the cap nor reach the repository root.
+    """
+    recent_stats: dict[str, int | bool] = {}
+    recent = load_commit_index(
+        repo,
+        per_file_limit,
+        indexable_files,
+        commit_sink=commit_sink,
+        provenance_classifier=provenance_classifier,
+        trace_index=trace_index,
+        cache_dir=cache_dir,
+        stats_sink=recent_stats,
+    )
+    sample = HistorySample(
+        commits={path: list(records[:per_file_limit]) for path, records in recent.items()},
+        recent_files=set(recent),
+        global_commits=int(recent_stats.get("commits", 0)),
+    )
+    if not recent_stats.get("succeeded"):
+        sample.fallback_files = set(indexable_files)
+        return sample
+
+    total_commits = _count_non_merge_commits(repo)
+    underfilled = {
+        path for path in indexable_files if len(sample.commits.get(path, ())) < per_file_limit
+    }
+    deep_stats: dict[str, int | bool] = {}
+    deep_walk_succeeded = False
+    deep_cursor = per_file_limit
+    recent_walk_complete = total_commits is not None and total_commits <= sample.global_commits
+    while (
+        not recent_walk_complete
+        and len(underfilled) >= deep_threshold
+        and (total_commits is None or deep_cursor < total_commits)
+    ):
+        deep_stats = {}
+        deep = load_deep_commit_index(
+            repo,
+            per_file_limit,
+            underfilled,
+            skip=deep_cursor,
+            deep_limit=deep_limit,
+            provenance_classifier=provenance_classifier,
+            trace_index=trace_index,
+            stats_sink=deep_stats,
+        )
+        for path, records in deep.items():
+            remaining = per_file_limit - len(sample.commits.get(path, ()))
+            if remaining > 0 and records:
+                sample.commits.setdefault(path, []).extend(records[:remaining])
+                sample.deep_files.add(path)
+        if not deep_stats.get("succeeded"):
+            break
+        deep_walk_succeeded = True
+        sample.deep_commits += int(deep_stats.get("commits", 0))
+        deep_cursor += deep_limit
+        underfilled = {
+            path
+            for path in indexable_files
+            if len(sample.commits.get(path, ())) < per_file_limit
+        }
+        # Without a reliable history total, one bounded deep walk is the safe
+        # limit; unresolved files retain the per-file fallback.
+        if total_commits is None:
+            break
+
+    shared_walk_complete = bool(
+        recent_walk_complete
+        or (
+            deep_walk_succeeded
+            and total_commits is not None
+            and deep_cursor >= total_commits
+        )
+    )
+    walked_depth = sample.global_commits + sample.deep_commits
+    sample.history_complete_through_depth = (
+        min(total_commits, walked_depth) if total_commits is not None else walked_depth
+    )
+    underfilled = {
+        path for path in indexable_files if len(sample.commits.get(path, ())) < per_file_limit
+    }
+    if not shared_walk_complete:
+        sample.fallback_files = underfilled
+        sample.deep_files.difference_update(sample.fallback_files)
+
+    for path in indexable_files - sample.fallback_files:
+        sample.commits.setdefault(path, [])
+    return sample

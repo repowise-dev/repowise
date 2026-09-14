@@ -7,6 +7,7 @@ routing core log output through the CLI ``console``.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, run_async
@@ -14,7 +15,11 @@ from repowise.core.pipeline import PhaseTimings, timed
 
 
 def _build_update_vector_store(
-    repo_path: Any, cfg: dict, degraded: list[str] | None = None
+    repo_path: Any,
+    cfg: dict,
+    degraded: list[str] | None = None,
+    *,
+    required: bool = False,
 ) -> Any | None:
     """Build the shared page/decision vector store for the update path.
 
@@ -33,10 +38,17 @@ def _build_update_vector_store(
         from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
         embedder = build_embedder(resolve_embedder(cfg.get("embedder")), repo_path)
-        return build_vector_store(repo_path, embedder)
+        store = build_vector_store(repo_path, embedder)
+        if required and store is None and (Path(repo_path) / ".repowise" / "lancedb").exists():
+            raise RuntimeError(
+                "the configured embedder cannot safely refresh the existing vector index"
+            )
+        return store
     except Exception as exc:
         if degraded is not None:
             degraded.append(f"Decision vector store: {type(exc).__name__}: {exc}")
+        if required:
+            raise
         return None
 
 
@@ -83,6 +95,8 @@ def _rebuild_graph_and_git(
     include_submodules: bool = False,
     include_nested_repos: bool = False,
     idle_decay_sink: dict[str, dict] | None = None,
+    force_full_git: bool = False,
+    git_summary_sink: list[Any] | None = None,
     timings: PhaseTimings | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
@@ -120,6 +134,8 @@ def _rebuild_graph_and_git(
             include_submodules=include_submodules,
             include_nested_repos=include_nested_repos,
             idle_decay_sink=idle_decay_sink,
+            force_full_git=force_full_git,
+            git_summary_sink=git_summary_sink,
             log=console.print,
             timings=timings,
         )

@@ -124,6 +124,143 @@ def test_full_persist_collects_degraded_steps(tmp_path: Path) -> None:
     assert any(entry.startswith("Graph nodes persist:") for entry in degraded)
 
 
+def test_required_config_persist_rejects_any_degraded_dependency(tmp_path: Path) -> None:
+    (tmp_path / ".repowise").mkdir()
+
+    with pytest.raises(RuntimeError, match="did not update every dependent store"):
+        asyncio.run(
+            _persist_full_update_async(
+                repo_path=tmp_path,
+                repo_name="repo",
+                generated_pages=[_page("file_page:a.py")],
+                file_diffs=[],
+                git_meta_map={},
+                new_decision_markers=[],
+                decision_vector_store=None,
+                provider=None,
+                partial_health_report=None,
+                dead_code_report=None,
+                graph_builder=None,
+                knowledge_graph_result=None,
+                degraded=[],
+                require_config_rebuild_success=True,
+            )
+        )
+
+    assert asyncio.run(_count_pages(tmp_path)) == 0
+
+
+def test_failed_fts_cleanup_debt_retries_on_next_persist(tmp_path: Path, monkeypatch) -> None:
+    import repowise.core.persistence as persistence
+    from repowise.core.pipeline.cleanup_debt import (
+        load_cleanup_debt,
+        record_cleanup_debt,
+    )
+
+    (tmp_path / ".repowise").mkdir()
+    orphan = "file_page:removed.py"
+    record_cleanup_debt(tmp_path, "fts", {orphan})
+    attempts: list[list[str]] = []
+
+    class _FailOnceFTS:
+        async def ensure_index(self):
+            return None
+
+        async def index(self, *args, **kwargs):
+            return None
+
+        async def delete_many(self, page_ids):
+            attempts.append(list(page_ids))
+            if len(attempts) == 1:
+                raise RuntimeError("fts unavailable")
+
+    monkeypatch.setattr(persistence, "FullTextSearch", lambda _engine: _FailOnceFTS())
+
+    async def _persist_once() -> None:
+        await _persist_full_update_async(
+            repo_path=tmp_path,
+            repo_name="repo",
+            generated_pages=[],
+            file_diffs=[],
+            git_meta_map={},
+            new_decision_markers=[],
+            decision_vector_store=None,
+            provider=None,
+            partial_health_report=None,
+            dead_code_report=None,
+            graph_builder=None,
+            knowledge_graph_result=None,
+            degraded=[],
+        )
+
+    asyncio.run(_persist_once())
+    assert load_cleanup_debt(tmp_path)["fts"] == {orphan}
+    asyncio.run(_persist_once())
+    assert attempts == [[orphan], [orphan]]
+    assert load_cleanup_debt(tmp_path)["fts"] == set()
+
+
+def test_required_git_decision_persist_failure_rolls_back(tmp_path: Path, monkeypatch) -> None:
+    from dataclasses import dataclass
+
+    import repowise.core.persistence.crud as crud
+
+    (tmp_path / ".repowise").mkdir()
+
+    @dataclass
+    class _Decision:
+        title: str = "Use durable retries"
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("decision store down")
+
+    monkeypatch.setattr(crud, "bulk_upsert_decisions", _boom)
+
+    with pytest.raises(RuntimeError, match="decision store down"):
+        asyncio.run(
+            _persist_full_update_async(
+                repo_path=tmp_path,
+                repo_name="repo",
+                generated_pages=[_page("file_page:a.py")],
+                file_diffs=[],
+                git_meta_map={},
+                new_decision_markers=[_Decision()],
+                decision_vector_store=None,
+                provider=None,
+                partial_health_report=None,
+                dead_code_report=None,
+                graph_builder=None,
+                knowledge_graph_result=None,
+                degraded=[],
+                require_decision_persist_success=True,
+            )
+        )
+
+    assert asyncio.run(_count_pages(tmp_path)) == 0
+
+
+def test_missing_reingested_coverage_is_authoritative_empty(tmp_path: Path, monkeypatch) -> None:
+    from repowise.cli.commands.update_cmd.persistence import _coverage_for_rescore
+
+    monkeypatch.setattr(
+        "repowise.core.repo_config.load_repo_config",
+        lambda _path: {"coverage": {"reingest_on_update": True}},
+    )
+    monkeypatch.setattr(
+        "repowise.core.analysis.health.coverage.discover_artifacts",
+        lambda *_args, **_kwargs: [],
+    )
+
+    coverage_map, files, source_format, authoritative = asyncio.run(
+        _coverage_for_rescore(object(), "repo", tmp_path, [])
+    )
+
+    assert coverage_map == {}
+    assert files == []
+    assert source_format is None
+    assert authoritative is True
+
+
 # ---------------------------------------------------------------------------
 # A retirement has to reach an index nobody re-indexes
 # ---------------------------------------------------------------------------

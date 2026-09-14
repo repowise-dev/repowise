@@ -11,6 +11,7 @@ import json as _json
 import logging
 import sqlite3
 import subprocess
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -107,6 +108,7 @@ class RepoUpdateResult:
     # tree state has no ``last_sync_commit`` to diff against. None on the
     # commit-anchored path, which leaves the stored list alone.
     working_tree_paths: list[str] | None = None
+    phase_timings: dict[str, float] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -560,12 +562,20 @@ async def update_single_repo_index(
     incremental failure run the full ingestion pipeline instead (index-only —
     no wiki pages).
     """
-    from ..repo_config import config_fingerprint
+    from ..repo_config import (
+        changed_config_dependencies,
+        config_dependency_fingerprints,
+        config_fingerprint,
+        load_repo_config,
+    )
 
     alias = repo_path.name
     state = read_repo_state(repo_path)
     base_ref = state.get("last_sync_commit")
     merged_excludes = _merged_repo_excludes(repo_path, exclude_patterns)
+    repo_config = load_repo_config(repo_path)
+    repo_commit_depth = int(repo_config.get("commit_limit", commit_depth))
+    repo_follow_renames = bool(repo_config.get("follow_renames", False))
 
     # Config drift check, mirroring the single-repo update path: a changed
     # config.yaml / health-rules.json invalidates persisted health scores and
@@ -577,7 +587,33 @@ async def update_single_repo_index(
     # surprise full re-index.
     stored_fp = state.get("config_fingerprint")
     config_changed = stored_fp is not None and stored_fp != config_fingerprint(repo_path)
-    if config_changed and (repo_path / ".repowise" / "wiki.db").is_file():
+    current_dependency_fps = config_dependency_fingerprints(repo_path, config=repo_config)
+    changed_dependencies = (
+        changed_config_dependencies(
+            state.get("config_dependency_fingerprints"), current_dependency_fps
+        )
+        if config_changed
+        else set()
+    )
+    # Workspace indexing has no generation layer. Only settings that affect
+    # its persisted graph/history/health stores require a full re-index;
+    # formatting, distill/MCP, and generation-only edits are state updates.
+    requires_full_reindex = config_changed and (
+        changed_dependencies is None
+        or bool((changed_dependencies or set()) - {"state_only", "generation"})
+    )
+    require_git_success = requires_full_reindex and (
+        changed_dependencies is None
+        or bool({"traversal", "git_history", "other"} & (changed_dependencies or set()))
+    )
+    require_health_success = requires_full_reindex and (
+        changed_dependencies is None
+        or bool(
+            {"traversal", "git_history", "health", "other"}
+            & (changed_dependencies or set())
+        )
+    )
+    if requires_full_reindex and (repo_path / ".repowise" / "wiki.db").is_file():
         _log.info(
             "workspace_update: %s config fingerprint drifted — full re-index "
             "so health scores reflect the new config",
@@ -585,7 +621,7 @@ async def update_single_repo_index(
         )
 
     if (
-        not config_changed
+        not requires_full_reindex
         and base_ref
         and (repo_path / ".repowise" / "wiki.db").is_file()
         and commit_exists(repo_path, str(base_ref))
@@ -612,10 +648,13 @@ async def update_single_repo_index(
 
         result = await index_repo_full(
             repo_path,
-            commit_depth=commit_depth,
+            commit_depth=repo_commit_depth,
             exclude_patterns=merged_excludes,
             include_submodules=bool(state.get("include_submodules", False)),
             include_nested_repos=bool(state.get("include_nested_repos", False)),
+            follow_renames=repo_follow_renames,
+            require_git_success=require_git_success,
+            require_health_success=require_health_success,
             progress=progress,
         )
 
@@ -691,6 +730,8 @@ async def update_workspace(
     Returns:
         List of :class:`RepoUpdateResult` for each repo.
     """
+    from ..repo_config import config_fingerprint
+
     results: list[RepoUpdateResult] = []
     # (alias, path, new_head, first_time)
     stale_repos: list[tuple[str, Path, str, bool]] = []
@@ -730,6 +771,7 @@ async def update_workspace(
 
         state_path = abs_path / ".repowise" / "state.json"
         stored_commit = None
+        state: dict[str, Any] = {}
         if state_path.is_file():
             try:
                 state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -741,6 +783,19 @@ async def update_workspace(
             abs_path,
             stored_commit,
         )
+        stored_config_fp = state.get("config_fingerprint")
+        config_state_missing = (
+            (abs_path / ".repowise" / "wiki.db").is_file()
+            and stored_config_fp is None
+        )
+        if not is_stale and (
+            config_state_missing
+            or (
+                stored_config_fp is not None
+                and stored_config_fp != config_fingerprint(abs_path)
+            )
+        ):
+            is_stale = True
 
         # A watched repo's changes are uncommitted by definition, so the
         # commit-to-commit staleness check above says "up to date" for exactly
@@ -857,12 +912,15 @@ async def update_workspace(
                     )
 
                 try:
+                    update_started = time.monotonic()
                     result = await update_single_repo_index(
                         path,
                         commit_depth=commit_depth,
                         exclude_patterns=exclude_patterns,
                         include_working_tree=include_working_tree,
                     )
+                    if result.updated and result.phase_timings is None:
+                        result.phase_timings = {"run": time.monotonic() - update_started}
                 finally:
                     _release_lock(path)
                 result.alias = alias
@@ -886,13 +944,24 @@ async def update_workspace(
                         state["knowledge_graph"] = result.kg_state
                     if result.working_tree_paths is not None:
                         state["working_tree_paths"] = result.working_tree_paths
+                    if result.phase_timings is not None:
+                        state["phase_timings"] = result.phase_timings
                     # Stamp the config fingerprint so the drift check in
                     # update_single_repo_index stays calibrated (and legacy repos
                     # without one stop re-triggering the full re-index).
                     with suppress(Exception):
-                        from ..repo_config import config_fingerprint
+                        from ..repo_config import (
+                            config_dependency_fingerprints,
+                            config_fingerprint,
+                            load_repo_config,
+                        )
 
                         state["config_fingerprint"] = config_fingerprint(path)
+                        state["config_dependency_fingerprints"] = (
+                            config_dependency_fingerprints(
+                                path, config=load_repo_config(path)
+                            )
+                        )
                     # Mark first-time so downstream tooling (status, doctor) can
                     # distinguish a never-indexed repo from one that's been
                     # updated at least once.

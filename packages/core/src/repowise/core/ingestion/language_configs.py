@@ -12,6 +12,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from tree_sitter import Node
+
+from .extractors.cobol import (
+    cobol_symbol_end_line,
+    normalize_cobol_call_target,
+    normalize_cobol_symbol_name,
+)
 from .extractors.visibility import (
     csharp_visibility,
     dart_visibility,
@@ -28,6 +35,10 @@ from .extractors.visibility import (
     ts_visibility,
     vbnet_visibility,
 )
+
+
+def _identity_name(name: str, _node_type: str) -> str:
+    return name
 
 
 @dataclass
@@ -64,6 +75,14 @@ class LanguageConfig:
     # what a .cpp defines, so both sides land as same-named symbols; this is
     # what tells them apart downstream (see ``Symbol.is_declaration``).
     declaration_node_types: frozenset[str] = field(default_factory=frozenset)
+
+    # Optional syntax-level normalization hooks. Most grammars capture a bare
+    # identifier and use the defaults. Languages whose grammar exposes a full
+    # header or quoted static target can normalize without branching in the
+    # parser.
+    symbol_name_fn: Callable[[str, str], str] = _identity_name
+    call_target_name_fn: Callable[[str, str], str] = _identity_name
+    symbol_end_line_fn: Callable[[Node, int], int] | None = None
 
     # Call-site node types that name a symbol without invoking it. Rust's
     # ``foo!(..)`` expands a ``macro_rules! foo``; which symbol the name means
@@ -539,6 +558,26 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # method (found by tracing _find_parent's actual implementation, not
         # guessed).
         parent_class_types=frozenset({"declType"}),
+    ),
+    "cobol": LanguageConfig(
+        symbol_node_types={
+            "program_definition": "module",
+            # PROGRAM-ID without its terminal period is recovered as ERROR;
+            # cobol.scm predicates the capture to that header only.
+            "ERROR": "module",
+            "section_header": "function",
+            "paragraph_header": "function",
+            "data_description": "variable",
+        },
+        # COPY/include resolution is intentionally outside this good-tier cut.
+        import_node_types=[],
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="none",
+        parent_class_types=frozenset(),
+        symbol_name_fn=normalize_cobol_symbol_name,
+        call_target_name_fn=normalize_cobol_call_target,
+        symbol_end_line_fn=cobol_symbol_end_line,
     ),
     "gdscript": LanguageConfig(
         symbol_node_types={

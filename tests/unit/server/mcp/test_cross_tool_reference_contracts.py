@@ -497,7 +497,15 @@ _CELL_LEDGER = tuple(
 
 
 @pytest.mark.asyncio
-async def test_canonical_emitter_reference_inventory(reference_repo, health_data, session) -> None:
+async def test_canonical_emitter_reference_inventory(
+    reference_repo, health_data, session, monkeypatch
+) -> None:
+    from repowise.server.mcp_server.tool_context import enrichment
+
+    # This inventory tests the public recovery reference, not the production
+    # row cap. Force the seeded callers across that boundary deterministically.
+    monkeypatch.setattr(enrichment, "_SYMBOL_NEIGHBOR_LIMIT", 2)
+
     from repowise.server.mcp_server import (
         get_answer,
         get_change_risk,

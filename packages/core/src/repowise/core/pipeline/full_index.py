@@ -20,6 +20,9 @@ async def index_repo_full(
     exclude_patterns: list[str] | None = None,
     include_submodules: bool = False,
     include_nested_repos: bool = False,
+    follow_renames: bool = False,
+    require_git_success: bool = False,
+    require_health_success: bool = False,
     progress: Any | None = None,
 ) -> Any:
     """Run the full pipeline (index-only, no LLM docs) and persist everything.
@@ -45,12 +48,23 @@ async def index_repo_full(
         exclude_patterns=exclude_patterns or None,
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
+        follow_renames=follow_renames,
         generate_docs=False,
         progress=progress,
     )
 
+    # The ordinary full-index fallback keeps Git and health best-effort for
+    # backward compatibility. A configuration-driven rebuild is different:
+    # advancing the dependency fingerprints after either required phase was
+    # swallowed by the orchestrator would permanently strand stale rows.
+    if require_git_success and getattr(result, "git_summary", None) is None:
+        raise RuntimeError("Git indexing failed during a required configuration rebuild")
+    if require_health_success and getattr(result, "health_report", None) is None:
+        raise RuntimeError("Health analysis failed during a required configuration rebuild")
+
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
+    stale_page_ids: list[str] = []
     try:
         await init_db(engine)
         sf = create_session_factory(engine)
@@ -60,7 +74,54 @@ async def index_repo_full(
                 name=result.repo_name,
                 local_path=str(repo_path),
             )
-            await persist_pipeline_result(result, session, repo.id)
+            stale_page_ids = (
+                await persist_pipeline_result(
+                    result,
+                    session,
+                    repo.id,
+                    replace_full_git_history=require_git_success,
+                )
+                or []
+            )
+
+        from repowise.core.pipeline.cleanup_debt import (
+            clear_cleanup_debt,
+            load_cleanup_debt,
+            record_cleanup_debt,
+        )
+
+        debt = load_cleanup_debt(repo_path)
+        fts_cleanup_ids = set(stale_page_ids) | debt["fts"]
+        if fts_cleanup_ids:
+            from repowise.core.persistence.search import FullTextSearch
+
+            try:
+                fts = FullTextSearch(engine)
+                await fts.ensure_index()
+                await fts.delete_many(sorted(fts_cleanup_ids))
+                clear_cleanup_debt(repo_path, "fts", fts_cleanup_ids)
+            except Exception:
+                record_cleanup_debt(repo_path, "fts", fts_cleanup_ids)
+                raise
+
+        vector_cleanup_ids = set(stale_page_ids) | debt["vectors"]
+        if vector_cleanup_ids:
+            lance_dir = repo_path / ".repowise" / "lancedb"
+            if lance_dir.exists():
+                from repowise.core.persistence.vector_store import LanceDBVectorStore
+                from repowise.core.providers.embedding.base import MockEmbedder
+
+                # Deletion does not embed or validate vector dimensions, so a
+                # mock instance can safely open a real-embedder table here.
+                try:
+                    vector_store = LanceDBVectorStore(str(lance_dir), embedder=MockEmbedder())
+                    await vector_store.delete_many(sorted(vector_cleanup_ids))
+                    clear_cleanup_debt(repo_path, "vectors", vector_cleanup_ids)
+                except Exception:
+                    record_cleanup_debt(repo_path, "vectors", vector_cleanup_ids)
+                    raise
+            else:
+                clear_cleanup_debt(repo_path, "vectors", vector_cleanup_ids)
     finally:
         await engine.dispose()
 

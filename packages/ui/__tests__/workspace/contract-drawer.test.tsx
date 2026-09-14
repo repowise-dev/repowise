@@ -2,7 +2,46 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { WorkspaceContractLinkEntry } from "@repowise-dev/types/workspace";
 import { ContractDrawer } from "../../src/workspace/contract-drawer.js";
-import { linksForContract, type ContractEntry } from "../../src/workspace/contract-facts.js";
+import {
+  flattenSchemaFields,
+  linksForContract,
+  schemaFieldConstraints,
+  type ContractEntry,
+} from "../../src/workspace/contract-facts.js";
+
+it("flattens recursive OpenAPI fields with locations, arrays, and constraints", () => {
+  const rows = flattenSchemaFields([
+    {
+      name: "$body",
+      type: "object",
+      location: "body",
+      children: [
+        {
+          name: "orders",
+          type: "array",
+          required: true,
+          items: {
+            name: "$items",
+            type: "object",
+            children: [
+              { name: "status", type: "string", nullable: true, enum_values: ["new", "done"] },
+            ],
+          },
+        },
+      ],
+    },
+    { name: "trace", type: "string", location: "header" },
+  ]);
+
+  expect(rows.map((row) => row.path)).toEqual([
+    "body",
+    "body.orders",
+    "body.orders[]",
+    "body.orders[].status",
+    "header:trace",
+  ]);
+  expect(schemaFieldConstraints(rows[3]!.field)).toBe("Optional · Nullable · Enum: new, done");
+});
 
 function contract(overrides: Partial<ContractEntry> = {}): ContractEntry {
   return {

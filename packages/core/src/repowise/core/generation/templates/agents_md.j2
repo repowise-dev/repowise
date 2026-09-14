@@ -1,6 +1,10 @@
 ## Codebase Intelligence for {{ data.repo_name }} (Repowise)
 
 Indexed by [Repowise](https://repowise.dev). Last indexed: {{ data.indexed_at }}{% if data.indexed_commit %} (commit {{ data.indexed_commit }}){% endif %}{% if data.avg_confidence %}. Confidence: {{ (data.avg_confidence * 100) | int }}%.{% endif %}
+{% if data.index_scope %}
+Scope: {{ data.index_scope.run_mode }} index · {{ data.index_scope.content_provenance }} content · {{ data.index_scope.git_tier }} Git{% if data.index_scope.file_pages.omitted is not none and data.index_scope.file_pages.omitted %} · {{ data.index_scope.file_pages.omitted }} eligible file pages omitted{% endif %}. Missing or unavailable evidence is not a negative finding. {% if data.index_scope.upgrade.status in ['pending', 'resumable', 'failed'] %}Run `repowise update --full` to continue the model-backed upgrade (cost is previewed before generation).{% endif %}
+Machine-readable scope: `{{ data.index_scope | tojson }}`
+{% endif %}
 
 ### How to work in this repo
 

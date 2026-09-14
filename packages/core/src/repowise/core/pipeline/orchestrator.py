@@ -649,6 +649,7 @@ async def run_pipeline(
     # rehydrated analysis (it's by definition persisted) — best-effort.
     if resume_controller is not None and not skip_analysis:
         await resume_controller.checkpoint_analysis(
+            parsed_files=parsed_files,
             dead_code_report=dead_code_report,
             health_report=health_report,
             decision_report=decision_report,

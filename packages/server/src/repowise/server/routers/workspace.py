@@ -151,7 +151,7 @@ def _query_repo_stats(db_path: Path) -> dict:
         if row:
             result["repo_id"] = row[0]
 
-        # file count (graph_nodes) 
+        # file count (graph_nodes)
         row = c.execute("SELECT COUNT(*) FROM graph_nodes WHERE node_type = 'file'").fetchone()
         result["file_count"] = row[0] if row else 0
 
@@ -298,7 +298,9 @@ def _contract_link(lk: dict) -> WorkspaceContractLinkEntry:
 async def get_contracts(
     ws_config=Depends(get_workspace_config),
     enricher=Depends(get_cross_repo_enricher),
-    contract_type: str | None = Query(None, description="Filter: http, grpc, socket, topic, or data"),
+    contract_type: str | None = Query(
+        None, description="Filter: http, grpc, socket, topic, or data"
+    ),
     repo: str | None = Query(None, description="Filter by repo alias"),
     role: str | None = Query(None, description="Filter: provider or consumer"),
     limit: int = Query(200, ge=1, le=1000),
@@ -404,9 +406,7 @@ async def get_contract_detail(
         (
             c
             for c in getattr(enricher, "_contracts", [])
-            if c.get("repo") == repo
-            and c.get("file_path") == file
-            and c.get("contract_id") == id
+            if c.get("repo") == repo and c.get("file_path") == file and c.get("contract_id") == id
         ),
         None,
     )
@@ -743,12 +743,13 @@ async def get_breaking_changes(
     repo: str | None = Query(None, description="Filter to changes whose provider is in this repo."),
     severity: str | None = Query(None, description="Filter: breaking or warning."),
 ):
-    """Provider contract changes that break consumers across repos.
+    """Provider contract findings and directly linked consumer exposure across repos.
 
     Computed during the most recent ``repowise update --workspace`` by diffing the
     freshly-extracted contracts against the previously-indexed set, then resolving
-    each change's direct consumers from the matched links. Returns an empty report
-    (not 404) when no breaking changes were detected or no report exists yet.
+    each finding's direct consumers from the matched links. Returns an empty report
+    (not 404) when no findings were detected or no report exists yet; ``generated_at``
+    distinguishes those states.
     """
     _require_workspace(ws_config)
 

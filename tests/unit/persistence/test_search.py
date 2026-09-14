@@ -254,3 +254,60 @@ async def test_path_only_match_outranks_content_only_match(fts):
     results = await fts.search("telemetry")
 
     assert [r.page_id for r in results] == ["path-match", "content-match"]
+
+
+async def test_full_text_search_repository_id_filter(async_engine, async_session):
+    """When repository_id is given, only pages belonging to that repository are returned."""
+    from repowise.core.persistence import crud
+
+    repo_a = await crud.upsert_repository(
+        async_session, name="repo-a", local_path="/tmp/repo-a", repo_id="repo-a-id"
+    )
+    repo_b = await crud.upsert_repository(
+        async_session, name="repo-b", local_path="/tmp/repo-b", repo_id="repo-b-id"
+    )
+
+    await crud.upsert_page(
+        async_session,
+        page_id="p-a",
+        repository_id=repo_a.id,
+        page_type="file_page",
+        title="Worker Service",
+        content="Handles background queue jobs in worker service.",
+        summary="Worker queue",
+        target_path="worker.py",
+        source_hash="ha",
+        model_name="m",
+        provider_name="p",
+    )
+    await crud.upsert_page(
+        async_session,
+        page_id="p-b",
+        repository_id=repo_b.id,
+        page_type="file_page",
+        title="Queue Handler",
+        content="Handles background queue jobs in queue handler.",
+        summary="Queue handler",
+        target_path="queue.py",
+        source_hash="hb",
+        model_name="m",
+        provider_name="p",
+    )
+
+    fts = FullTextSearch(async_engine)
+    await fts.ensure_index()
+    await fts.index("p-a", "Worker Service", "Handles background queue jobs in worker service.")
+    await fts.index("p-b", "Queue Handler", "Handles background queue jobs in queue handler.")
+
+    # Unscoped returns both
+    all_hits = await fts.search("queue")
+    assert {r.page_id for r in all_hits} == {"p-a", "p-b"}
+
+    # Scoped to repo-a returns only p-a
+    a_hits = await fts.search("queue", repository_id="repo-a-id")
+    assert [r.page_id for r in a_hits] == ["p-a"]
+
+    # Scoped to repo-b returns only p-b
+    b_hits = await fts.search("queue", repository_id="repo-b-id")
+    assert [r.page_id for r in b_hits] == ["p-b"]
+

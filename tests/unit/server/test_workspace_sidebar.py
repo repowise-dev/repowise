@@ -75,7 +75,7 @@ async def _build_repo_engine(repo_path: Path):
     )
     await init_db(engine)
     sf = async_sessionmaker(engine, expire_on_commit=False)
-    from repowise.core.persistence import upsert_repository
+    from repowise.core.persistence import crud, upsert_repository
     from repowise.core.persistence.database import get_session
 
     async with get_session(sf) as session:
@@ -91,12 +91,29 @@ async def _build_repo_engine(repo_path: Path):
                 node_type="file",
             )
         )
+        await crud.upsert_page(
+            session,
+            page_id="p1",
+            repository_id=repo.id,
+            page_type="file_page",
+            title="Auth module",
+            content="Authentication and JWT verification flow.",
+            summary="Auth module",
+            target_path="auth.py",
+            source_hash="h1",
+            model_name="mock",
+            provider_name="mock",
+        )
         await session.commit()
     fts = FullTextSearch(engine)
     await fts.ensure_index()
-    # Index a single page directly into FTS — we don't need a real
-    # wiki_pages row for the search router tests.
-    await fts.index("p1", "Auth module", "Authentication and JWT verification flow.")
+    await fts.index(
+        "p1",
+        "Auth module",
+        "Authentication and JWT verification flow.",
+        summary="Auth module",
+        target_path="auth.py",
+    )
     return engine, sf, fts, repo.id
 
 

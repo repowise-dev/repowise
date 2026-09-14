@@ -15,6 +15,7 @@ from repowise.cli.helpers import (
     db_configured,
     get_db_url_for_repo,
     get_repowise_dir,
+    load_config,
     load_state,
     reconcile_schema_best_effort,
     resolve_command_target,
@@ -23,6 +24,7 @@ from repowise.cli.helpers import (
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.cli.ui.brand import format_bytes
 from repowise.core.docs_mode import resolve_docs_mode
+from repowise.core.index_scope import resolve_index_scope
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -362,6 +364,7 @@ def _workspace_rows(target: CommandTarget) -> list[dict]:
             "symbols": None,
             "pages": None,
             "docs_mode": None,
+            "index_scope": None,
             "storage_bytes": None,
             "head": None,
             "stale": None,
@@ -376,11 +379,13 @@ def _workspace_rows(target: CommandTarget) -> list[dict]:
         is_stale, current_head, behind = check_repo_staleness(
             abs_path, entry.last_commit_at_index
         )
+        repo_state = load_state(abs_path)
         row.update(
             files=file_count,
             symbols=symbol_count,
             pages=page_count,
-            docs_mode=resolve_docs_mode(load_state(abs_path)),
+            docs_mode=resolve_docs_mode(repo_state),
+            index_scope=resolve_index_scope(repo_state, {}),
             storage_bytes=_index_storage_bytes(repowise_dir),
             head=current_head,
             stale=is_stale,
@@ -560,6 +565,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         return
 
     state = load_state(repo_path)
+    scope = resolve_index_scope(state, load_config(repo_path))
     storage_bytes = _index_storage_bytes(repowise_dir)
     db_path = repowise_dir / "wiki.db"
     has_db = db_path.exists() or db_configured()
@@ -585,6 +591,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "page_total": sum(counts.values()),
                 "page_tokens": total_db_tokens,
                 "health": _query_health(repo_path),
+                "index_scope": scope,
             }
         )
         return
@@ -602,6 +609,39 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     state_table.add_row("Model", state.get("model", "—") or "—")
     state_table.add_row("Total tokens", f"{state.get('total_tokens', 0):,}")
     state_table.add_row("Index storage", format_bytes(storage_bytes))
+    state_table.add_row(
+        "Scope",
+        f"{scope['run_mode']} · {scope['content_provenance']} · git {scope['git_tier']}",
+    )
+    coverage = scope["git_history_coverage"]
+    if coverage:
+        measured = coverage.get(
+            "files_with_history", coverage.get("files_measured", coverage.get("files_indexed", "?"))
+        )
+        eligible = coverage.get("files_eligible", coverage.get("eligible_files", "?"))
+        state_table.add_row(
+            "Git coverage", f"{measured}/{eligible} files (cap {scope['git_commit_cap']})"
+        )
+    fp = scope["file_pages"]
+    if fp["eligible"] is not None:
+        configured = "unlimited" if fp["configured_cap"] == 0 else fp["configured_cap"]
+        if configured is None:
+            configured = "auto"
+        effective = "unlimited" if fp["effective_cap"] is None else fp["effective_cap"]
+        state_table.add_row(
+            "File pages",
+            f"{fp['generated']}/{fp['eligible']} generated · {fp['omitted']} omitted · "
+            f"cap {effective} (configured {configured})",
+        )
+    if scope["analysis"]["unavailable"]:
+        state_table.add_row(
+            "Unavailable analysis",
+            ", ".join(scope["analysis"]["unavailable"]),
+        )
+    if scope["analysis"]["skipped"]:
+        state_table.add_row("Intentionally skipped", ", ".join(scope["analysis"]["skipped"]))
+    if scope["upgrade"]["status"] not in ("unknown", "not_applicable", "complete"):
+        state_table.add_row("Full upgrade", scope["upgrade"]["status"])
     console.print(state_table)
 
     if not has_db:

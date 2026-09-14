@@ -41,6 +41,7 @@ LanguageTag = Literal[
     "luau",
     "dart",
     "pascal",
+    "cobol",
     "gdscript",
     "vbnet",
     # Passthrough code languages (no AST parser yet — empty ParsedFile,

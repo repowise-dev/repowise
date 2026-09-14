@@ -85,6 +85,11 @@ _SYMBOL_USE_EDGE_TYPES = sorted(SYMBOL_USE_EDGE_TYPES)
 #: callees for three hops. Keep it meaning what it is named.
 _CALL_EDGE_TYPES = ["calls"]
 
+#: Maximum caller/callee rows returned for one symbol. Kept as a named seam so
+#: contract tests can force an omission without depending on response size or
+#: platform-specific serialization details.
+_SYMBOL_NEIGHBOR_LIMIT = 50
+
 #: Rows carried per relation kind. Deliberately far below the call cap: the
 #: agent question these answer is "what else reaches this, and how", which the
 #: kind and the honest total answer. Naming them costs less than the
@@ -153,7 +158,7 @@ async def _resolve_call_graph(
     repo_id = repository.id
     # 99.56% of symbols have <=50 callers (p99=31); the rare hub gets an
     # explicit `*_truncated` + `*_total` signal below rather than a silent cut.
-    limit = 50
+    limit = _SYMBOL_NEIGHBOR_LIMIT
 
     # Resolve to a graph node (symbol)
     node = await get_graph_node(session, repo_id, target)

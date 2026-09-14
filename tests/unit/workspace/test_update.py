@@ -303,6 +303,16 @@ class TestUpdateWorkspace:
 
         async def _run():
             await _seed()
+            from repowise.core.repo_config import (
+                config_dependency_fingerprints,
+                config_fingerprint,
+            )
+
+            state_path = repo / ".repowise" / "state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["config_fingerprint"] = config_fingerprint(repo)
+            state["config_dependency_fingerprints"] = config_dependency_fingerprints(repo)
+            state_path.write_text(json.dumps(state), encoding="utf-8")
             return await update_workspace(tmp_path, ws_config)
 
         import asyncio
@@ -345,6 +355,77 @@ class TestUpdateWorkspace:
         updated = [r for r in results if r.updated]
         assert len(updated) == 1
         assert updated[0].alias == "backend"
+        saved_state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        assert saved_state["phase_timings"]["run"] >= 0
+
+    def test_detects_config_only_staleness(self, tmp_path: Path) -> None:
+        """A workspace member with no new commit still runs when its local
+        configuration changed."""
+        from repowise.core.repo_config import config_fingerprint, save_repo_config
+
+        repo = _make_git_repo(tmp_path, "backend")
+        head = get_head_commit(repo)
+        save_repo_config(repo, {"provider": "mock"})
+        _write_state(repo, head)
+        state_path = repo / ".repowise" / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["config_fingerprint"] = config_fingerprint(repo)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        save_repo_config(repo, {"provider": "openai"})
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=head)]
+        )
+        mock_result = RepoUpdateResult(alias="backend", updated=True, file_count=1, symbol_count=1)
+
+        async def _run():
+            with patch(
+                "repowise.core.workspace.update.update_single_repo_index",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ) as mocked:
+                results = await update_workspace(tmp_path, ws_config)
+                return results, mocked.await_count
+
+        import asyncio
+
+        results, calls = asyncio.run(_run())
+        assert calls == 1
+        assert results[0].updated is True
+        saved_state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert saved_state["phase_timings"]["run"] >= 0
+
+    def test_legacy_config_fingerprints_are_backfilled_then_detect_changes(
+        self, tmp_path: Path
+    ) -> None:
+        from repowise.core.repo_config import save_repo_config
+
+        repo = _make_git_repo(tmp_path, "backend")
+        head = get_head_commit(repo)
+        _write_state(repo, head)
+        (repo / ".repowise" / "wiki.db").touch()
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=head)]
+        )
+        mock_result = RepoUpdateResult(alias="backend", updated=True, file_count=1)
+
+        async def _run() -> int:
+            with patch(
+                "repowise.core.workspace.update.update_single_repo_index",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ) as mocked:
+                await update_workspace(tmp_path, ws_config)
+                save_repo_config(repo, {"future_setting": True})
+                await update_workspace(tmp_path, ws_config)
+                return mocked.await_count
+
+        import asyncio
+
+        assert asyncio.run(_run()) == 2
+        state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        assert state.get("config_fingerprint")
+        assert state.get("config_dependency_fingerprints")
 
     def test_repo_filter(self, tmp_path: Path) -> None:
         """--repo flag should only update the specified repo."""
