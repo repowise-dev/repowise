@@ -3,18 +3,18 @@
 -#}
 # Active Landscape
 
-Where `{{ ctx.repo_name }}` has actually been changing. {{ ctx.total_commits_90d }} commits touched {{ ctx.files_touched_90d }} files in the last 90 days{% if ctx.stable_file_count %}; {{ ctx.stable_file_count }} files have not moved at all{% endif %}.
+Where `{{ ctx.repo_name }}` has changed in the indexed git window. {% if ctx.activity_window_start and ctx.activity_window_end %}The window runs from {{ ctx.activity_window_start }} through {{ ctx.activity_window_end }}. {% endif %}{{ ctx.total_commits_90d }} file-level commit touches accumulated across {{ ctx.files_touched_90d }} files{% if ctx.stable_file_count %}; {{ ctx.stable_file_count }} files are marked stable{% endif %}{% if ctx.active_contributor_count_90d is not none %}, with {{ ctx.active_contributor_count_90d }} distinct historical contributors in the trailing window{% endif %}.
 
 {% if ctx.hot_files %}
 ## Files under active change
 
-| File | Commits (90d) | Owner | Hotspot | Age |
+| File | Commit touches (90d) | Historical contributors | Hotspot | Age |
 | --- | --- | --- | --- | --- |
 {% for f in ctx.hot_files -%}
-| `{{ f.path }}` | {{ f.commit_count_90d }} | {{ (f.primary_owner or "unknown") | oneline(40) }} | {{ "yes" if f.is_hotspot else "no" }} | {{ f.age_days }}d |
+| `{{ f.path }}` | {{ f.commit_count_90d }} | {{ f.historical_contributor_count or "unknown" }} | {{ "yes" if f.is_hotspot else "no" }} | {{ f.age_days }}d |
 {% endfor %}
 
-A hotspot is a file that is both high-churn and structurally complex. Those are the ones where changes are most likely to go wrong.
+A hotspot is a file that is both high-churn and structurally complex. It is an investigation signal, not proof that a future change will fail.
 {% endif %}
 
 {% if ctx.hot_dirs %}
@@ -30,9 +30,13 @@ A hotspot is a file that is both high-churn and structurally complex. Those are 
 {% if ctx.dead_code_in_hot_files %}
 ## Unused code in files that keep changing
 
-Worth deleting first: it is being carried through every edit.
+These findings overlap files with recent activity. Inspect their evidence before deciding whether any change is appropriate.
 {% for f in ctx.dead_code_in_hot_files[:15] %}
 - `{{ f.get("symbol_name") or f.get("file_path") }}`{% if f.get("file_path") and f.get("symbol_name") %} in `{{ f.get("file_path") }}`{% endif %}{% if f.get("reason") %} ({{ f.get("reason") | oneline }}){% endif %}
 {% endfor %}
 {% endif %}
+
+## Limits of this snapshot
+
+Churn and contribution history do not establish current ownership, intent, coordination duty, code quality, difficulty, or whether an area is safe to change.
 {% include "stub/_footer.j2" %}

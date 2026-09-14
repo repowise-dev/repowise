@@ -30,6 +30,7 @@ _FREE_PAGE_TYPES = STRUCTURAL_PAGE_TYPES
 async def run_generation(
     *,
     repo_path: Path,
+    repo_name: str | None = None,
     parsed_files: list[Any],
     source_map: dict[str, bytes],
     graph_builder: Any,
@@ -117,7 +118,7 @@ async def run_generation(
     jobs_dir.mkdir(parents=True, exist_ok=True)
     job_system = JobSystem(jobs_dir)
 
-    repo_name = repo_path.name
+    repo_name = repo_name or repo_path.name
 
     # Track generation progress. Onboarding pages get routed to their own
     # phase so the terminal UI shows them as a distinct, named step rather
