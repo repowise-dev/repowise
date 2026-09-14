@@ -562,6 +562,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "cobol": LanguageConfig(
         symbol_node_types={
             "program_definition": "module",
+            # PROGRAM-ID without its terminal period is recovered as ERROR;
+            # cobol.scm predicates the capture to that header only.
+            "ERROR": "module",
             "section_header": "function",
             "paragraph_header": "function",
             "data_description": "variable",

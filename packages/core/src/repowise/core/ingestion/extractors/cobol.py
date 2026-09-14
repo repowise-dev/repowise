@@ -15,7 +15,7 @@ _PROCEDURE_HEADERS = frozenset({"section_header", "paragraph_header"})
 def normalize_cobol_symbol_name(raw_name: str, node_type: str) -> str:
     """Return COBOL's case-insensitive identifier in a stable graph form."""
     name = raw_name.strip()
-    if node_type == "program_definition":
+    if node_type in {"program_definition", "ERROR"}:
         recovered = _PROGRAM_ID_IN_ERROR.search(name)
         if recovered:
             name = recovered.group(1)
@@ -41,6 +41,14 @@ def cobol_symbol_end_line(node: Node, default_end_line: int) -> int:
     unlike languages whose function node wraps its body. Extending the range
     lets the generic caller-attribution pass select the innermost paragraph.
     """
+    if node.type == "ERROR":
+        ancestor = node.parent
+        while ancestor is not None:
+            if ancestor.type == "program_definition":
+                return max(default_end_line, ancestor.end_point[0] + 1)
+            ancestor = ancestor.parent
+        return default_end_line
+
     if node.type not in _PROCEDURE_HEADERS or node.parent is None:
         return default_end_line
 

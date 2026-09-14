@@ -9,11 +9,11 @@
 
 ; IBM course material commonly omits the terminal period after PROGRAM-ID.
 ; The grammar recovers the rest of the program but places the header in a
-; direct ERROR node. Capture only ERROR spans that actually contain PROGRAM-ID;
-; the name normalizer extracts that one identifier and ignores the remainder.
-((program_definition
-  (identification_division)
-  (ERROR) @symbol.name) @symbol.def
+; direct ERROR node. Older tree-sitter query compilers reject ERROR as a
+; declared child of program_definition, so capture the recovery node directly;
+; the predicate keeps unrelated errors out and the COBOL range hook restores
+; the containing program's end line.
+((ERROR) @symbol.name @symbol.def
   (#match? @symbol.name "PROGRAM-ID\\s*\\."))
 
 ; The grammar exposes headers as leaf nodes, including their punctuation.
