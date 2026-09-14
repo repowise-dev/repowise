@@ -50,6 +50,11 @@ _RESCUE_TOP_N = 2
 # answer depend on row order; this is small enough to stay one indexed lookup
 # and large enough that the ranking, not the LIMIT, picks the winner.
 _RESCUE_EXACT_FETCH = 8
+# BM25 floor for the rescue's FTS fallback. A multi-token query where only
+# one common token matches ("fallback") still returns rows at score ~3;
+# genuinely related pages score 2-3x higher (observed: weak 3.45 vs real
+# 8.70). Below the floor, silence beats a confident wrong suggestion.
+_RESCUE_FTS_MIN_SCORE = 6.0
 # Files the triage ranker considers. Ranking is over the grep's own matches,
 # so this only bites on floods wider than 200 files, where the tail is taken
 # by match count, the one signal available before any index lookup.
@@ -793,6 +798,10 @@ async def _rescue(
     except Exception:
         fts_rows = []
     for r in fts_rows:
+        if r.score < _RESCUE_FTS_MIN_SCORE:
+            # A weak FTS hit is a single-token ride, not a real match —
+            # silence beats a confident wrong suggestion.
+            continue
         target = getattr(r, "target_path", None) or ""
         page_type = getattr(r, "page_type", "") or ""
         if "::" in target:
