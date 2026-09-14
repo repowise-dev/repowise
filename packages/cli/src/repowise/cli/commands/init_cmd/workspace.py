@@ -482,8 +482,26 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         )
 
     # Persist to repo-local DB
-    run_async(persist_result(result, repo.path, timings=callback.table))
-
+    persist_warnings: list[str] = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as persist_bar:
+        persist_callback = callback.rebind(RichProgressCallback(persist_bar, console))
+        persist_callback.on_phase_start("persist", None)
+        try:
+            run_async(persist_result(result, repo.path, persist_callback, callback.table))
+        finally:
+            try:
+                persist_callback.on_phase_done("persist")
+                persist_warnings.extend(persist_callback.warnings)
+            except RuntimeError as e:
+                if "Event loop is closed" not in str(e):
+                    raise
+                
     # Write state.json so `repowise update` knows the base commit
     head = get_head_commit(repo.path)
     pages_count = len(result.generated_pages or [])
@@ -576,6 +594,10 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)
+        
+        state.pop("degraded", None)
+    if persist_warnings:
+        state["degraded"] = persist_warnings
     # A workspace repo is fully indexed here (concept tree included), so stamp
     # the terminal store format rather than clamping below the reindex gate.
     save_state(repo.path, state, full_index=True)
