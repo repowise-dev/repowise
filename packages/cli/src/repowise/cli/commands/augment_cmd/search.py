@@ -412,7 +412,7 @@ def _wiki_db_exists(repo_path: Path) -> bool:
     return (repo_path / ".repowise" / "wiki.db").exists()
 
 
-def _fast_pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] | None | object:
+def _fast_pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] | object | None:
     """``_pagerank_file_order`` over stdlib sqlite3. ``_ORM`` to fall back."""
     if not _wiki_db_exists(repo_path):
         return None
@@ -438,7 +438,7 @@ def _fast_search_enrich(
     mode: str,
     result_count: int,
     matched: dict[str, int] | None,
-) -> str | None | object:
+) -> str | object | None:
     """Triage and the widened rescue without the ORM. ``_ORM`` to fall back.
 
     The zero-result rescue is not served here on purpose: 45% of its queries

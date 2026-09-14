@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
+from repowise.core.analysis.execution_graph import is_walkable_execution_edge
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
@@ -61,7 +62,7 @@ def _flow_member_ids(
     """
     adjacency: dict[str, list[GraphEdge]] = {}
     for e in edges:
-        if e.edge_type == "calls":
+        if is_walkable_execution_edge(e.edge_type, e.resolution_origin, e.confidence):
             adjacency.setdefault(e.source_node_id, []).append(e)
 
     members: set[str] = set()
@@ -74,7 +75,7 @@ def _flow_member_ids(
             for e in adjacency.get(current, ()):
                 tid = e.target_node_id
                 conf = e.confidence if e.confidence is not None else 0.0
-                if tid in visited or conf < 0.5 or _node_id_is_excluded(tid):
+                if tid in visited or _node_id_is_excluded(tid):
                     continue
                 if conf > best_conf:
                     best_conf = conf

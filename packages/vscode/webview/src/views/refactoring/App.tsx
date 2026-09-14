@@ -8,17 +8,16 @@ import {
   typeMeta,
 } from "@repowise-dev/ui/refactoring/meta";
 import { PlanDetail } from "@repowise-dev/ui/refactoring/plan-detail";
-import { RefactoringPlanCard } from "@repowise-dev/ui/refactoring/refactoring-plan-card";
-import {
-  blastCount,
-  blastFiles,
-  evidenceRows,
-  planWins,
-  type Confidence,
-  type EffortBucket,
-  type RefactoringPlan,
-  type RefactoringTargets,
-} from "@repowise-dev/ui/refactoring/types";
+import { PriorityExplanation } from "@repowise-dev/ui/refactoring/priority-explanation";
+import { ValidationSummary } from "@repowise-dev/ui/refactoring/validation-summary";
+import { OpportunityRows } from "@repowise-dev/ui/refactoring/opportunity-rows";
+import { blastCount, blastFiles, evidenceRows, planWins } from "@repowise-dev/ui/refactoring/types";
+import type {
+  Confidence,
+  EffortBucket,
+  RefactoringOpportunity,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 import type { ViewProps } from "../../runtime/mount";
 import type { WebviewHost } from "../../runtime/rpc";
@@ -38,6 +37,10 @@ export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
   // lens or tree is never a dead end: the list is the file's plans when a
   // filePath came along, otherwise every ranked plan.
   const [selectedId, setSelectedId] = useState<string | null>(params.planId ?? null);
+  // The composed unit the list shows. A CodeLens or a tree item still arrives
+  // as one plan, so both selections exist and the step view is reachable from
+  // either route.
+  const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
 
   // The host can push new params into an already-open panel; honor them.
   useEffect(() => {
@@ -55,22 +58,119 @@ export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
     );
   }
 
+  if (selectedOpportunityId != null) {
+    return (
+      <OpportunityDetailView
+        host={host}
+        opportunityId={selectedOpportunityId}
+        refreshToken={refreshToken}
+        onBack={() => setSelectedOpportunityId(null)}
+        onOpenStep={(planId) => setSelectedId(planId)}
+      />
+    );
+  }
+
   return (
     <PlanListView
       host={host}
       filePath={params.filePath}
       refreshToken={refreshToken}
-      onOpen={(plan) => setSelectedId(plan.id)}
+      onOpen={(opportunity) => setSelectedOpportunityId(opportunity.opportunity_id)}
     />
+  );
+}
+
+/** One opportunity's ordered steps. Each opens the existing step detail. */
+function OpportunityDetailView({
+  host,
+  opportunityId,
+  refreshToken,
+  onBack,
+  onOpenStep,
+}: {
+  host: WebviewHost;
+  opportunityId: string;
+  refreshToken: number;
+  onBack: () => void;
+  onOpenStep: (planId: string) => void;
+}) {
+  const state = useAsync(
+    () => host.api.refactoringOpportunity(opportunityId),
+    [opportunityId, refreshToken],
+  );
+
+  if (state.status === "loading") return <CenteredNote>Loading opportunity…</CenteredNote>;
+  if (state.status === "error") {
+    return <ErrorNote title="Could not load the opportunity.">{state.message}</ErrorNote>;
+  }
+  const detail = state.data;
+  if (!detail.resolved) {
+    return (
+      <ErrorNote title="Opportunity unavailable.">
+        {detail.model_state?.state === "stale_model"
+          ? "It was written by an older analysis model. Re-index and open it again."
+          : "It may have been resolved by a later analysis."}
+      </ErrorNote>
+    );
+  }
+
+  const anyRelocated = detail.steps.some((step) => Boolean(step.relocated_by));
+  return (
+    <div className="mx-auto max-w-4xl px-6 py-6">
+      <button
+        type="button"
+        onClick={onBack}
+        className="inline-flex items-center gap-1.5 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+      >
+        <ArrowLeft className="h-4 w-4" aria-hidden />
+        All opportunities
+      </button>
+      <h1 className="mt-4 break-all font-mono text-lg font-semibold text-[var(--color-text-primary)]">
+        {detail.file_path}
+      </h1>
+      <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+        {detail.step_count} step{detail.step_count === 1 ? "" : "s"}, {detail.mechanical_steps}{" "}
+        mechanical · {EFFORT_LABEL[detail.effort_bucket]} effort ·{" "}
+        {CONFIDENCE_LABEL[detail.confidence]} confidence
+      </p>
+      {anyRelocated ? (
+        <p className="mt-3 rounded-md border border-[var(--color-caution)]/40 bg-[var(--color-caution)]/10 px-3 py-2 text-[12.5px] text-[var(--color-text-secondary)]">
+          {detail.ordering_note ??
+            "A step below is moved by an earlier one, so its file and lines say where the symbol was. Find it again before applying it."}
+        </p>
+      ) : null}
+      <ol className="mt-4 space-y-2">
+        {detail.steps.map((step, i) => (
+          <li key={step.plan_id}>
+            <button
+              type="button"
+              onClick={() => onOpenStep(step.plan_id)}
+              className="w-full rounded-lg border border-[var(--color-border-default)] px-3.5 py-3 text-left hover:border-[var(--color-border-hover)]"
+            >
+              <span className="text-[12.5px] text-[var(--color-text-secondary)]">
+                {String(i + 1).padStart(2, "0")} · {typeMeta(step.refactoring_type).label} ·{" "}
+                {step.applicability.classification === "mechanical" ? "Mechanical" : "Judgment"}
+                {step.relocated_by ? " · moved by an earlier step" : ""}
+              </span>
+              <span className="mt-1 block break-all font-mono text-[13px] font-medium text-[var(--color-text-primary)]">
+                {step.target_symbol || typeMeta(step.refactoring_type).label}
+              </span>
+              <span className="mt-0.5 block break-all font-mono text-[11px] text-[var(--color-text-tertiary)]">
+                {step.file_path}
+                {step.line_start ? `:${step.line_start}` : ""}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
 // ── Async state helper ─────────────────────────────────────────────────────
 
 type AsyncState<T> =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "ok"; data: T };
+  { status: "loading" } | { status: "error"; message: string } | { status: "ok"; data: T };
 
 function useAsync<T>(load: () => Promise<T>, deps: unknown[]): AsyncState<T> {
   const [state, setState] = useState<AsyncState<T>>({ status: "loading" });
@@ -83,7 +183,10 @@ function useAsync<T>(load: () => Promise<T>, deps: unknown[]): AsyncState<T> {
       },
       (err: unknown) => {
         if (!cancelled) {
-          setState({ status: "error", message: err instanceof Error ? err.message : String(err) });
+          setState({
+            status: "error",
+            message: err instanceof Error ? err.message : String(err),
+          });
         }
       },
     );
@@ -194,6 +297,14 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
         <PlanDetail plan={plan} fileHref={fileHref} />
       </Section>
 
+      <Section title="Priority">
+        <PriorityExplanation plan={plan} />
+      </Section>
+
+      <Section title="Validation">
+        <ValidationSummary validation={plan.validation} fileHref={fileHref} />
+      </Section>
+
       {evidence.length > 0 ? (
         <Section title="Evidence">
           <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -218,7 +329,7 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
         <div className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
           <Layers className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
           {affected.length > 0
-            ? `${affected.length} other file${affected.length === 1 ? "" : "s"} to keep consistent`
+            ? `${blast} affected file${blast === 1 ? "" : "s"} recorded`
             : blast > 0
               ? `${blast} dependent${blast === 1 ? "" : "s"} affected`
               : "No dependent files recorded."}
@@ -243,6 +354,11 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
             ) : null}
           </ul>
         ) : null}
+        {affected.length > 0 && affected.length < blast ? (
+          <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+            {Math.min(affected.length, 25)} shown of {blast} affected files.
+          </p>
+        ) : null}
       </Section>
 
       <CopyForAgentRow host={host} planId={planId} />
@@ -262,7 +378,10 @@ function PlanHeader({ plan, onOpenFile }: { plan: RefactoringPlan; onOpenFile: (
       <div className="flex flex-wrap items-center gap-3">
         <span
           className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[15px] font-semibold"
-          style={{ backgroundColor: `color-mix(in srgb, ${accent} 14%, transparent)`, color: accent }}
+          style={{
+            backgroundColor: `color-mix(in srgb, ${accent} 14%, transparent)`,
+            color: accent,
+          }}
         >
           <Icon className="h-4 w-4" />
           {meta.label}
@@ -336,9 +455,7 @@ function CopyForAgentRow({ host, planId }: { host: WebviewHost; planId: string }
           </button>
         ))}
       </div>
-      {copyError ? (
-        <p className="mt-2 text-xs text-[var(--color-error)]">{copyError}</p>
-      ) : null}
+      {copyError ? <p className="mt-2 text-xs text-[var(--color-error)]">{copyError}</p> : null}
     </div>
   );
 }
@@ -349,82 +466,70 @@ interface PlanListViewProps {
   host: WebviewHost;
   filePath?: string | undefined;
   refreshToken: number;
-  onOpen: (plan: RefactoringPlan) => void;
+  onOpen: (opportunity: RefactoringOpportunity) => void;
 }
 
 function PlanListView({ host, filePath, refreshToken, onOpen }: PlanListViewProps) {
   const state = useAsync(
-    () => host.api.refactoringTargets(filePath),
+    () => host.api.refactoringOpportunities(filePath),
     [filePath, refreshToken],
   );
 
-  if (state.status === "loading") return <CenteredNote>Loading refactoring plans…</CenteredNote>;
+  if (state.status === "loading") {
+    return <CenteredNote>Loading refactoring opportunities…</CenteredNote>;
+  }
   if (state.status === "error") {
-    return <ErrorNote title="Could not load refactoring plans.">{state.message}</ErrorNote>;
+    return <ErrorNote title="Could not load refactoring opportunities.">{state.message}</ErrorNote>;
   }
 
-  const targets: RefactoringTargets = state.data;
-  if (targets.plans.length === 0) {
+  const page = state.data;
+  if (page.items.length === 0) {
     return (
       <CenteredNote>
-        {filePath ? `No refactoring plans for ${filePath}.` : "No refactoring plans found."}
+        {filePath
+          ? `No refactoring opportunities for ${filePath}.`
+          : "No refactoring opportunities found."}
       </CenteredNote>
     );
   }
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
-      <SummaryStrip summary={targets.summary} filePath={filePath} />
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {targets.plans.map((plan) => (
-          <RefactoringPlanCard key={plan.id} plan={plan} onOpen={onOpen} />
-        ))}
+      <OpportunitySummaryStrip page={page} filePath={filePath} />
+      {/* The same rows the web board renders, over the same DTO. This was a
+          three-column grid of cards, each with a type-coloured rail and a
+          tinted type chip: six hues separating categories where two types are
+          most of the data. The web surface retired that treatment, and this
+          was the last thing mounting it. */}
+      <div className="mt-5 border-t border-[var(--color-border-default)]">
+        <OpportunityRows opportunities={page.items} onOpen={onOpen} />
       </div>
     </div>
   );
 }
 
-function SummaryStrip({
-  summary,
+function OpportunitySummaryStrip({
+  page,
   filePath,
 }: {
-  summary: RefactoringTargets["summary"];
+  page: { items: RefactoringOpportunity[]; total: number };
   filePath?: string | undefined;
 }) {
+  const steps = page.items.reduce((n, o) => n + o.step_count, 0);
+  const mechanical = page.items.reduce((n, o) => n + o.mechanical_steps, 0);
   return (
-    <div className="rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-5 py-4">
-      <div className="flex flex-wrap items-baseline gap-x-2">
-        <span className="text-2xl font-semibold tabular-nums text-[var(--color-text-primary)]">
-          {summary.total}
-        </span>
-        <span className="text-[15px] text-[var(--color-text-secondary)]">
-          refactoring plan{summary.total === 1 ? "" : "s"}
-          {filePath ? (
-            <>
-              {" in "}
-              <span className="font-mono text-xs text-[var(--color-text-tertiary)]">{filePath}</span>
-            </>
-          ) : null}
-        </span>
-      </div>
-      {summary.by_type.length > 0 ? (
-        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
-          {summary.by_type.map((row) => (
-            <span key={row.type} className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
-              <span
-                className="h-2 w-2 rounded-full"
-                style={{ backgroundColor: typeAccent(row.type) }}
-                aria-hidden
-              />
-              {typeMeta(row.type).label}
-              <span className="tabular-nums text-[var(--color-text-tertiary)]">{row.count}</span>
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </div>
+    <p className="text-sm text-[var(--color-text-secondary)]">
+      <span className="font-semibold text-[var(--color-text-primary)] tabular-nums">
+        {page.total.toLocaleString()}
+      </span>{" "}
+      opportunit{page.total === 1 ? "y" : "ies"}
+      {filePath ? ` in ${filePath}` : ""} ·{" "}
+      <span className="tabular-nums">{steps.toLocaleString()}</span> step
+      {steps === 1 ? "" : "s"}, <span className="tabular-nums">{mechanical}</span> mechanical
+    </p>
   );
 }
+
 
 // ── Shared bits ────────────────────────────────────────────────────────────
 

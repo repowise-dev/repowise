@@ -3,7 +3,7 @@
 import { ArrowDown, ArrowRight } from "lucide-react";
 import { PlanBefore } from "./plan-before";
 import { PlanDetail } from "./plan-detail";
-import type { RefactoringPlan } from "./types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface PlanComparisonProps {
   plan: RefactoringPlan;

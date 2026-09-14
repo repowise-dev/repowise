@@ -105,7 +105,18 @@ def test_every_provider_that_can_be_auto_detected_is_in_the_order():
 
 
 def test_server_provider_catalog_agrees_with_the_registry():
+    from repowise.core.providers.llm.registry import _BUILTIN_PROVIDERS
     from repowise.server.provider_config import PROVIDER_CATALOG
+
+    catalog_ids = {entry["id"] for entry in PROVIDER_CATALOG}
+    # Every provider the CLI can resolve must appear in the server catalog so
+    # the web dashboard's provider picker never silently disagrees with what
+    # the CLI can resolve. `mock` is the one deliberate exception — it is a
+    # test/fallback provider, not something a user should pick in the UI.
+    missing = set(_BUILTIN_PROVIDERS) - catalog_ids - {"mock"}
+    assert not missing, (
+        f"server/provider_config.py is missing catalog entries for: {sorted(missing)}"
+    )
 
     mismatched = {
         entry["id"]: (entry["env_keys"], list(PROVIDER_API_KEY_ENVS[entry["id"]]))

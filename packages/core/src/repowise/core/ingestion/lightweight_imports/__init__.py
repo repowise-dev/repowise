@@ -1,7 +1,14 @@
 """Import-only extraction for languages the symbol pipeline does not parse.
 
-Languages whose ``LanguageSpec.import_support`` is ``"partial"`` via the
-lightweight-resolver mechanism get their import statements extracted here.
+Languages with no ``LanguageConfig`` get their import statements extracted
+here. Most are ``import_support="partial"``, a dedicated resolver with a
+major known gap, usually a dialect the regex cannot read. ``godot_resource``
+is the exception at ``"full"``, on the terms ``languages/spec.py`` sets for
+that value: its ini dialect has no variant left unread, and a ``res://`` path
+is absolute, so resolution is exact rather than a rank-and-guess. Its gaps
+are narrow and named in ``specs/godot_resource.py``, not the
+44%-of-real-files kind that keeps ``html`` at ``"partial"``.
+
 The parser consults :func:`extract_lightweight_imports` on its
 no-``LanguageConfig`` path, so these files keep an empty symbol list — this
 tier claims no symbol knowledge — but carry real :class:`~..models.Import`
@@ -25,9 +32,11 @@ from .dart import extract_dart_imports
 from .elixir import extract_elixir_imports
 from .erlang import extract_erlang_imports
 from .fsharp import extract_fsharp_imports
+from .godot import extract_godot_imports
 from .haskell import extract_haskell_imports
 from .html import extract_html_imports
 from .lean import extract_lean_imports
+from .qml import extract_qml_imports
 from .sql import extract_dbt_imports
 
 ExtractorFn = Callable[[str], list[Import]]
@@ -38,6 +47,9 @@ _EXTRACTORS: dict[str, ExtractorFn] = {
     "clojure": extract_clojure_imports,
     "haskell": extract_haskell_imports,
     "lean": extract_lean_imports,
+    # `import QtQuick` / `import "components"`: module specs and quoted
+    # relative references (see qml.py).
+    "qml": extract_qml_imports,
     "erlang": extract_erlang_imports,
     "fsharp": extract_fsharp_imports,
     # dbt {{ ref() }} / {{ source() }}, the only import system .sql files
@@ -45,6 +57,10 @@ _EXTRACTORS: dict[str, ExtractorFn] = {
     "sql": extract_dbt_imports,
     # <script src> / <link href>. AST-backed rather than regex — see above.
     "html": extract_html_imports,
+    # [ext_resource path=...] in .tscn/.tres/.escn, plus project.godot's
+    # [autoload] table and run/main_scene. These are how a Godot project
+    # reaches its .gd files -- scripts are attached to scenes, not imported.
+    "godot_resource": extract_godot_imports,
 }
 
 LIGHTWEIGHT_IMPORT_LANGUAGES = frozenset(_EXTRACTORS)

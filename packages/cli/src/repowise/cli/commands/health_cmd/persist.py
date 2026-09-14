@@ -8,6 +8,9 @@ per-test map. A ``repowise health`` run must not overwrite that data.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 
 from repowise.cli.helpers import console, run_async
 
@@ -63,6 +66,47 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
         return {}
 
 
+def _load_recommendations(
+    repo_path: Path, suggestions: Sequence[Any], metrics: Sequence[Any]
+) -> list[dict[str, Any]]:
+    """Canonical CLI recommendations, enriched from the local store in bulk."""
+    from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
+    from repowise.core.analysis.health.refactoring.recommendations import (
+        build_recommendations,
+        hydrate_recommendations,
+        serialize_recommendations,
+    )
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+
+    async def _do() -> list[dict[str, Any]]:
+        url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return []
+            recommendations = await hydrate_recommendations(
+                session, repo.id, suggestions, metric_rows=metrics
+            )
+            return serialize_recommendations(recommendations)
+
+    try:
+        hydrated = run_async(_do())
+        if hydrated:
+            return hydrated
+    except Exception:
+        pass
+    return serialize_recommendations(
+        build_recommendations(
+            suggestions,
+            metric_by_path={getattr(metric, "file_path", ""): metric for metric in metrics},
+        )
+    )
+
+
 def _persist_health(repo_path: object, *, report: object) -> None:
     """Write the analyzer's health output to the repo's wiki.db.
 
@@ -85,6 +129,7 @@ def _persist_health(repo_path: object, *, report: object) -> None:
         save_health_metrics,
         save_health_snapshot,
     )
+    from repowise.core.workspace.update import get_head_commit
 
     async def _do() -> None:
         url = get_db_url_for_repo(repo_path)
@@ -101,7 +146,12 @@ def _persist_health(repo_path: object, *, report: object) -> None:
                 return
             repo_id = repo.id
 
-            await save_health_metrics(session, repo_id, list(getattr(report, "metrics", []) or []))
+            await save_health_metrics(
+                session,
+                repo_id,
+                list(getattr(report, "metrics", []) or []),
+                analyzed_commit=get_head_commit(repo_path),
+            )
             findings = list(getattr(report, "findings", []) or [])
             if findings:
                 await save_health_findings(session, repo_id, findings)
@@ -119,6 +169,10 @@ def _persist_health(repo_path: object, *, report: object) -> None:
                     worst_performer_score=kpis.get("worst_performer_score"),
                     per_file_scores=scores_map,
                     per_file_deductions=deductions_map,
+                    structure_average=kpis.get("structure_average"),
+                    history_average=kpis.get("history_average"),
+                    production_average=kpis.get("production_average"),
+                    maintainability_average=kpis.get("maintainability_average"),
                 )
             except Exception as exc:
                 console.print(f"[yellow]Snapshot write skipped: {exc}[/yellow]")

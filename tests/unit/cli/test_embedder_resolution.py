@@ -654,3 +654,191 @@ def test_build_embedder_is_silent_for_the_keyless_default(monkeypatch):
 
     assert isinstance(embedder, KeylessEmbedder)
     assert printed == []
+
+
+# --- the global config's ``embedder`` name, which had no reader -------------
+
+
+def _clear_embedder_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in (
+        "REPOWISE_EMBEDDER",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "OLLAMA_EMBEDDING_MODEL",
+        "EDENAI_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _write_global_config(home: Path, **keys: object) -> None:
+    global_dir = home / ".repowise"
+    global_dir.mkdir(parents=True, exist_ok=True)
+    (global_dir / "config.yaml").write_text(yaml.safe_dump(keys), encoding="utf-8")
+
+
+def test_global_config_embedder_is_used_when_nothing_is_exported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The defect: a configured backend resolved to ``mock``, then pinned it."""
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    _write_global_config(tmp_path, embedder="openai", embedder_api_key="sk-test")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    assert resolve_embedder(None) == "openai"
+
+
+def test_a_pinned_mock_is_not_a_choice_anyone_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stored ``mock`` is what a keyless run persisted, not a choice."""
+    from repowise.cli.providers.keys import global_config_embedder
+
+    _clear_embedder_env(monkeypatch)
+    _write_global_config(tmp_path, embedder="mock")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    assert global_config_embedder() is None
+
+
+def test_the_environment_still_outranks_the_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exported key is an explicit override and nothing may outrank it."""
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    _write_global_config(tmp_path, embedder="openai", embedder_api_key="sk-test")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    monkeypatch.setenv("GEMINI_API_KEY", "gk-test")
+
+    assert resolve_embedder(None) == "gemini"
+
+
+def test_an_explicit_flag_still_outranks_the_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    _write_global_config(tmp_path, embedder="openai", embedder_api_key="sk-test")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    assert resolve_embedder("ollama") == "ollama"
+
+
+def test_no_global_config_still_resolves_keyless(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The keyless default has to survive: it is the advertised no-key path."""
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    assert resolve_embedder(None) == "mock"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "embedder: [unclosed",  # throws inside safe_load
+        "just a bare string",  # parses to str, then .get raises
+        "- a",  # parses to list, same
+    ],
+)
+def test_a_malformed_global_config_resolves_keyless(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+) -> None:
+    """A hand-edited config must not take the run down.
+
+    The scalar and list cases parse *successfully*, so only an isinstance
+    check catches them, and ``resolve_embedder`` is on every command's path.
+    """
+    from repowise.cli.providers.embedders import resolve_embedder
+    from repowise.cli.providers.keys import global_config_embedder
+
+    _clear_embedder_env(monkeypatch)
+    global_dir = tmp_path / ".repowise"
+    global_dir.mkdir(parents=True, exist_ok=True)
+    (global_dir / "config.yaml").write_text(body, encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    assert global_config_embedder() is None
+    assert resolve_embedder(None) == "mock"
+
+
+def test_a_global_backend_with_no_key_is_not_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``serve`` writes ``embedder`` unconditionally, the key only if given.
+
+    By this tier the environment and the repo ``.env`` are known empty, so a
+    keyed backend with no ``embedder_api_key`` can only fail to build, and the
+    name would still be pinned against a store the fallback wrote at 8-wide.
+    """
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    _write_global_config(tmp_path, embedder="openai")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    assert resolve_embedder(None) == "mock"
+
+
+def test_a_keyless_global_backend_is_still_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ollama needs no key, so the absent-key rule must not swallow it."""
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    _write_global_config(tmp_path, embedder="ollama")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    assert resolve_embedder(None) == "ollama"
+
+
+def test_the_repo_env_overlay_outranks_the_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The precedence edge this change actually introduces."""
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    _write_global_config(tmp_path, embedder="gemini", embedder_api_key="gk-test")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    assert resolve_embedder(None, {"OPENAI_API_KEY": "sk-x"}) == "openai"
+
+
+def test_repowise_embedder_outranks_the_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    _write_global_config(tmp_path, embedder="openai", embedder_api_key="sk-test")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "edenai")
+
+    assert resolve_embedder(None) == "edenai"
+
+
+def test_a_repo_pin_outranks_the_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The width invariant: the pin wrote the table, so the pin queries it."""
+    from repowise.cli.providers.embedders import resolve_embedder_for_repo
+
+    _clear_embedder_env(monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_config(repo, embedder="mock")
+    _write_global_config(tmp_path, embedder="openai", embedder_api_key="sk-test")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    assert resolve_embedder_for_repo(repo) == "mock"

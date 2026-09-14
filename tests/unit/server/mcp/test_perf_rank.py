@@ -19,11 +19,11 @@ import uuid
 import pytest
 
 from repowise.core.analysis.health.biomarkers import registered_biomarkers
-from repowise.server.mcp_server.tool_health import (
-    _PERF_MARKER_POINTS,
-    _perf_rank,
-    _rank_emitted,
+from repowise.core.analysis.health.perf.opportunity_rank import (
+    MULTIPLIER_POINTS,
+    UNKNOWN_MULTIPLIER_POINTS,
 )
+from repowise.server.mcp_server.tool_health import _perf_rank, _rank_emitted
 
 # ---------------------------------------------------------------------------
 # The key itself
@@ -31,21 +31,28 @@ from repowise.server.mcp_server.tool_health import (
 
 
 def test_every_performance_biomarker_carries_a_weight() -> None:
-    """The weight table must not silently acquire a default.
+    """One weight table, and it must not silently acquire a default.
+
+    The observation key and the opportunity rank read the same table. They
+    used to keep one each and had already drifted apart on markers both named,
+    so a finding and the opportunity built from it disagreed about the same
+    evidence.
 
     A detector added without a weight ranks at the floor, which is the safe
     direction but also an invisible one — a new high-cost marker would sort
     below ``string_concat_in_loop`` and nobody would see it. This is the
     mechanism that makes adding one loud.
     """
-    registered = {b.name for b in registered_biomarkers() if getattr(b, "category", "") == "performance"}
+    registered = {
+        b.name for b in registered_biomarkers() if getattr(b, "category", "") == "performance"
+    }
     assert registered, "no performance detectors registered — the check is vacuous"
-    assert registered <= set(_PERF_MARKER_POINTS), (
-        f"unweighted performance biomarkers: {sorted(registered - set(_PERF_MARKER_POINTS))}"
+    assert registered <= set(MULTIPLIER_POINTS), (
+        f"unweighted performance biomarkers: {sorted(registered - set(MULTIPLIER_POINTS))}"
     )
     # And no stale entries pointing at detectors that no longer exist.
-    assert set(_PERF_MARKER_POINTS) <= registered, (
-        f"weights for unregistered markers: {sorted(set(_PERF_MARKER_POINTS) - registered)}"
+    assert set(MULTIPLIER_POINTS) <= registered, (
+        f"weights for unregistered markers: {sorted(set(MULTIPLIER_POINTS) - registered)}"
     )
 
 
@@ -89,7 +96,8 @@ def test_the_gated_markers_carry_their_hotness_proof() -> None:
 
 
 def test_an_unknown_marker_sinks_rather_than_floats() -> None:
-    assert _perf_rank("some_future_marker", {}) == min(_PERF_MARKER_POINTS.values())
+    assert _perf_rank("some_future_marker", {}) == UNKNOWN_MULTIPLIER_POINTS
+    assert min(MULTIPLIER_POINTS.values()) > UNKNOWN_MULTIPLIER_POINTS
 
 
 def test_malformed_details_never_raise() -> None:
@@ -217,21 +225,22 @@ async def test_the_perf_head_is_the_costliest_findings_not_the_first_alphabetica
     that was file order, so a small ``limit`` returned the cheapest findings in
     the repo and called them the top ones.
 
-    The base fixture's perf finding carries a non-zero impact, so it still leads
-    — the key breaks ties *within* an impact tier and never reorders across one.
+    The base fixture's perf finding carries a non-zero impact, so it still
+    leads: the key breaks ties *within* an impact tier and never reorders
+    across one.
     """
     from repowise.server.mcp_server import get_health
 
     result = await get_health(include=["biomarkers", "performance"], limit=4)
     assert [f["file_path"] for f in result["findings"]] == [
         "src/auth/service.py",
+        "h_nested_db.py",
         "i_spawn_xfn.py",
-        "g_hot_spawn.py",
         "f_db_xfn.py",
     ]
-    # Rank 6 is a three-way tie (the base fixture's row, the cross-function db
-    # N+1 and the nested db loop); ``file_path`` is what makes the order total.
-    assert [f["perf_rank"] for f in result["findings"]] == [6, 8, 7, 6]
+    ranks = [f["perf_rank"] for f in result["findings"]]
+    # A tie at the top, broken by ``file_path`` so the order is total.
+    assert ranks[1] == ranks[2] > ranks[3]
     # The total still describes the whole filtered set, so the cap stays visible.
     assert result["findings_total"] == 10
 
@@ -242,7 +251,12 @@ async def test_perf_rank_is_absent_from_every_other_dimension(setup_mcp, perf_fi
     would read as "measured, and it is nothing"."""
     from repowise.server.mcp_server import get_health
 
-    result = await get_health(include=["biomarkers"], limit=50)
+    # Naming the dimension, because the impact-ranked list leaves it out by
+    # default: every performance finding scores zero impact, so a ranking by
+    # impact is not where it belongs.
+    result = await get_health(
+        include=["biomarkers", "defect", "maintainability", "performance"], limit=50
+    )
     by_dim = {}
     for f in result["findings"]:
         by_dim.setdefault(f["dimension"], []).append(f)
@@ -253,31 +267,78 @@ async def test_perf_rank_is_absent_from_every_other_dimension(setup_mcp, perf_fi
 
 
 @pytest.mark.asyncio
-async def test_the_default_dashboard_does_not_pay_for_the_ranking_read(
-    setup_mcp, perf_findings, monkeypatch
+async def test_narrow_projection_leads_with_one_shared_causal_opportunity(
+    setup_mcp, perf_findings, session
 ):
-    """``details_json`` joins the narrow read only when perf can reach the head.
+    """One shared helper, five callers, one cause, and a recoverable tail."""
+    import json
 
-    Every perf finding carries impact 0, so in a mixed list all the defect
-    findings sort above them and the rank cannot move a row — paying for the
-    column there would be 6.6ms bought for nothing. This asserts the *read*:
-    the response is identical either way, so a payload-only test would pass on
-    the unfixed code.
-    """
-    from repowise.server.mcp_server import get_health, tool_health
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+    from repowise.core.persistence.models import HealthFinding
+    from repowise.server.mcp_server import get_health
 
-    selected: list[list[str]] = []
-    real = tool_health.select
+    for index, caller in enumerate(
+        ("src/a.py", "src/b.py", "src/c.py", "src/d.py", "src/e.py"), start=10
+    ):
+        session.add(
+            HealthFinding(
+                id=str(uuid.uuid4()),
+                repository_id=perf_findings,
+                file_path=caller,
+                biomarker_type="io_in_loop",
+                severity="medium",
+                function_name="run",
+                line_start=index,
+                line_end=index,
+                details_json=json.dumps(
+                    {
+                        "boundary_kind": "db",
+                        "cross_function": True,
+                        "path": [f"{caller}::run", "src/shared.py::load", "src/db.py::fetch"],
+                        "resolution_basis": "call-site",
+                    }
+                ),
+                health_impact=0.0,
+                reason="shared N+1",
+                dimension="performance",
+                status="open",
+            )
+        )
+    await session.flush()
+    await finalize_performance_opportunities(session, perf_findings)
+    await session.commit()
 
-    def spy(*cols):
-        selected.append([getattr(c, "key", str(c)) for c in cols])
-        return real(*cols)
+    result = await get_health(
+        include=["performance"], only=["performance_opportunities"], limit=50
+    )
+    shared = [
+        item
+        for item in result["performance_opportunities"]
+        if item["terminal_sink"] == "src/db.py::fetch"
+    ]
+    assert len(shared) == 1
+    assert shared[0]["intervention_symbol"] == "src/shared.py::load"
+    assert shared[0]["affected_call_sites_total"] == 5
+    assert shared[0]["observations_total"] == 5
+    assert {item["line_start"] for item in shared[0]["evidence"]} == {10, 11, 12}
+    assert {item["function_name"] for item in shared[0]["evidence"]} == {"run"}
+    assert shared[0]["evidence_total"] == 5
+    assert shared[0]["evidence_emitted"] == 3
+    assert shared[0]["evidence_reduced_reason"] == "evidence_page"
 
-    monkeypatch.setattr(tool_health, "select", spy)
+    # The tail is recovered by paging it, not by unpacking an omission blob.
+    # A blob would have cost the full read of every observation to build.
+    tail = await get_health(
+        opportunity_id=shared[0]["opportunity_id"],
+        only=["performance_evidence"],
+        cursor=shared[0]["evidence_next_cursor"],
+        limit=50,
+    )
+    assert [item["line_start"] for item in tail["evidence"]] == [13, 14]
+    assert tail["evidence_total"] == 5
+    assert "evidence_next_cursor" not in tail
 
-    await get_health()
-    assert not any("details_json" in cols for cols in selected)
-
-    selected.clear()
-    await get_health(include=["biomarkers", "performance"])
-    assert any("details_json" in cols for cols in selected)
+    # And every reference round-trips through the finding selector.
+    detail = await get_health(finding_id=tail["evidence"][0]["finding_id"])
+    assert detail["resolved"] is True
+    assert detail["finding"]["file_path"] == "src/d.py"

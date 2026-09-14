@@ -1,0 +1,1318 @@
+{
+  "python": {
+    "calls_a_sibling_closure": [
+      {
+        "ccn_removed": 3,
+        "end_line": 221,
+        "params": [
+          "emit",
+          "rows"
+        ],
+        "returns": [],
+        "slice_nloc": 11,
+        "start_line": 211
+      },
+      {
+        "ccn_removed": 3,
+        "end_line": 221,
+        "params": [
+          "emit",
+          "rows"
+        ],
+        "returns": [],
+        "slice_nloc": 10,
+        "start_line": 212
+      },
+      {
+        "ccn_removed": 3,
+        "end_line": 221,
+        "params": [
+          "emit",
+          "rows"
+        ],
+        "returns": [],
+        "slice_nloc": 9,
+        "start_line": 213
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 221,
+        "params": [
+          "emit",
+          "row"
+        ],
+        "returns": [],
+        "slice_nloc": 7,
+        "start_line": 215
+      }
+    ],
+    "changed_accumulator": [
+      {
+        "ccn_removed": 2,
+        "end_line": 39,
+        "params": [
+          "entries",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 12,
+        "start_line": 28
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 39,
+        "params": [
+          "entries",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 10,
+        "start_line": 30
+      }
+    ],
+    "clean_extraction": [
+      {
+        "ccn_removed": 4,
+        "end_line": 23,
+        "params": [
+          "results",
+          "threshold"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 14,
+        "start_line": 10
+      },
+      {
+        "ccn_removed": 4,
+        "end_line": 23,
+        "params": [
+          "results",
+          "threshold",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 13,
+        "start_line": 11
+      },
+      {
+        "ccn_removed": 4,
+        "end_line": 23,
+        "params": [
+          "count",
+          "results",
+          "threshold",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 12,
+        "start_line": 12
+      },
+      {
+        "ccn_removed": 3,
+        "end_line": 21,
+        "params": [
+          "results",
+          "threshold"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 12,
+        "start_line": 10
+      },
+      {
+        "ccn_removed": 3,
+        "end_line": 21,
+        "params": [
+          "results",
+          "threshold",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 11,
+        "start_line": 11
+      },
+      {
+        "ccn_removed": 3,
+        "end_line": 21,
+        "params": [
+          "count",
+          "results",
+          "threshold",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 10,
+        "start_line": 12
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 23,
+        "params": [
+          "count",
+          "threshold",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 8,
+        "start_line": 16
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 23,
+        "params": [
+          "count",
+          "threshold",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 7,
+        "start_line": 17
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 23,
+        "params": [
+          "count",
+          "threshold",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 6,
+        "start_line": 18
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 21,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 6,
+        "start_line": 16
+      }
+    ],
+    "elif_else_chain": [
+      {
+        "ccn_removed": 3,
+        "end_line": 75,
+        "params": [
+          "limit",
+          "values"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 15,
+        "start_line": 61
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 75,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 13,
+        "start_line": 63
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 74,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 12,
+        "start_line": 63
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 75,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 12,
+        "start_line": 64
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 73,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 11,
+        "start_line": 63
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 74,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 11,
+        "start_line": 64
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 75,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 11,
+        "start_line": 65
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 73,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 10,
+        "start_line": 64
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 74,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 10,
+        "start_line": 65
+      }
+    ],
+    "else_assigned_twin": [
+      {
+        "ccn_removed": 2,
+        "end_line": 56,
+        "params": [
+          "entries",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 13,
+        "start_line": 44
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 56,
+        "params": [
+          "entries",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 12,
+        "start_line": 45
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 56,
+        "params": [
+          "entry",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 10,
+        "start_line": 47
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 55,
+        "params": [
+          "entry",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 9,
+        "start_line": 47
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 56,
+        "params": [
+          "entry",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 9,
+        "start_line": 48
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 54,
+        "params": [
+          "entry",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 8,
+        "start_line": 47
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 55,
+        "params": [
+          "entry",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 8,
+        "start_line": 48
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 56,
+        "params": [
+          "entry",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 8,
+        "start_line": 49
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 54,
+        "params": [
+          "entry",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 7,
+        "start_line": 48
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 55,
+        "params": [
+          "entry",
+          "limit"
+        ],
+        "returns": [
+          "changed"
+        ],
+        "slice_nloc": 7,
+        "start_line": 49
+      }
+    ],
+    "for_else_clause": [
+      {
+        "ccn_removed": 2,
+        "end_line": 173,
+        "params": [
+          "rows"
+        ],
+        "returns": [
+          "flag"
+        ],
+        "slice_nloc": 15,
+        "start_line": 159
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 173,
+        "params": [
+          "rows"
+        ],
+        "returns": [
+          "flag"
+        ],
+        "slice_nloc": 14,
+        "start_line": 160
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 173,
+        "params": [
+          "rows"
+        ],
+        "returns": [],
+        "slice_nloc": 13,
+        "start_line": 161
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 173,
+        "params": [],
+        "returns": [],
+        "slice_nloc": 8,
+        "start_line": 166
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 172,
+        "params": [],
+        "returns": [],
+        "slice_nloc": 7,
+        "start_line": 166
+      }
+    ],
+    "holds_a_nested_helper": [],
+    "if_without_else": [
+      {
+        "ccn_removed": 2,
+        "end_line": 89,
+        "params": [
+          "limit",
+          "values"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 10,
+        "start_line": 80
+      }
+    ],
+    "loop_local_span": [
+      {
+        "ccn_removed": 2,
+        "end_line": 137,
+        "params": [
+          "limit",
+          "rows"
+        ],
+        "returns": [
+          "out"
+        ],
+        "slice_nloc": 12,
+        "start_line": 126
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 137,
+        "params": [
+          "limit",
+          "out",
+          "row"
+        ],
+        "returns": [],
+        "slice_nloc": 10,
+        "start_line": 128
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 136,
+        "params": [
+          "limit",
+          "out",
+          "row"
+        ],
+        "returns": [],
+        "slice_nloc": 9,
+        "start_line": 128
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 137,
+        "params": [
+          "limit",
+          "out",
+          "row"
+        ],
+        "returns": [],
+        "slice_nloc": 9,
+        "start_line": 129
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 135,
+        "params": [
+          "limit",
+          "row"
+        ],
+        "returns": [
+          "scaled"
+        ],
+        "slice_nloc": 8,
+        "start_line": 128
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 136,
+        "params": [
+          "limit",
+          "out",
+          "row"
+        ],
+        "returns": [],
+        "slice_nloc": 8,
+        "start_line": 129
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 137,
+        "params": [
+          "limit",
+          "out",
+          "row"
+        ],
+        "returns": [],
+        "slice_nloc": 8,
+        "start_line": 130
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 135,
+        "params": [
+          "limit",
+          "row"
+        ],
+        "returns": [
+          "scaled"
+        ],
+        "slice_nloc": 7,
+        "start_line": 129
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 136,
+        "params": [
+          "limit",
+          "out",
+          "row"
+        ],
+        "returns": [],
+        "slice_nloc": 7,
+        "start_line": 130
+      }
+    ],
+    "loop_mutates_iterated": [
+      {
+        "ccn_removed": 2,
+        "end_line": 121,
+        "params": [
+          "limit",
+          "queue"
+        ],
+        "returns": [
+          "seen"
+        ],
+        "slice_nloc": 12,
+        "start_line": 110
+      }
+    ],
+    "loop_read_above_span": [
+      {
+        "ccn_removed": 2,
+        "end_line": 105,
+        "params": [
+          "limit",
+          "rows"
+        ],
+        "returns": [
+          "carry"
+        ],
+        "slice_nloc": 12,
+        "start_line": 94
+      }
+    ],
+    "loop_rebinds_iterable": [],
+    "read_then_write_in_span": [
+      {
+        "ccn_removed": 5,
+        "end_line": 250,
+        "params": [
+          "block",
+          "limit"
+        ],
+        "returns": [
+          "names"
+        ],
+        "slice_nloc": 25,
+        "start_line": 226
+      },
+      {
+        "ccn_removed": 5,
+        "end_line": 250,
+        "params": [
+          "block",
+          "limit"
+        ],
+        "returns": [
+          "names"
+        ],
+        "slice_nloc": 19,
+        "start_line": 232
+      },
+      {
+        "ccn_removed": 5,
+        "end_line": 250,
+        "params": [
+          "block",
+          "limit",
+          "names"
+        ],
+        "returns": [],
+        "slice_nloc": 18,
+        "start_line": 233
+      },
+      {
+        "ccn_removed": 5,
+        "end_line": 250,
+        "params": [
+          "block",
+          "limit",
+          "names"
+        ],
+        "returns": [],
+        "slice_nloc": 17,
+        "start_line": 234
+      },
+      {
+        "ccn_removed": 5,
+        "end_line": 250,
+        "params": [
+          "block",
+          "depth",
+          "limit",
+          "names"
+        ],
+        "returns": [],
+        "slice_nloc": 16,
+        "start_line": 235
+      }
+    ],
+    "record": [],
+    "try_except_assigned": [
+      {
+        "ccn_removed": 2,
+        "end_line": 194,
+        "params": [
+          "limit",
+          "rows"
+        ],
+        "returns": [
+          "rate"
+        ],
+        "slice_nloc": 13,
+        "start_line": 182
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 194,
+        "params": [
+          "limit",
+          "rows"
+        ],
+        "returns": [
+          "rate"
+        ],
+        "slice_nloc": 12,
+        "start_line": 183
+      }
+    ]
+  },
+  "typescript": {
+    "cleanExtraction": [
+      {
+        "ccn_removed": 2,
+        "end_line": 24,
+        "params": [
+          "rows"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 15,
+        "start_line": 10
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 24,
+        "params": [
+          "rows",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 14,
+        "start_line": 11
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 24,
+        "params": [
+          "count",
+          "rows",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 13,
+        "start_line": 12
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 24,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 9,
+        "start_line": 16
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 23,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 8,
+        "start_line": 16
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 24,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 8,
+        "start_line": 17
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 22,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 7,
+        "start_line": 16
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 23,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 7,
+        "start_line": 17
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 24,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 7,
+        "start_line": 18
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 22,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 6,
+        "start_line": 17
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 23,
+        "params": [
+          "count",
+          "total"
+        ],
+        "returns": [
+          "average"
+        ],
+        "slice_nloc": 6,
+        "start_line": 18
+      }
+    ],
+    "elseAssignedTwin": [
+      {
+        "ccn_removed": 2,
+        "end_line": 58,
+        "params": [
+          "limit",
+          "values"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 14,
+        "start_line": 45
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 57,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 11,
+        "start_line": 47
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 56,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 10,
+        "start_line": 47
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 57,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 10,
+        "start_line": 48
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 55,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 9,
+        "start_line": 47
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 56,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 9,
+        "start_line": 48
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 57,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 9,
+        "start_line": 49
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 55,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 8,
+        "start_line": 48
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 56,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 8,
+        "start_line": 49
+      }
+    ],
+    "elseIfChain": [
+      {
+        "ccn_removed": 3,
+        "end_line": 114,
+        "params": [
+          "limit",
+          "values"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 17,
+        "start_line": 98
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 113,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 14,
+        "start_line": 100
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 112,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 13,
+        "start_line": 100
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 113,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 13,
+        "start_line": 101
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 111,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 12,
+        "start_line": 100
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 112,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 12,
+        "start_line": 101
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 113,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 12,
+        "start_line": 102
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 111,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 11,
+        "start_line": 101
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 112,
+        "params": [
+          "limit",
+          "value"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 11,
+        "start_line": 102
+      }
+    ],
+    "ifWithoutElse": [
+      {
+        "ccn_removed": 2,
+        "end_line": 40,
+        "params": [
+          "limit",
+          "values"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 12,
+        "start_line": 29
+      }
+    ],
+    "loopMutatesIterated": [
+      {
+        "ccn_removed": 2,
+        "end_line": 76,
+        "params": [
+          "limit",
+          "queue"
+        ],
+        "returns": [
+          "seen"
+        ],
+        "slice_nloc": 14,
+        "start_line": 63
+      }
+    ],
+    "memberNameCollision": [
+      {
+        "ccn_removed": 2,
+        "end_line": 133,
+        "params": [
+          "limit",
+          "pages"
+        ],
+        "returns": [
+          "bucket"
+        ],
+        "slice_nloc": 14,
+        "start_line": 120
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 132,
+        "params": [
+          "bucket",
+          "limit",
+          "page"
+        ],
+        "returns": [],
+        "slice_nloc": 11,
+        "start_line": 122
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 131,
+        "params": [
+          "bucket",
+          "limit",
+          "page"
+        ],
+        "returns": [],
+        "slice_nloc": 10,
+        "start_line": 122
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 132,
+        "params": [
+          "bucket",
+          "limit",
+          "page"
+        ],
+        "returns": [],
+        "slice_nloc": 10,
+        "start_line": 123
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 130,
+        "params": [
+          "bucket",
+          "limit",
+          "page"
+        ],
+        "returns": [],
+        "slice_nloc": 9,
+        "start_line": 122
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 131,
+        "params": [
+          "bucket",
+          "limit",
+          "page"
+        ],
+        "returns": [],
+        "slice_nloc": 9,
+        "start_line": 123
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 132,
+        "params": [
+          "bucket",
+          "limit",
+          "page"
+        ],
+        "returns": [],
+        "slice_nloc": 9,
+        "start_line": 124
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 130,
+        "params": [
+          "bucket",
+          "limit",
+          "page"
+        ],
+        "returns": [],
+        "slice_nloc": 8,
+        "start_line": 123
+      },
+      {
+        "ccn_removed": 1,
+        "end_line": 131,
+        "params": [
+          "bucket",
+          "limit",
+          "page"
+        ],
+        "returns": [],
+        "slice_nloc": 8,
+        "start_line": 124
+      }
+    ],
+    "record": [],
+    "sameLineSibling": [
+      {
+        "ccn_removed": 2,
+        "end_line": 93,
+        "params": [
+          "limit",
+          "values"
+        ],
+        "returns": [
+          "label"
+        ],
+        "slice_nloc": 13,
+        "start_line": 81
+      }
+    ]
+  }
+}

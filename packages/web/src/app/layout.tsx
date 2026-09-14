@@ -8,6 +8,7 @@ import { TooltipProvider } from "@repowise-dev/ui/ui/tooltip";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import { ThemedToaster } from "@/components/layout/themed-toaster";
 import { Sidebar } from "@/components/layout/sidebar";
+import { AppShellSkeleton } from "@/components/layout/app-shell-skeleton";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { CommandPalette } from "@/components/search/command-palette";
 import { ContextDrawerShell } from "@/components/layout/context-drawer-provider";
@@ -35,18 +36,24 @@ export default async function RootLayout({
   children: React.ReactNode;
 }) {
   // Fetch repos + workspace info server-side for the sidebar.
-  // Gracefully fall back to empty/null if the API is unavailable.
+  //
+  // A rejection is NOT an empty account. Falling back to `[]` silently made
+  // an unreachable API render the exact first-run "add your first repo"
+  // invitation a genuine new user sees, so a user whose server was down was
+  // being onboarded instead of told. `reposUnavailable` keeps the two apart.
   let repos: Awaited<ReturnType<typeof listRepos>> = [];
   let workspace: WorkspaceResponse | null = null;
+  let reposUnavailable = false;
   try {
     const [reposResult, wsResult] = await Promise.allSettled([
       listRepos(),
       getWorkspace(),
     ]);
     if (reposResult.status === "fulfilled") repos = reposResult.value;
+    else reposUnavailable = true;
     if (wsResult.status === "fulfilled") workspace = wsResult.value;
   } catch {
-    // API not available — show empty sidebar
+    reposUnavailable = true;
   }
 
   return (
@@ -66,12 +73,16 @@ export default async function RootLayout({
         <NuqsAdapter>
         <SWRProvider>
         <TooltipProvider delayDuration={300}>
-          <Suspense fallback={null}>
+          <Suspense fallback={<AppShellSkeleton />}>
             <ContextDrawerShell>
               <div className="flex h-screen flex-col overflow-hidden">
                 <UpgradeBanner />
                 <div className="flex flex-1 overflow-hidden">
-                <Sidebar repos={repos} workspace={workspace} />
+                <Sidebar
+                  repos={repos}
+                  workspace={workspace}
+                  reposUnavailable={reposUnavailable}
+                />
                 <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
                   <MobileNav repos={repos} workspace={workspace} />
                   {/* A flex column, so anything a route layout stacks above

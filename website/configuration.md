@@ -253,7 +253,7 @@ If you don't pass `--provider`, repowise detects your provider by checking:
 
 1. `REPOWISE_PROVIDER` environment variable
 2. `provider` in `.repowise/config.yaml`
-3. API key environment variables, in order: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY`
+3. API key environment variables, in order: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY` → `EDENAI_API_KEY`
 
 Codex CLI is intentionally explicit: pass `--provider codex_cli` or set `REPOWISE_PROVIDER=codex_cli`. Similarly, OpenCode is detected automatically when on `PATH` but can be explicitly selected with `--provider opencode` or `REPOWISE_PROVIDER=opencode`.
 

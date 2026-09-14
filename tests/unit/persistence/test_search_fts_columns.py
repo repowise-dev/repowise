@@ -18,7 +18,11 @@ import pytest
 from sqlalchemy.sql import text
 
 from repowise.core.persistence.crud import upsert_page
-from repowise.core.persistence.search import PAGE_FTS_COLUMNS, FullTextSearch
+from repowise.core.persistence.search import (
+    _BM25_COLUMN_WEIGHTS,
+    PAGE_FTS_COLUMNS,
+    FullTextSearch,
+)
 from tests.unit.persistence.helpers import insert_repo
 
 _OLD_SCHEMA_DDL = "CREATE VIRTUAL TABLE page_fts USING fts5(page_id UNINDEXED, title, content)"
@@ -312,3 +316,13 @@ async def test_ensure_index_prunes_orphans_on_a_current_schema(
     await FullTextSearch(async_engine).ensure_index()
 
     assert await _indexed_ids(async_engine) == set()
+
+
+def test_one_bm25_weight_per_indexed_column():
+    """A column added without a weight would be ranked, silently, at 1.0.
+
+    bm25() takes its weights positionally and validates nothing: a sixth
+    column defaults to 1.0 and a surplus weight is dropped, so drift here
+    changes ranking without raising anywhere.
+    """
+    assert len(_BM25_COLUMN_WEIGHTS) == len(PAGE_FTS_COLUMNS)

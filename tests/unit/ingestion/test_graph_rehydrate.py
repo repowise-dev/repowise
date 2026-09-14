@@ -88,6 +88,9 @@ def _serialize(builder: GraphBuilder) -> tuple[list[dict], list[dict]]:
                 "edge_type": data.get("edge_type", "imports"),
                 "confidence": data.get("confidence", 1.0),
                 "imported_names": data.get("imported_names", []),
+                "hint_source": data.get("hint_source"),
+                "resolution_origin": data.get("resolution_origin"),
+                "call_lines": data.get("call_lines", []),
             }
         )
     return nodes, edges
@@ -150,6 +153,17 @@ def test_resolution_origin_survives_rehydration():
         assert "resolution_origin" not in graph[e["source_node_id"]][e["target_node_id"]]
 
 
+def test_call_lines_survive_rehydration():
+    original = _build_sample()
+    nodes, edges = _serialize(original)
+    edges[0] = {**edges[0], "edge_type": "calls", "call_lines": [7, 11]}
+
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    stamped = hydrated.graph()[edges[0]["source_node_id"]][edges[0]["target_node_id"]]
+
+    assert stamped["call_lines"] == [7, 11]
+
+
 def test_rehydrate_without_metrics_falls_back_to_recompute():
     """No snapshot supplied → caches stay empty and metrics recompute on read."""
     original = _build_sample()
@@ -160,3 +174,19 @@ def test_rehydrate_without_metrics_falls_back_to_recompute():
     # Recompute on the rehydrated structure still equals the original.
     assert hydrated.pagerank() == original.pagerank()
     assert hydrated.in_degree()["c.py"] == 2
+
+
+def test_supplied_props_survives_rehydration():
+    """An edge's supplied_props must outlive the process that resolved it."""
+    original = _build_sample()
+    nodes, edges = _serialize(original)
+    edges[0] = {**edges[0], "edge_type": "calls", "supplied_props": ["showBanner", "isLoaded"]}
+
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    graph = hydrated.graph()
+
+    stamped = graph[edges[0]["source_node_id"]][edges[0]["target_node_id"]]
+    assert stamped["supplied_props"] == frozenset(["showBanner", "isLoaded"])
+    for e in edges[1:]:
+        assert "supplied_props" not in graph[e["source_node_id"]][e["target_node_id"]]
+

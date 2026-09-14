@@ -35,6 +35,7 @@ def build_table_provider(
     *,
     table_raw: str,
     framework: str,
+    line: int | None = None,
     confidence: float = 0.85,
 ) -> Contract | None:
     """Build a provider contract for a declared table, or ``None``.
@@ -57,6 +58,7 @@ def build_table_provider(
         symbol_name=f"{framework}:{table_raw}",
         confidence=confidence,
         service=None,
+        line=line,
         meta={"table": table, "framework": framework},
     )
 
@@ -67,6 +69,7 @@ def build_table_consumer(
     table_raw: str,
     verb: str,
     client: str,
+    line: int | None = None,
     confidence: float = 0.7,
 ) -> Contract | None:
     """Build a consumer contract for a table referenced from app code.
@@ -89,5 +92,6 @@ def build_table_consumer(
         symbol_name=f"{client}:{verb} {table}",
         confidence=confidence,
         service=None,
+        line=line,
         meta={"table": table, "verb": verb, "client": client},
     )

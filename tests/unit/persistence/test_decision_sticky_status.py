@@ -19,8 +19,10 @@ from repowise.core.persistence.crud import (
     list_decision_evidence,
     list_decisions,
     purge_proposed_decisions_by_source,
+    purge_proposed_decisions_outside_files,
     update_decision_status,
 )
+from repowise.core.persistence.crud.authority import latest_acceptance
 from repowise.core.persistence.models import DecisionEvidence, DecisionRecord
 from tests.unit.persistence.helpers import insert_repo
 
@@ -32,6 +34,9 @@ def _decision(title: str, *, source: str = "changelog", status: str = "proposed"
         "rationale": "",
         "source": source,
         "status": status,
+        # A scope, so these records can be accepted: acceptance is what the
+        # sticky-status guard has to protect, and a record with none cannot be.
+        "affected_files": [f"{title.lower().replace(' ', '_')}.py"],
         "evidence_file": f"{title.lower().replace(' ', '_')}.py",
         "confidence": 0.6,
         "verification": "exact",
@@ -80,17 +85,38 @@ async def test_confirmed_decision_not_walked_back_to_proposed(async_session):
     assert rec.status == "active"
 
 
-async def test_proposed_still_upgrades_to_active(async_session):
+async def test_accepted_adr_promotes_a_proposal(async_session):
+    """A committed ADR is the one artifact that can accept without a person.
+
+    It still has to meet the acceptance contract, so the ADR must say what the
+    decision governs; the resulting ``active`` is a projection of the recorded
+    acceptance rather than a status extraction wrote for itself.
+    """
     repo = await insert_repo(async_session)
     await bulk_upsert_decisions(async_session, repo.id, [_decision("Use Redis")])
 
-    # An ADR marked accepted arrives for the same decision.
-    await bulk_upsert_decisions(
-        async_session, repo.id, [_decision("Use Redis", source="adr", status="active")]
-    )
+    adr = _decision("Use Redis", source="adr", status="active")
+    adr["affected_files"] = ["src/cache.py"]
+    adr["evidence_file"] = "docs/adr/0002-redis.md"
+    await bulk_upsert_decisions(async_session, repo.id, [adr])
 
     rec = await _only_row(async_session, repo.id)
     assert rec.status == "active"
+    acceptance = await latest_acceptance(async_session, rec.id)
+    assert acceptance is not None and acceptance.artifact == "docs/adr/0002-redis.md"
+
+
+async def test_extraction_alone_never_reaches_active(async_session):
+    """The same ADR without a scope stays a candidate."""
+    repo = await insert_repo(async_session)
+    adr = _decision("Use Redis", source="adr", status="active")
+    adr["evidence_file"] = "docs/adr/0002-redis.md"
+    adr.pop("affected_files")
+    await bulk_upsert_decisions(async_session, repo.id, [adr])
+
+    rec = await _only_row(async_session, repo.id)
+    assert rec.status == "proposed"
+    assert await latest_acceptance(async_session, rec.id) is None
 
 
 async def test_update_decision_status_accepts_dismissed(async_session):
@@ -159,3 +185,24 @@ async def test_purge_drains_proposed_rows_of_source_only(async_session):
         .where(DecisionRecord.id.is_(None))
     )
     assert list(orphan_evidence.scalars().all()) == []
+
+
+async def test_scope_prune_removes_only_unreviewed_decisions(async_session):
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_decision("Excluded proposal"), _decision("Accepted history")],
+    )
+    rows = await list_decisions(async_session, repo.id)
+    accepted = next(row for row in rows if row.title == "Accepted history")
+    await update_decision_status(async_session, accepted.id, "active")
+
+    deleted = await purge_proposed_decisions_outside_files(
+        async_session, repo.id, {"kept.py"}
+    )
+
+    assert deleted == 1
+    assert {row.title for row in await list_decisions(async_session, repo.id)} == {
+        "Accepted history"
+    }

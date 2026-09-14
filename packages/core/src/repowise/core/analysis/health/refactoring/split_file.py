@@ -51,7 +51,10 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
+from repowise.core.analysis.execution_graph import is_reliable_call_edge
+
 from ....test_paths import is_test_related_path
+from ...dead_code.file_reachability import BARREL_FILENAMES
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 
@@ -124,7 +127,7 @@ def _is_generated_path(path: str) -> bool:
         or ".generated." in base
         or base.endswith(".min.js")
         # Barrel / package-init re-export files: nothing of substance to split.
-        or base in ("__init__.py", "index.ts", "index.js", "mod.rs")
+        or base in BARREL_FILENAMES
     )
 
 
@@ -452,7 +455,12 @@ class SplitFileDetector(RefactoringDetector):
             if owner not in node_set:
                 continue
             for _u, callee, edata in graph.out_edges(sid, data=True):
-                if edata.get("edge_type") != "calls" or callee == sid:
+                if (
+                    not is_reliable_call_edge(
+                        edata.get("edge_type"), edata.get("resolution_origin")
+                    )
+                    or callee == sid
+                ):
                     continue
                 if callee in owner_of:
                     cowner = owner_of[callee]
@@ -464,7 +472,7 @@ class SplitFileDetector(RefactoringDetector):
                     cdata = graph.nodes.get(callee, {})
                     fpath = cdata.get("file_path")
                     if fpath and fpath != ctx.file_path:
-                        label = ctx.module_map.get(fpath) or fpath
+                        label = ctx.community_label_map.get(fpath) or fpath
                         foreign_of[owner].add(label)
                         # The imported names this file pulls from the callee's
                         # file approximate the dependency surface this symbol
@@ -625,11 +633,15 @@ class SplitFileDetector(RefactoringDetector):
         groups: list[dict] = []
         self_segments = {seg.lower() for seg in ctx.file_path.replace("\\", "/").split("/")}
         self_segments.add(stem.lower())
-        for idx, members in enumerate(substantive, 1):
+        for members in substantive:
             label = self._group_label(defined, foreign_of, members, self_segments)
-            file_stem = label or f"{stem}_part{idx}"
-            filename = self._unique_filename(file_stem, ext, used)
-            suggested = f"{directory}/{filename}" if directory else filename
+            # A group whose symbols share no name token has no honest filename.
+            # ``{stem}_part{idx}`` looked like one and named nothing, so the
+            # field is absent instead and the surfaces prompt for a name.
+            suggested = None
+            if label:
+                filename = self._unique_filename(label, ext, used)
+                suggested = f"{directory}/{filename}" if directory else filename
             groups.append(
                 {
                     "name": label or None,
@@ -709,7 +721,9 @@ class SplitFileDetector(RefactoringDetector):
         dependent_files: set[str] = set()
         for sid in defined:
             for u, _v, edata in graph.in_edges(sid, data=True):
-                if edata.get("edge_type") != "calls":
+                if not is_reliable_call_edge(
+                    edata.get("edge_type"), edata.get("resolution_origin")
+                ):
                     continue
                 f = graph.nodes.get(u, {}).get("file_path")
                 if f and f != ctx.file_path:

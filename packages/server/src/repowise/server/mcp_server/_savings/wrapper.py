@@ -44,8 +44,45 @@ logger = logging.getLogger(__name__)
 #: Coarse, non-identifying result fields worth reporting per tool call. All are
 #: enums or booleans (confidence tier, retrieval quality, staleness) — never
 #: query text, paths, or repo/symbol names. See the telemetry privacy contract.
+#:
+#: ``degraded`` names WHY a get_answer reply carries no synthesised prose (no
+#: provider, versus a provider that failed), which is the difference between an
+#: install working as designed and one that broke.
+#:
+#: ``response_chars`` / ``response_tokens`` size the delivered payload; plain
+#: counts, never content, so a field before/after of payload size exists.
 _META_FLAGS = ("index_behind", "embedder_degraded")
-_RESULT_ENUMS = ("confidence", "retrieval_quality", "grounding")
+_RESULT_ENUMS = ("confidence", "retrieval_quality", "grounding", "degraded")
+
+
+def _response_size(result: Any) -> tuple[int, int] | None:
+    """Serialised size of *result* as ``(chars, tokens)``, or ``None`` if unknown.
+
+    The response budget already stamps the compact serialised size on the way
+    in, so read that and serialise only when no stamp is present.
+    """
+    try:
+        from repowise.server.mcp_server._budget.budgeter import CHARS_PER_TOKEN
+
+        stamped = None
+        if isinstance(result, dict):
+            meta = result.get("_meta")
+            budget = meta.get("response_budget") if isinstance(meta, dict) else None
+            stamped = budget.get("serialized_chars") if isinstance(budget, dict) else None
+        if isinstance(stamped, int) and stamped > 0:
+            chars = stamped
+        else:
+            chars = len(json.dumps(result, separators=(",", ":"), default=str))
+    except Exception:
+        return None
+    return chars, chars // CHARS_PER_TOKEN
+
+
+def _semantic_search_state() -> bool | None:
+    """The install's vector-leg state, or ``None`` when it was never evaluated."""
+    from repowise.server.mcp_server._meta import semantic_search_state
+
+    return semantic_search_state()
 
 
 def _results_count_bucket(result: Any) -> str | None:
@@ -68,7 +105,7 @@ def _results_count_bucket(result: Any) -> str | None:
 def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str, Any]:
     """Build the anonymous ``mcp_tool_call`` properties for *result*.
 
-    Only coarse enums / booleans / bucketed counts — no user-identifying data.
+    Only coarse enums / booleans / bucketed counts / response size, never user-identifying data.
     """
     is_error = isinstance(result, dict) and bool(result.get("error"))
     props: dict[str, Any] = {
@@ -89,6 +126,18 @@ def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str,
         bucket = _results_count_bucket(result)
         if bucket is not None:
             props["results_bucket"] = bucket
+        size = _response_size(result)
+        if size is not None:
+            props["response_chars"], props["response_tokens"] = size
+    # Read from server state rather than from the response. `embedder_degraded`
+    # is False on a keyless install by design, so it only ever catches
+    # misconfiguration and the larger keyless population - retrieval genuinely
+    # full-text-only - was invisible. Taking it here keeps the caller's response
+    # exactly as it was: this is a fact about the install, and the agent already
+    # has everything it needs to see it.
+    semantic_search = _semantic_search_state()
+    if semantic_search is not None:
+        props["semantic_search"] = semantic_search
     return props
 
 

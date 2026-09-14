@@ -208,6 +208,11 @@ class PerfHit:
     # chain ``A -> B -> ... -> sink`` (PR4). Empty for same-function hits —
     # its emptiness is what distinguishes the two cases downstream.
     path: tuple[str, ...] = ()
+    # How the first interprocedural hop was resolved. ``direct`` is the
+    # same-function default; cross-function bridges set ``call-site`` or the
+    # labelled legacy ``name-fallback``. Ranking can therefore use provenance
+    # without re-reading or re-walking the graph.
+    resolution_basis: str = "direct"
     # Set by the dataflow promotion pass (``perf.promotion``) when intra-
     # procedural reaching definitions PROVE the enclosing loop carries no data
     # dependence between iterations, turning an advisory "if the iterations are

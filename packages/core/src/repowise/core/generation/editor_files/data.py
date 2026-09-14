@@ -66,7 +66,12 @@ class CodeHealthBlock:
     average_health: float
     worst_score: float
     worst_path: str
-    hotspot_trend: str = "stable"
+    # The band word for ``average_health``, so the line reads the same
+    # direction as every other surface: a bare "6.9/10" beside a risk-shaped
+    # label is the one reading that inverts.
+    band: str = ""
+    # ``None`` until two snapshots exist; the section then omits the label.
+    hotspot_trend: str | None = None
     # Maintainability pillar headline (NLOC-weighted average over the per-file
     # maintainability scores). ``None`` until the split populates the column, so
     # the section omits it rather than printing a misleading 10.0.

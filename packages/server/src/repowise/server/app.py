@@ -7,6 +7,14 @@ scheduler) and shutdown (cleanup).
 
 from __future__ import annotations
 
+# Same reason as the CLI entry point, and it matters more here: a server is
+# long-lived, so a BLAS workspace sized to the host's core count is held for
+# the process's whole life rather than one index (issue #1394).
+from repowise.core.blas_threads import limit_blas_threads
+
+limit_blas_threads()
+
+# ruff: noqa: E402 — the BLAS pin above is only effective before these run.
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -27,7 +35,9 @@ from repowise.core.persistence.database import (
 )
 from repowise.core.persistence.models import GenerationJob
 from repowise.core.persistence.search import FullTextSearch
+from repowise.core.providers.embedding import is_semantic_embedder
 from repowise.core.providers.embedding.base import KeylessEmbedder
+from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server import __version__
 from repowise.server.routers import (
     blast_radius,
@@ -95,6 +105,7 @@ def _build_embedder():
         gemini     — GeminiEmbedder via GEMINI_API_KEY / GOOGLE_API_KEY env var
         openai     — OpenAIEmbedder via OPENAI_API_KEY env var
         openrouter — OpenRouterEmbedder via OPENROUTER_API_KEY env var
+        edenai     — EdenAIEmbedder via EDENAI_API_KEY env var
     """
     name = os.environ.get("REPOWISE_EMBEDDER", "mock").lower()
     if name == "ollama":
@@ -104,7 +115,23 @@ def _build_embedder():
     if name == "gemini":
         from repowise.core.providers.embedding.gemini import GeminiEmbedder
 
-        dims = int(os.environ.get("REPOWISE_EMBEDDING_DIMS", "768"))
+        dims_raw = os.environ.get("REPOWISE_EMBEDDING_DIMS")
+        dims = 768
+        if dims_raw:
+            try:
+                parsed = int(dims_raw)
+            except (ValueError, OverflowError):
+                parsed = 0
+            if parsed > 0:
+                dims = parsed
+            else:
+                import sys
+
+                print(
+                    f"REPOWISE_EMBEDDING_DIMS={dims_raw!r} is not a positive integer;"
+                    f" using {dims}.",
+                    file=sys.stderr,
+                )
         # Honour the indexed embedding model so serve doesn't silently rebuild
         # the embedder with a different default than init used (issue #426).
         model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
@@ -121,10 +148,26 @@ def _build_embedder():
 
         model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "google/gemini-embedding-001")
         return OpenRouterEmbedder(model=model)
+    if name == "edenai":
+        from repowise.core.providers.embedding.edenai import EdenAIEmbedder
+
+        model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "amazon/amazon.titan-embed-text-v2:0")
+        return EdenAIEmbedder(model=model)
     logger.warning(
-        "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, or ollama for real RAG"
+        "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, "
+        "ollama, or edenai for real RAG"
     )
     return KeylessEmbedder()
+
+
+def _build_query_embedder():
+    """Build the HTTP server's long-lived, query-side embedder.
+
+    Keyless is left bare because semantic-search routing identifies it by type;
+    wrapping it would incorrectly enable a vector leg with no signal.
+    """
+    embedder = _build_embedder()
+    return CachingEmbedder(embedder) if is_semantic_embedder(embedder) else embedder
 
 
 @asynccontextmanager
@@ -200,7 +243,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Reuse the repo-local LanceDB index written by CLI init/update. A fresh
     # in-memory store is used only when this database cannot be associated with
     # a repository or the optional LanceDB runtime is unavailable.
-    embedder = _build_embedder()
+    embedder = _build_query_embedder()
     from repowise.server.search_helpers import build_primary_vector_store
 
     vector_store, primary_vector_repo_id = await build_primary_vector_store(
@@ -338,7 +381,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             repo_registry = RepoRegistry(
                 workspace_root=_Path(ws_root),
                 ws_config=ws_config,
-                embedder_factory=_build_embedder,
+                embedder_factory=_build_query_embedder,
             )
             app.state.repo_registry = repo_registry
             set_tool_workspace(registry=repo_registry, workspace_root=str(ws_root))
@@ -433,6 +476,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await _repo_registry.close()
             # The enricher is only ever published alongside the registry.
             set_tool_workspace(registry=None, workspace_root=None, cross_repo_enricher=None)
+            # The test-impact join holds its own session per consumer repo.
+            from repowise.server.mcp_server._test_impact import close_test_impact_indexes
+
+            with suppress(Exception):
+                await close_test_impact_indexes()
         # Dispose workspace repo engines first
         for ws_engine in getattr(app.state, "workspace_engines", []):
             with suppress(Exception):

@@ -178,6 +178,153 @@ def test_running_dependency_across_iterations_is_carried():
     )
 
 
+# -- branch joins ---------------------------------------------------------
+
+
+def test_definition_on_every_branch_is_independent():
+    """Every path through the ``if`` writes ``key`` before the await reads it.
+
+    The must-def analysis has to reach a fixpoint over the loop to see this:
+    the join block is emitted before either arm, so its id is lower than the
+    ids of the blocks flowing into it and one pass in id order cannot see them.
+    """
+    assert _independent(
+        """
+        async def run(items):
+            out = []
+            for item in items:
+                if item.ok:
+                    key = item.a
+                else:
+                    key = item.b
+                out.append(await fetch(key))  # HIT
+            return out
+        """,
+        "HIT",
+    )
+
+
+def test_definition_on_every_nested_branch_is_independent():
+    assert _independent(
+        """
+        async def run(items):
+            for item in items:
+                if item.a:
+                    if item.b:
+                        key = 1
+                    else:
+                        key = 2
+                else:
+                    key = 3
+                r = await fetch(key)  # HIT
+        """,
+        "HIT",
+    )
+
+
+def test_definition_on_only_one_branch_is_carried():
+    # ``key`` is unwritten on the else path, so the read there takes the
+    # previous iteration's value. That is a carry and must refuse.
+    assert not _independent(
+        """
+        async def run(items):
+            for item in items:
+                if item.ok:
+                    key = item.id
+                r = await fetch(key)  # HIT
+        """,
+        "HIT",
+    )
+
+
+def test_definition_only_inside_a_nested_loop_is_carried():
+    # The inner loop may run zero times, so ``key`` is not definitely written.
+    assert not _independent(
+        """
+        async def run(items):
+            for item in items:
+                for sub in item.parts:
+                    key = sub.id
+                r = await fetch(key)  # HIT
+        """,
+        "HIT",
+    )
+
+
+def test_an_exception_may_skip_the_assignment_it_precedes():
+    """A handler is entered by an exception that may have escaped anything.
+
+    The CFG draws one edge from the protected region's entry block, and the
+    whole ``try`` body usually sits in that block, so the handler must inherit
+    what was defined *before* the region. Reading the block's exit state would
+    count the very assignment the exception skipped.
+    """
+    # ``except`` leaves ``key`` unwritten, so the read there takes the previous
+    # iteration's value: a carry.
+    assert not _independent(
+        """
+        async def run(items):
+            for item in items:
+                try:
+                    key = item.id
+                except AttributeError:
+                    pass
+                r = await fetch(key)  # HIT
+        """,
+        "HIT",
+    )
+    # Both paths write it, so the read is intra-iteration on either.
+    assert _independent(
+        """
+        async def run(items):
+            for item in items:
+                try:
+                    key = item.id
+                except AttributeError:
+                    key = 0
+                r = await fetch(key)  # HIT
+        """,
+        "HIT",
+    )
+
+
+def test_finally_does_not_hide_a_partial_assignment():
+    # The handler path reaches the finally block too, so a variable written
+    # only on the happy path is still not definitely written after it.
+    assert not _independent(
+        """
+        async def run(items):
+            for item in items:
+                try:
+                    key = item.id
+                except AttributeError:
+                    pass
+                finally:
+                    pass
+                r = await fetch(key)  # HIT
+        """,
+        "HIT",
+    )
+
+
+def test_an_except_handler_can_carry_a_dependence():
+    # The handler reads the accumulator the previous iteration wrote.
+    assert not _independent(
+        """
+        async def run(items):
+            prev = None
+            for item in items:
+                try:
+                    key = item.id
+                except AttributeError:
+                    key = prev
+                r = await fetch(key)  # HIT
+                prev = r
+        """,
+        "HIT",
+    )
+
+
 # -- degrade-to-silence ---------------------------------------------------
 
 

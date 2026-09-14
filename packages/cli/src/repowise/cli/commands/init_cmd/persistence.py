@@ -29,6 +29,7 @@ from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.models import count_stub_fallbacks
+from repowise.core.repo_config import config_dependency_fingerprints
 
 logger = structlog.get_logger(__name__)
 
@@ -94,28 +95,34 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
                         ).where(Page.id.in_(batch))
                     )
                 ).all()
-            for page_id, title, content, summary, target_path in rows:
-                await fts.index(
-                    page_id,
-                    title or "",
-                    content or "",
-                    summary=summary or "",
-                    target_path=target_path or "",
-                )
+            await fts.index_many(
+                [
+                    (page_id, title or "", content or "", summary or "", target_path or "")
+                    for page_id, title, content, summary, target_path in rows
+                ]
+            )
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("persist.preserved_fts_backfill_failed", error=str(exc))
 
 
-async def persist_result(result: Any, repo_path: Path, progress: Any | None = None) -> None:
+async def persist_result(
+    result: Any,
+    repo_path: Path,
+    progress: Any | None = None,
+    timings: Any | None = None,
+) -> None:
     """Persist a PipelineResult to the local SQLite database.
 
     Handles both index-only (no pages) and full (with pages + FTS) modes.
 
-    *progress* is optional and reports the full-text indexing loop below, the
-    one part of persistence whose length is known in advance and proportional
-    to the wiki. Everything after "Generated N pages" used to happen under a
-    single indeterminate spinner, so on a repo of a few thousand pages the run
-    sat silent for minutes with no way to tell work from a hang.
+    *progress* is optional, and closing the phase is all it is used for here.
+    The full-text index used to be written a page at a time, which was minutes
+    of silence on a large wiki and earned a bar with a real denominator; it is
+    one statement now, and nothing else persistence does is proportional to
+    the page count, so the phase the CLI opens stays indeterminate.
+
+    *timings* splits that span into its SQL and full-text halves, which the
+    single ``persist`` number cannot distinguish.
     """
     from datetime import UTC, datetime
 
@@ -126,8 +133,10 @@ async def persist_result(result: Any, repo_path: Path, progress: Any | None = No
         persist_generation,
         persist_pipeline_result,
         sweep_stale_generated_pages,
+        timed,
         tombstone_absent_file_pages,
     )
+    from repowise.core.pipeline.persist import persist_symbol_analysis
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
 
@@ -166,6 +175,15 @@ async def persist_result(result: Any, repo_path: Path, progress: Any | None = No
             repo.settings_json = _json.dumps(existing)
         swept_page_ids: list[str] = []
         if index_done:
+            # Health runs after the INDEX checkpoint and mutates the in-memory
+            # symbol complexities. Reconcile them again in this final required
+            # transaction: it heals a best-effort checkpoint failure, and if
+            # this write also fails the ledger below cannot claim ANALYSIS is
+            # complete with parser-default complexity still on disk.
+            if getattr(result, "health_report", None) is not None:
+                await persist_symbol_analysis(
+                    session, repo.id, getattr(result, "parsed_files", None)
+                )
             await persist_analysis(result, session, repo.id)
             await persist_generation(result, session, repo.id)
             # persist_generation has already upserted the current pages, so the
@@ -240,24 +258,17 @@ async def persist_result(result: Any, repo_path: Path, progress: Any | None = No
     # holds a write lock raises "database is locked". The swept-id delete must
     # therefore stay here (it cannot move ahead of the SQL commit like the
     # vector delete can); it is idempotent and narrow (orphan FTS rows only).
-    if fts is not None and swept_page_ids:
-        await fts.delete_many(swept_page_ids)
-    if fts is not None and result.generated_pages:
-        if progress is not None:
-            progress.on_phase_start("persist", len(result.generated_pages))
-        for page in result.generated_pages:
-            await fts.index(
-                page.page_id,
-                page.title,
-                page.content,
-                summary=page.summary,
-                target_path=page.target_path,
+    with timed(timings, "persist.fts"):
+        if fts is not None and swept_page_ids:
+            await fts.delete_many(swept_page_ids)
+        if fts is not None and result.generated_pages:
+            await fts.index_many(
+                [
+                    (page.page_id, page.title, page.content, page.summary, page.target_path)
+                    for page in result.generated_pages
+                ]
             )
-            if progress is not None:
-                progress.on_item_done("persist")
-        if progress is not None:
-            progress.on_phase_done("persist")
-    await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
+        await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that
     # they're persisted, so a future resume can skip them too.
@@ -274,6 +285,11 @@ async def persist_result(result: Any, repo_path: Path, progress: Any | None = No
             await ledger.mark_completed(ResumePhase.GENERATION)
 
     await engine.dispose()
+    # Closed here rather than after the indexing loop: the preserved-page
+    # backfill and the ledger stamp are persistence too, and a phase that
+    # stopped short of them reported a different span per run mode.
+    if progress is not None:
+        progress.on_phase_done("persist")
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +325,18 @@ def effective_run_mode_for_resume(repo_path: Path, run_mode: str, resume: bool) 
 # ---------------------------------------------------------------------------
 # state.json + config.yaml writers
 # ---------------------------------------------------------------------------
+
+
+def apply_git_history_coverage_state(state: dict[str, Any], result: Any) -> None:
+    """Replace achieved Git coverage, clearing stale data when unavailable."""
+    summary = getattr(result, "git_summary", None)
+    if summary is None:
+        return
+    coverage = getattr(summary, "history_coverage", None)
+    if coverage is None:
+        state.pop("git_history_coverage", None)
+    else:
+        state["git_history_coverage"] = coverage.to_dict()
 
 
 def save_full_state_and_config(
@@ -364,6 +392,7 @@ def save_full_state_and_config(
     # Full-mode docs runs always index the FULL git tier.
     state["run_mode"] = "standard"
     state["git_tier"] = "full"
+    apply_git_history_coverage_state(state, result)
     # Same pattern as git_tier: `repowise update` reads this back so its
     # graph rebuild keeps the init run's submodule boundary semantics.
     state["include_submodules"] = include_submodules
@@ -418,6 +447,7 @@ def save_full_state_and_config(
 
     # Re-save state with the fingerprint now that config.yaml is written.
     state["config_fingerprint"] = config_fingerprint(repo_path)
+    state["config_dependency_fingerprints"] = config_dependency_fingerprints(repo_path)
     # This index's health rows were written by the current analyzer, so start
     # tracking it here — otherwise a fresh install carries no stamp and the
     # first analyzer change after it cannot tell it needs a re-score.

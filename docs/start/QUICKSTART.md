@@ -86,12 +86,16 @@ This is the payoff: your agent reads the index instead of your codebase.
 
 <details open><summary><b>Claude Code</b></summary>
 
-**`repowise init` already did this.** It writes a repo-root `.mcp.json`
-unconditionally, and unless you passed `--no-editor-setup` or set
-`REPOWISE_SKIP_EDITOR_SETUP=1`, it also registers repowise with
-`~/.claude/settings.json`. A Claude Code session opened in this repo already
-sees the MCP server. Check with `repowise agents` (Claude Code should show as
-wired) or `repowise doctor`.
+**`repowise init` already did this.** Unless you passed `--no-editor-setup` or
+set `REPOWISE_SKIP_EDITOR_SETUP=1`, it writes a repo-root `.mcp.json` and
+registers repowise with `~/.claude/settings.json`. One switch covers both: the
+flag used to gate only the machine-wide registration, so a run that opted out
+of editor setup still wrote files into the working tree. `.repowise/mcp.json`
+is the one deliberate exception — it is written either way, because it is what
+`repowise mcp .` prints and is how you opt back in by hand.
+
+A Claude Code session opened in this repo already sees the MCP server. Check
+with `repowise agents` (Claude Code should show as wired) or `repowise doctor`.
 
 Skipped editor setup, or setting up a machine where you did? Wire it up now:
 
@@ -220,7 +224,7 @@ too, so the same index serves you and your agent. See [VS Code](../agent/VSCODE.
 > *"What's the blast radius if I change `src/auth.py`? Use `get_context` with
 > `include: ["callers"]`."*
 >
-> *"Score my branch with `get_change_risk` for `main..HEAD`."*
+> *"Review my branch with `get_change_risk` for `main..HEAD`."*
 
 You should get a graph-grounded answer immediately, instead of a run of greps and
 file reads. That is the whole point.

@@ -327,7 +327,7 @@ def _render_exact_excerpts(
     return included, blocks, skipped
 
 
-def _select_reference_evidence(
+def _select_symbol_reference_evidence(
     source_map: Mapping[str, bytes],
     references: Sequence[str],
     parsed_files: Sequence[object],
@@ -375,6 +375,56 @@ def _select_reference_evidence(
     return EvidenceSelection(rendered, tuple(included), tuple(skipped))
 
 
+def _select_reference_evidence(
+    source_map: Mapping[str, bytes],
+    references: Sequence[str],
+    parsed_files: Sequence[object],
+    *,
+    token_budget: int,
+) -> EvidenceSelection:
+    """Select bounded file and exact-symbol references under one budget.
+
+    A reference may name a whole repository file or a ``path::symbol``. Setup
+    pages need authoritative documents in full-file form, while execution-flow
+    pages need exact symbol bodies. When both kinds are present, each receives
+    a stable half of the reference budget.
+    """
+    normalized = tuple(str(reference).removeprefix("file:") for reference in references)
+    file_references = tuple(reference for reference in normalized if "::" not in reference)
+    symbol_references = tuple(reference for reference in normalized if "::" in reference)
+
+    if not symbol_references:
+        return select_source_evidence(source_map, file_references, token_budget=token_budget)
+    if not file_references:
+        return _select_symbol_reference_evidence(
+            source_map,
+            symbol_references,
+            parsed_files,
+            token_budget=token_budget,
+        )
+
+    symbol_budget = token_budget // 2
+    files = select_source_evidence(
+        source_map,
+        file_references,
+        token_budget=max(0, token_budget - symbol_budget - 1),
+    )
+    symbols = _select_symbol_reference_evidence(
+        source_map,
+        symbol_references,
+        parsed_files,
+        token_budget=symbol_budget,
+    )
+    rendered = files.rendered + symbols.rendered
+    if estimate_tokens(rendered) > token_budget:  # pragma: no cover - defensive invariant
+        raise AssertionError("rendered reference evidence exceeded its token budget")
+    return EvidenceSelection(
+        rendered,
+        files.included + symbols.included,
+        files.skipped + symbols.skipped,
+    )
+
+
 def select_prompt_evidence(
     source_map: Mapping[str, bytes],
     configured: Sequence[str],
@@ -392,10 +442,27 @@ def select_prompt_evidence(
     if not references:
         return select_source_evidence(source_map, configured, token_budget=token_budget)
 
+    configured_paths = set(configured)
+    reference_skips: list[EvidenceSkip] = []
+    effective_references: list[str] = []
+    for raw_reference in references:
+        reference = str(raw_reference).removeprefix("file:")
+        if "::" not in reference and reference in configured_paths:
+            reference_skips.append(EvidenceSkip(reference, "duplicate_configured"))
+            continue
+        effective_references.append(reference)
+    if not effective_references:
+        configured_only = select_source_evidence(source_map, configured, token_budget=token_budget)
+        return EvidenceSelection(
+            configured_only.rendered,
+            configured_only.included,
+            configured_only.skipped + tuple(reference_skips),
+        )
+
     exact_budget = token_budget // 2
     exact = _select_reference_evidence(
         source_map,
-        references,
+        effective_references,
         parsed_files,
         token_budget=exact_budget,
     )
@@ -409,7 +476,7 @@ def select_prompt_evidence(
         return EvidenceSelection(
             configured_only.rendered,
             configured_only.included,
-            configured_only.skipped + exact.skipped,
+            configured_only.skipped + tuple(reference_skips) + exact.skipped,
         )
     configured_selection = select_source_evidence(
         source_map,
@@ -422,5 +489,5 @@ def select_prompt_evidence(
     return EvidenceSelection(
         rendered,
         configured_selection.included + exact.included,
-        configured_selection.skipped + exact.skipped,
+        configured_selection.skipped + tuple(reference_skips) + exact.skipped,
     )

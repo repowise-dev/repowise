@@ -136,7 +136,7 @@ export interface Commit {
   subsystems_changed: number;
   entropy: number;
   is_fix: boolean;
-  /** Raw 0–10 change-risk score from the calibrated model (stored). */
+  /** Supporting 0–10 calibrated diff-size/spread score (stored; not a probability). */
   change_risk_score: number | null;
   /** Absolute calibration band — kept for transparency, but skews high on
    * repos with large typical commits; prefer {@link review_priority}. */
@@ -165,7 +165,7 @@ export interface Commit {
 export interface RiskDriver {
   feature: string;
   value: number | null;
-  /** Signed push on the logit; positive raises risk, negative lowers it. */
+  /** Signed push on the model logit; positive raises the supporting score. */
   contribution: number;
   label: string;
 }
@@ -225,7 +225,7 @@ export interface CommitEvolution {
   last_commit_at: string | null;
 }
 
-/** One bin of the repo's raw change-risk score distribution. */
+/** One bin of the repo's supporting 0-10 diff-shape score distribution. */
 export interface RiskHistogramBucket {
   /** Bin lower bound on the 0-10 raw score axis (inclusive). */
   start: number;

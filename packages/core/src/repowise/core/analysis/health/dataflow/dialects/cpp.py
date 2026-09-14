@@ -220,6 +220,7 @@ class CppDefUseDialect(BaseDefUseDialect):
             uses.append(self._occ(node))
             return
         if self._is_scope_boundary(node):
+            self.boundary_def(node, defs)
             return
         for child in node.named_children:
             self._process(child, defs, uses)

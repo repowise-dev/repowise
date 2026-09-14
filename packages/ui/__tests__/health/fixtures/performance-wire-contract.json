@@ -1,0 +1,115 @@
+{
+  "page": [
+    "facets",
+    "has_more",
+    "items",
+    "next_offset",
+    "summary",
+    "total"
+  ],
+  "summary": [
+    "actionability",
+    "analyzed_commit",
+    "boundary",
+    "context",
+    "materialized_model_version",
+    "performance_model_version",
+    "repository_total",
+    "status",
+    "total",
+    "with_plan_total"
+  ],
+  "facets": [
+    "actionability",
+    "boundary",
+    "confidence",
+    "context",
+    "plan_state"
+  ],
+  "facet_entry": [
+    "total",
+    "value"
+  ],
+  "item": [
+    "actionability_reason",
+    "actionability_state",
+    "affected_call_sites_total",
+    "affected_files_total",
+    "biomarker_type",
+    "biomarker_types",
+    "boundary_kind",
+    "confidence",
+    "evidence",
+    "evidence_emitted",
+    "evidence_total",
+    "evidence_truncated",
+    "execution_context",
+    "facets",
+    "file_path",
+    "fix",
+    "intervention_symbol",
+    "observations_total",
+    "opportunity_id",
+    "performance_model_version",
+    "plan_id",
+    "plan_reason",
+    "plan_status",
+    "prerequisites",
+    "provenance",
+    "rank_factors",
+    "rank_position",
+    "rank_score",
+    "reliable_entry_reachability",
+    "resource_fingerprints",
+    "shared_path_suffix",
+    "terminal_sink",
+    "why_ranked"
+  ],
+  "item_facets": [
+    "actionability_confidence",
+    "amplification",
+    "change_risk",
+    "exposure",
+    "leverage"
+  ],
+  "evidence": [
+    "biomarker_type",
+    "file_path",
+    "finding_id",
+    "function_name",
+    "line_end",
+    "line_start",
+    "path",
+    "provenance",
+    "reason"
+  ],
+  "why_ranked": [
+    "factor",
+    "points",
+    "value"
+  ],
+  "fix": [
+    "rationale",
+    "safety",
+    "strategy"
+  ],
+  "detail_extra": [
+    "analyzed_commit",
+    "lifecycle_status",
+    "model_state",
+    "resolved"
+  ],
+  "unresolved_detail": [
+    "detail",
+    "model_state",
+    "opportunity_id",
+    "resolved"
+  ],
+  "model_state": [
+    "opportunity_id",
+    "performance_model_version",
+    "refresh_required",
+    "requested_model_version",
+    "state"
+  ]
+}

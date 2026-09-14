@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
+from repowise.core.analysis.decisions.policy import DISCOVERY_BOUNDS
 from repowise.core.analysis.decisions.scope import derive_decision_scope
 
 
@@ -54,6 +55,11 @@ class DecisionRecordResponse(BaseModel):
     # /evidence endpoint instead).
     evidence_count: int | None = None
     evidence_preview: EvidencePreview | None = None
+    # Effective currency from the acceptance, or None for a candidate. This is
+    # the authority answer; ``status`` is the projection kept in step for
+    # readers that predate the split. A record can be stored ``active`` and
+    # carry no currency at all, which is precisely what a candidate is.
+    currency: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:
@@ -110,6 +116,23 @@ class DecisionCountsResponse(BaseModel):
     proposed: int
     superseded: int
     deprecated: int
+
+
+class DecisionLaneCountsResponse(BaseModel):
+    """Records per review lane, from a scan of the acceptance join.
+
+    ``candidates`` and the four currency lanes partition the repository and sum
+    to ``total``; ``governing`` is the roll-up of the two that still bind, so a
+    caller can state "N rules" without adding two tabs together.
+    """
+
+    candidates: int
+    active: int
+    needs_review: int
+    uncheckable: int
+    history: int
+    governing: int
+    total: int
 
 
 class DecisionCreate(BaseModel):
@@ -226,3 +249,126 @@ class DecisionGraphResponse(BaseModel):
     nodes: list[DecisionGraphNode]
     decision_edges: list[DecisionGraphEdge]
     code_edges: list[DecisionCodeEdge]
+
+
+class DecisionHealthResponse(BaseModel):
+    """Governance rollup: what is stale, awaiting review, and ungoverned."""
+
+    #: Record counts by status, plus ``stale``, ``unscoped`` and ``conflicts``.
+    summary: dict[str, int] = {}
+    stale_decisions: list[DecisionRecordResponse] = []
+    proposed_awaiting_review: list[DecisionRecordResponse] = []
+    #: Hotspot paths no active decision names, worst-ranked first.
+    ungoverned_hotspots: list[str] = []
+
+
+class DecisionEvidenceListResponse(BaseModel):
+    evidence: list[DecisionEvidenceResponse] = []
+
+
+class DecisionLineageResponse(BaseModel):
+    """The supersedes/refines chain, root first."""
+
+    lineage: list[DecisionLineageEntry] = []
+
+
+# ---------------------------------------------------------------------------
+# Capture policy
+# ---------------------------------------------------------------------------
+
+
+#: Sourced from the policy registry so the wire bounds cannot drift from the
+#: ones the resolver enforces.
+_DISCOVERY_DEFAULTS = {key: bounds[2] for key, bounds in DISCOVERY_BOUNDS.items()}
+_DISCOVERY_RANGE = {key: {"ge": bounds[0], "le": bounds[1]} for key, bounds in DISCOVERY_BOUNDS.items()}
+
+
+class DecisionSourceState(BaseModel):
+    """One capture source's capabilities and resolved state."""
+
+    key: str
+    label: str
+    description: str
+    #: ``machine`` for inferred capture, ``human`` for authority routes.
+    authority: str
+    deterministic: bool
+    supports_llm: bool
+    #: False for authority routes, which have no capture to switch off.
+    togglable: bool
+    enabled: bool
+    llm_enabled: bool
+    #: enabled | disabled | deterministic_only | skipped_no_provider | always_on
+    status: str
+    reason: str
+
+
+class DecisionDiscoveryBudget(BaseModel):
+    """Per-update ceiling on the one broad session-discovery call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_sessions: int = _DISCOVERY_DEFAULTS["max_sessions"]
+    max_input_tokens: int = _DISCOVERY_DEFAULTS["max_input_tokens"]
+
+
+class DecisionDiscoveryPatch(BaseModel):
+    """A change to the discovery budget. Omitted fields keep their value.
+
+    Separate from :class:`DecisionDiscoveryBudget` because a response states
+    both numbers while a write may set one, and a shared model would fill the
+    other from its default and quietly reset it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_sessions: int | None = Field(default=None, **_DISCOVERY_RANGE["max_sessions"])
+    max_input_tokens: int | None = Field(default=None, **_DISCOVERY_RANGE["max_input_tokens"])
+
+
+class DecisionSettings(BaseModel):
+    """The resolved decision capture policy for one repository."""
+
+    enabled: bool = True
+    llm: bool = True
+    #: default | off | local_only | balanced | full | custom
+    preset: str = "default"
+    discovery: DecisionDiscoveryBudget = DecisionDiscoveryBudget()
+    sources: list[DecisionSourceState] = []
+    provider_available: bool = True
+    #: Recoverable config problems, e.g. an unknown source key.
+    warnings: list[str] = []
+    #: Legacy keys still being honoured. A write through this endpoint
+    #: replaces them, so a settings form can say so before saving.
+    legacy_keys: list[str] = []
+    #: Changes ``etag`` whenever the resolved policy changes. Pass it back on
+    #: write to detect a concurrent edit.
+    etag: str = ""
+
+
+class DecisionSourcePatch(BaseModel):
+    """A change to one source. Omitted fields keep their current value.
+
+    ``extra="forbid"`` on purpose: an untyped mapping accepted a misspelt
+    ``{"enable": true}`` and returned 200 having changed nothing, so a UI
+    toggle read as saved when it was not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    llm: bool | None = None
+
+
+class DecisionSettingsUpdate(BaseModel):
+    """A partial policy write. Omitted fields keep their current value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    llm: bool | None = None
+    #: Applied first, so a preset plus per-source overrides works in one call.
+    preset: str | None = None
+    sources: dict[str, DecisionSourcePatch] | None = None
+    #: Budget for broad session discovery. Omitted fields keep their value.
+    discovery: DecisionDiscoveryPatch | None = None
+    etag: str | None = None

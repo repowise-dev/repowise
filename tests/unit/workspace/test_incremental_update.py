@@ -120,12 +120,14 @@ def stub_full_pipeline(monkeypatch):
         repo_name = "stub"
         file_count = 7
         symbol_count = 9
+        git_summary = object()
+        health_report = object()
 
     async def _fake_pipeline(repo_path, **kwargs):
         calls.append({"repo_path": repo_path, **kwargs})
         return _FakeResult()
 
-    async def _fake_persist(result, session, repo_id):
+    async def _fake_persist(result, session, repo_id, **kwargs):
         return None
 
     monkeypatch.setattr(pipeline_pkg, "run_pipeline", _fake_pipeline)
@@ -338,6 +340,106 @@ def test_full_pipeline_merges_repo_settings_excludes(tmp_path, stub_full_pipelin
 
     _assert_full_pipeline_fallback(result, stub_full_pipeline)
     assert stub_full_pipeline[0]["exclude_patterns"] == ["tools/"]
+
+
+def test_full_pipeline_uses_repo_history_settings(tmp_path, stub_full_pipeline):
+    from repowise.core.repo_config import save_repo_config
+
+    repo = _make_git_repo(tmp_path)
+    _mark_indexed(repo, "deadbeef" * 5)
+    save_repo_config(repo, {"commit_limit": 17, "follow_renames": True})
+
+    result = asyncio.run(update_single_repo_index(repo, commit_depth=3))
+
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
+    assert stub_full_pipeline[0]["commit_depth"] == 17
+    assert stub_full_pipeline[0]["follow_renames"] is True
+
+
+def test_config_full_pipeline_requires_changed_phases(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from repowise.core.repo_config import (
+        config_dependency_fingerprints,
+        config_fingerprint,
+        save_repo_config,
+    )
+
+    captured: dict = {}
+
+    async def _fake_full_index(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(file_count=1, symbol_count=1, knowledge_graph_result=None)
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.full_index.index_repo_full", _fake_full_index
+    )
+
+    repo = _make_git_repo(tmp_path)
+    save_repo_config(repo, {"commit_limit": 3})
+    _mark_indexed(
+        repo,
+        get_head_commit(repo),
+        config_fingerprint=config_fingerprint(repo),
+        config_dependency_fingerprints=config_dependency_fingerprints(repo),
+    )
+    save_repo_config(repo, {"commit_limit": 7})
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    assert result.updated is True
+    assert captured["require_git_success"] is True
+    assert captured["require_health_success"] is True
+
+
+@pytest.mark.parametrize(
+    ("missing_attr", "required_kw", "message"),
+    [
+        ("git_summary", "require_git_success", "Git indexing failed"),
+        ("health_report", "require_health_success", "Health analysis failed"),
+    ],
+)
+def test_required_config_phase_failure_aborts_before_persist(
+    tmp_path, monkeypatch, missing_attr, required_kw, message
+):
+    from types import SimpleNamespace
+
+    import repowise.core.pipeline as pipeline_pkg
+    from repowise.core.pipeline.full_index import index_repo_full
+
+    async def _fake_pipeline(*args, **kwargs):
+        result = SimpleNamespace(git_summary=object(), health_report=object())
+        setattr(result, missing_attr, None)
+        return result
+
+    monkeypatch.setattr(pipeline_pkg, "run_pipeline", _fake_pipeline)
+
+    with pytest.raises(RuntimeError, match=message):
+        asyncio.run(index_repo_full(tmp_path, **{required_kw: True}))
+
+
+def test_generation_only_config_drift_stays_incremental(tmp_path, forbid_full_pipeline):
+    from repowise.core.repo_config import (
+        config_dependency_fingerprints,
+        config_fingerprint,
+        save_repo_config,
+    )
+
+    repo = _make_git_repo(tmp_path)
+    save_repo_config(repo, {"provider": "mock"})
+    base = get_head_commit(repo)
+    _mark_indexed(
+        repo,
+        base,
+        config_fingerprint=config_fingerprint(repo),
+        config_dependency_fingerprints=config_dependency_fingerprints(repo),
+    )
+    save_repo_config(repo, {"provider": "openai"})
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    assert result.updated is True
+    assert result.error is None
 
 
 # ---------------------------------------------------------------------------

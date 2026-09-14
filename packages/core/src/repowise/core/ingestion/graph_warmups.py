@@ -398,6 +398,107 @@ def _warmup_dart(ctx: ResolverContext) -> None:
                 pf.file_info.is_entry_point = True
 
 
+def _warmup_godot(ctx: ResolverContext) -> None:
+    """Stamp Godot engine-invoked entry points, and vendored ``addons/``.
+
+    Two facts about a Godot project that the import graph cannot express, both
+    read off its ini manifests.
+
+    **Autoloads, the main scene and an addon's EditorPlugin are entry points.**
+    Godot instantiates every ``[autoload]`` singleton before the first scene,
+    boots into ``run/main_scene``, and loads an addon's ``plugin.cfg``
+    ``script`` when the plugin is enabled. No source imports any of them by
+    name (an autoload is reached through a global identifier the engine
+    injects), so such a file has inbound edges from the manifest alone, and the
+    unreachable-file pass would report the most load-bearing scripts in the
+    project. See ``lightweight_imports/godot.py`` for why every import on one
+    of these manifests is an execution start.
+
+    Two deliberate imprecisions here. An autoload named by ``uid://`` rather
+    than ``res://`` cannot be resolved (the ``.uid`` sidecars are build-cache
+    artifacts the spec blocks) and goes unstamped. And a ``plugin.cfg`` script
+    is stamped whether or not ``project.godot``'s ``[editor_plugins] enabled=``
+    lists it: a checked-in but switched-off plugin is not dead code, it is
+    off.
+
+    **``addons/`` is vendored when a Godot project encloses it.** Godot has no
+    package manager: a plugin is distributed by copying its ``addons/<name>/``
+    tree into the consuming project, so ``addons/`` is a checked-in
+    ``node_modules``. Its scripts are a third party's public API, reached by
+    the editor or by the plugin's own scenes, and reporting them as dead is
+    reporting on code the repo does not own.
+
+    But the *publisher* of a plugin also keeps it in ``addons/``, and there the
+    same tree is the entire product. The discriminator implemented here is
+    whether a ``project.godot`` sits in an *ancestor* directory of the
+    ``addons/`` tree, not whether the repo has one anywhere. On the corpus
+    that exempts Pixelorama's 39 vendored scripts and spares dialogic's 264
+    first-party ones, which matters because 97% of dialogic *is* ``addons/``.
+
+    **Its known failure mode**, and it is not hypothetical: a publisher that
+    ships a demo or test project at the repo root gets its own product
+    never-flagged. dialogic escapes only because its single ``project.godot``
+    is a CI fixture parked under ``.github/``. Two of the four corpus repos
+    have no ``addons/`` at all, so the rule is really evidenced by n=2.
+
+    The alternative rule, vendored unless the project declares a plugin entry
+    for it, reaches the same verdict on both corpus repos. It differs only for
+    a vendored plugin that is switched *off*, which ``[editor_plugins]
+    enabled=`` would not list and which this treats as vendored anyway.
+    """
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+
+    project_files: list[str] = []
+    manifests: list[str] = []
+    for p in getattr(ctx, "sorted_paths", ()):
+        name = p.rsplit("/", 1)[-1]
+        if name == "project.godot":
+            project_files.append(p)
+            manifests.append(p)
+        elif name == "plugin.cfg":
+            manifests.append(p)
+    if not manifests:
+        return
+
+    from .resolvers.gdscript import resolve_gdscript_import
+
+    parsed_files = getattr(ctx, "parsed_files", None) or {}
+    for path in manifests:
+        parsed = parsed_files.get(path)
+        for imp in getattr(parsed, "imports", ()) or ():
+            target = resolve_gdscript_import(imp.module_path, path, ctx)
+            # An unresolved path comes back as an ``external:`` node the
+            # resolver just minted. Flagging that says nothing about a file in
+            # this repo, so only in-repo targets are stamped.
+            if target is None or target not in ctx.path_set:
+                continue
+            node = graph.nodes.get(target)
+            if node is not None:
+                node["is_entry_point"] = True
+            # Both, as _warmup_dart and _warmup_go do: the graph attribute is
+            # what dead-code reachability reads, but the wiki's entry-point
+            # list, the tour and page selection all read FileInfo. Stamping
+            # only the first would leave an addon-publisher repo still
+            # reporting no entry point anywhere a reader looks.
+            target_parsed = parsed_files.get(target)
+            if target_parsed is not None and getattr(target_parsed, "file_info", None):
+                target_parsed.file_info.is_entry_point = True
+
+    # A project root of "" (project.godot at the repo root) gives "addons/".
+    # Keyed on project.godot only: a plugin.cfg is what marks an addon, not
+    # what makes it someone else's.
+    if not project_files:
+        return
+    addon_prefixes = tuple(p[: -len("project.godot")] + "addons/" for p in project_files)
+    for node_name in list(graph.nodes()):
+        if str(node_name).startswith(addon_prefixes):
+            nd = graph.nodes.get(node_name)
+            if nd is not None:
+                nd["is_never_flag"] = True
+
+
 # Map language tag → (phase-event name, warmup function). The phase
 # name shows up in the CLI progress bar and in ``state.json`` timings.
 #
@@ -416,6 +517,12 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "c": ("graph.cpp_index", _warmup_cpp),
     "swift": ("graph.swift_entry", _warmup_swift),
     "dart": ("graph.dart_shells", _warmup_dart),
+    # Registered under both tags: a repo of loose .gd scripts has no scenes,
+    # and an addon distributed as scenes plus a project.godot may carry no
+    # first-party .gd at all. Shared event name, and the warmup is a no-op
+    # without a project.godot, so firing twice is harmless.
+    "gdscript": ("graph.godot_project", _warmup_godot),
+    "godot_resource": ("graph.godot_project", _warmup_godot),
 }
 
 

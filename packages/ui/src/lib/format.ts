@@ -2,6 +2,25 @@
  * Number, date, token, and other formatters for repowise UI.
  */
 
+/** A timestamp we can render. */
+type Timestamp = string | Date;
+
+/**
+ * Parse an API timestamp into a `Date`, treating a bare ISO string without an
+ * explicit timezone suffix (e.g. `"2026-08-21T13:23:33"`) as UTC. The repowise
+ * API returns UTC wall-clock strings with no trailing `Z`, so a plain
+ * `new Date("...")` would interpret them as *local* time and shift every
+ * displayed timestamp by the viewer's UTC offset.
+ */
+export function parseDate(date: Timestamp): Date {
+  if (date instanceof Date) return date;
+  // No timezone suffix (`Z`/`z` or `+HH:MM`)? Treat the wall-clock as UTC.
+  if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
+    return new Date(`${date.trim()}Z`);
+  }
+  return new Date(date);
+}
+
 /** Format a number with commas: 1234567 → "1,234,567" */
 export function formatNumber(n: number): string {
   return new Intl.NumberFormat().format(n);
@@ -37,7 +56,7 @@ export function formatCost(usd: number): string {
 
 /** Format a datetime to a relative string: "2h ago", "3d ago", "just now" */
 export function formatRelativeTime(date: string | Date): string {
-  const d = typeof date === "string" ? new Date(date) : date;
+  const d = parseDate(date);
   const now = Date.now();
   const diff = now - d.getTime();
   const seconds = Math.floor(diff / 1000);
@@ -64,30 +83,32 @@ export function formatRelativeTimeOrNull(
   fallback = "—",
 ): string {
   if (!iso) return fallback;
-  const d = new Date(iso);
+  const d = parseDate(iso);
   if (Number.isNaN(d.getTime()) || d.getTime() > Date.now()) return fallback;
   return formatRelativeTime(d);
 }
 
-/** Format a datetime to an absolute string: "Mar 19, 2026" */
+/** Format a datetime to an absolute string: "Mar 19, 2026" (in UTC) */
 export function formatDate(date: string | Date): string {
-  const d = typeof date === "string" ? new Date(date) : date;
+  const d = parseDate(date);
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
+    timeZone: "UTC",
   }).format(d);
 }
 
-/** Format a datetime to full: "Mar 19, 2026 at 10:30 AM" */
+/** Format a datetime to full: "Mar 19, 2026 at 10:30 AM" (in UTC) */
 export function formatDateTime(date: string | Date): string {
-  const d = typeof date === "string" ? new Date(date) : date;
+  const d = parseDate(date);
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    timeZone: "UTC",
   }).format(d);
 }
 
@@ -111,6 +132,49 @@ export function truncatePath(path: string, maxChars = 60): string {
   // Just filename
   const filename = parts[parts.length - 1] ?? path;
   return filename.length <= maxChars ? `…/${filename}` : `…${filename.slice(-(maxChars - 1))}`;
+}
+
+/**
+ * Shortest labels that still tell a set of paths apart: `src/css/mod.rs` and
+ * `src/text/mod.rs` become `css/mod.rs` and `text/mod.rs`, while a path whose
+ * basename is already unique keeps it. Each path grows by one trailing segment
+ * per round until it is unique or has no segments left.
+ *
+ * Prefer {@link truncatePath} for a path shown on its own; this is for many
+ * paths displayed side by side, where a bare basename can be ambiguous.
+ */
+export function disambiguateBasenames(paths: Iterable<string>): Map<string, string> {
+  const labels = new Map<string, string>();
+  const unique = [...new Set(paths)];
+
+  // Segments in use, grown only for the paths still tied at this depth.
+  let depth = 1;
+  let pending = unique;
+  while (pending.length > 0) {
+    const byLabel = new Map<string, string[]>();
+    for (const path of pending) {
+      const label = path.split("/").slice(-depth).join("/");
+      const group = byLabel.get(label);
+      if (group) group.push(path);
+      else byLabel.set(label, [path]);
+    }
+
+    const stillTied: string[] = [];
+    for (const [label, group] of byLabel) {
+      // One path holds this label, or the group is already shown in full:
+      // unreachable for a deduplicated set, but it bounds the loop.
+      const exhausted = group.every((p) => p.split("/").length <= depth);
+      if (group.length === 1 || exhausted) {
+        for (const path of group) labels.set(path, label);
+      } else {
+        stillTied.push(...group);
+      }
+    }
+    pending = stillTied;
+    depth += 1;
+  }
+
+  return labels;
 }
 
 /** Format age in days to split units: 45 → "1 month 15 days", 400 → "1 year 1 month" */
@@ -164,6 +228,15 @@ export function formatPercent(ratio: number, decimals = 0): string {
   const pct = ratio * 100;
   if (decimals <= 0) return `${Math.round(pct)}%`;
   return `${pct.toFixed(decimals)}%`;
+}
+
+/** Render a surfaced 0-100 percentile as an honest upper-tail rank. */
+export function formatTopPercentile(percentile: number): string {
+  const bounded = Math.min(Math.max(percentile, 0), 100);
+  const upperTail = Math.round((100 - bounded) * 1e10) / 1e10;
+  if (upperTail < 0.1) return "top <0.1%";
+  if (upperTail < 10) return `top ${upperTail.toFixed(1).replace(/\.0$/, "")}%`;
+  return `top ${Math.round(upperTail)}%`;
 }
 
 /** Format byte counts: 1536 → "1.5 KB", 1048576 → "1.0 MB" */

@@ -1,14 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  Check,
-  Copy,
-  Sparkles,
-  Bot,
-  Code2,
-  Wand2,
-} from "lucide-react";
+import { Check, Copy, Sparkles } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { ViewToggle } from "./code-health-controls";
 import type { AiPromptFlavor } from "./ai-prompt-builder";
 
 export interface AiPromptModalProps {
@@ -31,16 +25,18 @@ export interface AiPromptModalProps {
   description?: string;
 }
 
-const FLAVORS: {
-  value: AiPromptFlavor;
-  label: string;
-  Icon: React.ComponentType<{ className?: string }>;
-  hint: string;
-}[] = [
-  { value: "generic", label: "Generic", Icon: Wand2, hint: "Any agent — Copilot, Codex, ChatGPT, custom." },
-  { value: "claude-code", label: "Claude Code", Icon: Bot, hint: "Tuned for Claude Code's tools (Read / Edit / TodoWrite)." },
-  { value: "claude-code-mcp", label: "Claude + repowise MCP", Icon: Sparkles, hint: "Steers the agent to repowise's MCP tools (get_context / get_risk / get_why) instead of re-grepping." },
-  { value: "cursor", label: "Cursor", Icon: Code2, hint: "Uses @file context, Cursor editing conventions." },
+/** The four target agents, in the order the segmented control renders them.
+ *  No per-flavor icon: four icons on four segments decorate a choice that its
+ *  own label already names, and the hint for the active one says the rest. */
+const FLAVORS: { value: AiPromptFlavor; label: string; hint: string }[] = [
+  { value: "generic", label: "Generic", hint: "Any agent: Copilot, Codex, ChatGPT, custom." },
+  { value: "claude-code", label: "Claude Code", hint: "Tuned for Claude Code's tools (Read / Edit / TodoWrite)." },
+  {
+    value: "claude-code-mcp",
+    label: "Claude + MCP",
+    hint: "Steers the agent to repowise's MCP tools (get_context / get_risk / get_why) instead of re-grepping.",
+  },
+  { value: "cursor", label: "Cursor", hint: "Uses @file context and Cursor editing conventions." },
 ];
 
 const FLAVOR_STORAGE_KEY = "repowise:ai-prompt-flavor";
@@ -102,7 +98,7 @@ export function AiPromptModal({
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-[var(--color-accent-primary)]" />
+            <Sparkles className="h-4 w-4 text-[var(--color-model)]" />
             {title}
             {filePath ? (
               <span className="ml-2 text-xs font-mono font-normal text-[var(--color-text-tertiary)] truncate max-w-[260px]">
@@ -113,51 +109,41 @@ export function AiPromptModal({
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3">
-          <div>
-            <p className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-              Target agent
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              {FLAVORS.map((f) => {
-                const active = flavor === f.value;
-                return (
-                  <button
-                    key={f.value}
-                    type="button"
-                    onClick={() => setFlavor(f.value)}
-                    className={
-                      "rounded-md border px-3 py-2 text-left transition-colors " +
-                      (active
-                        ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)]"
-                        : "border-[var(--color-border-default)] hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]")
-                    }
-                    title={f.hint}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <f.Icon className={`h-3.5 w-3.5 ${active ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-tertiary)]"}`} />
-                      <span className="text-xs font-semibold text-[var(--color-text-primary)]">
-                        {f.label}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-xs text-[var(--color-text-tertiary)] leading-snug">
-                      {f.hint}
-                    </p>
-                  </button>
-                );
-              })}
+        <div className="space-y-4">
+          {/* Full-bleed hairlines rather than a bordered, filled well. The
+              prompt is the thing you opened this to read, not an object you
+              can select or act on, so it does not earn a container — and a
+              second plane inside a floating panel is one plane too many. The
+              rules run to the modal's edge (`-mx-6` against its `p-6`) so they
+              read as the page's section dividers do, rather than as a box that
+              happens to have lost its sides. */}
+          <div className="-mx-6 divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
+            <div className="space-y-2 px-6 py-4">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                Target agent
+              </p>
+              <div className="w-fit">
+                <ViewToggle
+                  value={flavor}
+                  options={FLAVORS.map((f) => ({ value: f.value, label: f.label }))}
+                  onChange={setFlavor}
+                />
+              </div>
+              <p className="text-xs leading-snug text-[var(--color-text-tertiary)]">
+                {FLAVORS.find((f) => f.value === flavor)?.hint}
+              </p>
+            </div>
+
+            <div className="max-h-[420px] overflow-y-auto px-6 py-4">
+              <pre className="font-mono text-xs leading-relaxed text-[var(--color-text-primary)] whitespace-pre-wrap break-words">
+                {prompt}
+              </pre>
             </div>
           </div>
 
-          <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] max-h-[420px] overflow-y-auto">
-            <pre className="px-3 py-2 text-[11.5px] font-mono text-[var(--color-text-primary)] whitespace-pre-wrap break-words">
-              {prompt}
-            </pre>
-          </div>
-
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
-            <span>
-              {prompt.length.toLocaleString()} chars · approx{" "}
+            <span className="tabular-nums">
+              {prompt.length.toLocaleString()} chars, approx{" "}
               {Math.round(prompt.length / 4).toLocaleString()} tokens
             </span>
             <button
@@ -168,7 +154,7 @@ export function AiPromptModal({
                 "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors " +
                 (copied
                   ? "bg-[var(--color-success)] text-[var(--color-text-inverse)]"
-                  : "bg-[var(--color-accent-primary)] text-[var(--color-bg-surface)] hover:opacity-90")
+                  : "bg-[var(--color-model)] text-[var(--color-text-on-model)] hover:bg-[var(--color-model-hover)]")
               }
             >
               {copied ? (

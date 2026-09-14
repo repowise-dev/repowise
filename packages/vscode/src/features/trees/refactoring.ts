@@ -55,7 +55,10 @@ class RefactoringTreeProvider extends RepowiseTreeProvider {
     const tooltip = new vscode.MarkdownString();
     tooltip.appendMarkdown(`**${humanizeType(plan.refactoring_type)}**\n\n`);
     tooltip.appendMarkdown(`\`${plan.file_path}\`\n\n`);
-    tooltip.appendMarkdown(`- Impact: ${plan.impact_delta.toFixed(2)}\n`);
+    tooltip.appendMarkdown(`- Priority: ${plan.rank_score.toFixed(2)}\n`);
+    if (plan.impact_delta > 0) {
+      tooltip.appendMarkdown(`- Health recovery: ${plan.impact_delta.toFixed(2)}\n`);
+    }
     tooltip.appendMarkdown(`- Effort: ${plan.effort_bucket}\n`);
     tooltip.appendMarkdown(`- Confidence: ${plan.confidence}\n`);
     const blast = blastCount(plan.blast_radius);
@@ -65,7 +68,7 @@ class RefactoringTreeProvider extends RepowiseTreeProvider {
       label: `${humanizeType(plan.refactoring_type)} ${
         plan.target_symbol ?? baseName(plan.file_path)
       }`,
-      description: `impact ${plan.impact_delta.toFixed(2)} · ${plan.effort_bucket}`,
+      description: `priority ${plan.rank_score.toFixed(2)} · ${plan.effort_bucket}`,
       tooltip,
       icon: new vscode.ThemeIcon("wrench"),
       collapsibleState: vscode.TreeItemCollapsibleState.None,

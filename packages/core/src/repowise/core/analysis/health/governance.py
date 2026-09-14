@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...test_paths import is_test_related_path
 from .models import HealthFindingData, Severity
-from .scoring import severity_deduction
 
 # ---------------------------------------------------------------------------
 # Tunables
@@ -35,9 +35,18 @@ Keeps the finding table bounded for large mono-repos where a single
 architectural decision might reference hundreds of files.
 """
 
-# Impact values anchored to the severity → deduction table in scoring.py.
-_IMPACT_MEDIUM = round(severity_deduction(Severity.MEDIUM), 3)  # 0.7
-_IMPACT_HIGH = round(severity_deduction(Severity.HIGH), 3)  # 1.2
+# This pass runs after scoring and never moves ``HealthFileMetric.score``, so
+# zero is the honest impact. Anything else is summed by every surface that adds
+# impacts up, and outranks findings that did cost the file points. Severity
+# still carries the urgency.
+_IMPACT_NONE = 0.0
+
+#: The biomarker types this pass owns. Anything rewriting health findings has
+#: to leave them alone: they are produced here, after scoring, and no scoring
+#: path ever sees them.
+GOVERNANCE_BIOMARKERS: frozenset[str] = frozenset(
+    {"ungoverned_hotspot", "stale_governance", "contradictory_decision"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +58,7 @@ def build_governance_findings(
     *,
     health_summary: dict[str, Any],
     decisions: list[Any],
+    scored_paths: set[str] | None = None,
 ) -> list[HealthFindingData]:
     """Derive governance ``HealthFindingData`` rows from a decision health summary.
 
@@ -64,6 +74,10 @@ def build_governance_findings(
         The full list of ``DecisionRecord`` ORM rows for the repository
         (used to resolve ``affected_files_json`` for conflict findings
         without hitting the DB).
+    scored_paths:
+        The files health scores. Governance findings outside it are dropped,
+        so a decision covering a design document does not put a finding on a
+        file that carries no score to attach it to. ``None`` keeps every file.
 
     Returns
     -------
@@ -80,6 +94,8 @@ def build_governance_findings(
     findings.extend(_stale_governance_findings(health_summary))
     findings.extend(_contradictory_decision_findings(health_summary, decision_by_id))
 
+    if scored_paths is not None:
+        findings = [f for f in findings if f.file_path in scored_paths]
     return findings
 
 
@@ -92,6 +108,10 @@ def _ungoverned_hotspot_findings(health_summary: dict[str, Any]) -> list[HealthF
     """One MEDIUM finding per ungoverned churn hotspot."""
     out: list[HealthFindingData] = []
     for path in health_summary.get("ungoverned_hotspots", []):
+        # A churning test file is the suite keeping up with the code, not a
+        # corner of the system nobody has decided anything about.
+        if is_test_related_path(path):
+            continue
         out.append(
             HealthFindingData(
                 biomarker_type="ungoverned_hotspot",
@@ -101,7 +121,7 @@ def _ungoverned_hotspot_findings(health_summary: dict[str, Any]) -> list[HealthF
                 line_start=None,
                 line_end=None,
                 details={"is_hotspot": True},
-                health_impact=_IMPACT_MEDIUM,
+                health_impact=_IMPACT_NONE,
                 reason="Churn hotspot with no governing architectural decision.",
             )
         )
@@ -147,7 +167,7 @@ def _stale_governance_findings(health_summary: dict[str, Any]) -> list[HealthFin
                     "decision_title": decision.title,
                     "staleness_score": round(staleness, 3),
                 },
-                health_impact=_IMPACT_HIGH,
+                health_impact=_IMPACT_NONE,
                 reason=(
                     f"Governing decision '{decision.title}' is stale "
                     f"(staleness_score={staleness:.2f})."
@@ -218,7 +238,7 @@ def _contradictory_decision_findings(
                         "src_title": src_title,
                         "dst_title": dst_title,
                     },
-                    health_impact=_IMPACT_HIGH,
+                    health_impact=_IMPACT_NONE,
                     reason=f"Contradicts decision '{dst_title}'.",
                 )
             )

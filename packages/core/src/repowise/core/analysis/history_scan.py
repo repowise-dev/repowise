@@ -44,7 +44,6 @@ from repowise.core.analysis.security_scan import (
     SecurityScanner,
 )
 from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
-from repowise.core.test_paths import is_test_related_path
 
 
 def _run_git(repo_path: Path, args: list[str], *, timeout: float = 30.0) -> str:
@@ -348,17 +347,12 @@ class HistorySecurityScanner:
         summary.blobs_scanned = len(blobs)
         blob_introduced_at, commit_dates = self._blob_introductions(repo_path, since, to)
 
-        # Test material is excluded from history mode, not merely down-ranked.
-        # A committed secret matters because it leaked a live credential, and a
-        # fixture is not one: on this repo 730 of 832 history hits (88%) were
-        # `api_key="sk-test"` in provider unit tests. That ratio makes the whole
-        # report untrustworthy, which is worse than reporting nothing.
-        # `--all-patterns` lifts this along with the kind gate.
+        # Test material findings are downgraded to low severity by scan_file
+        # so real keys in test files are still recorded without polluting high-severity reports.
         source_items = [
             (blob_sha, path)
             for blob_sha, path in blobs.items()
-            if (not path or self._is_source(path))
-            and not (secrets_only and path and is_test_related_path(path))
+            if not path or self._is_source(path)
         ]
         contents_map = self._read_blobs_batch(
             repo_path, [blob_sha for blob_sha, _ in source_items]

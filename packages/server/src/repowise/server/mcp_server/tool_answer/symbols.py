@@ -496,6 +496,13 @@ async def _anchor_symbol_hits(
     anchor_score = max(top_score + 2.0, _HIGH_CONFIDENCE_SCORE_FLOOR + 1.0)
     for sym in chosen:
         fp = sym.file_path
+        if not fp:
+            # The same guard the concept-anchoring twin applies to its winner.
+            # An anchor scores above every real hit by construction, so a
+            # pathless one takes rank 1 and serves a row carrying nothing but a
+            # score — no path, title, summary or excerpt — while displacing a
+            # real hit from the synthesis window.
+            continue
         target = by_path.get(fp)
         if target is None:
             target = {

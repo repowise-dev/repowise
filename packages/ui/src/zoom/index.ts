@@ -26,10 +26,11 @@ export {
   describeRelations,
   indexRelationsByNode,
   summarizeRelations,
+  toggleVerb,
 } from "./relation-summary";
 export type { RelationSummary, VerbCount } from "./relation-summary";
 
-export { hasRole, healthBandLabel, nodeRoles } from "./node-signals";
+export { hasRole, healthBandLabel, KIND_LABEL, nodeRoles } from "./node-signals";
 
 export { drawScene, pickNode } from "./draw-tree";
 export type { DrawOptions, DrawStats, PickEntry } from "./draw-tree";
@@ -87,7 +88,6 @@ export { isOnScreen, selectChildren } from "./cull";
 
 export type {
   ZoomKind,
-  ZoomRect,
   ZoomMetrics,
   ZoomNode,
   ZoomRelation,

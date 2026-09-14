@@ -94,6 +94,10 @@ async def test_health_reads_honor_repo_settings_excludes(session, tmp_path) -> N
         "open_findings": 1,
         "maintainability_average": None,
         "performance_average": None,
+        # None because this fixture's rows predate the split, not because the
+        # summary stopped reporting it.
+        "structure_average": None,
+        "history_average": None,
         "maintainability_findings": 0,
         "performance_findings": 0,
         "performance_findings_density": None,

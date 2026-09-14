@@ -22,6 +22,7 @@ is an accusation.
 
 from __future__ import annotations
 
+from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -53,6 +54,11 @@ class UntestedHotspotDetector:
     category = "test_coverage"
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
+        # A test file is not undertested. Coverage reports rarely instrument
+        # the suite itself, so where coverage is ingested every test file reads
+        # as 0% covered and a churning one would be accused of it.
+        if is_test_related_path(ctx.file_path, ctx.language):
+            return []
         if not _is_hotspot(ctx):
             return []
         if ctx.dependents_count < _DEPENDENTS_THRESHOLD:

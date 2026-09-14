@@ -13,9 +13,15 @@
  */
 
 import { deadCodeRiskFactorLabel } from "@repowise-dev/types/dead-code";
+import type { PerformanceOpportunity } from "@repowise-dev/types/health";
+import type {
+  OpportunityStep,
+  RefactoringOpportunityDetailResolved,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 
-import { biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
-import type { RefactoringTarget } from "./refactoring-card";
+import { biomarkerInfo, CATEGORY_LABEL, splitByOrigin } from "./biomarker-glossary";
+import type { HealthWorkItem } from "./refactoring-card";
 import {
   blastFiles,
   cutEdges,
@@ -25,7 +31,9 @@ import {
   extractMethodPlan,
   helperSite,
   moveTarget,
-  type RefactoringPlan,
+  splitGroups,
+  splitResidual,
+  splitShimRequired,
 } from "../refactoring/types";
 import { typeMeta } from "../refactoring/meta";
 
@@ -51,7 +59,7 @@ const FLAVOR_PREAMBLE: Record<AiPromptFlavor, string> = {
  * to the repowise tools it already has instead of repeating the exploration
  * repowise did at index time; every other flavor keeps the read-first wording.
  */
-type CloserKind = "refactor" | "coverage" | "security" | "hotspot";
+type CloserKind = "refactor" | "coverage" | "security" | "hotspot" | "file-health";
 
 const CLOSER_CONFIG: Record<
   CloserKind,
@@ -89,6 +97,14 @@ const CLOSER_CONFIG: Record<
     readFirst:
       "Start by reading the file end-to-end, then look at what it co-changes with and how well it's tested. High churn is a symptom — the goal is to make this file safer and cheaper to change, not to rewrite it. Don't propose changes until you understand why it churns.",
   },
+  "file-health": {
+    mcpSecond: (f) =>
+      `\`get_health(['${f}'])\` for the scored findings behind the numbers below, then \`get_risk(['${f}'])\` for blast radius, co-change partners and test gaps`,
+    mcpInto: "functions the findings name",
+    verb: "change anything",
+    readFirst:
+      "Start by reading the file end-to-end, then its callers, its tests, and whatever it changes alongside. The report above spans several independent signals, and they do not all point at the same fix. Work out which ones share a root cause before you touch anything.",
+  },
 };
 
 /**
@@ -112,6 +128,27 @@ function explorationCloser(
 
 function bulletList(items: (string | null | undefined | false)[]): string {
   return items.filter(Boolean).map((s) => `- ${s}`).join("\n");
+}
+
+/**
+ * History findings, stated as context rather than as work.
+ *
+ * They are scored, so leaving them out would not explain the file's number,
+ * but they are measured from the commit log: an agent handed them in a fix
+ * list will either edit the file until it gives up or invent a change that
+ * cannot move them. They get their own section and an explicit instruction.
+ */
+function historyContextBlock(
+  findings: { biomarker_type: string; reason: string; health_impact: number }[],
+): string | null {
+  if (findings.length === 0) return null;
+  const ranked = findings.slice().sort((a, b) => b.health_impact - a.health_impact);
+  const cost = ranked.reduce((sum, f) => sum + f.health_impact, 0);
+  return [
+    bulletList(ranked.map((f) => `**${biomarkerInfo(f.biomarker_type).label}** - ${f.reason}`)),
+    "",
+    `These are measured from this file's git history, not its code, and account for -${cost.toFixed(2)} points of its score. **Do not try to fix them.** No edit to this file will clear one; they move only as its commit history moves. Read them as background on how this code behaves over time, and let them raise your care where the structural work above touches the same regions.`,
+  ].join("\n");
 }
 
 function biomarkerExtraContext(
@@ -169,7 +206,7 @@ function biomarkerExtraContext(
   return null;
 }
 
-function effortHint(effort: RefactoringTarget["effort_bucket"]): string {
+function effortHint(effort: HealthWorkItem["effort_bucket"]): string {
   switch (effort) {
     case "S":
       return "Small (≤40 NLOC) — should be doable in one focused pass.";
@@ -187,7 +224,7 @@ function effortHint(effort: RefactoringTarget["effort_bucket"]): string {
 // ─────────────────────────────────────────────────────────────────────
 
 export interface BuildPromptOptions {
-  target: RefactoringTarget;
+  target: HealthWorkItem;
   flavor?: AiPromptFlavor;
   repoName?: string;
 }
@@ -200,7 +237,7 @@ export function buildAiPrompt({
   const t = target;
   const repoLine = repoName ? ` (\`${repoName}\`)` : "";
 
-  const findings = (
+  const allFindings = (
     t.all_findings && t.all_findings.length > 0
       ? t.all_findings
       : [
@@ -218,13 +255,18 @@ export function buildAiPrompt({
     .slice()
     .sort((a, b) => b.health_impact - a.health_impact);
 
+  // History markers are scored but unfixable, so they belong in context, not
+  // in a list titled "issues to fix". The split preserves the ranking above.
+  const { codeShape: fixable, history: historyFindings } = splitByOrigin(allFindings);
+  const historyBlock = historyContextBlock(historyFindings);
+
   // Cap the detailed findings so a file with dozens of hits doesn't produce a
   // multi-thousand-token prompt. The top findings (by impact) are spelled out
   // in full; the long tail is rolled up into a single grouped line so the agent
   // still knows what's left without paying for every description.
   const MAX_DETAILED_FINDINGS = 8;
-  const detailed = findings.slice(0, MAX_DETAILED_FINDINGS);
-  const remainder = findings.slice(MAX_DETAILED_FINDINGS);
+  const detailed = fixable.slice(0, MAX_DETAILED_FINDINGS);
+  const remainder = fixable.slice(MAX_DETAILED_FINDINGS);
 
   const findingsBlock = detailed
     .map((f, i) => {
@@ -301,11 +343,11 @@ export function buildAiPrompt({
       t.module ? `Module: \`${t.module}\`` : null,
     ]),
     "",
-    "## Issues to fix (ranked by impact)",
+    detailed.length > 0
+      ? ["## Issues to fix (ranked by impact)", "", findingsBlock, remainderLine ?? ""].join("\n")
+      : "## Issues to fix\n\nNothing in this file's own code is currently scored. Its deduction is entirely history, listed below; there is no structural work to do here.",
     "",
-    findingsBlock,
-    remainderLine ?? "",
-    "",
+    historyBlock ? ["## How this file behaves over time", "", historyBlock, ""].join("\n") : "",
     t.primary_suggestion
       ? ["## Suggested direction", "", t.primary_suggestion, ""].join("\n")
       : "",
@@ -420,7 +462,7 @@ export function buildCoverageAiPrompt({
         : null,
       row.nloc ? `File size: ${row.nloc} NLOC` : null,
       row.health_score != null
-        ? `Current health score: ${row.health_score.toFixed(1)}/10 — risky changes here are likely to break things, so tests pay off.`
+        ? `Current health score: ${row.health_score.toFixed(1)}/10 — stronger defect indicators make focused tests especially valuable.`
         : null,
       row.module ? `Module: \`${row.module}\`` : null,
       row.source_format ? `Coverage source: ${row.source_format.toUpperCase()}` : null,
@@ -697,23 +739,70 @@ export interface CouplingPromptEdge {
   target: string;
   strength?: number | null;
   last_co_change?: string | null;
+  /** Commits that touched both files, undecayed. */
+  support?: number | null;
+  /** Share of `source`'s own commits that also touched `target`. */
+  confidence_ab?: number | null;
+  /** The same share from `target`'s side. */
+  confidence_ba?: number | null;
+  /** `corroborated` / `unexplained` / `not_applicable`, or absent on an older index. */
+  structural?: string | null;
+}
+
+/** What the page already knows about one end of the pair. */
+export interface CouplingPromptNode {
+  module?: string | null;
+  score?: number | null;
+  nloc?: number | null;
 }
 
 export interface BuildCouplingPromptOptions {
   edge: CouplingPromptEdge;
   flavor?: AiPromptFlavor;
   repoName?: string;
+  /** Per-file facts keyed by path; either end may be missing. */
+  nodes?: Record<string, CouplingPromptNode>;
+}
+
+/** The dependency-graph verdict, spelled out. `null` when the index has none. */
+function structuralLine(structural: string | null | undefined): string | null {
+  switch (structural) {
+    case "unexplained":
+      return "Dependency graph: **nothing connects them** — no import, type use, framework wiring, or read. This is the finding: they move together with no structural reason to.";
+    case "corroborated":
+      return "Dependency graph: a dependency already connects them, so the co-change is at least partly explained. Judge whether the dependency is the *right* one before treating this as accidental.";
+    case "not_applicable":
+      return "Dependency graph: at least one side was never parsed (a lockfile, changelog, config, or doc), so there was no edge to look for. The coupling is real but is probably release plumbing, not a code-structure problem.";
+    default:
+      return null;
+  }
+}
+
+/** One end's module / health / size, as a bullet, when anything is known. */
+function fileFacts(path: string, label: string, node: CouplingPromptNode | undefined): string {
+  const facts: string[] = [];
+  if (node?.module) facts.push(`module \`${node.module}\``);
+  if (typeof node?.score === "number") facts.push(`health ${node.score.toFixed(1)}/10`);
+  if (typeof node?.nloc === "number" && node.nloc > 0) facts.push(`${node.nloc} lines`);
+  return facts.length
+    ? `File ${label}: \`${path}\` (${facts.join(", ")})`
+    : `File ${label}: \`${path}\``;
 }
 
 export function buildCouplingAiPrompt({
   edge,
   flavor = "generic",
   repoName,
+  nodes,
 }: BuildCouplingPromptOptions): string {
   const repoLine = repoName ? ` (\`${repoName}\`)` : "";
   const last = edge.last_co_change
     ? new Date(edge.last_co_change).toISOString().slice(0, 10)
     : null;
+  const pctOf = (v: number | null | undefined) =>
+    typeof v === "number" ? `${Math.round(v * 100)}%` : null;
+  const abPct = pctOf(edge.confidence_ab);
+  const baPct = pctOf(edge.confidence_ba);
 
   const constraintList = [
     "**Diagnose before decoupling.** Read both files and the commits that touched them together. The coupling may be legitimate (two halves of one feature) or accidental (a leaky abstraction, a shared constant, copy-paste). Name which it is before acting.",
@@ -741,10 +830,21 @@ export function buildCouplingAiPrompt({
     `## Hidden coupling to untangle${repoLine}`,
     "",
     bulletList([
-      `File A: \`${edge.source}\``,
-      `File B: \`${edge.target}\``,
+      fileFacts(edge.source, "A", nodes?.[edge.source]),
+      fileFacts(edge.target, "B", nodes?.[edge.target]),
+      edge.support
+        ? `Shared commits: **${edge.support}** (undecayed count of commits that touched both)`
+        : null,
+      // The asymmetry is the content: a file that never changes alone is a
+      // different finding from two that both change often.
+      abPct && baPct
+        ? `Directional confidence: ${abPct} of A's own commits also touched B; ${baPct} of B's also touched A. The larger share is the stronger claim; the smaller one says how independent that side still is.`
+        : (abPct ?? baPct)
+          ? `Directional confidence: ${abPct ? `${abPct} of A's own commits also touched B` : `${baPct} of B's own commits also touched A`} (the other side's commit total is unknown).`
+          : null,
+      structuralLine(edge.structural),
       edge.strength != null
-        ? `Coupling strength: **${edge.strength}** (recency-weighted count of commits that changed both — not a verified dependency)`
+        ? `Coupling strength: ${edge.strength} (recency-weighted, not a percentage and not a verified dependency)`
         : null,
       last ? `Last changed together: ${last}` : null,
       "Source: repowise co-change analysis (git history — treat as a lead).",
@@ -1244,7 +1344,7 @@ export function buildCommitAiPrompt({
   const short = c.sha.slice(0, 10);
 
   const constraintList = [
-    "Read the diff first. The risk score is a prior, not a verdict — a high score on a mechanical rename is fine; a low score hiding a logic change is not.",
+    "Read the diff first. The calibrated diff-size score is supporting evidence, not a verdict — a high score on a mechanical rename is fine; a low score hiding a logic change is not.",
     "Focus on what the change-risk drivers flag: scattered edits, missing tests, a hotspot touch, a new-to-the-area author. Confirm each against the actual diff.",
     "Check the blast radius: what depends on the changed files, and is anything that usually changes with them missing from this commit?",
     "Call out missing or weak test coverage for the behavior this commit changes.",
@@ -1273,8 +1373,8 @@ export function buildCommitAiPrompt({
       c.author_name ? `Author: ${c.author_name}` : null,
       c.is_fix ? "Tagged as a bug-fix commit." : null,
       c.review_priority ? `Review priority (repo-relative): **${c.review_priority}**` : null,
-      c.risk_percentile != null ? `Risk percentile in this repo: ${Math.round(c.risk_percentile)}th` : null,
-      c.change_risk_score != null ? `Raw change-risk score: ${c.change_risk_score.toFixed(1)}/10` : null,
+      c.risk_percentile != null ? `Diff-shape percentile in this repo: ${Math.round(c.risk_percentile)}th` : null,
+      c.change_risk_score != null ? `Supporting diff-size score: ${c.change_risk_score.toFixed(1)}/10 (calibrated per commit)` : null,
       c.files_changed != null ? `Files changed: ${c.files_changed}` : null,
       c.lines_added != null || c.lines_deleted != null
         ? `Lines: +${c.lines_added ?? 0} / −${c.lines_deleted ?? 0}`
@@ -1303,6 +1403,54 @@ export function buildCommitAiPrompt({
 // Refactoring plan prompt — hand a deterministic plan to a coding agent
 // ─────────────────────────────────────────────────────────────────────
 
+export interface BuildPerformanceOpportunityPromptOptions {
+  opportunity: PerformanceOpportunity;
+  flavor?: AiPromptFlavor;
+}
+
+/** An evidence-first handoff used only when no exact persisted plan is available. */
+export function buildPerformanceOpportunityPrompt({
+  opportunity,
+  flavor = "generic",
+}: BuildPerformanceOpportunityPromptOptions): string {
+  const evidence = opportunity.evidence.map((item) => {
+    const location = `${item.file_path}${item.line_start ? `:${item.line_start}` : ""}`;
+    const path = item.path.length ? `; path: ${item.path.join(" -> ")}` : "";
+    return `- \`${location}\`: ${item.reason} (${item.provenance}${path})`;
+  });
+  const intervention = opportunity.intervention_symbol
+    ? `Candidate shared intervention: \`${opportunity.intervention_symbol}\`.`
+    : "No shared intervention was proven.";
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    "## Causal performance opportunity",
+    "",
+    `- Stable opportunity ID: \`${opportunity.opportunity_id}\`.`,
+    `- Detector: \`${opportunity.biomarker_type}\`.`,
+    `- Execution context: ${opportunity.execution_context}.`,
+    `- Boundary: ${opportunity.boundary_kind ?? "unknown"}.`,
+    `- Confidence: ${opportunity.confidence}; provenance: ${opportunity.provenance}.`,
+    `- Scope: ${opportunity.affected_call_sites_total} affected call sites across ${opportunity.affected_files_total} files.`,
+    `- ${intervention}`,
+    `- Product status: ${opportunity.plan_reason}`,
+    "",
+    "## Evidence sampled by the analyzer",
+    "",
+    evidence.length ? evidence.join("\n") : "No resolved evidence paths were included in this page.",
+    "",
+    "## What to do",
+    "",
+    "1. Verify the repeated cost and caller-to-sink paths against the real code.",
+    "2. Determine whether one behavior-preserving intervention safely addresses the shared cause.",
+    "3. Identify the tests and commands that prove result equivalence and performance improvement.",
+    "4. If the evidence is insufficient or the intervention is unsafe, stop and explain the blocker instead of editing.",
+    "",
+    "Do not run commands or change files until the evidence and proposed validation have been reviewed.",
+  ].join("\n");
+}
+
 export interface BuildRefactoringPlanPromptOptions {
   plan: RefactoringPlan;
   flavor?: AiPromptFlavor;
@@ -1313,6 +1461,40 @@ function planSourceLink(path: string, start: number | null, end: number | null):
   if (start && end) return `\`${path}:${start}-${end}\``;
   if (start) return `\`${path}:${start}\``;
   return `\`${path}\``;
+}
+
+function recommendationValidation(plan: RefactoringPlan): string {
+  const validation = plan.validation;
+  if (!validation) return "";
+  const evidence =
+    validation.basis === "unknown"
+      ? "No measured or inferred guarding test was found; treat this as a validation gap."
+      : `${validation.total} guarding test${validation.total === 1 ? "" : "s"} via ${
+          validation.via ?? validation.basis
+        }${validation.truncated ? ` (showing ${validation.tests.length})` : ""}.`;
+  return [
+    "## Validation plan",
+    "",
+    bulletList([
+      evidence,
+      validation.tests.length
+        ? `Tests: ${validation.tests.map((test) => `\`${test}\``).join(", ")}.`
+        : null,
+      validation.affected_files.length
+        ? `Affected files: ${validation.affected_files
+            .map((file) => `\`${file}\``)
+            .join(", ")}.`
+        : null,
+      validation.affected_symbols.length
+        ? `Affected symbols: ${validation.affected_symbols
+            .map((symbol) => `\`${symbol}\``)
+            .join(", ")}.`
+        : null,
+      validation.commands.length
+        ? `Run: ${validation.commands.map((command) => `\`${command}\``).join("; ")}.`
+        : null,
+    ]),
+  ].join("\n");
 }
 
 /** Render the concrete, type-specific steps the agent should carry out. The
@@ -1393,6 +1575,33 @@ function refactoringPlanSteps(plan: RefactoringPlan): string {
         "For each edge, invert the dependency or introduce an abstraction/interface so the importer no longer needs the importee at module load time. Don't just move the import inside a function unless that genuinely breaks the cycle.",
       ].join("\n");
     }
+    case "split_file": {
+      const groups = splitGroups(plan).filter((g) => g.symbols.length > 0);
+      const residual = splitResidual(plan);
+      const shim = splitShimRequired(plan);
+      const lines = groups.map(
+        (g, i) => `- **${g.suggested_file ?? `part${i + 1}`}** — ${g.symbols.join(", ")}`,
+      );
+      return [
+        `Split \`${plan.file_path}\` into ${groups.length} file${
+          groups.length === 1 ? "" : "s"
+        } along the seams below. Move each group's symbols together:`,
+        "",
+        lines.join("\n"),
+        residual.length
+          ? `\nLeave in the original file (shared by more than one group): ${residual
+              .map((symbol) => `\`${symbol}\``)
+              .join(", ")}.`
+          : "",
+        "",
+        shim
+          ? "Other files import this module, so keep the original path importable: re-export the moved symbols from it, or update every importer. Do not break the existing import surface."
+          : "Update every importer of the moved symbols.",
+        "The suggested filenames are a starting point, not a requirement; rename them if the repo has a clearer convention.",
+      ]
+        .filter((line) => line !== "")
+        .join("\n");
+    }
     default:
       return "Apply the refactoring described above.";
   }
@@ -1413,6 +1622,7 @@ export function buildRefactoringPlanPrompt({
   const repoLine = repoName ? ` (\`${repoName}\`)` : "";
   const meta = typeMeta(plan.refactoring_type);
   const files = blastFiles(plan).filter((f) => f !== plan.file_path);
+  const validation = recommendationValidation(plan);
 
   const constraintList = [
     "Preserve behavior exactly — this is a refactoring, not a feature change. No public API or observable behavior should shift.",
@@ -1451,6 +1661,8 @@ export function buildRefactoringPlanPrompt({
     "",
     refactoringPlanSteps(plan),
     "",
+    validation,
+    "",
     "## Hard constraints",
     "",
     bulletList(constraintList),
@@ -1460,6 +1672,570 @@ export function buildRefactoringPlanPrompt({
     completionContract.join("\n"),
     "",
     explorationCloser(flavor, plan.file_path, "refactor"),
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// File health prompt
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Everything the file drawer knows about one file, in the shape the prompt
+ * needs it.
+ *
+ * Structural rather than imported from the drawer, like every other input in
+ * this module: the drawer imports the builder, so importing the drawer's types
+ * back would be a cycle, and a host holding the same facts from somewhere else
+ * can still build the prompt.
+ */
+export interface FileHealthPromptInput {
+  file_path: string;
+  score: number;
+  nloc?: number | null;
+  module?: string | null;
+  defect_score?: number | null;
+  maintainability_score?: number | null;
+  performance_score?: number | null;
+  line_coverage_pct?: number | null;
+  has_test_file?: boolean;
+  duplication_pct?: number | null;
+  max_ccn?: number | null;
+  primary_biomarker?: string | null;
+  primary_reason?: string | null;
+  total_deduction?: number | null;
+}
+
+export interface FileHealthPromptFinding {
+  id: string;
+  biomarker_type: string;
+  severity: string;
+  function_name: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  health_impact: number;
+  reason: string;
+  // Spelled with an explicit `undefined` because the drawer forwards rows
+  // whose optional fields are genuinely absent, and the package compiles with
+  // exactOptionalPropertyTypes.
+  status?: string | undefined;
+  details?: Record<string, unknown> | null | undefined;
+}
+
+export interface FileHealthPromptCategory {
+  category: string;
+  cap?: number | null;
+  applied_deduction: number;
+  capped: boolean;
+  finding_count: number;
+}
+
+/** The process and topology facts the drawer's signals panel shows. */
+export interface FileHealthPromptSignals {
+  commit_count_90d?: number | null;
+  change_entropy_pct?: number | null;
+  prior_defect_count?: number | null;
+  bug_magnet?: boolean | null;
+  last_fix_at?: string | null;
+  in_degree?: number | null;
+  out_degree?: number | null;
+  age_days?: number | null;
+}
+
+export interface BuildRefactoringOpportunityPromptOptions {
+  opportunity: RefactoringOpportunityDetailResolved;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+/** `- Mechanical (dataflow proved the extraction).` */
+function stepApplicabilityLine(step: OpportunityStep): string {
+  const classification =
+    step.applicability.classification === "mechanical" ? "Mechanical" : "Judgment";
+  const reasons = step.applicability.reasons.map((r) => r.replace(/_/g, " ")).join("; ");
+  const unknowns = step.applicability.unknowns.length
+    ? ` Not established: ${step.applicability.unknowns
+        .map((u) => u.replace(/_/g, " "))
+        .join(", ")}.`
+    : "";
+  return `${classification}${reasons ? ` — ${reasons}` : ""}.${unknowns}`;
+}
+
+/**
+ * The ordered steps, each one saying what kind of change it is.
+ *
+ * `relocated_by` gets its own sentence rather than a footnote. A step it marks
+ * names an earlier step that moves its symbol to another file, so its own path
+ * and span describe where the symbol *was* — an agent that follows those
+ * coordinates after applying step one lands in the wrong file, and nothing else
+ * in the payload would tell it so.
+ */
+function opportunitySteps(opportunity: RefactoringOpportunityDetailResolved): string {
+  const byId = new Map(opportunity.plans.map((plan) => [plan.id, plan]));
+  return opportunity.steps
+    .map((step, i) => {
+      const plan = byId.get(step.plan_id);
+      const meta = typeMeta(step.refactoring_type);
+      const lines: (string | null)[] = [
+        `${i + 1}. **${meta.label}** — ${planSourceLink(step.file_path, step.line_start, step.line_end)}${
+          step.target_symbol ? ` — \`${step.target_symbol}\`` : ""
+        }`,
+        `   - Step id: \`${step.plan_id}\``,
+        `   - ${stepApplicabilityLine(step)}`,
+        step.relocated_by
+          ? `   - **Locate it again first.** Step \`${step.relocated_by}\` moves this symbol to another file, so the path and lines above are where it was, not where it will be when you get here.`
+          : null,
+        plan
+          ? indentBlock(refactoringPlanSteps(plan), "   ")
+          : // Not a silent gap: a step whose payload did not come back still
+            // says so rather than rendering a header with no instruction.
+            `   - The detail for this step was not in this payload. Ask for it by id: \`${step.plan_id}\`.`,
+      ];
+      return lines.filter(Boolean).join("\n");
+    })
+    .join("\n\n");
+}
+
+/** Indent a multi-line block so it reads as the body of its numbered step. */
+function indentBlock(body: string, pad: string): string {
+  return body
+    .split("\n")
+    .map((line) => (line.trim() === "" ? "" : `${pad}${line}`))
+    .join("\n");
+}
+
+/** The observations behind the diagnosis, never presented as work. */
+function opportunityEvidence(opportunity: RefactoringOpportunityDetailResolved): string {
+  if (opportunity.evidence.length === 0) return "";
+  const rows = opportunity.evidence.map((item) => {
+    const meta = typeMeta(item.refactoring_type);
+    const detail = Object.entries(item.summary)
+      .filter(([, value]) => value !== null && value !== undefined && value !== "")
+      .map(([key, value]) => `${key.replace(/_/g, " ")}: ${String(value)}`)
+      .join("; ");
+    return `- ${meta.label}${item.target_symbol ? ` \`${item.target_symbol}\`` : ""}${
+      detail ? ` — ${detail}` : ""
+    }`;
+  });
+  return [
+    "## Evidence behind the diagnosis",
+    "",
+    "Supporting observations, not extra work. They are why the diagnosis reads the way it does.",
+    "",
+    rows.join("\n"),
+    opportunity.evidence_truncated
+      ? `\n${opportunity.evidence_emitted} of ${opportunity.evidence_total} shown.`
+      : "",
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+/** The validation profiles the steps share, with their runnable commands. */
+function opportunityValidation(opportunity: RefactoringOpportunityDetailResolved): string {
+  if (opportunity.validation_profiles.length === 0) return "";
+  const blocks = opportunity.validation_profiles.map((profile) => {
+    const evidence =
+      profile.basis === "unknown"
+        ? "No measured or inferred guarding test was found; treat this as a validation gap."
+        : `${profile.total} guarding test${profile.total === 1 ? "" : "s"} via ${
+            profile.via ?? profile.basis
+          }${profile.truncated ? ` (showing ${profile.tests.length})` : ""}.`;
+    return bulletList([
+      evidence,
+      profile.tests.length
+        ? `Tests: ${profile.tests.map((test) => `\`${test}\``).join(", ")}.`
+        : null,
+      profile.commands.length
+        ? `Run: ${profile.commands.map((command) => `\`${command}\``).join("; ")}.`
+        : null,
+    ]);
+  });
+  return ["## Validation plan", "", blocks.join("\n")].join("\n");
+}
+
+/**
+ * The line that tells an MCP-capable agent it can pull this record itself.
+ *
+ * An id in a prompt with no call that resolves it is noise — the work-queue
+ * prompt prints `- Target: <id>` and nothing accepts it, which is the mistake
+ * this deliberately does not repeat. So the id is stated for every flavor,
+ * because it is how a person reports completion and how staleness is detected,
+ * but only the MCP flavor is told to call anything with it. Every other flavor
+ * gets the whole plan inlined above and is told plainly that it cannot query
+ * back, rather than being handed a tool name it has no way to invoke.
+ */
+function opportunityHandoff(
+  opportunity: RefactoringOpportunityDetailResolved,
+  flavor: AiPromptFlavor,
+): string {
+  if (flavor === "claude-code-mcp") {
+    return [
+      "## Pull this record yourself",
+      "",
+      `\`get_health(opportunity_id="${opportunity.opportunity_id}")\``,
+      "",
+      "That returns this same opportunity from the index: every ordered step with its mechanical/judgment classification and reasons, the member plans' payloads, the validation profiles with runnable commands, the evidence, and structured next actions. Call it before you start — the steps below are a snapshot, and the index is the record.",
+    ].join("\n");
+  }
+  return [
+    "## This opportunity's id",
+    "",
+    `\`${opportunity.opportunity_id}\``,
+    "",
+    "Quote it when you report back. You have no tool here that resolves it, so everything needed to execute the work is inlined above rather than left behind a call you cannot make.",
+  ].join("\n");
+}
+
+/**
+ * Build a ready-to-paste prompt that hands a coding agent ONE composed
+ * refactoring opportunity: the file, what it leads with, its ordered steps with
+ * the mechanical/judgment split, the evidence, the validation commands, and the
+ * stable id that resolves back to the record.
+ *
+ * This is the opportunity-level sibling of `buildRefactoringPlanPrompt`, which
+ * still handles a single step.
+ */
+export function buildRefactoringOpportunityPrompt({
+  opportunity,
+  flavor = "generic",
+  repoName,
+}: BuildRefactoringOpportunityPromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const meta = typeMeta(opportunity.lead_refactoring_type || "");
+  const others = opportunity.affected_files.filter((f) => f !== opportunity.file_path);
+
+  // Tri-state, and all three states survive. `null` means no dominant finding
+  // was recorded to compare against, which is not the claim `false` makes.
+  const primaryLine =
+    opportunity.addresses_primary_problem === true
+      ? "These steps address the file's dominant diagnosed problem."
+      : opportunity.addresses_primary_problem === false
+        ? "These steps do NOT address the file's dominant diagnosed problem — they are real work, but not the biggest cost in this file. Say so if you think something else should come first."
+        : "No dominant problem was recorded for this file, so whether these steps address the main one is unknown — not answered either way.";
+
+  const anyRelocated = opportunity.steps.some((step) => Boolean(step.relocated_by));
+
+  const constraintList = [
+    "Preserve behavior exactly — this is a refactoring, not a feature change. No public API or observable behavior should shift.",
+    "Apply the steps in the order given. It is dependency-safe; reordering it is not.",
+    anyRelocated
+      ? "Where a step says to locate its symbol again, do that before touching it: an earlier step moves it, so the recorded path and lines go stale mid-run."
+      : null,
+    "A step marked Judgment has an unproven obligation. Read the real code and decide before applying it; do not treat it like a mechanical one.",
+    "Run the project's tests (and type-checker/linter) after the change; the suite must stay green.",
+    "If, after reading the real code, a step looks wrong or unsafe, stop and explain why instead of forcing it — the detection is static and can be a false positive.",
+    others.length > 0
+      ? `Keep these co-affected files consistent: ${others.map((f) => `\`${f}\``).join(", ")}.`
+      : null,
+  ];
+
+  const completionContract = [
+    "1. The refactored code, with each step above applied in order.",
+    "2. Per step: whether you applied it, and for anything you skipped, the reason.",
+    "3. A short note on what you renamed or introduced and why.",
+    "4. Confirmation the tests pass (or the exact failures if they don't).",
+    `5. The opportunity id \`${opportunity.opportunity_id}\`, so the work can be matched back to the record.`,
+  ];
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## ${meta.label} in \`${opportunity.file_path}\`${repoLine}`,
+    "",
+    bulletList([
+      `Opportunity: \`${opportunity.opportunity_id}\``,
+      `File: \`${opportunity.file_path}\``,
+      opportunity.lead_biomarker
+        ? `Leading cause: ${opportunity.lead_biomarker.replace(/_/g, " ")}.`
+        : null,
+      `${opportunity.step_count} step${opportunity.step_count === 1 ? "" : "s"}: ${opportunity.mechanical_steps} mechanical, ${opportunity.judgment_steps} judgment.`,
+      opportunity.recoverable_health > 0
+        ? `Recovers ~${opportunity.recoverable_health.toFixed(2)} of health score if applied.`
+        : null,
+      `Effort: ${opportunity.effort_bucket} bucket. Detector confidence: ${opportunity.confidence}.`,
+      primaryLine,
+    ]),
+    "",
+    "## The steps, in order",
+    "",
+    anyRelocated
+      ? `${opportunity.ordering_note ?? "One or more steps below are moved by an earlier step; each says so on its own line."}\n`
+      : "",
+    opportunitySteps(opportunity),
+    "",
+    opportunityEvidence(opportunity),
+    "",
+    opportunityValidation(opportunity),
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    opportunityHandoff(opportunity, flavor),
+    "",
+    explorationCloser(flavor, opportunity.file_path, "refactor"),
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+export interface BuildFileHealthPromptOptions {
+  file: FileHealthPromptInput;
+  findings?: FileHealthPromptFinding[];
+  categories?: FileHealthPromptCategory[];
+  signals?: FileHealthPromptSignals | null;
+  /** Open performance causes, when the host fetched them. */
+  performance?: { items: PerformanceOpportunity[]; total: number } | null;
+  /** Score movement between the last two snapshots, when known. */
+  trendDelta?: number | null;
+  suggestions?: Record<string, string>;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+/** Spelled out in full; the rest roll up, so a noisy file stays affordable. */
+const MAX_FILE_HEALTH_FINDINGS = 10;
+/** Causes listed by name. Past this, the queue is where to read them. */
+const MAX_FILE_HEALTH_CAUSES = 6;
+
+/**
+ * One file, everything code health has on it, as a prompt.
+ *
+ * Deliberately not `buildAiPrompt`. That one takes a refactoring-queue item
+ * and asks for a refactor. This takes the drawer's own view of a file, which
+ * spans three scored dimensions, the category ceilings, the process and
+ * topology signals, and any open performance causes. Those signals disagree
+ * often enough that the prompt's job is to hand over all of them and ask which
+ * ones share a root cause, rather than to order a fix.
+ */
+export function buildFileHealthAiPrompt({
+  file,
+  findings = [],
+  categories = [],
+  signals,
+  performance,
+  trendDelta,
+  suggestions = {},
+  flavor = "generic",
+  repoName,
+}: BuildFileHealthPromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  // Triaged findings stay on the row. A prompt that asked an agent to fix
+  // something already marked resolved would be reporting the drawer's state
+  // rather than the file's.
+  const open = findings.filter(
+    (f) => f.status !== "resolved" && f.status !== "false_positive",
+  );
+  // Split before ranking: history markers are scored but cannot be fixed from
+  // this file, so they go to context rather than into a list of open work.
+  const { codeShape, history: historyFindings } = splitByOrigin(open);
+  const historyBlock = historyContextBlock(historyFindings);
+  const ranked = codeShape.slice().sort((a, b) => b.health_impact - a.health_impact);
+  const detailed = ranked.slice(0, MAX_FILE_HEALTH_FINDINGS);
+  const remainder = ranked.slice(MAX_FILE_HEALTH_FINDINGS);
+
+  const pillars = bulletList([
+    file.defect_score != null ? `Code health: **${file.defect_score.toFixed(1)}/10**` : null,
+    file.maintainability_score != null
+      ? `Maintainability: **${file.maintainability_score.toFixed(1)}/10**`
+      : null,
+    file.performance_score != null
+      ? `Performance: **${file.performance_score.toFixed(1)}/10**`
+      : null,
+  ]);
+
+  const snapshot = bulletList([
+    `Health score: **${file.score.toFixed(1)}/10** (lower is worse; 10.0 is clean)`,
+    file.total_deduction != null
+      ? `Total deduction: **−${file.total_deduction.toFixed(2)}** across ${categories.length} scoring ${
+          categories.length === 1 ? "category" : "categories"
+        }`
+      : null,
+    trendDelta != null && trendDelta !== 0
+      ? `Score moved ${trendDelta > 0 ? "up" : "down"} ${Math.abs(trendDelta).toFixed(2)} since the previous snapshot`
+      : null,
+    file.nloc != null ? `Size: ${file.nloc} NLOC` : null,
+    file.module ? `Module: \`${file.module}\`` : null,
+    file.max_ccn != null ? `Highest cyclomatic complexity in the file: ${file.max_ccn}` : null,
+    file.duplication_pct != null ? `Duplication: ${file.duplication_pct.toFixed(1)}%` : null,
+    file.line_coverage_pct != null
+      ? `Line coverage: ${Math.round(file.line_coverage_pct)}%`
+      : "Line coverage: not reported",
+    file.has_test_file === false
+      ? "No test file was found for this file, so treat any behaviour change as unverified until you add one."
+      : null,
+  ]);
+
+  const categoryBlock =
+    categories.length > 0
+      ? bulletList(
+          categories
+            .slice()
+            .sort((a, b) => b.applied_deduction - a.applied_deduction)
+            .map((c) => {
+              const label =
+                CATEGORY_LABEL[c.category as keyof typeof CATEGORY_LABEL] ?? c.category;
+              const cap = c.cap != null ? `, capped at −${c.cap.toFixed(1)}` : "";
+              // A capped category understates itself: the raw deductions ran
+              // past the ceiling, so this figure is a floor on how bad it is,
+              // not a measurement of it.
+              const note = c.capped
+                ? " — **at its ceiling**, so this understates the category"
+                : "";
+              return `${label}: −${c.applied_deduction.toFixed(2)} from ${c.finding_count} finding${
+                c.finding_count === 1 ? "" : "s"
+              }${cap}${note}`;
+            }),
+        )
+      : null;
+
+  const findingsBlock = detailed
+    .map((f, i) => {
+      const info = biomarkerInfo(f.biomarker_type);
+      const loc = f.function_name
+        ? `function \`${f.function_name}\`${
+            f.line_start ? ` (line ${f.line_start}${f.line_end ? `–${f.line_end}` : ""})` : ""
+          }`
+        : "file-level";
+      const extra = biomarkerExtraContext(f.biomarker_type, f.details);
+      const suggestion = suggestions[f.biomarker_type];
+      return [
+        `${i + 1}. **${info.label}** · ${CATEGORY_LABEL[info.category]} · ${f.severity.toUpperCase()} · health impact −${f.health_impact.toFixed(2)}`,
+        `   - Where: ${loc}`,
+        `   - Why it's a problem: ${info.description}`,
+        `   - Observed: ${f.reason}`,
+        extra ? `   - Extra context: ${extra}` : null,
+        suggestion ? `   - Suggested direction: ${suggestion}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+
+  const remainderLine = (() => {
+    if (remainder.length === 0) return null;
+    const counts = new Map<string, number>();
+    for (const f of remainder) {
+      counts.set(f.biomarker_type, (counts.get(f.biomarker_type) ?? 0) + 1);
+    }
+    const grouped = Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([type, n]) => `${n}× ${biomarkerInfo(type).label}`)
+      .join(", ");
+    const tail = remainder.reduce((s, f) => s + f.health_impact, 0);
+    return `…and ${remainder.length} more lower-impact finding${
+      remainder.length === 1 ? "" : "s"
+    } (${grouped}; −${tail.toFixed(2)} total). Handle these only after the ranked items above.`;
+  })();
+
+  const signalLines = signals
+    ? bulletList([
+        signals.commit_count_90d != null
+          ? `${signals.commit_count_90d} commits in the last 90 days`
+          : null,
+        signals.change_entropy_pct != null
+          ? `Change entropy ${Math.round(signals.change_entropy_pct)}%, which is how scattered those edits were across the file`
+          : null,
+        signals.prior_defect_count != null && signals.prior_defect_count > 0
+          ? `${signals.prior_defect_count} prior bug fixes have landed here${
+              signals.last_fix_at ? `, most recently ${signals.last_fix_at.slice(0, 10)}` : ""
+            }`
+          : null,
+        signals.bug_magnet
+          ? "Flagged a **bug magnet**: fixes keep landing in this file, so treat a regression here as likely rather than unlucky."
+          : null,
+        signals.in_degree != null
+          ? `${signals.in_degree} file${signals.in_degree === 1 ? "" : "s"} import this one, so changing its public surface reaches all of them`
+          : null,
+        signals.out_degree != null ? `It imports ${signals.out_degree} others` : null,
+        signals.age_days != null ? `First seen ${signals.age_days} days ago` : null,
+      ])
+    : null;
+
+  const causes = performance?.items ?? [];
+  const causeBlock =
+    causes.length > 0
+      ? [
+          bulletList(
+            causes.slice(0, MAX_FILE_HEALTH_CAUSES).map((c) => {
+              // Titled the way every other surface titles a cause: the marker
+              // plus where it fires. The fix's strategy name is not the
+              // cause's name, and using it made distinct causes read as
+              // several copies of one.
+              const first = c.evidence[0];
+              const symbol = c.intervention_symbol ?? first?.function_name ?? null;
+              const at = symbol ? ` in \`${symbol}\`` : "";
+              const line = first?.line_start != null ? ` (line ${first.line_start})` : "";
+              const reach =
+                c.affected_call_sites_total > 1
+                  ? ` Reaches ${c.affected_call_sites_total} call sites across ${c.affected_files_total} file${
+                      c.affected_files_total === 1 ? "" : "s"
+                    }.`
+                  : "";
+              const fix = c.fix
+                ? ` Recorded fix: ${c.fix.strategy} (${c.fix.safety}). ${c.fix.rationale}`
+                : "";
+              return `**${biomarkerInfo(c.biomarker_type).label}**${at}${line} — ${c.actionability_reason}${reach}${fix}`;
+            }),
+          ),
+          causes.length > MAX_FILE_HEALTH_CAUSES
+            ? `…and ${causes.length - MAX_FILE_HEALTH_CAUSES} more open on this file.`
+            : null,
+          "These are static reads of the code, not measurements of a running system. Confirm a path is actually hot before optimising it.",
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      : null;
+
+  const constraints = [
+    "**Read first, edit second.** Read the file, its callers, its tests, and any obvious helpers before proposing a change.",
+    "Group the findings by root cause before you start. Several markers on one function are usually one problem, and fixing them separately produces churn without improving the file.",
+    "Preserve runtime behaviour. No new features, and no opportunistic rewrites in unrelated regions.",
+    "Do **not** change public signatures or exported names unless a verified finding requires it. Call it out explicitly if you must.",
+    "Keep test coverage at least as high as before. If you change logic, add or update tests.",
+    "Match the existing style of the file and its neighbours.",
+    "If a finding turns out to be a false positive once you have read the code, skip it and say why. That is a useful answer, not a failure.",
+  ];
+
+  const expected = [
+    "1. A short triage: which findings share a root cause, which are independent, and which you believe are false positives.",
+    "2. A plan of 3 to 6 bullets for the ones worth acting on, ordered so the riskiest change is not the first.",
+    "3. The edits, scoped to this file plus its tests and any tightly coupled helper.",
+    "4. A summary of what changed, and which specific findings each change should clear.",
+  ];
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    `\n## Target file${repoLine}\n`,
+    `\`${file.file_path}\``,
+    `\n## Current health snapshot\n`,
+    snapshot,
+    pillars ? `\n### Scored dimensions\n\n${pillars}` : "",
+    file.primary_biomarker
+      ? `\n### Leading cause\n\n**${biomarkerInfo(file.primary_biomarker).label}.**${
+          file.primary_reason ? ` ${file.primary_reason}` : ""
+        }`
+      : "",
+    categoryBlock ? `\n## Where the deduction comes from\n\n${categoryBlock}` : "",
+    detailed.length > 0 ? `\n## Open findings (ranked by impact)\n\n${findingsBlock}` : "",
+    remainderLine ? `\n${remainderLine}` : "",
+    causeBlock ? `\n## Open performance causes\n\n${causeBlock}` : "",
+    signalLines || historyBlock
+      ? `\n## How this file behaves over time\n\n${[signalLines, historyBlock].filter(Boolean).join("\n\n")}`
+      : "",
+    // These carry their own leading blank line, because the filter below that
+    // drops absent sections also drops any bare "" used as a separator.
+    `\n## Hard constraints\n`,
+    bulletList(constraints),
+    `\n## What I expect back\n`,
+    expected.join("\n"),
+    `\n${explorationCloser(flavor, file.file_path, "file-health")}`,
   ]
     .filter((s) => s !== "")
     .join("\n");

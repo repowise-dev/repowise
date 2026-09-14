@@ -12,11 +12,19 @@ import {
   CATEGORY_LABEL,
   DIMENSION_CHIP,
   DIMENSION_LABEL,
+  HISTORY_CHIP,
+  HISTORY_EXPLAINER,
+  HISTORY_LABEL,
+  isHistoryBiomarker,
   type BiomarkerDimension,
 } from "./biomarker-glossary";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "./score-breakdown";
+import { AiPromptButton } from "./ai-prompt-button";
+import { AiPromptModal } from "./ai-prompt-modal";
+import { buildFileHealthAiPrompt } from "./ai-prompt-builder";
 import { FileSignalsPanel } from "./file-signals-panel";
+import { FindingOpportunityLink } from "./file-opportunity";
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { formatRelativeTimeOrNull } from "../lib/format";
 import { Sparkline } from "./sparkline";
@@ -25,13 +33,21 @@ import {
   SEVERITY_LABEL,
   deltaColor,
   formatDelta,
+  healthBandColor,
   type Severity,
 } from "./tokens";
-// Shared band function, never a local threshold: two surfaces disagreeing
-// about where "Good" starts is worse than the import.
-import { healthBand } from "../overview/health-lede";
-import type { FileHealthTrend, FileSignals } from "@repowise-dev/types/health";
+// The shared bands, never a local threshold: this pill sits beside marks that
+// all derive from `bandForScore`, and two of them disagreeing about where a
+// band starts describes one file two ways in one viewport.
+import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import type {
+  FileHealthTrend,
+  FileSignals,
+  PerformanceOpportunity,
+} from "@repowise-dev/types/health";
+import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { SeverityMark } from "./severity-mark";
+import { ImpactFigure } from "./impact-figure";
 
 export interface HealthDrawerFinding {
   id: string;
@@ -82,12 +98,24 @@ export interface HealthFileDrawerProps {
   } | null;
   findings?: HealthDrawerFinding[];
   suggestions?: Record<string, string>;
+  /**
+   * The file's composed refactoring opportunity, when the host can supply one.
+   * Findings whose cause it addresses get a link to it; the rest do not, so the
+   * drawer never offers a plan for a problem the plan does not answer.
+   */
+  opportunity?: RefactoringOpportunity | null | undefined;
+  refactoringOpportunityHref?: ((opportunityId: string) => string) | undefined;
   /** Per-file score trajectory; renders a compact sparkline when populated. */
   trend?: FileHealthTrend | null;
   /** Process / people / topology signals; the panel is silent when absent. */
   signals?: FileSignals | null;
   fileViewHref?: string;
-  /** Build a per-line deep-link from the drawer's function:line span. */
+  /**
+   * Build a per-line deep-link from the drawer's function:line span. Unbound
+   * until a file view renders line anchors: no `#L<n>` resolves today, so a
+   * host that supplies one only adds a fragment that goes nowhere. Without
+   * it the label falls back to `fileViewHref`, the file page itself.
+   */
   fileViewHrefFor?: ((lineStart: number) => string) | undefined;
   permalinkHref?: string;
   onPartnerSelect?: ((path: string) => void) | undefined;
@@ -96,6 +124,23 @@ export interface HealthFileDrawerProps {
   onFindingStatusChange?:
     | ((findingId: string, status: string) => Promise<void> | void)
     | undefined;
+  /**
+   * The surface this file was opened from. In `performance` the drawer leads
+   * with the file's causes rather than with its defect score, because that is
+   * what the reader was looking at. Anything else renders as before.
+   */
+  lens?: string;
+  /**
+   * The file's open performance causes, when the host fetched them. `null` is
+   * "the host did not ask", which the section says rather than drawing an
+   * empty list that reads as a clear file.
+   */
+  performance?: { items: PerformanceOpportunity[]; total: number } | null;
+  performanceLoading?: boolean;
+  /** Open one cause on the performance surface. */
+  onOpportunitySelect?: ((opportunityId: string) => void) | undefined;
+  /** Named in the agent prompt so a pasted prompt says which repo it is for. */
+  repoName?: string;
 }
 
 /** Bucket for one-off file-level markers, kept pooled so a file with several
@@ -118,6 +163,8 @@ export function HealthFileDrawer({
   breakdown,
   findings = [],
   suggestions = {},
+  opportunity,
+  refactoringOpportunityHref,
   trend,
   signals,
   fileViewHref,
@@ -126,8 +173,14 @@ export function HealthFileDrawer({
   onPartnerSelect,
   onPartnerHref,
   onFindingStatusChange,
+  lens,
+  performance,
+  performanceLoading = false,
+  onOpportunitySelect,
+  repoName,
 }: HealthFileDrawerProps) {
   const [statusOverride, setStatusOverride] = useState<Record<string, string>>({});
+  const [promptOpen, setPromptOpen] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const setStatus = async (id: string, status: string) => {
     if (!onFindingStatusChange) return;
@@ -145,6 +198,7 @@ export function HealthFileDrawer({
   // it through props on every collapsible group.
   const renderFinding = (f: HealthDrawerFinding) => {
     const info = biomarkerInfo(f.biomarker_type);
+    const isHistory = isHistoryBiomarker(f.biomarker_type);
     return (
       // A hairline row, not a card inside a card. These sat as bordered boxes
       // inside a bordered group inside the drawer: three frames deep for one
@@ -168,6 +222,18 @@ export function HealthFileDrawer({
             {CATEGORY_LABEL[info.category]}
           </span>
           {(() => {
+            // A history marker wears a neutral "Watch" chip instead of its
+            // pillar's: it is scored, but nothing in this file will clear it.
+            if (isHistory) {
+              return (
+                <span
+                  className={`inline-flex items-center gap-1 rounded px-1.5 py-px text-[10px] font-medium ${HISTORY_CHIP}`}
+                >
+                  {HISTORY_LABEL}
+                  <InfoTip content={HISTORY_EXPLAINER} label="Why this is a watch item" />
+                </span>
+              );
+            }
             const dim =
               f.dimension === "maintainability" ||
               f.dimension === "defect" ||
@@ -212,7 +278,7 @@ export function HealthFileDrawer({
               </span>
             );
           })() : null}
-          <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">−{f.health_impact.toFixed(2)}</span>
+          <ImpactFigure impact={f.health_impact} className="ml-auto text-xs" />
         </div>
         <p className="text-xs text-[var(--color-text-secondary)]">{f.reason}</p>
         <BiomarkerDetails
@@ -226,6 +292,11 @@ export function HealthFileDrawer({
             {suggestions[f.biomarker_type]}
           </p>
         ) : null}
+        <FindingOpportunityLink
+          opportunity={opportunity}
+          biomarkerType={f.biomarker_type}
+          href={refactoringOpportunityHref}
+        />
         {onFindingStatusChange ? (
           <div className="flex flex-wrap items-center gap-1.5 pt-1">
             {TRIAGE_STATUSES.map((opt) => {
@@ -338,16 +409,25 @@ export function HealthFileDrawer({
       .sort((a, b) => b.total - a.total);
   })();
 
-  // The one reason this file scores low: prefer the server lead, else the
-  // worst finding. Rendered as a headline so the "why" leads (P3).
+  // The one reason this file scores low, and it has to be one the reader can
+  // act on. The server's lead is the highest-impact finding outright, which on
+  // a churn-heavy file is a history marker — naming that as the leading cause
+  // points someone at a commit log and calls it the thing to fix. So a history
+  // lead is passed over for the strongest code-shape finding, and a file whose
+  // whole deficit is history says that instead of naming a cause.
   const primaryLead = (() => {
-    if (metric?.primary_biomarker) {
+    const codeShape = findings.filter((f) => !isHistoryBiomarker(f.biomarker_type));
+    if (metric?.primary_biomarker && !isHistoryBiomarker(metric.primary_biomarker)) {
       return { biomarker: metric.primary_biomarker, reason: metric.primary_reason ?? null };
     }
-    if (findings.length === 0) return null;
-    const worst = findings.reduce((a, b) => (b.health_impact > a.health_impact ? b : a));
+    if (codeShape.length === 0) return null;
+    const worst = codeShape.reduce((a, b) => (b.health_impact > a.health_impact ? b : a));
     return { biomarker: worst.biomarker_type, reason: worst.reason };
   })();
+
+  // Only meaningful once the findings have loaded: an empty list before then is
+  // "not known yet", not "nothing to fix".
+  const historyOnly = primaryLead === null && findings.length > 0;
 
   return (
     <AdaptivePanel
@@ -375,12 +455,12 @@ export function HealthFileDrawer({
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
                 <div className="flex shrink-0 flex-col gap-2 sm:w-[150px]">
                   <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                    Defect risk
+                    Code health
                   </p>
                   <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
                     <span
                       className="text-[40px] font-semibold leading-none tracking-tight tabular-nums"
-                      style={{ color: healthBand(metric.score).color }}
+                      style={{ color: healthBandColor(bandForScore(metric.score)) }}
                     >
                       {metric.score.toFixed(1)}
                     </span>
@@ -389,12 +469,12 @@ export function HealthFileDrawer({
                   <span
                     className="w-fit rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
                     style={{
-                      color: healthBand(metric.score).color,
-                      borderColor: `color-mix(in srgb, ${healthBand(metric.score).color} 40%, transparent)`,
-                      background: `color-mix(in srgb, ${healthBand(metric.score).color} 9%, transparent)`,
+                      color: healthBandColor(bandForScore(metric.score)),
+                      borderColor: `color-mix(in srgb, ${healthBandColor(bandForScore(metric.score))} 40%, transparent)`,
+                      background: `color-mix(in srgb, ${healthBandColor(bandForScore(metric.score))} 9%, transparent)`,
                     }}
                   >
-                    {healthBand(metric.score).label}
+                    {HEALTH_BAND_LABEL[bandForScore(metric.score)]}
                   </span>
 
                   {trend && trend.points.length >= 2 ? (
@@ -435,43 +515,75 @@ export function HealthFileDrawer({
                         {primaryLead.reason ? ` ${primaryLead.reason}` : ""}
                       </p>
                     </div>
+                  ) : historyOnly ? (
+                    <div className="flex flex-col gap-1">
+                      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                        Leading cause
+                      </p>
+                      <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+                        Nothing in this file&rsquo;s code is scored. Its deduction is all
+                        history, which no edit here will clear.
+                      </p>
+                    </div>
                   ) : null}
 
-                  {/* The one action. It was two links to the same page, one a
-                      tertiary line at the top and one accent-coloured in the
-                      middle of the body. */}
-                  {(permalinkHref ?? fileViewHref) ? (
-                    <a
-                      href={permalinkHref ?? fileViewHref}
-                      className="inline-flex w-fit items-center gap-1.5 text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
-                    >
-                      <ExternalLink className="h-3.5 w-3.5" />
-                      Open full page
-                    </a>
-                  ) : null}
+                  {/* Two actions, and only two: read the whole file's report,
+                      or hand what this drawer knows to an agent. The link was
+                      once duplicated, a tertiary line at the top and an
+                      accent-coloured one in the body, both to the same page. */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    {(permalinkHref ?? fileViewHref) ? (
+                      <a
+                        href={permalinkHref ?? fileViewHref}
+                        className="inline-flex w-fit items-center gap-1.5 text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        Open full page
+                      </a>
+                    ) : null}
+                    <AiPromptButton
+                      onClick={() => setPromptOpen(true)}
+                      label="AI prompt"
+                    />
+                  </div>
                 </div>
               </div>
 
               {/* The other two pillars and the structural counters, as a
                   hairline list. Ten bordered tiles made a 3.1 and a 14 read as
                   the same kind of news. */}
+              {lens === "performance" ? (
+                <PerformanceCauses
+                  page={performance ?? null}
+                  loading={performanceLoading}
+                  onSelect={onOpportunitySelect}
+                />
+              ) : null}
+
               <MetricGrid metric={metric} />
 
               <FileSignalsPanel signals={signals} />
 
               <BugHistorySection signals={signals} />
 
+              {/* Collapsed by default. This is the audit trail for a number
+                  the drawer already states at the top, beside a leading cause
+                  that names the biggest contributor in words. A reader who
+                  wants the per-category arithmetic can ask for it; one who
+                  does not should not scroll past it to reach the findings. */}
               {breakdown ? (
-                <section className="flex flex-col gap-2">
-                  <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                    Why this score
-                  </h3>
+                <CollapsibleSection
+                  title="Why this score"
+                  hint={`−${breakdown.total_deduction.toFixed(2)} across ${
+                    breakdown.categories.length
+                  } ${breakdown.categories.length === 1 ? "category" : "categories"}`}
+                >
                   <ScoreBreakdown
                     score={breakdown.score}
                     totalDeduction={breakdown.total_deduction}
                     categories={breakdown.categories}
                   />
-                </section>
+                </CollapsibleSection>
               ) : null}
 
               {findings.length > 0 ? (
@@ -504,6 +616,39 @@ export function HealthFileDrawer({
             </>
           )}
         </div>
+
+        {/* Everything the drawer knows about this file, as one prompt. The
+            modal renders through a portal, so it sits here for locality
+            rather than for layout. */}
+        <AiPromptModal
+          open={promptOpen}
+          onOpenChange={setPromptOpen}
+          filePath={metric?.file_path ?? null}
+          title="AI prompt for this file"
+          description="Every scored finding, category ceiling, open performance cause and change signal this drawer holds, written up so an agent can triage the file before it edits anything."
+          getPrompt={
+            metric
+              ? (flavor) =>
+                  buildFileHealthAiPrompt({
+                    file: metric,
+                    findings: findings.map((f) => ({
+                      ...f,
+                      // Triage applied in this session but not yet refetched,
+                      // so a finding just marked resolved leaves the prompt.
+                      status: statusOverride[f.id] ?? f.status,
+                      details: f.details as Record<string, unknown> | null | undefined,
+                    })),
+                    categories: breakdown?.categories ?? [],
+                    signals: signals ?? null,
+                    performance: performance ?? null,
+                    trendDelta: trend?.delta ?? null,
+                    suggestions,
+                    flavor,
+                    ...(repoName ? { repoName } : {}),
+                  })
+              : null
+          }
+        />
     </AdaptivePanel>
   );
 }
@@ -633,7 +778,7 @@ function FunctionFindingsGroup({
           <span className="text-[var(--color-text-tertiary)]">
             {findings.length} {findings.length === 1 ? "marker" : "markers"}
           </span>
-          <span className="text-[var(--color-error)]">−{total.toFixed(2)}</span>
+          <ImpactFigure impact={total} />
           {/* Why 34 markers cost half a point. Without this the count reads as
               the severity and the capped total looks like a bug. The
               explanation rides in the accessible name, not a `title`: a bare
@@ -770,7 +915,7 @@ function PillarScore({ v }: { v: number | null }) {
   return (
     <span
       className="text-lg font-semibold tabular-nums"
-      style={{ color: healthBand(v).color }}
+      style={{ color: healthBandColor(bandForScore(v)) }}
     >
       {v.toFixed(1)}
       <span className="text-xs font-normal text-[var(--color-text-tertiary)]">/10</span>
@@ -783,3 +928,132 @@ function PlainValue({ children }: { children: React.ReactNode }) {
     <span className="text-sm tabular-nums text-[var(--color-text-primary)]">{children}</span>
   );
 }
+
+/**
+ * The file's open performance causes, when the reader arrived from that lens.
+ *
+ * Counts and causes, not a score: the performance pillar compresses into a
+ * narrow band and a number from it says nothing about this file.
+ *
+ * A cause is titled by the shape the detector recognized and identified by
+ * where it fires, because on one file that is what tells two of them apart:
+ * this repository has files carrying thirty-six causes of a single marker, and
+ * titling them by the marker alone produces thirty-six identical rows. The
+ * whole section says plainly when the host never asked for the data, because
+ * an empty list would read as a clear file.
+ */
+function PerformanceCauses({
+  page,
+  loading,
+  onSelect,
+}: {
+  page: { items: PerformanceOpportunity[]; total: number } | null;
+  loading: boolean;
+  onSelect?: ((opportunityId: string) => void) | undefined;
+}) {
+  const items = page?.items ?? [];
+  const withPlan = items.filter((o) => o.plan_id).length;
+  return (
+    <section className="flex flex-col gap-2">
+      <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+        Performance causes
+      </h3>
+      {loading ? (
+        <p className="text-xs text-[var(--color-text-tertiary)]">Loading causes…</p>
+      ) : page === null ? (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          This view has no performance data wired up, so nothing is claimed about this
+          file either way.
+        </p>
+      ) : items.length === 0 ? (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          No open cause names this file as the place to intervene. The detectors are
+          high precision and low recall, so that is not a measurement that it is fast.
+        </p>
+      ) : (
+        <>
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            <span className="tabular-nums">{page.total.toLocaleString()}</span> open cause
+            {page.total === 1 ? "" : "s"} name this file as the place to intervene
+            {items.length < page.total ? (
+              <>
+                , <span className="tabular-nums">{items.length}</span> shown
+              </>
+            ) : null}
+            . <span className="tabular-nums">{withPlan}</span> of those carry a stored plan.
+          </p>
+          <ul className="flex flex-col divide-y divide-[var(--color-border-default)]">
+            {items.map((o) => (
+              <CauseRow key={o.opportunity_id} opportunity={o} onSelect={onSelect} />
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Where a cause fires, from the evidence the queue already carries. */
+function causeLocation(o: PerformanceOpportunity): string | null {
+  if (o.terminal_sink) return o.terminal_sink;
+  if (o.intervention_symbol) return o.intervention_symbol;
+  const first = o.evidence[0];
+  if (!first) return null;
+  const name = first.function_name ?? null;
+  if (name && first.line_start != null) return `${name}:${first.line_start}`;
+  if (name) return name;
+  return first.line_start != null ? `line ${first.line_start}` : null;
+}
+
+function CauseRow({
+  opportunity: o,
+  onSelect,
+}: {
+  opportunity: PerformanceOpportunity;
+  onSelect?: ((opportunityId: string) => void) | undefined;
+}) {
+  const location = causeLocation(o);
+  const body = (
+    <>
+      <span className="flex items-baseline gap-2">
+        <span className="min-w-0 flex-1 text-xs font-medium text-[var(--color-text-primary)]">
+          {biomarkerLabel(o.biomarker_type)}
+        </span>
+        <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
+          {ACTIONABILITY_WORD[o.actionability_state] ?? o.actionability_state}
+        </span>
+      </span>
+      {location ? (
+        <span className="truncate font-mono text-[10px] text-[var(--color-text-secondary)]">
+          {location}
+        </span>
+      ) : null}
+      <span className="text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+        {o.observations_total} observation{o.observations_total === 1 ? "" : "s"} ·{" "}
+        {o.affected_files_total} file{o.affected_files_total === 1 ? "" : "s"} ·{" "}
+        {o.plan_id ? "stored plan" : o.plan_reason}
+      </span>
+    </>
+  );
+  return (
+    <li>
+      {onSelect ? (
+        <button
+          type="button"
+          onClick={() => onSelect(o.opportunity_id)}
+          className="flex w-full flex-col gap-0.5 px-1 py-2 text-left transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        >
+          {body}
+        </button>
+      ) : (
+        <div className="flex flex-col gap-0.5 px-1 py-2">{body}</div>
+      )}
+    </li>
+  );
+}
+
+const ACTIONABILITY_WORD: Record<string, string> = {
+  plan_ready: "Plan ready",
+  advisory: "Advisory",
+  investigate: "Investigate",
+};

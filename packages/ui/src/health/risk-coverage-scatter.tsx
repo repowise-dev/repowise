@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CoverageBasis } from "@repowise-dev/types/health";
+import { GOOD_MIN, bandForScore, type CoverageBasis } from "@repowise-dev/types/health";
+import { HEALTH_BAND_FILL } from "./tokens";
 
 export interface RiskCoveragePoint {
   file_path: string;
@@ -26,7 +27,7 @@ export interface RiskCoverageScatterProps {
 }
 
 /**
- * Health × tests. Y is the defect-risk score (0 to 10, higher is better) and
+ * Health × tests. Y is the defect-health score (0 to 10, higher is healthier) and
  * dot radius encodes lines of code on both bases. What X means depends on which
  * signal answered, and that is the whole design.
  *
@@ -144,7 +145,7 @@ export function RiskCoverageScatter({
       // 60% coverage and a 7.0 score are the quadrant thresholds. On the
       // inferred basis the vertical one is the column divider instead.
       midX: inferred ? padL + plotW * 0.5 : xScale(60),
-      midY: yScale(7),
+      midY: yScale(GOOD_MIN),
     };
   }, [width, height, data, inferred]);
 
@@ -348,12 +349,9 @@ function reachedFill(reached: boolean | undefined): string {
   return reached ? "var(--color-accent-fill)" : "var(--color-accent-secondary)";
 }
 
-/** Fill by health band. The bands are the same ones the rest of health uses. */
+/** Fill by health band. */
 function bandFill(score: number): string {
-  if (score < 4) return "fill-[var(--color-error)]";
-  if (score < 6) return "fill-[var(--color-warning)]";
-  if (score < 8) return "fill-[var(--color-caution)]";
-  return "fill-[var(--color-success)]";
+  return HEALTH_BAND_FILL[bandForScore(score)];
 }
 
 /**

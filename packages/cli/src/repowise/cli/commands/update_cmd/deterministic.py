@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, run_async
+from repowise.core.persistence import (
+    load_stale_structural_file_paths as load_stale_structural_file_paths,
+)
 
 
 def deterministic_embedder_name(cfg: dict) -> str:
@@ -88,6 +91,7 @@ def regenerate_deterministic_pages(
     degraded: list[str],
     dead_code_report: Any = None,
     prior_page_ids: dict | None = None,
+    full_scope: bool = False,
 ) -> list:
     """Re-render the template pages for *regenerate_paths*. Never raises.
 
@@ -114,6 +118,7 @@ def regenerate_deterministic_pages(
         dead_code_report=dead_code_report,
         prior_page_ids=prior_page_ids,
         degrade_label="Template page refresh",
+        full_scope=full_scope,
     )
 
 
@@ -132,6 +137,7 @@ def _render_pages(
     dead_code_report: Any,
     prior_page_ids: dict | None,
     degrade_label: str,
+    full_scope: bool = False,
 ) -> list:
     """Render the changed files' pages from structure (free, no LLM).
 
@@ -142,8 +148,16 @@ def _render_pages(
     from repowise.core.providers.llm.template import TemplateProvider
 
     regen_set = set(regenerate_paths)
-    affected_parsed = [pf for pf in parsed_files if pf.file_info.path in regen_set]
-    affected_source = {p: s for p, s in source_map.items() if p in regen_set}
+    affected_parsed = (
+        list(parsed_files)
+        if full_scope
+        else [pf for pf in parsed_files if pf.file_info.path in regen_set]
+    )
+    affected_source = (
+        dict(source_map)
+        if full_scope
+        else {p: s for p, s in source_map.items() if p in regen_set}
+    )
     if not affected_parsed:
         return []
 
@@ -151,7 +165,7 @@ def _render_pages(
         config = GenerationConfig.from_repo_config(
             cfg,
             deterministic=True,
-            file_pages_only=True,
+            file_pages_only=not full_scope,
             max_concurrency=concurrency,
             language=cfg.get("language", "en"),
             enable_onboarding=bool(cfg.get("enable_onboarding", True)),
@@ -179,7 +193,7 @@ def _render_pages(
 
         generator = PageGenerator(
             TemplateProvider(),
-            ContextAssembler(config),
+            ContextAssembler(config, repo_path=repo_path),
             config,
             vector_store=vector_store,
             language=config.language,
@@ -337,6 +351,43 @@ def load_file_page_render_keys(repo_path: Path) -> dict[str, str]:
     population the first run after that change has to refresh.
     """
     return run_async(_load_file_page_render_keys(repo_path))
+
+
+def load_stale_file_page_ages(repo_path: Path) -> dict[str, float]:
+    """``{file_path: staleness_age_seconds}`` for already-stale file pages.
+
+    Drives the cascade-budget ordering in
+    :func:`~repowise.core.ingestion.change_detector.ChangeDetector.get_affected_pages`
+    so a constrained docs run spends its LLM calls on the oldest stale pages
+    rather than reordering purely by importance (issues #847 / #851). Best
+    effort, like the render-key load: an unreadable store yields ``{}``, which
+    keeps the historical pure-importance ordering.
+    """
+    return run_async(_load_stale_file_page_ages(repo_path))
+
+
+async def _load_stale_file_page_ages(repo_path: Path) -> dict[str, float]:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        get_stale_file_page_ages,
+    )
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            from repowise.core.persistence.crud import get_repository_by_path
+
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return {}
+            return await get_stale_file_page_ages(session, repo.id)
+    except Exception:
+        return {}
+    finally:
+        await engine.dispose()
 
 
 async def _load_file_page_render_keys(repo_path: Path) -> dict[str, str]:

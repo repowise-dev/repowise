@@ -7,7 +7,7 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -659,3 +659,149 @@ async def get_stale_pages(
         )
     )
     return list(result.scalars().all())
+
+
+#: Page types a scoped ``update`` can re-render for one file. Every other
+#: structural type (cycle, layer, contract, infra) describes the whole
+#: repository and is only written by a full run, so a stale row of those types
+#: is not something an update can clear and must not make it think it can.
+_FILE_SCOPED_PAGE_TYPES = frozenset({"file_page", "symbol_spotlight"})
+
+
+async def get_stale_structural_file_paths(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[str]:
+    """File paths whose file-scoped pages are marked ``stale`` or ``expired``.
+
+    Covers ``file_page`` rows (``target_path`` is the file) and
+    ``symbol_spotlight`` rows (``target_path`` is ``<file>::<symbol>``), which
+    are the two page kinds a scoped ``update`` re-renders for a file. The
+    caller feeds these paths into the same regeneration list the renderer
+    staleness path uses, so an already-stale page is reconciled even when HEAD
+    has not moved.
+    """
+    result = await session.execute(
+        select(Page.target_path).where(
+            Page.repository_id == repository_id,
+            Page.page_type.in_(sorted(_FILE_SCOPED_PAGE_TYPES)),
+            Page.freshness_status.in_(["stale", "expired"]),
+        )
+    )
+    stale_paths: list[str] = []
+    for (target_path,) in result:
+        file_path = (target_path or "").split("::", 1)[0]
+        if file_path:
+            stale_paths.append(file_path)
+    return list(dict.fromkeys(stale_paths))
+
+
+def load_stale_structural_file_paths(repo_path: Any) -> list[str]:
+    """Sync entry point for :func:`_load_stale_structural_file_paths_async`.
+
+    Called from synchronous CLI code and from ``check_repo_staleness``, which
+    the async workspace update calls from inside a running loop. ``asyncio.run``
+    refuses to nest, so that one caller gets its own loop on a worker thread.
+    """
+    import asyncio
+    import concurrent.futures
+    from pathlib import Path
+
+    path_obj = Path(repo_path)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                lambda: asyncio.run(_load_stale_structural_file_paths_async(path_obj))
+            ).result()
+    return asyncio.run(_load_stale_structural_file_paths_async(path_obj))
+
+
+async def _load_stale_structural_file_paths_async(repo_path: Any) -> list[str]:
+    """Load the stale file-scoped page paths for *repo_path* from its store.
+
+    Returns ``[]`` when no store is reachable: no configured database URL and
+    no local ``wiki.db``. A store that is reachable but fails to answer raises,
+    because reading that as "nothing is stale" would silently retire the
+    reconciliation this exists for.
+    """
+    from pathlib import Path
+
+    import structlog
+
+    from ..database import (
+        create_engine,
+        create_session_factory,
+        get_configured_db_url,
+        get_repo_db_path,
+        get_session,
+        resolve_db_url,
+    )
+    from .repository import get_repository_by_path
+
+    logger = structlog.get_logger(__name__)
+    path_obj = Path(repo_path)
+
+    if get_configured_db_url() is None and not get_repo_db_path(path_obj).exists():
+        return []
+
+    url = resolve_db_url(path_obj)
+    engine = create_engine(url)
+    try:
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(path_obj))
+            if repo is None:
+                return []
+            return await get_stale_structural_file_paths(session, repo.id)
+    except Exception as exc:
+        logger.warning("load_stale_structural_file_paths_failed", error=str(exc))
+        raise
+    finally:
+        await engine.dispose()
+
+
+async def get_stale_file_page_ages(
+    session: AsyncSession,
+    repository_id: str,
+) -> dict[str, float]:
+    """``{file_path: staleness_age_seconds}`` for stale/expired file pages.
+
+    The cascade-budget ordering in
+    :meth:`~repowise.core.ingestion.change_detector.ChangeDetector.get_affected_pages`
+    consumes this so a constrained regeneration run bubbles the *oldest* stale
+    pages to the top rather than reordering purely by importance (issues #847 /
+    #851). Staleness age is measured from ``updated_at`` — the last time the
+    page was regenerated — so the page whose prose lagged the code longest
+    carries the largest value.
+
+    Only ``file_page`` rows are returned: the cascade reaches file paths, and
+    the module / SCC / repo-wide containers are derived from the selected files
+    rather than selected themselves. Returns an empty dict when nothing is
+    stale (or the repository has no file pages), which keeps the pure-importance
+    ordering.
+    """
+    result = await session.execute(
+        select(Page.id, Page.target_path, Page.updated_at).where(
+            Page.repository_id == repository_id,
+            Page.page_type == "file_page",
+            Page.freshness_status.in_(["stale", "expired"]),
+        )
+    )
+    now = datetime.now(UTC)
+    ages: dict[str, float] = {}
+    for _pid, target_path, updated_at in result:
+        if not target_path:
+            continue
+        if updated_at is None:
+            ages[target_path] = float("inf")
+            continue
+        dt = updated_at
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        ages[target_path] = max(0.0, (now - dt).total_seconds())
+    return ages

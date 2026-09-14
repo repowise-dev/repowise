@@ -22,6 +22,7 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import { cn } from "../lib/cn";
+import { parseDate } from "../lib/format";
 
 /**
  * The repo's development "story arc" — a stacked-area timeline of how the
@@ -81,13 +82,13 @@ const STACK_ORDER: CommitCategory[] = [
 type Mode = "share" | "volume";
 
 function formatBucketLabel(startIso: string, granularity: string): string {
-  const d = new Date(startIso);
+  const d = parseDate(startIso);
   if (Number.isNaN(d.getTime())) return startIso;
-  const month = d.toLocaleString("en-US", { month: "short" });
+  const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
   if (granularity === "week") {
-    return `${month} ${d.getDate()}`;
+    return `${month} ${d.getUTCDate()}`;
   }
-  return `${month} ${String(d.getFullYear()).slice(2)}`;
+  return `${month} ${String(d.getUTCFullYear()).slice(2)}`;
 }
 
 /** Dominant category across a slice of buckets (by summed count). */

@@ -156,7 +156,7 @@ export function FileGraphTab({
         }
         action={
           <A
-            href={`${linkPrefix}/architecture?view=graph&node=${encodeURIComponent(filePath)}`}
+            href={`${linkPrefix}/architecture?view=files&node=${encodeURIComponent(filePath)}`}
             className="text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
           >
             Show in the dependency graph <span aria-hidden>→</span>

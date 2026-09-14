@@ -75,11 +75,14 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "Good: 'Repowise is a codebase documentation engine: it indexes a repository "
         "by traversing files, parsing code into ASTs, analyzing dependencies, and "
         "generating LLM-synthesised wiki pages served via MCP and a web UI.' "
-        "Required sections: ## Project Summary, ## Technology Stack, ## Entry Points, ## Architecture. "
+        "Required sections, in this order and no others: ## Project Summary, "
+        "## Architecture, ## Key concepts. A list of entry-point paths or of the "
+        "most-imported files is something the reader can get from ls; say what is "
+        "central and why instead. "
         "\n"
         "The page is a short orientation, not a manual: keep the prose within the "
-        "word budget the user prompt states, and reach for a table or a list "
-        "wherever the material is a set of facts rather than an argument."
+        "word budget the user prompt states. The enumerable facts are inserted "
+        "after you write, from the code as indexed, so do not tabulate them."
     ),
     "architecture_diagram": (
         "You are repowise, an expert technical documentation generator. "

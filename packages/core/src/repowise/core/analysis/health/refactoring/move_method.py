@@ -30,6 +30,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.analysis.execution_graph import is_reliable_call_edge
+
 from ....test_paths import is_test_related_path
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
@@ -178,7 +180,10 @@ class MoveMethodDetector(RefactoringDetector):
         # Group the method's class-owned callees by the class they belong to.
         accessed_by_class: dict[str, set[str]] = {}
         for _u, callee, edata in graph.out_edges(method_id, data=True):
-            if edata.get("edge_type") != "calls" or callee == method_id:
+            if (
+                not is_reliable_call_edge(edata.get("edge_type"), edata.get("resolution_origin"))
+                or callee == method_id
+            ):
                 continue
             owner = _owning_class_id(graph, callee)
             if owner is None:
@@ -275,7 +280,7 @@ class MoveMethodDetector(RefactoringDetector):
         count = 0
         if method_id in graph:
             for _u, _v, data in graph.in_edges(method_id, data=True):
-                if data.get("edge_type") == "calls":
+                if is_reliable_call_edge(data.get("edge_type"), data.get("resolution_origin")):
                     count += 1
         return count
 

@@ -6,7 +6,8 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .baseline import baseline_samples_cached, scores_excluding
+from ..risk_semantics import change_risk_authority, change_risk_scales
+from .baseline import BaselineSample, baseline_samples_cached, densities_excluding, scores_excluding
 from .features import (
     GIT_TIMEOUT_SECONDS,
     ChangeFeatures,
@@ -43,8 +44,9 @@ class ChangeRiskResult:
     working_tree: bool = False  # scored the uncommitted change, not a commit
     # Bug-fix history of the ground this change stands on. ``density`` is the
     # churn-weighted mean fix pressure of the touched files, ``percentile`` ranks
-    # it against the repo's own fix-bearing files, and ``hot_files`` names where
-    # the pressure is. Unlike the score, none of these grow with diff size.
+    # it against the same measure over the repo's own recent commits, and
+    # ``hot_files`` names where the pressure is. Unlike the score, none of
+    # these grow with diff size.
     fix_density: float = 0.0
     fix_percentile: float | None = None
     hot_files: tuple[tuple[str, int, float], ...] = ()  # (path, churn, pressure)
@@ -192,6 +194,7 @@ def score_live_change(
     percentile: float | None = None
     priority: str | None = None
     baseline_sample_size = 0
+    samples: list[BaselineSample] = []
     if baseline:
         samples = baseline_samples_cached(
             repo_path,
@@ -218,22 +221,28 @@ def score_live_change(
         request_excludes=exclude_patterns,
         working_tree=working_tree,
         fix_density=round(density, 3),
-        fix_percentile=fix_density_percentile(pressure, density),
+        fix_percentile=fix_density_percentile(
+            densities_excluding(samples, excluded_ref, pressure), density
+        ),
         hot_files=fix_bearing,
         fix_history_available=fix_history_available,
     )
 
 
-def change_risk_payload(result: ChangeRiskResult) -> dict:
+def change_risk_payload(result: ChangeRiskResult, *, scales: bool = False) -> dict:
     """Render the machine-readable response shared by the CLI and MCP tool.
 
     ``fix_history`` leads: it is the block that distinguishes a surgical edit to
     a file that keeps breaking from a bulk rename of files that never have.
     ``score`` and ``risk_percentile`` describe the *shape* of the diff and are
     kept for continuity, labelled for what they measure — see ``score_measures``.
-    ``fallback_band`` is the absolute calibrated band, non-null only when there
+    ``fallback_band`` is the absolute model-score band, non-null only when there
     was no baseline to rank against. ``score_unit`` names the unit that band
     assumes.
+
+    ``risk_authority`` always ships: it names the field to act on. The
+    per-field ``risk_scales`` dictionary is identical on every call, so it
+    ships only when ``scales`` is set.
     """
     features, risk = result.features, result.risk
     return {
@@ -248,6 +257,7 @@ def change_risk_payload(result: ChangeRiskResult) -> dict:
                 for path, churn, pressure in result.hot_files
             ],
         },
+        "risk_authority": change_risk_authority(),
         "score": risk.score,
         "score_measures": SCORE_MEASURES,
         "score_unit": SCORE_UNIT,
@@ -257,6 +267,7 @@ def change_risk_payload(result: ChangeRiskResult) -> dict:
         "fallback_band": risk.level if result.priority is None else None,
         "baseline_sample_size": result.baseline_sample_size,
         "exclude_patterns": list(result.riskignore_excludes + result.request_excludes),
+        **({"risk_scales": change_risk_scales()} if scales else {}),
         "is_fix": features.is_fix,
         "features": {
             "la": features.la,

@@ -17,7 +17,13 @@ from repowise.core.analysis.dead_code.file_reachability import (
 )
 from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
+from repowise.core.ingestion.package_roots import (
+    module_for,
+    package_roots_from_paths,
+    scan_package_roots,
+)
 
+from ...co_change import STRUCTURAL_UNEXPLAINED, parse_partners
 from ..categories import file_category
 from ..entry_points import orientation_entry_points, rank_entry_point_paths
 from ..models import GenerationConfig
@@ -59,6 +65,16 @@ _MAX_TOP_FILES = 20
 # rather than dropped silently, so a truncated table cannot read as a complete
 # public surface.
 _MAX_CONCEPT_ROWS = 40
+
+# The graph gives every file a synthetic symbol that owns its module-scope
+# calls. It is not a caller anyone can look up, and the importer list already
+# covers import-time use.
+_MODULE_SCOPE_NODE = "__module__"
+
+# How many co-change partners a file page names. Past a handful the list
+# stops being "and this other thing moves with it" and becomes a second,
+# weaker dependency table.
+_MAX_CO_CHANGE_PARTNERS = 5
 
 # The module page's "Class hierarchy" section: how many classes it shows, and
 # how many any one file may contribute so a single dense file cannot fill it.
@@ -244,8 +260,11 @@ class ContextAssembler:
     ``config.token_budget`` tokens.
     """
 
-    def __init__(self, config: GenerationConfig) -> None:
+    def __init__(self, config: GenerationConfig, repo_path: Any | None = None) -> None:
         self._config = config
+        # Checkout root, used only to read package boundaries off disk.
+        self._repo_path = repo_path
+        self._package_roots: set[str] | None = None
 
     # ------------------------------------------------------------------
     # Token utilities
@@ -351,6 +370,21 @@ class ContextAssembler:
         # Generation depth
         depth = self._select_generation_depth(path, git_meta, pagerank.get(path, 0.0))
 
+        # Files this one changes with in history and does not import. The
+        # partners the graph already explains are dropped: they are the paths
+        # the page lists under "Depends on" two sections down, and a section
+        # that repeats them says nothing. Decoded here rather than in the
+        # template because the indexer persists them as a JSON cell.
+        co_change_pages = [
+            {
+                "path": partner.file_path,
+                "commits": partner.support,
+                "last": partner.last_co_change or "",
+            }
+            for partner in parse_partners((git_meta or {}).get("co_change_partners_json"))
+            if partner.structural == STRUCTURAL_UNEXPLAINED and partner.support > 0
+        ][:_MAX_CO_CHANGE_PARTNERS]
+
         # Graph intelligence: call graph, heritage, community metadata
         call_graph_entries = extract_call_graph(path, graph, symbol_index)
         heritage_entries = extract_heritage(path, graph, symbol_index)
@@ -379,6 +413,7 @@ class ContextAssembler:
             parse_errors=parsed.parse_errors,
             estimated_tokens=used,
             git_metadata=git_meta,
+            co_change_pages=co_change_pages,
             dead_code_findings=dead_code_findings or [],
             depth=depth,
             dependency_summaries=dep_summaries,
@@ -423,6 +458,8 @@ class ContextAssembler:
         else:
             callers = []
 
+        call_sites = _resolved_call_sites(symbol, graph)
+
         # Extract source body for the symbol
         source_body = None
         if source_bytes and symbol.start_line and symbol.end_line:
@@ -445,6 +482,7 @@ class ContextAssembler:
             complexity_estimate=symbol.complexity_estimate,
             callers=callers,
             source_body=source_body,
+            call_sites=call_sites,
         )
 
     # ------------------------------------------------------------------
@@ -617,8 +655,30 @@ class ContextAssembler:
             most_fixed_file=most_fixed_file,
         )
 
-    @staticmethod
+    def _package_boundaries(self, known_paths: set[str]) -> set[str]:
+        """Package roots for this repo, resolved once.
+
+        Scans the checkout, exactly as the health writer does, so both producers
+        of ``module`` agree. The path-list fallback is for a caller with no
+        checkout, and it only sees manifests already in *known_paths* -- on an
+        incremental run that is the changed files alone, which is why the scan
+        is preferred rather than optional.
+        """
+        if self._package_roots is not None:
+            return self._package_roots
+        roots: set[str] | None = None
+        if self._repo_path is not None:
+            try:
+                roots = scan_package_roots(self._repo_path)
+            except OSError as exc:
+                log.debug("generation_package_root_scan_failed", error=str(exc))
+        if roots is None:
+            roots = package_roots_from_paths(known_paths)
+        self._package_roots = roots
+        return roots
+
     def _module_git_enrichment(
+        self,
         files: list[str],
         member_set: set[str],
         git_meta_map: dict[str, dict] | None,
@@ -630,7 +690,6 @@ class ContextAssembler:
         empty when there is no git metadata, so a repository indexed without
         history renders none of it rather than a fabricated health line.
         """
-        import json as _json
         from collections import Counter
 
         if not git_meta_map:
@@ -640,6 +699,8 @@ class ContextAssembler:
         if not metas:
             return 0, 0, 0, [], 0, {}
 
+        roots = self._package_boundaries(set(git_meta_map))
+
         hotspot_count = sum(1 for m in metas if m.get("is_hotspot"))
         stable_count = sum(1 for m in metas if m.get("is_stable"))
         # bus_factor is the number of authors covering the bulk of a file's
@@ -648,24 +709,15 @@ class ContextAssembler:
         single_owner_files = sum(1 for m in metas if 0 < (m.get("bus_factor") or 0) <= 1)
 
         # Files this subsystem changes together with in history but that live in
-        # another module. History coupling the import graph never shows.
+        # another module. Restricted to pairs the dependency graph does not
+        # explain, because the page claims exactly that.
         coupled: Counter[str] = Counter()
         for m in metas:
-            raw = m.get("co_change_partners_json") or "[]"
-            try:
-                partners = _json.loads(raw) if isinstance(raw, str) else raw
-            except Exception:
-                partners = []
-            for p in partners:
-                # Co-change entries are dicts keyed by ``file_path`` (see
-                # git_indexer/co_change.py); tolerate a bare string too.
-                partner_path = (p.get("file_path") or p.get("path")) if isinstance(p, dict) else p
-                if (
-                    isinstance(partner_path, str)
-                    and partner_path
-                    and partner_path not in member_set
-                ):
-                    module = partner_path.rsplit("/", 1)[0] if "/" in partner_path else partner_path
+            for p in parse_partners(m.get("co_change_partners_json")):
+                if p.file_path in member_set or p.structural != STRUCTURAL_UNEXPLAINED:
+                    continue
+                module = module_for(p.file_path, roots)
+                if module:
                     coupled[module] += 1
         coupled_modules = [{"path": path, "count": count} for path, count in coupled.most_common(5)]
 
@@ -739,6 +791,7 @@ class ContextAssembler:
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
         parsed_files: list[ParsedFile] | None = None,
+        prose_digest: str = "",
     ) -> RepoOverviewContext:
         """Assemble context for the repo_overview template."""
         # Top files sorted by PageRank descending, path breaking ties. Leaf
@@ -872,6 +925,7 @@ class ContextAssembler:
             external_systems=external_systems or [],
             decision_records=decision_records or [],
             package_stats=package_stats,
+            prose_digest=prose_digest,
         )
 
     # ------------------------------------------------------------------
@@ -1031,12 +1085,7 @@ class ContextAssembler:
         if len(sig_commits) >= 8:
             return "thorough"
 
-        co_json = git_meta.get("co_change_partners_json", "[]")
-        try:
-            co_partners = _json.loads(co_json) if isinstance(co_json, str) else co_json
-        except Exception:
-            co_partners = []
-        if co_partners:
+        if parse_partners(git_meta.get("co_change_partners_json")):
             return "thorough"
 
         # Downgrade conditions
@@ -1105,3 +1154,53 @@ def _symbol_to_dict(symbol: Symbol) -> dict[str, Any]:
         "start_line": symbol.start_line,
         "end_line": symbol.end_line,
     }
+
+
+def _resolved_call_sites(symbol: Symbol, graph: Any) -> list[dict]:
+    """Calls the resolver actually resolved to *symbol*, most confident first.
+
+    A spotlight's ``callers`` list is the files importing the defining module,
+    which for a constant like ``PRUNED_DIRS`` means thirty-seven files that
+    may never touch it. The call graph knows better wherever the resolver
+    reached a verdict, and ``Symbol.id`` is the graph's own node key, so this
+    is an in-edge scan on one node rather than a walk.
+
+    Uncapped: the template slices what it prints and reports the true total,
+    the way the importer list already does. A count that was silently the cap
+    would tell a reader with nine hundred callers that it had twenty-five.
+
+    Empty when nothing resolved, which is the common case for data and for
+    dynamically dispatched languages — the template then keeps the honest
+    import-level wording.
+    """
+    try:
+        if symbol.id not in graph:
+            return []
+        scored: list[tuple[float, dict]] = []
+        for source, _, edata in graph.in_edges(symbol.id, data=True):
+            if edata.get("edge_type") != "calls":
+                continue
+            data = graph.nodes.get(source, {})
+            if data.get("name") == _MODULE_SCOPE_NODE:
+                continue
+            scored.append(
+                (
+                    float(edata.get("confidence") or 0.0),
+                    {
+                        "caller": data.get("name", source),
+                        "caller_file": data.get("file_path", ""),
+                    },
+                )
+            )
+    except Exception:
+        return []
+    scored.sort(key=lambda s: (-s[0], s[1]["caller_file"], s[1]["caller"]))
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict] = []
+    for _, site in scored:
+        key = (site["caller_file"], site["caller"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(site)
+    return unique

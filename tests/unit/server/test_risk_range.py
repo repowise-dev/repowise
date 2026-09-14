@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient
 
-from repowise.core.analysis.change_risk import baseline_samples, scores_excluding
+from repowise.core.analysis.change_risk import (
+    baseline_samples,
+    densities_excluding,
+    scores_excluding,
+)
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -78,6 +82,9 @@ async def test_risk_range_happy_path(client: AsyncClient, git_repo: Path, tmp_pa
     assert data["review_priority"] is None
     assert data["classification"] is None
     assert data["fallback_band"] in {"low", "moderate", "high"}
+    assert data["risk_authority"]["primary_fields"] == ["risk_percentile", "classification"]
+    assert data["risk_authority"]["score_role"] == "supporting_diff_shape_signal"
+    assert "risk_scales" not in data
 
 
 @pytest.mark.asyncio
@@ -117,15 +124,20 @@ async def test_risk_range_baseline_zero_skips_percentile(
     data = resp.json()
     assert data["risk_percentile"] is None
     assert data["review_priority"] is None
+    # The fix density is ranked against the same sample, so it goes too.
+    assert data["fix_history"]["percentile"] is None
 
 
-def test_baseline_samples_pair_each_sha_with_a_float(git_repo: Path) -> None:
+def test_baseline_samples_carry_sha_score_and_churn(git_repo: Path) -> None:
     _commit(git_repo, {"src/d.py": "a = 1\nb = 2\n"}, "feat: add d")
     _commit(git_repo, {"src/e.py": "c = 3\n"}, "fix: crash on null")
 
     samples = baseline_samples(str(git_repo), "HEAD", 200, ())
     assert len(samples) >= 1
-    assert all(isinstance(sha, str) and isinstance(score, float) for sha, score in samples)
+    assert all(isinstance(sample.sha, str) for sample in samples)
+    assert all(isinstance(sample.score, float) for sample in samples)
+    # The churn rides along so a fix density can be computed without a second walk.
+    assert all(sample.file_churn for sample in samples)
 
 
 def test_baseline_samples_filters_excluded_paths(git_repo: Path) -> None:
@@ -139,6 +151,21 @@ def test_baseline_samples_filters_excluded_paths(git_repo: Path) -> None:
     samples = baseline_samples(str(git_repo), "HEAD", 2, (), exclude_patterns=("tests/",))
 
     assert len(samples) == 1
+
+
+def test_densities_excluding_omits_target_ref(git_repo: Path) -> None:
+    """Same self-exclusion contract as the scores: a change never ranks itself."""
+    _commit(git_repo, {"src/app.py": "a = 1\n"}, "feat: app")
+    head = _commit(git_repo, {"src/next.py": "b = 2\n"}, "feat: next")
+
+    samples = baseline_samples(str(git_repo), "HEAD", 2, ())
+    pressure = {"src/app.py": 2.0, "src/next.py": 1.0}
+
+    assert len(densities_excluding(samples, head, pressure)) == 1
+    assert len(densities_excluding(samples, head[:7], pressure)) == 1
+    assert len(densities_excluding(samples, "", pressure)) == 2
+    # And it is a density, not a score: the retained commit touches app.py only.
+    assert densities_excluding(samples, head, pressure) == [2.0]
 
 
 def test_scores_excluding_omits_target_ref(git_repo: Path) -> None:

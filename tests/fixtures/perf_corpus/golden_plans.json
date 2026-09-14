@@ -1,0 +1,1148 @@
+{
+  "plans": [
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/fanout.py"
+        ]
+      },
+      "confidence": "high",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "serial_await_in_loop",
+        "biomarker_types": [
+          "serial_await_in_loop"
+        ],
+        "boundary_kind": "network",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 16,
+        "rationale": "Dataflow proves that every observed loop carries no cross-iteration dependence.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/fanout.py",
+      "impact_delta": 0.0,
+      "line_end": 92,
+      "line_start": 90,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/fanout.py",
+            "function_name": "gather_all",
+            "line_end": 92,
+            "line_start": 90
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": null,
+        "opportunity_id": "perf2_182b2a7c053167959285",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "proven",
+        "strategy": "parallelize_independent_awaits"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "serial_await_in_loop",
+      "target_symbol": "gather_all"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/clients.py"
+        ]
+      },
+      "confidence": "high",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "resource_construction_in_loop",
+        "biomarker_types": [
+          "resource_construction_in_loop"
+        ],
+        "boundary_kind": "network",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 16,
+        "rationale": "Dataflow proves construction arguments and lifetime are loop invariant.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/clients.py",
+      "impact_delta": 0.0,
+      "line_end": 172,
+      "line_start": 170,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/clients.py",
+            "function_name": "each",
+            "line_end": 172,
+            "line_start": 170
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": null,
+        "opportunity_id": "perf2_386a99aa2876c0dd31bd",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "proven",
+        "strategy": "hoist_loop_invariant_resource"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "resource_construction_in_loop",
+      "target_symbol": "each"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 2,
+        "file_count": 1,
+        "files": [
+          "src/app/entry.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 2,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 3,
+          "boundary_kind": 4,
+          "entry_reachability": 3,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 20,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": true
+      },
+      "file_path": "src/app/entry.py",
+      "impact_delta": 0.0,
+      "line_end": 252,
+      "line_start": 250,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/entry.py",
+            "function_name": "a",
+            "line_end": 252,
+            "line_start": 250
+          },
+          {
+            "file_path": "src/app/entry.py",
+            "function_name": "b",
+            "line_end": 257,
+            "line_start": 255
+          }
+        ],
+        "affected_locations_total": 2,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/entry.py::_hit",
+        "opportunity_id": "perf2_0673587e7abbea99fc0b",
+        "paths": [
+          [
+            "src/app/entry.py::a",
+            "src/app/entry.py::_hit",
+            "src/app/db.py::reach_sink"
+          ],
+          [
+            "src/app/entry.py::b",
+            "src/app/entry.py::_hit",
+            "src/app/db.py::reach_sink"
+          ]
+        ],
+        "paths_total": 2,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/entry.py::_hit"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 2,
+        "file_count": 1,
+        "files": [
+          "src/app/api.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 2,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 3,
+          "boundary_kind": 4,
+          "entry_reachability": 3,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 20,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": true
+      },
+      "file_path": "src/app/repo.py",
+      "impact_delta": 0.0,
+      "line_end": null,
+      "line_start": null,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/api.py",
+            "function_name": "list_users",
+            "line_end": 32,
+            "line_start": 30
+          },
+          {
+            "file_path": "src/app/api.py",
+            "function_name": "list_orders",
+            "line_end": 33,
+            "line_start": 31
+          }
+        ],
+        "affected_locations_total": 2,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/repo.py::fetch_page",
+        "opportunity_id": "perf2_89348be6c2ba0311a0e8",
+        "paths": [
+          [
+            "src/app/api.py::list_users",
+            "src/app/repo.py::fetch_page",
+            "src/app/db.py::execute"
+          ],
+          [
+            "src/app/api.py::list_orders",
+            "src/app/repo.py::fetch_page",
+            "src/app/db.py::execute"
+          ]
+        ],
+        "paths_total": 2,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/repo.py::fetch_page"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 2,
+        "file_count": 1,
+        "files": [
+          "src/app/reindex.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "nested_loop_with_io",
+        "biomarker_types": [
+          "io_in_loop",
+          "nested_loop_with_io"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 2,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 3,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 6,
+          "provenance": 3
+        },
+        "rank_score": 19,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/reindex.py",
+      "impact_delta": 0.0,
+      "line_end": 212,
+      "line_start": 210,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/reindex.py",
+            "function_name": "one",
+            "line_end": 212,
+            "line_start": 210
+          },
+          {
+            "file_path": "src/app/reindex.py",
+            "function_name": "many",
+            "line_end": 217,
+            "line_start": 215
+          }
+        ],
+        "affected_locations_total": 2,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/reindex.py::_write",
+        "opportunity_id": "perf2_3d62fcebb00bdf408f2c",
+        "paths": [
+          [
+            "src/app/reindex.py::one",
+            "src/app/reindex.py::_write",
+            "src/app/db.py::upsert"
+          ],
+          [
+            "src/app/reindex.py::many",
+            "src/app/reindex.py::_write",
+            "src/app/db.py::upsert"
+          ]
+        ],
+        "paths_total": 2,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "nested_loop_with_io",
+      "target_symbol": "src/app/reindex.py::_write"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 2,
+        "file_count": 1,
+        "files": [
+          "src/app/sync.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 2,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 3,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 17,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/sync.py",
+      "impact_delta": 0.0,
+      "line_end": 72,
+      "line_start": 70,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/sync.py",
+            "function_name": "sync_one",
+            "line_end": 72,
+            "line_start": 70
+          },
+          {
+            "file_path": "src/app/sync.py",
+            "function_name": "sync_all",
+            "line_end": 73,
+            "line_start": 71
+          }
+        ],
+        "affected_locations_total": 2,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/sync.py::_load",
+        "opportunity_id": "perf2_af29fc10103a555c8652",
+        "paths": [
+          [
+            "src/app/sync.py::sync_one",
+            "src/app/sync.py::_load",
+            "src/app/db.py::query"
+          ],
+          [
+            "src/app/sync.py::sync_all",
+            "src/app/sync.py::_load",
+            "src/app/db.py::query"
+          ]
+        ],
+        "paths_total": 2,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/sync.py::_load"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/cache.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "blocking_io_under_lock",
+        "biomarker_types": [
+          "blocking_io_under_lock"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 5,
+          "provenance": 3
+        },
+        "rank_score": 17,
+        "rationale": "I/O under the lock is proven, but shared-state ordering must be validated before moving it.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/cache.py",
+      "impact_delta": 0.0,
+      "line_end": 112,
+      "line_start": 110,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/cache.py",
+            "function_name": "refresh",
+            "line_end": 112,
+            "line_start": 110
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/cache.py::refresh",
+        "opportunity_id": "perf2_9dfe577bc9c8b799355e",
+        "paths": [
+          [
+            "src/app/cache.py::refresh",
+            "src/app/db.py::write"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "shrink_lock_scope"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "blocking_io_under_lock",
+      "target_symbol": "src/app/cache.py::refresh"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/billing.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 16,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": false
+      },
+      "file_path": "src/app/billing.py",
+      "impact_delta": 0.0,
+      "line_end": 13,
+      "line_start": 11,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/billing.py",
+            "function_name": "handle",
+            "line_end": 13,
+            "line_start": 11
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/billing.py::handle",
+        "opportunity_id": "perf2_3d4056f8405c9313d004",
+        "paths": [
+          [
+            "src/app/billing.py::handle",
+            "src/app/db.py::get_session"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/billing.py::handle"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/orders.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 16,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": false
+      },
+      "file_path": "src/app/orders.py",
+      "impact_delta": 0.0,
+      "line_end": 12,
+      "line_start": 10,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/orders.py",
+            "function_name": "handle",
+            "line_end": 12,
+            "line_start": 10
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/orders.py::handle",
+        "opportunity_id": "perf2_5abe869788cb2cebf6cf",
+        "paths": [
+          [
+            "src/app/orders.py::handle",
+            "src/app/db.py::get_session"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/orders.py::handle"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/reports.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 16,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": false
+      },
+      "file_path": "src/app/reports.py",
+      "impact_delta": 0.0,
+      "line_end": 14,
+      "line_start": 12,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/reports.py",
+            "function_name": "handle",
+            "line_end": 14,
+            "line_start": 12
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/reports.py::handle",
+        "opportunity_id": "perf2_7d6b729c3f43753626f2",
+        "paths": [
+          [
+            "src/app/reports.py::handle",
+            "src/app/db.py::get_session"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/reports.py::handle"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/job.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 16,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/job.py",
+      "impact_delta": 0.0,
+      "line_end": 202,
+      "line_start": 200,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/job.py",
+            "function_name": "run",
+            "line_end": 202,
+            "line_start": 200
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/job.py::run",
+        "opportunity_id": "perf2_811bb33b8d8f9e744638",
+        "paths": [
+          [
+            "src/app/job.py::run",
+            "src/app/db.py::get_session"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/job.py::run"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/lone.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 16,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/lone.py",
+      "impact_delta": 0.0,
+      "line_end": 11,
+      "line_start": 9,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/lone.py",
+            "function_name": "run",
+            "line_end": 11,
+            "line_start": 9
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": null,
+        "opportunity_id": "perf2_f349f0c0ac6827ebfd86",
+        "paths": [
+          [
+            "src/app/db.py::only_sink"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "run"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "scripts/backfill.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "tooling",
+        "observations_total": 1,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 2,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 15,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "scripts/backfill.py",
+      "impact_delta": 0.0,
+      "line_end": 202,
+      "line_start": 200,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "scripts/backfill.py",
+            "function_name": "run",
+            "line_end": 202,
+            "line_start": 200
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": "scripts/backfill.py::run",
+        "opportunity_id": "perf2_626e6b4848d036aede65",
+        "paths": [
+          [
+            "scripts/backfill.py::run",
+            "src/app/db.py::get_session"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "scripts/backfill.py::run"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/edge.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "reliable-edge",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 2
+        },
+        "rank_score": 15,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/edge.py",
+      "impact_delta": 0.0,
+      "line_end": 232,
+      "line_start": 230,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/edge.py",
+            "function_name": "run",
+            "line_end": 232,
+            "line_start": 230
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/edge.py::run",
+        "opportunity_id": "perf2_cf3653d0149e79f7a1fb",
+        "paths": [
+          [
+            "src/app/edge.py::run",
+            "src/app/db.py::reliable_sink"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/edge.py::run"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "tests/test_job.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "test",
+        "observations_total": 1,
+        "provenance": "call-site",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 1,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 14,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "tests/test_job.py",
+      "impact_delta": 0.0,
+      "line_end": 202,
+      "line_start": 200,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "tests/test_job.py",
+            "function_name": "run",
+            "line_end": 202,
+            "line_start": 200
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": "tests/test_job.py::run",
+        "opportunity_id": "perf2_b17b10884d21aeeb4df0",
+        "paths": [
+          [
+            "tests/test_job.py::run",
+            "src/app/db.py::get_session"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "tests/test_job.py::run"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/guess.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "name-fallback",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 4,
+          "provenance": 0
+        },
+        "rank_score": 13,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/guess.py",
+      "impact_delta": 0.0,
+      "line_end": 242,
+      "line_start": 240,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/guess.py",
+            "function_name": "run",
+            "line_end": 242,
+            "line_start": 240
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": "src/app/guess.py::run",
+        "opportunity_id": "perf2_a817f9001be1d323f8a2",
+        "paths": [
+          [
+            "src/app/guess.py::run",
+            "src/app/db.py::guessed_sink"
+          ]
+        ],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "src/app/guess.py::run"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/filters.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "membership_test_against_list_in_loop",
+        "biomarker_types": [
+          "membership_test_against_list_in_loop"
+        ],
+        "boundary_kind": null,
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 0,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 3,
+          "provenance": 3
+        },
+        "rank_score": 11,
+        "rationale": "The collection is proven list-backed; element hashability and ordering/identity use still require validation.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/filters.py",
+      "impact_delta": 0.0,
+      "line_end": 152,
+      "line_start": 150,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/filters.py",
+            "function_name": "select",
+            "line_end": 152,
+            "line_start": 150
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": null,
+        "opportunity_id": "perf2_6b8f8be1ab10062f0a19",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "replace_membership_collection"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "membership_test_against_list_in_loop",
+      "target_symbol": "select"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/render.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "string_concat_in_loop",
+        "biomarker_types": [
+          "string_concat_in_loop"
+        ],
+        "boundary_kind": null,
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 0,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "multiplier_shape": 3,
+          "provenance": 3
+        },
+        "rank_score": 11,
+        "rationale": "Repeated string accumulation is proven; intermediate accumulator observations still require validation.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/render.py",
+      "impact_delta": 0.0,
+      "line_end": 162,
+      "line_start": 160,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/render.py",
+            "function_name": "to_csv",
+            "line_end": 162,
+            "line_start": 160
+          }
+        ],
+        "affected_locations_total": 1,
+        "evidence_truncated": false,
+        "intervention_symbol": null,
+        "opportunity_id": "perf2_e82f5ad0e9c24fe3d1a1",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "advisory",
+        "strategy": "buffer_string_accumulation"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "string_concat_in_loop",
+      "target_symbol": "to_csv"
+    }
+  ]
+}

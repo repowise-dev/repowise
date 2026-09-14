@@ -442,6 +442,33 @@ def test_ts_nested_io_requires_collection_outer_loop():
     assert ("nested_loop_with_io", "db") in _hits("typescript", nested)
 
 
+def test_ts_prisma_verb_is_a_sink_only_as_a_member_call():
+    """A bare ``aggregate(xs)`` is a local function, not a database round trip.
+
+    The prisma lexicon is reached through the client (``prisma.user.aggregate``),
+    so matching the bare name flagged pure arithmetic as an N+1 in a codebase
+    with no database at all.
+    """
+    pure = (
+        "function aggregate(xs){ return xs.reduce(roll); }"
+        " function view(sorted, ratio){ for (const chunk of sorted) {"
+        " const rolled = aggregate(chunk); } }"
+    )
+    assert _hits("typescript", pure) == []
+
+    # The real thing still reports, through the client object.
+    real = (
+        "async function f(prisma, xs){ for (const x of xs) {"
+        " await prisma.user.aggregate({ where: x }); } }"
+    )
+    assert ("io_in_loop", "db") in _hits("typescript", real)
+
+    # And the other bare names the lexicon carries are equally not sinks.
+    for verb in ("groupBy", "upsert", "findMany"):
+        src = f"function {verb}(xs){{ return xs; }} function g(xs){{ for (const x of xs) {{ {verb}(x); }} }}"
+        assert _hits("typescript", src) == [], verb
+
+
 # ---------------------------------------------------------------------------
 # Phase-7d language-specific markers
 # ---------------------------------------------------------------------------
@@ -547,7 +574,9 @@ def test_python_os_and_shutil_verbs_gated_on_the_module_root():
     # Non-I/O members of the same module never fire.
     assert not any(
         k == "io_in_loop"
-        for k, _ in _hits("python", "import os\ndef f(ps):\n    for p in ps:\n        os.getpid()\n")
+        for k, _ in _hits(
+            "python", "import os\ndef f(ps):\n    for p in ps:\n        os.getpid()\n"
+        )
     )
     # ``remove`` / ``move`` / ``replace`` are ordinary collection verbs off the
     # module root, so an unrelated receiver must stay silent.
@@ -581,7 +610,10 @@ def test_python_chained_os_call_is_not_a_filesystem_sink():
     # Other chained-root shapes off the same ceiling.
     for expr in ("os.environ.get(k).replace('a', 'b')", "os.path.relpath(p).replace('a', 'b')"):
         assert not any(
-            k == "io_in_loop" for k, _ in _hits("python", f"import os\ndef f(xs):\n    for x in xs:\n        {expr}\n")
+            k == "io_in_loop"
+            for k, _ in _hits(
+                "python", f"import os\ndef f(xs):\n    for x in xs:\n        {expr}\n"
+            )
         ), expr
     # The genuine two-segment call is unaffected.
     assert ("io_in_loop", "filesystem") in _hits(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,7 @@ def _workspace_update(
     """
     from repowise.cli.helpers import load_state
     from repowise.core.docs_mode import resolve_docs_mode
+    from repowise.core.repo_config import config_fingerprint
     from repowise.core.workspace import (
         check_repo_staleness,
         reconcile_repo_head_commit,
@@ -86,6 +88,7 @@ def _workspace_update(
     from .mode import _resolve_index_only_mode
 
     start = time.monotonic()
+    started_at = datetime.now(UTC)
     ws_root = target.ws_root
     ws_config = target.ws_config
     repo_alias = target.repo_filter
@@ -113,8 +116,19 @@ def _workspace_update(
         stored = entry.last_commit_at_index
         is_stale, head, behind = check_repo_staleness(abs_path, stored)
         indexed = (abs_path / ".repowise").is_dir()
+        repo_state = load_state(abs_path) if indexed else {}
+        config_stale = bool(
+            indexed
+            and (
+                repo_state.get("config_fingerprint") is None
+                or repo_state.get("config_fingerprint") != config_fingerprint(abs_path)
+            )
+        )
+        is_stale = is_stale or config_stale
         if not indexed:
             status = "[dim]not indexed[/dim]"
+        elif config_stale and not behind:
+            status = "[yellow]config changed[/yellow]"
         elif is_stale:
             status = f"[yellow]{behind} new commit(s)[/yellow]"
         else:
@@ -124,7 +138,6 @@ def _workspace_update(
         if is_stale:
             stale_count += 1
             if indexed:
-                repo_state = load_state(abs_path)
                 if not _resolve_index_only_mode(
                     index_only=index_only, docs_flag=docs_flag, state=repo_state
                 ):
@@ -192,6 +205,7 @@ def _workspace_update(
             repo_filter=repo_alias,
             docs_aliases=docs_aliases,
             start=start,
+            started_at=started_at,
             agents_md=agents_md,
             verbose=verbose,
             docs_flag=docs_flag,
@@ -249,6 +263,8 @@ def _workspace_update(
 
     from .reporting import show_workspace_completion
 
+    _print_breaking_changes(ws_root, started_at)
+
     show_workspace_completion(
         ws_name=ws_root.name,
         updated=updated,
@@ -260,6 +276,68 @@ def _workspace_update(
     )
 
 
+_BREAKING_DETAIL_LINES = 3
+
+
+def _print_breaking_changes(ws_root: Path, started_at: datetime) -> None:
+    """One line naming the contracts this update broke, if any.
+
+    The report is written by the cross-repo hooks during this run, so it is only
+    ours when it was stamped after we started; an older one belongs to a
+    previous update and saying nothing beats attributing it here.
+    """
+    from rich.markup import escape
+
+    from repowise.core.workspace.breaking_change import (
+        SEVERITY_BREAKING,
+        load_breaking_change_report,
+    )
+
+    report = load_breaking_change_report(ws_root)
+    if report is None or not report.ran or not report.changes:
+        return
+    try:
+        if datetime.fromisoformat(report.generated_at or "") < started_at:
+            return
+    except (TypeError, ValueError):
+        return
+    # Counted the way `workspace check` gates, so the two never contradict.
+    gating = [
+        c
+        for c in report.changes
+        if c.severity == SEVERITY_BREAKING
+        and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
+    ]
+    repos = sorted(
+        {ic.repo for c in gating for ic in c.impacted_consumers if ic.repo != c.provider_repo}
+    )
+    others = len(report.changes) - len(gating)
+    if not gating:
+        console.print(
+            f"\n[dim]{others} contract change(s) recorded; none breaks another repo.[/dim]"
+        )
+        return
+    console.print(
+        f"\n[yellow]![/yellow] {len(gating)} breaking contract change(s) impacting "
+        f"{escape(', '.join(repos))}"
+        + (f", plus {others} non-breaking" if others else "")
+        + ". [dim]repowise workspace check[/dim]"
+    )
+    # Name a few of them, so the count is actionable without a second command.
+    # Capped: this runs at the end of an update, and `workspace check` is the
+    # place that lists every one.
+    for change in gating[:_BREAKING_DETAIL_LINES]:
+        hit = sorted(
+            {ic.repo for ic in change.impacted_consumers if ic.repo != change.provider_repo}
+        )
+        console.print(
+            f"  [dim]{escape(change.contract_id)}[/dim]  "
+            f"{escape(change.provider_repo)} -> {escape(', '.join(hit))}"
+        )
+    if len(gating) > _BREAKING_DETAIL_LINES:
+        console.print(f"  [dim]and {len(gating) - _BREAKING_DETAIL_LINES} more[/dim]")
+
+
 def _workspace_docs_update(
     *,
     ws_root: Path,
@@ -267,6 +345,7 @@ def _workspace_docs_update(
     repo_filter: str | None,
     docs_aliases: set[str],
     start: float,
+    started_at: datetime,
     agents_md: bool | None,
     verbose: bool,
     docs_flag: bool | None,
@@ -466,6 +545,7 @@ def _workspace_docs_update(
             f"[green]Workspace update complete[/green]: {summary} "
             f"[dim]({time.monotonic() - start:.1f}s)[/dim]"
         )
+        _print_breaking_changes(ws_root, started_at)
 
 
 def _refresh_workspace_editor_project_files(

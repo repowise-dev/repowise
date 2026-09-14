@@ -10,10 +10,9 @@ needs the working tree on disk, so it is a local-server capability.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
+from repowise.core.analysis.health.refactoring.recommendations import hydrate_recommendations
 from repowise.core.persistence.crud import get_refactoring_suggestion
 from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -21,43 +20,14 @@ from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 
-def _row_to_suggestion(row: Any) -> Any:
-    """Re-hydrate a persisted ORM row into a ``RefactoringSuggestion`` dataclass.
-
-    Mirrors the web router's adapter; the enrichment engine reads the open
-    ``plan`` / ``evidence`` / ``blast_radius`` dicts, which the DB stores as
-    ``*_json`` text.
-    """
-    from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
-
-    def _loads(value: Any) -> dict[str, Any]:
-        if not value:
-            return {}
-        try:
-            parsed = json.loads(value)
-        except (TypeError, ValueError):
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-
-    sug = RefactoringSuggestion(
-        refactoring_type=row.refactoring_type,
-        file_path=row.file_path,
-        target_symbol=row.target_symbol,
-        line_start=row.line_start,
-        line_end=row.line_end,
-        plan=_loads(row.plan_json),
-        evidence=_loads(row.evidence_json),
-        impact_delta=row.impact_delta,
-        effort_bucket=row.effort_bucket,
-        blast_radius=_loads(row.blast_radius_json),
-        confidence=row.confidence,
-        source_biomarker=row.source_biomarker,
-    )
-    sug.id = row.id  # type: ignore[attr-defined]
-    return sug
-
-
-@mcp.tool(default=False)
+@mcp.tool(
+    default=False,
+    surface_order=240,
+    trust_kind="generated",
+    artifact_type="refactoring",
+    presentation="source_diff",
+    safety="generative",
+)
 async def generate_refactoring_code(suggestion_id: str, repo: str | None = None) -> dict:
     """Generate refactored code + a unified diff for one refactoring plan.
 
@@ -86,26 +56,53 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
     ctx = await _resolve_repo_context(repo)
     repo_path = Path(ctx.path)
 
-    if not llm_enrichment_enabled(load_repo_config(repo_path)):
-        return {
-            "error": "disabled",
-            "detail": (
-                "Refactoring code generation is opt-in. Set 'refactoring.llm.enabled: "
-                "true' in .repowise/config.yaml to enable it."
-            ),
-        }
-
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         row = await get_refactoring_suggestion(session, repository.id, suggestion_id)
+        if row is None:
+            from repowise.core.persistence.crud import get_refactoring_suggestions
+            from repowise.server.mcp_server.tool_health import _refactoring_plan_id
+
+            candidates = await get_refactoring_suggestions(session, repository.id)
+            row = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if _refactoring_plan_id(candidate, ctx.alias or repository.name)
+                    == suggestion_id
+                ),
+                None,
+            )
         if row is None:
             return {
                 "error": "not_found",
                 "detail": f"No refactoring plan with id {suggestion_id!r} in this repo.",
                 "_meta": _build_meta(repository=repository),
             }
-        sug = _row_to_suggestion(row)
+        recommendation = (await hydrate_recommendations(session, repository.id, [row]))[0]
+        sug = recommendation.suggestion
         meta = _build_meta(repository=repository)
+
+    from repowise.server.mcp_server.tool_health import _serialize_refactoring
+
+    public_plan = _serialize_refactoring(
+        recommendation, ctx.alias or repository.name
+    )
+    if not llm_enrichment_enabled(load_repo_config(repo_path)):
+        return {
+            "suggestion_id": public_plan["id"],
+            "resolved": True,
+            "plan": public_plan,
+            "generation": {
+                "available": False,
+                "reason": "disabled",
+                "detail": (
+                    "Refactoring code generation is opt-in. Set "
+                    "'refactoring.llm.enabled: true' in .repowise/config.yaml to enable it."
+                ),
+            },
+            "_meta": meta,
+        }
 
     try:
         provider = build_enrichment_provider(repo_path)
@@ -114,5 +111,7 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
 
     result = await enrich_suggestion(sug, provider=provider, repo_path=repo_path)
     payload = result.to_dict()
+    payload["suggestion_id"] = public_plan["id"]
+    payload["resolved"] = True
     payload["_meta"] = meta
     return payload

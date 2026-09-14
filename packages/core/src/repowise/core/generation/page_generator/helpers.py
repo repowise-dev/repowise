@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -241,6 +242,47 @@ def build_dead_code_map(dead_code_report: Any | None) -> dict[str, list[dict]]:
                 }
             )
     return dead_code_by_file
+
+
+def _decision_confidence(payload: dict) -> float:
+    """A decision's confidence as a float, 0.0 when it is missing or unusable."""
+    try:
+        return float(payload.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def rank_decisions(decisions: Iterable[dict]) -> list[dict]:
+    """Most confident first, ties in discovery order (the sort is stable).
+
+    A page has room for a handful, so which handful matters -- the list is both
+    rendered and fed to the model as context. Taking a raw slice showed whichever
+    happened to be written first.
+    """
+    ranked = list(decisions)
+    ranked.sort(key=lambda payload: -_decision_confidence(payload))
+    return ranked
+
+
+def decisions_for_files(
+    decisions_by_file: dict[str, list[dict]], paths: Iterable[str]
+) -> list[dict]:
+    """The decisions governing *paths*, de-duplicated and ranked.
+
+    A decision that affects several of a module's files appears once. The key
+    matches the ``decision_records`` uniqueness constraint (title, source,
+    evidence file), so two genuinely distinct records are never collapsed.
+    """
+    seen: set[tuple[Any, Any, Any]] = set()
+    scoped: list[dict] = []
+    for path in paths:
+        for payload in decisions_by_file.get(path) or ():
+            key = (payload.get("title"), payload.get("source"), payload.get("evidence_file"))
+            if key in seen:
+                continue
+            seen.add(key)
+            scoped.append(payload)
+    return rank_decisions(scoped)
 
 
 def build_decision_maps(

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class McpToolRecipeInfo(BaseModel):
+    name: str
+    call: str
+    requires: list[str]
 
 
 class McpToolInfo(BaseModel):
@@ -10,9 +16,20 @@ class McpToolInfo(BaseModel):
 
     name: str
     description: str
+    tier: str
     default: bool
+    default_single_repo: bool
+    default_workspace: bool
+    eligible: bool
+    eligible_single_repo: bool
+    eligible_workspace: bool
     requires_workspace: bool
     enabled: bool
+    recipes: list[McpToolRecipeInfo] = Field(default_factory=list)
+    artifact_type: str
+    presentation: str
+    safety: str
+    evidence_basis: str
 
 
 class McpToolSurfaceResponse(BaseModel):

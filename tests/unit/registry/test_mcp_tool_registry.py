@@ -52,6 +52,17 @@ def test_tool_alias_matches_register(registry):
     assert my_tool in registry.tools()
 
 
+def test_legacy_default_workspace_tool_infers_utility_tier(registry):
+    @registry.tool(requires_workspace=True)
+    async def workspace_utility() -> dict:
+        return {}
+
+    entry = registry.entries()[0]
+    assert entry.default is True
+    assert entry.requires_workspace is True
+    assert entry.tier == "utility"
+
+
 def test_apply_registers_with_server(registry):
     @registry.register
     async def t1() -> dict:

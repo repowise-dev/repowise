@@ -71,7 +71,7 @@ def _ctx(
     nloc: int = 600,
     language: str = "python",
     blame_index: BlameIndex | None = None,
-    module_map: dict[str, str] | None = None,
+    community_label_map: dict[str, str] | None = None,
 ) -> RefactoringContext:
     return RefactoringContext(
         file_path=file_path,
@@ -79,7 +79,7 @@ def _ctx(
         nloc=nloc,
         graph=g,
         blame_index=blame_index,
-        module_map=module_map or {},
+        community_label_map=community_label_map or {},
     )
 
 
@@ -240,6 +240,26 @@ def test_blast_radius_lists_external_referrers():
     assert br["import_rewrites"] == br["dependent_count"]  # python → shim language
 
 
+def test_blast_radius_does_not_count_noncall_execution_edges_as_callers():
+    g = _two_cluster_graph()
+    g.add_node(
+        "framework.py::binding",
+        node_type="symbol",
+        kind="function",
+        name="binding",
+        file_path="framework.py",
+    )
+    g.add_edge(
+        "framework.py::binding",
+        "big.py::alpha_0",
+        edge_type="framework_binds",
+        resolution_origin="framework",
+    )
+
+    plan = _detect(g, "big.py")[0]
+    assert "framework.py" not in plan.blast_radius["dependent_files"]
+
+
 def test_go_split_needs_no_import_rewrites():
     out = _detect(_two_cluster_graph("pkg/big.go"), "pkg/big.go", language="go")
     assert len(out) == 1
@@ -351,8 +371,8 @@ def test_import_name_signal_separates_distinct_dependencies():
         _add_foreign_call(g, f"big.py::fn_{i}", "ext/b.py", "beta_dep")
     _imports(g, "big.py", "ext/a.py", ["alpha_dep"])
     _imports(g, "big.py", "ext/b.py", ["beta_dep"])
-    module_map = {"ext/a.py": "extpkg", "ext/b.py": "extpkg"}
-    out = _detect(g, "big.py", module_map=module_map)
+    community_label_map = {"ext/a.py": "extpkg", "ext/b.py": "extpkg"}
+    out = _detect(g, "big.py", community_label_map=community_label_map)
     assert len(out) == 1
     s = out[0]
     assert s.evidence["group_count"] == 2
@@ -371,8 +391,8 @@ def test_foreign_module_proxy_is_used_when_imported_names_empty():
         _add_foreign_call(g, f"big.py::fn_{i}", "ext/a.py", "alpha_dep")
     for i in range(4, 8):
         _add_foreign_call(g, f"big.py::fn_{i}", "ext/b.py", "beta_dep")
-    module_map = {"ext/a.py": "moda", "ext/b.py": "modb"}
-    out = _detect(g, "big.py", module_map=module_map)
+    community_label_map = {"ext/a.py": "moda", "ext/b.py": "modb"}
+    out = _detect(g, "big.py", community_label_map=community_label_map)
     assert len(out) == 1
     s = out[0]
     assert s.evidence["group_count"] == 2

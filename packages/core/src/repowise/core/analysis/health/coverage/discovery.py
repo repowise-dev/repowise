@@ -129,6 +129,10 @@ class ResolvedCoverage:
     matched_suffix: int = 0
     unmatched: list[str] = field(default_factory=list)
     ambiguous: list[str] = field(default_factory=list)
+    # True when more than half the report's files failed to map to the tree.
+    # Set by :func:`resolve_reports`; consumers must flag the aggregate as
+    # partial rather than reporting the mapped subset's numbers as repo-wide.
+    mapping_partial: bool = False
 
     @property
     def matched(self) -> int:
@@ -326,11 +330,12 @@ def resolve_reports(
     suffix_index = _build_suffix_index(repo_keys)
     result = ResolvedCoverage()
     by_key: dict[str, FileCoverage] = {}
-
+    report_file_count = 0
     for report in reports:
         if result.source_format is None and report.source_format not in (None, "unknown"):
             result.source_format = report.source_format
         for fc in report.files:
+            report_file_count += 1
             norm = normalize_report_path(
                 fc.file_path, strip_prefix=strip_prefix, path_prefix=path_prefix
             )
@@ -356,6 +361,15 @@ def resolve_reports(
                 _merge_into(by_key[key], resolved_fc)
             else:
                 by_key[key] = resolved_fc
+
+    # Severe mapping loss is a property of the *report*, not of the matched
+    # subset: a 200-file report that mapped 20 files is a fragment no matter
+    # how coherent those 20 look. Majority-unmapped is the threshold the
+    # coverage path already documents as the "treats loss as success" trap
+    # (issue #1746), and it deliberately avoids a hard ratio on the matched
+    # side so monorepos ingesting one package's report stay unflagged.
+    if report_file_count:
+        result.mapping_partial = result.matched * 2 < report_file_count
 
     for key, fc in by_key.items():
         result.coverage_map[key] = {

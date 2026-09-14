@@ -16,7 +16,7 @@
  */
 
 import type { ArchitectureView, C4L1, C4L2, C4L3 } from "@repowise-dev/ui/c4";
-import type { CouplingGraphResponse } from "@repowise-dev/types/coupling";
+import type { CouplingEdge, CouplingGraphResponse } from "@repowise-dev/types/coupling";
 import type { FileDetailResponse, FilesIndexResponse } from "@repowise-dev/types/files";
 import type {
   ChurnComplexityResponse,
@@ -27,14 +27,24 @@ import type {
   HealthFinding,
   HealthOverviewResponse,
   HealthTrendResponse,
-  RefactoringQuery,
-  RefactoringTargetsResponse,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
+import type {
+  PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
+} from "@repowise-dev/types/health";
+import type {
+  RefactoringPlan,
+  RefactoringPlanPage,
+  RefactoringTargets,
+} from "@repowise-dev/types/refactoring";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import type { SymbolDetailResponse } from "@repowise-dev/types/symbols";
 import { ApiClientError } from "./client";
 import type { ModuleHealthSortKey } from "./modules";
+import type { RefactoringPageParams, RefactoringTargetsParams } from "./refactoring";
 import type {
   ArchitectureGraphResponse,
   CommunitySliceResponse,
@@ -212,6 +222,19 @@ interface WireFilesIndex {
   totals: { files?: number; loc?: number };
 }
 
+/**
+ * Coupling as it arrives, not as `CouplingGraphResponse` promises: a snapshot
+ * written before the coupling analyzer ran omits `nodes`/`edges` entirely, and
+ * one written before support/confidence existed omits those per edge.
+ */
+interface WireCoupling {
+  nodes?: CouplingGraphResponse["nodes"];
+  edges?: Partial<CouplingEdge>[];
+  total_edges?: number;
+  coupled_files?: number;
+  total_files?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Mapping helpers (exported for tests)
 // ---------------------------------------------------------------------------
@@ -360,6 +383,7 @@ export interface HostedProvider {
       file_path?: string;
       min_severity?: string;
       dimension?: string;
+      limit?: number;
     },
   ): Promise<HealthFinding[]>;
   listHealthFiles(repoId: string, opts?: HealthFilesQuery): Promise<HealthFilesResponse>;
@@ -369,10 +393,33 @@ export interface HostedProvider {
     repoId: string,
     opts?: { file_path?: string; limit?: number },
   ): Promise<HealthCoverageResponse>;
+  getHealthWorkQueue(
+    repoId: string,
+    opts?: HealthWorkQueueQuery,
+  ): Promise<HealthWorkQueueResponse>;
+  /** @deprecated Use getHealthWorkQueue. */
   getRefactoringTargets(
     repoId: string,
-    opts?: RefactoringQuery,
-  ): Promise<RefactoringTargetsResponse>;
+    opts?: HealthWorkQueueQuery,
+  ): Promise<HealthWorkQueueResponse>;
+  getRefactoringPlans(
+    repoId: string,
+    opts?: RefactoringTargetsParams,
+  ): Promise<RefactoringTargets>;
+  getRefactoringPlansPage(
+    repoId: string,
+    opts?: RefactoringPageParams,
+  ): Promise<RefactoringPlanPage>;
+  getRefactoringPlan(repoId: string, planId: string): Promise<RefactoringPlan>;
+  getPerformanceOpportunities(
+    repoId: string,
+    opts?: PerformanceOpportunityQuery,
+  ): Promise<PerformanceOpportunityPage>;
+  getPerformanceOpportunityFindings(
+    repoId: string,
+    opportunityId: string,
+    opts?: { limit?: number; offset?: number },
+  ): Promise<import("@repowise-dev/types").Paginated<HealthFinding>>;
   getChurnComplexity(repoId: string, opts?: { limit?: number }): Promise<ChurnComplexityResponse>;
 
   // Modules
@@ -657,7 +704,7 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
         biomarker: opts?.biomarker_type,
         file_path: opts?.file_path,
         dimension: opts?.dimension,
-        limit: 500,
+        limit: opts?.limit ?? 500,
       });
       let items = res.items ?? [];
       if (opts?.min_severity !== undefined && opts.min_severity in SEVERITY_ORDER) {
@@ -739,8 +786,48 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
       };
     },
     getHealthCoverage: (repoId, opts) => snapGet(repoId, "/health/coverage", opts),
+    getHealthWorkQueue: (repoId, opts) =>
+      snapGet(repoId, "/health/refactoring-targets", opts as QueryParams),
     getRefactoringTargets: (repoId, opts) =>
       snapGet(repoId, "/health/refactoring-targets", opts as QueryParams),
+    getRefactoringPlans: (repoId, opts = {}) =>
+      snapGet(repoId, "/refactoring/targets", {
+        refactoring_type: opts.refactoringType,
+        min_confidence: opts.minConfidence,
+        file_path: opts.filePath,
+        view: opts.view,
+      }),
+    getRefactoringPlansPage: (repoId, opts = {}) =>
+      snapGet(repoId, "/refactoring/targets/page", {
+        refactoring_type: opts.refactoringType,
+        min_confidence: opts.minConfidence,
+        file_path: opts.filePath,
+        view: opts.view,
+        search: opts.search,
+        confidence: opts.confidence,
+        effort: opts.effort,
+        sort: opts.sort,
+        limit: opts.limit,
+        offset: opts.offset,
+      }),
+    getRefactoringPlan: (repoId, planId) =>
+      snapGet(repoId, `/refactoring/${encodeURIComponent(planId)}`),
+    getPerformanceOpportunities: (repoId, opts = {}) => {
+      // The file scope is the one list-valued member of the query, and the
+      // parameter helper takes scalars, so it goes over the wire the way the
+      // route reads it rather than as an array the serializer would drop.
+      const { file_paths, ...rest } = opts;
+      return snapGet(repoId, "/health/performance-opportunities", {
+        ...rest,
+        ...(file_paths?.length ? { file_paths: file_paths.join(",") } : {}),
+      });
+    },
+    getPerformanceOpportunityFindings: (repoId, opportunityId, opts = {}) =>
+      snapGet(
+        repoId,
+        `/health/performance-opportunities/${encodeURIComponent(opportunityId)}/findings`,
+        opts,
+      ),
     getChurnComplexity: (repoId, opts) => snapGet(repoId, "/health/churn-complexity", opts),
 
     listModuleHealth: (repoId, options = {}) => snapGet(repoId, "/modules/health", options),
@@ -762,7 +849,34 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
       snapGet(repoId, `/communities/${communityId}/slice`),
     getModuleGraph: (repoId) => snapGet(repoId, "/module-graph"),
     getExecutionFlows: (repoId, params) => snapGet(repoId, "/execution-flows", params),
-    getCoupling: (repoId, opts) => snapGet(repoId, "/coupling", opts),
+    async getCoupling(repoId, opts): Promise<CouplingGraphResponse> {
+      const res = await snapGet<WireCoupling>(repoId, "/coupling", opts);
+      const nodes = res.nodes ?? [];
+      // An older snapshot has no support/confidence/structural. Zero and null
+      // read as "not measured", which the table already renders as a dash.
+      const edges: CouplingEdge[] = (res.edges ?? []).map((e) => ({
+        source: e.source ?? "",
+        target: e.target ?? "",
+        strength: e.strength ?? 0,
+        last_co_change: e.last_co_change ?? null,
+        support: e.support ?? 0,
+        confidence_ab: e.confidence_ab ?? null,
+        confidence_ba: e.confidence_ba ?? null,
+        structural: e.structural ?? null,
+        dependency_kind: e.dependency_kind ?? null,
+      }));
+      // Falling back to the post-cap length understates the pre-cap count, but
+      // an honest "showing N of N" beats `NaN` downstream.
+      return {
+        nodes,
+        edges,
+        total_edges: res.total_edges ?? edges.length,
+        // An older snapshot carries no file count; deriving one from the
+        // capped edges would understate it, and 0 already reads as unknown.
+        coupled_files: res.coupled_files ?? 0,
+        total_files: res.total_files ?? 0,
+      };
+    },
 
     async getFilesIndex(repoId): Promise<FilesIndexResponse> {
       // Same rows, different envelope: hosted totals/language_counts vs the

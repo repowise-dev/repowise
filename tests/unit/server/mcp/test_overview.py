@@ -59,3 +59,44 @@ async def test_get_overview_repo_not_found(setup_mcp):
 
     with pytest.raises(LookupError, match="not found"):
         await get_overview(repo="/nonexistent")
+
+
+_GATED_KEYS = {
+    "outline": "outline",
+    "tour": "guided_tour",
+    "decisions": "key_decisions",
+    "graph": "community_summary",
+    "ownership": "knowledge_map",
+}
+
+
+@pytest.mark.asyncio
+async def test_default_overview_omits_every_gated_block(setup_mcp):
+    from repowise.server.mcp_server import get_overview
+
+    result = await get_overview()
+    for key in (*_GATED_KEYS.values(), "reading_order", "outline_hint"):
+        assert key not in result, f"{key} should be opt-in"
+    assert "include=[" in result["more"]
+
+
+@pytest.mark.asyncio
+async def test_orientation_blocks_carry_no_prose(setup_mcp):
+    from repowise.server.mcp_server import get_overview
+
+    result = await get_overview()
+    assert result["key_modules"]
+    assert all("description" not in m for m in result["key_modules"])
+    for layer in result.get("architecture", {}).get("layers", []):
+        assert "description" not in layer
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("flag", "key"),
+    [("tour", "reading_order"), ("graph", "community_summary"), ("ownership", "knowledge_map")],
+)
+async def test_include_flag_restores_its_block(setup_mcp, flag, key):
+    from repowise.server.mcp_server import get_overview
+
+    assert key in await get_overview(include=[flag])

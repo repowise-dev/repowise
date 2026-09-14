@@ -1,8 +1,10 @@
 "use client";
 
-import { Ban, CheckCircle, XCircle, Loader2, AlertTriangle, RotateCw, Settings, X } from "lucide-react";
+import { Ban, CheckCircle, XCircle, AlertTriangle, RotateCw, Settings, X } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Progress } from "../ui/progress";
 import { Badge } from "../ui/badge";
+import { ActivityDot } from "../ui/activity-dot";
 import { Button } from "../ui/button";
 import { JobLog, type JobLogEntry } from "./job-log";
 import { formatTokens, formatNumber } from "../lib/format";
@@ -86,7 +88,7 @@ export function GenerationProgress({
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        {isInflight && <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent-primary)] shrink-0" />}
+        {isInflight && <Spinner className="text-[var(--color-model)]" />}
         {isDone && <CheckCircle className="h-4 w-4 text-[var(--color-fresh)] shrink-0" />}
         {isFailed && <XCircle className="h-4 w-4 text-[var(--color-outdated)] shrink-0" />}
         {isCancelled && <Ban className="h-4 w-4 text-[var(--color-text-tertiary)] shrink-0" />}
@@ -155,8 +157,8 @@ export function GenerationProgress({
         <div className="flex items-center gap-1.5 text-xs text-[var(--color-text-tertiary)]">
           <span>Cost: ${actualCost.toFixed(4)}</span>
           {isRunning && (
-            <span className="inline-flex items-center gap-0.5 rounded bg-[var(--color-accent-primary)]/15 px-1 py-px text-[10px] font-medium text-[var(--color-accent-primary)]">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-accent-primary)]" />
+            <span className="inline-flex items-center gap-0.5 rounded bg-[var(--color-model)]/15 px-1 py-px text-[10px] font-medium text-[var(--color-model)]">
+              <ActivityDot className="h-1.5 w-1.5" />
               live
             </span>
           )}

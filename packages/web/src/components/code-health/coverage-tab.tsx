@@ -13,8 +13,7 @@ import {
   getHealthCoverage,
   getTestsReaching,
   getHealthOverview,
-  getRefactoringTargets,
-  listHealthFiles,
+  getHealthWorkQueue,
   listHealthFindings,
   updateFindingStatus,
 } from "@/lib/api/code-health";
@@ -27,8 +26,7 @@ export function CoverageTab({ repoId: id }: { repoId: string }) {
     cacheKey: id,
     getOverview: (limit) => getHealthOverview(id, limit),
     listFindings: (opts) => listHealthFindings(id, opts),
-    listFiles: (opts) => listHealthFiles(id, opts),
-    getRefactoringTargets: (opts) => getRefactoringTargets(id, opts),
+    getHealthWorkQueue: (opts) => getHealthWorkQueue(id, opts),
     updateFindingStatus: (findingId, status) =>
       updateFindingStatus(id, findingId, status),
     getCoverage: (opts) => getHealthCoverage(id, opts),

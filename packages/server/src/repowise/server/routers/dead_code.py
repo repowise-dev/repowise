@@ -12,6 +12,7 @@ from repowise.core.analysis.dead_code.risk_factors import (
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
+    DeadCodeAnalyzeResponse,
     DeadCodeFindingResponse,
     DeadCodePatchRequest,
     DeadCodeSummaryResponse,
@@ -53,7 +54,11 @@ async def list_dead_code(
     return [DeadCodeFindingResponse.from_orm(f) for f in findings[:limit]]
 
 
-@router.post("/api/repos/{repo_id}/dead-code/analyze", status_code=202)
+@router.post(
+    "/api/repos/{repo_id}/dead-code/analyze",
+    response_model=DeadCodeAnalyzeResponse,
+    status_code=202,
+)
 async def analyze_dead_code(
     repo_id: str,
     request: Request,

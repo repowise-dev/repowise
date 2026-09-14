@@ -306,11 +306,7 @@ class TestFilePageTemplate:
 
         from jinja2 import Environment, FileSystemLoader
 
-        from repowise.core.generation.page_generator.structural import (
-            as_markdown,
-            oneline,
-            signature,
-        )
+        from repowise.core.generation.page_generator.structural import register_filters
         from repowise.core.generation.structural_labels import resolve_structural_labels
 
         template_dir = (
@@ -326,9 +322,7 @@ class TestFilePageTemplate:
         env = Environment(loader=FileSystemLoader(str(template_dir)))
         # Mirror the production environment, which registers these in
         # PageGenerator.__init__. Without them the templates fail to compile.
-        env.filters["oneline"] = oneline
-        env.filters["as_markdown"] = as_markdown
-        env.filters["signature"] = signature
+        register_filters(env)
         env.globals["labels"] = resolve_structural_labels(None)
         return env
 
@@ -356,7 +350,8 @@ class TestFilePageTemplate:
         )
         rendered = tmpl.render(ctx=ctx)
         assert "**Layer:** Core Pipeline" in rendered
-        assert "**Role:** internal" in rendered
+        # The stored value is an enum member; the page spells it for a reader.
+        assert "**Role:** internal to its layer" in rendered
 
     def test_file_page_without_kg(self, jinja_env):
         tmpl = jinja_env.get_template("file_page.j2")

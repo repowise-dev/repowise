@@ -8,12 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
+from repowise.server.schemas import ChurnComplexityResponse
 
 from ._router import router
 from .serializers import _churn_complexity_to_dict
 
 
-@router.get("/api/repos/{repo_id}/health/churn-complexity")
+@router.get(
+    "/api/repos/{repo_id}/health/churn-complexity",
+    response_model=ChurnComplexityResponse,
+)
 async def churn_complexity(
     repo_id: str,
     # The ceiling has to clear the code-health map's file window (2,000), not
@@ -29,7 +33,7 @@ async def churn_complexity(
     One point per recently-changed file: x = 90-day commit count (churn),
     y = max cyclomatic complexity, dot size = NLOC, color = health band. The
     top-right corner is where churn and complexity collide -- the highest-value
-    refactoring targets, plotted instead of listed.
+    health work items, plotted instead of listed.
     """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:

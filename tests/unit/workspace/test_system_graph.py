@@ -158,7 +158,9 @@ def test_socket_contract_becomes_socket_edge():
         _provider("api", "socket::/hubs/game", ctype="socket", file="api/hub.cs"),
         _consumer("unity", "socket::/hubs/game", ctype="socket", file="unity/net.cs"),
     ]
-    links = [_link("socket::/hubs/game", "api", "api/hub.cs", "unity", "unity/net.cs", ctype="socket")]
+    links = [
+        _link("socket::/hubs/game", "api", "api/hub.cs", "unity", "unity/net.cs", ctype="socket")
+    ]
     graph = build_system_graph(contracts, links, CrossRepoOverlay(), {})
     assert graph.edges[0].kind == "socket"
 
@@ -205,6 +207,29 @@ def test_package_dep_edge_points_dependent_to_dependency():
     assert edge.structural is True
     assert edge.match_type == "exact"
     assert edge.confidence == 1.0
+
+
+def test_maven_package_edge_keeps_coordinate_evidence():
+    overlay = CrossRepoOverlay(
+        package_deps=[
+            CrossRepoPackageDep(
+                source_repo="consumer",
+                target_repo="producer",
+                source_manifest="app/pom.xml",
+                target_manifest="shared/pom.xml",
+                target_package="com.acme:shared",
+                requested_version="1.2.0",
+                scope="compile",
+                resolution_basis="unique_workspace_coordinate",
+                kind="maven_coordinate",
+            )
+        ]
+    )
+
+    graph = build_system_graph([], [], overlay, {})
+    edge = _edges_by_key(graph)[("consumer", "producer", "package")]
+
+    assert edge.contract_refs == ["maven_coordinate:com.acme:shared:app/pom.xml"]
 
 
 def test_cochange_edge_is_behavioral_and_undirected():
@@ -273,7 +298,14 @@ def test_system_graph_json_shape_is_locked():
     )
     data = graph.to_dict()
 
-    assert set(data) == {"version", "generated_at", "nodes", "edges", "diagnostics"}
+    assert set(data) == {
+        "version",
+        "generated_at",
+        "repo_provenance",
+        "nodes",
+        "edges",
+        "diagnostics",
+    }
     assert set(data["nodes"][0]) == {
         "id",
         "repo",
@@ -311,6 +343,10 @@ def test_system_graph_json_shape_is_locked():
         "consumers_by_layer",
         "http_consumers_unresolved",
         "http_consumer_coverage",
+        "symbol_identity",
+        "schema_coverage",
+        "openapi",
+        "code_api",
     }
 
 

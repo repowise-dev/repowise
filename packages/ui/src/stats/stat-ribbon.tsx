@@ -1,8 +1,16 @@
 import * as React from "react";
 
+import { InfoTip } from "../shared/info-tip";
+
 export interface RibbonStat {
   label: string;
   value: string;
+  /**
+   * What this figure means, shown on an `InfoTip` beside the label. A figure a
+   * reader cannot define is a figure they cannot act on, and the native `title`
+   * this used to render was invisible, unreachable by keyboard and absent on
+   * touch — an explainer nobody could find.
+   */
   hint?: string;
   /**
    * Tailwind text-colour class for the value. Only for figures that carry a
@@ -15,6 +23,8 @@ export interface RibbonStat {
   sub?: string | undefined;
   /** Tailwind text-colour class for `sub`. Same rule as `valueColor`. */
   subColor?: string | undefined;
+  /** Marks the figure the page's current selection describes. */
+  highlighted?: boolean | undefined;
   /** Optional jump to the page that owns this figure. Added because the
    *  Overview replaced a strip of *linked* KPI tiles with this component, and
    *  without it Files and Symbols lost their only entry point from that page. */
@@ -49,10 +59,8 @@ export function StatRibbon({
       {shown.map((s, i) => (
         <div
           key={s.label}
-          title={s.hint}
           className={[
             s.href ? "" : "px-4 py-3.5",
-            s.hint ? "cursor-help" : "",
             // Hairlines between cells only — the outer edges come from the
             // wrapper's border-y, so cells never double up on the boundary.
             "border-[var(--color-border-default)]",
@@ -71,8 +79,11 @@ export function StatRibbon({
             // The link wraps the whole cell rather than the value, so the
             // padding is part of the hit target instead of a dead margin
             // around it.
+            // A linked cell keeps the native tooltip: the anchor wraps the whole
+            // cell, and a tip is a button, which cannot nest inside it.
             <A
               href={s.href}
+              title={s.hint}
               className="group block px-4 py-3.5 no-underline transition-colors hover:bg-[var(--color-bg-elevated)]"
             >
               <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
@@ -88,8 +99,15 @@ export function StatRibbon({
             </A>
           ) : (
             <>
-              <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              <dt
+                className={`flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] ${
+                  s.highlighted
+                    ? "text-[var(--color-accent-primary)]"
+                    : "text-[var(--color-text-tertiary)]"
+                }`}
+              >
                 {s.label}
+                {s.hint && <InfoTip content={s.hint} label={`What ${s.label} means`} />}
               </dt>
               <dd
                 className={`mt-1 text-xl font-semibold tabular-nums ${

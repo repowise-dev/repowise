@@ -1,7 +1,10 @@
 import * as vscode from "vscode";
-import { buildRefactoringPlanPrompt, type AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
+import {
+  buildRefactoringPlanPrompt,
+  type AiPromptFlavor,
+} from "@repowise-dev/ui/health/ai-prompt-builder";
 import { typeMeta } from "@repowise-dev/ui/refactoring/meta";
-import type { RefactoringPlan } from "@repowise-dev/ui/refactoring/types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 import { CONFIG_SECTION, InternalCommands } from "../constants";
 import type { RepowiseContext } from "../core/context";
 import { repoRelativePath } from "../core/fileSignals";
@@ -113,13 +116,20 @@ function createProvider(
 
 /** "Repowise: Extract Class plan (impact 1.20)". */
 function lensTitle(plan: RefactoringPlan): string {
-  return `Repowise: ${typeMeta(plan.refactoring_type).label} plan (impact ${plan.impact_delta.toFixed(2)})`;
+  const score =
+    typeof plan.rank_score === "number"
+      ? `priority ${plan.rank_score.toFixed(2)}`
+      : `impact ${plan.impact_delta.toFixed(2)}`;
+  return `Repowise: ${typeMeta(plan.refactoring_type).label} plan (${score})`;
 }
 
 /** Open the designed plan panel, seeded with this plan (and its file for the list). */
 function openRefactoringPlan(ctx: RepowiseContext, plan: RefactoringPlan): void {
   if (!plan) return;
-  openViewPanel(ctx, "refactoring", { planId: plan.id, filePath: plan.file_path });
+  openViewPanel(ctx, "refactoring", {
+    planId: plan.id,
+    filePath: plan.file_path,
+  });
 }
 
 /** Pick a prompt flavor and copy the shared agent prompt for this plan. */

@@ -34,8 +34,15 @@ async def _seed(
             decision="dec",
             rationale="why",
             source=source,
+            affected_files=["src/app.py"],
+            evidence_file="src/app.py",
             confidence=confidence,
         )
+        # ``active`` is a projection of an acceptance, so a seed that wants a
+        # governing decision has to perform one; a bare upsert lands a
+        # candidate however the status argument reads.
+        if status == "active":
+            await crud.accept_decision(session, rec, accepter="tester")
         return rec.id
 
 

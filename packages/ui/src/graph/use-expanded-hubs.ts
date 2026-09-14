@@ -8,8 +8,14 @@ import { useState, useCallback } from "react";
  * most-recent-LAST so Esc / {@link collapseLast} closes the most recently
  * opened cluster (documented behavior). {@link collapseAll} closes everything.
  *
- * Pure client state — the actual member slices are fetched separately
- * (see useCommunitySlices) and merged into the sigma graph by the shell.
+ * Pure client state — the actual member slices were fetched separately and
+ * merged into the sigma graph by the shell.
+ *
+ * @deprecated No longer wired up. A hub double-click now *enters* the
+ * community and draws its own scoped file graph (`GraphFlow`'s
+ * `activeCommunity` / `communitySlice`), rather than blossoming its members as
+ * satellites on the radial layout. Kept exported, and untouched, only so an
+ * out-of-tree host compiles while it ports; delete once none does.
  */
 export function useExpandedHubs() {
   // Insertion-ordered list of expanded community ids (oldest → newest).

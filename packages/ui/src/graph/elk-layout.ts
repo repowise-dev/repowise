@@ -39,6 +39,9 @@ export interface FileNodeData {
   hasDoc: boolean;
   isHotspot?: boolean | undefined;
   isDead?: boolean | undefined;
+  /** Named by a recorded architectural decision. Already on the node payload;
+   *  the inspector uses it to offer the decision as a destination. */
+  hasDecision?: boolean | undefined;
   [key: string]: unknown;
 }
 

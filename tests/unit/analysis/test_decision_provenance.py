@@ -67,6 +67,15 @@ def test_git_archaeology_aliases_commit_rank():
     assert rank_for_source("git_archaeology") == rank_for_source("commit") == 6
 
 
+def test_conventions_sits_with_commit_and_leaves_the_scale_intact():
+    """Counted from the code itself, so it ranks where a commit does."""
+    from repowise.core.analysis.decision_provenance import LISTABLE_SOURCES
+
+    assert rank_for_source("conventions") == 6
+    assert MAX_SOURCE_RANK == 9
+    assert "conventions" in LISTABLE_SOURCES
+
+
 def test_unknown_source_lowest_rank():
     assert rank_for_source("something_new") == 1
     assert rank_for_source(None) == 1

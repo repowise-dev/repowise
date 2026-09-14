@@ -393,10 +393,14 @@ async def execute_job(
             try:
                 from repowise.server.provider_config import get_chat_provider_instance
 
-                # Pass the repo path so the job reuses the provider/model/key the
-                # repo was configured with (``.repowise/config.yaml`` + ``.env``)
-                # rather than the server-global default.
-                llm_client = get_chat_provider_instance(repo_path=repo_path)
+                # Pass the repo id *and* path so the job resolves exactly what
+                # the UI's provider picker chose. The picker persists its choice
+                # per repo, under ``repos[repo_id]`` — the most specific step in
+                # the resolver and the only one that carries a deliberate user
+                # decision. Resolving on path alone skipped it entirely, so a
+                # repo whose settings named a provider still fell through to the
+                # auto-detect step and indexed with whatever it guessed.
+                llm_client = get_chat_provider_instance(repo_path=repo_path, repo_id=repo_id)
             except Exception as exc:
                 docs_skip_reason = f"no provider configured: {exc}"
                 logger.warning("no_provider_configured", error=str(exc))
@@ -495,6 +499,8 @@ async def execute_job(
                 repo_wiki_style=wiki_style,
                 vector_store=vector_store,
                 prior_pages=prior_pages,
+                session_factory=session_factory,
+                repo_id=repo_id,
             )
 
         # ---- Persist results -----------------------------------------------
@@ -591,7 +597,8 @@ async def execute_job(
         # mode, config) that `repowise init` would have written.
         try:
             if is_initial_index:
-                _persist_initial_index_state(
+                await asyncio.to_thread(
+                    _persist_initial_index_state,
                     Path(repo_path),
                     llm_client=llm_client,
                     # With a provider the pages are model-written ("llm"); with
@@ -610,7 +617,7 @@ async def execute_job(
                     exclude_patterns=exclude_patterns,
                 )
             else:
-                _stamp_last_sync_commit(Path(repo_path))
+                await asyncio.to_thread(_stamp_last_sync_commit, Path(repo_path))
         except Exception:
             logger.debug("state_json_update_failed", job_id=job_id, exc_info=True)
 
@@ -619,6 +626,14 @@ async def execute_job(
             enricher = getattr(app_state, "cross_repo_enricher", None)
             if enricher is not None and hasattr(enricher, "reload"):
                 enricher.reload()
+                # Imported here because a single-repo server never gets this
+                # far: the contract map and the consumer indexes the join
+                # reads change together, so a reload of one invalidates both.
+                from repowise.server.mcp_server._test_impact import (
+                    close_test_impact_indexes,
+                )
+
+                await close_test_impact_indexes()
         except Exception:
             logger.debug("enricher_reload_failed", job_id=job_id, exc_info=True)
 
@@ -817,6 +832,24 @@ def _persist_initial_index_state(
         logger.debug("store_version_stamp_failed", repo_path=str(repo_path), exc_info=True)
 
     state["config_fingerprint"] = config_fingerprint(repo_path)
+    _save_state(repo_path, state)
+
+
+def _persist_generate_job_state(
+    repo_path: Path,
+    *,
+    total_pages: int,
+    remaining_templates: int,
+    pages_generated: int,
+) -> None:
+    """Persist a scoped generation's Git baseline and page metadata."""
+    head = _read_head_sha(repo_path)
+    state = _load_state(repo_path)
+    if head:
+        state["last_sync_commit"] = head
+    state["total_pages"] = total_pages
+    if remaining_templates == 0 and pages_generated and resolve_docs_mode(state) != "llm":
+        state.update(docs_mode_state_fields("llm"))
     _save_state(repo_path, state)
 
 
@@ -1086,14 +1119,13 @@ async def _run_generate_job(
     # page count, and docs_mode — which flips to "llm" only once no template page
     # remains, mirroring the CLI so a later `repowise update` reads the same mode.
     try:
-        head = _read_head_sha(repo_path)
-        state = _load_state(repo_path)
-        if head:
-            state["last_sync_commit"] = head
-        state["total_pages"] = total_pages
-        if remaining_templates == 0 and pages_generated and resolve_docs_mode(state) != "llm":
-            state.update(docs_mode_state_fields("llm"))
-        _save_state(repo_path, state)
+        await asyncio.to_thread(
+            _persist_generate_job_state,
+            repo_path,
+            total_pages=total_pages,
+            remaining_templates=remaining_templates,
+            pages_generated=pages_generated,
+        )
     except Exception:
         logger.debug("state_json_update_failed", job_id=job_id, exc_info=True)
 
@@ -1153,6 +1185,8 @@ async def _incremental_page_regen(
     *,
     vector_store: Any | None = None,
     prior_pages: dict[str, Any] | None = None,
+    session_factory: Any | None = None,
+    repo_id: str | None = None,
 ) -> list:
     """Regenerate only wiki pages affected by recent changes.
 
@@ -1161,72 +1195,44 @@ async def _incremental_page_regen(
     be empty if nothing changed or no base ref is available).
     """
     try:
-        # Read base ref from state.json (the commit we last synced to)
-        state_path = repo_path / ".repowise" / "state.json"
-        base_ref: str | None = None
-        if state_path.is_file():
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            base_ref = state.get("last_sync_commit")
+        # Feed existing stale-page ages into the cascade so a constrained
+        # budget spends its LLM calls on the oldest stale pages rather than
+        # reordering purely by importance (issues #847 / #851). Keep the DB
+        # lookup async; the synchronous Git/graph planning below is the unit
+        # that belongs in a worker thread.
+        stale_pages: dict[str, float] = {}
+        if session_factory is not None and repo_id is not None:
+            try:
+                from repowise.core.persistence import (
+                    get_session,
+                    get_stale_file_page_ages,
+                )
 
-        # Webhook jobs may carry explicit before/after refs
-        if not base_ref:
-            base_ref = job_config.get("before")
+                async with get_session(session_factory) as session:
+                    stale_pages = await get_stale_file_page_ages(session, repo_id)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("incremental_page_regen_stale_lookup_failed", error=str(exc))
 
-        if not base_ref:
-            logger.info("incremental_page_regen_skipped", reason="no_base_ref")
-            return []
-
-        import subprocess as _sp
-
-        head_result = _sp.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
+        plan = await asyncio.to_thread(
+            _plan_incremental_page_regen,
+            repo_path,
+            result,
+            job_config,
+            stale_pages,
         )
-        if head_result.returncode != 0:
+        if plan is None:
             return []
-        head = head_result.stdout.strip()
-
-        if head == base_ref:
-            logger.info("incremental_page_regen_skipped", reason="no_new_commits")
-            return []
-
-        from repowise.core.ingestion import ChangeDetector
-        from repowise.core.ingestion.change_detector import compute_adaptive_budget
-
-        detector = ChangeDetector(repo_path)
-        file_diffs = detector.get_changed_files(base_ref, head)
-        if not file_diffs:
-            return []
-
-        cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
-        affected = detector.get_affected_pages(
-            file_diffs,
-            result.graph_builder.graph(),
-            cascade_budget,
-            pagerank=result.graph_builder.pagerank(),
-        )
-
-        if not affected.regenerate:
-            logger.info("incremental_page_regen_skipped", reason="no_affected_pages")
-            return []
+        affected_parsed, affected_source, changed_count, affected_count, cascade_budget = plan
 
         logger.info(
             "incremental_page_regen_start",
-            changed_files=len(file_diffs),
-            affected_pages=len(affected.regenerate),
+            changed_files=changed_count,
+            affected_pages=affected_count,
             cascade_budget=cascade_budget,
         )
 
         if progress:
-            progress.on_phase_start("generation", len(affected.regenerate))
-
-        # Filter parsed files to only affected ones
-        regen_set = set(affected.regenerate)
-        affected_parsed = [pf for pf in result.parsed_files if pf.file_info.path in regen_set]
-        affected_source = {p: s for p, s in result.source_map.items() if p in regen_set}
+            progress.on_phase_start("generation", affected_count)
 
         from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
 
@@ -1255,7 +1261,7 @@ async def _incremental_page_regen(
             # level 2 and leave the repo-wide pages for a full run.
             file_pages_only=True,
         )
-        assembler = ContextAssembler(generation_config)
+        assembler = ContextAssembler(generation_config, repo_path=repo_path)
         # D3: pass the vector store (re-embed re-rendered pages) and prior pages
         # (reuse an unchanged page instead of re-billing it), matching the CLI
         # incremental path. Without these, every sync re-billed the repo-wide
@@ -1285,3 +1291,60 @@ async def _incremental_page_regen(
     except Exception as exc:
         logger.warning("incremental_page_regen_failed", error=str(exc))
         return []
+
+
+def _plan_incremental_page_regen(
+    repo_path: Path,
+    result: Any,
+    job_config: dict,
+    stale_pages: dict[str, float],
+) -> tuple[list[Any], dict[str, Any], int, int, int] | None:
+    """Build an incremental regeneration plan without blocking the event loop.
+
+    The caller runs this synchronous unit in a worker thread. Keeping the Git
+    command, GitPython-backed ``ChangeDetector``, graph ranking, and related
+    filesystem reads together avoids moving only the cheapest operation while
+    leaving the rest of change detection on the async server thread.
+    """
+    base_ref = _load_state(repo_path).get("last_sync_commit") or job_config.get("before")
+    if not base_ref:
+        logger.info("incremental_page_regen_skipped", reason="no_base_ref")
+        return None
+
+    head = _read_head_sha(repo_path)
+    if not head:
+        return None
+    if head == base_ref:
+        logger.info("incremental_page_regen_skipped", reason="no_new_commits")
+        return None
+
+    from repowise.core.ingestion import ChangeDetector
+    from repowise.core.ingestion.change_detector import compute_adaptive_budget
+
+    detector = ChangeDetector(repo_path)
+    file_diffs = detector.get_changed_files(base_ref, head)
+    if not file_diffs:
+        return None
+
+    cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
+    affected = detector.get_affected_pages(
+        file_diffs,
+        result.graph_builder.graph(),
+        cascade_budget,
+        pagerank=result.graph_builder.pagerank(),
+        stale_pages=stale_pages,
+    )
+    if not affected.regenerate:
+        logger.info("incremental_page_regen_skipped", reason="no_affected_pages")
+        return None
+
+    regen_set = set(affected.regenerate)
+    affected_parsed = [pf for pf in result.parsed_files if pf.file_info.path in regen_set]
+    affected_source = {p: s for p, s in result.source_map.items() if p in regen_set}
+    return (
+        affected_parsed,
+        affected_source,
+        len(file_diffs),
+        len(affected.regenerate),
+        cascade_budget,
+    )

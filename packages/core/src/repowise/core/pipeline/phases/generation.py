@@ -93,7 +93,7 @@ async def run_generation(
     # Falls back to defaults when the pipeline entry point did not thread one through.
     base_config = generation_config if generation_config is not None else GenerationConfig()
     config = replace(base_config, max_concurrency=concurrency)
-    assembler = ContextAssembler(config)
+    assembler = ContextAssembler(config, repo_path=repo_path)
 
     # Test-run: limit to top 10 files by PageRank for a fast validation run.
     # Applied here rather than only in the orchestrator so it works whether the
@@ -169,6 +169,14 @@ async def run_generation(
         if progress:
             progress.on_phase_start(name, total)
 
+    def on_warning(text: str) -> None:
+        """Surface a generation-time degradation through the progress callback
+        so it lands in the run's warnings (persisted as ``degraded``), not
+        only in structlog — the CLI pins structlog to ERROR unless -v, so a
+        log-only warning is invisible on the path that matters (issue #1369)."""
+        if progress:
+            progress.on_message("warning", text)
+
     generator = PageGenerator(
         llm_client,
         assembler,
@@ -179,6 +187,9 @@ async def run_generation(
         repo_path=repo_path,
     )
 
+    # The recorder carries the run's shared totals table; generation's own
+    # sub-spans write into it so they sit beside the top-level phases rather
+    # than in a second table nothing reads.
     generated_pages = await generator.generate_all(
         parsed_files,
         source_map,
@@ -200,6 +211,8 @@ async def run_generation(
         kg_data=kg_data,
         only_page_ids=only_page_ids,
         preserved_page_ids=preserved_page_ids,
+        timings=getattr(progress, "table", None),
+        on_warning=on_warning,
     )
 
     # Onboarding summary — count generated slots and surface which ones

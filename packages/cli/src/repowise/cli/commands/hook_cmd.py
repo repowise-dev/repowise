@@ -991,10 +991,10 @@ def hook_status(path: str | None, workspace: bool, no_workspace: bool) -> None:
         for entry in target.ws_config.repos:
             abs_path = (target.ws_root / entry.path).resolve()
             result = status(abs_path)
-            icon = "[green]✓[/green]" if result == "installed" else "[dim]✗[/dim]"
+            icon = "[green]✓[/green]" if result.startswith("installed") else "[dim]✗[/dim]"
             console.print(f"  {icon} {entry.alias}: {result}")
     else:
         assert target.repo_path is not None
         result = status(target.repo_path)
-        icon = "[green]✓[/green]" if result == "installed" else "[dim]✗[/dim]"
+        icon = "[green]✓[/green]" if result.startswith("installed") else "[dim]✗[/dim]"
         console.print(f"  {icon} post-commit: {result}")

@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import re
 import stat
+import subprocess
 from pathlib import Path
 
 _HOOK_MARKER = "# repowise-hook-start"
@@ -56,13 +57,21 @@ _LEGACY_HOOK_FINGERPRINTS = (
 # The outer ``{ ... } &`` brace group ensures the queued marker is written
 # synchronously (so the augment hook sees it on the *next* tool call after
 # the commit) before the heavy update spawns into the background.
+#
+# Two gates keep a default-on hook boring. It fires only when
+# ``.repowise/state.json`` exists, which is the precondition ``repowise
+# update`` itself checks, so a dry-run directory or a deleted store does not
+# fail on every commit forever. And when ``repowise`` is not on PATH it looks
+# only in the repo's own ``.venv``; the old ``uv run`` fallback resolved
+# whatever project ``uv`` found above the repo, on every commit, in repos
+# that were not Python projects at all.
 _HOOK_SCRIPT = """\
 # repowise-hook-start
 # Auto-syncs repowise wiki after each commit (background, non-blocking).
 # Installed by: repowise hook install
 {
   ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-  [ -d "$ROOT/.repowise" ] || exit 0
+  [ -f "$ROOT/.repowise/state.json" ] || exit 0
   HEAD=$(git rev-parse HEAD 2>/dev/null) || HEAD=""
   TS=$(date +%s 2>/dev/null) || TS=""
   if [ -n "$TS" ]; then
@@ -78,8 +87,10 @@ _HOOK_SCRIPT = """\
     cd "$ROOT" || exit 1
     if command -v repowise >/dev/null 2>&1; then
       repowise update >> "$LOG" 2>&1
-    elif command -v uv >/dev/null 2>&1; then
-      uv run repowise update >> "$LOG" 2>&1
+    elif [ -x "$ROOT/.venv/bin/repowise" ]; then
+      "$ROOT/.venv/bin/repowise" update >> "$LOG" 2>&1
+    elif [ -x "$ROOT/.venv/Scripts/repowise.exe" ]; then
+      "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
     fi
   ) &
 } >/dev/null 2>&1
@@ -94,6 +105,112 @@ def _git_root(path: Path) -> Path | None:
         if (parent / ".git").exists():
             return parent
     return None
+
+
+def _hooks_dir(repo_path: Path) -> Path | None:
+    """Resolve the real hooks directory for *repo_path*.
+
+    A normal repo keeps ``.git/hooks`` under ``.git``, but a git **worktree**
+    stores ``.git`` as a *file* (``gitdir: <path>``) pointing at the shared
+    metadata dir — so ``root / ".git" / "hooks"`` is ``NotADirectoryError``
+    territory. Ask git for the real hooks path so both layouts work, and fall
+    back to the ``.git/hooks`` heuristic when git is unavailable or not a repo.
+
+    ``git rev-parse --git-path hooks`` also honours ``core.hooksPath``, which
+    husky and lefthook both set. A *global* ``core.hooksPath`` (say
+    ``~/.githooks``) resolves outside any repo, so the hook is shared:
+    ``status`` then reports installed from every repo, and ``uninstall`` run
+    in one repo removes it for all of them. Following the config is still
+    correct, because that directory is genuinely where git looks, and the
+    hook body is repo-scoped at runtime -- it resolves its own ``$ROOT`` and
+    returns early unless ``$ROOT/.repowise`` exists -- so a shared hook is
+    inert in repos with no index rather than wrong.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-path", "hooks"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            p = Path(result.stdout.strip())
+            if not p.is_absolute():
+                p = repo_path / p
+            return _husky_user_hook_dir(p)
+    except Exception:
+        pass
+    root = _git_root(repo_path)
+    if root is None:
+        return None
+    return root / ".git" / "hooks"
+
+
+def _is_shell_hook(content: str) -> bool:
+    """Whether an existing hook file can take an appended POSIX sh block.
+
+    A hook with no shebang, or a sh, bash, dash, zsh or ksh one, can. A hook
+    written for node or python cannot, and appending shell to it would break
+    the user's own hook on every commit after this one.
+    """
+    first = content.split("\n", 1)[0].strip()
+    if not first.startswith("#!"):
+        return True
+    return re.search(r"\b(sh|bash|dash|zsh|ksh)\b", first) is not None
+
+
+def _husky_user_hook_dir(hooks_dir: Path) -> Path:
+    """Redirect husky's generated shim directory to its user-hook directory.
+
+    husky points ``core.hooksPath`` at ``.husky/_``, which it regenerates on
+    every install and gitignores wholesale (``.husky/_/.gitignore`` is ``*``), so
+    a hook written there is deleted by the next ``npm install``. husky's shim
+    dispatches to ``.husky/<hook-name>`` one level up, which is the committed,
+    durable location.
+
+    Dispatch does not depend on which user hooks already exist. husky writes a
+    shim for a fixed list of all 14 git hook names on every install, regardless
+    of what is in ``.husky/`` (husky 9.1.7 ``index.js``: the ``l`` array includes
+    ``post-commit``, and ``l.forEach`` writes each one unconditionally), and each
+    shim sources ``_/h``, which execs ``.husky/<name>`` when that file exists and
+    exits 0 when it does not. So a hook written here is picked up immediately
+    rather than waiting for the next ``npm install``.
+
+    The exception is a checkout where husky has never run: ``.husky/_`` does not
+    exist, ``core.hooksPath`` points at a missing directory, and git therefore
+    runs no hooks at all -- husky's own included. Writing to ``.husky/`` is still
+    the right destination, since it survives, but nothing fires until husky is
+    installed. :func:`husky_pending_reason` reports that so it is visible at
+    install time instead of looking like a working hook.
+    """
+    if hooks_dir.name != "_":
+        return hooks_dir
+    # Only remap a directory that really is husky's, not any directory named
+    # "_". The generated helpers are the strongest signal, but they are absent
+    # in a fresh worktree where husky has not been installed yet; there the
+    # parent being a ``.husky`` directory is what identifies the layout.
+    is_husky = any((hooks_dir / marker).exists() for marker in ("h", "husky.sh"))
+    if not (is_husky or hooks_dir.parent.name == ".husky"):
+        return hooks_dir
+    return hooks_dir.parent
+
+
+def husky_pending_reason(hooks_dir: Path) -> str | None:
+    """Why a hook in *hooks_dir* will not run yet, or None if it will.
+
+    Only one case: the husky user-hook directory in a checkout where husky has
+    not been installed, so ``core.hooksPath`` points at a ``_`` that is not there
+    and git runs nothing. Silent in every other layout.
+    """
+    if hooks_dir.name != ".husky":
+        return None
+    if (hooks_dir / "_" / "h").exists():
+        return None
+    return (
+        "husky is not set up in this checkout (no .husky/_), so git runs no hooks "
+        "here yet -- run your package manager's install to activate it"
+    )
 
 
 def _strip_legacy_block(content: str) -> tuple[str, bool]:
@@ -186,13 +303,22 @@ def install(repo_path: Path) -> str:
     if root is None:
         return "not a git repository"
 
-    hooks_dir = root / ".git" / "hooks"
-    hooks_dir.mkdir(exist_ok=True)
+    hooks_dir = _hooks_dir(repo_path)
+    if hooks_dir is None:
+        return "not a git repository"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
     hook_path = hooks_dir / "post-commit"
+
+    pending = husky_pending_reason(hooks_dir)
+
+    def _annotate(state: str) -> str:
+        return f"{state} ({pending})" if pending else state
 
     migrated_legacy = False
     if hook_path.exists():
         content = hook_path.read_text(encoding="utf-8")
+        if not _is_shell_hook(content):
+            return "not installed: the existing post-commit hook is not a shell script"
         content, migrated_legacy = _strip_legacy_block(content)
         if migrated_legacy:
             hook_path.write_text(content, encoding="utf-8")
@@ -201,7 +327,7 @@ def install(repo_path: Path) -> str:
             # Marker block present. Decide whether to leave alone or upgrade.
             current_block = _HOOK_SCRIPT.rstrip() + "\n"
             if current_block in content:
-                return (
+                return _annotate(
                     "migrated legacy hook" if migrated_legacy else "already installed"
                 )
             content, replaced = _replace_marker_block(content, _HOOK_SCRIPT)
@@ -212,8 +338,8 @@ def install(repo_path: Path) -> str:
                         hook_path.stat().st_mode
                         | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
                     )
-                return "upgraded"
-            return "already installed"
+                return _annotate("upgraded")
+            return _annotate("already installed")
         # Append to existing hook
         hook_path.write_text(
             content.rstrip() + "\n\n" + _HOOK_SCRIPT,
@@ -226,7 +352,7 @@ def install(repo_path: Path) -> str:
     with contextlib.suppress(OSError):
         hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
-    return "installed"
+    return _annotate("installed")
 
 
 def uninstall(repo_path: Path) -> str:
@@ -239,7 +365,10 @@ def uninstall(repo_path: Path) -> str:
     if root is None:
         return "not a git repository"
 
-    hook_path = root / ".git" / "hooks" / "post-commit"
+    hooks_dir = _hooks_dir(repo_path)
+    if hooks_dir is None:
+        return "not a git repository"
+    hook_path = hooks_dir / "post-commit"
     if not hook_path.exists():
         return "no post-commit hook found"
 
@@ -268,11 +397,15 @@ def status(repo_path: Path) -> str:
     if root is None:
         return "not a git repository"
 
-    hook_path = root / ".git" / "hooks" / "post-commit"
+    hooks_dir = _hooks_dir(repo_path)
+    if hooks_dir is None:
+        return "not a git repository"
+    hook_path = hooks_dir / "post-commit"
     if not hook_path.exists():
         return "not installed"
 
     content = hook_path.read_text(encoding="utf-8")
     if _HOOK_MARKER in content:
-        return "installed"
+        pending = husky_pending_reason(hook_path.parent)
+        return f"installed ({pending})" if pending else "installed"
     return "not installed"

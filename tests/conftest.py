@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,37 @@ def _no_real_editor_setup():
     mp.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
     yield
     mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_db_url_env():
+    """Stop one test's database URL from redirecting every later test.
+
+    ``resolve_db_url`` checks ``REPOWISE_DB_URL`` / ``REPOWISE_DATABASE_URL``
+    *before* the explicit ``repo_path`` it is handed, so whatever holds those
+    variables decides where every index write in the process lands.
+
+    ``serve_cmd`` assigns ``REPOWISE_DB_URL`` directly on ``os.environ`` when it
+    finds a ``.repowise/`` beside the cwd, which is right for a real ``serve``
+    process and wrong inside pytest: a test that drives the real ``serve``
+    command in-process leaves the *developer's own* database pinned for the
+    rest of the session, and every later test that indexes a ``tmp_path``
+    fixture repo writes its rows there instead of into its own store. That is
+    how a suite run leaves hundreds of ``repo`` rows, pointing at temp
+    directories, in the checkout you are working in.
+
+    Snapshot and restore rather than pin a value: a test that sets its own URL
+    must keep working, and one that sets none must still fall through to
+    ``<repo>/.repowise/wiki.db``. Only the leak across the test boundary is
+    closed.
+    """
+    saved = {k: os.environ.get(k) for k in ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")}
+    yield
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 @pytest.fixture(autouse=True)

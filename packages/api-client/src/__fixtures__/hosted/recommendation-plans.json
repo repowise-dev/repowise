@@ -1,0 +1,24 @@
+{
+  "summary": {
+    "total": 1,
+    "by_type": [{ "type": "extract_method", "count": 1 }]
+  },
+  "plans": [
+    {
+      "id": "legacy-plan",
+      "refactoring_type": "extract_method",
+      "file_path": "src/app.py",
+      "target_symbol": "run",
+      "line_start": 10,
+      "line_end": 40,
+      "plan": {},
+      "evidence": {},
+      "impact_delta": 1.25,
+      "effort_bucket": "M",
+      "blast_radius": {},
+      "confidence": "medium",
+      "source_biomarker": "complex_method",
+      "rank_score": 1.5
+    }
+  ]
+}

@@ -6,11 +6,13 @@ orchestrator.py) imports these phase functions. No CLI/click/rich imports.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from repowise.core.co_change import parse_partners
 from repowise.core.ingestion.git_indexer import GitIndexTier
 from repowise.core.pipeline.progress import ProgressCallback, emit_warning
 
@@ -34,6 +36,26 @@ def drop_transient_git_signals(git_metadata_list: list[dict]) -> None:
     """
     for meta in git_metadata_list:
         meta.pop("blame_index", None)
+
+
+def label_co_change_structure(graph_builder: Any, git_meta_map: dict[str, dict]) -> int:
+    """Stamp each persisted co-change record with what the graph says about it.
+
+    The column holds JSON, so the records are decoded, labelled, and written
+    back; labelling the decoded copies alone would be discarded on persist.
+    Returns the number of pairs left unexplained.
+    """
+    decoded = {}
+    for file_path, meta in git_meta_map.items():
+        partners = parse_partners(meta.get("co_change_partners_json"))
+        if partners:
+            decoded[file_path] = [p.record for p in partners]
+    if not decoded:
+        return 0
+    unexplained = graph_builder.label_co_change_structure(decoded)
+    for file_path, records in decoded.items():
+        git_meta_map[file_path]["co_change_partners_json"] = json.dumps(records)
+    return unexplained
 
 
 async def _run_git_indexing(

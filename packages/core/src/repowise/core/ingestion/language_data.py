@@ -7,6 +7,8 @@ so existing consumers need no changes.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from .languages.registry import REGISTRY
 
 # ---------------------------------------------------------------------------
@@ -59,3 +61,15 @@ def get_builtin_types(language: str) -> frozenset[str]:
     """Return the type names that never resolve to a repo-declared symbol."""
     spec = REGISTRY.get(language)
     return spec.builtin_types if spec else frozenset()
+
+
+def get_external_receiver_types(language: str) -> frozenset[str]:
+    """Return the type names the repo-wide receiver tier must not answer for."""
+    spec = REGISTRY.get(language)
+    return spec.external_receiver_types if spec else frozenset()
+
+
+def get_external_return_types(language: str) -> Mapping[str, Mapping[str, str]]:
+    """Return ``{external type: {static method: return type}}`` for chain heads."""
+    spec = REGISTRY.get(language)
+    return spec.external_return_types if spec else {}

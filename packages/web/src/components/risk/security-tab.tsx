@@ -62,8 +62,10 @@ export function SecurityTab({ repoId }: { repoId: string }) {
           Findings refresh on every sync.
         </p>
         <Button size="sm" variant="outline" onClick={handleRescan} disabled={rescanning}>
-          <RotateCw className={`h-3.5 w-3.5 mr-1.5 ${rescanning ? "animate-spin" : ""}`} />
-          Re-scan
+          <RotateCw
+            className={`h-3.5 w-3.5 mr-1.5 ${rescanning ? "motion-safe:animate-spin" : ""}`}
+          />
+          {rescanning ? "Re-scanning…" : "Re-scan"}
         </Button>
       </div>
 

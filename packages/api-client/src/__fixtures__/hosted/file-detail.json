@@ -5,7 +5,7 @@
     "metric": {
       "file_path": ".pre-commit-config.yaml",
       "score": 10,
-      "band": "healthy",
+      "band": "excellent",
       "max_ccn": 1,
       "max_nesting": 0,
       "nloc": 23,

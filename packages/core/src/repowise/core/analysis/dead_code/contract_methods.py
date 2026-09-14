@@ -18,6 +18,9 @@ Currently covers:
   ``GetIDsOfNames``, ``Invoke``, etc.). They never appear as static
   callers in C# / C++ COM-interop code because the runtime resolves
   the vtable slot.
+* **JVM / C++ / Godot**: the ``Object`` and STL contracts, and the Godot
+  engine callbacks (``_ready``, ``_process``, …) the engine invokes on
+  every node it owns.
 
 Extend this list (and the matching helper) when other reserved-name
 patterns surface — e.g. WinRT activation factories, .NET ``ToString``
@@ -181,6 +184,93 @@ _CPP_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({
 _CPP_LANGUAGES: frozenset[str] = frozenset({"cpp", "c"})
 
 
+# Godot engine callbacks. The engine invokes these on every node it owns:
+# ``_ready`` when the node enters the scene tree, ``_process`` once a frame,
+# ``_input`` on every event. So a script that does nothing but override them
+# is the *normal* shape of a Godot script and has no static caller anywhere.
+# Without this, every ``.gd`` file in a Godot project reads as a file full of
+# uncalled private functions.
+#
+# All of them are leading-underscore, which GDScript's visibility convention
+# (shared with Python) reads as private, which is exactly why they land in
+# the uncalled-private pass rather than the unused-export one.
+#
+# Godot documents ~200 virtuals across its class hierarchy. Enumerating them
+# all would be arbitrary and stale within a release, so this covers the ones
+# a project actually overrides: the ``Node`` / ``CanvasItem`` lifecycle, the
+# ``Object`` property protocol, and the ``EditorPlugin`` interface an
+# ``addons/`` plugin must implement. The ceiling is the mirror image of the
+# gap: a project method that happens to share a name with a Godot virtual is
+# silently exempted. Contained to GDScript, and every name here starts with
+# ``_``, which a project author uses for a helper it does not expect anyone
+# else to call either.
+_GODOT_CALLBACK_NAMES: frozenset[str] = frozenset({
+    # ---- Object / RefCounted ----------------------------------------
+    "_init",
+    "_notification",
+    "_to_string",
+    # Property protocol: the engine calls these when the inspector or a
+    # script reads/writes a property that does not exist as a real field.
+    "_get",
+    "_set",
+    "_get_property_list",
+    "_validate_property",
+    "_property_can_revert",
+    "_property_get_revert",
+    # ---- Node lifecycle ---------------------------------------------
+    "_ready",
+    "_enter_tree",
+    "_exit_tree",
+    "_process",
+    "_physics_process",
+    "_get_configuration_warnings",
+    # ---- Input ------------------------------------------------------
+    "_input",
+    "_unhandled_input",
+    "_unhandled_key_input",
+    "_shortcut_input",
+    "_gui_input",
+    "_input_event",
+    # ---- CanvasItem / Control drawing and hit-testing ----------------
+    "_draw",
+    "_has_point",
+    "_get_minimum_size",
+    "_make_custom_tooltip",
+    "_structured_text_parser",
+    # ---- Control drag and drop --------------------------------------
+    "_get_drag_data",
+    "_can_drop_data",
+    "_drop_data",
+    # ---- GDScript 3 spellings ---------------------------------------
+    # Godot 3 named several of these virtuals without a leading underscore and
+    # singularised the configuration-warning hook. Both dialects parse (see
+    # LANGUAGE_SUPPORT.md), so both spellings belong here. The
+    # underscore-free ones read as *public*, which puts them in the
+    # unused-export pass rather than the uncalled-private one.
+    "get_drag_data",
+    "can_drop_data",
+    "drop_data",
+    "make_custom_tooltip",
+    "_get_configuration_warning",
+    # ---- Physics bodies ---------------------------------------------
+    "_integrate_forces",
+    # ---- EditorPlugin: what an addons/ plugin must implement ---------
+    "_enable_plugin",
+    "_disable_plugin",
+    "_get_plugin_name",
+    "_get_plugin_icon",
+    "_has_main_screen",
+    "_make_visible",
+    "_handles",
+    "_edit",
+    "_apply_changes",
+    "_save_external_data",
+    "_get_window_layout",
+    "_set_window_layout",
+    "_build",
+})
+
+
 def is_contract_method(sym_name: str, sym_kind: str | None, language: str | None) -> bool:
     """Return True if *sym_name* is a reserved contract-method name in *language*.
 
@@ -204,6 +294,8 @@ def is_contract_method(sym_name: str, sym_kind: str | None, language: str | None
     if language in _COM_LANGUAGES and sym_name in _COM_CONTRACT_METHOD_NAMES:
         return True
     if language in _JVM_LANGUAGES and sym_name in _JVM_CONTRACT_METHOD_NAMES:
+        return True
+    if language == "gdscript" and sym_name in _GODOT_CALLBACK_NAMES:
         return True
     if language in _CPP_LANGUAGES:
         if sym_name in _CPP_CONTRACT_METHOD_NAMES:

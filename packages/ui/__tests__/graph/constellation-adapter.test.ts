@@ -3,6 +3,8 @@ import {
   architectureToGraphology,
   hubNodeId,
   CORE_NODE_ID,
+  UNCLUSTERED_COMMUNITY_ID,
+  UNCLUSTERED_NODE_ID,
   mergeCommunitySlice,
   satelliteSizeFromPagerank,
 } from "../../src/graph/sigma/constellation-adapter";
@@ -322,5 +324,32 @@ describe("mergeCommunitySlice", () => {
     const g = baseGraph();
     const { satelliteIds } = mergeCommunitySlice(g, 42, makeSlice({ community_id: 42 }));
     expect(satelliteIds).toEqual([]);
+  });
+});
+
+describe("architectureToGraphology unclustered disc", () => {
+  it("draws the ungrouped files as one neutral hub outside the ranking", () => {
+    const arch: ArchitectureGraph = {
+      ...makeArch([makeArchNode({ community_id: 0 })]),
+      unclustered: { file_count: 72, files: ["README.md"] },
+    };
+    const g = architectureToGraphology(arch);
+    expect(g.hasNode(UNCLUSTERED_NODE_ID)).toBe(true);
+    expect(hubNodeId(UNCLUSTERED_COMMUNITY_ID)).toBe(UNCLUSTERED_NODE_ID);
+    const attrs = g.getNodeAttributes(UNCLUSTERED_NODE_ID);
+    expect(attrs.nodeType).toBe("hub");
+    expect(attrs.communityId).toBe(UNCLUSTERED_COMMUNITY_ID);
+    expect(attrs.memberCount).toBe(72);
+    // Past the outer ring, so the ranked hubs keep their positions.
+    const hub = g.getNodeAttributes(hubNodeId(0));
+    expect(Math.hypot(attrs.x, attrs.y)).toBeGreaterThan(Math.hypot(hub.x, hub.y));
+  });
+
+  it("draws nothing when there is nothing ungrouped", () => {
+    const g = architectureToGraphology({
+      ...makeArch([makeArchNode({ community_id: 0 })]),
+      unclustered: { file_count: 0, files: [] },
+    });
+    expect(g.hasNode(UNCLUSTERED_NODE_ID)).toBe(false);
   });
 });

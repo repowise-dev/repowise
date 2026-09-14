@@ -125,3 +125,14 @@ def test_the_stored_metric_agrees_with_the_biomarker(tmp_path):
     ).analyze()
     metric = next(m for m in report.metrics if m.file_path == "src/parser.py")
     assert metric.has_test_file is True
+
+
+def test_test_and_performance_passes_share_one_execution_index(tmp_path):
+    analyzer = HealthAnalyzer(_graph(calls=True), parsed_files=_tree(tmp_path))
+
+    first = analyzer._execution_graph()
+    analyzer._files_reached_by_tests()
+    analyzer._apply_crossfn_perf([])
+
+    assert first is not None
+    assert analyzer._execution_graph() is first

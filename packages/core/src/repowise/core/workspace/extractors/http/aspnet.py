@@ -5,8 +5,11 @@ Covers three shapes that can co-exist in one file:
 * attribute routing — ``[HttpGet("path")]`` stitched onto the class
   ``[Route("api/users")]`` prefix;
 * parameterless attributes — ``[HttpPost]`` whose route is the class prefix;
-* minimal APIs — ``app.MapGet("/users", ...)`` (not inside a controller, so
-  never prefix-stitched).
+* minimal APIs — ``app.MapGet("/users", ...)``, prefix-stitched onto the
+  ``MapGroup`` chain the receiver is bound to rather than onto a class route.
+
+The minimal-API shape is recognised by ``ingestion.framework_routes``, shared
+with the graph-edge builder that reads the same call for its handler argument.
 """
 
 from __future__ import annotations
@@ -14,8 +17,12 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from repowise.core.ingestion.framework_routes import aspnet_groups, aspnet_routes
+
+from ..base import line_at
 from ..langs import CSHARP
-from .dialect import METHODS, build_provider_contract, nearest_prefix
+from .dialect import build_provider_contract, nearest_prefix
+from .mounts import compose_prefix, group_prefixes
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -41,12 +48,6 @@ _ASPNET_CLASS_ROUTE_RE = re.compile(
     r"""\[\s*Route\s*\(\s*['"]([^'"]+)['"]""",
 )
 
-# Minimal API: app.MapGet("/users", ...) — same shape, different method names.
-_ASPNET_MINIMAL_RE = re.compile(
-    rf"""\.\s*Map({METHODS})\s*\(\s*['"]([^'"]+)['"]""",
-    re.IGNORECASE,
-)
-
 
 class AspNetDialect:
     name = "aspnet"
@@ -67,14 +68,27 @@ class AspNetDialect:
             prefix = nearest_prefix(class_mappings, m.start())
             if prefix:
                 path_raw = prefix + "/" + path_raw.lstrip("/")
-            c = build_provider_contract(ctx, method=method, path_raw=path_raw, framework="aspnet")
+            c = build_provider_contract(
+                ctx,
+                method=method,
+                path_raw=path_raw,
+                framework="aspnet",
+                line=line_at(content, m.start()),
+            )
             if c is not None:
                 out.append(c)
 
-        # Minimal API — not inside a controller, never prefix-stitched.
-        for m in _ASPNET_MINIMAL_RE.finditer(content):
+        # Minimal API — the prefix comes from the MapGroup chain its receiver
+        # is bound to, not from a class [Route(...)].
+        prefixes = group_prefixes(aspnet_groups(content))
+        for route in aspnet_routes(content):
             c = build_provider_contract(
-                ctx, method=m.group(1).upper(), path_raw=m.group(2), framework="aspnet-minimal"
+                ctx,
+                method=route.verb,
+                path_raw=compose_prefix(prefixes.get(route.receiver or "", ""), route.path or ""),
+                framework="aspnet-minimal",
+                line=line_at(content, route.offset),
+                handler=route.handler,
             )
             if c is not None:
                 out.append(c)
@@ -87,7 +101,13 @@ class AspNetDialect:
                 prefix = nearest_prefix(class_mappings, m.start())
                 if not prefix:
                     continue
-                c = build_provider_contract(ctx, method=method, path_raw=prefix, framework="aspnet")
+                c = build_provider_contract(
+                    ctx,
+                    method=method,
+                    path_raw=prefix,
+                    framework="aspnet",
+                    line=line_at(content, m.start()),
+                )
                 if c is not None:
                     out.append(c)
 

@@ -39,20 +39,44 @@ async def _add_decision(
     confidence: float = 1.0,
     files: list[str] | None = None,
 ) -> None:
-    session.add(
-        DecisionRecord(
-            id=rec_id,
-            repository_id=repo_id,
-            title=title,
-            decision=f"{title} because reasons",
-            status=status,
-            staleness_score=staleness,
-            confidence=confidence,
-            affected_files_json=json.dumps(files or []),
-            source="changelog",
-        )
+    """Add a record, and accept it when the caller asked for a governing one.
+
+    ``status="active"`` alone no longer makes a record govern: the summary
+    counts the acceptance, so a fixture that only set the column would seed
+    candidates and prove nothing about the lists this file is about.
+    """
+    record = DecisionRecord(
+        id=rec_id,
+        repository_id=repo_id,
+        title=title,
+        decision=f"{title} because reasons",
+        status=status,
+        staleness_score=staleness,
+        confidence=confidence,
+        affected_files_json=json.dumps(files or []),
+        source="changelog",
     )
+    session.add(record)
     await session.flush()
+    if status == "active":
+        from repowise.core.persistence.crud.authority import accept_decision
+
+        # An acceptance has to name what it governs, so a fixture that gave no
+        # files gets one. Without it the record accepts as ``uncheckable``,
+        # which is not the currency any of these tests is about.
+        await accept_decision(
+            session,
+            record,
+            accepter="test",
+            evidence=[f"seed:{rec_id}"],
+            scope=files or [f"src/{rec_id}.py"],
+        )
+        # The scope ``accept_decision`` wrote stands: it is what makes the
+        # record checkable, and wiping it back to empty would derive
+        # ``uncheckable`` instead of the currency each test is about. Staleness
+        # is restored because the acceptance does not carry it.
+        record.staleness_score = staleness
+        await session.flush()
 
 
 async def _add_hotspot(session, repo_id: str, path: str, score: float | None) -> None:

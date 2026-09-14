@@ -6,10 +6,10 @@ import {
   Download,
   FileText,
   FolderArchive,
-  Loader2,
   PanelRight,
   PanelRightClose,
 } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Button } from "../ui/button";
 import { ConfidenceBadge } from "../wiki/confidence-badge";
 import { READER_PERSONAS, type ReaderPersona } from "./reader-persona";
@@ -125,7 +125,7 @@ export function ExportMenu({
         aria-expanded={open}
       >
         {isExporting ? (
-          <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+          <Spinner size="sm" className="mr-1.5" />
         ) : (
           <Download className="h-3.5 w-3.5 mr-1.5" />
         )}

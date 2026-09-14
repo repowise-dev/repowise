@@ -21,9 +21,10 @@ import type {
   HealthFinding,
   HealthOverviewResponse,
   HealthTrendResponse,
-  RefactoringTargetsResponse,
+  HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
+import type { RefactoringTargets } from "@repowise-dev/types/refactoring";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import { createHostedProvider, type HostedProvider } from "./hosted";
 import type {
@@ -85,6 +86,7 @@ describe("hosted fixtures satisfy the OSS contracts", () => {
       ["/health/trend", "health-trend"],
       ["/health/churn-complexity", "churn-complexity"],
       ["/health/refactoring-targets", "refactoring-targets"],
+      ["/refactoring/targets", "recommendation-plans"],
     ]);
     const overview: HealthOverviewResponse = await p.getHealthOverview("repo-1");
     expect(overview.summary.file_count).toBeGreaterThan(0);
@@ -109,8 +111,15 @@ describe("hosted fixtures satisfy the OSS contracts", () => {
     const churn: ChurnComplexityResponse = await p.getChurnComplexity("repo-1");
     expect(Array.isArray(churn.points)).toBe(true);
 
-    const targets: RefactoringTargetsResponse = await p.getRefactoringTargets("repo-1");
+    const targets: HealthWorkQueueResponse = await p.getHealthWorkQueue("repo-1");
     expect(Array.isArray(targets.targets)).toBe(true);
+    const legacyTargets: HealthWorkQueueResponse = await p.getRefactoringTargets("repo-1");
+    expect(legacyTargets).toEqual(targets);
+
+    const plans: RefactoringTargets = await p.getRefactoringPlans("repo-1");
+    expect(plans.plans[0]?.rank_score).toBeTypeOf("number");
+    // Recorded older-server payload: the newer fields are intentionally absent.
+    expect(plans.plans[0]?.validation).toBeUndefined();
   });
 
   it("overview summary and stats highlights", async () => {

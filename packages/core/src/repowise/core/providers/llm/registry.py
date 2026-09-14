@@ -10,9 +10,11 @@ Built-in providers:
     - openrouter  → OpenRouterProvider
     - deepseek    → DeepSeekProvider
     - kimi        → KimiProvider
+    - edenai      → EdenAIProvider
     - ollama      → OllamaProvider
     - litellm     → LiteLLMProvider
     - codex_cli   → CodexCliProvider
+    - claude_cli  → ClaudeCliProvider
     - opencode    → OpenCodeProvider
     - mock        → MockProvider (testing only)
 
@@ -31,6 +33,7 @@ from __future__ import annotations
 import importlib
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from repowise.core.providers.llm.base import BaseProvider
@@ -49,7 +52,9 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
     "deepseek": ("repowise.core.providers.llm.deepseek", "DeepSeekProvider"),
     "kimi": ("repowise.core.providers.llm.kimi", "KimiProvider"),
+    "edenai": ("repowise.core.providers.llm.edenai", "EdenAIProvider"),
     "codex_cli": ("repowise.core.providers.llm.codex_cli", "CodexCliProvider"),
+    "claude_cli": ("repowise.core.providers.llm.claude_cli", "ClaudeCliProvider"),
     "opencode": ("repowise.core.providers.llm.opencode", "OpenCodeProvider"),
     "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
 }
@@ -69,6 +74,7 @@ PROVIDER_API_KEY_ENVS: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),  # either one
     "deepseek": ("DEEPSEEK_API_KEY",),
     "kimi": ("KIMI_API_KEY",),
+    "edenai": ("EDENAI_API_KEY",),
     "litellm": ("LITELLM_API_KEY",),
 }
 
@@ -80,6 +86,7 @@ PROVIDER_BASE_URL_ENVS: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_BASE_URL",),
     "deepseek": ("DEEPSEEK_BASE_URL",),
     "kimi": ("KIMI_BASE_URL",),
+    "edenai": ("EDENAI_BASE_URL",),
     "ollama": ("OLLAMA_BASE_URL",),
     "litellm": ("LITELLM_BASE_URL", "LITELLM_API_BASE"),
 }
@@ -89,7 +96,7 @@ PROVIDER_BASE_URL_ENVS: dict[str, tuple[str, ...]] = {
 # proxy the user secured elsewhere). Resolution must never reject one of these
 # for a "missing" key, and must never fall through to a different provider
 # because it could not find one.
-KEYLESS_PROVIDERS = frozenset({"codex_cli", "opencode", "ollama", "litellm", "mock"})
+KEYLESS_PROVIDERS = frozenset({"codex_cli", "claude_cli", "opencode", "ollama", "litellm", "mock"})
 
 # Providers that shell out to a CLI and therefore need to be told which repo
 # they are reasoning about: they pass it as the subprocess working directory.
@@ -111,6 +118,10 @@ PROVIDER_AUTODETECT_ORDER: tuple[str, ...] = (
     "gemini",
     "deepseek",
     "kimi",
+    # A provider adding itself appends: autodetect order is de facto precedence,
+    # and an unrelated EDENAI_API_KEY in the environment must not silently take
+    # over from a provider the user was already resolving to.
+    "edenai",
 )
 
 # An env var set to "" or whitespace means "not set". CI systems and agent
@@ -294,8 +305,10 @@ def get_provider(
             "openrouter": "openai",  # openrouter uses the openai package
             "deepseek": "openai",  # deepseek uses the openai package
             "kimi": "openai",  # kimi uses the openai package
+            "edenai": "openai",  # edenai uses the openai package
             "litellm": "litellm",
             "codex_cli": "@openai/codex",
+            "claude_cli": "@anthropic-ai/claude-code",
             "opencode": "opencode",
         }
         package = _missing.get(name, name)
@@ -314,3 +327,23 @@ def list_providers() -> list[str]:
     Includes both built-in and runtime-registered custom providers.
     """
     return sorted(set(_BUILTIN_PROVIDERS) | set(_custom_providers))
+
+
+def provider_available_for_repo(repo_path: Path | str) -> bool:
+    """Whether a provider would resolve for *repo_path*, constructing nothing.
+
+    Mirrors the CLI's resolution order: an explicit choice is checked for
+    usability, auto-detection asks only whether credentials name a provider.
+    Reporting-only, so it answers False rather than raising on a broken config.
+    """
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        configured = (os.environ.get("REPOWISE_PROVIDER") or "").strip()
+        if not configured:
+            configured = str(load_repo_config(repo_path).get("provider") or "").strip()
+        if configured:
+            return provider_is_usable(configured)
+        return any(provider_credentials_present(name) for name in PROVIDER_AUTODETECT_ORDER)
+    except Exception:
+        return False

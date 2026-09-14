@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import remix_route_file
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -26,7 +27,6 @@ if TYPE_CHECKING:
     import networkx as nx
 
 
-_REMIX_ROUTE_RE = re.compile(r"(?:^|/)(?:app/)?routes/")
 _SVELTE_ROUTE_RE = re.compile(r"/\+(?:page|layout|server|error)[.\w]*\.(ts|tsx|js|mjs|svelte)$")
 _ASTRO_PAGE_RE = re.compile(r"(?:^|/)src/pages/")
 
@@ -38,9 +38,7 @@ _ROUTE_LANGUAGES = ("typescript", "javascript", "svelte")
 def _is_convention_route(path: str) -> bool:
     if _SVELTE_ROUTE_RE.search(path):
         return True
-    if _REMIX_ROUTE_RE.search(path) and any(
-        path.endswith(ext) for ext in (".ts", ".tsx", ".js", ".jsx")
-    ):
+    if remix_route_file(path):
         return True
     return bool(_ASTRO_PAGE_RE.search(path))
 

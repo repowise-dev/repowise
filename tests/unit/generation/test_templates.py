@@ -19,11 +19,7 @@ from repowise.core.generation.context_assembler import (
     SymbolSpotlightContext,
     _TopFile,
 )
-from repowise.core.generation.page_generator.structural import (
-    as_markdown,
-    oneline,
-    signature,
-)
+from repowise.core.generation.page_generator.structural import register_filters
 from repowise.core.generation.structural_labels import resolve_structural_labels
 from repowise.core.ingestion.models import PackageInfo
 
@@ -53,9 +49,7 @@ def jinja_env() -> jinja2.Environment:
     # The same filters PageGenerator registers. Structural templates render
     # page content rather than a prompt, so they lean on these to keep
     # docstrings and signatures inside a table cell or list item.
-    env.filters.setdefault("oneline", oneline)
-    env.filters.setdefault("as_markdown", as_markdown)
-    env.filters.setdefault("signature", signature)
+    register_filters(env)
     env.globals["labels"] = resolve_structural_labels(None)
     return env
 

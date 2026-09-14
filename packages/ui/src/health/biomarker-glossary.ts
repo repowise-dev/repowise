@@ -420,7 +420,7 @@ export function biomarkerDimension(name: string): BiomarkerDimension {
 }
 
 export const DIMENSION_LABEL: Record<BiomarkerDimension, string> = {
-  defect: "Defect risk",
+  defect: "Code health",
   maintainability: "Maintainability",
   performance: "Performance",
 };
@@ -431,3 +431,43 @@ export const DIMENSION_CHIP: Record<BiomarkerDimension, string> = {
   maintainability: "bg-[var(--color-accent-secondary)]/10 text-[var(--color-accent-secondary)]",
   performance: "bg-[var(--color-info)]/10 text-[var(--color-info)]",
 };
+
+/**
+ * The category whose evidence is git history rather than the file's code.
+ * Mirrors `HISTORY_CATEGORY` / `split_by_origin` in core's health scoring:
+ * the two must agree, or a finding excluded from the score's structural half
+ * still reads as something to go and fix.
+ */
+export const HISTORY_CATEGORY: BiomarkerCategory = "organizational";
+
+export function isHistoryBiomarker(name: string): boolean {
+  return biomarkerInfo(name).category === HISTORY_CATEGORY;
+}
+
+/**
+ * Partition findings into the ones a reader can act on by editing the file and
+ * the ones they cannot. The TS mirror of core's `split_by_origin`.
+ */
+export function splitByOrigin<T extends { biomarker_type: string }>(
+  findings: T[],
+): { codeShape: T[]; history: T[] } {
+  const codeShape: T[] = [];
+  const history: T[] = [];
+  for (const finding of findings) {
+    (isHistoryBiomarker(finding.biomarker_type) ? history : codeShape).push(finding);
+  }
+  return { codeShape, history };
+}
+
+/**
+ * History findings are watch items, not work items, so they take a neutral
+ * chip. The pillar colours mark where work belongs; painting a signal nobody
+ * can act on in the same ink sends a reader to edit a file over its commit log.
+ */
+export const HISTORY_CHIP =
+  "bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]";
+
+export const HISTORY_LABEL = "Watch";
+
+export const HISTORY_EXPLAINER =
+  "Measured from this file's git history, not its code. Editing the file will not clear it.";

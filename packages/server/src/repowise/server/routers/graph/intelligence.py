@@ -78,6 +78,7 @@ async def get_graph_metrics(
         pagerank_percentile=percentile_rank(node.pagerank or 0.0, all_pr),
         betweenness=round(node.betweenness or 0.0, 6),
         betweenness_percentile=percentile_rank(node.betweenness or 0.0, all_bw),
+        betweenness_scored=node.betweenness_commit is not None,
         community_id=node.community_id or 0,
         community_label=meta.get("label") or None,
         is_entry_point=node.is_entry_point,

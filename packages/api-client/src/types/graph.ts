@@ -63,6 +63,7 @@ export interface CommunitySliceResponse
   community_id: number;
   member_count: number;
   truncated?: boolean;
+  hidden_member_count?: number;
 }
 
 // Architecture super-node graph (Phase A)
@@ -70,7 +71,9 @@ export interface ArchitectureNodeResponse {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   top_file: string;
   avg_pagerank: number;
   hotspot_count: number;
@@ -86,10 +89,35 @@ export interface ArchitectureEdgeResponse {
   edge_count: number;
 }
 
+export interface PopulationBreakdownResponse {
+  total: number;
+  visible: number;
+  tests?: number;
+  examples?: number;
+  docs?: number;
+  include_tests?: boolean;
+  include_examples?: boolean;
+  include_docs?: boolean;
+}
+
+export interface UnclusteredFilesResponse {
+  file_count: number;
+  files?: string[];
+}
+
 export interface ArchitectureGraphResponse {
   nodes: ArchitectureNodeResponse[];
   edges: ArchitectureEdgeResponse[];
+  population?: PopulationBreakdownResponse | null;
+  unclustered?: UnclusteredFilesResponse | null;
 }
+
+/** Query flags shared by every community endpoint. Omitted = production only. */
+export type PopulationParams = {
+  include_tests?: boolean;
+  include_examples?: boolean;
+  include_docs?: boolean;
+};
 
 export interface GraphPathResponse {
   path: string[];

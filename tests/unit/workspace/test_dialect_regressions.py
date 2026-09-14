@@ -29,6 +29,7 @@ from repowise.core.workspace.extractors.base import (
 from repowise.core.workspace.extractors.data import DataExtractor
 from repowise.core.workspace.extractors.data.sql_strings import SqlStringsDialect
 from repowise.core.workspace.extractors.http.fastapi import FastApiDialect
+from repowise.core.workspace.extractors.http.jaxrs import JaxRsDialect
 
 
 def _ctx(content: str, rel_path: str = "app/routers/chat.py") -> ScanContext:
@@ -247,3 +248,50 @@ class TestDataExtractorEndToEnd:
         assert "data::git_metadata" in ids
         for fabricated in ("data::ranked", "data::path", "data::would"):
             assert fabricated not in ids
+
+
+class TestQuarkusIsJaxRs:
+    """A Quarkus REST resource is a JAX-RS resource and needs no dialect of its own.
+
+    The JAX-RS dialect gates on ``@Path`` in the file, not on the stack, so the
+    ``jakarta.ws.rs`` annotations Quarkus uses yield contracts as they are.
+    """
+
+    RESOURCE = """package org.acme;
+
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
+import io.quarkus.runtime.annotations.RegisterForReflection;
+
+@Path("/fruits")
+public class FruitResource {
+
+    @GET
+    public List<Fruit> list() { return Fruit.listAll(); }
+
+    @GET
+    @Path("/{id}")
+    public Fruit get(@PathParam("id") Long id) { return Fruit.findById(id); }
+
+    @POST
+    public Response add(Fruit fruit) { fruit.persist(); return Response.ok(fruit).build(); }
+}
+"""
+
+    def test_quarkus_resource_yields_jaxrs_contracts(self) -> None:
+        ctx = ScanContext(
+            repo_alias="api",
+            rel_path="src/main/java/org/acme/FruitResource.java",
+            suffix=".java",
+            content=self.RESOURCE,
+        )
+        contracts = JaxRsDialect().extract(ctx)
+        assert _ids(contracts) == {
+            "http::GET::/fruits",
+            "http::GET::/fruits/{param}",
+            "http::POST::/fruits",
+        }
+        assert {c.meta["framework"] for c in contracts} == {"jaxrs"}
+

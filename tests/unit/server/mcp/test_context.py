@@ -419,7 +419,9 @@ async def test_file_on_git_preferred_over_partial_module(setup_mcp_multi):
     assert t.get("type") != "module"
     assert t.get("exists_in_git") is True
     assert t["primary_owner"] == "Carol"
-    assert "error" in t  # "exists but has no wiki page" shape
+    assert "error" not in t
+    assert t["type"] == "file"
+    assert t["index_status"] == "live_file_without_wiki_page"
 
 
 @pytest.mark.asyncio
@@ -472,6 +474,56 @@ async def test_file_target_callers_rolls_up_importers(setup_mcp):
     [middleware] = [c for c in callers if c["file"] == "src/auth/middleware.py"]
     assert middleware.get("imports") is True
     assert "rollup" in t.get("_call_graph_note", "")
+
+
+@pytest.mark.asyncio
+async def test_file_target_callers_bank_the_full_ranked_tail(
+    setup_mcp, session, tmp_path, monkeypatch
+):
+    """File import rollups report and bank every caller beyond the visible 20."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context, get_symbol
+
+    store_path = tmp_path / "omissions.sqlite3"
+    monkeypatch.setattr(
+        "repowise.server.mcp_server._budget.collector.default_store_path",
+        lambda _root: store_path,
+    )
+    monkeypatch.setattr(
+        "repowise.core.distill.store.default_store_path",
+        lambda _root=None: store_path,
+    )
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    for index in range(25):
+        node_id = f"src/generated/importer_{index:02d}.py"
+        session.add(
+            GraphNode(
+                id=f"file_importer_{index}",
+                repository_id=repo.id,
+                node_id=node_id,
+                node_type="file",
+                name=f"importer_{index:02d}.py",
+                file_path=node_id,
+            )
+        )
+        session.add(
+            GraphEdge(
+                repository_id=repo.id,
+                source_node_id=node_id,
+                target_node_id="src/auth/service.py",
+                edge_type="imports",
+            )
+        )
+    await session.commit()
+
+    result = await get_context(["src/auth/service.py"], include=["callers"], compact=False)
+    card = result["targets"]["src/auth/service.py"]
+    assert card["callers_total"] == 27
+    assert card["callers_emitted"] == 20
+    assert card["callers_reduced_reason"] == "construction_cap"
+    [ref] = result["_meta"]["omitted"]["refs"]
+    recovered = await get_symbol(ref)
+    assert "src/generated/importer_24.py" in recovered.get("content", ""), recovered
 
 
 @pytest.mark.asyncio
@@ -616,12 +668,19 @@ async def test_one_caller_joined_by_two_edge_types_is_listed_once(setup_mcp, ses
 
 
 @pytest.mark.asyncio
-async def test_high_fan_in_callers_signal_truncation(setup_mcp, session):
+async def test_high_fan_in_callers_signal_truncation(
+    setup_mcp, session, tmp_path, monkeypatch
+):
     """A symbol with more callers than the display cap must report the TRUE
     total + a truncation flag, so a find-all-callers sweep is not silently
     misled into thinking the partial list is complete (S2 dogfood bug)."""
     from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
     from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server._budget import collector as collector_mod
+
+    monkeypatch.setattr(
+        collector_mod, "default_store_path", lambda start=None: tmp_path / "omissions.db"
+    )
 
     repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
     target_id = "src/db/util.py::hot"
@@ -675,8 +734,11 @@ async def test_high_fan_in_callers_signal_truncation(setup_mcp, session):
     t = result["targets"][target_id]
     assert len(t["callers"]) == 50  # capped display
     assert t["callers_total"] == n_callers  # true total surfaced
+    assert t["callers_emitted"] == 50
+    assert t["callers_reduced_reason"] == "construction_cap"
     assert t["callers_truncated"] is True
-    assert "grep" in t["_callers_note"]
+    assert "get_symbol" in t["_callers_note"]
+    assert result["_meta"]["omitted"]["refs"]
 
 
 # --- Structural retrieval: parent page + concept-page tree position ---------

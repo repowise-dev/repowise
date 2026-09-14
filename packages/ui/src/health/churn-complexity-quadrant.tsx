@@ -5,21 +5,14 @@ import { useMemo, useState } from "react";
 // the vite/rollup base alias clobbers subpath value resolution. Type-only
 // subpath imports are fine (erased before resolution).
 import { bandForScore } from "@repowise-dev/types";
-import type { ChurnComplexityPoint, HealthBand } from "@repowise-dev/types/health";
+import type { ChurnComplexityPoint } from "@repowise-dev/types/health";
+import { HEALTH_BAND_FILL } from "./tokens";
 
 export interface ChurnComplexityQuadrantProps {
   points: ChurnComplexityPoint[];
   onSelect?: (point: ChurnComplexityPoint) => void;
   height?: number;
 }
-
-/* SVG fill class per canonical health band (the 3-bucket currency). Literal
- * strings so Tailwind's static scanner keeps them. */
-const BAND_FILL: Record<HealthBand, string> = {
-  alert: "fill-[var(--color-error)]",
-  warning: "fill-[var(--color-caution)]",
-  healthy: "fill-[var(--color-success)]",
-};
 
 /** Median of a numeric list (the data-driven quadrant split). */
 function median(values: number[]): number {
@@ -140,7 +133,7 @@ export function ChurnComplexityQuadrant({
             const cx = xScale(p.commit_count_90d);
             const cy = yScale(p.max_ccn);
             const isHovered = hovered?.file_path === p.file_path;
-            const fillCls = BAND_FILL[bandForScore(p.score)];
+            const fillCls = HEALTH_BAND_FILL[bandForScore(p.score)];
             return (
               <circle
                 key={p.file_path}

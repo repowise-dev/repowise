@@ -13,8 +13,15 @@ and error on its missing arguments.
 
 from __future__ import annotations
 
+import networkx as nx
+
+from repowise.core.analysis.test_reachability import call_graph_from_db, call_graph_from_graph
 from repowise.core.analysis.test_reachability import tests_reaching as reaching
 from repowise.core.analysis.test_reachability import tests_reaching_by_tier as by_tier
+from repowise.core.persistence.crud.graph import (
+    batch_upsert_graph_edges,
+    get_all_graph_edges,
+)
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from tests.unit.persistence.helpers import insert_repo
 
@@ -23,9 +30,7 @@ async def _seed(session, repo_id, *, nodes, edges):
     """Seed file nodes and edges. An edge is ``(src, dst, type[, origin])``."""
     for path, is_test in nodes.items():
         session.add(
-            GraphNode(
-                repository_id=repo_id, node_id=path, node_type="file", is_test=is_test
-            )
+            GraphNode(repository_id=repo_id, node_id=path, node_type="file", is_test=is_test)
         )
     # Deduped: two ``_calls`` into the same source file both declare its
     # symbol, and graph_edges is unique on (repo, src, dst, type).
@@ -66,9 +71,7 @@ async def test_names_the_tests_that_call_a_changed_file(async_session):
         nodes={"tests/test_a.py": True, "tests/test_z.py": True, "src/a.py": False},
         edges=[*_calls("tests/test_a.py", "src/a.py")],
     )
-    assert await reaching(async_session, repo.id, ["src/a.py"]) == {
-        "src/a.py": ["tests/test_a.py"]
-    }
+    assert await reaching(async_session, repo.id, ["src/a.py"]) == {"src/a.py": ["tests/test_a.py"]}
 
 
 async def test_transitive_execution_is_found(async_session):
@@ -132,9 +135,7 @@ async def test_the_import_tier_answers_only_where_calls_are_silent(async_session
             ("tests/test_imports_only.py", "src/imported.py", "imports"),
         ],
     )
-    result = await by_tier(
-        async_session, repo.id, ["src/called.py", "src/imported.py"]
-    )
+    result = await by_tier(async_session, repo.id, ["src/called.py", "src/imported.py"])
     assert result["src/called.py"].tests == ["tests/test_called.py"]
     assert result["src/called.py"].via == "call-graph"
     assert result["src/imported.py"].tests == ["tests/test_imports_only.py"]
@@ -229,3 +230,48 @@ async def test_repo_with_no_test_nodes_returns_empty(async_session):
         edges=[*_calls("src/b.py", "src/a.py")],
     )
     assert await reaching(async_session, repo.id, ["src/a.py"]) == {}
+
+
+async def test_database_and_memory_builders_apply_the_same_execution_policy(async_session):
+    repo = await insert_repo(async_session)
+    edges = [
+        ("tests/t.py", "tests/t.py::test", "defines"),
+        ("tests/t.py::test", "src/a.py::run", "calls", "same_file"),
+        ("src/a.py::run", "src/b.py::impl", "dispatches_to"),
+        ("tests/t.py::test", "src/guess.py::run", "calls", "global_unique"),
+        ("tests/t.py::test", "src/named.py::handler", "references"),
+    ]
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/t.py": True, "src/a.py": False, "src/b.py": False},
+        edges=edges,
+    )
+    graph = nx.DiGraph()
+    for source, target, edge_type, *origin in edges:
+        attrs = {"edge_type": edge_type}
+        if origin and origin[0] is not None:
+            attrs["resolution_origin"] = origin[0]
+        graph.add_edge(source, target, **attrs)
+
+    memory = call_graph_from_graph(graph)
+    database = await call_graph_from_db(async_session, repo.id)
+
+    assert database.declares == memory.declares
+    assert database.forward == memory.forward
+    assert database.reverse == memory.reverse
+
+
+async def test_call_site_lines_round_trip_through_edge_persistence(async_session):
+    repo = await insert_repo(async_session)
+    edge = {
+        "source_node_id": "a.py::run",
+        "target_node_id": "b.py::load",
+        "edge_type": "calls",
+        "call_lines_json": "[4, 9]",
+    }
+
+    await batch_upsert_graph_edges(async_session, repo.id, [edge])
+    rows = await get_all_graph_edges(async_session, repo.id)
+
+    assert rows[0]["call_lines"] == [4, 9]

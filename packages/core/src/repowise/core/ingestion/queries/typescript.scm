@@ -50,6 +50,12 @@
   parameters: (formal_parameters) @symbol.params
 ) @symbol.def
 
+; Private method inside class body (ECMAScript #private members)
+(method_definition
+  name: (private_property_identifier) @symbol.name
+  parameters: (formal_parameters) @symbol.params
+) @symbol.def
+
 ; Arrow function assigned to const/let: const foo = (...) => { }
 (lexical_declaration
   (variable_declarator
@@ -226,7 +232,7 @@
 (call_expression
   function: (member_expression
     object: [(identifier) (this)] @call.receiver
-    property: (property_identifier) @call.target
+    property: [(property_identifier) (private_property_identifier)] @call.target
   )
   arguments: (arguments) @call.arguments
 ) @call.site
@@ -234,7 +240,7 @@
 ; Chained call: obj.method1().method2(args)
 (call_expression
   function: (member_expression
-    object: (call_expression)
+    object: (call_expression) @call.receiver_call
     property: (property_identifier) @call.target
   )
   arguments: (arguments) @call.arguments

@@ -35,6 +35,7 @@ import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   formatBytes,
   formatCost,
+  formatDateTime,
   formatLOC,
   formatNumber,
   formatRelativeTime,
@@ -92,7 +93,7 @@ export default async function OverviewPage({ params }: Props) {
   if (lastActivityAt) {
     meta.push({
       label: `synced ${formatRelativeTime(lastActivityAt)}`,
-      title: new Date(lastActivityAt).toLocaleString(),
+      title: formatDateTime(lastActivityAt),
     });
   }
 
@@ -270,7 +271,7 @@ export default async function OverviewPage({ params }: Props) {
     {
       label: "Languages",
       value: formatNumber(summary.languages.length),
-      href: `${base}/architecture?view=graph&colorMode=language`,
+      href: `${base}/architecture?view=files&colorMode=language`,
     },
   );
 
@@ -440,7 +441,7 @@ export default async function OverviewPage({ params }: Props) {
           title="Composition"
           action={
             <SectionLink
-              href={`${base}/architecture?view=graph&colorMode=language`}
+              href={`${base}/architecture?view=files&colorMode=language`}
               LinkComponent={Link}
             >
               Open the graph

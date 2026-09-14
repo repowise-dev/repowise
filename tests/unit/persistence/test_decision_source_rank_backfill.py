@@ -21,7 +21,7 @@ from repowise.core.persistence.crud import (
     reconcile_source_ranks,
 )
 from repowise.core.persistence.models import DecisionEvidence, DecisionRecord
-from tests.unit.persistence.helpers import insert_repo
+from tests.unit.persistence.helpers import accept, insert_repo
 
 _TITLE = "Use PostgreSQL for storage"
 
@@ -205,9 +205,9 @@ def test_persist_wires_both_repairs():
 
 
 async def test_purge_keeps_what_a_human_confirmed(async_session):
-    """Only ``proposed`` rows drain. An active record survives its source's removal."""
+    """Only ``proposed`` rows drain. An accepted record survives its source's removal."""
     repo = await insert_repo(async_session)
-    await bulk_upsert_decisions(
+    ids = await bulk_upsert_decisions(
         async_session,
         repo.id,
         [
@@ -215,13 +215,18 @@ async def test_purge_keeps_what_a_human_confirmed(async_session):
                 "title": "Kept because someone confirmed it",
                 "decision": "mined from a changelog, then confirmed by a human",
                 "source": "changelog",
-                "status": "active",
+                "status": "proposed",
+                "affected_files": ["src/changelog.py"],
+                "evidence_file": "CHANGELOG.md",
                 "confidence": 0.6,
                 "verification": "exact",
                 "source_quote": "mined from a changelog, then confirmed by a human",
             }
         ],
     )
+    # Accepting is what makes it survive; the row lands ``proposed`` whatever
+    # the extraction dict claimed.
+    await accept(async_session, ids[0])
 
     assert await purge_proposed_decisions_by_source(async_session, repo.id, "changelog") == 0
     rec = await _record(async_session, repo.id)

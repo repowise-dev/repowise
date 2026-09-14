@@ -27,8 +27,10 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from repowise.core import fs_walk
+from repowise.core.exclusion import build_exclude_spec, is_excluded
 
 from .grouping import ConceptGroup
 
@@ -60,6 +62,51 @@ _MAX_DOCS = 60
 _HEADING = re.compile(r"^\s{0,3}#{1,4}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 # Bolded lead-ins are how glossaries are usually written: "**Blast radius** — ".
 _BOLD_TERM = re.compile(r"\*\*([A-Z][^*\n]{2,40})\*\*")
+
+# Opening fence: 0-3 leading spaces, then 3+ backticks or tildes, optional info
+_FENCE_OPEN = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})", re.MULTILINE)
+
+
+def _strip_fenced_blocks(text: str) -> str:
+    """Return *text* with lines inside fenced code blocks replaced with empty strings.
+
+    Lines inside a fenced block are replaced with empty strings so that code
+    and shell comments are stripped while keeping line breaks intact.
+
+    Both backtick fences (``` … ```) and tilde fences (~~~ … ~~~) are
+    supported.  The fence marker on the *opening* line determines which marker
+    closes the block (CommonMark §4.5).
+    """
+    lines = text.split("\n")
+    result: list[str] = []
+    inside = False
+    fence_char: str = ""
+    fence_len: int = 0
+
+    for line in lines:
+        if not inside:
+            m = _FENCE_OPEN.match(line)
+            if m:
+                inside = True
+                fence_char = m.group(1)[0]  # '`' or '~'
+                fence_len = len(m.group(1))
+                result.append(line)  # keep the opening fence line itself
+            else:
+                result.append(line)
+        else:
+            stripped = line.lstrip(" ")
+            # A closing fence: same character, at least as many, no info string
+            if (
+                stripped.startswith(fence_char * fence_len)
+                and stripped.rstrip(fence_char).rstrip() == ""
+            ):
+                inside = False
+                result.append(line)  # keep the closing fence line itself
+            else:
+                # Replace content line with an empty string to strip code/comments.
+                result.append("")
+
+    return "\n".join(result)
 
 _STOPWORDS = frozenset(
     {
@@ -186,6 +233,17 @@ def _is_useful(term: str) -> bool:
     words = term.split()
     if not (_MIN_TERM_WORDS <= len(words) <= _MAX_TERM_WORDS):
         return False
+    # A term made entirely of separators (hyphens, underscores, spaces) contains
+    # no alphanumeric characters.  term_words() splits on [\s_\-]+ and filters
+    # empty strings, so it returns [] for "---" or "___".  Two things then break:
+    #   • term_words(c.term)[0] in extract_house_terms raises IndexError.
+    #   • phrase_pattern builds \b\b, which matches at every word boundary in the
+    #     repository, making the phantom term corroborated by every source file.
+    # Rejecting here — before either site sees the term — fixes both at once.
+    # \w is not enough: _ is a word character but is also in the word-gap
+    # splitter, so "___" has \w characters and still produces an empty word list.
+    if not any(c.isalnum() for c in term):
+        return False
     if all(w.lower() in _STOPWORDS for w in words):
         return False
     # A heading that is entirely boilerplate ("Getting Started") says nothing
@@ -235,13 +293,51 @@ class HouseTerm:
     is_indexed_symbol: bool
 
 
+def _rel(path: Path, repo_root: Path) -> str:
+    """Repo-relative posix path, or the bare name when it is not under root."""
+    try:
+        return path.relative_to(repo_root).as_posix()
+    except ValueError:  # pragma: no cover — path came from repo_root
+        return path.name
+
+
+def _exclude_spec(repo_root: Path) -> Any:
+    """The repository's own exclusion rules, or ``None``. Never raises.
+
+    A malformed ``.gitignore`` line makes ``pathspec`` raise, and mining is a
+    decoration: a repository with an unparseable ignore file should mine one
+    document too many, not fail to generate.
+    """
+    try:
+        return build_exclude_spec(repo_root)
+    except Exception as exc:
+        logger.warning("vocabulary: could not read exclusion rules (%s); mining unfiltered", exc)
+        return None
+
+
+def _is_minable(path: Path, repo_root: Path, spec: Any) -> bool:
+    """Whether a document may be quoted as where a term is written.
+
+    Two rules, both learned the same way. The repository's own exclusion rules
+    are honoured because a path the user told git to ignore is scratch work,
+    and the capability table cited ``local-stash/`` harnesses as authoritative
+    definitions. Market-facing documents are dropped by name because their
+    headings look exactly like subsystem names and nothing downstream can tell
+    the difference.
+    """
+    return not is_excluded(_rel(path, repo_root), spec) and not _NON_NORMATIVE_DOC_NAMES.search(
+        path.name
+    )
+
+
 def _doc_paths(repo_root: Path, *, patterns: tuple[str, ...] = ("*.md",)) -> list[Path]:
     """The documents worth mining, in a fixed order. Never raises."""
     files: list[Path] = []
+    spec = _exclude_spec(repo_root)
     try:
         for name in DOC_FILES:
             candidate = repo_root / name
-            if candidate.is_file():
+            if candidate.is_file() and _is_minable(candidate, repo_root, spec):
                 files.append(candidate)
         for rel_dir in DOC_DIRS:
             directory = repo_root / rel_dir
@@ -251,7 +347,11 @@ def _doc_paths(repo_root: Path, *, patterns: tuple[str, ...] = ("*.md",)) -> lis
             for pattern in patterns:
                 found.extend(directory.glob(pattern))
             for candidate in sorted(found):
-                if candidate.is_file() and candidate not in files:
+                if (
+                    candidate.is_file()
+                    and candidate not in files
+                    and _is_minable(candidate, repo_root, spec)
+                ):
                     files.append(candidate)
                 if len(files) >= _MAX_DOCS:
                     break
@@ -504,6 +604,13 @@ def _join_markdown_wrapped(lines: list[str], start: int) -> str:
 #: repository and the least useful one to mine: on this repository it consumed
 #: 142 of the first 200 term slots before the tool guide was ever opened.
 _RELEASE_NOTE_NAMES = re.compile(r"(change ?log|releases?|news|history)\.(md|rst|txt)$", re.I)
+#: Documents about the market rather than about the system. Their headings are
+#: product claims, competitor names and score tables, so mining them cites a
+#: positioning document as "where this capability is written". Dropped by name
+#: because their headings are indistinguishable from a real subsystem's.
+_NON_NORMATIVE_DOC_NAMES = re.compile(
+    r"(benchmarks?|competitive[_ -]?analysis|competitors?|pricing|roadmap)\.(md|rst|txt)$", re.I
+)
 _VERSION_HEADING = re.compile(r"^v?\d+\.\d+")
 #: A document has to be overwhelmingly version headings before it is dropped. A
 #: guide that cites a few release numbers is not release notes, and dropping a
@@ -515,7 +622,10 @@ _MIN_HEADINGS_TO_JUDGE = 8
 def _is_release_notes(path: Path, text: str) -> bool:
     if _RELEASE_NOTE_NAMES.search(path.name):
         return True
-    headings = _HEADING.findall(text)
+    # Strip fenced blocks so that shell/script comments (# …) inside code
+    # examples are not counted as headings.  Fixes #2142.
+    prose = _strip_fenced_blocks(text)
+    headings = _HEADING.findall(prose)
     if len(headings) < _MIN_HEADINGS_TO_JUDGE:
         return False
     versiony = sum(1 for h in headings if _VERSION_HEADING.match(h.strip()))
@@ -643,10 +753,7 @@ def _harvest(
         if skip_release_notes and _is_release_notes(path, text):
             skipped.append(path.name)
             continue
-        try:
-            rel = path.relative_to(repo_root).as_posix()
-        except ValueError:  # pragma: no cover — path came from repo_root
-            rel = path.name
+        rel = _rel(path, repo_root)
 
         # Definitions found for terms seen in *this* document, keyed the same
         # way as candidates so a repeat mention can fill a gap left earlier.
@@ -678,9 +785,13 @@ def _harvest(
             rst_sections_seen += len(entries)
             rst_sections_undefined += sum(1 for _t, d in entries if d is None)
         else:
+            # Strip fenced blocks before scanning so that code block comments
+            # (e.g. shell script or config comments) are not harvested as headings.
+            # Pass stripped prose to _definition_after_heading so search offsets align.
+            prose = _strip_fenced_blocks(text)
             entries = [
-                (m.group(1), _definition_after_heading(text, m.end()))
-                for m in _HEADING.finditer(text)
+                (m.group(1), _definition_after_heading(prose, m.end()))
+                for m in _HEADING.finditer(prose)
             ]
         # Bolded lead-ins read the same in both markup languages.
         entries += [(m.group(1), None) for m in _BOLD_TERM.finditer(text)]
@@ -788,6 +899,7 @@ def _scan_tree(repo_root: Path) -> tuple[list[tuple[str, str]], frozenset[str]]:
     dir_names: set[str] = set()
     unreadable = 0
     truncated = False
+    spec = _exclude_spec(repo_root)
 
     for dirpath, dirnames, filenames in fs_walk.walk_repo(repo_root, prune_dirs=_EXTRA_PRUNED_DIRS):
         # Hidden directories are tool and agent territory — CI definitions,
@@ -799,7 +911,16 @@ def _scan_tree(repo_root: Path) -> tuple[list[tuple[str, str]], frozenset[str]]:
         # ``.claude/`` ahead of the original, and the mined definitions cited
         # paths a reader has no reason to open. Pruning the whole class costs
         # one string test and no repository keeps its documented source here.
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        # A tree the repository excludes from its own index is scratch work,
+        # not the repository talking about itself. Skipped here rather than
+        # filtered later so a large stash costs no walk: the capability table
+        # was citing ``local-stash/`` harnesses as where a capability is
+        # written, and those files are absent from every other surface.
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if not d.startswith(".") and not is_excluded(_rel(dirpath / d, repo_root) + "/", spec)
+        ]
         for name in dirnames:
             dir_names.add(_singular(name.lower()))
         if truncated:
@@ -820,6 +941,9 @@ def _scan_tree(repo_root: Path) -> tuple[list[tuple[str, str]], frozenset[str]]:
                 truncated = True
                 break
             path = dirpath / name
+            rel = _rel(path, repo_root)
+            if is_excluded(rel, spec):
+                continue
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")[:_MAX_SOURCE_BYTES]
             except OSError:
@@ -829,10 +953,6 @@ def _scan_tree(repo_root: Path) -> tuple[list[tuple[str, str]], frozenset[str]]:
             if not blocks:
                 continue
             joined = "\n".join(_JSDOC_GUTTER.sub("", b) for b in blocks)
-            try:
-                rel = path.relative_to(repo_root).as_posix()
-            except ValueError:  # pragma: no cover — path came from repo_root
-                rel = path.name
             prose.append((rel, joined))
 
     if unreadable:

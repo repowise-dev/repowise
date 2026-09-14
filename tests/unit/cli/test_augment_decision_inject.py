@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from repowise.cli.commands.augment_cmd import decision_inject
 from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import (
+    DecisionAcceptance,
     DecisionEvidence,
     DecisionNodeLink,
     DecisionRecord,
@@ -53,6 +54,23 @@ async def _build_wiki_db(repo_root: Path, decisions: list[dict], extras=None) ->
                     evidence_file=spec["id"],  # keeps the unique constraint happy
                 )
             )
+            # Injection serves accepted decisions. A spec is accepted unless it
+            # says otherwise, so an ``accepted: False`` spec is a candidate and
+            # proves the hook leaves candidates out.
+            if spec.get("accepted", True):
+                session.add(
+                    DecisionAcceptance(
+                        repository_id=_REPO_ID,
+                        decision_id=spec["id"],
+                        seq=1,
+                        action="accepted",
+                        currency="active",
+                        reason=spec.get("rationale") or spec["title"],
+                        scope_json=json.dumps([spec["id"]]),
+                        evidence_json=json.dumps([spec["id"]]),
+                        accepter="tester",
+                    )
+                )
             for node_id, link_type in spec.get("links", []):
                 session.add(
                     DecisionNodeLink(
@@ -482,3 +500,25 @@ def test_detached_head_yields_no_branch(tmp_path, monkeypatch):
     files, branch = decision_inject._dirty_files_and_branch(tmp_path)
     assert files == ["a.py"]
     assert branch == ""
+
+
+async def test_a_candidate_is_never_injected(tmp_path):
+    """A record with no acceptance is review material, not guidance.
+
+    The whole point of the entity split lands here: before it, two sightings in
+    two transcripts were enough to put a line in front of the agent as though a
+    person had agreed to it.
+    """
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "cand0001",
+                "title": "Never accepted by anybody",
+                "decision": "do the thing",
+                "accepted": False,
+                "links": [("src/app.py", "file")],
+            }
+        ],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/app.py", "s1", {}) is None

@@ -64,6 +64,20 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Method call through a field: a.b.Method(args)
+; The operand is itself a selector_expression (``o.in`` in ``o.in.Do()``),
+; which the identifier-only pattern above does not match, so the call was
+; missing from the graph entirely. Capture the whole receiver expression so
+; the resolver has something to type; resolution is a separate, measured
+; change and must not route the composed text to the bare-name lookup.
+(call_expression
+  function: (selector_expression
+    operand: (selector_expression) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Package-qualified call: pkg.Function(args)
 ; (same pattern as method call — receiver is the package alias)
 ; Captured by the selector_expression pattern above.

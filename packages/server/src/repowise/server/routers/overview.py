@@ -20,6 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.aggregation import (
+    severity_breakdown as health_severity_breakdown,
+)
 from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
@@ -32,6 +35,7 @@ from repowise.core.persistence.models import (
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
 from repowise.server.services.knowledge_map import compute_knowledge_map
+from repowise.server.services.module_health import top_level_module
 
 router = APIRouter(
     prefix="/api/repos",
@@ -345,8 +349,7 @@ async def overview_summary(
     module_owner_files: dict[str, dict[str, int]] = {}
     module_file_totals: dict[str, int] = {}
     for fp, owner in owner_rows:
-        parts = fp.split("/")
-        module = parts[0] if len(parts) > 1 else "root"
+        module = top_level_module(fp)
         module_file_totals[module] = module_file_totals.get(module, 0) + 1
         if owner:
             bucket = module_owner_files.setdefault(module, {})
@@ -415,11 +418,7 @@ async def overview_summary(
         if len(file_counts) == 2 and all(file_counts):
             deltas["file_count"] = file_counts[1] - file_counts[0]
 
-    severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    for f in findings:
-        s = (f.severity or "").lower()
-        if s in severity_breakdown:
-            severity_breakdown[s] += 1
+    severity_breakdown = health_severity_breakdown(findings)
 
     # "Can you trust this score?" — the backtested precision of the defect
     # ranking, shown on the health card. Sourced here rather than from the stats
@@ -453,6 +452,7 @@ async def overview_summary(
     defect_accuracy = None
     try:
         from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+        from repowise.core.analysis.health.ranking import deduction_by_path
 
         defect_accuracy = compute_defect_accuracy(
             [
@@ -466,6 +466,7 @@ async def overview_summary(
                 for m in health_metrics
             ],
             prior_defect_rows,
+            deductions=deduction_by_path(findings),
         )
     except Exception:
         # Best-effort: the card omits the panel rather than failing the page.

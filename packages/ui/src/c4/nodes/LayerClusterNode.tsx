@@ -2,6 +2,7 @@
 
 import { memo, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
+import { healthBand100 } from "../../health/tokens";
 import { InkNodeShell, type InkRole } from "./ink-node-shell";
 import { getKindIcon } from "./kind-icons";
 import { useArchitectureStore } from "../store/use-architecture-store";
@@ -87,7 +88,7 @@ function LayerClusterNodeImpl(props: NodeProps) {
         style={{
           fontSize: 12,
           fontWeight: 600,
-          color: layer.health_score >= 80 ? THEME.health.good : layer.health_score >= 60 ? THEME.health.fair : THEME.health.poor,
+          color: THEME.health[healthBand100(layer.health_score)],
         }}
       >
         {Math.round(layer.health_score)}

@@ -24,9 +24,11 @@ from repowise.server.schemas import (
     CommunitySliceResponse,
 )
 from repowise.server.services.graph_views import (
+    Population,
     build_architecture_graph,
     build_community_slice,
     edge_response,
+    neighbour_edge_counts,
 )
 
 
@@ -170,7 +172,158 @@ async def test_build_community_slice_member_limit_truncates(async_session, tmp_p
     )
 
     assert payload.truncated is True
-    assert payload.member_count == 1
+    # The true visible size, so the banner can say "1 most connected of 2".
+    assert payload.member_count == 2
+    assert [n.node_id for n in payload.nodes if not n.is_boundary] == ["src/a.py"]
+
+
+async def _seed_mixed_population(session, tmp_path) -> str:
+    """Community 0: two production files and three tests; community 1: one
+    production file, one test, one doc; community 2: a test-only pair."""
+    repo = await upsert_repository(session, name="mixed", local_path=str(tmp_path))
+    nodes = [
+        ("src/a.py", 0, 0.9, False),
+        ("src/b.py", 0, 0.5, False),
+        ("tests/test_a.py", 0, 0.95, True),
+        ("tests/test_b.py", 0, 0.4, True),
+        ("tests/test_c.py", 0, 0.3, True),
+        ("src/c.py", 1, 0.6, False),
+        ("tests/test_d.py", 1, 0.2, True),
+        ("docs/guide.md", 1, 0.1, False),
+        ("tests/fixtures/x.py", 2, 0.1, True),
+        ("tests/fixtures/y.py", 2, 0.1, True),
+        # An unresolved import, stored as a file row: never a member.
+        ("external:pytest", 0, 0.99, False),
+    ]
+    await batch_upsert_graph_nodes(
+        session,
+        repo.id,
+        [
+            {
+                "node_id": path,
+                "node_type": "file",
+                "language": "python",
+                "pagerank": pr,
+                "community_id": cid,
+                "is_test": is_test,
+                "community_meta_json": json.dumps(
+                    {"label": f"c{cid}", "cohesion": 0.1, "conductance": 0.25}
+                ),
+            }
+            for path, cid, pr, is_test in nodes
+        ],
+    )
+    await batch_upsert_graph_edges(
+        session,
+        repo.id,
+        [
+            {"source_node_id": "src/a.py", "target_node_id": "src/b.py"},
+            {"source_node_id": "src/a.py", "target_node_id": "src/c.py"},
+            {"source_node_id": "tests/test_a.py", "target_node_id": "src/a.py"},
+            {"source_node_id": "tests/test_a.py", "target_node_id": "src/c.py"},
+            {"source_node_id": "src/b.py", "target_node_id": "tests/test_d.py"},
+        ],
+    )
+    await session.flush()
+    return repo.id
+
+
+@pytest.mark.asyncio
+async def test_architecture_graph_counts_production_only_by_default(async_session, tmp_path):
+    repo_id = await _seed_mixed_population(async_session, tmp_path)
+
+    view = await build_architecture_graph(async_session, repo_id, min_members=1)
+
+    by_cid = {n.community_id: n for n in view.nodes}
+    # The test-only community is not drawn at all.
+    assert set(by_cid) == {0, 1}
+    assert by_cid[0].member_count == 2
+    assert by_cid[0].hidden_member_count == 3
+    # The top file is the top *visible* file, not the higher-ranked test.
+    assert by_cid[0].top_file == "src/a.py"
+    assert by_cid[0].conductance == 0.25
+    assert by_cid[1].member_count == 1
+    assert by_cid[1].hidden_member_count == 2
+    # Cross edges count only visible endpoints: a->c stays, b->test_d goes.
+    assert [(e.source, e.target, e.edge_count) for e in view.edges] == [(0, 1, 1)]
+    assert view.population is not None
+    assert (view.population.total, view.population.visible) == (10, 3)
+    assert (view.population.tests, view.population.docs) == (6, 1)
+    assert view.population.include_tests is False
+
+
+@pytest.mark.asyncio
+async def test_architecture_graph_population_flags_change_the_counts(async_session, tmp_path):
+    repo_id = await _seed_mixed_population(async_session, tmp_path)
+
+    view = await build_architecture_graph(
+        async_session,
+        repo_id,
+        min_members=1,
+        population=Population(include_tests=True, include_docs=True),
+    )
+
+    by_cid = {n.community_id: n for n in view.nodes}
+    assert set(by_cid) == {0, 1, 2}
+    assert by_cid[0].member_count == 5
+    assert by_cid[0].hidden_member_count == 0
+    assert by_cid[0].top_file == "tests/test_a.py"
+    assert by_cid[1].member_count == 3
+    assert {(e.source, e.target, e.edge_count) for e in view.edges} == {(0, 1, 3)}
+    assert view.population is not None
+    assert view.population.visible == 10
+    assert view.population.include_tests is True
+
+
+@pytest.mark.asyncio
+async def test_architecture_graph_names_the_unclustered(async_session, tmp_path):
+    repo_id = await _seed_mixed_population(async_session, tmp_path)
+
+    view = await build_architecture_graph(async_session, repo_id, min_members=2)
+
+    # Community 1 has one visible file, so it is below the cut and unclustered.
+    assert [n.community_id for n in view.nodes] == [0]
+    assert view.unclustered is not None
+    assert view.unclustered.file_count == 1
+    assert view.unclustered.files == ["src/c.py"]
+
+
+@pytest.mark.asyncio
+async def test_community_slice_filters_members_and_boundary(async_session, tmp_path):
+    repo_id = await _seed_mixed_population(async_session, tmp_path)
+
+    payload = await build_community_slice(async_session, repo_id, community_id=0)
+
+    by_id = {n.node_id: n for n in payload.nodes}
+    members = {k for k, n in by_id.items() if not n.is_boundary}
+    boundary = {k for k, n in by_id.items() if n.is_boundary}
+    assert members == {"src/a.py", "src/b.py"}
+    # test_d is a boundary neighbour but a test, so it is filtered like a member.
+    assert boundary == {"src/c.py"}
+    assert payload.member_count == 2
+    assert payload.hidden_member_count == 3
+
+    shown = await build_community_slice(
+        async_session, repo_id, community_id=0, population=Population(include_tests=True)
+    )
+    assert shown.member_count == 5
+    assert shown.hidden_member_count == 0
+    assert {n.node_id for n in shown.nodes if n.is_boundary} == {"src/c.py", "tests/test_d.py"}
+
+
+@pytest.mark.asyncio
+async def test_neighbour_edge_counts_respect_population(async_session, tmp_path):
+    repo_id = await _seed_mixed_population(async_session, tmp_path)
+    members = ["src/a.py", "src/b.py", "tests/test_a.py"]
+
+    hidden = await neighbour_edge_counts(async_session, repo_id, 0, members)
+    shown = await neighbour_edge_counts(
+        async_session, repo_id, 0, members, population=Population(include_tests=True)
+    )
+
+    # a->c and test_a->c reach community 1; b->test_d only counts with tests on.
+    assert hidden == [(1, 2)]
+    assert shown == [(1, 3)]
 
 
 @pytest.mark.asyncio

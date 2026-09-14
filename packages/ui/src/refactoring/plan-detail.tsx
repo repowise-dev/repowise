@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowRight, CornerDownRight, FilePlus2, Layers, Scissors } from "lucide-react";
+import { ProvenancePathList } from "../shared/provenance-path-list";
 import {
   blastFiles,
   cutEdges,
@@ -11,12 +12,13 @@ import {
   extractMethodPlan,
   helperSite,
   moveTarget,
+  performancePlanDetail,
   splitBlast,
   splitGroups,
   splitResidual,
   splitShimRequired,
-  type RefactoringPlan,
 } from "./types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface PlanDetailProps {
   plan: RefactoringPlan;
@@ -36,17 +38,19 @@ function FileRef({
   path,
   line,
   fileHref,
+  label,
   className = "",
 }: {
   path: string;
   line?: number | null;
   fileHref?: PlanDetailProps["fileHref"];
+  label?: string;
   /** Extra classes, e.g. `block truncate` inside a `min-w-0` flex item. */
   className?: string;
 }) {
   const inner = (
     <>
-      {shortFile(path)}
+      {label ?? shortFile(path)}
       {line ? <span className="text-[var(--color-text-tertiary)]">:{line}</span> : null}
     </>
   );
@@ -108,6 +112,73 @@ const ACCENT = "var(--color-accent-fill)";
 
 export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProps) {
   const accent = ACCENT;
+
+  if (plan.refactoring_type === "performance_fix") {
+    const detail = performancePlanDetail(plan);
+    const provenance =
+      typeof plan.evidence?.provenance === "string" ? plan.evidence.provenance : "unresolved";
+    return (
+      <div className="space-y-4">
+        {hideIntro ? null : (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            {detail.safety === "proven" ? "Proven" : "Advisory"}{" "}
+            {detail.strategy.replaceAll("_", " ")} at the shared intervention.
+          </p>
+        )}
+        <div className="border-y border-[var(--color-border-default)] py-3">
+          <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+            Intervention point
+          </div>
+          <FileRef
+            path={plan.file_path}
+            line={plan.line_start ?? null}
+            fileHref={fileHref}
+            label={detail.interventionSymbol ?? plan.target_symbol}
+            className="mt-1 block break-all text-xs font-semibold"
+          />
+        </div>
+        <div>
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+            Caller-to-sink paths
+          </div>
+          <ProvenancePathList
+            paths={detail.paths.map((nodes) => ({ nodes, provenance }))}
+            total={detail.paths.length}
+            fileHref={(path) => fileHref?.(path, null)}
+          />
+          {detail.truncated ? (
+            <p className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+              {detail.paths.length} resolved {detail.paths.length === 1 ? "path" : "paths"} shown;
+              additional observations remain in Code Health evidence.
+            </p>
+          ) : null}
+        </div>
+        <div>
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+            Affected targets
+          </div>
+          <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
+            {detail.affectedLocations.map((location, index) => (
+              <li key={`${location.file_path}:${location.line_start ?? index}`} className="py-2">
+                <FileRef
+                  path={location.file_path}
+                  line={location.line_start ?? null}
+                  fileHref={fileHref}
+                  className="break-all"
+                />
+              </li>
+            ))}
+          </ul>
+          {detail.affectedLocations.length < detail.affectedLocationsTotal ? (
+            <p className="mt-2 text-2xs text-[var(--color-text-tertiary)]">
+              {detail.affectedLocations.length} shown of {detail.affectedLocationsTotal} affected
+              call sites.
+            </p>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   if (plan.refactoring_type === "extract_class") {
     const groups = extractClassGroups(plan).filter(
@@ -300,7 +371,10 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
           </div>
           <div
             className="rounded-lg border px-3 py-2"
-            style={{ borderColor: accent, backgroundColor: `color-mix(in srgb, ${accent} 8%, transparent)` }}
+            style={{
+              borderColor: accent,
+              backgroundColor: `color-mix(in srgb, ${accent} 8%, transparent)`,
+            }}
           >
             <div className="text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
               To

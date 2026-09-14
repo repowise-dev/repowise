@@ -35,6 +35,7 @@ def make_grpc_contract(
     symbol_name: str,
     confidence: float,
     meta: dict,
+    line: int | None = None,
 ) -> Contract:
     """Build a gRPC :class:`Contract` with the common fields filled in."""
     from repowise.core.workspace.contracts import Contract
@@ -48,5 +49,6 @@ def make_grpc_contract(
         symbol_name=symbol_name,
         confidence=confidence,
         service=None,
+        line=line,
         meta=meta,
     )

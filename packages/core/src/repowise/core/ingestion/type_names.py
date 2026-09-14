@@ -92,6 +92,67 @@ def bare_type_name(raw: str) -> str:
     return text.strip()
 
 
+# C++ template heads whose ``operator->`` forwards to their argument, so
+# ``shared_ptr<Foo> p`` makes ``p->m()`` a call on ``Foo``. Only these: a
+# container holds a ``T`` without being one, and unwrapping ``vector<Foo>``
+# would answer ``Foo`` for ``v.size()``.
+#
+# ``weak_ptr`` is deliberately absent. It declares no ``operator->`` at all and
+# reaches its argument only through ``lock()``.
+_POINTER_LIKE_HEADS = frozenset({"shared_ptr", "unique_ptr", "auto_ptr", "optional"})
+
+# Every member the heads above declare, which is the whole of what a ``.`` call
+# on one can name -- the arrow yields the argument, the dot yields the wrapper.
+# A caller that cannot see which operator was written refuses these names
+# instead, which costs an arrow call that really did mean ``Foo::get`` and
+# never lets a ``p.get()`` bind to one. Measured over aria2's 2,242 wrapper
+# receivers: it covers every one of the 355 real dot calls and gives up 57
+# arrows.
+POINTER_LIKE_MEMBERS = frozenset({
+    "get", "reset", "release", "swap", "use_count", "unique", "owner_before",
+    "get_deleter", "value", "has_value", "value_or", "emplace",
+    "and_then", "transform", "or_else",
+})
+
+
+def unwrap_pointer_like(raw: str) -> str | None:
+    """The type ``raw``'s ``operator->`` yields, or None if it forwards nowhere.
+
+    ``std::shared_ptr<Foo>`` -> ``Foo``; ``unique_ptr<Foo, D>`` -> ``Foo``,
+    since the deleter is not what the arrow reaches. Every other head answers
+    None, a repo's own wrapper included: whether *its* arrow forwards is not
+    written at the declaration, and guessing would bind ``h->m()`` to a class
+    the handle merely holds.
+
+    ``normalize_return_type`` deliberately does not use this. There the head is
+    the receiver -- ``future<T>.get()`` is a method on ``future`` -- so the two
+    call sites want opposite answers from the same spelling.
+    """
+    head, opener, rest = raw.strip().partition("<")
+    rest = rest.rstrip()
+    if not opener or not rest.endswith(">"):
+        return None
+    for separator in _QUALIFIER_SEPARATORS:
+        head = head.rsplit(separator, 1)[-1]
+    if head.strip() not in _POINTER_LIKE_HEADS:
+        return None
+
+    # The first top-level argument, tracked by depth so a ``map<K, V>`` nested
+    # inside one cannot be split at its own comma.
+    depth = 0
+    first: list[str] = []
+    for char in rest[:-1]:
+        if char in "<([":
+            depth += 1
+        elif char in ">)]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            break
+        first.append(char)
+    name = bare_type_name("".join(first))
+    return name or None
+
+
 def is_resolvable_type_name(name: str, language: str) -> bool:
     """True if *name* could name a symbol declared in this repo.
 

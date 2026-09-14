@@ -1,12 +1,13 @@
 """Single-file-component source preparation.
 
-A ``.svelte`` or ``.vue`` file is three languages in one file: ``<script>``
-blocks hold TS/JS, the markup is a framework-flavoured HTML, and ``<style>`` is
-CSS. The markup grammars parse the file but hand each ``<script>`` body back as
-one opaque ``raw_text`` node — a ``.scm`` query run against them captures no
-symbol, no import and no call.
+A ``.svelte``, ``.vue`` or ``.razor`` file is more than one language in one
+file: ``<script>`` blocks hold TS/JS, the markup is a framework-flavoured
+HTML, and ``@code`` / ``@{ }`` regions hold C#. The markup grammars parse
+the file but hand each ``<script>`` body back as one opaque ``raw_text``
+node, so a ``.scm`` query run against them captures no symbol, no import and
+no call.
 
-So a markup grammar is used here only to *locate* the JS-bearing regions:
+So a markup grammar is used here only to *locate* the code-bearing regions:
 
 * every ``<script>`` body,
 * every markup expression — Svelte's ``{expr}`` and ``on:click={inc}``, Vue's
@@ -27,7 +28,8 @@ the markup would make the dead-code pass wrong on nearly every component.
 Only the *region-location* step differs per language, so it lives behind
 :data:`_LOCATORS`; the blanking, fencing, caching and offset invariants are
 shared. Adding a markup language means adding a :class:`Locator`, not a second
-copy of the walker.
+copy of the walker: grammar-backed for Svelte and Vue, byte-scanned for
+Razor, which has no usable tree-sitter grammar (see the ``razor`` locator).
 
 Binding forms are deliberately skipped rather than kept: Svelte's
 ``{#each items as item}`` and ``{#await}`` heads, and Vue's ``v-for="item in
@@ -138,15 +140,29 @@ _EMPTY_SCAN = SfcScan(js_spans=(), terminators=(), component_tags=(), has_error=
 
 
 class Locator(NamedTuple):
-    """How one markup language exposes its JS regions and component tags."""
+    """How one markup language exposes its code regions and component tags.
 
-    # Importable module exposing a ``language()`` capsule.
-    grammar_module: str
-    # Called for every node; appends to ``state`` (spans/terminators/tags).
-    visit: Callable[[Node, dict], None]
+    Two shapes are supported. A **grammar-backed** locator (Svelte, Vue)
+    parses the file with a tree-sitter markup grammar and ``visit`` walks
+    every node. A **byte-scanned** locator (Razor) has ``grammar_module`` /
+    ``visit`` left as None and ``byte_scan`` instead walks the raw bytes;
+    there is no usable ``tree-sitter-razor`` on PyPI, and an HTML grammar
+    actively mis-parses Razor (``List<Order>`` reads as an HTML element).
+    Both shapes append to the same ``state`` dict and produce the same
+    :class:`SfcScan`.
+    """
+
+    # Importable module exposing a ``language()`` capsule (None = byte-scan).
+    grammar_module: str | None = None
+    # Called for every node (grammar-backed locators); appends to ``state``.
+    visit: Callable[[Node, dict], None] | None = None
     # Maps a raw markup tag name to the component name it instantiates, or
     # None when the tag is not a user component.
-    component_name: Callable[[str], str | None]
+    component_name: Callable[[str], str | None] | None = None
+    # Byte-scanned locators (Razor): called once with the raw source bytes;
+    # appends ``(start, end)`` spans / terminator offsets / ``(name, line)``
+    # component tags to ``state`` exactly like a grammar walk would.
+    byte_scan: Callable[[bytes, dict], None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +367,242 @@ def vue_component_name_from_stem(stem: str, parent_dir: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Razor / Blazor
+# ---------------------------------------------------------------------------
+
+# Razor's C#-bearing constructs, without the leading ``@`` sigil (the scan
+# compares against ``source[at + 1:]``). ``@code`` / ``@functions`` / ``@{ }``
+# hold class-body or statement content.
+_RAZOR_BLOCK_OPENERS = (b"code", b"functions", b"{")
+
+# Razor comments hide both markup and C#. HTML comments only hide markup: a
+# Razor expression inside ``<!-- -->`` still runs, so only the tag pass skips
+# them.
+_RAZOR_COMMENT_CLOSE = b"*@"
+_HTML_COMMENT_OPEN = b"<!--"
+_HTML_COMMENT_CLOSE = b"-->"
+
+
+def _csharp_literal_end(source: bytes, index: int) -> int | None:
+    """Index just past the C# literal or comment starting at ``index``.
+
+    The brace-depth walk must not count braces inside these: a ``{`` in a
+    string would leave the block unclosed or swallow the markup after it.
+    """
+    two = source[index : index + 2]
+    if two == b"//":
+        newline = source.find(b"\n", index + 2)
+        return len(source) if newline < 0 else newline
+    if two == b"/*":
+        close = source.find(b"*/", index + 2)
+        return len(source) if close < 0 else close + 2
+
+    cursor = index
+    verbatim = False
+    # ``$`` and ``@`` may appear in either order. An interpolated literal's
+    # braces are balanced by construction, so skipping the whole literal is
+    # right for it too.
+    while source[cursor : cursor + 1] in (b"@", b"$"):
+        verbatim = verbatim or source[cursor : cursor + 1] == b"@"
+        cursor += 1
+    quote = source[cursor : cursor + 1]
+
+    if quote == b'"':
+        cursor += 1
+        while cursor < len(source):
+            byte = source[cursor : cursor + 1]
+            if verbatim:
+                if byte == b'"':
+                    if source[cursor + 1 : cursor + 2] == b'"':
+                        cursor += 2
+                        continue
+                    return cursor + 1
+                cursor += 1
+                continue
+            if byte == b"\\":
+                cursor += 2
+                continue
+            if byte == b'"':
+                return cursor + 1
+            cursor += 1
+        return len(source)
+
+    if quote == b"'" and cursor == index:
+        # A char literal is at most a few bytes (``'\u0041'``); an apostrophe
+        # in markup inside ``@{ }`` must not swallow the rest of the block.
+        probe = cursor + 1
+        while probe < len(source) and probe <= cursor + 8:
+            byte = source[probe : probe + 1]
+            if byte == b"\\":
+                probe += 2
+                continue
+            if byte == b"'":
+                return probe + 1
+            probe += 1
+    return None
+
+
+def _razor_byte_scan(source: bytes, state: dict) -> None:
+    """Locate C# regions and component tags in ``.razor`` / ``.cshtml`` bytes.
+
+    The scanner walks the raw bytes with no grammar: ``@code { ... }`` /
+    ``@functions { ... }`` / ``@{ ... }`` interiors are projected as C#
+    (brace-depth matched so nested object initialisers survive), and
+    PascalCase tags (``<RadzenDataGrid>``) are recorded as component
+    instantiations. Everything else (directives, markup, attributes) is
+    blanked by :func:`_blank`.
+
+    Deliberate exclusions, mirroring the Svelte/Vue ceilings:
+
+    * ``@@`` is the Razor escape for a literal ``@`` (``@@code`` renders
+      ``@code``), skipped so an escaped sigil never opens a false block.
+    * A ``@`` that is part of a longer identifier token (``email@host``,
+      ``user@@example.com``) is not a directive: the following character
+      must be alphabetic or ``{`` for the sigil to count.
+    * ``@* ... *@`` comments are skipped by both passes. Commented-out code
+      compiles to nothing, so a block or tag inside one would be a wrong edge.
+    * ``@using X`` directives are NOT projected (Razor drops the trailing
+      ``;``, which the C# grammar needs; the projection would have to
+      rewrite bytes to satisfy it). The ``@inject`` / ``@bind`` /
+      ``@on*`` attribute-value forms are two-way bindings, not call edges,
+      the same posture as Svelte's ``{#each}`` heads and Vue's ``v-for``.
+    """
+    comments: list[tuple[int, int]] = []
+
+    # -- C# regions ----------------------------------------------------------
+    # Scanned FIRST so the component-tag pass below can skip their interiors:
+    # ``List<Order>`` inside a C# region is a generic type argument, not a
+    # component tag, and the C# grammar (not the tag pass) owns that text.
+    # One sequential walk, so a ``@code`` inside a comment and a ``@*`` inside
+    # a C# string are each jumped over rather than matched.
+    pos = 0
+    while True:
+        at = source.find(b"@", pos)
+        if at < 0:
+            break
+        following = source[at + 1 : at + 2]
+        # Skip the @@ escape.
+        if following == b"@":
+            pos = at + 2
+            continue
+        if following == b"*":
+            close = source.find(_RAZOR_COMMENT_CLOSE, at + 2)
+            end = len(source) if close < 0 else close + len(_RAZOR_COMMENT_CLOSE)
+            comments.append((at, end))
+            pos = end
+            continue
+        rest = source[at + 1 :]
+        matched = None
+        for opener in _RAZOR_BLOCK_OPENERS:
+            if rest.startswith(opener):
+                matched = opener
+                break
+        if matched is None:
+            # Not a block opener: keep scanning for the next sigil.
+            pos = at + 1
+            continue
+
+        open_brace = at + 1 + len(matched)
+        if matched == b"{":
+            # For ``@{`` the sigil IS the opener: the brace sits at ``at + 1``,
+            # not one past a keyword like ``code`` / ``functions``.
+            open_brace = at + 1
+        # Skip whitespace between the keyword and the opening brace.
+        while open_brace < len(source) and source[open_brace : open_brace + 1] in (
+            b" ",
+            b"\t",
+            b"\r",
+            b"\n",
+        ):
+            open_brace += 1
+        if open_brace >= len(source) or source[open_brace : open_brace + 1] != b"{":
+            pos = at + 1
+            continue
+
+        depth = 0
+        end = None
+        cursor = open_brace
+        while cursor < len(source):
+            byte = source[cursor : cursor + 1]
+            if byte in (b'"', b"'", b"/", b"@", b"$"):
+                skip = _csharp_literal_end(source, cursor)
+                if skip is not None:
+                    cursor = skip
+                    continue
+            if byte == b"{":
+                depth += 1
+            elif byte == b"}":
+                depth -= 1
+                if depth == 0:
+                    end = cursor
+                    break
+            cursor += 1
+        if end is None:
+            pos = at + 1
+            continue
+
+        # The interior is the C# body. Fence it with both braces so a
+        # sibling block cannot run into it and vice versa.
+        interior_start, interior_end = open_brace + 1, end
+        if interior_end > interior_start:
+            state["spans"].append((interior_start, interior_end))
+            state["terminators"].append(open_brace)
+            state["terminators"].append(end)
+        pos = end + 1
+
+    # -- component tags: <PascalCase ...> / <PascalCase /> ------------------
+    # Skip any ``<`` inside a C# region or a Razor comment: ``List<Order>`` is
+    # a generic type argument, ``a < b`` is a comparison, and a commented-out
+    # tag renders nothing. HTML comments are jumped over for the same reason.
+    hidden = tuple(state["spans"]) + tuple(comments)
+
+    def _is_hidden(offset: int) -> bool:
+        return any(start <= offset < end for start, end in hidden)
+
+    pos = 0
+    while True:
+        lt = source.find(b"<", pos)
+        if lt < 0:
+            break
+        if _is_hidden(lt):
+            pos = lt + 1
+            continue
+        if source.startswith(_HTML_COMMENT_OPEN, lt):
+            close = source.find(_HTML_COMMENT_CLOSE, lt + len(_HTML_COMMENT_OPEN))
+            pos = len(source) if close < 0 else close + len(_HTML_COMMENT_CLOSE)
+            continue
+        name_start = lt + 1
+        name_end = name_start
+        while name_end < len(source) and (
+            source[name_end : name_end + 1].isalnum()
+            or source[name_end : name_end + 1] in (b"_", b".")
+        ):
+            name_end += 1
+        if name_end > name_start:
+            # A namespace-qualified tag (``<Shared.Grid />``) instantiates the
+            # last dotted segment.
+            raw = source[name_start:name_end].decode("utf-8", errors="replace")
+            name = _razor_component_name(raw.rsplit(".", 1)[-1])
+            if name:
+                line = source.count(b"\n", 0, lt) + 1
+                state["tags"].append((name, line))
+        pos = lt + 1
+
+
+def _razor_component_name(name: str) -> str | None:
+    """``<RadzenDataGrid>`` instantiates a component; ``<div>`` is HTML.
+
+    The Svelte rule transfers verbatim: a PascalCase tag names a user
+    component, a lowercase tag is a plain element. Razor components are
+    PascalCase by convention, so no kebab- or ``+``-normalisation is
+    needed.
+    """
+    if not name or not name[0].isupper():
+        return None
+    return name
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -377,6 +629,14 @@ _LOCATORS: dict[str, Locator] = {
         grammar_module="tree_sitter_html",
         visit=_vue_visit,
         component_name=_vue_component_name,
+    ),
+    # Razor has no usable tree-sitter grammar on PyPI, and an HTML grammar
+    # actively mis-parses it (``List<Order>`` reads as an HTML element). The
+    # locator byte-scans instead: ``@code`` / ``@functions`` / ``@{ }``
+    # interiors project as C#, PascalCase tags become component calls.
+    "razor": Locator(
+        component_name=_razor_component_name,
+        byte_scan=_razor_byte_scan,
     ),
 }
 
@@ -419,7 +679,21 @@ def scan(language: str, source: bytes) -> SfcScan:
 @lru_cache(maxsize=4)
 def _cached_scan(language: str, source: bytes) -> SfcScan:
     locator = _LOCATORS[language]
-    grammar = _grammar(locator.grammar_module)
+    state: dict = {"spans": [], "terminators": [], "tags": []}
+
+    # Byte-scanned locator (Razor): no markup grammar exists, so the raw
+    # bytes are scanned directly. There is no tree to carry a parse-error
+    # flag, and a byte scan cannot mis-parse, so ``has_error`` stays False.
+    if locator.byte_scan is not None:
+        locator.byte_scan(source, state)
+        return SfcScan(
+            js_spans=tuple(sorted(state["spans"])),
+            terminators=tuple(sorted(state["terminators"])),
+            component_tags=tuple(state["tags"]),
+            has_error=False,
+        )
+
+    grammar = _grammar(locator.grammar_module or "")
     if grammar is None:
         return _EMPTY_SCAN
 
@@ -431,7 +705,6 @@ def _cached_scan(language: str, source: bytes) -> SfcScan:
         log.debug("sfc_scan_failed", language=language, error=str(exc))
         return _EMPTY_SCAN
 
-    state: dict = {"spans": [], "terminators": [], "tags": []}
     _walk(tree.root_node, locator.visit, state)
     return SfcScan(
         js_spans=tuple(sorted(state["spans"])),
@@ -514,4 +787,8 @@ def prepare_source(language: str, source: bytes, *, path: str | None = None) -> 
         from .parser_helpers import prepare_pascal_source
 
         return prepare_pascal_source(source, path)
+    if language == "objectivec" and source:
+        from .parser_helpers import prepare_objectivec_source
+
+        return prepare_objectivec_source(source)
     return source

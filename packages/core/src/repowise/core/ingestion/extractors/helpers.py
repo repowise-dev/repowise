@@ -59,6 +59,132 @@ def refine_kotlin_class_kind(class_node: Node) -> str:
     return "class"
 
 
+# Elixir definition keyword -> SymbolKind. Every definition is a `call` node,
+# so the node type says nothing; the keyword in the call's target says all.
+_ELIXIR_DEFINITION_KINDS = {
+    "defmodule": "module",
+    "defprotocol": "interface",
+    "defimpl": "impl",
+    "def": "function",
+    "defp": "function",
+    "defdelegate": "function",
+    "defmacro": "macro",
+    "defmacrop": "macro",
+    "defguard": "macro",
+    "defguardp": "macro",
+}
+
+
+def refine_elixir_call_kind(call_node: Node, src: str) -> str:
+    """Refine the placeholder ``module`` kind for an Elixir ``call`` node.
+
+    ``LANGUAGE_CONFIGS["elixir"]`` maps the one node type Elixir has to
+    ``module`` rather than to a callable kind on purpose: a ``def`` nested in
+    a ``defmodule`` has a ``call`` ancestor, so a callable mapping would make
+    ``_has_callable_ancestor`` drop every function in every module. The real
+    kind is read back here, after that filter has run.
+    """
+    target = call_node.child_by_field_name("target")
+    if target is None:
+        return "module"
+    keyword = node_text(target, src).strip()
+    return _ELIXIR_DEFINITION_KINDS.get(keyword, "module")
+
+
+def refine_pascal_type_kind(decl_type_node: Node) -> str:
+    """Refine the generic ``class`` kind for Pascal ``declType`` nodes.
+
+    ``declType`` wraps class / record / object / interface / class-helper
+    / enum / set / array / plain-alias in one node shape (see
+    ``languages/specs/pascal.py``'s spec docstring). Its ``type`` field is
+    one of two shapes:
+
+    * a class-like node directly -- ``declClass`` (covers *both* the
+      ``class`` and ``record``/``object`` keyword forms; the grammar has
+      no separate "record" node, so the first child's keyword token
+      (``kRecord`` vs. ``kClass``/``kObject``) is what actually
+      distinguishes them), ``declIntf``, or ``declHelper``;
+    * a generic ``type`` wrapper around ``declEnum``, ``declSet``,
+      ``declArray``, or a bare ``typeref`` (a plain alias, e.g.
+      ``TMyInt = Integer;``).
+
+    ``object`` and class-helper both collapse to ``"class"`` -- Pascal's
+    pre-OOP ``object`` type and a class helper both declare members the
+    same shape a class does, and neither has a closer match in
+    :data:`~repowise.core.ingestion.models.SymbolKind`. ``set``/``array``/
+    plain-alias all collapse to ``"type_alias"`` for the same reason:
+    none of them declare members of their own, so ``"class"`` would be
+    actively misleading.
+    """
+    type_node = decl_type_node.child_by_field_name("type")
+    if type_node is None:
+        return "class"
+    if type_node.type == "declClass":
+        first_child = type_node.children[0] if type_node.children else None
+        if first_child is not None and first_child.type == "kRecord":
+            return "struct"
+        return "class"
+    if type_node.type == "declIntf":
+        return "interface"
+    if type_node.type == "declHelper":
+        return "class"
+    if type_node.type == "type":
+        inner = next(iter(type_node.named_children), None)
+        if inner is not None and inner.type == "declEnum":
+            return "enum"
+        return "type_alias"
+    return "class"
+
+
+def fsharp_type_name(simple_type_node: Node, src: str) -> str | None:
+    """The bare name of an F# ``simple_type``, qualifier dropped.
+
+    ``inherit System.Exception()`` names the same type as ``inherit
+    Exception()`` and F# writes the type name last, so the last segment of
+    the dotted path is the name the symbol index is keyed by. Shared by the
+    heritage extractor and the type-reference head walk, which ask the same
+    question of the same node.
+    """
+    head = simple_type_node
+    if head.type == "simple_type":
+        head = next(iter(head.named_children), None)
+        if head is None:
+            return None
+    if head.type == "long_identifier":
+        idents = [c for c in head.named_children if c.type == "identifier"]
+        if not idents:
+            return None
+        head = idents[-1]
+    if head.type != "identifier":
+        return None
+    return node_text(head, src).strip() or None
+
+
+def refine_fsharp_type_kind(anon_type_defn_node: Node) -> str:
+    """Tell an F# interface apart from a class inside ``anon_type_defn``.
+
+    The grammar gives classes, structs and interfaces the same node: an
+    interface is written ``type IFoo = abstract member Bar: ...`` with no
+    constructor and nothing but abstract members. Those two facts together
+    are what F# itself compiles to an interface, so both are required; a
+    class with one abstract member and a constructor stays a class.
+    """
+    members = [
+        node
+        for child in anon_type_defn_node.named_children
+        for node in ([child] if child.type == "member_defn" else child.named_children)
+        if node.type == "member_defn"
+    ]
+    if not members:
+        return "class"
+    if any(child.type == "primary_constr_args" for child in anon_type_defn_node.named_children):
+        return "class"
+    for member in members:
+        if not any(child.type == "abstract" for child in member.children):
+            return "class"
+    return "interface"
+
+
 def clean_string_literal(text: str) -> str:
     """Strip quote characters from a Python string literal."""
     text = text.strip()

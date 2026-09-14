@@ -11,6 +11,7 @@ export interface CommitsMiniEntry {
   committed_at: string | null;
   change_risk_level?: string | null;
   risk_percentile?: number | null;
+  review_priority?: string | null;
 }
 
 interface CommitsMiniProps {
@@ -72,9 +73,16 @@ export function CommitsMini({ commits, repoId, linkPrefix, previewCount = 8 }: C
             >
               <span
                 className={`h-2 w-2 rounded-full shrink-0 ${
-                  RISK_DOT[c.change_risk_level ?? ""] ?? "bg-[var(--color-text-tertiary)]"
+                  RISK_DOT[c.review_priority ?? c.change_risk_level ?? ""] ??
+                  "bg-[var(--color-text-tertiary)]"
                 }`}
-                title={c.change_risk_level ? `${c.change_risk_level} change risk` : undefined}
+                title={
+                  c.review_priority
+                    ? `${c.review_priority} repo-relative review priority`
+                    : c.change_risk_level
+                      ? `${c.change_risk_level} absolute per-commit fallback band`
+                      : undefined
+                }
               />
               <span className="text-xs font-mono text-[var(--color-text-tertiary)] shrink-0">
                 {c.short_sha}

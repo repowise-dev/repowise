@@ -49,7 +49,7 @@ def test_head_match_is_silent(tmp_path, monkeypatch):
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["a.py"])
     assert "stale_warning" not in out
     assert out["index_behind"] is False
-    assert "live_head" not in out
+    assert out["live_head"] == _INDEXED[:12]
 
 
 def test_no_git_signal_omits_index_behind_entirely(tmp_path, monkeypatch):
@@ -213,3 +213,89 @@ def test_changed_files_between_real_git(tmp_path):
     assert changed == frozenset({"b.py"})
     # Unknown SHA → None (fail toward warning), and the miss is cached too.
     assert _meta._changed_files_between(str(tmp_path), "f" * 40, sha2) is None
+
+
+def test_confident_answer_is_never_told_retrieval_found_nothing() -> None:
+    """A high-confidence answer empties ``retrieval`` deliberately, so the hint
+    must never read that block's length as a count of what retrieval found.
+    Every cached reply re-derives its hint from the stored payload, which is
+    where such a misreading would reach the most trustworthy answers we send."""
+    from repowise.server.mcp_server._meta import answer_hint
+
+    assert answer_hint("high") is None
+    assert answer_hint("medium") is None
+    assert "Read the listed fallback_targets" in (answer_hint("low") or "")
+
+
+def test_no_answer_hint_names_an_external_tool() -> None:
+    """A dead end redirects into our own surface; only the exhaustive-sweep
+    wording may name an external tool, and it is not a get_answer hint."""
+    from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT, answer_hint
+
+    hints = [answer_hint(c) for c in ("high", "medium", "low")]
+    hints += [
+        answer_hint("low", degraded="no-llm-provider", retrieval_quality=q)
+        for q in ("high", "partial", "weak")
+    ]
+    assert not [h for h in hints if h and "Grep" in h]
+    assert "Grep" not in NO_HITS_RECOVERY_HINT
+    assert "search_codebase" in NO_HITS_RECOVERY_HINT
+
+
+async def _stamp_head_commit(sha: str) -> None:
+    """Give the fixture repository an indexed commit so freshness has something
+    to report. Without it ``freshness_from_repo`` emits only the age fields, and
+    a tool that forgot to pass ``repository`` would look identical to one that
+    passed it."""
+    from sqlalchemy import update
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Repository
+
+    async with get_session(mcp_mod._session_factory) as session:
+        await session.execute(update(Repository).values(head_commit=sha))
+
+
+@pytest.mark.asyncio
+async def test_structured_search_meta_carries_freshness(setup_mcp):
+    """A single-repo symbol search compares against one index, so it must say
+    which commit that index was built from."""
+    from repowise.server.mcp_server import search_codebase
+
+    await _stamp_head_commit(_INDEXED)
+    result = await search_codebase("AuthService", mode="symbol")
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+
+
+@pytest.mark.asyncio
+async def test_execution_flows_meta_carries_freshness(setup_mcp):
+    """get_execution_flows serves traces over files of one repo, so its
+    envelope carries that repo's freshness like every other default tool."""
+    from repowise.server.mcp_server.tool_flows import get_execution_flows
+
+    await _stamp_head_commit(_INDEXED)
+    result = await get_execution_flows()
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+
+
+@pytest.mark.asyncio
+async def test_execution_flows_targets_name_the_traced_files(setup_mcp, monkeypatch):
+    """A stale warning is scoped to what the response served, so the files the
+    published traces walk have to reach freshness as targets."""
+    from repowise.server.mcp_server import tool_flows
+
+    seen: list = []
+    real = tool_flows._build_meta
+
+    def spy(**kwargs):
+        seen.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(tool_flows, "_build_meta", spy)
+    await _stamp_head_commit(_INDEXED)
+    result = await tool_flows.get_execution_flows(entry_point="src/auth/service.py")
+    assert result["flows"]
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+    assert seen[-1]["repository"] is not None
+    assert "src/auth/service.py" in seen[-1]["targets"]

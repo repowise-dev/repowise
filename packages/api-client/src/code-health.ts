@@ -9,14 +9,22 @@ import type {
   HealthFilesQuery,
   HealthFilesResponse,
   HealthFinding,
+  HealthMapFeed,
+  HealthMapQuery,
   HealthCoverageResponse,
   TestsReachingFile,
   HealthFileBreakdownResponse,
   HealthOverviewResponse,
   HealthTrendResponse,
-  RefactoringQuery,
-  RefactoringTargetsResponse,
+  PerformanceOpportunityDetail,
+  PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
+  HealthScope,
+  HealthCounts,
 } from "@repowise-dev/types/health";
+import type { Paginated } from "@repowise-dev/types";
 import { apiGet, apiPatch } from "./client";
 
 export type {
@@ -36,10 +44,31 @@ export type {
   HealthFilesQuery,
   HealthFilesResponse,
   HealthFinding,
+  HealthMapFeed,
+  HealthMapModuleRollup,
+  HealthMapOmissions,
+  HealthMapPerformance,
+  HealthMapQuery,
+  HealthMapSelection,
   HealthModuleRow,
   HealthOverviewResponse,
+  HealthCounts,
+  HealthScope,
   HealthTrendResponse,
+  HealthWorkItem,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
   ModuleCoverageRow,
+  PerformanceActionabilityState,
+  PerformanceExecutionContext,
+  PerformanceFacets,
+  PerformanceOpportunity,
+  PerformanceOpportunityConfidence,
+  PerformanceOpportunityDetail,
+  PerformanceOpportunityEvidence,
+  PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
+  PerformanceOpportunitySummary,
   RefactoringQuery,
   RefactoringTarget,
   RefactoringTargetsResponse,
@@ -48,10 +77,12 @@ export type {
 export async function getHealthOverview(
   repoId: string,
   limit = 25,
+  scope?: HealthScope,
+  counts?: HealthCounts,
 ): Promise<HealthOverviewResponse> {
   return apiGet<HealthOverviewResponse>(
     `/api/repos/${repoId}/health/overview`,
-    { limit },
+    { limit, scope, counts },
   );
 }
 
@@ -61,11 +92,82 @@ export async function listHealthFindings(
     biomarker_type?: string;
     file_path?: string;
     min_severity?: string;
+    /** Exact severities, comma-separated. Overrides `min_severity`. */
+    severity?: string;
     dimension?: string;
+    /** Comma-separated statuses, or `"all"`. Defaults to open work. */
+    status?: string;
     limit?: number;
+    scope?: HealthScope;
+    counts?: HealthCounts;
   },
 ): Promise<HealthFinding[]> {
   return apiGet<HealthFinding[]>(`/api/repos/${repoId}/health/findings`, opts);
+}
+
+/** The canonical query shape lives with the wire types. */
+export type PerformanceOpportunityPageParams = PerformanceOpportunityQuery;
+
+export async function getPerformanceOpportunities(
+  repoId: string,
+  opts: PerformanceOpportunityQuery = {},
+): Promise<PerformanceOpportunityPage> {
+  return apiGet<PerformanceOpportunityPage>(
+    `/api/repos/${repoId}/health/performance-opportunities`,
+    {
+      context: opts.context,
+      boundary: opts.boundary,
+      confidence: opts.confidence,
+      actionability: opts.actionability,
+      view: opts.view,
+      sort: opts.sort,
+      file_paths: opts.file_paths?.length ? opts.file_paths.join(",") : undefined,
+      limit: opts.limit,
+      offset: opts.offset,
+    },
+  );
+}
+
+/** One opportunity by its stable id, with bounded evidence. */
+export async function getPerformanceOpportunity(
+  repoId: string,
+  opportunityId: string,
+  opts: { evidenceLimit?: number; evidenceOffset?: number } = {},
+): Promise<PerformanceOpportunityDetail> {
+  return apiGet<PerformanceOpportunityDetail>(
+    `/api/repos/${repoId}/health/performance-opportunities/${encodeURIComponent(opportunityId)}`,
+    { evidence_limit: opts.evidenceLimit, evidence_offset: opts.evidenceOffset },
+  );
+}
+
+export async function getPerformanceOpportunityFindings(
+  repoId: string,
+  opportunityId: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<Paginated<HealthFinding>> {
+  return apiGet(
+    `/api/repos/${repoId}/health/performance-opportunities/${encodeURIComponent(opportunityId)}/findings`,
+    { limit: opts.limit, offset: opts.offset },
+  );
+}
+
+/**
+ * The bounded field the code-health map draws.
+ *
+ * Distinct from {@link listHealthFiles}, which is an inventory page: this one
+ * chooses its rows so the caller's selection and the repository's performance
+ * causes are guaranteed a node, and states what the cap left out.
+ */
+export async function getHealthMap(
+  repoId: string,
+  opts: HealthMapQuery = {},
+): Promise<HealthMapFeed> {
+  return apiGet<HealthMapFeed>(`/api/repos/${repoId}/health/map`, {
+    cap: opts.cap,
+    active: opts.active?.length ? opts.active.join(",") : undefined,
+    scope: opts.scope,
+    counts: opts.counts,
+  });
 }
 
 export async function listHealthFiles(
@@ -81,15 +183,20 @@ export async function listHealthFiles(
 export async function getHealthFileBreakdown(
   repoId: string,
   filePath: string,
+  counts?: HealthCounts,
 ): Promise<HealthFileBreakdownResponse> {
   return apiGet<HealthFileBreakdownResponse>(
     `/api/repos/${repoId}/health/files/breakdown`,
-    { file_path: filePath },
+    { file_path: filePath, counts },
   );
 }
 
-export async function getHealthTrend(repoId: string, limit = 20): Promise<HealthTrendResponse> {
-  return apiGet<HealthTrendResponse>(`/api/repos/${repoId}/health/trend`, { limit });
+export async function getHealthTrend(
+  repoId: string,
+  limit = 20,
+  scope?: HealthScope,
+): Promise<HealthTrendResponse> {
+  return apiGet<HealthTrendResponse>(`/api/repos/${repoId}/health/trend`, { limit, scope });
 }
 
 export async function updateFindingStatus(
@@ -128,15 +235,18 @@ export async function getTestsReaching(
   );
 }
 
-export async function getRefactoringTargets(
+export async function getHealthWorkQueue(
   repoId: string,
-  opts?: RefactoringQuery,
-): Promise<RefactoringTargetsResponse> {
-  return apiGet<RefactoringTargetsResponse>(
+  opts?: HealthWorkQueueQuery,
+): Promise<HealthWorkQueueResponse> {
+  return apiGet<HealthWorkQueueResponse>(
     `/api/repos/${repoId}/health/refactoring-targets`,
     opts as Record<string, string | number | boolean | undefined>,
   );
 }
+
+/** @deprecated Use getHealthWorkQueue; the response is file triage, not plans. */
+export const getRefactoringTargets = getHealthWorkQueue;
 
 export async function getChurnComplexity(
   repoId: string,

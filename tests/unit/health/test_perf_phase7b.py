@@ -218,25 +218,52 @@ _HOT_SRC = (
 )
 
 
-def test_centrality_gate_fires_in_a_churny_file():
+def test_centrality_gate_is_silent_on_churn_alone():
+    """Churn is not reachability, so it cannot carry these markers alone.
+
+    A git hotspot with no callers was hot on its own until the gate required
+    centrality. How often a file is edited is not how often it runs.
+    """
     walked = _walked("svc.py", _HOT_SRC)
-    # No graph, but the file is a git hotspot -> churny -> hot.
-    ranker = PerfRanker(None, {"svc.py": {"is_hotspot": True}})
-    out = collect_centrality_gated(walked, ranker)
-    kinds = sorted(h.kind for h in out.get("svc.py", []))
-    assert kinds == ["hot_path_sync_io", "nested_loop_quadratic"]
-    assert out["svc.py"][0].detail or True  # hot_path carries the boundary kind
-
-
-def test_centrality_gate_silent_without_any_hot_signal():
-    walked = _walked("cold.py", _HOT_SRC)
-    # No graph, no git metadata -> nothing is hot -> no gated markers ship.
-    ranker = PerfRanker(None, {})
+    ranker = PerfRanker(None)
     assert collect_centrality_gated(walked, ranker) == {}
 
 
+def test_centrality_gate_silent_without_a_graph():
+    walked = _walked("cold.py", _HOT_SRC)
+    # No graph -> nothing is central -> no gated markers ship.
+    ranker = PerfRanker(None)
+    assert collect_centrality_gated(walked, ranker) == {}
+
+
+def test_centrality_gate_fires_for_a_central_function_end_to_end():
+    """The surviving arm still ships both gated markers."""
+    g = nx.MultiDiGraph()
+    g.add_node(
+        "svc.py::hot", node_type="symbol", name="hot", file_path="svc.py", start_line=2, end_line=6
+    )
+    for i in range(4):
+        cid = f"c.py::caller{i}"
+        g.add_node(
+            cid,
+            node_type="symbol",
+            name=f"caller{i}",
+            file_path="c.py",
+            start_line=10 + i,
+            end_line=11 + i,
+        )
+        g.add_edge(cid, "svc.py::hot", edge_type="calls")
+    walked = _walked("svc.py", _HOT_SRC)
+    out = collect_centrality_gated(walked, PerfRanker(CallGraphIndex(g)))
+    assert sorted(h.kind for h in out.get("svc.py", [])) == [
+        "hot_path_sync_io",
+        "nested_loop_quadratic",
+    ]
+
+
 def test_centrality_gate_fires_for_a_central_function():
-    # A symbol with top-quintile caller count is "central" even without churn.
+    # A symbol with top-quintile caller count is central; a single-caller leaf
+    # is not, which is the floor at work on a graph this small.
     g = nx.MultiDiGraph()
     g.add_node(
         "svc.py::hot", node_type="symbol", name="hot", file_path="svc.py", start_line=1, end_line=6
@@ -254,7 +281,7 @@ def test_centrality_gate_fires_for_a_central_function():
         )
         g.add_edge(cid, "svc.py::hot", edge_type="calls")
         callers.append(cid)
-    # A cold leaf with a single caller — must NOT be central.
+    # A cold leaf with a single caller: must NOT be central.
     g.add_node(
         "svc.py::cold",
         node_type="symbol",
@@ -266,7 +293,7 @@ def test_centrality_gate_fires_for_a_central_function():
     g.add_edge(callers[0], "svc.py::cold", edge_type="calls")
 
     index = CallGraphIndex(g)
-    ranker = PerfRanker(index, {})
+    ranker = PerfRanker(index)
     assert ranker.is_central("svc.py", 1) is True
     assert ranker.is_central("svc.py", 20) is False
 

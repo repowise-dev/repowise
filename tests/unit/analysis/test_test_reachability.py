@@ -130,8 +130,8 @@ def test_containment_bridges_files_to_symbols_and_nothing_else():
         ]
     )
     view = call_graph_from_graph(graph)
-    assert view.declares == {"tests/test_a.py": {"tests/test_a.py::test_x"}}
-    assert view.calls == {"tests/test_a.py::test_x": {"src/a.py::run"}}
+    assert view.declares == {"tests/test_a.py": ("tests/test_a.py::test_x",)}
+    assert view.calls == {"tests/test_a.py::test_x": ("src/a.py::run",)}
 
 
 def test_name_only_resolutions_are_dropped():
@@ -148,7 +148,7 @@ def test_name_only_resolutions_are_dropped():
             ("t.py::test", "c.py::h", {"edge_type": "calls"}),
         ]
     )
-    assert call_graph_from_graph(graph).calls == {"t.py::test": {"b.py::g", "c.py::h"}}
+    assert call_graph_from_graph(graph).calls == {"t.py::test": ("b.py::g", "c.py::h")}
 
 
 def test_missing_graph_is_no_signal_not_an_error():

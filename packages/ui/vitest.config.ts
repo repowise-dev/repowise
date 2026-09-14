@@ -42,6 +42,10 @@ export default defineConfig({
         "../types/src/external-systems.ts",
       ),
       "@repowise-dev/types/health": path.resolve(__dirname, "../types/src/health.ts"),
+      "@repowise-dev/types/refactoring": path.resolve(
+        __dirname,
+        "../types/src/refactoring.ts",
+      ),
       "@repowise-dev/types/coupling": path.resolve(__dirname, "../types/src/coupling.ts"),
       "@repowise-dev/types/stats": path.resolve(__dirname, "../types/src/stats.ts"),
       "@repowise-dev/types": path.resolve(__dirname, "../types/src/index.ts"),

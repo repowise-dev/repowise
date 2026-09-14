@@ -8,15 +8,25 @@ import {
 } from "@repowise-dev/ui/decisions/decision-status-mark";
 import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
 import { formatRelativeTime, stripMarkdown } from "@repowise-dev/ui/lib/format";
+import {
+  DECISION_STATUSES,
+  DECISION_STATUS_LABELS,
+} from "@repowise-dev/types/decisions";
 import type { DecisionRecordResponse } from "@repowise-dev/api-client/types";
 import type { ViewProps } from "../../runtime/mount";
 
 type Status = DecisionRecordResponse["status"];
 
-const STATUS_ORDER: readonly Status[] = ["active", "proposed", "deprecated", "superseded"];
+// The shared ladder, not a local copy. The copy that was here ordered
+// deprecated ahead of superseded while the list endpoint ordered them the
+// other way, so the same rows ranked differently depending on the surface.
+const STATUS_ORDER: readonly Status[] = DECISION_STATUSES;
 
 function statusLabel(status: Status): string {
-  return status.charAt(0).toUpperCase() + status.slice(1);
+  // `status` is a strict union here but an unconstrained string on the wire,
+  // so fall back to the raw value: a chip carrying a count needs a word beside
+  // it, and a blank label is worse than an unfamiliar one.
+  return DECISION_STATUS_LABELS[status] ?? status;
 }
 
 /** Record section labels. Uppercase micro-labels are mono: it separates a

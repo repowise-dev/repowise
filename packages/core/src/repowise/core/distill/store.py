@@ -21,6 +21,7 @@ import structlog
 
 from repowise.core.distill import tracking
 from repowise.core.distill.markers import REF_LENGTH, is_valid_ref
+from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
 
 logger = structlog.get_logger(__name__)
 
@@ -32,6 +33,9 @@ DEFAULT_TTL_DAYS = 7
 #: Compressed-content size cap; oldest rows pruned first when exceeded.
 DEFAULT_MAX_MB = 50
 
+#: Retry window for a contended open, in milliseconds.
+_BUSY_TIMEOUT_MS = 5000
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS omissions (
     ref TEXT PRIMARY KEY,
@@ -41,6 +45,12 @@ CREATE TABLE IF NOT EXISTS omissions (
     original_tokens INTEGER NOT NULL,
     kept_tokens INTEGER NOT NULL,
     access_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS evidence_references (
+    ref TEXT PRIMARY KEY,
+    content BLOB NOT NULL,
+    repository TEXT NOT NULL,
+    created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS savings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,9 +108,7 @@ class OmissionStore:
         self.max_mb = max_mb
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        apply_sqlite_pragmas(self._conn, _BUSY_TIMEOUT_MS)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
@@ -151,6 +159,9 @@ class OmissionStore:
         or ``None`` when the ref is unknown/expired. *query* filters the
         content lines exactly as in :meth:`get`.
         """
+        from repowise.core.distill.markers import normalize_ref
+
+        ref = normalize_ref(ref) or ""
         if not is_valid_ref(ref):
             return None
         row = self._conn.execute(
@@ -197,6 +208,41 @@ class OmissionStore:
                 """
             )
         self._conn.commit()
+
+    # -- machine-joinable evidence references -----------------------------
+
+    def put_evidence_reference(
+        self, ref: str, content: str, *, repository: str
+    ) -> None:
+        """Persist one exact evidence object under its canonical public id."""
+
+        blob = zlib.compress(content.encode("utf-8"))
+        self._conn.execute(
+            """
+            INSERT INTO evidence_references (ref, content, repository, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(ref) DO UPDATE SET
+                content = excluded.content,
+                repository = excluded.repository,
+                created_at = excluded.created_at
+            """,
+            (ref, blob, repository, time.time()),
+        )
+        self._conn.commit()
+
+    def get_evidence_reference(self, ref: str) -> dict[str, str] | None:
+        """Return one exact persisted evidence object, if present."""
+
+        row = self._conn.execute(
+            "SELECT content, repository FROM evidence_references WHERE ref = ?",
+            (ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "content": zlib.decompress(row[0]).decode("utf-8"),
+            "repository": row[1],
+        }
 
     # -- savings ledger ----------------------------------------------------
 

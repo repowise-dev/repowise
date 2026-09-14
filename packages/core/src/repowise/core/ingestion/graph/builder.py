@@ -47,6 +47,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         *,
         exclude_patterns: list[str] | None = None,
         centrality_cache_dir: Path | str | None = None,
+        head_commit: str | None = None,
         include_submodules: bool = False,
         include_nested_repos: bool = False,
     ) -> None:
@@ -87,6 +88,12 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 self._centrality_cache = CentralityCache(centrality_cache_dir)
             except Exception:
                 self._centrality_cache = None
+        # Stamped onto an exact betweenness scoring so a later reuse can say
+        # which commit the values are from. Passed in rather than read here:
+        # reaching for HEAD from ``ingestion`` would invert the package order.
+        self._head_commit: str | None = head_commit
+        # kind -> BetweennessScoring, read by persistence to stamp each node.
+        self._betweenness_scoring: dict[str, Any] = {}
 
         import pathspec
 
@@ -498,10 +505,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # header must be able to reach the implementation.
         self._resolve_cpp_header_pairs(progress=progress)
 
-        # --- C# partial-class co-fragments ---
+        # --- C# / VB.NET partial-class co-fragments ---
         # Fragments of one partial type across files are literally one
         # class; link them bidirectionally so neither reads as orphaned.
-        self._resolve_csharp_partials(ctx, progress=progress)
+        self._resolve_dotnet_partials(ctx, progress=progress)
 
         # --- JVM same-package implicit references ---
         # Java/Kotlin (and Scala) reference same-package types without an
@@ -509,11 +516,11 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # packages don't read as disconnected files.
         self._resolve_jvm_same_package(ctx, progress=progress)
 
-        # --- C# same-namespace + global-using implicit references ---
-        # C# references same-namespace types with no using directive, and
-        # global usings make namespaces visible project-wide; emit
-        # conservative sibling edges so neither reads as orphaned.
-        self._resolve_csharp_same_namespace(ctx, progress=progress)
+        # --- C# / VB.NET same-namespace implicit references ---
+        # Both reference same-namespace types with no import directive, and
+        # project-wide usings widen that; most .vb files declare no namespace
+        # at all. Emit conservative sibling edges so neither reads as orphaned.
+        self._resolve_dotnet_same_namespace(ctx, progress=progress)
 
         # --- Swift intra-module type references ---
         # Swift files see same-target siblings with no import statement;

@@ -5,6 +5,7 @@ import {
   type HealthDrawerFinding,
   type HealthDrawerMetric,
 } from "../../src/health/health-file-drawer.js";
+import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 
 function metric(partial: Partial<HealthDrawerMetric> = {}): HealthDrawerMetric {
   return {
@@ -371,10 +372,12 @@ describe("HealthFileDrawer metrics", () => {
     expect(cellValue("Duplication")).toBe("not measured");
   });
 
-  it("leads with the file's own score and band", () => {
+  it("leads with the file's own score and a canonical band", () => {
     render(<HealthFileDrawer open onClose={() => {}} metric={metric({ score: 1.0 })} />);
     expect(screen.getByText("1.0")).toBeInTheDocument();
-    expect(screen.getByText("Critical")).toBeInTheDocument();
+    // The shared band word, never a local one: this pill sits beside marks
+    // that all derive from `bandForScore`.
+    expect(screen.getByText("At risk")).toBeInTheDocument();
   });
 
   it("offers one link to the full page", () => {
@@ -465,5 +468,199 @@ describe("HealthFileDrawer bug history", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: /Bug history/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("HealthFileDrawer under the performance lens", () => {
+  function cause(
+    id: string,
+    partial: Partial<PerformanceOpportunity> = {},
+  ): PerformanceOpportunity {
+    return {
+      opportunity_id: id,
+      performance_model_version: 2,
+      biomarker_type: "serial_await_in_loop",
+      biomarker_types: ["serial_await_in_loop"],
+      boundary_kind: "db",
+      execution_context: "production",
+      terminal_sink: null,
+      shared_path_suffix: [],
+      intervention_symbol: null,
+      file_path: "packages/cli/doctor_cmd.py",
+      resource_fingerprints: [],
+      affected_call_sites_total: 1,
+      affected_files_total: 1,
+      observations_total: 1,
+      evidence: [],
+      evidence_truncated: false,
+      evidence_total: 1,
+      evidence_emitted: 1,
+      reliable_entry_reachability: null,
+      provenance: "direct",
+      confidence: "high",
+      facets: {
+        actionability_confidence: "high",
+        exposure: "unknown",
+        amplification: "unknown",
+        leverage: "single_site",
+        change_risk: "low",
+      },
+      actionability_state: "plan_ready",
+      actionability_reason: "proven_strategy",
+      prerequisites: [],
+      rank_score: 10,
+      rank_position: 0,
+      rank_factors: {},
+      why_ranked: [],
+      fix: null,
+      plan_id: "plan-1",
+      plan_status: "available",
+      plan_reason: "",
+      ...partial,
+    } as PerformanceOpportunity;
+  }
+
+  const located = (id: string, fn: string, line: number) =>
+    cause(id, {
+      evidence: [
+        {
+          finding_id: `finding_${id}`,
+          file_path: "packages/cli/doctor_cmd.py",
+          biomarker_type: "serial_await_in_loop",
+          function_name: fn,
+          line_start: line,
+          line_end: line,
+          reason: "a database call is awaited serially in a loop",
+          path: [],
+          provenance: "direct",
+        },
+      ],
+    });
+
+  it("leads with the causes rather than with the defect score", () => {
+    const { getByText } = render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        lens="performance"
+        performance={{ items: [cause("perf2_a")], total: 1 }}
+      />,
+    );
+    expect(getByText("Performance causes")).toBeInTheDocument();
+  });
+
+  it("tells two causes of one marker apart by where they fire", () => {
+    // Thirty-six causes of a single marker on one file is real here. Titling
+    // them by the marker alone renders thirty-six identical rows.
+    const { getByText } = render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        lens="performance"
+        performance={{
+          items: [located("perf2_a", "sweep_pages", 1312), located("perf2_b", "sweep_cycles", 1218)],
+          total: 2,
+        }}
+      />,
+    );
+    expect(getByText("sweep_pages:1312")).toBeInTheDocument();
+    expect(getByText("sweep_cycles:1218")).toBeInTheDocument();
+  });
+
+  it("counts the repository's causes, not the slice it was handed", () => {
+    const { getByText } = render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        lens="performance"
+        performance={{ items: [cause("perf2_a"), cause("perf2_b")], total: 36 }}
+      />,
+    );
+    // The figures sit in their own tabular-nums spans, so read the sentence.
+    const summary = getByText(/open cause/).textContent ?? "";
+    expect(summary).toContain("36 open causes");
+    expect(summary).toContain("2 shown");
+  });
+
+  it("says nothing about performance under another lens", () => {
+    const { queryByText } = render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        performance={{ items: [cause("perf2_a")], total: 1 }}
+      />,
+    );
+    expect(queryByText("Performance causes")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes a host that did not ask from a file with no cause", () => {
+    const notWired = render(
+      <HealthFileDrawer open onClose={() => {}} metric={metric()} lens="performance" />,
+    );
+    expect(notWired.getByText(/no performance data wired up/)).toBeInTheDocument();
+
+    const clean = render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        lens="performance"
+        performance={{ items: [], total: 0 }}
+      />,
+    );
+    // And refuses the reading that a clear detector run means the file is fast.
+    const empty = clean.getByText(/No open cause names this file/).textContent ?? "";
+    expect(empty).toContain("not a measurement that it is fast");
+  });
+});
+
+describe("HealthFileDrawer leading cause", () => {
+  it("passes over a history lead for the strongest code-shape finding", () => {
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric({ primary_biomarker: "co_change_scatter", primary_reason: "edits scatter" })}
+        findings={[
+          finding({ biomarker_type: "co_change_scatter", health_impact: 1.8 }),
+          finding({ biomarker_type: "brain_method", health_impact: 0.4 }),
+        ]}
+      />,
+    );
+    // The server's lead is the history marker; the drawer must not present it
+    // as the thing to fix.
+    expect(screen.getByText(/Brain method\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Co-change scatter\./)).not.toBeInTheDocument();
+  });
+
+  it("says so when a file's whole deduction is history", () => {
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric({ primary_biomarker: "co_change_scatter", primary_reason: "edits scatter" })}
+        findings={[finding({ biomarker_type: "co_change_scatter", health_impact: 1.8 })]}
+      />,
+    );
+    expect(screen.getByText(/Its deduction is all\s+history/)).toBeInTheDocument();
+  });
+
+  it("marks a history finding as a watch item, not a pillar", () => {
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        findings={[finding({ biomarker_type: "prior_defect", health_impact: 1.0 })]}
+      />,
+    );
+    expect(screen.getAllByText("Watch").length).toBeGreaterThan(0);
+    // No pillar chip: the pillar colours mark where work belongs, and this is
+    // not work. The title is what distinguishes the chip from the score label.
+    expect(document.querySelector('[title="Code health pillar"]')).toBeNull();
   });
 });

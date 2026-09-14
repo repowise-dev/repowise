@@ -61,7 +61,7 @@ describe("DecisionCreateForm", () => {
 
     fill("Title", "Prefer ruff check");
     fill("Decision", "never ruff format");
-    fireEvent.click(screen.getByRole("button", { name: "Record decision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save as candidate" }));
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(
@@ -78,7 +78,7 @@ describe("DecisionCreateForm", () => {
   it("cannot be submitted without a title and a decision", () => {
     render(<DecisionCreateForm onSubmit={vi.fn(async () => undefined)} />);
 
-    const submit = screen.getByRole("button", { name: "Record decision" });
+    const submit = screen.getByRole("button", { name: "Save as candidate" });
     expect(submit).toBeDisabled();
 
     fill("Title", "Half a record");
@@ -86,6 +86,67 @@ describe("DecisionCreateForm", () => {
 
     fill("Decision", "the other half");
     expect(submit).toBeEnabled();
+  });
+
+  // The form and the acceptance contract have to agree before the write, not
+  // after it. `record_acceptance` refuses an acceptance that names no scope,
+  // so a form offering "Record decision" on an empty Affected files sent a
+  // request that came back as "no scope: name the files or modules it
+  // governs" in a failure toast, with the eight answered fields still on
+  // screen and nothing saying which field was the problem.
+  describe("says which outcome the write will have", () => {
+    function fillRequired() {
+      fill("Title", "Use JWT for authentication");
+      fill("Decision", "Issue signed JWTs");
+    }
+
+    it("offers to record a decision once it names a scope", () => {
+      render(<DecisionCreateForm onSubmit={vi.fn(async () => undefined)} />);
+      fillRequired();
+      fill("Affected files", "src/auth/service.py");
+
+      expect(
+        screen.getByRole("button", { name: "Record decision" }),
+      ).toBeEnabled();
+      expect(screen.getByText(/Recorded as confirmed/)).toBeInTheDocument();
+    });
+
+    it("offers to save a candidate while it names nothing", () => {
+      render(<DecisionCreateForm onSubmit={vi.fn(async () => undefined)} />);
+      fillRequired();
+
+      expect(
+        screen.getByRole("button", { name: "Save as candidate" }),
+      ).toBeEnabled();
+      expect(
+        screen.getByText(/Name the files it governs to confirm it/),
+      ).toBeInTheDocument();
+    });
+
+    it("switches the verb as the scope field is filled and cleared", () => {
+      render(<DecisionCreateForm onSubmit={vi.fn(async () => undefined)} />);
+      fillRequired();
+
+      fill("Affected files", "src/auth/service.py");
+      expect(screen.getByRole("button", { name: "Record decision" })).toBeTruthy();
+
+      // A field holding only separators names nothing, the same way the
+      // server reads it: splitList drops the blanks on both sides.
+      fill("Affected files", " , ");
+      expect(
+        screen.getByRole("button", { name: "Save as candidate" }),
+      ).toBeTruthy();
+    });
+
+    it("names the outcome in the success toast too", async () => {
+      const onSubmit = vi.fn(async () => undefined);
+      render(<DecisionCreateForm onSubmit={onSubmit} />);
+      fillRequired();
+      fireEvent.click(screen.getByRole("button", { name: "Save as candidate" }));
+
+      await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+      expect(toastSuccess.mock.calls[0]?.[0]).toMatch(/candidate/i);
+    });
   });
 
   it("keeps the form open and says so when the write fails", async () => {
@@ -97,7 +158,7 @@ describe("DecisionCreateForm", () => {
 
     fill("Title", "Use JWT");
     fill("Decision", "sign them");
-    fireEvent.click(screen.getByRole("button", { name: "Record decision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save as candidate" }));
 
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     expect(onCreated).not.toHaveBeenCalled();

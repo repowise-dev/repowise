@@ -19,6 +19,7 @@ from repowise.core.persistence.crud.analysis import (
     get_health_metrics,
     save_health_findings,
     save_health_metrics,
+    upsert_health_findings,
     upsert_health_metrics,
 )
 from tests.unit.persistence.helpers import insert_repo
@@ -122,6 +123,60 @@ async def test_save_health_findings_persists_dimension(async_session):
 
 
 @pytest.mark.asyncio
+async def test_dimension_scoped_upsert_preserves_other_findings(async_session):
+    repo = await insert_repo(async_session)
+    base = [
+        HealthFindingData(
+            biomarker_type="change_entropy",
+            severity=Severity.HIGH,
+            file_path="a.py",
+            function_name=None,
+            line_start=1,
+            line_end=1,
+            details={},
+            health_impact=1.0,
+            dimension="defect",
+        ),
+        HealthFindingData(
+            biomarker_type="io_in_loop",
+            severity=Severity.MEDIUM,
+            file_path="a.py",
+            function_name="run",
+            line_start=2,
+            line_end=2,
+            details={"opportunity_id": "old"},
+            health_impact=0.0,
+            dimension="performance",
+        ),
+    ]
+    await save_health_findings(async_session, repo.id, base)
+    replacement = HealthFindingData(
+        biomarker_type="io_in_loop",
+        severity=Severity.MEDIUM,
+        file_path="a.py",
+        function_name="run",
+        line_start=3,
+        line_end=3,
+        details={"opportunity_id": "new"},
+        health_impact=0.0,
+        dimension="performance",
+    )
+    await upsert_health_findings(
+        async_session,
+        repo.id,
+        [replacement],
+        file_paths=["a.py"],
+        dimension="performance",
+    )
+    await async_session.commit()
+    rows = await get_health_findings(async_session, repo.id)
+    assert {(row.biomarker_type, row.line_start) for row in rows} == {
+        ("change_entropy", 1),
+        ("io_in_loop", 3),
+    }
+
+
+@pytest.mark.asyncio
 async def test_get_health_findings_accepts_comma_separated_biomarker_types(async_session):
     """One request can pull several biomarker types (the panels batch this way);
     a single value with no comma still matches exactly."""
@@ -155,7 +210,5 @@ async def test_get_health_findings_accepts_comma_separated_biomarker_types(async
     }
 
     # Single value still behaves as an exact match.
-    single = await get_health_findings(
-        async_session, repo.id, biomarker_type="change_entropy"
-    )
+    single = await get_health_findings(async_session, repo.id, biomarker_type="change_entropy")
     assert {r.biomarker_type for r in single} == {"change_entropy"}

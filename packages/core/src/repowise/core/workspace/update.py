@@ -11,6 +11,7 @@ import json as _json
 import logging
 import sqlite3
 import subprocess
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
+    from repowise.core.workspace.repo_index import WorkspaceIndex
 
 # Per-repo update lock — the shared single-flight guard (one implementation
 # for the CLI update command and this workspace updater, which used to carry
@@ -33,7 +35,13 @@ from repowise.core.update_lock import (
     release_update_lock as _release_lock,
 )
 from repowise.core.update_lock import (
+    release_workspace_lock as _release_workspace_lock,
+)
+from repowise.core.update_lock import (
     try_acquire_update_lock as _try_acquire_lock,
+)
+from repowise.core.update_lock import (
+    update_workspace_lock as _try_acquire_workspace_lock,
 )
 
 from ..docs_mode import docs_mode_state_fields
@@ -100,6 +108,7 @@ class RepoUpdateResult:
     # tree state has no ``last_sync_commit`` to diff against. None on the
     # commit-anchored path, which leaves the stored list alone.
     working_tree_paths: list[str] | None = None
+    phase_timings: dict[str, float] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +275,15 @@ def check_repo_staleness(
         return True, current_head, 0
 
     if current_head == last_commit:
+        # Same reconciliation as the single-repo update: a page can be stale
+        # with HEAD unmoved, and only an update clears it.
+        try:
+            from repowise.core.persistence import load_stale_structural_file_paths
+
+            if load_stale_structural_file_paths(repo_path):
+                return True, current_head, 0
+        except Exception:
+            _log.debug("stale page probe failed for %s", repo_path, exc_info=True)
         return False, current_head, 0
 
     behind = count_commits_between(repo_path, last_commit, current_head)
@@ -430,8 +448,10 @@ async def _incremental_repo_update(
     # against an empty dict — which reads as "no commits in 90 days" and puts
     # the whole repo on the 0.7 / safe-to-delete rung of the confidence ladder.
     from ..pipeline.incremental import (
+        load_stored_coverage_map,
         load_stored_function_mod_p80,
         load_stored_git_meta,
+        load_stored_performance_callers,
     )
 
     stored_git_meta = await load_stored_git_meta(repo_path, log=_log.info)
@@ -439,6 +459,17 @@ async def _incremental_repo_update(
     # pass scores the Function Hotspot gate against the full repo instead of
     # this run's changed-files subset (issue #1484).
     stored_function_mod_p80 = await load_stored_function_mod_p80(repo_path, log=_log.info)
+    performance_changed_paths = {diff.path for diff in file_diffs}
+    performance_changed_paths.update(
+        diff.old_path for diff in file_diffs if getattr(diff, "old_path", None)
+    )
+    stored_performance_callers = await load_stored_performance_callers(
+        repo_path, performance_changed_paths, log=_log.info
+    )
+    # Preserve coverage across an incremental health re-score: without a
+    # coverage_map the changed files are re-scored as if no coverage existed
+    # and their stored line_coverage_pct is nulled (issue #1739).
+    stored_coverage_map = await load_stored_coverage_map(repo_path, log=_log.info)
 
     partial_health_report, dead_code_report = run_partial_analysis(
         repo_path,
@@ -448,7 +479,9 @@ async def _incremental_repo_update(
         file_diffs,
         source_map=source_map,
         stored_git_meta=stored_git_meta,
+        stored_performance_callers=stored_performance_callers,
         repo_function_mod_p80=stored_function_mod_p80,
+        coverage_map=stored_coverage_map,
         log=_log.info,
     )
 
@@ -529,12 +562,20 @@ async def update_single_repo_index(
     incremental failure run the full ingestion pipeline instead (index-only —
     no wiki pages).
     """
-    from ..repo_config import config_fingerprint
+    from ..repo_config import (
+        changed_config_dependencies,
+        config_dependency_fingerprints,
+        config_fingerprint,
+        load_repo_config,
+    )
 
     alias = repo_path.name
     state = read_repo_state(repo_path)
     base_ref = state.get("last_sync_commit")
     merged_excludes = _merged_repo_excludes(repo_path, exclude_patterns)
+    repo_config = load_repo_config(repo_path)
+    repo_commit_depth = int(repo_config.get("commit_limit", commit_depth))
+    repo_follow_renames = bool(repo_config.get("follow_renames", False))
 
     # Config drift check, mirroring the single-repo update path: a changed
     # config.yaml / health-rules.json invalidates persisted health scores and
@@ -546,7 +587,33 @@ async def update_single_repo_index(
     # surprise full re-index.
     stored_fp = state.get("config_fingerprint")
     config_changed = stored_fp is not None and stored_fp != config_fingerprint(repo_path)
-    if config_changed and (repo_path / ".repowise" / "wiki.db").is_file():
+    current_dependency_fps = config_dependency_fingerprints(repo_path, config=repo_config)
+    changed_dependencies = (
+        changed_config_dependencies(
+            state.get("config_dependency_fingerprints"), current_dependency_fps
+        )
+        if config_changed
+        else set()
+    )
+    # Workspace indexing has no generation layer. Only settings that affect
+    # its persisted graph/history/health stores require a full re-index;
+    # formatting, distill/MCP, and generation-only edits are state updates.
+    requires_full_reindex = config_changed and (
+        changed_dependencies is None
+        or bool((changed_dependencies or set()) - {"state_only", "generation"})
+    )
+    require_git_success = requires_full_reindex and (
+        changed_dependencies is None
+        or bool({"traversal", "git_history", "other"} & (changed_dependencies or set()))
+    )
+    require_health_success = requires_full_reindex and (
+        changed_dependencies is None
+        or bool(
+            {"traversal", "git_history", "health", "other"}
+            & (changed_dependencies or set())
+        )
+    )
+    if requires_full_reindex and (repo_path / ".repowise" / "wiki.db").is_file():
         _log.info(
             "workspace_update: %s config fingerprint drifted — full re-index "
             "so health scores reflect the new config",
@@ -554,7 +621,7 @@ async def update_single_repo_index(
         )
 
     if (
-        not config_changed
+        not requires_full_reindex
         and base_ref
         and (repo_path / ".repowise" / "wiki.db").is_file()
         and commit_exists(repo_path, str(base_ref))
@@ -581,10 +648,13 @@ async def update_single_repo_index(
 
         result = await index_repo_full(
             repo_path,
-            commit_depth=commit_depth,
+            commit_depth=repo_commit_depth,
             exclude_patterns=merged_excludes,
             include_submodules=bool(state.get("include_submodules", False)),
             include_nested_repos=bool(state.get("include_nested_repos", False)),
+            follow_renames=repo_follow_renames,
+            require_git_success=require_git_success,
+            require_health_success=require_health_success,
             progress=progress,
         )
 
@@ -660,6 +730,8 @@ async def update_workspace(
     Returns:
         List of :class:`RepoUpdateResult` for each repo.
     """
+    from ..repo_config import config_fingerprint
+
     results: list[RepoUpdateResult] = []
     # (alias, path, new_head, first_time)
     stale_repos: list[tuple[str, Path, str, bool]] = []
@@ -699,6 +771,7 @@ async def update_workspace(
 
         state_path = abs_path / ".repowise" / "state.json"
         stored_commit = None
+        state: dict[str, Any] = {}
         if state_path.is_file():
             try:
                 state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -710,6 +783,19 @@ async def update_workspace(
             abs_path,
             stored_commit,
         )
+        stored_config_fp = state.get("config_fingerprint")
+        config_state_missing = (
+            (abs_path / ".repowise" / "wiki.db").is_file()
+            and stored_config_fp is None
+        )
+        if not is_stale and (
+            config_state_missing
+            or (
+                stored_config_fp is not None
+                and stored_config_fp != config_fingerprint(abs_path)
+            )
+        ):
+            is_stale = True
 
         # A watched repo's changes are uncommitted by definition, so the
         # commit-to-commit staleness check above says "up to date" for exactly
@@ -742,154 +828,212 @@ async def update_workspace(
     if dry_run or not stale_repos:
         return results
 
-    # Step 2: Update stale repos (parallel with concurrency limit)
-    semaphore = asyncio.Semaphore(_MAX_CONCURRENT_UPDATES)
-
-    async def _update_one(
-        alias: str, path: Path, new_head: str, first_time: bool
-    ) -> RepoUpdateResult:
-        async with semaphore:
-            if on_repo_start:
-                on_repo_start(alias)
-
-            # Ensure the .repowise/ dir exists before the pipeline runs so
-            # first-time indexing has a place to put wiki.db and state.json.
-            (path / ".repowise").mkdir(parents=True, exist_ok=True)
-
-            # Per-repo single-flight lock. The post-commit hook fires a
-            # new ``repowise update`` for every commit; without this guard,
-            # rapid-fire commits race on save_state, each pass starts from
-            # the same stale base, and the wiki never converges to HEAD.
-            # Check + acquire are one atomic exclusive create.
-            existing = _try_acquire_lock(path, new_head)
-            if existing is not None:
-                age = _lock_age_seconds(existing)
-                target_short = (existing.get("target_commit") or "")[:8]
-                _log.info(
-                    "workspace_update: skipping %s — update already in flight "
-                    "(pid=%s target=%s elapsed=%ss)",
-                    alias,
-                    existing.get("pid"),
-                    target_short,
-                    int(age) if age is not None else "?",
-                )
-                # Record pending so the running update can roll forward.
+    # Workspace-level single-flight guard. The per-repo lock below only
+    # stops two updates racing on the *same* repo's index; it does not stop
+    # N post-commit-hook ``repowise update`` invocations (one per rebase
+    # commit) from each running a full workspace pass over every stale
+    # member. Coalesce those triggers at the workspace level: the first pass
+    # holds this lock, and every concurrent one defers by recording a pending
+    # marker per stale repo so the running pass rolls forward to the latest
+    # HEAD instead of a second full index being spawned.
+    workspace_owner = _try_acquire_workspace_lock(workspace_root)
+    if workspace_owner is not None:
+        age = _lock_age_seconds(workspace_owner)
+        _log.info(
+            "workspace_update: deferring — a workspace update is already "
+            "in flight (pid=%s elapsed=%ss); queuing %d stale repo(s) for it",
+            workspace_owner.get("pid"),
+            int(age) if age is not None else "?",
+            len(stale_repos),
+        )
+        # Record pending so the running workspace update rolls forward to the
+        # latest HEAD of each member. Mirrors the per-repo deferral in
+        # ``_update_one``.
+        for _alias, path, new_head, _first_time in stale_repos:
+            if new_head:
                 with suppress(OSError):
-                    (path / ".repowise" / ".update.pending").write_text(new_head, encoding="utf-8")
-                return RepoUpdateResult(
-                    alias=alias,
-                    updated=False,
-                    skipped_reason="in_flight",
-                    lock_age_seconds=age,
-                )
-
-            try:
-                result = await update_single_repo_index(
-                    path,
-                    commit_depth=commit_depth,
-                    exclude_patterns=exclude_patterns,
-                    include_working_tree=include_working_tree,
-                )
-            finally:
-                _release_lock(path)
-            result.alias = alias
-            result.first_time_indexed = first_time and result.updated
-
-            # Update state.json with new commit
-            if result.updated and new_head:
-                import json as _json
-
-                state_path = path / ".repowise" / "state.json"
-                state: dict[str, Any] = {}
-                if state_path.is_file():
-                    with suppress(Exception):
-                        state = _json.loads(state_path.read_text(encoding="utf-8"))
-
-                if "last_docs_commit" not in state and "last_sync_commit" in state:
-                    state["last_docs_commit"] = state["last_sync_commit"]
-
-                state["last_sync_commit"] = new_head
-                if result.kg_state:
-                    state["knowledge_graph"] = result.kg_state
-                if result.working_tree_paths is not None:
-                    state["working_tree_paths"] = result.working_tree_paths
-                # Stamp the config fingerprint so the drift check in
-                # update_single_repo_index stays calibrated (and legacy repos
-                # without one stop re-triggering the full re-index).
-                with suppress(Exception):
-                    from ..repo_config import config_fingerprint
-
-                    state["config_fingerprint"] = config_fingerprint(path)
-                # Mark first-time so downstream tooling (status, doctor) can
-                # distinguish a never-indexed repo from one that's been
-                # updated at least once.
-                if first_time and "docs_mode" not in state and "docs_enabled" not in state:
-                    # This path indexes only; nothing renders pages here, not
-                    # even from templates.
-                    state.update(docs_mode_state_fields("none"))
-                    state["docs_skip_reason"] = (
-                        "first-time index via update; run "
-                        "`repowise update --repo " + alias + " --docs` to generate docs"
+                    (path / ".repowise").mkdir(parents=True, exist_ok=True)
+                    (path / ".repowise" / ".update.pending").write_text(
+                        new_head, encoding="utf-8"
                     )
-                from ..fsutils import atomic_write_text
-
-                state_path.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_text(state_path, _json.dumps(state, indent=2))
-                # Keep the DB freshness stamp in lockstep with last_sync_commit.
-                # The no-relevant-changes incremental path returns updated=True
-                # without re-running DB persistence, so the row would otherwise
-                # lag HEAD; a no-op when persistence already stamped it.
-                await reconcile_repo_head_commit(path, new_head)
-                # Drop any stale pending marker now that we've advanced to
-                # new_head (a bailed sibling update may have written one).
-                clear_stale_update_pending(path, new_head)
-
-            # Update workspace config entry
-            if result.updated:
-                entry = ws_config.get_repo(alias)
-                if entry is not None:
-                    entry.indexed_at = datetime.now(UTC).isoformat()
-                    entry.last_commit_at_index = new_head
-
-            if on_repo_done:
-                on_repo_done(result)
-
-            return result
-
-    update_results = await asyncio.gather(
-        *[
-            _update_one(alias, path, head, first_time)
-            for alias, path, head, first_time in stale_repos
-        ],
-        return_exceptions=True,
-    )
-
-    changed_aliases: list[str] = []
-    for r in update_results:
-        if isinstance(r, Exception):
-            results.append(
-                RepoUpdateResult(
-                    alias="unknown",
-                    updated=False,
-                    error=str(r),
-                )
+        return [
+            RepoUpdateResult(
+                alias=alias,
+                updated=False,
+                skipped_reason="in_flight",
+                lock_age_seconds=age,
             )
-        else:
-            results.append(r)
-            if r.updated:
-                changed_aliases.append(r.alias)
+            for alias, _path, _head, _first_time in stale_repos
+        ]
 
-    # Step 3: Save workspace config with updated timestamps
-    if changed_aliases:
-        ws_config.save(workspace_root)
+    # Step 2: Update stale repos (parallel with concurrency limit).
+    # The workspace lock is held for the whole pass and released once every
+    # member has been attempted (including on failure) so the next hook-triggered
+    # invocation can take over.
+    try:
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_UPDATES)
 
-    # Step 4: Run cross-repo hooks (Phase 3/4 placeholder). ``run_hooks`` lets
-    # the CLI defer these so they run once over the union of index-only and
-    # docs repos, rather than on this partial set.
-    if changed_aliases and run_hooks:
-        await run_cross_repo_hooks(ws_config, workspace_root, changed_aliases)
+        async def _update_one(
+            alias: str, path: Path, new_head: str, first_time: bool
+        ) -> RepoUpdateResult:
+            async with semaphore:
+                if on_repo_start:
+                    on_repo_start(alias)
 
-    return results
+                # Ensure the .repowise/ dir exists before the pipeline runs so
+                # first-time indexing has a place to put wiki.db and state.json.
+                (path / ".repowise").mkdir(parents=True, exist_ok=True)
+
+                # Per-repo single-flight lock. The post-commit hook fires a
+                # new ``repowise update`` for every commit; without this guard,
+                # rapid-fire commits race on save_state, each pass starts from
+                # the same stale base, and the wiki never converges to HEAD.
+                # Check + acquire are one atomic exclusive create.
+                existing = _try_acquire_lock(path, new_head)
+                if existing is not None:
+                    age = _lock_age_seconds(existing)
+                    target_short = (existing.get("target_commit") or "")[:8]
+                    _log.info(
+                        "workspace_update: skipping %s — update already in flight "
+                        "(pid=%s target=%s elapsed=%ss)",
+                        alias,
+                        existing.get("pid"),
+                        target_short,
+                        int(age) if age is not None else "?",
+                    )
+                    # Record pending so the running update can roll forward.
+                    with suppress(OSError):
+                        (path / ".repowise" / ".update.pending").write_text(new_head, encoding="utf-8")
+                    return RepoUpdateResult(
+                        alias=alias,
+                        updated=False,
+                        skipped_reason="in_flight",
+                        lock_age_seconds=age,
+                    )
+
+                try:
+                    update_started = time.monotonic()
+                    result = await update_single_repo_index(
+                        path,
+                        commit_depth=commit_depth,
+                        exclude_patterns=exclude_patterns,
+                        include_working_tree=include_working_tree,
+                    )
+                    if result.updated and result.phase_timings is None:
+                        result.phase_timings = {"run": time.monotonic() - update_started}
+                finally:
+                    _release_lock(path)
+                result.alias = alias
+                result.first_time_indexed = first_time and result.updated
+
+                # Update state.json with new commit
+                if result.updated and new_head:
+                    import json as _json
+
+                    state_path = path / ".repowise" / "state.json"
+                    state: dict[str, Any] = {}
+                    if state_path.is_file():
+                        with suppress(Exception):
+                            state = _json.loads(state_path.read_text(encoding="utf-8"))
+
+                    if "last_docs_commit" not in state and "last_sync_commit" in state:
+                        state["last_docs_commit"] = state["last_sync_commit"]
+
+                    state["last_sync_commit"] = new_head
+                    if result.kg_state:
+                        state["knowledge_graph"] = result.kg_state
+                    if result.working_tree_paths is not None:
+                        state["working_tree_paths"] = result.working_tree_paths
+                    if result.phase_timings is not None:
+                        state["phase_timings"] = result.phase_timings
+                    # Stamp the config fingerprint so the drift check in
+                    # update_single_repo_index stays calibrated (and legacy repos
+                    # without one stop re-triggering the full re-index).
+                    with suppress(Exception):
+                        from ..repo_config import (
+                            config_dependency_fingerprints,
+                            config_fingerprint,
+                            load_repo_config,
+                        )
+
+                        state["config_fingerprint"] = config_fingerprint(path)
+                        state["config_dependency_fingerprints"] = (
+                            config_dependency_fingerprints(
+                                path, config=load_repo_config(path)
+                            )
+                        )
+                    # Mark first-time so downstream tooling (status, doctor) can
+                    # distinguish a never-indexed repo from one that's been
+                    # updated at least once.
+                    if first_time and "docs_mode" not in state and "docs_enabled" not in state:
+                        # This path indexes only; nothing renders pages here, not
+                        # even from templates.
+                        state.update(docs_mode_state_fields("none"))
+                        state["docs_skip_reason"] = (
+                            "first-time index via update; run "
+                            "`repowise update --repo " + alias + " --docs` to generate docs"
+                        )
+                    from ..fsutils import atomic_write_text
+
+                    state_path.parent.mkdir(parents=True, exist_ok=True)
+                    atomic_write_text(state_path, _json.dumps(state, indent=2))
+                    # Keep the DB freshness stamp in lockstep with last_sync_commit.
+                    # The no-relevant-changes incremental path returns updated=True
+                    # without re-running DB persistence, so the row would otherwise
+                    # lag HEAD; a no-op when persistence already stamped it.
+                    await reconcile_repo_head_commit(path, new_head)
+                    # Drop any stale pending marker now that we've advanced to
+                    # new_head (a bailed sibling update may have written one).
+                    clear_stale_update_pending(path, new_head)
+
+                # Update workspace config entry
+                if result.updated:
+                    entry = ws_config.get_repo(alias)
+                    if entry is not None:
+                        entry.indexed_at = datetime.now(UTC).isoformat()
+                        entry.last_commit_at_index = new_head
+
+                if on_repo_done:
+                    on_repo_done(result)
+
+                return result
+
+        update_results = await asyncio.gather(
+            *[
+                _update_one(alias, path, head, first_time)
+                for alias, path, head, first_time in stale_repos
+            ],
+            return_exceptions=True,
+        )
+
+        changed_aliases: list[str] = []
+        for r in update_results:
+            if isinstance(r, Exception):
+                results.append(
+                    RepoUpdateResult(
+                        alias="unknown",
+                        updated=False,
+                        error=str(r),
+                    )
+                )
+            else:
+                results.append(r)
+                if r.updated:
+                    changed_aliases.append(r.alias)
+
+        # Step 3: Save workspace config with updated timestamps
+        if changed_aliases:
+            ws_config.save(workspace_root)
+
+        # Step 4: Run cross-repo hooks (Phase 3/4 placeholder). ``run_hooks`` lets
+        # the CLI defer these so they run once over the union of index-only and
+        # docs repos, rather than on this partial set.
+        if changed_aliases and run_hooks:
+            await run_cross_repo_hooks(ws_config, workspace_root, changed_aliases)
+
+        return results
+    finally:
+        _release_workspace_lock(workspace_root)
 
 
 # ---------------------------------------------------------------------------
@@ -929,6 +1073,36 @@ async def run_cross_repo_hooks(
     if len(ws_config.repos) < 2:
         return
 
+    from .repo_index import WorkspaceIndex, open_workspace_index
+
+    timings = PhaseTimingRecorder()
+
+    # The read side of every repo's index, opened once here and closed in the
+    # finally below, so one connection per repo serves all five phases.
+    # Indexing has just written these databases; without this the phases below
+    # re-derive from raw text what they already hold. Only the HTTP extractor
+    # reads it today, so nothing is opened when that is off.
+    workspace_index = (
+        await open_workspace_index(ws_config, workspace_root)
+        if ws_config.contracts.detect_http
+        else WorkspaceIndex({})
+    )
+    try:
+        await _run_phases(
+            ws_config, workspace_root, changed_repos, timings, workspace_index
+        )
+    finally:
+        await workspace_index.close()
+
+
+async def _run_phases(
+    ws_config: WorkspaceConfig,
+    workspace_root: Path,
+    changed_repos: list[str],
+    timings: PhaseTimingRecorder,
+    workspace_index: WorkspaceIndex,
+) -> None:
+    """The five cross-repo phases, over an already-open workspace index."""
     from .breaking_change import run_breaking_change_detection
     from .conformance import run_conformance_check
     from .contracts import ContractStore, load_contract_store, run_contract_extraction
@@ -938,8 +1112,6 @@ async def run_cross_repo_hooks(
         _detect_boundaries_by_repo,
         run_system_graph_build,
     )
-
-    timings = PhaseTimingRecorder()
 
     # Service boundaries, detected once for the whole workspace. Contract
     # extraction and the system-graph build both need them and each used to walk
@@ -968,7 +1140,7 @@ async def run_cross_repo_hooks(
     previous_store = load_contract_store(workspace_root) or ContractStore()
 
     # Phases 1 and 2 are independent: they read disjoint inputs (git history and
-    # manifests vs source files and the parse cache), write different artifacts
+    # manifests vs source files and the symbol index), write different artifacts
     # (cross_repo_edges.json vs contracts.json), and share no mutable state —
     # boundaries_by_repo is computed above and passed in read-only. Both push
     # their blocking work through asyncio.to_thread, so gather genuinely
@@ -993,6 +1165,7 @@ async def run_cross_repo_hooks(
                 changed_repos,
                 boundaries_by_repo or None,
                 previous_store,
+                workspace_index,
             ),
         ),
         return_exceptions=True,

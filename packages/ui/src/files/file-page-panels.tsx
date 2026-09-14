@@ -112,6 +112,7 @@ export function buildFilePanels({
       <FileCoverageTab
         coverage={data.coverage}
         coverageCodeHtml={coverageCodeHtml}
+        filePath={data.file_path}
         testsPanel={testsPanel}
       />
     ),

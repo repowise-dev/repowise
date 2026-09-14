@@ -7,8 +7,8 @@ ordinary computation?* That decomposes into two pieces:
 1. **Dependency classification** (this module) — which imported names in a file
    originate from an I/O library, and of what kind. Reuses the shared
    :func:`...ingestion.external_systems.io_kind.classify_io_kind` table
-   (Primitive 1) rather than a perf-private list, so the same maintained
-   classification powers C4 typing, the perf pass, and a future security layer.
+   rather than a perf-private list, so the same maintained classification
+   powers C4 typing, the perf pass, and a future security layer.
    :func:`collect_io_names` walks a file's import nodes and binds each imported
    identifier to its ``io_kind``. This step is **language-agnostic** — an import
    statement is a quoted module source (TS) or a dotted path (Python/Java/...);

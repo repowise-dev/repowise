@@ -236,6 +236,18 @@ class TestGetAffectedPages:
         assert len(result.regenerate) <= 3
         # Some go to decay_only
         assert len(result.decay_only) > 0
+        # Check that skipped pages are counted in stale_due_to_budget
+        assert result.stale_due_to_budget > 0
+        assert result.stale_due_to_budget == 10 - len(result.regenerate)
+
+    def test_stale_due_to_budget_is_zero_when_under_budget(self, tmp_path: Path) -> None:
+        """When under cascade budget, stale_due_to_budget should be 0."""
+        d = self._detector(tmp_path)
+        g = nx.DiGraph()
+        g.add_node("file0.py")
+        diff = self._simple_file_diff("file0.py")
+        result = d.get_affected_pages([diff], graph=g, cascade_budget=50)
+        assert result.stale_due_to_budget == 0
 
     def test_all_lists_are_disjoint(self, tmp_path: Path) -> None:
         """regenerate, rename_patch, and decay_only should be disjoint."""
@@ -345,3 +357,93 @@ class TestAffectedPagesPagerankParam:
         assert set(result.regenerate) | set(result.decay_only) == {
             f"f{i}.py" for i in range(6)
         }
+
+
+class TestAffectedPagesStalenessPriority:
+    """A constrained cascade budget must spend its LLM calls on the oldest stale
+    pages first, not merely the highest-importance pages (issues #847 / #851).
+
+    Historically the budget slice was ordered purely by pagerank (importance),
+    so a run could regenerate pages that were already current while leaving
+    genuinely stale prose untouched. Staleness is the more useful tiebreak for
+    an update: an already-stale page outranks a fresh page no matter how
+    central the fresh one is.
+    """
+
+    def _diff(self, path: str):
+        from repowise.core.ingestion.change_detector import FileDiff
+
+        return FileDiff(
+            path=path,
+            status="modified",
+            old_path=None,
+            old_parsed=None,
+            new_parsed=_parsed([], path=path),
+            symbol_diff=None,
+        )
+
+    def test_stale_pages_bubble_above_fresh_importance(self, tmp_path: Path) -> None:
+        """A stale page is regenerated ahead of a more important but fresh one."""
+        d = ChangeDetector(tmp_path)
+        g = nx.DiGraph()
+        g.add_node("authority.py")
+        g.add_node("legacy.py")
+        g.add_node("trigger.py")
+        # Both authority.py and legacy.py are directly changed (import trigger);
+        # authority.py is the far more central file.
+        g.add_edge("authority.py", "trigger.py")
+        g.add_edge("legacy.py", "trigger.py")
+
+        pr = {"authority.py": 0.95, "legacy.py": 0.1, "trigger.py": 0.2}
+        # legacy.py is stale (old prose), authority.py is fresh.
+        stale_pages = {"legacy.py": 3600.0}
+
+        diffs = [self._diff("authority.py"), self._diff("legacy.py"), self._diff("trigger.py")]
+        result = d.get_affected_pages(
+            diffs, graph=g, cascade_budget=1, pagerank=pr, stale_pages=stale_pages
+        )
+        # The stale page is regenerated even though it is far less important.
+        assert result.regenerate == ["legacy.py"]
+        assert "authority.py" in result.decay_only
+
+    def test_oldest_stale_first_within_budget(self, tmp_path: Path) -> None:
+        """Among stale pages, the oldest stale page regenerates before a newer one."""
+        d = ChangeDetector(tmp_path)
+        g = nx.DiGraph()
+        g.add_node("old_stale.py")
+        g.add_node("new_stale.py")
+        g.add_node("trigger.py")
+        g.add_edge("old_stale.py", "trigger.py")
+        g.add_edge("new_stale.py", "trigger.py")
+
+        pr = {"old_stale.py": 0.1, "new_stale.py": 0.9, "trigger.py": 0.2}
+        # Both stale, but old_stale has the larger age (older prose).
+        stale_pages = {"old_stale.py": 86400.0, "new_stale.py": 3600.0}
+
+        result = d.get_affected_pages(
+            [self._diff("old_stale.py"), self._diff("new_stale.py"), self._diff("trigger.py")],
+            graph=g,
+            cascade_budget=1,
+            pagerank=pr,
+            stale_pages=stale_pages,
+        )
+        assert result.regenerate[0] == "old_stale.py"
+
+    def test_absent_stale_pages_keeps_importance_order(self, tmp_path: Path) -> None:
+        """No stale_pages passed -> historical pure-importance ordering holds."""
+        d = ChangeDetector(tmp_path)
+        g = nx.DiGraph()
+        g.add_node("a.py")
+        g.add_node("b.py")
+        g.add_node("trigger.py")
+        g.add_edge("a.py", "trigger.py")
+        g.add_edge("b.py", "trigger.py")
+
+        pr = {"a.py": 0.8, "b.py": 0.3, "trigger.py": 0.2}
+        result = d.get_affected_pages(
+            [self._diff("a.py"), self._diff("b.py"), self._diff("trigger.py")],
+            graph=g,
+            cascade_budget=1,
+            pagerank=pr,
+        )
+        assert result.regenerate[0] == "a.py"

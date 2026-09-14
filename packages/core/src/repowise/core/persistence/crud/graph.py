@@ -61,6 +61,7 @@ _NODE_FIELDS = (
     "is_entry_point",
     "pagerank",
     "betweenness",
+    "betweenness_commit",
     "community_id",
     "community_meta_json",
     "kind",
@@ -87,6 +88,9 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
     # cohesion (a real import statement appears between two package siblings)
     # must lose the stamp, or cycle detection keeps skipping it forever.
     existing.hint_source = edge_data.get("hint_source")
+    call_lines = edge_data.get("call_lines_json")
+    if call_lines is not None:
+        existing.call_lines_json = call_lines
     confidence = edge_data.get("confidence")
     if confidence is not None:
         # Keep the max on collision, mirroring the in-memory resolver
@@ -167,7 +171,7 @@ async def batch_upsert_graph_edges(
 
     Each element of *edges* should have ``source_node_id``, ``target_node_id``,
     ``edge_type``, and optionally ``imported_names_json``, ``confidence``,
-    ``hint_source`` and ``resolution_origin``.
+    ``hint_source``, ``resolution_origin`` and ``call_lines_json``.
 
     The unique constraint is (repository_id, source, target, edge_type),
     allowing multiple edge types between the same pair of nodes.
@@ -194,6 +198,7 @@ async def batch_upsert_graph_edges(
             confidence=e.get("confidence", 1.0),
             hint_source=e.get("hint_source"),
             resolution_origin=e.get("resolution_origin"),
+            call_lines_json=e.get("call_lines_json", "[]"),
         ),
     )
 
@@ -288,6 +293,7 @@ async def reconcile_edges_for_files(
                 confidence=e.get("confidence", 1.0),
                 hint_source=e.get("hint_source"),
                 resolution_origin=e.get("resolution_origin"),
+                call_lines_json=e.get("call_lines_json", "[]"),
             )
         )
     await session.flush()
@@ -513,6 +519,10 @@ async def get_all_graph_edges(
             imported_names = json.loads(row.imported_names_json or "[]")
         except (ValueError, TypeError):
             imported_names = []
+        try:
+            call_lines = json.loads(row.call_lines_json or "[]")
+        except (ValueError, TypeError):
+            call_lines = []
         edges.append(
             {
                 "source_node_id": row.source_node_id,
@@ -522,6 +532,7 @@ async def get_all_graph_edges(
                 "imported_names": imported_names,
                 "hint_source": row.hint_source,
                 "resolution_origin": row.resolution_origin,
+                "call_lines": call_lines,
             }
         )
     return edges

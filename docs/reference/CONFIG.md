@@ -135,7 +135,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 |-----|---------|---------|
 | `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `opencode` |
 | `model` | provider default | Model identifier passed to the provider |
-| `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `mock` |
+| `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `edenai`, `mock` |
 | `embedding_model` | provider default | Embedding model identifier |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `max_tokens` | `16384` | Maximum output tokens requested for each model-written documentation page |
@@ -382,35 +382,136 @@ mcp:
 
 ### The `decisions:` block
 
-Controls decision extraction. Each key under `sources:` names an index-time
-capture source; set it to `false` to skip that source on the next
-`init` / `update`. Unknown keys are ignored, and sources you don't mention
-stay enabled.
+Controls decision capture: whether it runs at all, which sources it uses, and
+whether any of them may call a model. One resolved policy backs the CLI, the
+API, and the index pipeline, so all three agree about what will run.
 
 ```yaml
 decisions:
-  session_mining: true      # mine agent-session transcripts (see below)
+  enabled: true             # master switch for automatic capture
+  llm: true                 # master switch for decision-extraction model calls
+  preset: balanced          # default | off | local_only | balanced | full
   sources:
-    comment: false          # LLM comment archaeology (top central files)
-    # inline_marker: false  # WHY:/DECISION: markers
-    # git_archaeology: false
-      # adr: false
-    # changelog: false
-    # pr: false
+    inline_marker: true     # WHY:/DECISION: markers
+    git_archaeology: true   # commit messages
+    adr: true               # ADR files
+    pr: true                # PR / squash-merge bodies
+    comment: false          # comment archaeology on top central files
+    session:                # long form: run the source, skip its model stage
+      enabled: true
+      llm: false
+    session_discovery: true # one broad model pass over new transcript prose
+    conventions: false      # import patterns the graph proves, no model
+  discovery:                # budget for that one pass, per update
+    max_sessions: 12        # 1-24
+    max_input_tokens: 30000 # 2000-60000
 ```
 
-`session_mining` (default on) lets `repowise update` mine coding-agent
-session transcripts (Claude Code's `~/.claude/projects/`) for durable
-decisions: user corrections, explicit choices with a stated reason, and
-failed approaches replaced by working ones. Candidates pass deterministic
-gates first, then one batched LLM structuring call per update, and every
-produced field must quote the transcript verbatim or it is dropped. A
-decision observed in two or more sessions is promoted as `active` with
-`source: session`; a direct user correction promotes after one. Everything
-stays local: transcripts are read from your machine, staging lives in
-`.repowise/sessions/sessions.db`, and only the distilled decision text about
-the codebase is stored. Set `session_mining: false` to turn the whole
-pipeline off.
+Every key is optional. **A config with no `decisions:` block behaves exactly as
+it did before these switches existed**: every source that shipped on is on,
+model stages on. That resolved policy is named `default`. A source added after
+those switches existed (`session_discovery` and `conventions`) stays off until you
+ask for it, so upgrading never starts a model call nobody enabled. The same
+holds for a config that names a preset *and* lists its sources: that list is
+what the preset covered when it was written, so a source added to that preset
+later does not join it retroactively. Re-apply the preset to pick it up.
+
+A source is a bare boolean or a `{enabled, llm}` mapping. The long form only
+matters for a source with both a deterministic and a model stage
+(`inline_marker`, `adr`, `session`): it keeps the deterministic parse and skips
+the model call. A source that is model-only (`git_archaeology`, `pr`,
+`comment`, `session_discovery`) is skipped entirely when its model stage is
+off, because running it would produce a zero indistinguishable from an empty
+repository.
+
+Unknown keys are reported as warnings rather than discarded, so a typo'd source
+name shows up instead of silently reading as a working switch. Retired names
+(`code_comment`, `changelog`, `readme_mining`) are among them: an old config
+still loads, it just says which key it ignored.
+
+**Presets** are conveniences that write the same keys:
+
+| Preset | Effect |
+|--------|--------|
+| `default` | What a config with no `decisions:` block resolves to. Every long-standing source on, broad discovery off. |
+| `off` | No automatic capture. Stored decisions and manual entry keep working. |
+| `local_only` | Deterministic capture only. Zero decision-extraction model calls. |
+| `balanced` | The high-signal sources plus session mining and broad session discovery; comment archaeology off. |
+| `full` | Every source, every model stage. |
+
+Editing any individual key after applying a preset drops the `preset` line and
+the resolved policy reads as `custom`.
+
+`llm: false` is a complete mode, not a degraded one: transcripts are still
+read, markers and ADRs are still parsed, episodes are still recorded, manual
+decisions still work, and already-accepted decisions keep governing. It is the
+one switch that proves no decision extraction reaches a model.
+
+Set these from the CLI rather than by hand if you prefer:
+
+```bash
+repowise decision config show          # the resolved policy, per source
+repowise decision config preset local_only
+repowise decision source set comment --off
+repowise decision source set adr --no-llm     # keep the parse, skip the model
+repowise decision source set session_discovery --on
+repowise decision config discovery --max-sessions 6 --max-input-tokens 12000
+repowise decision llm --off
+```
+
+Every mutating command takes `--dry-run` to print the change without writing,
+and `--format json` for scripts. Writes are atomic and preserve every unrelated
+key in `config.yaml`.
+
+The legacy `decisions.session_mining: true|false` key is still honoured and
+resolves to the `session` source. The first write through the CLI or the API
+replaces it with `sources.session`.
+
+### `.repowise/decisions.yaml`
+
+Everything else under `.repowise/` is a local index you can delete and rebuild.
+This one file is not: it holds the decisions you accepted, and it is meant to be
+committed. `repowise decision export` writes it and un-ignores it in your
+`.gitignore` if a `.repowise/` rule was hiding it; `repowise decision import`
+reconciles the store to it, with the file as the authority. Its format carries
+its own `version`, and a file written by a newer repowise is refused rather than
+downgraded. See [DECISIONS.md](../layers/DECISIONS.md) for the round trip.
+
+`session` mining lets `repowise update` read coding-agent session transcripts
+(Claude Code's `~/.claude/projects/`) for durable decisions: user corrections,
+explicit choices with a stated reason, and failed approaches replaced by working
+ones. Candidates pass deterministic gates first, then one batched LLM
+structuring call per update, and every produced field must quote the transcript
+verbatim or it is dropped. **Mined decisions are stored as candidates**, however
+many sessions they recur across; accepting one with `repowise decision confirm`
+is what makes it govern. Everything stays local: transcripts are read from your
+machine, staging lives in `.repowise/sessions/sessions.db`, and only the
+distilled decision text about the codebase is stored.
+
+`session_discovery` is the broad lane beside those gates. Once per update it
+sends the user and assistant prose that update newly read, bounded by
+`discovery.max_sessions` and `discovery.max_input_tokens`, to the model in a
+single call, and asks for durable decisions the gates never surfaced. It reuses
+the transcript read the `session` source already performs, so enabling it does
+not read your transcripts twice.
+
+Every candidate it returns must cite the span ids it rests on, and each cited
+quote is verified against that span's exact text before anything is stored.
+A candidate that cites a span that was not sent, quotes something no span
+says, or names a file the cited turns never touched is rejected and counted,
+never stored. Scope comes from the files those turns' tools touched; the model
+may select among them and may not add one. Everything it produces is a
+candidate: like the deterministic lane it is written `proposed`, and only
+`repowise decision confirm` makes a decision govern.
+
+Prose that does not fit one update's budget is not dropped. It stays queued in
+`.repowise/sessions/sessions.db`, the next update sends it oldest-first, and a
+queued span is never aged out before it is read. A provider failure leaves the
+same prose queued and retries it on the next two updates before retiring it, so
+an outage costs a round rather than the input. Switching the source off leaves
+what is already queued in place; new prose is only captured while the source is
+on, so there is no backfill of what was read while it was off. Discovery reads
+what the `session` source read, so it needs that source on too.
 
 Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 `dismissed` tombstone, so reindexing never re-proposes the same decision, and
@@ -528,6 +629,42 @@ export OPENAI_BASE_URL="http://localhost:8000/v1"
 repowise init --provider openai --model qwen3 --reasoning off
 ```
 
+The same adapter works with local gateways such as 9router and with any
+OpenAI-compatible custom provider. Set the gateway's API key under
+`OPENAI_API_KEY`, point `OPENAI_BASE_URL` at its `/v1` endpoint, and use the
+model id returned by that endpoint's `/models` response:
+
+```bash
+export OPENAI_API_KEY="your-9router-dashboard-key"
+export OPENAI_BASE_URL="http://localhost:20128/v1"
+repowise init --provider openai --model ag/gemini-3.7-flash-medium
+```
+
+Repowise discovers namespaced model ids from compatible gateways as-is, so
+the model does not need to start with `gpt-`. For another local provider,
+replace the key, URL, and model with that provider's values.
+
+In an interactive `repowise init`, choose **OpenAI-compatible (Custom / local
+gateway)**. Repowise then validates the endpoint, collects the key without
+echoing it, verifies the gateway through `/models`, and lets you search the
+discovered models or enter an exact model id. If `/models` is unavailable, you
+can retry the endpoint/key, continue with a manual model id, or return to the
+provider menu:
+
+```text
+Base URL [http://localhost:20128/v1]:
+API key (hidden): <paste the gateway key>
+✓ Connected — discovered 47 model(s).
+Select model: ag/gemini-3.7-flash-medium
+```
+
+The endpoint is placed in the repo's gitignored `.repowise/.env`; the key is
+saved there only after confirmation, and `--no-save-key` always keeps it
+process-local. The selected runtime provider (`openai`) and exact model id are
+written to `config.yaml`. Choose the separate **openai** row for the official
+OpenAI endpoint. Scripted runs (`--yes`, CI, or non-TTY) remain non-interactive
+and should continue to use environment variables and `--provider openai`.
+
 ### OpenRouter
 
 ```bash
@@ -589,6 +726,53 @@ export LITELLM_API_KEY="..."
 repowise init --provider litellm --model azure/gpt-4
 ```
 
+### Eden AI (hosted, with an EU endpoint)
+
+[Eden AI](https://www.edenai.co/) is a hosted gateway with an EU endpoint, so
+inference can stay in the EU without self-hosting anything. That is the reason to
+reach for it here: every other hosted provider in this list terminates in the US,
+and the alternatives for a team working under a DPA are Ollama or LiteLLM on your
+own infrastructure.
+
+Point at the EU endpoint with `EDENAI_BASE_URL`. It covers the embedder as well,
+since both read the same variable:
+
+```bash
+export EDENAI_API_KEY="..."
+export EDENAI_BASE_URL="https://api.eu.edenai.run/v3"
+repowise init --provider edenai --model mistral/mistral-small-latest
+```
+
+Without that variable, requests go to the global endpoint:
+
+```bash
+export EDENAI_API_KEY="..."
+repowise init --provider edenai --model openai/gpt-5-mini --reasoning low
+```
+
+Beyond residency it is also an aggregator: one key reaches many vendors (Mistral,
+GPT, Claude, Gemini, Cohere, DeepSeek, Llama) through a single
+OpenAI-compatible endpoint, with models addressed as `vendor/model`. The live
+catalogue is public and needs no authentication at
+<https://api.edenai.run/v3/models>, with the embedding models at
+<https://api.edenai.run/v3/embeddings/models>.
+
+The same key also selects `edenai` as the embedder for semantic search. Its
+default is `amazon/amazon.titan-embed-text-v2:0`, chosen because it is served
+from an EU region and is the cheapest per token of the models this adapter
+declares. Pick another with `REPOWISE_EMBEDDING_MODEL`:
+
+```bash
+export REPOWISE_EMBEDDING_MODEL="google/gemini-embedding-001"
+```
+
+Only the models in `EdenAIEmbedder._DIMS` are accepted, because a wrong
+dimension count would silently mis-size stored vectors. Adding one means adding
+its measured width to that table.
+
+`reasoning` is forwarded as OpenAI `reasoning_effort` for OpenAI reasoning models
+routed through Eden (e.g. `openai/gpt-5*`); other models expose only `auto`.
+
 ### Provider auto-detection
 
 If you don't pass `--provider`, repowise detects your provider by checking, in
@@ -596,7 +780,7 @@ order:
 
 1. `REPOWISE_PROVIDER` environment variable
 2. `provider` in `.repowise/config.yaml`
-3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY`
+3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY` → `EDENAI_API_KEY`
 
 ---
 
@@ -631,7 +815,7 @@ store would be rebuilt from scratch, discarding what the reindex just built.
 `REPOWISE_EMBEDDING_MODEL` overrides the model for whichever embedder is
 active. `REPOWISE_EMBEDDING_DIMS` and `REPOWISE_EMBEDDING_TIMEOUT` apply the
 same way; the provider-prefixed variants below (`OPENAI_*`, `GEMINI_*`,
-`OLLAMA_*`, `OPENROUTER_*`) narrow a setting to one embedder and take
+`OLLAMA_*`, `OPENROUTER_*`, `EDENAI_*`) narrow a setting to one embedder and take
 precedence over the shared name.
 
 ---
@@ -655,7 +839,7 @@ The `.repowise/.env` file is gitignored automatically.
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key |
-| `OPENAI_API_KEY` | OpenAI API key |
+| `OPENAI_API_KEY` | OpenAI or OpenAI-compatible gateway API key |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
@@ -668,7 +852,7 @@ The `.repowise/.env` file is gitignored automatically.
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_BASE_URL` | Override the Anthropic API base URL |
-| `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang-compatible endpoints) |
+| `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang, 9router, and other compatible endpoints) |
 | `GEMINI_BASE_URL` | Override the Gemini API base URL |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
 | `DEEPSEEK_BASE_URL` | Override the DeepSeek API base URL |
@@ -689,13 +873,15 @@ The `.repowise/.env` file is gitignored automatically.
 
 | Variable | Description |
 |----------|-------------|
-| `REPOWISE_EMBEDDER` | Embedder: `gemini`, `openai`, `ollama`, `openrouter`, or `mock` |
+| `REPOWISE_EMBEDDER` | Embedder: `gemini`, `openai`, `ollama`, `openrouter`, `edenai`, or `mock` |
 | `REPOWISE_EMBEDDING_MODEL` | Embedding model, applies to any embedder |
 | `REPOWISE_EMBEDDING_DIMS` | Embedding output dimensions (optional; inferred from the model otherwise) |
 | `REPOWISE_EMBEDDING_TIMEOUT` | Embed request timeout in seconds (default: `30` for `ollama`, `10` elsewhere). Raise it for a local endpoint — one request embeds a whole batch, and an expired batch is reported only as `N/N items failed to embed`. An unparseable value warns and keeps the default |
+| `REPOWISE_VECTOR_SEARCH_TIMEOUT_S` | Seconds one vector-store query may take (default: `30`, capped at `120`). The first query in a process pays for the store open, the first embed and the first ANN probe, which can run past 13s on a cold index where a warm query takes under a second. Raise it on a slow disk or a very large wiki; a timeout drops the semantic leg and logs a warning, leaving full-text hits only. An unparseable value warns and keeps the default |
 | `OPENAI_EMBEDDING_TIMEOUT` | As above, `openai` only; takes precedence over the shared variable |
 | `GEMINI_EMBEDDING_TIMEOUT` | As above, `gemini` only |
 | `OPENROUTER_EMBEDDING_TIMEOUT` | As above, `openrouter` only |
+| `EDENAI_EMBEDDING_TIMEOUT` | As above, `edenai` only |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (also selects the `ollama` embedder) |
 | `OLLAMA_EMBEDDING_DIMS` | Ollama embedding output dimensions (optional; inferred from the model otherwise) |
 | `OLLAMA_EMBEDDING_TIMEOUT` | As above, `ollama` only; raise it for long pages on slow local models |

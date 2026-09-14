@@ -23,6 +23,41 @@ _GLOBAL_CONFIG_DIR = Path.home() / ".repowise"
 _SERVE_LOCK_NAME = "serve.lock.json"
 
 
+#: How often a running ``serve`` re-reads release currency. The PyPI fetch is
+#: TTL-cached on disk for a day, so this bounds the print, not the network.
+_UPDATE_ADVISORY_INTERVAL_S = 6 * 3600
+
+
+def _update_advisory_tick(announced: set[str]) -> bool:
+    """Print the advisory for a release not yet announced. Never raises."""
+    try:
+        from repowise.cli.update_check import get_cli_update_check_cached
+        from repowise.cli.whats_new import render_update_advisory
+
+        check = get_cli_update_check_cached()
+        if not check.update_available or check.latest_version in announced:
+            return False
+        if render_update_advisory(console, check):
+            announced.add(check.latest_version)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _start_update_advisory_loop(announced: set[str]) -> None:
+    """Re-run the advisory tick on a daemon thread; it dies with the process."""
+    import threading
+    import time
+
+    def _loop() -> None:
+        while True:
+            time.sleep(_UPDATE_ADVISORY_INTERVAL_S)
+            _update_advisory_tick(announced)
+
+    threading.Thread(target=_loop, name="update-advisory", daemon=True).start()
+
+
 def _serve_lock_path(cwd: Path | None = None) -> Path | None:
     """Return where the serve lockfile belongs for this directory, if anywhere.
 
@@ -570,17 +605,14 @@ def serve_command(
         console.print("[red]uvicorn is not installed. Install it with: pip install repowise[/red]")
         raise SystemExit(1) from None
 
-    # One-line, non-blocking "newer release available" advisory at startup.
-    # Best-effort and interactive-only; the cached check keeps it off the network
-    # on most launches.
+    # One-line, non-blocking "newer release available" advisory at startup and
+    # then once per interval for as long as the server runs. Best-effort and
+    # interactive-only; the cached check keeps it off the network on most
+    # passes.
     if console.is_terminal:
-        try:
-            from repowise.cli.update_check import get_cli_update_check_cached
-            from repowise.cli.whats_new import render_update_advisory
-
-            render_update_advisory(console, get_cli_update_check_cached())
-        except Exception:
-            pass
+        announced: set[str] = set()
+        _update_advisory_tick(announced)
+        _start_update_advisory_loop(announced)
 
     # Load the local .repowise/.env (API keys written by `repowise init`) and
     # seed the chat/search provider + embedder from .repowise/config.yaml. This

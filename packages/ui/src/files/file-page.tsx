@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import { ViewTabs } from "../shared/view-tabs";
-import { FILE_PAGE_TABS, type FilePageTab, type FileTabDef } from "./file-page-tabs";
+import type { FilePageTab, FileTabDef } from "./file-page-tabs";
 
 export interface FilePageProps {
   /**
@@ -70,12 +70,4 @@ export function FilePage({ header, tabs, panels, initialTab, onTabChange }: File
       </ViewTabs>
     </div>
   );
-}
-
-/** Narrow a `?tab=` string to a tab this page actually renders. Exported for
- *  server components that need it before the shell mounts. */
-export function asFilePageTab(value: string | undefined): FilePageTab | undefined {
-  return value && (FILE_PAGE_TABS as readonly string[]).includes(value)
-    ? (value as FilePageTab)
-    : undefined;
 }

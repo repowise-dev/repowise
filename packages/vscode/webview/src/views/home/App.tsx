@@ -47,11 +47,8 @@ import {
 import owlDarkTheme from "../../assets/owl-dark-theme.png";
 import owlLightTheme from "../../assets/owl-light-theme.png";
 
-/**
- * The shared score ramp, as a text class. This file used to carry its own
- * thresholds — healthy at 7.5 — which disagreed with every other surface in the
- * product and, more visibly, with the health dashboard this hero launches.
- */
+/** The shared band ramp as a text class, so this hero and the health dashboard
+ * it launches read a score the same way. */
 function scoreTone(score: number | null): string {
   return score == null ? "text-[var(--color-text-tertiary)]" : scoreTextColor(score);
 }

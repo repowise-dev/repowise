@@ -22,6 +22,7 @@ from collections import defaultdict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.co_change import parse_partners
 from repowise.core.persistence.models import GitMetadata
 from repowise.server.schemas import ReviewerSuggestion
 
@@ -56,16 +57,9 @@ async def suggest_reviewers(
     cochange_paths: set[str] = set()
     cochange_partners: dict[str, list[str]] = defaultdict(list)
     for m in direct_rows:
-        try:
-            partners = json.loads(m.co_change_partners_json or "[]")
-        except json.JSONDecodeError:
-            partners = []
-        partners.sort(key=lambda p: p.get("co_change_count", 0), reverse=True)
-        for p in partners[:5]:
-            other = p.get("file_path")
-            if other:
-                cochange_paths.add(other)
-                cochange_partners[other].append(m.file_path)
+        for p in parse_partners(m.co_change_partners_json)[:5]:
+            cochange_paths.add(p.file_path)
+            cochange_partners[p.file_path].append(m.file_path)
 
     cochange_rows = []
     if cochange_paths:

@@ -96,4 +96,26 @@ describe("extract_method suggested_name reaches the rendered prompt", () => {
     expect(prompt).toContain("a clearly named helper");
     expect(extractMethodPlan(methodPlan(null)).suggested_name).toBeNull();
   });
+
+  it("includes the canonical validation plan in copy-to-agent handoff", () => {
+    const plan: RefactoringPlan = {
+      ...methodPlan("compute_average"),
+      validation: {
+        basis: "measured",
+        via: "coverage",
+        total: 1,
+        tests: ["tests/test_pipeline.py::test_average"],
+        truncated: false,
+        affected_files: ["pkg/pipeline.py"],
+        affected_symbols: ["run_pipeline"],
+        commands: ["pytest tests/test_pipeline.py::test_average"],
+        targets: [],
+      },
+    };
+    const prompt = buildRefactoringPlanPrompt({ plan });
+    expect(prompt).toContain("## Validation plan");
+    expect(prompt).toContain("guarding test via coverage");
+    expect(prompt).toContain("tests/test_pipeline.py::test_average");
+    expect(prompt).toContain("pytest tests/test_pipeline.py::test_average");
+  });
 });

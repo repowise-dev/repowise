@@ -5,12 +5,16 @@ import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react"
 import { InfoTip } from "../shared/info-tip";
 import { biomarkerInfo, biomarkerLabel } from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
-import { type Severity } from "./tokens";
+import { EFFORT_TINT, type Severity } from "./tokens";
+import { ImpactFigure } from "./impact-figure";
+import { FindingOpportunityLink } from "./file-opportunity";
+import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { SeverityMark } from "./severity-mark";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
-export interface RefactoringTargetFinding {
+export interface HealthWorkItemFinding {
   id: string;
   biomarker_type: string;
   severity: Severity;
@@ -23,7 +27,7 @@ export interface RefactoringTargetFinding {
   details?: BiomarkerDetailsRecord | null;
 }
 
-export interface RefactoringTarget {
+export interface HealthWorkItem {
   file_path: string;
   score: number;
   nloc: number;
@@ -38,19 +42,31 @@ export interface RefactoringTarget {
   primary_finding_id?: string;
   total_impact: number;
   finding_count: number;
+  open_finding_count?: number;
   biomarkers: string[];
   effort_bucket: EffortBucket;
   impact_per_effort: number;
-  all_findings?: RefactoringTargetFinding[];
+  all_findings?: HealthWorkItemFinding[];
 }
 
 export type FindingStatus = "open" | "acknowledged" | "resolved" | "false_positive";
 
-export interface RefactoringCardProps {
-  target: RefactoringTarget;
-  onSelect?: ((target: RefactoringTarget) => void) | undefined;
+export interface HealthWorkItemCardProps {
+  target: HealthWorkItem;
+  onSelect?: ((target: HealthWorkItem) => void) | undefined;
   onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
-  onGeneratePrompt?: ((target: RefactoringTarget) => void) | undefined;
+  onGeneratePrompt?: ((target: HealthWorkItem) => void) | undefined;
+  /** This file's composed refactoring opportunity, if the host already has one. */
+  opportunity?: RefactoringOpportunity | null | undefined;
+  /**
+   * Resolve this file's opportunity on first expand, alongside the findings.
+   * Lazy for the same reason they are: a queue of hundreds of collapsed cards
+   * should not fetch a plan for every one of them.
+   */
+  onLoadOpportunity?:
+    | ((filePath: string) => Promise<RefactoringOpportunity | null>)
+    | undefined;
+  refactoringOpportunityHref?: ((opportunityId: string) => string) | undefined;
   /**
    * Fetch this file's findings, called on first expand. The list response
    * deliberately omits them — serializing every file's findings to render a
@@ -59,7 +75,7 @@ export interface RefactoringCardProps {
    * an older payload still expands.
    */
   onLoadFindings?:
-    | ((filePath: string) => Promise<RefactoringTargetFinding[]>)
+    | ((filePath: string) => Promise<HealthWorkItemFinding[]>)
     | undefined;
   expandable?: boolean;
   /** Flash-highlight the card (e.g. after a quadrant dot click scrolled to it). */
@@ -73,25 +89,25 @@ const effortLabel: Record<EffortBucket, string> = {
   XL: "Extra large",
 };
 
-const effortColor: Record<EffortBucket, string> = {
-  S: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
-  M: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
-  L: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
-  XL: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
-};
-
-export function RefactoringCard({
+export function HealthWorkItemCard({
   target,
   onSelect,
   onStatusChange,
   onGeneratePrompt,
+  opportunity,
+  refactoringOpportunityHref,
+  onLoadOpportunity,
   onLoadFindings,
   expandable = true,
   highlighted = false,
-}: RefactoringCardProps) {
+}: HealthWorkItemCardProps) {
   const [expanded, setExpanded] = useState(false);
-  const [loaded, setLoaded] = useState<RefactoringTargetFinding[] | null>(null);
+  const [loaded, setLoaded] = useState<HealthWorkItemFinding[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [loadedOpportunity, setLoadedOpportunity] = useState<
+    RefactoringOpportunity | null | undefined
+  >(undefined);
+  const shownOpportunity = opportunity ?? loadedOpportunity;
 
   // `finding_count` is on every target, so the expander's presence and its
   // label no longer depend on shipping the findings themselves.
@@ -101,7 +117,15 @@ export function RefactoringCard({
   const toggle = async () => {
     const next = !expanded;
     setExpanded(next);
-    if (!next || findings || !onLoadFindings) return;
+    if (!next) return;
+    if (onLoadOpportunity && opportunity === undefined && loadedOpportunity === undefined) {
+      // A failure here stays `undefined` rather than becoming `null`: the card
+      // must not claim a file has no plan when the lookup is what failed.
+      void onLoadOpportunity(target.file_path)
+        .then((result) => setLoadedOpportunity(result ?? null))
+        .catch(() => undefined);
+    }
+    if (findings || !onLoadFindings) return;
     setLoadFailed(false);
     try {
       setLoaded(await onLoadFindings(target.file_path));
@@ -112,7 +136,7 @@ export function RefactoringCard({
   };
   return (
     <div
-      data-refactoring-card={target.file_path}
+      data-health-work-item={target.file_path}
       className={`rounded-lg border bg-[var(--color-bg-surface)] overflow-hidden transition-colors ${
         highlighted
           ? "border-[var(--color-accent-primary)] ring-1 ring-[var(--color-accent-primary)]/40"
@@ -137,7 +161,7 @@ export function RefactoringCard({
             </span>
           ) : null}
           <span
-            className={`inline-block rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${effortColor[target.effort_bucket]}`}
+            className={`inline-block rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${EFFORT_TINT[target.effort_bucket]}`}
             title={`Effort: ${effortLabel[target.effort_bucket]} (NLOC ${target.nloc})`}
           >
             {target.effort_bucket}
@@ -145,9 +169,21 @@ export function RefactoringCard({
           <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]" title="Total health impact across this file's findings">
             −{target.total_impact.toFixed(2)}
           </span>
+          <AskAboutThis
+            context={{
+              kind: "health",
+              label: target.file_path,
+              target: target.file_path,
+              targetKind: "path",
+            }}
+            question={`Explain the ${biomarkerLabel(target.primary_biomarker)} finding in ${target.file_path} and propose a safe way to address it.`}
+            label={`Ask about the finding in ${target.file_path}`}
+            className="-my-1 h-6 w-6"
+          />
         </div>
         <button
           type="button"
+          data-work-item-header=""
           onClick={onSelect ? () => onSelect(target) : undefined}
           className="group/file flex w-full items-center gap-1.5 text-left rounded-md -mx-1 px-1 py-0.5 hover:bg-[var(--color-bg-elevated)] disabled:cursor-default disabled:hover:bg-transparent"
           disabled={!onSelect}
@@ -176,7 +212,13 @@ export function RefactoringCard({
           <span>Score {target.score.toFixed(1)}/10</span>
           <span>· {target.nloc} NLOC</span>
           <span>· {effortLabel[target.effort_bucket]} effort</span>
-          <span>· {target.finding_count} findings</span>
+          <span>
+            {"· "}
+            {target.open_finding_count != null &&
+            target.open_finding_count !== target.finding_count
+              ? `${target.open_finding_count} open of ${target.finding_count} findings`
+              : `${target.finding_count} findings`}
+          </span>
           <span className="ml-auto tabular-nums">leverage {target.impact_per_effort.toFixed(2)}</span>
         </div>
         {onGeneratePrompt ? (
@@ -187,7 +229,7 @@ export function RefactoringCard({
                 e.stopPropagation();
                 onGeneratePrompt(target);
               }}
-              className="group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-success)]/40 bg-[var(--color-success)]/10 px-2.5 py-1 text-xs font-semibold text-[var(--color-success)] hover:bg-[var(--color-success)]/20 hover:border-[var(--color-success)]/60 transition-colors"
+              className="group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-model)]/40 bg-[var(--color-model-muted)] px-2.5 py-1 text-xs font-semibold text-[var(--color-model)] hover:bg-[var(--color-model)]/20 hover:border-[var(--color-model)]/60 transition-colors"
               title="Generate a ready-to-paste prompt for an AI coding agent"
             >
               <Sparkles className="h-3.5 w-3.5 transition-transform group-hover/ai:rotate-12" />
@@ -224,11 +266,15 @@ export function RefactoringCard({
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}
-                    <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">
-                      −{f.health_impact.toFixed(2)}
-                    </span>
+                    <FindingLine lineStart={f.line_start} />
+                    <ImpactFigure impact={f.health_impact} className="ml-auto text-xs" />
                   </div>
                   <p className="text-xs text-[var(--color-text-tertiary)] line-clamp-2">{f.reason}</p>
+                  <FindingOpportunityLink
+                    opportunity={shownOpportunity}
+                    biomarkerType={f.biomarker_type}
+                    href={refactoringOpportunityHref}
+                  />
                   {onStatusChange ? (
                     <div className="flex flex-wrap gap-1 pt-1">
                       <StatusButton current={f.status} value="acknowledged" onClick={() => onStatusChange(f.id, "acknowledged")} label="Acknowledge" />
@@ -243,6 +289,26 @@ export function RefactoringCard({
         </>
       ) : null}
     </div>
+  );
+}
+
+/** @deprecated Health queue compatibility names; these are not structured plans. */
+export type RefactoringTarget = HealthWorkItem;
+export type RefactoringTargetFinding = HealthWorkItemFinding;
+export type RefactoringCardProps = HealthWorkItemCardProps;
+export const RefactoringCard = HealthWorkItemCard;
+
+/**
+ * Where a finding sits. Not a link: no file view renders a line anchor, so a
+ * "line 412" href would land at the top of the page every time. Silent
+ * without a line, because a marker describing the whole file has none.
+ */
+function FindingLine({ lineStart }: { lineStart: number | null | undefined }) {
+  if (lineStart == null) return null;
+  return (
+    <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
+      line {lineStart}
+    </span>
   );
 }
 

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { formatRelativeTime } from "../lib/format";
+import { formatDateTime, formatRelativeTime } from "../lib/format";
 
 export interface ChangeStat {
   /** Pre-formatted figure, e.g. "8" or "10+". */
@@ -42,7 +42,7 @@ export function ChangeLine({ since, stats }: ChangeLineProps) {
     <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-y border-[var(--color-border-default)] py-2.5 text-xs text-[var(--color-text-secondary)]">
       <span
         className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
-        title={new Date(since).toLocaleString()}
+        title={formatDateTime(since)}
       >
         Since the previous index, {formatRelativeTime(since)}
       </span>

@@ -32,6 +32,7 @@ def test_mcp_cli_passes_tools_override(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert captured["tools"] == "+get_execution_flows,-get_dead_code"
     assert captured["host"] == "127.0.0.1"
+    assert captured["workspace_mode"] is True
 
 
 def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
@@ -46,6 +47,51 @@ def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert captured["tools"] == "all"
     assert captured["host"] == "127.0.0.1"
+    assert captured["workspace_mode"] is True
+
+
+def test_mcp_cli_no_workspace_flag_forces_single_repo(
+    monkeypatch, tmp_path: Path
+) -> None:
+    (tmp_path / ".repowise").mkdir()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
+    )
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--no-workspace"])
+
+    assert result.exit_code == 0
+    assert captured["workspace_mode"] is False
+
+
+def test_mcp_cli_no_workspace_ignores_enclosing_workspace(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    nested = workspace / "vendor" / "microdot"
+    nested.mkdir(parents=True)
+    (workspace / ".repowise-workspace.yaml").write_text(
+        "version: 1\n"
+        "default_repo: repowise\n"
+        "repos:\n"
+        "- path: .\n"
+        "  alias: repowise\n"
+        "  is_primary: true\n",
+        encoding="utf-8",
+    )
+    (nested / ".repowise").mkdir()
+    (nested / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
+    )
+
+    result = CliRunner().invoke(cli, ["mcp", str(nested), "--no-workspace"])
+
+    assert result.exit_code == 0
+    assert captured["workspace_mode"] is False
 
 
 def test_mcp_cli_accepts_streamable_http_transport(
@@ -80,6 +126,7 @@ def test_mcp_cli_accepts_streamable_http_transport(
         "host": "127.0.0.1",
         "port": 7339,
         "tools": None,
+        "workspace_mode": True,
     }
 
 
@@ -132,6 +179,7 @@ def test_mcp_cli_streamable_http_prints_workspace_summary(
         "host": "127.0.0.1",
         "port": 7341,
         "tools": None,
+        "workspace_mode": True,
     }
 
 
@@ -337,3 +385,101 @@ def test_a_plain_error_is_left_alone(monkeypatch) -> None:
 
     with pytest.raises(OSError):
         _server.run_mcp(transport="stdio")
+
+
+def test_a_group_from_startup_is_unwrapped_too(monkeypatch) -> None:
+    """The reason the unwrap moved: it used to cover only `mcp.run`.
+
+    Surface construction and transport security run before the transport starts,
+    and a group raised by either escaped with its wrapper class intact - which is
+    the likeliest reason installs still report a bare group class.
+    """
+    import pytest
+
+    from repowise.server.mcp_server import _server
+
+    def boom():
+        raise ExceptionGroup("startup", [PermissionError("wiki.db is not writable")])
+
+    monkeypatch.setattr("repowise.server.mcp_server.ensure_full_surface", boom)
+
+    with pytest.raises(PermissionError):
+        _server.run_mcp(transport="stdio")
+
+
+def test_a_crash_carries_the_names_of_every_leaf(monkeypatch) -> None:
+    """One exception travels; the siblings ride along as class names.
+
+    `error_type` can only ever name the one that was raised, which cannot say
+    whether a crash-looping server has a single fault or several. The names are
+    stamped on the exception so the layer that classifies the invocation can
+    report them without reaching back into the server to re-derive them.
+    """
+    import pytest
+
+    from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
+    from repowise.server.mcp_server import _server
+
+    def boom(**_kw):
+        raise ExceptionGroup(
+            "outer",
+            [
+                ModuleNotFoundError("no mcp"),
+                ExceptionGroup("inner", [PermissionError("locked"), OSError("pipe")]),
+            ],
+        )
+
+    monkeypatch.setattr(_server.mcp, "run", boom)
+
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        _server.run_mcp(transport="stdio")
+
+    assert getattr(excinfo.value, GROUP_LEAF_TYPES_ATTR) == (
+        "ModuleNotFoundError",
+        "OSError",
+        "PermissionError",
+    )
+
+
+def test_the_root_group_reports_those_names(monkeypatch, tmp_path: Path) -> None:
+    """End to end through the CLI: the names reach the invocation's outcome."""
+
+    from repowise.cli.platform import telemetry
+    from repowise.server.mcp_server import _server
+
+    (tmp_path / ".repowise").mkdir()
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr(telemetry, "add_command_outcome", recorded.update)
+
+    def boom(**_kw):
+        raise ExceptionGroup("outer", [ModuleNotFoundError("no mcp"), OSError("pipe")])
+
+    monkeypatch.setattr(_server.mcp, "run", boom)
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert recorded["error_leaves"] == "ModuleNotFoundError,OSError"
+    assert recorded["error_leaf_count"] == 2
+
+
+def test_an_interrupt_is_not_reported_as_a_crash(monkeypatch, tmp_path: Path) -> None:
+    """Ctrl-C is how a long-running server normally exits.
+
+    The root group classifies it as `interrupted` rather than an error on
+    purpose; putting crash dimensions on that event would make the failure
+    numbers this exists to measure unreadable in exactly the same way.
+    """
+    from repowise.cli.platform import telemetry
+
+    (tmp_path / ".repowise").mkdir()
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr(telemetry, "add_command_outcome", recorded.update)
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.run_mcp",
+        lambda **_kw: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    CliRunner().invoke(cli, ["mcp", str(tmp_path)])
+
+    assert "error_leaves" not in recorded

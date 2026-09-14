@@ -1,8 +1,15 @@
-"""Express / Node.js HTTP provider dialect — ``router.get('/path', ...)``.
+"""Node router-DSL HTTP provider dialect — ``router.get('/path', ...)``.
 
-Express routers carry no in-file prefix; the mount lives in a separate
+Express, Hono, Fastify, Koa and Elysia all serve routes through this one call
+shape, and only the variable's binding says which is which. The contract is
+labelled from that binding rather than assumed to be Express.
+
+Routers carry no in-file prefix; the mount lives in a separate
 ``app.use('/prefix', router)`` call, so the real path is recovered by stitching
 the cross-file mount prefix (collected by the orchestrator) onto the route.
+
+The route call and the bindings both come from ``ingestion.framework_routes``,
+shared with the graph-edge builders that scan the same call's argument list.
 """
 
 from __future__ import annotations
@@ -10,8 +17,16 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from repowise.core.ingestion.framework_routes import (
+    HTTP_METHODS,
+    JS_DEFAULT_ROUTER_NAMES,
+    express_routes,
+    js_router_bindings,
+)
+
+from ..base import line_at
 from ..langs import JS_TS
-from .dialect import METHODS, build_provider_contract
+from .dialect import build_provider_contract
 from .mounts import compose_prefix
 
 if TYPE_CHECKING:
@@ -19,22 +34,8 @@ if TYPE_CHECKING:
 
     from ..base import ScanContext
 
-# router.get('/path', ...) / app.post('/path', ...). The receiver variable is
-# captured so its mount prefix can be resolved; the negative lookbehind for ``@``
-# keeps decorator frameworks (FastAPI ``@app.get``, NestJS ``@Get``) out.
-_EXPRESS_RE = re.compile(
-    rf"""(?<!@)(\w+)\.({METHODS})\s*\(\s*['"]([^'"]+)['"]""",
-    re.IGNORECASE,
-)
-
-# Variables bound to an Express app / router: ``r = express.Router()``,
-# ``app = express()``, ``router = require('express').Router()``.
-_ROUTER_BIND_RE = re.compile(r"""(\w+)\s*=\s*(?:[\w.]*\.Router\s*\(|express\s*\(|Router\s*\()""")
-
 # app.use('/prefix', router) — a cross-file (or in-file) router mount.
 _APP_USE_RE = re.compile(r"""\.use\s*\(\s*['"]([^'"]+)['"]\s*,\s*([\w.]+)""")
-
-_DEFAULT_ROUTER_NAMES = frozenset({"app", "router"})
 
 
 class ExpressDialect:
@@ -49,17 +50,31 @@ class ExpressDialect:
         return out
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        known = {m.group(1) for m in _ROUTER_BIND_RE.finditer(ctx.content)}
-        known |= _DEFAULT_ROUTER_NAMES
+        bindings = js_router_bindings(ctx.content)
+        # `app`/`router` are routers whose constructor is in another file, so
+        # they take the file's framework when it binds exactly one, and Express
+        # otherwise — which is what they were always labelled.
+        served = set(bindings.values())
+        default = served.pop() if len(served) == 1 else "express"
 
         out: list[Contract] = []
-        for m in _EXPRESS_RE.finditer(ctx.content):
-            var, method, path_raw = m.group(1), m.group(2), m.group(3)
-            if var not in known:
+        for route in express_routes(ctx.content):
+            # The registry also yields `use`/`all`, which the graph consumer
+            # scans for handlers but which name no HTTP method here.
+            if route.verb not in HTTP_METHODS or not route.path:
                 continue
-            path = compose_prefix(ctx.mounts.get(var, ""), path_raw)
+            if route.receiver in bindings:
+                framework = bindings[route.receiver]
+            elif route.receiver in JS_DEFAULT_ROUTER_NAMES:
+                framework = default
+            else:
+                continue
             c = build_provider_contract(
-                ctx, method=method.upper(), path_raw=path, framework="express"
+                ctx,
+                method=route.verb,
+                path_raw=compose_prefix(ctx.mounts.get(route.receiver, ""), route.path),
+                framework=framework,
+                line=line_at(ctx.content, route.offset),
             )
             if c is not None:
                 out.append(c)

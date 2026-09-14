@@ -57,6 +57,7 @@ SOURCE_RANK: dict[str, int] = {
     "pr": 7,  # PR / squash-merge body
     "commit": 6,  # individual commit message
     "git_archaeology": 6,  # alias for commit-mined decisions
+    "conventions": 6,  # counted from the code itself, so it sits with commit
     "changelog": 5,  # legacy rows from the removed changelog miner
     "inline_marker": 4,  # # WHY: / # DECISION: code markers
     "comment": 3,  # LLM-curated rationale prose on high-centrality code

@@ -42,6 +42,17 @@ def test_get_record_returns_provenance(store: OmissionStore) -> None:
     assert store.get_record("0" * 12) is None
 
 
+def test_evidence_reference_roundtrip_uses_exact_public_id(store: OmissionStore) -> None:
+    reference = '{"id":"ev_abc","repository":"backend","kind":"file_range"}'
+    store.put_evidence_reference("ev_abc", reference, repository="backend")
+
+    assert store.get_evidence_reference("ev_abc") == {
+        "content": reference,
+        "repository": "backend",
+    }
+    assert store.get_evidence_reference("ev_missing") is None
+
+
 def test_get_with_query_filters_lines(store: OmissionStore) -> None:
     content = "FAILED test_a\npassed test_b\nFAILED test_c"
     ref = store.put(content, source="cli:test_output", original_tokens=10, kept_tokens=2)

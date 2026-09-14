@@ -144,10 +144,10 @@ def test_detect_clones_attaches_co_change_count(tmp_path: Path):
     parsed = [_pf("a.py", str(a)), _pf("b.py", str(b))]
     git_meta_map = {
         "a.py": {
-            "co_change_partners_json": json.dumps([{"file_path": "b.py", "co_change_count": 7}])
+            "co_change_partners_json": json.dumps([{"file_path": "b.py", "co_change_count": 7, "frequency": 7}])
         },
         "b.py": {
-            "co_change_partners_json": json.dumps([{"file_path": "a.py", "co_change_count": 5}])
+            "co_change_partners_json": json.dumps([{"file_path": "a.py", "co_change_count": 5, "frequency": 5}])
         },
     }
     report = detect_clones(parsed, git_meta_map, window_tokens=20, min_lines=4)

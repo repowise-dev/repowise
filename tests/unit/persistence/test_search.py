@@ -143,3 +143,114 @@ async def test_full_text_search_multiple_pages_relevance_ordered(fts):
     # Both should appear; 'exact' should rank first (title match)
     assert len(results) >= 1
     assert results[0].page_id == "exact"
+
+
+# ---------------------------------------------------------------------------
+# Batch indexing
+# ---------------------------------------------------------------------------
+
+
+async def _indexed_ids(fts) -> set[str]:
+    return await fts.list_indexed_ids()
+
+
+async def test_index_many_writes_the_same_rows_as_indexing_one_at_a_time(async_engine):
+    """The batch path is the single-page path, so the two must not diverge."""
+    pages = [
+        (f"p{i}", f"Title {i}", f"content about widgets number {i}", f"sum {i}", f"a/b{i}.py")
+        for i in range(20)
+    ]
+
+    one_at_a_time = FullTextSearch(async_engine)
+    await one_at_a_time.ensure_index()
+    for page in pages:
+        await one_at_a_time.index(page[0], page[1], page[2], summary=page[3], target_path=page[4])
+    sequential = sorted(
+        (r.page_id, r.title) for r in await one_at_a_time.search("widgets", limit=50)
+    )
+
+    await one_at_a_time.delete_many([p[0] for p in pages])
+    await one_at_a_time.index_many(pages)
+    batched = sorted((r.page_id, r.title) for r in await one_at_a_time.search("widgets", limit=50))
+
+    assert batched == sequential
+    assert len(batched) == 20
+
+
+async def test_index_many_spans_more_ids_than_one_statement_can_bind(fts):
+    """The delete half chunks; 1,200 ids is past both chunk boundaries.
+
+    A wiki is thousands of pages, so the first real corpus would have been the
+    first test of this path.
+    """
+    pages = [(f"p{i}", f"Title {i}", "a page about chunking", "", f"{i}.py") for i in range(1200)]
+
+    await fts.index_many(pages)
+    assert len(await _indexed_ids(fts)) == 1200
+
+    # Re-indexing the same ids must replace rather than duplicate them.
+    await fts.index_many(pages)
+    assert len(await _indexed_ids(fts)) == 1200
+
+
+async def test_a_page_id_repeated_in_one_batch_keeps_its_last_entry(fts):
+    """Every id is deleted before any is inserted, so a duplicate would double."""
+    await fts.index_many(
+        [
+            ("p1", "First", "a page about alpacas", "", "a.py"),
+            ("p1", "Second", "a page about zebras", "", "a.py"),
+        ]
+    )
+
+    assert await _indexed_ids(fts) == {"p1"}
+    assert [r.page_id for r in await fts.search("zebras")] == ["p1"]
+    assert await fts.search("alpacas") == []
+
+
+async def test_index_many_of_nothing_is_a_no_op(fts):
+    await fts.index_many([])
+    assert await _indexed_ids(fts) == set()
+
+
+async def test_path_only_match_outranks_content_only_match(fts):
+    """A page the query names by path beats one that only mentions the word.
+
+    Both pages carry the term once, and the path-matching one has the longer
+    body, so bm25's length normalisation ranks it second under uniform column
+    weights. Only weighting target_path above content flips it.
+
+    The fillers keep the corpus off the degenerate case where every page
+    matches and bm25 clamps a non-positive idf to a floor, leaving every score
+    at ~1e-6.
+    """
+    sentence = "This module handles records for the wider system and explains its use. "
+    await fts.index(
+        "path-match",
+        "Collector",
+        sentence * 6,
+        summary="A collector module.",
+        target_path="packages/core/telemetry/collector.py",
+    )
+    await fts.index(
+        "content-match",
+        "Emitter",
+        sentence * 2 + " It forwards each record to telemetry.",
+        summary="An emitter module.",
+        target_path="packages/core/reporting/emitter.py",
+    )
+    await fts.index_many(
+        [
+            (
+                f"filler{i}",
+                f"Filler {i}",
+                "An unrelated module about parsing and graphs. " * 3,
+                "Filler.",
+                f"packages/core/other/mod{i}.py",
+            )
+            for i in range(10)
+        ]
+    )
+
+    results = await fts.search("telemetry")
+
+    assert [r.page_id for r in results] == ["path-match", "content-match"]

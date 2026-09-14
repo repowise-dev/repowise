@@ -13,10 +13,12 @@ from pathlib import Path
 import pytest
 
 from repowise.core.analysis.change_risk import (
+    BaselineSample,
     FixHistoryUnavailableError,
     change_fix_density,
     change_risk_payload,
     clear_fix_pressure_cache,
+    densities_excluding,
     fix_density_percentile,
     fix_pressure,
     score_live_change,
@@ -152,16 +154,74 @@ def test_fix_history_excludes_the_change_being_scored(repo_with_history: Path) -
     assert result.fix_density == pytest.approx(before["hot.py"], abs=0.05)
 
 
-def test_percentile_needs_enough_fix_bearing_files(repo_with_history: Path) -> None:
-    pressure = fix_pressure(str(repo_with_history), "HEAD")
-    assert fix_density_percentile(pressure, 1.0) is None  # only one such file
+def test_percentile_needs_enough_commits_to_rank_against() -> None:
+    assert fix_density_percentile([1.0, 2.0, 3.0], 2.5) is None
+    assert fix_density_percentile([float(i) for i in range(8)], 2.5) is not None
 
 
 def test_percentile_is_none_when_the_change_touches_no_fix_history() -> None:
     """Not "0th percentile" — the question does not apply, and 0 reads as a rank."""
-    pressure = {f"f{i}.py": float(i + 1) for i in range(10)}
-    assert fix_density_percentile(pressure, 0.0) is None
-    assert fix_density_percentile(pressure, 5.5) is not None
+    population = [float(i + 1) for i in range(10)]
+    assert fix_density_percentile(population, 0.0) is None
+    assert fix_density_percentile(population, 5.5) is not None
+
+
+def test_percentile_ranks_a_multi_file_change_against_whole_commits() -> None:
+    """The population is per-commit densities, so averaging is not a penalty.
+
+    The old population was per-*file* pressures. A change spread over several
+    files averages below the lowest single per-file value that exists anywhere,
+    so it fell under the whole population and pinned to 0. The same change
+    against per-commit densities lands where its ground actually sits.
+    """
+    pressure = {"hot.py": 5.0, "warm.py": 1.0, "cold.py": 0.0}
+    spread = change_fix_density(pressure, [("hot.py", 10), ("cold.py", 10)])
+    assert spread == pytest.approx(2.5)
+
+    per_file = sorted(v for v in pressure.values() if v > 0)  # the old population
+    assert spread > per_file[0]  # ... which this change would still clear here
+
+    # The real repo has no per-file value below 0.75, so a wider spread does not.
+    diluted = change_fix_density(pressure, [("hot.py", 1), ("cold.py", 20)])
+    assert diluted < min(per_file)
+
+    # Under the old per-file population it would have sat below every member
+    # and pinned to 0. Against whole commits it ranks above the zero-density
+    # ones and below the rest.
+    population = [0.0, 0.0, 0.4, 0.9, 1.4, 2.5, 3.1, 4.0, 4.4, 5.0]
+    assert fix_density_percentile(population, diluted) == pytest.approx(20.0)
+
+
+def test_zero_density_commits_stay_in_the_population() -> None:
+    """They are legitimate members; dropping them would inflate every rank."""
+    pressure = {"hot.py": 4.0}
+    samples = [
+        BaselineSample(f"{i:040x}", 1.0, (("cold.py", 10),))  # touches no fix history
+        for i in range(6)
+    ] + [
+        BaselineSample(f"{i:040x}", 1.0, (("hot.py", 10),)) for i in range(6, 10)
+    ]
+
+    population = densities_excluding(samples, "", pressure)
+
+    assert population.count(0.0) == 6  # the zero-density commits survived the walk
+    assert len(population) == 10
+
+
+def test_percentile_uses_the_repos_own_commits(repo_with_history: Path) -> None:
+    """End to end: a change to the fragile file outranks one to the safe file."""
+    hot_sha = _commit(repo_with_history, {"hot.py": "v = 9\n"}, "feat: touch the hot file")
+    cold_sha = _commit(repo_with_history, {"cold.py": "c = 9\n"}, "feat: touch the cold file")
+    # Enough commits for the sample to clear MIN_DENSITY_POPULATION.
+    for i in range(4, 8):
+        _commit(repo_with_history, {"cold.py": f"c = {i}\n"}, f"feat: add capability {i}")
+
+    hot = score_live_change(str(repo_with_history), hot_sha, baseline=200)
+    cold = score_live_change(str(repo_with_history), cold_sha, baseline=200)
+
+    assert hot.fix_percentile is not None
+    assert hot.fix_percentile > 0.0
+    assert cold.fix_percentile is None  # touches no fix history at all
 
 
 def test_decay_is_anchored_to_the_change_not_to_the_latest_fix(tmp_path: Path) -> None:

@@ -156,6 +156,19 @@ class TestSerializeHits:
         [kept] = serialize_hits([expanded], symbols_for_expanded=True)
         assert "key_symbols" in kept
 
+    def test_excerpt_rows_cuts_the_excerpt_and_nothing_else(self) -> None:
+        hits = [dict(RAW_HIT, target_path=f"pkg/m{i}.py", excerpt="E" * 1500) for i in range(5)]
+        rows = serialize_hits(hits, limit=5, excerpt_rows=3)
+        assert [("excerpt" in r) for r in rows] == [True, True, True, False, False]
+        # The cut is a field cut, not a row cut: every path still ships, which is
+        # what keeps a withheld excerpt one follow-up call away rather than lost.
+        assert [r["path"] for r in rows] == [f"pkg/m{i}.py" for i in range(5)]
+        assert all({"title", "summary", "snippet", "score"} <= set(r) for r in rows)
+
+    def test_excerpt_rows_unset_serves_every_excerpt(self) -> None:
+        hits = [dict(RAW_HIT, target_path=f"pkg/m{i}.py", excerpt="E" * 1500) for i in range(5)]
+        assert all("excerpt" in r for r in serialize_hits(hits, limit=5))
+
 
 # ---------------------------------------------------------------------------
 # Confidence-conditional retrieval through get_answer
@@ -228,8 +241,11 @@ async def test_high_confidence_drops_retrieval_block(setup_mcp, monkeypatch):
 
     result = await get_answer("how does the beta module go function work")
     assert result["confidence"] == "high"
-    assert result["retrieval"] == []
-    assert result["fallback_targets"], "routing targets survive the diet"
+    assert "retrieval" not in result
+    assert result["citations"], "trust-bearing paths survive the projection"
+    assert result["_meta"]["projection"]["recovery"]["arguments"]["include"] == [
+        "evidence"
+    ]
     _assert_no_underscore_keys(result)
 
 
@@ -266,9 +282,8 @@ async def test_non_dominant_synthesizes_with_evidence(setup_mcp, monkeypatch):
     assert result["confidence"] == "medium"
     assert result["answer"], "non-dominant retrieval now carries synthesized prose"
     assert result["best_guesses"]
-    for entry in result["retrieval"]:
-        assert "page_id" not in entry
-        assert entry.get("path")
+    assert "retrieval" not in result
+    assert all(entry.get("file") for entry in result["best_guesses"])
     _assert_no_underscore_keys(result)
 
 

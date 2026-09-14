@@ -36,6 +36,8 @@ import json
 import tomllib
 from pathlib import Path
 
+from repowise.cli.errors import reasoned_error
+
 from ..types import (
     Capability,
     DoctorReport,
@@ -261,7 +263,6 @@ def _migrate_hooks_config(hooks: dict) -> None:
 
 def write_server_config(repo_path: Path) -> FileWrite:
     """Merge the repowise server table into project-local ``.codex/config.toml``."""
-    import click
 
     from ..formats.toml_merge import (
         ensure_valid_toml,
@@ -305,9 +306,10 @@ def write_server_config(repo_path: Path) -> FileWrite:
     try:
         block = table_block("mcp_servers.repowise", merged)
     except TypeError as exc:
-        raise click.ClickException(
+        raise reasoned_error(
             f"Cannot update {config_path}: [mcp_servers.repowise] holds a value repowise "
-            f"cannot rewrite ({exc}). Remove that key and retry; no changes were written."
+            f"cannot rewrite ({exc}). Remove that key and retry; no changes were written.",
+            reason="editor_config_unmergeable",
         ) from exc
     merged_text = replace_table(existing_text, "mcp_servers.repowise", block)
     merged_doc = ensure_valid_toml(merged_text, config_path)
@@ -355,8 +357,6 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
     because they are genuinely two files and reporting only the first would hide
     a run whose sole effect was switching the feature back on.
     """
-    import click
-
     from ..formats.json_merge import load_json_object, write_json_config
 
     hooks_path = project_hooks_path(repo_path)
@@ -370,9 +370,10 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
 
     hooks = existing.setdefault("hooks", {})
     if not isinstance(hooks, dict):
-        raise click.ClickException(
+        raise reasoned_error(
             f"Cannot update {hooks_path}: hooks must contain a JSON object. "
-            "Fix or remove it and retry; no changes were written."
+            "Fix or remove it and retry; no changes were written.",
+            reason="editor_config_malformed",
         )
 
     _migrate_hooks_config(hooks)
@@ -380,9 +381,10 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
     for event, entries in new_config["hooks"].items():
         event_hooks = hooks.setdefault(event, [])
         if not isinstance(event_hooks, list):
-            raise click.ClickException(
+            raise reasoned_error(
                 f"Cannot update {hooks_path}: hooks.{event} must contain a JSON array. "
-                "Fix or remove it and retry; no changes were written."
+                "Fix or remove it and retry; no changes were written.",
+                reason="editor_config_malformed",
             )
         for entry in entries:
             if not _has_augment_hook_for_matcher(event_hooks, entry.get("matcher")):

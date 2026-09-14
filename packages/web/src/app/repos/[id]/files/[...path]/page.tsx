@@ -95,6 +95,8 @@ async function renderCoverageCode(
         {
           line(node, line) {
             if (covered.has(line)) node.properties["data-covered"] = "y";
+            // Real file lines, so a selection here can name a real range.
+            node.properties["data-line"] = String(line);
           },
         },
       ],
@@ -184,6 +186,7 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
     healthPanel: (
       <FileHealthPanel
         repoId={id}
+        filePath={detail.file_path}
         health={detail.health}
         functionBlame={detail.function_blame}
       />

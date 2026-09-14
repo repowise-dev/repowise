@@ -147,16 +147,20 @@ over data already in the database.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.ingestion.models import (
-    EXECUTION_EDGE_TYPES,
-    FILE_DEPENDENCY_EDGE_TYPES,
+from repowise.core.analysis.execution_graph import (
+    UNRELIABLE_EXECUTION_ORIGINS,
+    ExecutionGraphIndex,
+    file_of_symbol,
 )
+from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GraphNode
 
 # How many call hops a test may take and still be said to reach a file. The walk
@@ -168,7 +172,7 @@ DEFAULT_CALL_DEPTH = 3
 DEFAULT_MAX_DEPTH = 1
 
 # Call edges whose resolver only matched a name. See the Confidence section.
-UNRELIABLE_CALL_ORIGINS = frozenset({"global_unique"})
+UNRELIABLE_CALL_ORIGINS = UNRELIABLE_EXECUTION_ORIGINS
 
 # Cap on how many test files one target reports. The consumers all cut their
 # own lists shorter; the cap exists so a helper called from every test in the
@@ -195,17 +199,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class CallGraphView:
-    """The two adjacencies a call-graph reachability walk needs.
-
-    ``declares`` bridges the file layer to the symbol layer - nothing points
-    from a symbol back to a file, so without it a walk cannot start at a test
-    file. ``calls`` is the symbol-to-symbol adjacency, already origin-filtered.
-    """
-
-    declares: dict[str, set[str]]
-    calls: dict[str, set[str]]
+CallGraphView: TypeAlias = ExecutionGraphIndex
 
 
 @dataclass(frozen=True)
@@ -222,11 +216,9 @@ class ReachedBy:
     tests: list[str]
     via: ReachedVia
     total: int = 0
-
-
-def _file_of(symbol_id: str) -> str:
-    """The file a symbol node belongs to. Node ids are ``path::Name``."""
-    return symbol_id.split("::", 1)[0]
+    # Internal uncapped identities let downstream aggregators de-duplicate one
+    # test that reaches several targets while public lists remain bounded.
+    all_tests: tuple[str, ...] | None = None
 
 
 def call_graph_from_graph(graph: Any) -> CallGraphView:
@@ -239,25 +231,7 @@ def call_graph_from_graph(graph: Any) -> CallGraphView:
     Returns an empty view for ``None`` - the health engine runs without a graph
     on some paths, and the documented outcome there is "no signal".
     """
-    declares: dict[str, set[str]] = {}
-    calls: dict[str, set[str]] = {}
-    if graph is None:
-        return CallGraphView(declares, calls)
-    try:
-        edges = graph.edges(data=True)
-    except Exception:
-        return CallGraphView(declares, calls)
-    for src, dst, data in edges:
-        attrs = data or {}
-        edge_type = attrs.get("edge_type")
-        if edge_type == "defines":
-            declares.setdefault(src, set()).add(dst)
-        elif (
-            edge_type in EXECUTION_EDGE_TYPES
-            and attrs.get("resolution_origin") not in UNRELIABLE_CALL_ORIGINS
-        ):
-            calls.setdefault(src, set()).add(dst)
-    return CallGraphView(declares, calls)
+    return ExecutionGraphIndex(graph)
 
 
 async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphView:
@@ -273,25 +247,27 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
     repository, and a per-level ``IN`` list over every file is the shape it was
     explicitly not built for.
     """
-    declares: dict[str, set[str]] = {}
-    calls: dict[str, set[str]] = {}
     wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES)]
     params: dict[str, Any] = {"repo_id": repo_id}
     ets = _in_clause("e", wanted, params)
     rows = await session.execute(
         text(
-            "SELECT source_node_id, target_node_id, edge_type, resolution_origin "
+            "SELECT source_node_id, target_node_id, edge_type, resolution_origin, "
+            "call_lines_json "
             "FROM graph_edges WHERE repository_id = :repo_id "
-            f"AND edge_type IN ({ets})"
+            f"AND edge_type IN ({ets}) "
+            "ORDER BY source_node_id, target_node_id, edge_type"
         ),
         params,
     )
-    for src, dst, edge_type, origin in rows:
-        if edge_type == "defines":
-            declares.setdefault(src, set()).add(dst)
-        elif origin not in UNRELIABLE_CALL_ORIGINS:
-            calls.setdefault(src, set()).add(dst)
-    return CallGraphView(declares, calls)
+    edge_rows = []
+    for src, dst, edge_type, origin, call_lines_json in rows:
+        try:
+            call_lines = json.loads(call_lines_json or "[]")
+        except (TypeError, ValueError):
+            call_lines = []
+        edge_rows.append((src, dst, edge_type, origin, call_lines))
+    return ExecutionGraphIndex(edge_rows=edge_rows)
 
 
 def files_reached_by_tests(
@@ -315,7 +291,7 @@ def files_reached_by_tests(
 
     frontier: set[str] = set()
     for path in test_files:
-        frontier |= view.declares.get(path, frozenset())
+        frontier.update(view.declares.get(path, ()))
     seen = set(frontier)
     # The seeds are what the tests *declare*, not what they reach. Counting them
     # would make containment alone a claim of reaching.
@@ -323,14 +299,14 @@ def files_reached_by_tests(
     for _ in range(max_depth):
         nxt: set[str] = set()
         for node in frontier:
-            nxt |= view.calls.get(node, frozenset())
+            nxt.update(view.calls.get(node, ()))
         nxt -= seen
         if not nxt:
             break
         seen |= nxt
         reached |= nxt
         frontier = nxt
-    return {_file_of(symbol) for symbol in reached} - test_files
+    return {file_of_symbol(symbol) for symbol in reached} - test_files
 
 
 async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
@@ -371,8 +347,15 @@ async def tests_reaching_by_tier(
     *,
     call_depth: int = DEFAULT_CALL_DEPTH,
     import_depth: int = DEFAULT_MAX_DEPTH,
+    symbol_seeds: Mapping[str, Collection[str]] | None = None,
 ) -> dict[str, ReachedBy]:
     """:func:`tests_reaching`, also saying which tier answered each target.
+
+    *symbol_seeds* narrows the call walk for the targets it names: the walk
+    enters at exactly those symbol ids instead of at every symbol the file
+    declares. A target it does not name, or names with no ids, keeps the
+    ``defines`` lookup, and the
+    import tier stays file-level either way.
 
     The call walk runs first; the import walk is then seeded with only the
     targets it left unanswered, so the weaker tier never speaks over the
@@ -396,22 +379,24 @@ async def tests_reaching_by_tier(
 
     out: dict[str, ReachedBy] = {}
     if call_depth >= 1:
-        found = await _call_reaching(session, repo_id, seeds, test_files, call_depth)
+        found = await _call_reaching(
+            session, repo_id, seeds, test_files, call_depth, symbol_seeds=symbol_seeds
+        )
         for seed, tests in found.items():
-            out[seed] = ReachedBy(_cut(tests), "call-graph", len(tests))
+            ordered = tuple(sorted(tests))
+            out[seed] = ReachedBy(
+                list(ordered[:MAX_TESTS_PER_TARGET]), "call-graph", len(ordered), ordered
+            )
 
     unanswered = [seed for seed in seeds if seed not in out]
     if unanswered and import_depth >= 1:
-        found = await _import_reaching(
-            session, repo_id, unanswered, test_files, import_depth
-        )
+        found = await _import_reaching(session, repo_id, unanswered, test_files, import_depth)
         for seed, tests in found.items():
-            out[seed] = ReachedBy(_cut(tests), "import-graph", len(tests))
+            ordered = tuple(sorted(tests))
+            out[seed] = ReachedBy(
+                list(ordered[:MAX_TESTS_PER_TARGET]), "import-graph", len(ordered), ordered
+            )
     return out
-
-
-def _cut(tests: set[str]) -> list[str]:
-    return sorted(tests)[:MAX_TESTS_PER_TARGET]
 
 
 async def _call_reaching(
@@ -420,6 +405,8 @@ async def _call_reaching(
     seeds: list[str],
     test_files: set[str],
     max_depth: int,
+    *,
+    symbol_seeds: Mapping[str, Collection[str]] | None = None,
 ) -> dict[str, set[str]]:
     """Tests that can execute into each seed file, walking call edges backwards.
 
@@ -427,10 +414,24 @@ async def _call_reaching(
     join symbols, so the first query resolves each seed to the symbols it
     declares, and the walk carries the seed from there.
     """
-    declared = await _edges_from(session, repo_id, seeds, ["defines"])
     origins: dict[str, set[str]] = {}
-    for seed, symbol in declared:
-        origins.setdefault(symbol, set()).add(seed)
+    # A caller that knows which symbol in the file it cares about enters there,
+    # so a test reaching an unrelated symbol in the same file does not count.
+    # An empty entry names no symbol, so that file is unseeded and keeps the
+    # ``defines`` lookup; treating it as seeded would silence the file entirely.
+    seeded = {
+        seed: symbol_seeds[seed]
+        for seed in seeds
+        if symbol_seeds and symbol_seeds.get(seed)
+    }
+    for seed, symbol_ids in seeded.items():
+        for symbol in symbol_ids:
+            origins.setdefault(symbol, set()).add(seed)
+    unseeded = [seed for seed in seeds if seed not in seeded]
+    if unseeded:
+        declared = await _edges_from(session, repo_id, unseeded, ["defines"])
+        for seed, symbol in declared:
+            origins.setdefault(symbol, set()).add(seed)
     if not origins:
         return {}
 
@@ -448,10 +449,10 @@ async def _call_reaching(
             sorted(EXECUTION_EDGE_TYPES),
             UNRELIABLE_CALL_ORIGINS,
         ):
-            carried = origins.get(callee, frozenset())
+            carried = origins.get(callee)
             if not carried:
                 continue
-            owner = _file_of(caller)
+            owner = file_of_symbol(caller)
             if owner in test_files:
                 for seed in carried:
                     found.setdefault(seed, set()).add(owner)
@@ -490,7 +491,7 @@ async def _import_reaching(
         for dependent, dependency in await _edges_into(
             session, repo_id, level, sorted(FILE_DEPENDENCY_EDGE_TYPES), frozenset()
         ):
-            carried = origins.get(dependency, frozenset())
+            carried = origins.get(dependency)
             if not carried:
                 continue
             if dependent in test_files:
@@ -563,9 +564,7 @@ async def _edges_into(
         # NULL means the row predates the vocabulary, not "unknown", so it has
         # to survive the filter, and a bare NOT IN would drop it.
         bad = _in_clause("o", sorted(excluded_origins), params)
-        origin_filter = (
-            f" AND (resolution_origin IS NULL OR resolution_origin NOT IN ({bad}))"
-        )
+        origin_filter = f" AND (resolution_origin IS NULL OR resolution_origin NOT IN ({bad}))"
     rows = await session.execute(
         text(
             "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "

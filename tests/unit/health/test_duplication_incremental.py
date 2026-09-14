@@ -371,7 +371,7 @@ def test_co_change_weight_applied_live_on_splice(tmp_path: Path):
     parsed = _parsed(tmp_path)
     meta = {
         "a.py": {
-            "co_change_partners_json": json.dumps([{"file_path": "b.py", "co_change_count": 7}])
+            "co_change_partners_json": json.dumps([{"file_path": "b.py", "co_change_count": 7, "frequency": 7}])
         }
     }
     report = detect_clones(

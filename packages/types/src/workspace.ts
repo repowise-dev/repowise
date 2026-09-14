@@ -20,6 +20,9 @@ export interface RepoStats {
 export interface WorkspaceCrossRepoSummary {
   co_change_count: number;
   package_dep_count: number;
+  package_diagnostic_count?: number;
+  package_diagnostics_emitted?: number;
+  package_diagnostic_codes?: string[];
   top_connections: Array<{ repos: string[]; edge_count: number }>;
 }
 
@@ -40,6 +43,20 @@ export interface WorkspaceContractLinkEntry {
   consumer_repo: string;
   consumer_file: string;
   consumer_symbol: string;
+  /**
+   * Service boundary the provider sits behind, when the workspace declares one.
+   * Matching skips a pair only when the repo *and* the service are the same, so
+   * this is what explains a link between two services inside one repo.
+   */
+  provider_service: string | null;
+  /** The same, for the calling side. */
+  consumer_service: string | null;
+  /**
+   * The linked contracts' symbol ids, so a caller can name the code rather than
+   * a display label. Null when that side never bound to one.
+   */
+  provider_symbol_id: string | null;
+  consumer_symbol_id: string | null;
 }
 
 export interface WorkspaceCoChangeEntry {
@@ -58,6 +75,11 @@ export interface WorkspacePackageDepEntry {
   target_repo: string;
   target_package: string;
   kind: string;
+  /** Maven evidence; absent for path-based ecosystems. */
+  target_manifest?: string;
+  requested_version?: string | null;
+  scope?: string;
+  resolution_basis?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +155,11 @@ export interface SystemGraph {
 // ---------------------------------------------------------------------------
 
 /** Why a consumer contract never formed a cross-repo link. */
-export type UnmatchedReason = "no_provider" | "internal_only" | "unlinked";
+export type UnmatchedReason =
+  | "no_provider"
+  | "internal_only"
+  | "unlinked"
+  | "external_host";
 
 export interface RepoDiagnostics {
   repo: string;
@@ -243,6 +269,19 @@ export interface SchemaField {
   required?: boolean;
   number?: number | null;
   repeated?: boolean;
+  nullable?: boolean | null;
+  enum_values?: Array<string | number | boolean> | null;
+  location?: "path" | "query" | "header" | "cookie" | "body" | null;
+  source_pointer?: string | null;
+  children?: SchemaField[];
+  items?: SchemaField | null;
+}
+
+export interface ContractSchemaIssue {
+  code: string;
+  side: "request" | "response" | "both" | string;
+  source_pointer: string;
+  detail?: string;
 }
 
 export interface ContractSchema {
@@ -250,6 +289,15 @@ export interface ContractSchema {
   source: string;
   request_fields: SchemaField[];
   response_fields: SchemaField[];
+  source_version?: string | null;
+  comparison_key?: string | null;
+  comparison_ready?: boolean;
+  request_state?: "complete" | "partial" | "unsupported" | "unresolved" | null;
+  response_state?: "complete" | "partial" | "unsupported" | "unresolved" | null;
+  request_media_type?: string | null;
+  response_media_type?: string | null;
+  response_status_code?: string | null;
+  issues?: ContractSchemaIssue[];
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +309,7 @@ export interface ContractSchema {
 /** How a breaking change ranks. `breaking` = wire-incompatible; `warning` = source risk. */
 export type BreakingChangeSeverity = "breaking" | "warning";
 
-/** A consumer endangered by a provider's breaking change (from a matched link). */
+/** A consumer exposed to a provider finding through a matched contract link. */
 export interface BreakingChangeConsumer {
   repo: string;
   service: string | null;
@@ -270,6 +318,8 @@ export interface BreakingChangeConsumer {
   /** The exact consumer file that calls the changed contract. */
   file: string;
   symbol: string;
+  /** Looked-up id for `symbol`; `null` when the consumer did not resolve to one. */
+  symbol_id?: string | null;
   match_type: string;
   confidence: number;
 }
@@ -283,11 +333,18 @@ export interface BreakingChange {
   provider_repo: string;
   provider_file: string;
   provider_symbol: string;
+  /** Looked-up id for `provider_symbol`; `null` when it did not resolve to one. */
+  provider_symbol_id?: string | null;
   provider_service: string | null;
   /** System-graph node id of the changed provider. */
   provider_node_id: string;
   /** Human-readable one-liner. */
   detail: string;
+  /** Request/response side when the finding is side-specific. */
+  side?: "request" | "response" | null;
+  /** Parser family and fidelity key used for the comparison. */
+  comparison_source?: string | null;
+  comparison_key?: string | null;
   field_name?: string | null;
   old_value?: string | null;
   new_value?: string | null;
@@ -305,9 +362,9 @@ export interface BreakingChangeReport {
   total: number;
   breaking_count: number;
   warning_count: number;
-  /** Distinct repos with an endangered consumer. */
+  /** Distinct repos with an endpoint-exposed consumer. */
   impacted_repos: string[];
-  /** Distinct system-graph node ids with an endangered consumer. */
+  /** Distinct system-graph node ids with an endpoint-exposed consumer. */
   impacted_services: string[];
   total_impacted_consumers: number;
 }
@@ -464,4 +521,94 @@ export interface ArchitectureMetrics {
   role_breakdown: Record<NodeRole, number>;
   roles: NodeArchitectureRole[];
   generated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-repo test impact: which consumer tests guard a provider change.
+// Mirror of `core/workspace/test_impact.py` and
+// `server/schemas/workspace.py::WorkspaceTestImpactResponse`.
+// ---------------------------------------------------------------------------
+
+/** How a recommendation was arrived at. */
+export type TestImpactBasis = "measured" | "inferred";
+
+/** The state one consumer file ended the join in. */
+export type TestImpactState = "measured" | "inferred" | "none" | "unresolved";
+
+/** Why a contract link could not be followed into the consumer's tests. */
+export type TestImpactUnresolvedReason =
+  | "no_index"
+  | "unbound"
+  | "symbol_missing"
+  | "lookup_failed";
+
+/** A test in a consumer repo that guards a changed provider file. */
+export interface WorkspaceTestRecommendation {
+  test_id: string;
+  test_file: string;
+  consumer_repo: string;
+  /** Every consumer file that reached this test, sorted. */
+  consumer_files: string[];
+  /** The symbols the contracts bound to in the consumer, sorted. */
+  consumer_symbol_ids: string[];
+  provider_repo: string;
+  contract_ids: string[];
+  contract_types: string[];
+  basis: TestImpactBasis;
+  /** "coverage-map" | "call-graph" | "import-graph". */
+  via: string;
+  /** The link's confidence as a plain number, not a percentage. */
+  confidence: number;
+  /** Provider files this test guards. */
+  source_files: string[];
+  evidence: Record<string, unknown>[];
+}
+
+/** A contract link the join could not follow, and why. */
+export interface WorkspaceUnresolvedLink {
+  consumer_repo: string;
+  consumer_file: string;
+  consumer_symbol_id: string | null;
+  provider_repo: string;
+  provider_file: string;
+  contract_id: string;
+  contract_type: string;
+  reason: TestImpactUnresolvedReason | string;
+  detail: string | null;
+}
+
+/** One consumer file the join looked at, and the state it ended in. */
+export interface WorkspaceTestImpactFile {
+  consumer_repo: string;
+  consumer_file: string;
+  state: TestImpactState;
+  measured_tests_count: number;
+  inferred_tests_count: number;
+  /** The tier that answered, or null when nothing did. */
+  via: string | null;
+  provider_repos: string[];
+  contract_ids: string[];
+  consumer_symbol_ids: string[];
+}
+
+/** `GET /api/workspace/test-impact`: consumer tests for a provider change. */
+export interface WorkspaceTestImpactResponse {
+  workspace: boolean;
+  recommendations: WorkspaceTestRecommendation[];
+  recommendations_total: number;
+  recommendations_emitted: number;
+  recommendations_truncated: boolean;
+  recommendations_omitted: number;
+  recommendations_by_basis: Record<string, number>;
+  recommendations_by_repo: Record<string, number>;
+  recommendations_by_consumer_repo: Record<string, number>;
+  unresolved: WorkspaceUnresolvedLink[];
+  files_analyzed: WorkspaceTestImpactFile[];
+  /**
+   * Counters plus, when the answer is empty, the `reason` that produced it
+   * ("no_contract_data" | "no_changed_files" | "no_matching_links" |
+   * "no_contract_store" | "lookup_failed"), and for "lookup_failed" a
+   * `detail` naming what failed.
+   */
+  summary: Record<string, unknown>;
 }

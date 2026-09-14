@@ -179,7 +179,11 @@ class PerTypeGenerationMixin:
         return self._structural_symbol_spotlight(
             ctx,
             target,
-            structural_page_title(self._language, "symbol_spotlight", symbol.qualified_name),
+            # Titled by the target the page is keyed on, not by the dotted
+            # path built from every directory above the file. That path is
+            # synthetic; a real path beside a real name is what a reader
+            # scanning the tree can place.
+            structural_page_title(self._language, "symbol_spotlight", target),
             subject_hash=parsed.content_hash or "",
         )
 
@@ -387,6 +391,7 @@ class PerTypeGenerationMixin:
         source_map: dict[str, bytes] | None = None,
         parsed_files: list[ParsedFile] | None = None,
         capabilities: Sequence[Capability] = (),
+        prose_digest: str = "",
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_repo_overview(
             repo_structure,
@@ -398,6 +403,7 @@ class PerTypeGenerationMixin:
             external_systems=external_systems,
             decision_records=decision_records,
             parsed_files=parsed_files,
+            prose_digest=prose_digest,
         )
         repo_git_summary = None
         if git_meta_map:
@@ -422,7 +428,7 @@ class PerTypeGenerationMixin:
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
             page = _with_architecture_map(
-                _with_capability_table(_with_package_table(stub, ctx.package_stats), capabilities),
+                _with_package_table(_with_capability_table(stub, capabilities), ctx.package_stats),
                 overview_mermaid,
             )
             selection = self._disabled_source_evidence("repo_overview", "deterministic_generation")
@@ -440,31 +446,55 @@ class PerTypeGenerationMixin:
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
             page = _with_architecture_map(
-                _with_capability_table(
-                    _with_package_table(
-                        _stub_fallback(stub, "repo_overview", exc), ctx.package_stats
+                _with_package_table(
+                    _with_capability_table(
+                        _stub_fallback(stub, "repo_overview", exc), capabilities
                     ),
-                    capabilities,
+                    ctx.package_stats,
                 ),
                 overview_mermaid,
             )
             return self._attach_source_evidence(page, "repo_overview", evidence)
+        overview_grounding_evidence: dict[str, str] = {}
+        for item in evidence.included:
+            overview_grounding_evidence[item.path] = "\n".join(
+                filter(None, (overview_grounding_evidence.get(item.path), item.text))
+            )
+        repository_paths = tuple(
+            parsed.file_info.path
+            for parsed in parsed_files or ()
+            if getattr(getattr(parsed, "file_info", None), "path", None)
+        ) + tuple((source_map or {}).keys())
+        cleaned, ungrounded = _onboarding.check_grounding(
+            response.content,
+            (ctx, repository_paths),
+            overview_grounding_evidence,
+        )
+        if cleaned != response.content:
+            response = replace(response, content=cleaned)
+        if ungrounded:
+            log.info(
+                "repo_overview.grounding_stripped",
+                count=len(ungrounded),
+                tokens=ungrounded[:20],
+            )
         # The overview carries its own enumerable facts: the package table and
         # the KG-derived architecture map are built from the run, not drawn by
         # the model, and both embeds are idempotent so a reused page picks them
-        # up too. The table goes in first so it lands above the diagram.
-        if ctx.package_stats:
-            response = replace(
-                response,
-                content=embed_package_table(
-                    response.content, build_package_table(ctx.package_stats)
-                ),
-            )
+        # up too. Appended in reading order, so what the repository does lands
+        # above what it is made of, and both above the diagram.
         if capabilities:
             response = replace(
                 response,
                 content=embed_capability_table(
                     response.content, build_capability_table(capabilities)
+                ),
+            )
+        if ctx.package_stats:
+            response = replace(
+                response,
+                content=embed_package_table(
+                    response.content, build_package_table(ctx.package_stats)
                 ),
             )
         if overview_mermaid:

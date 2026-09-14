@@ -105,16 +105,15 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
   const kpis = useMemo(() => {
     let loc = 0;
     let scored = 0;
-    let healthy = 0;
+    let good = 0;
     for (const f of files) {
       loc += f.loc ?? 0;
       if (f.defect_score != null) {
         scored++;
-        // `bandForScore`, not a local `>= 7`. The threshold here was 7 while
-        // every band this page paints starts Healthy at 8, so the strip was
-        // reporting a share of files as healthy that the map beside it was
-        // colouring amber.
-        if (bandForScore(f.defect_score) === "healthy") healthy++;
+        // `bandForScore`, not a local threshold, so the strip and the map
+        // beside it cannot report different shares of the same files.
+        const band = bandForScore(f.defect_score);
+        if (band === "good" || band === "excellent") good++;
       }
     }
     return {
@@ -122,7 +121,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
       loc,
       langCount: languages.length,
       scored,
-      healthyPct: scored > 0 ? Math.round((healthy / scored) * 100) : null,
+      goodPct: scored > 0 ? Math.round((good / scored) * 100) : null,
     };
   }, [files, languages]);
 
@@ -201,10 +200,10 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
               <Fig>{formatNumber(kpis.total)}</Fig> files across <Fig>{formatLOC(kpis.loc)}</Fig>{" "}
               lines in <Fig>{kpis.langCount}</Fig> {kpis.langCount === 1 ? "language" : "languages"}
               .{" "}
-              {kpis.healthyPct != null ? (
+              {kpis.goodPct != null ? (
                 <>
-                  <Fig>{kpis.healthyPct}%</Fig> of the <Fig>{formatNumber(kpis.scored)}</Fig>{" "}
-                  carrying a health score are healthy.
+                  <Fig>{kpis.goodPct}%</Fig> of the <Fig>{formatNumber(kpis.scored)}</Fig>{" "}
+                  carrying a health score are Good or better.
                 </>
               ) : (
                 "None carry a health score yet."

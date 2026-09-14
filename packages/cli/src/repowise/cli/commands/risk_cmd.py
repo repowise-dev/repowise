@@ -4,7 +4,8 @@ Two questions, one command, because they are the same question asked of
 different subjects.
 
 A REVSPEC scores a *change* from its diff shape — size, diffusion, author
-familiarity — and prints a 0-10 risk with an attributable breakdown. Runs
+familiarity — and prints a benchmarked review priority plus a supporting 0-10
+diff-shape score with an attributable breakdown. Runs
 in-process: pure git + learned constants, no LLM, no network. A natural
 pre-merge / PR gate, complementary to ``repowise health`` (which scores files).
 
@@ -25,12 +26,13 @@ Examples:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import click
 from rich.table import Table
 
 from repowise.cli.commands import _tool_adapters as _ta
-from repowise.cli.helpers import console, err_console
+from repowise.cli.helpers import console, err_console, repo_index_session, run_async
 from repowise.cli.output import emit_json, format_option, full_option
 from repowise.core.analysis.change_risk import (
     change_risk_payload,
@@ -39,9 +41,9 @@ from repowise.core.analysis.change_risk import (
 )
 
 _PRIORITY_LEAD = {
-    "low": "Lower risk than a typical commit in this repo",
-    "moderate": "About as risky as a typical commit in this repo",
-    "high": "Riskier than most commits in this repo",
+    "low": "Smaller or more focused than a typical commit in this repo",
+    "moderate": "Typical diff size and spread for this repo",
+    "high": "Larger or more dispersed than most commits in this repo",
 }
 
 
@@ -57,7 +59,9 @@ _PRIORITY_LEAD = {
 #: ``_base_dep_count`` is bookkeeping the tool uses to rebuild ``risk_summary``
 #: after enrichment. ``impact_surface`` is the transitive dependent set, the one
 #: genuinely unbounded block, and its own summary counts survive in
-#: ``risk_summary`` and ``dependents_count``.
+#: ``risk_summary`` and ``dependents_count``. It is opt-in on the tool now and
+#: this command does not ask for it; the entry stays so that a caller passing a
+#: hand-built payload gets the same projection.
 _DROPPED_TARGET_KEYS = ("_base_dep_count", "impact_surface")
 
 
@@ -80,12 +84,13 @@ def project_risk(payload: dict) -> dict:
     (15/10/10/5) before it gets here — so the block a caller would most want is
     the one an allowlist would silently discard, at almost no size.
     """
-    out: dict = {
-        "targets": {
-            name: _project_target(card) for name, card in (payload.get("targets") or {}).items()
-        }
+    out: dict = {}
+    if payload.get("directive"):
+        out["directive"] = payload["directive"]
+    out["targets"] = {
+        name: _project_target(card) for name, card in (payload.get("targets") or {}).items()
     }
-    for key in ("directive", "pr_blast_radius", "global_hotspots", "omission_marker"):
+    for key in ("risk_scales", "pr_blast_radius", "global_hotspots", "omission_marker"):
         if payload.get(key):
             out[key] = payload[key]
     note = _ta.index_note(payload)
@@ -117,6 +122,8 @@ def _target_risk(
         return get_risk(
             targets=list(targets),
             changed_files=list(changed_files) or None,
+            # _render_target_risk prints risk_type and change_magnitude.
+            include=["churn"],
         )
 
     payload = _ta.run(repo, _factory, "get_risk")
@@ -140,18 +147,23 @@ def _render_target_risk(projected: dict, requested: tuple[str, ...]) -> None:
     directive = projected.get("directive")
     if directive:
         # PR mode leads with the directive because that is the tool's contract:
-        # what will break, what is missing, what to run.
+        # what may break, what is missing, what to run.
         console.print(f"\n[bold]Directive[/bold] {escape(str(directive.get('summary', '')))}")
         for label, key in (
-            ("Will break", "will_break"),
-            ("Tests likely broken", "will_break_tests"),
+            ("May break", "may_break"),
+            ("Tests that may break", "may_break_tests"),
             ("Missing co-changes", "missing_cochanges"),
             ("Files without tests", "missing_tests"),
             ("Tests to run", "tests_to_run"),
         ):
             _print_list(label, directive.get(key) or [])
         for label, key in _DIRECTIVE_RECORD_BLOCKS:
-            _print_records(label, directive.get(key) or [], key)
+            _print_records(
+                label,
+                directive.get(key) or [],
+                key,
+                truncated=directive.get(f"{key}_truncated") or 0,
+            )
 
     targets = projected.get("targets") or {}
     for name in requested:
@@ -204,7 +216,7 @@ def _render_card(name: str, card: dict) -> None:
     trend = card.get("trend") or "unknown"
     console.print(
         f"  [dim]hotspot {float(card.get('hotspot_score') or 0.0):.0%} ({trend}) · "
-        f"{card.get('dependents_count', 0)} dependents · "
+        f"{card.get('dependents_count', 0)} direct dependents · "
         f"{card.get('risk_type', 'unknown')} · owned "
         f"{_ta.owner_share(card.get('owner_pct'))} by "
         f"{escape(str(card.get('primary_owner') or 'unknown'))}[/dim]"
@@ -253,11 +265,17 @@ def _render_card(name: str, card: dict) -> None:
     cross = card.get("cross_repo_impact") or {}
     if cross:
         repos = cross.get("affected_repos") or []
-        consumers = cross.get("cross_repo_consumers") or []
+        historical = cross.get("cross_repo_consumers") or []
         contracts = cross.get("contract_consumers") or []
         console.print(
-            f"  [bold]Crosses repo boundaries[/bold] [dim]{len(consumers)} consumer(s)"
-            + (f", {len(contracts)} contract link(s)" if contracts else "")
+            "  [bold]Crosses repo boundaries[/bold] [dim]"
+            f"{cross.get('cross_repo_consumers_total', len(historical))} historical co-change(s)"
+            + (
+                f", {cross.get('contract_consumers_total', len(contracts))} "
+                "typed contract consumer(s)"
+                if contracts
+                else ""
+            )
             + (f" in {', '.join(str(r) for r in repos)}" if repos else "")
             + "[/dim]"
         )
@@ -288,13 +306,13 @@ def _render_card(name: str, card: dict) -> None:
     if partners:
         console.print("  [bold]Co-changes with[/bold]")
         for p in partners[:8]:
-            link = " [dim](imports)[/dim]" if p.get("has_import_link") else ""
+            link = " [dim](also imports)[/dim]" if p.get("has_import_link") else ""
             # A recency-decayed weight rather than a raw tally, so it is not an
             # integer; ``:g`` keeps a whole number whole and trims the rest.
             weight = p.get("weight", 0)
-            shown = f"{float(weight):.1f}".rstrip("0").rstrip(".") if weight else "0"
+            weight_text = f"{float(weight):.1f}".rstrip("0").rstrip(".") if weight else "0"
             console.print(
-                f"    {escape(str(p.get('file_path', '')))} [dim]x{shown}[/dim]{link}"
+                f"    {escape(str(p.get('file_path', '')))} [dim]x{weight_text}[/dim]{link}"
             )
         if len(partners) > 8:
             console.print(f"    [dim]… and {len(partners) - 8} more (--format json).[/dim]")
@@ -319,7 +337,7 @@ def _print_list(label: str, values: list[str], *, indent: str = "  ") -> None:
 #: four printed as raw Python dict reprs. Each formatter is written against
 #: that module's construction site.
 _DIRECTIVE_RECORD_BLOCKS = (
-    ("Consumers that may break", "will_break_consumers"),
+    ("Consumer structural reach", "will_break_consumers"),
     ("Missing cross-repo co-changes", "missing_cross_repo_cochanges"),
     ("Breaking contract changes", "breaking_changes"),
     ("Conformance violations", "conformance_violations"),
@@ -353,7 +371,7 @@ def _record_text(key: str, entry: dict) -> str:
     return str(entry)
 
 
-def _print_records(label: str, values: list, key: str) -> None:
+def _print_records(label: str, values: list, key: str, truncated: int = 0) -> None:
     """A directive block whose entries are dicts, one line each."""
     from rich.markup import escape
 
@@ -363,6 +381,67 @@ def _print_records(label: str, values: list, key: str) -> None:
     for entry in values:
         text = _record_text(key, entry) if isinstance(entry, dict) else str(entry)
         console.print(f"    {escape(str(text))}")
+    if truncated:
+        console.print(f"    [dim]... and {truncated} more[/dim]")
+
+
+def _independent_changes_for(repo_path: str, result, revspec: str | None) -> dict | None:
+    """How this diff splits, per the index, or ``None`` when it cannot be read."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core import git_refs
+    from repowise.core.analysis.independent_changes import independent_changes
+
+    paths = [path for path, _ in result.features.file_churn]
+    if len(paths) < 2:
+        return None
+    # A diff names paths from the repository root, so a command run in a
+    # subdirectory has to score against that root, not against the given path.
+    root = Path(git_refs.toplevel(repo_path) or repo_path).resolve()
+    # One commit touching two files links them harder than any edge does. Read
+    # git before the store opens: no subprocess while a connection is held.
+    sets = git_refs.commit_file_sets(str(root), revspec)
+
+    async def read() -> dict | None:
+        found = None
+        async with repo_index_session(root) as opened:
+            if opened is not None:
+                session, repo_id = opened
+                try:
+                    found = await independent_changes(session, repo_id, paths, commit_sets=sets)
+                except (SQLAlchemyError, OSError, LookupError):
+                    # An index written by an older version can fail the query itself.
+                    return None
+        return found.to_dict() if found else None
+
+    return run_async(read())
+
+
+#: How many ungrouped names the table prints. The summary already states the
+#: count, so a docs-heavy diff need not spell out hundreds of paths.
+_UNGROUPED_SHOWN = 10
+
+
+def _print_independent_changes(block: dict) -> None:
+    """The groups, plainly: no score, no percentage, no adjective."""
+    from rich.markup import escape
+
+    console.print(f"\n[bold]{escape(str(block.get('summary') or ''))}[/bold]")
+    for number, group in enumerate(block.get("groups") or [], start=1):
+        files = [str(f) for f in group.get("files") or []]
+        plural = "" if len(files) == 1 else "s"
+        console.print(f"  {number}. {len(files)} file{plural}: {escape(', '.join(files))}")
+        bridging = [str(f) for f in group.get("bridging_files") or []]
+        if bridging:
+            # Naming these files says where the group would split if one moved out.
+            console.print(f"     [dim]held together by: {escape(', '.join(bridging))}[/dim]")
+    ungrouped = [str(f) for f in block.get("ungrouped_files") or []]
+    if ungrouped:
+        shown = escape(", ".join(ungrouped[:_UNGROUPED_SHOWN]))
+        cut = len(ungrouped) - _UNGROUPED_SHOWN
+        more = f" and {cut} more" if cut > 0 else ""
+        console.print(f"  Left out of the grouping: {shown}{more}")
+    console.print(f"  [dim]Basis: {escape(str(block.get('basis') or ''))}.[/dim]")
 
 
 def _ordinal(n: int) -> str:
@@ -393,7 +472,7 @@ def _ordinal(n: int) -> str:
     default=200,
     type=click.IntRange(min=0),
     help="Sample this many recent commits to rank the change within the repo "
-    "(0 disables; shows only the absolute calibrated band).",
+    "(0 disables; shows only the absolute per-commit model-score band).",
 )
 @click.option(
     "--exclude",
@@ -418,7 +497,7 @@ def _ordinal(n: int) -> str:
     multiple=True,
     metavar="PATH",
     help="With --target: PR mode. The response leads with a directive naming "
-    "what will break, which co-changes and tests are missing, and what to run.",
+    "structural review candidates, missing co-changes/tests, and what to run.",
 )
 @format_option()
 @full_option()
@@ -433,7 +512,7 @@ def risk_command(
     fmt: str,
     full: bool,
 ) -> None:
-    """Score the defect risk of a change, or of touching some files.
+    """Assess a change's review priority, or the history of named files.
 
     With no --target this scores REVSPEC (a commit, or a ``base..head``
     range) from its diff. Omit REVSPEC to score your uncommitted work, or
@@ -482,11 +561,30 @@ def risk_command(
         )
 
     if fmt == "json":
-        click.echo(json.dumps(change_risk_payload(result), indent=2))
+        payload = change_risk_payload(result, scales=True)
+        groups = _independent_changes_for(repo_path, result, revspec)
+        if groups:
+            payload["independent_changes"] = groups
+        click.echo(json.dumps(payload, indent=2))
         return
 
-    # The headline is the fix record, not the score: the score restates diff
-    # size, so leading with it put the least informative number first.
+    # Lead with the benchmarked population-relative authority. Without a usable
+    # baseline, label the offline absolute band explicitly as the fallback.
+    if percentile is not None and priority is not None:
+        console.print(
+            f"\n[bold]Benchmarked review priority[/bold]: "
+            f"{review_priority_classification(priority)} · "
+            f"{_ordinal(round(percentile))} percentile of recent commits by size and spread"
+        )
+        console.print(f"  [dim]{_PRIORITY_LEAD[priority]}.[/dim]")
+    else:
+        color = {"high": "red", "moderate": "yellow", "low": "green"}[risk.level]
+        console.print(
+            f"\n[bold]Absolute fallback band[/bold]: [{color}]{risk.level}[/{color}] "
+            "(absolute per-commit band — no repo baseline to rank against)"
+        )
+
+    # Fix history remains separate evidence about where the change lands.
     if not result.fix_history_available:
         console.print(
             f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
@@ -494,8 +592,7 @@ def risk_command(
         )
     elif result.hot_files:
         where = (
-            f" · {_ordinal(round(result.fix_percentile))} percentile of this repo's "
-            "fix-bearing files"
+            f" · {_ordinal(round(result.fix_percentile))} percentile of this repo's recent commits"
             if result.fix_percentile is not None
             else ""
         )
@@ -535,22 +632,6 @@ def risk_command(
             "one from a year earlier counts a half.[/dim]"
         )
 
-    # Diff shape second, and labelled for what it measures rather than as a
-    # verdict. The absolute band appears only when no percentile outranks it.
-    if percentile is not None and priority is not None:
-        console.print(
-            f"\n[bold]Diff shape[/bold]: {review_priority_classification(priority)} · "
-            f"{_ordinal(round(percentile))} percentile of recent commits by size and spread"
-        )
-        console.print(f"  [dim]{_PRIORITY_LEAD[priority]}.[/dim]")
-    else:
-        # No usable baseline (shallow repo, --baseline 0): fall back to the
-        # absolute calibrated band, labelled honestly as such.
-        color = {"high": "red", "moderate": "yellow", "low": "green"}[risk.level]
-        console.print(
-            f"\n[bold]Diff shape[/bold]: [{color}]{risk.level}[/{color}] "
-            "(absolute per-commit band — no repo baseline to rank against)"
-        )
     console.print(
         f"  [dim]Diff-size score: {risk.score:.1f}/10 — how big and spread out the change is, "
         f"not where it lands. Corpus-anchored to a single commit.[/dim]"
@@ -569,3 +650,7 @@ def risk_command(
             f"[{push_color}]{sign}{d.contribution:.2f}[/{push_color}]",
         )
     console.print(table)
+
+    groups = _independent_changes_for(repo_path, result, revspec)
+    if groups:
+        _print_independent_changes(groups)
