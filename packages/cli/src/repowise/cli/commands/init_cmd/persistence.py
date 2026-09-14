@@ -327,6 +327,18 @@ def effective_run_mode_for_resume(repo_path: Path, run_mode: str, resume: bool) 
 # ---------------------------------------------------------------------------
 
 
+def apply_git_history_coverage_state(state: dict[str, Any], result: Any) -> None:
+    """Replace achieved Git coverage, clearing stale data when unavailable."""
+    summary = getattr(result, "git_summary", None)
+    if summary is None:
+        return
+    coverage = getattr(summary, "history_coverage", None)
+    if coverage is None:
+        state.pop("git_history_coverage", None)
+    else:
+        state["git_history_coverage"] = coverage.to_dict()
+
+
 def save_full_state_and_config(
     *,
     repo_path: Path,
@@ -380,6 +392,7 @@ def save_full_state_and_config(
     # Full-mode docs runs always index the FULL git tier.
     state["run_mode"] = "standard"
     state["git_tier"] = "full"
+    apply_git_history_coverage_state(state, result)
     # Same pattern as git_tier: `repowise update` reads this back so its
     # graph rebuild keeps the init run's submodule boundary semantics.
     state["include_submodules"] = include_submodules

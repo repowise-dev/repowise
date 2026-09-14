@@ -15,6 +15,7 @@ __all__ = [
     "_FIELD_SEP",
     "_LOG_FORMAT",
     "_RECORD_SEP",
+    "GitHistoryCoverage",
     "GitIndexSummary",
     "RepoTotals",
     "_CommitRec",
@@ -170,6 +171,41 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
 
 
 @dataclass
+class GitHistoryCoverage:
+    """Achieved file-history coverage for one Git indexing run."""
+
+    eligible_files: int = 0
+    files_with_history: int = 0
+    unavailable_files: int = 0
+    retained_commits: int = 0
+    per_file_limit: int = 0
+    global_commits: int = 0
+    deep_commits: int = 0
+    recent_files: int = 0
+    deep_files: int = 0
+    fallback_files: int = 0
+    complete_through_depth: int = 0
+    workers: int = 1
+
+    def to_dict(self) -> dict[str, int]:
+        """Stable JSON shape used by state/progress provenance."""
+        return {
+            "eligible_files": self.eligible_files,
+            "files_with_history": self.files_with_history,
+            "unavailable_files": self.unavailable_files,
+            "retained_commits": self.retained_commits,
+            "per_file_limit": self.per_file_limit,
+            "global_commits": self.global_commits,
+            "deep_commits": self.deep_commits,
+            "recent_files": self.recent_files,
+            "deep_files": self.deep_files,
+            "fallback_files": self.fallback_files,
+            "complete_through_depth": self.complete_through_depth,
+            "workers": self.workers,
+        }
+
+
+@dataclass
 class GitIndexSummary:
     files_indexed: int
     hotspots: int
@@ -194,6 +230,7 @@ class GitIndexSummary:
     # contributor counts instead of deriving them from the bounded sample
     # (issue #730). None when git is unavailable or the repo has no commits.
     repo_totals: RepoTotals | None = None
+    history_coverage: GitHistoryCoverage | None = None
 
 
 _RENAME_RE = re.compile(r"\{(.*?) => (.*?)\}")

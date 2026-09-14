@@ -2288,6 +2288,12 @@ def run_update(
     # paths' ``run`` rows measure the same span.
     timings.stop("run")
     state["phase_timings"] = timings.totals
+    if full_git_summaries:
+        coverage = getattr(full_git_summaries[0], "history_coverage", None)
+        if coverage is not None:
+            state["git_history_coverage"] = coverage.to_dict()
+        else:
+            state.pop("git_history_coverage", None)
     save_state(repo_path, state)
 
     # --- Pending-marker cleanup --------------------------------------------

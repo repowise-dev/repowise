@@ -19,6 +19,9 @@ from repowise.core.ingestion.git_commit_index import (
     load_deep_commit_index,
 )
 from repowise.core.ingestion.git_indexer import GitIndexer
+from repowise.core.ingestion.git_indexer.agent_provenance import (
+    AgentProvenanceClassifier,
+)
 from repowise.core.ingestion.git_indexer.file_history import _parse_per_file_log
 from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
 
@@ -84,13 +87,10 @@ def test_deep_bucket_matches_per_file_fallback(tmp_path) -> None:
             fp,
             commit_limit=2,
             follow_renames=False,
-            provenance_classifier=None,
+            provenance_classifier=AgentProvenanceClassifier(),
         )
-        # The oracle path classifies provenance only when given a classifier;
-        # compare structure first, then provenance separately below.
-        assert [(c.sha, c.ts, c.is_merge, c.added, c.deleted) for c in deep[fp]] == [
-            (c.sha, c.ts, c.is_merge, c.added, c.deleted) for c in oracle
-        ], fp
+        assert oracle is not None
+        assert [_rec_tuple(c) for c in deep[fp]] == [_rec_tuple(c) for c in oracle], fp
 
     # Agent provenance was classified during the deep walk.
     agents = [c.agent for c in deep["old_0.py"]]

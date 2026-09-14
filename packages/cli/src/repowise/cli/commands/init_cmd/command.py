@@ -93,6 +93,7 @@ from .generation import (
     structural_page_summary,
 )
 from .persistence import (
+    apply_git_history_coverage_state,
     build_resume_controller,
     effective_run_mode_for_resume,
     git_tier_for_run_mode,
@@ -1756,6 +1757,7 @@ def init_command(
     # same tier instead of silently upgrading ESSENTIAL → FULL (issue #341).
     base_state["run_mode"] = run_mode
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
+    apply_git_history_coverage_state(base_state, result)
     # Record whether submodules were indexed so `repowise update` rebuilds
     # the graph with the same boundary semantics (same pattern as git_tier:
     # missing → False keeps legacy behavior for old state files).

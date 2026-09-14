@@ -26,19 +26,26 @@ def _quiet(monkeypatch) -> None:
     monkeypatch.setattr(reporting, "show_index_only_completion", lambda **_k: None)
 
 
-def _persist(tmp_path: Path, timings: PhaseTimings | None) -> dict:
+def _persist(
+    tmp_path: Path, timings: PhaseTimings | None, *, full_git_summary=None
+) -> dict:
     from repowise.cli.commands.update_cmd.persistence import _persist_index_only_update
 
+    state = {
+        "last_sync_commit": "0" * 40,
+        "git_history_coverage": {"eligible_files": 99},
+    }
     _persist_index_only_update(
         tmp_path,
         object(),
         {},
         None,
         None,
-        {"last_sync_commit": "0" * 40},
+        state,
         "1" * 40,
         time.monotonic(),
         [],
+        full_git_summary=full_git_summary,
         timings=timings,
     )
     return json.loads((tmp_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
@@ -81,3 +88,27 @@ def test_rescore_gets_its_own_row(tmp_path: Path, monkeypatch) -> None:
 
     assert "rescore" in state["phase_timings"]
     assert state["health_analyzer_version"]
+
+
+def test_incremental_update_preserves_last_full_git_coverage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / ".repowise").mkdir()
+    _quiet(monkeypatch)
+
+    state = _persist(tmp_path, None)
+
+    assert state["git_history_coverage"] == {"eligible_files": 99}
+
+
+def test_unavailable_full_git_refresh_clears_stale_coverage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.core.ingestion.git_indexer.records import GitIndexSummary
+
+    (tmp_path / ".repowise").mkdir()
+    _quiet(monkeypatch)
+
+    state = _persist(tmp_path, None, full_git_summary=GitIndexSummary(0, 0, 0, 0.0))
+
+    assert "git_history_coverage" not in state

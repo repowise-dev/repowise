@@ -78,7 +78,7 @@ from .generation import (
     run_repo_generation,
     structural_page_summary,
 )
-from .persistence import persist_result
+from .persistence import apply_git_history_coverage_state, persist_result
 from .reporting import show_workspace_completion
 
 
@@ -503,6 +503,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     repo_phase_timings: dict[str, float] = callback.timings
     if repo_phase_timings:
         state["phase_timings"] = repo_phase_timings
+    apply_git_history_coverage_state(state, result)
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)

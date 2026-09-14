@@ -479,6 +479,12 @@ def _persist_index_only_update(
         # here is exactly the cost the mode exists to avoid.
         "renderer_fingerprint": _current_renderer_fingerprint(repo_path),
     }
+    if full_git_summary is not None:
+        coverage = getattr(full_git_summary, "history_coverage", None)
+        if coverage is not None:
+            new_state["git_history_coverage"] = coverage.to_dict()
+        else:
+            new_state.pop("git_history_coverage", None)
     # Before save_state, and reading ``state`` (the pre-update dict) for the old
     # pointer: this is what keeps a degraded run recoverable now that the
     # pointer below advances to head regardless.
