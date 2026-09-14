@@ -1,7 +1,7 @@
 # Language Support
 
 **26 languages parsed to a full AST · 40 on the five-rung ladder ·
-framework-aware across all of them.** "Do you support X" has five useful answers
+framework-aware where an ecosystem handler exists.** "Do you support X" has five useful answers
 rather than two, so every language lands on a rung and the rung says what it
 buys you. Everything else in your repo still appears in the wiki and is tracked
 through git history. This page is the "what works for my language today"
