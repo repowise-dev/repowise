@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.cli.commands.update_cmd.deterministic import deterministic_embedder_name
+from repowise.cli.commands.update_cmd import deterministic
+from repowise.cli.commands.update_cmd.deterministic import (
+    deterministic_embedder_name,
+    regenerate_deterministic_page_ids,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -52,3 +56,57 @@ class TestDeterministicEmbedderName:
 
     def test_nothing_configured_is_mock(self) -> None:
         assert deterministic_embedder_name({}) == "mock"
+
+
+def test_exact_structural_refresh_uses_full_context_without_model(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Config:
+        language = "en"
+
+        @classmethod
+        def from_repo_config(cls, _cfg, **kwargs):
+            captured["config"] = kwargs
+            return cls()
+
+    class _Generator:
+        def __init__(self, provider, _assembler, _config, **_kwargs):
+            captured["provider"] = type(provider).__name__
+
+        async def generate_all(self, parsed, source, *_args, only_page_ids=None, **_kwargs):
+            captured["parsed"] = parsed
+            captured["source"] = source
+            captured["only_page_ids"] = only_page_ids
+            return ["scc"]
+
+    import repowise.core.generation as generation
+
+    monkeypatch.setattr(generation, "GenerationConfig", _Config)
+    monkeypatch.setattr(generation, "ContextAssembler", lambda *_a, **_k: object())
+    monkeypatch.setattr(generation, "PageGenerator", _Generator)
+    monkeypatch.setattr(deterministic, "deterministic_embedder_name", lambda _cfg: "mock")
+
+    parsed = [object(), object()]
+    source = {"a.py": b"a", "b.py": b"b"}
+    result = regenerate_deterministic_page_ids(
+        repo_path=tmp_path,
+        parsed_files=parsed,
+        source_map=source,
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        page_ids={"scc_page:scc-current"},
+        cfg={},
+        concurrency=2,
+        degraded=[],
+    )
+
+    assert result == ["scc"]
+    assert captured["provider"] == "TemplateProvider"
+    assert captured["config"]["deterministic"] is True
+    assert captured["config"]["file_pages_only"] is False
+    assert captured["parsed"] == parsed
+    assert captured["source"] == source
+    assert captured["only_page_ids"] == {"scc_page:scc-current"}

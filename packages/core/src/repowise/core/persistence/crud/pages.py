@@ -672,10 +672,49 @@ async def get_stale_pages(
 
 
 #: Page types a scoped ``update`` can re-render for one file. Every other
-#: structural type (cycle, layer, contract, infra) describes the whole
-#: repository and is only written by a full run, so a stale row of those types
-#: is not something an update can clear and must not make it think it can.
+#: Page types the changed-file renderer can refresh from one file path. Whole-
+#: repository deterministic targets are handled separately below by exact id.
 _FILE_SCOPED_PAGE_TYPES = frozenset({"file_page", "symbol_spotlight"})
+
+# Deterministic pages that describe the complete repository rather than one
+# file.  A scoped file render cannot refresh these, but update already rebuilds
+# the complete graph and can render an exact id from that view without a model.
+# Keep this deliberately narrow: module/overview/onboarding pages are
+# model-written and belong to ``repowise generate --stale``; layer pages are
+# retired and swept independently.
+_UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES = frozenset({"scc_page"})
+
+
+async def get_stale_update_targets(
+    session: AsyncSession,
+    repository_id: str,
+) -> tuple[list[str], set[str]]:
+    """Return the stale pages an ordinary update can heal without a model.
+
+    The first item contains file paths for the existing file-scoped renderer.
+    The second contains exact ids for deterministic whole-repository pages,
+    which must be rendered from the complete parsed/graph view.  Returning both
+    from one query keeps the up-to-date fast path to a single store read.
+    """
+    result = await session.execute(
+        select(Page.id, Page.page_type, Page.target_path).where(
+            Page.repository_id == repository_id,
+            Page.page_type.in_(
+                sorted(_FILE_SCOPED_PAGE_TYPES | _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES)
+            ),
+            Page.freshness_status.in_(["stale", "expired"]),
+        )
+    )
+    stale_paths: list[str] = []
+    deterministic_ids: set[str] = set()
+    for page_id, page_type, target_path in result:
+        if page_type in _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES:
+            deterministic_ids.add(page_id)
+            continue
+        file_path = (target_path or "").split("::", 1)[0]
+        if file_path:
+            stale_paths.append(file_path)
+    return list(dict.fromkeys(stale_paths)), deterministic_ids
 
 
 async def get_stale_structural_file_paths(
@@ -691,19 +730,8 @@ async def get_stale_structural_file_paths(
     staleness path uses, so an already-stale page is reconciled even when HEAD
     has not moved.
     """
-    result = await session.execute(
-        select(Page.target_path).where(
-            Page.repository_id == repository_id,
-            Page.page_type.in_(sorted(_FILE_SCOPED_PAGE_TYPES)),
-            Page.freshness_status.in_(["stale", "expired"]),
-        )
-    )
-    stale_paths: list[str] = []
-    for (target_path,) in result:
-        file_path = (target_path or "").split("::", 1)[0]
-        if file_path:
-            stale_paths.append(file_path)
-    return list(dict.fromkeys(stale_paths))
+    stale_paths, _ = await get_stale_update_targets(session, repository_id)
+    return stale_paths
 
 
 def load_stale_structural_file_paths(repo_path: Any) -> list[str]:
@@ -729,6 +757,26 @@ def load_stale_structural_file_paths(repo_path: Any) -> list[str]:
                 lambda: asyncio.run(_load_stale_structural_file_paths_async(path_obj))
             ).result()
     return asyncio.run(_load_stale_structural_file_paths_async(path_obj))
+
+
+def load_stale_update_targets(repo_path: Any) -> tuple[list[str], set[str]]:
+    """Sync entry point returning both file paths and whole-repo page ids."""
+    import asyncio
+    import concurrent.futures
+    from pathlib import Path
+
+    path_obj = Path(repo_path)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                lambda: asyncio.run(_load_stale_update_targets_async(path_obj))
+            ).result()
+    return asyncio.run(_load_stale_update_targets_async(path_obj))
 
 
 async def _load_stale_structural_file_paths_async(repo_path: Any) -> list[str]:
@@ -770,6 +818,42 @@ async def _load_stale_structural_file_paths_async(repo_path: Any) -> list[str]:
             return await get_stale_structural_file_paths(session, repo.id)
     except Exception as exc:
         logger.warning("load_stale_structural_file_paths_failed", error=str(exc))
+        raise
+    finally:
+        await engine.dispose()
+
+
+async def _load_stale_update_targets_async(repo_path: Any) -> tuple[list[str], set[str]]:
+    """Load all no-model stale targets for an ordinary update."""
+    from pathlib import Path
+
+    import structlog
+
+    from ..database import (
+        create_engine,
+        create_session_factory,
+        get_configured_db_url,
+        get_repo_db_path,
+        get_session,
+        resolve_db_url,
+    )
+    from .repository import get_repository_by_path
+
+    logger = structlog.get_logger(__name__)
+    path_obj = Path(repo_path)
+
+    if get_configured_db_url() is None and not get_repo_db_path(path_obj).exists():
+        return [], set()
+
+    engine = create_engine(resolve_db_url(path_obj))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(path_obj))
+            if repo is None:
+                return [], set()
+            return await get_stale_update_targets(session, repo.id)
+    except Exception as exc:
+        logger.warning("load_stale_update_targets_failed", error=str(exc))
         raise
     finally:
         await engine.dispose()

@@ -911,7 +911,15 @@ async def _persist_full_update_async(
                         # free; the operator opts into the spend explicitly via
                         # `generate --stale`.
                         cascade = expand_cascade(seed_ids, "none", deps)
-                        await mark_page_ids_stale(session, repo_id, cascade.stale_ids | seed_ids)
+                        # A no-model structural recovery can have refreshed one
+                        # of these dependents in this same run. The page upsert
+                        # above made it fresh; never decay it again afterwards.
+                        generated_ids = {page.page_id for page in generated_pages}
+                        await mark_page_ids_stale(
+                            session,
+                            repo_id,
+                            (cascade.stale_ids | seed_ids) - generated_ids,
+                        )
             except Exception as exc:
                 _skip("Stale-page decay", exc)
 

@@ -451,7 +451,10 @@ def test_update_decay_paths_use_cascade_dependents(
         _persist_full_update_async(
             repo_path=tmp_path,
             repo_name="repo",
-            generated_pages=[_page("file_page:a.py")],
+            # The SCC was recovered deterministically in this same update. It
+            # appears in the cascade's stale dependents, but the final decay
+            # must not undo the fresh upsert.
+            generated_pages=[_page("file_page:a.py"), _page("scc_page:cycle")],
             file_diffs=[],
             git_meta_map={},
             new_decision_markers=[],
@@ -471,7 +474,6 @@ def test_update_decay_paths_use_cascade_dependents(
     assert recorded["expand_cascade"]["mode"] == "none"
     assert recorded["marked"] == {
         "module_page:pkg",
-        "scc_page:cycle",
         "repo_overview:repo",
         "file_page:src/a.py",
     }

@@ -81,6 +81,54 @@ async def _page_count(session: object, repo_id: str) -> int:
     return int(result.scalar_one())
 
 
+async def _stale_page_counts(session: object, repo_id: str) -> dict[str, int]:
+    """Count stale pages by type without hydrating their rendered content."""
+    from sqlalchemy import func, select
+
+    from repowise.core.persistence.models import Page
+
+    result = await session.execute(  # type: ignore[attr-defined]
+        select(Page.page_type, func.count())
+        .where(
+            Page.repository_id == repo_id,
+            Page.freshness_status.in_(["stale", "expired"]),
+        )
+        .group_by(Page.page_type)
+    )
+    return {str(page_type): int(count) for page_type, count in result.all()}
+
+
+def _stale_page_guidance(counts: dict[str, int]) -> str:
+    """Describe stale work by owner and name commands that can clear it."""
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+
+    total = sum(counts.values())
+    model_written = sum(
+        count for page_type, count in counts.items() if page_type in MODEL_WRITTEN_PAGE_TYPES
+    )
+    structural = total - model_written
+    categories = []
+    if model_written:
+        categories.append(f"{model_written} model-written")
+    if structural:
+        categories.append(f"{structural} structural")
+
+    detail = (
+        f"{total} stale ({', '.join(categories)}) — content no longer matches its "
+        "current inputs or generation selection."
+    )
+    if model_written:
+        detail += (
+            " `repowise generate --stale` is the cheaper refresh for model-written "
+            "pages that are still selected."
+        )
+    detail += (
+        " `repowise update --full` performs the authoritative reconciliation and "
+        "retires pages no longer selected."
+    )
+    return detail + " `--repair` only fixes store drift."
+
+
 async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
     """Every page this repository has, for reconciling against the indexes.
 
@@ -327,6 +375,7 @@ def _run_repo_checks(
 
     # 7. Stale page count
     stale_count = 0
+    stale_counts: dict[str, int] = {}
     if db_ok and page_count > 0:
         try:
 
@@ -336,7 +385,6 @@ def _run_repo_checks(
                     create_session_factory,
                     get_repository_by_path,
                     get_session,
-                    get_stale_pages,
                 )
 
                 url = get_db_url_for_repo(repo_path)
@@ -346,22 +394,20 @@ def _run_repo_checks(
                 async with get_session(sf) as session:
                     repo = await get_repository_by_path(session, str(repo_path))
                     if repo:
-                        stale = await get_stale_pages(session, repo.id)
+                        counts = await _stale_page_counts(session, repo.id)
                         await engine.dispose()
-                        return len(stale)
+                        return counts
                 await engine.dispose()
-                return 0
+                return {}
 
-            stale_count = run_async(_check_stale())
+            stale_counts = run_async(_check_stale())
+            stale_count = sum(stale_counts.values())
             if stale_count:
                 checks.append(
                     _check(
                         "Stale pages",
                         False,
-                        f"{stale_count} stale — pages whose content lags the code "
-                        "(change cascade exceeded the regeneration budget). "
-                        "`repowise update --full` regenerates them; "
-                        "`--repair` cannot, it only fixes store drift.",
+                        _stale_page_guidance(stale_counts),
                     )
                 )
             else:
@@ -863,17 +909,12 @@ def _run_repo_checks(
         repaired_count = run_async(_repair())
         console.print(f"[bold green]Repaired {repaired_count} entries.[/bold green]")
         if stale_count:
-            console.print(
-                "[yellow]Stale pages are not store drift, so --repair leaves them "
-                "alone: they are pages the last docs run could not regenerate "
-                "within its budget. Run `repowise update --full` to clear them.[/yellow]"
-            )
+            console.print(f"[yellow]{_stale_page_guidance(stale_counts)}[/yellow]")
     elif repair and not has_mismatches and not registration_wedged and not agents_need_refresh:
         if stale_count:
             console.print(
-                f"[yellow]No store drift to repair, but {stale_count} stale page(s) "
-                "remain — they are content lag, not drift. `repowise update --full` "
-                "regenerates them.[/yellow]"
+                f"[yellow]No store drift to repair. "
+                f"{_stale_page_guidance(stale_counts)}[/yellow]"
             )
         else:
             console.print("[green]Nothing to repair.[/green]")
