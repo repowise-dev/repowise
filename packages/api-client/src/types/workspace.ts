@@ -37,6 +37,12 @@ export interface WorkspaceSyncResponse {
   results: WorkspaceSyncResult[];
 }
 
+export interface WorkspaceRepoRemovedResponse {
+  ok: boolean;
+  alias: string;
+  remaining_repos: number;
+}
+
 export interface WorkspaceCrossRepoSummary {
   co_change_count: number;
   package_dep_count: number;

@@ -1,10 +1,11 @@
-import { apiGet, apiPost } from "./client";
+import { apiDelete, apiGet, apiPost } from "./client";
 import type {
   WorkspaceResponse,
   WorkspaceContractsResponse,
   WorkspaceContractDetail,
   WorkspaceCoChangesResponse,
   WorkspaceGraphResponse,
+  WorkspaceRepoRemovedResponse,
   WorkspaceSyncResponse,
   WorkspaceSystemGraphResponse,
   WorkspaceBlastRadiusResponse,
@@ -195,3 +196,17 @@ export async function getWorkspaceTestImpact(
     fetchOptions,
   );
 }
+
+/**
+ * Remove a repository entry from `.repowise-workspace.yaml`.
+ */
+export async function removeWorkspaceRepo(
+  alias: string,
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceRepoRemovedResponse> {
+  return apiDelete<WorkspaceRepoRemovedResponse>(
+    `/api/workspace/repos/${encodeURIComponent(alias)}`,
+    fetchOptions,
+  );
+}
+
