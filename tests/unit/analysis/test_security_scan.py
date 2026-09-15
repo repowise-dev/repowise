@@ -236,6 +236,100 @@ class TestScanFile:
         assert len(hits) == 1
         assert hits[0]["severity"] == "low"
 
+    # -- Vendor credential shapes (#2117) ----------------------------------
+
+    @pytest.mark.parametrize(
+        ("source", "expected_kind"),
+        [
+            ('AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n', "aws_access_key"),
+            (
+                'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n',
+                "github_token",
+            ),
+            (
+                "GH_APP_TOKEN = 'ghu_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ'\n",
+                "github_token",
+            ),
+            (
+                'GH_FINE_GRAINED = "github_pat_'
+                + "abcdefghijklmnopqrstuvwxyzABCDEFGHIJabcdefghijklmnopqrstuvwxyzABCDEFGHIJabcdefghij"
+                + '"\n',
+                "github_token",
+            ),
+            ('SLACK_BOT_TOKEN = "xoxb-4721609583-T5Rk9mPz2Qa"\n', "slack_token"),
+            (
+                'GOOGLE_MAPS_API_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"\n',
+                "google_api_key",
+            ),
+            (
+                # Built from parts so the literal "sk_" + "live_" prefix pair
+                # never appears contiguous in source: GitHub's push
+                # protection flags that Stripe prefix on sight, independent
+                # of body entropy.
+                'stripe.api_key = "' + "sk_" + "live_" + "A" * 24 + '"\n',
+                "stripe_key",
+            ),
+        ],
+    )
+    def test_vendor_key_shapes_fire_regardless_of_variable_name(
+        self, source: str, expected_kind: str
+    ) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
+        kinds = {f["kind"] for f in findings}
+        assert expected_kind in kinds
+
+    def test_token_and_access_key_keywords_are_detected(self) -> None:
+        """#2117: ``token`` and ``access_key`` were not in the keyword list."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        for source in (
+            'TOKEN = "a_real_looking_token_value_123"\n',
+            'access_key = "a_real_looking_access_key_456"\n',
+        ):
+            findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
+            assert any(f["kind"] == "hardcoded_secret" for f in findings), source
+
+    def test_client_id_vendor_key_is_caught_by_shape_not_name(self) -> None:
+        """A vendor key is invisible to the keyword list under a name like
+        ``client_id``, so it must be caught by the value shape alone."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'client_id = "AKIAQZXNRTVYWMPKLBHG"\n'
+        findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
+        assert any(f["kind"] == "aws_access_key" for f in findings)
+
+    def test_pem_private_key_with_body_is_flagged(self) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n"
+            "-----END RSA PRIVATE KEY-----\n"
+        )
+        findings = asyncio.run(scanner.scan_file("id_rsa.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "private_key_pem"]
+        assert len(hits) == 1
+        assert hits[0]["line"] == 1
+
+    def test_pem_header_without_body_does_not_fire(self) -> None:
+        """Code that assembles PEM text from the header string alone (no key
+        material) must not be reported."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = (
+            'PEM_HEADER = "-----BEGIN RSA PRIVATE KEY-----"\n'
+            'PEM_FOOTER = "-----END RSA PRIVATE KEY-----"\n'
+        )
+        findings = asyncio.run(scanner.scan_file("pem_templates.py", source, symbols=[]))
+        assert not any(f["kind"] == "private_key_pem" for f in findings)
+
+    def test_vendor_key_shapes_are_gated_by_credential_value_rules(self) -> None:
+        """#2121's value gate must apply to the new vendor kinds too: a
+        low-severity path downgrades severity, same as the keyword kinds."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'
+        findings = asyncio.run(scanner.scan_file("tests/fixtures/keys.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "aws_access_key"]
+        assert len(hits) == 1
+        assert hits[0]["severity"] == "low"
+
     def test_single_line_subprocess_shell_true_is_flagged(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         source = 'subprocess.run("rm -rf " + path, shell=True)\n'

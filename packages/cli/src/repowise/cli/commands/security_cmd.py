@@ -57,7 +57,8 @@ def security_command() -> None:
     default=False,
     help="History mode: also report code-smell patterns (eval, os.system, "
     "weak hashes, ...). By default history mode reports only leaked-secret "
-    "patterns (hardcoded_password / hardcoded_secret) to avoid noise.",
+    "patterns (hardcoded credentials and known vendor key/token/PEM shapes) "
+    "to avoid noise.",
 )
 @format_option(help="Output format. ``json`` is the machine-readable summary.")
 @click.option(
