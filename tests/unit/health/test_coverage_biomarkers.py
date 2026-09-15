@@ -10,6 +10,7 @@ from repowise.core.analysis.health.biomarkers.coverage_gradient import (
 from repowise.core.analysis.health.biomarkers.untested_hotspot import (
     UntestedHotspotDetector,
 )
+from repowise.core.analysis.health.coverage import parse_repowise_json
 
 
 def _ctx(
@@ -128,6 +129,41 @@ def test_coverage_gap_skips_when_no_coverage_data() -> None:
 
 def test_coverage_gap_skips_well_covered() -> None:
     ctx = _ctx(line_cov=85.0, total_lines=200, covered_lines=set(range(1, 171)))
+    assert CoverageGapDetector().detect(ctx) == []
+
+
+def test_coverage_gap_counts_from_the_percentage_when_no_hit_set_is_reported() -> None:
+    # A parser may pin a file with a percentage and a total and no per-line set.
+    # Reading the absent set as "nothing is covered" made 20 real uncovered
+    # lines report as 40/40 and clear the 25-line gate.
+    ctx = _ctx(line_cov=50.0, total_lines=40)
+    assert CoverageGapDetector().detect(ctx) == []
+
+
+def test_coverage_gap_severity_follows_the_percentage_count_not_the_total() -> None:
+    ctx = _ctx(line_cov=25.0, total_lines=120)
+    results = CoverageGapDetector().detect(ctx)
+    assert len(results) == 1
+    assert results[0].details["uncovered_lines"] == 90
+    assert results[0].severity == "medium"
+
+
+def test_coverage_gap_ranks_the_hit_set_ahead_of_the_percentage() -> None:
+    # The set is exact evidence; the percentage is the fallback, and rounded.
+    ctx = _ctx(line_cov=40.0, total_lines=100, covered_lines=set(range(1, 62)))
+    results = CoverageGapDetector().detect(ctx)
+    assert len(results) == 1
+    assert results[0].details["uncovered_lines"] == 39
+
+
+def test_coverage_gap_reads_a_repowise_json_entry_that_omits_the_hit_set() -> None:
+    report = parse_repowise_json(
+        '{"format": "repowise-coverage-v1", "files": {"src/example.py": '
+        '{"line_coverage_pct": 50.0, "total_coverable_lines": 40}}}'
+    )
+    fc = report.files[0]
+    assert fc.covered_lines == []
+    ctx = _ctx(line_cov=fc.line_coverage_pct, total_lines=fc.total_coverable_lines)
     assert CoverageGapDetector().detect(ctx) == []
 
 

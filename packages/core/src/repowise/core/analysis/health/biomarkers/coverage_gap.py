@@ -37,9 +37,12 @@ class CoverageGapDetector:
 
         cov = ctx.line_coverage_pct
         total = ctx.total_coverable_lines
-        uncovered = total - len(ctx.covered_lines or ())
-        # Some parsers don't emit a per-line set; fall back to math.
-        if uncovered <= 0:
+        if ctx.covered_lines:
+            uncovered = max(0, total - len(ctx.covered_lines))
+        else:
+            # Some parsers pin a file with a percentage and a total but no
+            # per-line set; count from the percentage rather than reading the
+            # absent set as "nothing is covered".
             uncovered = round(total * (100.0 - cov) / 100.0)
 
         deep_gap = cov < _LINE_COVERAGE_DEEP_GAP and total >= _MIN_FILE_SIZE
