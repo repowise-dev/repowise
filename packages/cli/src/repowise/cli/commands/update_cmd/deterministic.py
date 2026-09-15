@@ -122,6 +122,51 @@ def regenerate_deterministic_pages(
     )
 
 
+def regenerate_deterministic_page_ids(
+    *,
+    repo_path: Path,
+    parsed_files: list,
+    source_map: dict,
+    graph_builder: Any,
+    repo_structure: Any,
+    git_meta_map: dict,
+    page_ids: set[str],
+    cfg: dict,
+    concurrency: int,
+    degraded: list[str],
+    dead_code_report: Any = None,
+    prior_page_ids: dict | None = None,
+    vector_store: Any = None,
+) -> list:
+    """Render exact deterministic page ids from the complete repository view.
+
+    Used for whole-repository structural pages such as SCCs that cannot be
+    rebuilt from the changed-file slice.  The TemplateProvider guarantees this
+    recovery path makes no LLM calls; ``only_page_ids`` keeps it from rendering
+    unrelated module/overview/onboarding pages while the level ladder reaches
+    the requested structural level.
+    """
+    if not page_ids:
+        return []
+    return _render_pages(
+        repo_path=repo_path,
+        parsed_files=parsed_files,
+        source_map=source_map,
+        graph_builder=graph_builder,
+        repo_structure=repo_structure,
+        git_meta_map=git_meta_map,
+        regenerate_paths=[],
+        cfg=cfg,
+        concurrency=concurrency,
+        degraded=degraded,
+        dead_code_report=dead_code_report,
+        prior_page_ids=prior_page_ids,
+        degrade_label="Structural page refresh",
+        only_page_ids=page_ids,
+        vector_store=vector_store,
+    )
+
+
 def _render_pages(
     *,
     repo_path: Path,
@@ -138,6 +183,8 @@ def _render_pages(
     prior_page_ids: dict | None,
     degrade_label: str,
     full_scope: bool = False,
+    only_page_ids: set[str] | None = None,
+    vector_store: Any = None,
 ) -> list:
     """Render the changed files' pages from structure (free, no LLM).
 
@@ -148,14 +195,15 @@ def _render_pages(
     from repowise.core.providers.llm.template import TemplateProvider
 
     regen_set = set(regenerate_paths)
+    complete_context = full_scope or only_page_ids is not None
     affected_parsed = (
         list(parsed_files)
-        if full_scope
+        if complete_context
         else [pf for pf in parsed_files if pf.file_info.path in regen_set]
     )
     affected_source = (
         dict(source_map)
-        if full_scope
+        if complete_context
         else {p: s for p, s in source_map.items() if p in regen_set}
     )
     if not affected_parsed:
@@ -165,7 +213,7 @@ def _render_pages(
         config = GenerationConfig.from_repo_config(
             cfg,
             deterministic=True,
-            file_pages_only=not full_scope,
+            file_pages_only=not complete_context,
             max_concurrency=concurrency,
             language=cfg.get("language", "en"),
             enable_onboarding=bool(cfg.get("enable_onboarding", True)),
@@ -179,13 +227,13 @@ def _render_pages(
         # leaves that store untouched; full-text search is unaffected either
         # way. It also keeps the lancedb import off the post-commit hook's
         # path, which is the one place in this command that avoids it.
-        vector_store = None
+        resolved_vector_store = vector_store
         embedder_name = deterministic_embedder_name(cfg)
-        if embedder_name != "mock":
+        if resolved_vector_store is None and embedder_name != "mock":
             from repowise.cli.providers import build_embedder, build_vector_store
 
             try:
-                vector_store = build_vector_store(
+                resolved_vector_store = build_vector_store(
                     repo_path, build_embedder(embedder_name, repo_path)
                 )
             except Exception as exc:  # embedding is optional; FTS still indexes
@@ -195,7 +243,7 @@ def _render_pages(
             TemplateProvider(),
             ContextAssembler(config, repo_path=repo_path),
             config,
-            vector_store=vector_store,
+            vector_store=resolved_vector_store,
             language=config.language,
             # Every persisted page id, so interlinking and related-pages can
             # resolve references to pages outside this run's slice. Not a reuse
@@ -217,7 +265,7 @@ def _render_pages(
                     git_meta_map=git_meta_map,
                     repo_path=repo_path,
                     dead_code_report=dead_code_report,
-                    only_page_ids=None,
+                    only_page_ids=only_page_ids,
                 )
             )
     except Exception as exc:

@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from repowise.cli.commands.doctor_cmd import repo_checks
-from repowise.core.persistence import load_stale_structural_file_paths
+from repowise.core.persistence import (
+    get_stale_update_targets,
+    load_stale_structural_file_paths,
+    load_stale_update_targets,
+)
 from repowise.core.workspace.update import check_repo_staleness
 
 
@@ -96,12 +100,8 @@ def test_load_stale_structural_file_paths(tmp_path: Path) -> None:
     assert stale == ["bar.py"]
 
 
-def test_repo_wide_structural_pages_are_not_reported(tmp_path: Path) -> None:
-    """A stale cycle or layer page is only ever rewritten by a full run.
-
-    Reporting it would make every idle update pay a full reparse that cannot
-    clear it, on every run, forever.
-    """
+def test_stale_cycle_is_an_exact_update_target_not_a_file_path(tmp_path: Path) -> None:
+    """A stale SCC wakes update without being mistaken for a source path."""
     from repowise.core.persistence import (
         create_engine,
         create_session_factory,
@@ -112,30 +112,35 @@ def test_repo_wide_structural_pages_are_not_reported(tmp_path: Path) -> None:
 
     repo_path, _ = asyncio.run(_setup_repo_with_pages(tmp_path, []))
 
-    async def _add_stale_layer_page() -> None:
+    async def _add_stale_cycle_page() -> tuple[list[str], set[str]]:
         engine = create_engine(f"sqlite+aiosqlite:///{repo_path / '.repowise' / 'wiki.db'}")
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await upsert_repository(session, name="test_repo", local_path=str(repo_path))
             await upsert_page(
                 session,
-                page_id="layer_page:core",
+                page_id="scc_page:scc-current",
                 repository_id=repo.id,
-                page_type="layer_page",
-                title="Layer: core",
-                content="# core\n",
+                page_type="scc_page",
+                title="Cycle: current",
+                content="# cycle\n",
                 summary="Summary",
-                target_path="core",
+                target_path="scc-current",
                 source_hash="hash",
                 model_name="mock",
                 provider_name="mock",
                 freshness_status="stale",
             )
             await session.commit()
+            targets = await get_stale_update_targets(session, repo.id)
         await engine.dispose()
+        return targets
 
-    asyncio.run(_add_stale_layer_page())
+    paths, page_ids = asyncio.run(_add_stale_cycle_page())
+    assert paths == []
+    assert page_ids == {"scc_page:scc-current"}
     assert load_stale_structural_file_paths(repo_path) == []
+    assert load_stale_update_targets(repo_path) == ([], {"scc_page:scc-current"})
 
 
 def test_load_stale_structural_file_paths_spotlight(tmp_path: Path) -> None:
@@ -183,13 +188,46 @@ def test_doctor_detects_stale_pages_and_clears_after_reconciliation(tmp_path: Pa
     stale_check = next(c for c in checks if c.name == "Stale pages")
     assert stale_check.ok is False
     assert stale_check.detail.startswith("2 stale")
+    assert "2 structural" in stale_check.detail
+    assert "repowise update --full" in stale_check.detail
+    assert "repowise generate --stale" not in stale_check.detail
+    assert "cascade exceeded" not in stale_check.detail
 
     # 2. Verify load_stale_structural_file_paths returns the 2 stale paths
     stale_paths = load_stale_structural_file_paths(repo_path)
     assert sorted(stale_paths) == ["bar.py", "foo.py"]
 
 
-def test_stale_structural_paths_scoped_to_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_stale_guidance_names_each_owner() -> None:
+    detail = repo_checks._stale_page_guidance(
+        {
+            "module_page": 4,
+            "onboarding": 1,
+            "scc_page": 2,
+            "file_page": 3,
+        }
+    )
+
+    assert detail.startswith("10 stale (5 model-written, 5 structural)")
+    assert "repowise generate --stale" in detail
+    assert "repowise update --full" in detail
+    assert "still selected" in detail
+    assert "retires pages no longer selected" in detail
+    assert "current inputs or generation selection" in detail
+    assert "cascade" not in detail
+
+
+def test_doctor_model_only_guidance_keeps_authoritative_fallback() -> None:
+    detail = repo_checks._stale_page_guidance({"module_page": 2})
+
+    assert "repowise generate --stale" in detail
+    assert "repowise update --full" in detail
+    assert "retires pages no longer selected" in detail
+
+
+def test_stale_structural_paths_scoped_to_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """load_stale_structural_file_paths filters by repository_id in a shared database."""
     import git as gitpython
 
