@@ -183,6 +183,64 @@ async def _backfill_git(
     )
 
 
+async def _persist_authoritative_pages(
+    *,
+    session: Any,
+    repository_id: str,
+    generated_pages: list[Any],
+    vector_store: Any,
+) -> list[str]:
+    """Persist a full selection and retire every page outside it."""
+    from repowise.core.persistence import upsert_pages_from_generated
+    from repowise.core.pipeline.persist import tombstone_pages_outside_generation
+
+    await upsert_pages_from_generated(session, generated_pages, repository_id)
+    retired_page_ids = await tombstone_pages_outside_generation(
+        session,
+        repository_id,
+        {page.page_id for page in generated_pages},
+    )
+    if retired_page_ids and vector_store is not None:
+        await vector_store.delete_many(retired_page_ids)
+    return retired_page_ids
+
+
+async def _sync_authoritative_fts(
+    *,
+    engine: Any,
+    repo_path: Path,
+    generated_pages: list[Any],
+    retired_page_ids: list[str],
+) -> None:
+    """Replace full-run FTS content and durably retry retired-id cleanup."""
+    from repowise.core.persistence.search import FullTextSearch
+    from repowise.core.pipeline.cleanup_debt import (
+        clear_cleanup_debt,
+        load_cleanup_debt,
+        record_cleanup_debt,
+    )
+
+    cleanup_ids = set(retired_page_ids) | load_cleanup_debt(repo_path)["fts"]
+    try:
+        fts = FullTextSearch(engine)
+        await fts.ensure_index()
+        if cleanup_ids:
+            await fts.delete_many(sorted(cleanup_ids))
+        for page in generated_pages:
+            await fts.index(
+                page.page_id,
+                page.title,
+                page.content,
+                summary=page.summary,
+                target_path=page.target_path,
+            )
+    except BaseException:
+        record_cleanup_debt(repo_path, "fts", cleanup_ids)
+        raise
+    else:
+        clear_cleanup_debt(repo_path, "fts", cleanup_ids)
+
+
 async def _run_upgrade(
     repo_path: Path,
     provider: Any,
@@ -199,12 +257,10 @@ async def _run_upgrade(
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.generation.cost_tracker import CostTracker
     from repowise.core.persistence import (
-        FullTextSearch,
         create_engine,
         create_session_factory,
         get_session,
         init_db,
-        upsert_pages_from_generated,
         upsert_repository,
     )
     from repowise.core.pipeline import rehydrate_graph_builder
@@ -345,7 +401,18 @@ async def _run_upgrade(
 
     # 6. Persist pages + a GenerationJob marker, then build the FTS index.
     async with get_session(sf) as session:
-        await upsert_pages_from_generated(session, generated_pages, repo_id)
+        # A successful full generation is authoritative for every generated
+        # page type. Retire rows that are absent from its selection even when
+        # their backing file still exists (for example, a once-nontrivial file
+        # that no longer qualifies for a file page). Without this sweep,
+        # `update --full` can report success while doctor keeps reporting those
+        # old rows stale forever.
+        retired_page_ids = await _persist_authoritative_pages(
+            session=session,
+            repository_id=repo_id,
+            generated_pages=generated_pages,
+            vector_store=vector_store,
+        )
         try:
             from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
 
@@ -377,16 +444,12 @@ async def _run_upgrade(
             pass  # job recording is best-effort
 
     try:
-        fts = FullTextSearch(engine)
-        await fts.ensure_index()
-        for page in generated_pages:
-            await fts.index(
-                page.page_id,
-                page.title,
-                page.content,
-                summary=page.summary,
-                target_path=page.target_path,
-            )
+        await _sync_authoritative_fts(
+            engine=engine,
+            repo_path=repo_path,
+            generated_pages=generated_pages,
+            retired_page_ids=retired_page_ids,
+        )
     except BaseException:
         await engine.dispose()
         raise

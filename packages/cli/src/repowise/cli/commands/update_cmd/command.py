@@ -951,12 +951,13 @@ def run_update(
     # forever, and the store is asked only once the git checks would otherwise
     # have exited, so the common case stays free of a store read.
     stale_db_paths: list[str] = []
+    stale_deterministic_ids: set[str] = set()
     if git_is_current:
-        from repowise.core.persistence import load_stale_structural_file_paths
+        from repowise.core.persistence import load_stale_update_targets
 
-        stale_db_paths = load_stale_structural_file_paths(repo_path)
+        stale_db_paths, stale_deterministic_ids = load_stale_update_targets(repo_path)
 
-    if git_is_current and not stale_db_paths:
+    if git_is_current and not stale_db_paths and not stale_deterministic_ids:
         console.print("[green]Already up to date.[/green]")
         # D7: on a template (index-only) wiki, "up to date" is true of the code
         # but the pages are still unwritten. Point at the command that writes
@@ -1179,6 +1180,15 @@ def run_update(
             working_tree_diffs,
         )
 
+    # The up-to-date gate loaded these already. A content-changing run still
+    # has to carry old structural debt forward: otherwise a fresh commit can
+    # repeatedly update file pages while an SCC stranded by an earlier
+    # budget-capped run remains stale forever.
+    if not git_is_current:
+        from repowise.core.persistence import load_stale_update_targets
+
+        stale_db_paths, stale_deterministic_ids = load_stale_update_targets(repo_path)
+
     # A stale page whose file is gone is a deletion the diff walk never saw
     # (the file left in a range an earlier run did not cover, or was never
     # committed). Re-rendering cannot clear it, so hand it to the same
@@ -1203,7 +1213,13 @@ def run_update(
         if absent:
             console.print(f"Stale pages for deleted files: [cyan]{len(absent)}[/cyan]")
 
-    if not file_diffs and not config_changed and not renderer_changed and not stale_db_paths:
+    if (
+        not file_diffs
+        and not config_changed
+        and not renderer_changed
+        and not stale_db_paths
+        and not stale_deterministic_ids
+    ):
         console.print("[green]No changed files detected.[/green]")
         # Always advance the sync pointer so the on-disk freshness marker stays
         # current on no-op syncs. In docs mode, no changed files means no docs
@@ -1409,6 +1425,10 @@ def run_update(
     # until it is retired.
     if stale_db_paths:
         console.print(f"Reconciling stale structural pages: [cyan]{len(stale_db_paths)}[/cyan]")
+    if stale_deterministic_ids:
+        console.print(
+            f"Reconciling stale repository structure: [cyan]{len(stale_deterministic_ids)}[/cyan]"
+        )
     stale_extra = list(dict.fromkeys([*stale_renderer_paths, *stale_db_paths]))
     if stale_extra:
         affected.regenerate = list(dict.fromkeys([*affected.regenerate, *stale_extra]))
@@ -1515,6 +1535,7 @@ def run_update(
             from .deterministic import (
                 load_prior_page_ids,
                 persist_deterministic_pages,
+                regenerate_deterministic_page_ids,
                 regenerate_deterministic_pages,
             )
 
@@ -1544,6 +1565,23 @@ def run_update(
                     prior_page_ids=prior_ids,
                     full_scope=generation_config_changed,
                 )
+                if stale_deterministic_ids and not generation_config_changed:
+                    det_pages.extend(
+                        regenerate_deterministic_page_ids(
+                            repo_path=repo_path,
+                            parsed_files=parsed_files,
+                            source_map=source_map,
+                            graph_builder=graph_builder,
+                            repo_structure=repo_structure,
+                            git_meta_map=git_meta_map,
+                            page_ids=stale_deterministic_ids,
+                            cfg=cfg,
+                            concurrency=concurrency,
+                            degraded=degraded,
+                            dead_code_report=dead_code_report,
+                            prior_page_ids=prior_ids,
+                        )
+                    )
             if generation_config_changed and len(degraded) > degraded_before_render:
                 raise RuntimeError(
                     "Configuration-driven page generation failed; the previous "
@@ -2164,6 +2202,33 @@ def run_update(
 
     if checkpointer.failure:
         degraded.append(f"Per-page crash checkpointing: {checkpointer.failure}")
+
+    # SCC pages are deterministic but describe the complete graph, so the
+    # changed-file generator above cannot safely refresh them. Render only the
+    # stale structural ids from the complete repository view with the template
+    # provider. This performs no model calls and reuses the update's vector
+    # store so semantic search is refreshed with the page.
+    if stale_deterministic_ids and not generation_config_changed:
+        from .deterministic import regenerate_deterministic_page_ids
+
+        with timed(timings, "render.structure"):
+            generated_pages.extend(
+                regenerate_deterministic_page_ids(
+                    repo_path=repo_path,
+                    parsed_files=parsed_files,
+                    source_map=source_map,
+                    graph_builder=graph_builder,
+                    repo_structure=repo_structure,
+                    git_meta_map=git_meta_map,
+                    page_ids=stale_deterministic_ids,
+                    cfg=cfg,
+                    concurrency=concurrency,
+                    degraded=degraded,
+                    dead_code_report=dead_code_report,
+                    prior_page_ids=prior_pages,
+                    vector_store=decision_vector_store,
+                )
+            )
 
     # Flush the buffered LLM cost rows now that generation is done — a single
     # transaction outside the contended generation window (issue #326).

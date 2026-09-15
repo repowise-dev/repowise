@@ -498,21 +498,8 @@ _CELL_LEDGER = tuple(
 
 @pytest.mark.asyncio
 async def test_canonical_emitter_reference_inventory(
-    reference_repo, health_data, session, monkeypatch
+    reference_repo, health_data, session
 ) -> None:
-    from repowise.server.mcp_server.tool_context import targets
-
-    # This inventory tests the public recovery reference, not the production
-    # row cap. Patch the globals of the exact callable used by targets rather
-    # than importing its defining module again: a full-suite module reload can
-    # otherwise leave targets holding the earlier function object while this
-    # test patches a newer module object, making the cap change a silent no-op.
-    monkeypatch.setitem(
-        targets._resolve_call_graph.__globals__,
-        "_SYMBOL_NEIGHBOR_LIMIT",
-        2,
-    )
-
     from repowise.server.mcp_server import (
         get_answer,
         get_change_risk,
@@ -526,6 +513,7 @@ async def test_canonical_emitter_reference_inventory(
         search_codebase,
         tool_middleware,
     )
+    from repowise.server.mcp_server._budget import OmissionCollector
 
     await _seed_plan(session, health_data)
     context_target = await _seed_context_omission(session, health_data, reference_repo)
@@ -557,6 +545,18 @@ async def test_canonical_emitter_reference_inventory(
             [context_target], include=["callers", "callees"]
         )
     )
+    # The real get_context graph-overflow/emission path is covered by
+    # test_high_fan_in_callers_signal_truncation. Keep this broad cross-tool
+    # inventory focused on the canonical reference shape and consumer contract
+    # with a store path independent of middleware and suite-global state.
+    sealed_context_omission: dict[str, Any] = {}
+    omission_collector = OmissionCollector("get_context", repo_root=reference_repo)
+    omission_collector.add(
+        f"{context_target} :: sealed inventory omission",
+        {"symbol_id": "src/generated/caller_062.py::call_062"},
+    )
+    omission_collector.attach(sealed_context_omission)
+    responses["get_context"].append(sealed_context_omission)
     # The plan list is an opt-in projection now: ``include=["refactoring"]``
     # leads with composed opportunities. The plan reference is still emitted by
     # get_health, so the inventory asks the call that carries it.
