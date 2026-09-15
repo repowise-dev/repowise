@@ -38,6 +38,7 @@ from repowise.server.schemas import (
     WorkspaceGraphNode,
     WorkspaceGraphResponse,
     WorkspaceRepoEntry,
+    WorkspaceRepoRemovedResponse,
     WorkspaceResponse,
     WorkspaceSyncResponse,
     WorkspaceSystemGraphResponse,
@@ -1068,3 +1069,80 @@ async def sync_workspace(
         skipped=sum(1 for r in results if r.status == "skipped"),
         errors=sum(1 for r in results if r.status == "error"),
     )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/workspace/repos/{alias}
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/repos/{alias}",
+    response_model=WorkspaceRepoRemovedResponse,
+    status_code=200,
+)
+async def remove_workspace_repo(
+    alias: str,
+    request: Request,
+    ws_config=Depends(get_workspace_config),
+):
+    """Remove a repository from the workspace configuration.
+
+    Drops the repo entry from ``.repowise-workspace.yaml`` and cleans up
+    running server state (session factories, FTS, repo id mappings) so
+    the change takes effect immediately without requiring a restart.
+    """
+    _require_workspace(ws_config)
+
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    if ws_root is None:
+        raise HTTPException(status_code=500, detail="Workspace root missing on app state")
+    ws_root_path = Path(ws_root)
+
+    entry = ws_config.get_repo(alias)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown repo alias '{alias}' in workspace.",
+        )
+
+    # Compute absolute repo path to clean up mappings
+    repo_path_str = str((ws_root_path / entry.path).resolve())
+
+    # Remove from config and save to disk
+    removed = ws_config.remove_repo(alias)
+    if removed is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown repo alias '{alias}' in workspace.",
+        )
+    ws_config.save(ws_root_path)
+
+    # Update live in-memory app state
+    request.app.state.workspace_config = ws_config
+
+    # Clean up associated in-memory references if present
+    path_to_rid = getattr(request.app.state, "workspace_path_to_repo_id", None)
+    repo_id = None
+    if path_to_rid and repo_path_str in path_to_rid:
+        repo_id = path_to_rid.pop(repo_path_str)
+
+    if repo_id is not None:
+        ws_sessions = getattr(request.app.state, "workspace_sessions", None)
+        if ws_sessions and repo_id in ws_sessions:
+            ws_sessions.pop(repo_id, None)
+
+        ws_fts = getattr(request.app.state, "workspace_fts", None)
+        if ws_fts and repo_id in ws_fts:
+            ws_fts.pop(repo_id, None)
+
+        ws_vs = getattr(request.app.state, "workspace_vector_stores", None)
+        if ws_vs and repo_id in ws_vs:
+            ws_vs.pop(repo_id, None)
+
+    return WorkspaceRepoRemovedResponse(
+        ok=True,
+        alias=alias,
+        remaining_repos=len(ws_config.repos),
+    )
+
