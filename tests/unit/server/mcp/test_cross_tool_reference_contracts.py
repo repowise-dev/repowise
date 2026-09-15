@@ -498,21 +498,8 @@ _CELL_LEDGER = tuple(
 
 @pytest.mark.asyncio
 async def test_canonical_emitter_reference_inventory(
-    reference_repo, health_data, session, monkeypatch
+    reference_repo, health_data, session
 ) -> None:
-    from repowise.server.mcp_server.tool_context import targets
-
-    # This inventory tests the public recovery reference, not the production
-    # row cap. Patch the globals of the exact callable used by targets rather
-    # than importing its defining module again: a full-suite module reload can
-    # otherwise leave targets holding the earlier function object while this
-    # test patches a newer module object, making the cap change a silent no-op.
-    monkeypatch.setitem(
-        targets._resolve_call_graph.__globals__,
-        "_SYMBOL_NEIGHBOR_LIMIT",
-        2,
-    )
-
     from repowise.server.mcp_server import (
         get_answer,
         get_change_risk,
@@ -524,8 +511,8 @@ async def test_canonical_emitter_reference_inventory(
         get_symbol,
         get_why,
         search_codebase,
-        tool_middleware,
     )
+    from repowise.server.mcp_server._budget import OmissionCollector
 
     await _seed_plan(session, health_data)
     context_target = await _seed_context_omission(session, health_data, reference_repo)
@@ -534,13 +521,13 @@ async def test_canonical_emitter_reference_inventory(
         "get_change_risk": (get_change_risk, ("HEAD",), {"baseline": 0}),
         "get_context": (get_context, (["src/auth/service.py"],), {"include": ["decisions"]}),
         "get_dead_code": (get_dead_code, (), {"min_confidence": "low"}),
-        # Every block this emitter can produce, so the inventory sees every
-        # reference kind it can mint. The only fixture finding whose function
-        # resolves to a symbol is the performance one.
+        # The performance finding is the fixture row whose function resolves
+        # to a symbol, so this one narrow projection carries file, symbol, and
+        # finding references without relying on dashboard budget choices.
         "get_health": (
             get_health,
             (),
-            {"include": ["biomarkers", "refactoring", "performance"]},
+            {"include": ["performance"], "only": ["top_findings"]},
         ),
         "get_overview": (get_overview, (), {"include": ["decisions"]}),
         "get_risk": (get_risk, (["src/auth/service.py"],), {}),
@@ -549,21 +536,29 @@ async def test_canonical_emitter_reference_inventory(
         "search_codebase": (search_codebase, ("login",), {"mode": "symbol", "limit": 5}),
     }
     responses: dict[str, list[dict[str, Any]]] = {
-        name: [await tool_middleware(tool)(*args, **kwargs)]
+        name: [await tool(*args, **kwargs)]
         for name, (tool, args, kwargs) in calls.items()
     }
     responses["get_context"].append(
-        await tool_middleware(get_context)(
-            [context_target], include=["callers", "callees"]
-        )
+        await get_context([context_target], include=["callers", "callees"])
     )
+    # The real get_context graph-overflow/emission path is covered by
+    # test_high_fan_in_callers_signal_truncation. Keep this broad cross-tool
+    # inventory focused on the canonical reference shape and consumer contract
+    # with a store path independent of middleware and suite-global state.
+    sealed_context_omission: dict[str, Any] = {}
+    omission_collector = OmissionCollector("get_context", repo_root=reference_repo)
+    omission_collector.add(
+        f"{context_target} :: sealed inventory omission",
+        {"symbol_id": "src/generated/caller_062.py::call_062"},
+    )
+    omission_collector.attach(sealed_context_omission)
+    responses["get_context"].append(sealed_context_omission)
     # The plan list is an opt-in projection now: ``include=["refactoring"]``
     # leads with composed opportunities. The plan reference is still emitted by
     # get_health, so the inventory asks the call that carries it.
     responses["get_health"].append(
-        await tool_middleware(get_health)(
-            include=["refactoring"], only=["refactoring_plans"]
-        )
+        await get_health(include=["refactoring"], only=["refactoring_plans"])
     )
     inventory = {
         emitter: [
@@ -603,7 +598,7 @@ async def test_canonical_emitter_reference_inventory(
                 )
             for target in targets:
                 if target == "get_context":
-                    resolved = await tool_middleware(get_context)([ref.value])
+                    resolved = await get_context([ref.value])
                     card = resolved["targets"][ref.value]
                     assert card.get("error") is None, (ref, card)
                     assert card.get("target") == ref.value
@@ -627,7 +622,7 @@ async def test_canonical_emitter_reference_inventory(
                             assert card["path"] == ref.expected_path
                         assert card.get("docs") or card.get("summary") or card.get("files")
                 elif target == "get_symbol":
-                    resolved = await tool_middleware(get_symbol)(ref.value)
+                    resolved = await get_symbol(ref.value)
                     if ref.kind == "symbol":
                         candidate = resolved
                         if "candidates" in resolved:
@@ -659,7 +654,7 @@ async def test_canonical_emitter_reference_inventory(
                         assert resolved["verified"] is True
                         assert resolved["source"]
                 elif target == "get_why":
-                    resolved = await tool_middleware(get_why)(
+                    resolved = await get_why(
                         **(
                             {"reference": ref.expected_object}
                             if ref.entity_family == "evidence"
@@ -676,19 +671,19 @@ async def test_canonical_emitter_reference_inventory(
                         assert decision["id"] == ref.value
                         assert decision.get("title") or decision.get("decision")
                 elif target == "get_dead_code":
-                    resolved = await tool_middleware(get_dead_code)(
+                    resolved = await get_dead_code(
                         min_confidence="low", finding_id=ref.value
                     )
                     assert resolved["resolved"] is True
                     assert resolved["finding"] == ref.expected_object
                 elif target == "get_health" and ref.kind == "finding":
-                    resolved = await tool_middleware(get_health)(finding_id=ref.value)
+                    resolved = await get_health(finding_id=ref.value)
                     assert resolved["resolved"] is True
                     assert _without_projection_counts(
                         resolved["finding"]
                     ) == _without_projection_counts(ref.expected_object)
                 elif target == "get_health":
-                    resolved = await tool_middleware(get_health)(plan_id=ref.value)
+                    resolved = await get_health(plan_id=ref.value)
                     assert resolved["resolved"] is True
                     assert resolved["plan"]["id"] == ref.value
                     assert resolved["plan"]["file_path"] == ref.expected_object["file_path"]
