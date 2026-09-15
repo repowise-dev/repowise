@@ -258,7 +258,7 @@ _TS = LanguageNodeMap(
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_statement"}),
-    case_kinds=frozenset({"switch_case"}),
+    case_kinds=frozenset({"switch_case", "switch_default"}),
     boolean_operator_kinds=frozenset(),
     boolean_operator_text_kinds=frozenset({"binary_expression"}),
     class_kinds=frozenset({"class_declaration", "class", "abstract_class_declaration"}),
@@ -295,8 +295,10 @@ _GO = LanguageNodeMap(
     loop_kinds=frozenset({"for_statement"}),
     try_kinds=frozenset(),
     catch_kinds=frozenset(),
-    switch_kinds=frozenset({"expression_switch_statement", "type_switch_statement"}),
-    case_kinds=frozenset({"expression_case", "type_case", "default_case"}),
+    switch_kinds=frozenset(
+        {"expression_switch_statement", "type_switch_statement", "select_statement"}
+    ),
+    case_kinds=frozenset({"expression_case", "type_case", "default_case", "communication_case"}),
     boolean_operator_kinds=frozenset(),
     boolean_operator_text_kinds=frozenset({"binary_expression"}),
     # No class-level fields: Go methods attach to a type via an external
