@@ -21,6 +21,7 @@ import structlog
 
 from repowise.core.distill import tracking
 from repowise.core.distill.markers import REF_LENGTH, is_valid_ref
+from repowise.core.savings import schema as savings_schema
 from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
 
 logger = structlog.get_logger(__name__)
@@ -35,35 +36,6 @@ DEFAULT_MAX_MB = 50
 
 #: Retry window for a contended open, in milliseconds.
 _BUSY_TIMEOUT_MS = 5000
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS omissions (
-    ref TEXT PRIMARY KEY,
-    content BLOB NOT NULL,
-    source TEXT NOT NULL,
-    created_at REAL NOT NULL,
-    original_tokens INTEGER NOT NULL,
-    kept_tokens INTEGER NOT NULL,
-    access_count INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS evidence_references (
-    ref TEXT PRIMARY KEY,
-    content BLOB NOT NULL,
-    repository TEXT NOT NULL,
-    created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS savings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at REAL NOT NULL,
-    filter TEXT NOT NULL,
-    source TEXT NOT NULL,
-    command TEXT,
-    raw_tokens INTEGER NOT NULL,
-    distilled_tokens INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_omissions_created ON omissions(created_at);
-CREATE INDEX IF NOT EXISTS idx_savings_created ON savings(created_at);
-"""
 
 
 def default_store_path(start: Path | None = None) -> Path:
@@ -107,10 +79,9 @@ class OmissionStore:
         self.ttl_days = ttl_days
         self.max_mb = max_mb
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(db_path)
+        self._conn = sqlite3.connect(db_path, isolation_level=None)
         apply_sqlite_pragmas(self._conn, _BUSY_TIMEOUT_MS)
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        savings_schema.initialize_savings_schema(self._conn)
 
     @classmethod
     def open_default(cls, start: Path | None = None) -> OmissionStore:
@@ -211,9 +182,7 @@ class OmissionStore:
 
     # -- machine-joinable evidence references -----------------------------
 
-    def put_evidence_reference(
-        self, ref: str, content: str, *, repository: str
-    ) -> None:
+    def put_evidence_reference(self, ref: str, content: str, *, repository: str) -> None:
         """Persist one exact evidence object under its canonical public id."""
 
         blob = zlib.compress(content.encode("utf-8"))
@@ -291,8 +260,8 @@ def _filter_lines(content: str, query: str) -> str:
 
     try:
         pattern = re.compile(query)
-        matcher = pattern.search
     except re.error:
-        matcher = lambda line: query in line  # noqa: E731
-    matched = [line for line in content.splitlines() if matcher(line)]
+        matched = [line for line in content.splitlines() if query in line]
+    else:
+        matched = [line for line in content.splitlines() if pattern.search(line)]
     return "\n".join(matched)
