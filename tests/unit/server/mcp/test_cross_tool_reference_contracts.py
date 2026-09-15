@@ -500,11 +500,18 @@ _CELL_LEDGER = tuple(
 async def test_canonical_emitter_reference_inventory(
     reference_repo, health_data, session, monkeypatch
 ) -> None:
-    from repowise.server.mcp_server.tool_context import enrichment
+    from repowise.server.mcp_server.tool_context import targets
 
     # This inventory tests the public recovery reference, not the production
-    # row cap. Force the seeded callers across that boundary deterministically.
-    monkeypatch.setattr(enrichment, "_SYMBOL_NEIGHBOR_LIMIT", 2)
+    # row cap. Patch the globals of the exact callable used by targets rather
+    # than importing its defining module again: a full-suite module reload can
+    # otherwise leave targets holding the earlier function object while this
+    # test patches a newer module object, making the cap change a silent no-op.
+    monkeypatch.setitem(
+        targets._resolve_call_graph.__globals__,
+        "_SYMBOL_NEIGHBOR_LIMIT",
+        2,
+    )
 
     from repowise.server.mcp_server import (
         get_answer,
