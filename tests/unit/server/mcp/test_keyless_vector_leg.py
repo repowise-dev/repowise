@@ -37,7 +37,8 @@ class _RealisticEmbedder:
 
     dimensions = 4
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind
         out = []
         for text in texts:
             raw = [float(text.count(c)) for c in "abcd"]
