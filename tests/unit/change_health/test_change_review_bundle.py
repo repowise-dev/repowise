@@ -16,7 +16,12 @@ import subprocess
 import pytest
 
 from repowise.core.analysis.branch_overlap import BranchOverlap
-from repowise.core.analysis.change_health import GitRevisionSource, MappingRevisionSource
+from repowise.core.analysis.change_health import (
+    ChangeHealthDeltaService,
+    DeltaRequest,
+    GitRevisionSource,
+    MappingRevisionSource,
+)
 from repowise.core.analysis.change_review import (
     CHANGE_REVIEW_CONTRACT_VERSION,
     LANES,
@@ -28,6 +33,7 @@ from repowise.core.analysis.change_review import (
 )
 from repowise.core.analysis.change_risk import assess_change, features_from_file_changes
 from repowise.core.analysis.independent_changes import IndependentChangeEvidence
+from repowise.core.analysis.review_directive import review_directive
 
 from .conftest import Repo, python_complex
 
@@ -318,6 +324,41 @@ def test_no_coverage_map_and_no_candidates_asks_for_coverage(make_repo):
     assert bundle.lanes["tests"].state == "partial"
     kinds = {a.kind for a in bundle.directive.actions}
     assert "establish_test_coverage" in kinds
+
+
+def test_a_supplied_delta_is_used_rather_than_recompared(make_repo):
+    """A surface that runs the comparison concurrently keeps that concurrency."""
+    repo = _two_commit_repo(make_repo)
+    service = ChangeHealthDeltaService(GitRevisionSource(str(repo.path)), repo_path=str(repo.path))
+    precomputed = service.compare(
+        DeltaRequest(repo_path=str(repo.path), revspec="HEAD", extensions=(), exclude_patterns=())
+    )
+
+    bundle = _service(repo).review(
+        ChangeReviewRequest(revspec="HEAD", baseline=0),
+        evidence=ChangeReviewEvidence(health=precomputed),
+    )
+
+    assert bundle.health is precomputed
+    assert bundle.lanes["health"].state in {"available", "partial"}
+    # The directive is decided from the supplied delta, not from a second one.
+    assert bundle.directive.status == review_directive(precomputed).status
+
+
+def test_a_supplied_delta_beats_a_skip(make_repo):
+    """Handing the lane an answer is not the same as asking for it to be skipped."""
+    repo = _two_commit_repo(make_repo)
+    service = ChangeHealthDeltaService(GitRevisionSource(str(repo.path)), repo_path=str(repo.path))
+    precomputed = service.compare(
+        DeltaRequest(repo_path=str(repo.path), revspec="HEAD", extensions=(), exclude_patterns=())
+    )
+
+    bundle = _service(repo).review(
+        ChangeReviewRequest(revspec="HEAD", baseline=0),
+        evidence=ChangeReviewEvidence(health=precomputed, skip=frozenset({"health"})),
+    )
+
+    assert bundle.health is precomputed
 
 
 def test_a_supplied_risk_result_is_used_rather_than_rescored(make_repo):

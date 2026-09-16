@@ -73,6 +73,11 @@ class ChangeReviewEvidence:
     #: A pre-scored change. Omitted, the service scores the change itself when
     #: it has a checkout to score from.
     risk: ChangeRiskResult | None = None
+    #: An already-computed comparison. Omitted, the service runs one. A caller
+    #: that runs the comparison concurrently with its other work -- which every
+    #: real surface does, because it is the expensive half -- hands the result
+    #: in here rather than losing that concurrency to a synchronous lane.
+    health: ChangeHealthDelta | None = None
     contracts: ContractInputs | None = None
     #: The result of ``analyze_test_impact``, uncapped, in its own shape.
     tests: Mapping[str, Any] | None = None
@@ -165,20 +170,23 @@ class ChangeReviewService:
         evidence: ChangeReviewEvidence,
         lanes: dict[str, LaneState],
     ) -> ChangeHealthDelta | None:
-        if "health" in evidence.skip:
+        if evidence.health is not None:
+            delta = evidence.health
+        elif "health" in evidence.skip:
             lanes["health"] = LaneState("unsupported", "the caller skipped this lane")
             return None
-        service = self.delta_service or ChangeHealthDeltaService(
-            self.source, repo_path=self.repo_path
-        )
-        delta = service.compare(
-            DeltaRequest(
-                repo_path=self.repo_path or "",
-                revspec=request.revspec,
-                extensions=request.extensions,
-                exclude_patterns=request.exclude_patterns,
+        else:
+            service = self.delta_service or ChangeHealthDeltaService(
+                self.source, repo_path=self.repo_path
             )
-        )
+            delta = service.compare(
+                DeltaRequest(
+                    repo_path=self.repo_path or "",
+                    revspec=request.revspec,
+                    extensions=request.extensions,
+                    exclude_patterns=request.exclude_patterns,
+                )
+            )
         # The delta's own status already says how complete the comparison was;
         # restating it in a second vocabulary is how the two drift apart.
         lanes["health"] = LaneState(
