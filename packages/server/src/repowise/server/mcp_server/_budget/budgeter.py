@@ -38,6 +38,7 @@ import logging
 import math
 import os
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from repowise.server.mcp_server._budget.collector import OmissionCollector
@@ -182,6 +183,20 @@ def shed_stem(key: str) -> str:
     return key[:-2] if key.endswith("[]") else key
 
 
+@dataclass(frozen=True)
+class _ShedLimits:
+    """The knobs every key in one :func:`fit_to_budget` pass shares."""
+
+    headroom: int
+    char_budget: int | None
+    record_counts: bool
+
+    def exceeded(self, response: dict[str, Any]) -> bool:
+        return over_budget(
+            response, headroom=self.headroom, char_budget=self.char_budget
+        )
+
+
 def fit_to_budget(
     response: dict[str, Any],
     order: Sequence[str],
@@ -208,8 +223,9 @@ def fit_to_budget(
     ``truncated``. Call before the caller's :meth:`OmissionCollector.attach`,
     which is what ``headroom`` reserves for.
     """
+    limits = _ShedLimits(headroom, char_budget, record_counts)
     for key in order:
-        if not over_budget(response, headroom=headroom, char_budget=char_budget):
+        if not limits.exceeded(response):
             break
         container, _, leaf = key.rpartition(".")
         target: Any = response
@@ -218,17 +234,11 @@ def fit_to_budget(
         if not isinstance(target, dict):
             continue
         if leaf.endswith("[]"):
-            _shed_tail(
-                response,
-                target,
-                leaf[:-2],
-                key[:-2],
-                collector,
-                headroom,
-                char_budget,
-                record_counts,
-                bool(entitled and shed_stem(key) in entitled),
-            )
+            rows = target.get(leaf[:-2])
+            keep = 1
+            if entitled and shed_stem(key) in entitled:
+                keep = entitled_floor(len(rows) if isinstance(rows, (list, dict)) else 0)
+            _shed_tail(response, target, leaf[:-2], key[:-2], collector, limits, keep)
         elif target.get(leaf):
             value = target.pop(leaf)
             collector.add(key, value)
@@ -244,21 +254,16 @@ def _shed_tail(
     leaf: str,
     label: str,
     collector: OmissionCollector,
-    headroom: int,
-    char_budget: int | None,
-    record_counts: bool,
-    entitled: bool = False,
+    limits: _ShedLimits,
+    keep: int = 1,
 ) -> None:
-    """Drop ranked rows from the tail of ``container[leaf]`` until it fits."""
+    """Drop ranked rows from the tail of ``container[leaf]`` down to *keep*."""
     rows = container.get(leaf)
     if not isinstance(rows, (list, dict)):
         return
     total = len(rows)
-    floor = entitled_floor(total) if entitled else 1
     dropped: list[Any] = []
-    while len(rows) > floor and over_budget(
-        response, headroom=headroom, char_budget=char_budget
-    ):
+    while len(rows) > keep and limits.exceeded(response):
         if isinstance(rows, list):
             dropped.append(rows.pop())
         else:
@@ -266,7 +271,7 @@ def _shed_tail(
             dropped.append({name: rows.pop(name)})
     if dropped:
         collector.add(label, list(reversed(dropped)))
-        if record_counts:
+        if limits.record_counts:
             prior_reason = container.get(f"{leaf}_reduced_reason")
             collection_total = max(
                 total, int(container.get(f"{leaf}_total") or 0)
