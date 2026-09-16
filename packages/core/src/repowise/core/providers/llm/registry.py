@@ -31,6 +31,7 @@ Custom provider registration:
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -38,6 +39,8 @@ from typing import Any
 
 from repowise.core.providers.llm.base import BaseProvider
 from repowise.core.rate_limiter import PROVIDER_DEFAULTS, RateLimitConfig, RateLimiter
+
+logger = logging.getLogger(__name__)
 
 # Map of provider name → (module_path, class_name)
 # Providers are imported lazily to avoid requiring all dependencies at import time.
@@ -129,6 +132,35 @@ PROVIDER_AUTODETECT_ORDER: tuple[str, ...] = (
 # matrix), and treating one as a real value resolves a provider that cannot
 # possibly authenticate.
 EnvLookup = Callable[[str], "str | None"]
+
+
+def repo_env_lookup(repo_path: Any = None) -> EnvLookup:
+    """An :data:`EnvLookup` that also sees *repo_path*'s ``.repowise/.env``.
+
+    The process environment still wins. Reading the file instead of merging it
+    into ``os.environ`` is what keeps one repo's keys out of another's
+    resolution in a workspace server, which is why ``load_repo_env`` exists.
+
+    Without this, a reporting caller sees only ``os.environ`` and answers
+    "no provider" for a repo whose key ``repowise init`` wrote to
+    ``.repowise/.env`` — the file it writes to by default.
+    """
+    if repo_path is None:
+        return os.environ.get
+    try:
+        from repowise.core.repo_config import RepoConfigError, load_repo_env
+
+        overlay = load_repo_env(repo_path)
+    except RepoConfigError:
+        # A broken .env must surface rather than read as "no key" (#852), the
+        # same way the CLI and server readers report it.
+        logger.warning("Repo .env unreadable for %s; using the environment only", repo_path)
+        return os.environ.get
+    except Exception:
+        return os.environ.get
+    if not overlay:
+        return os.environ.get
+    return lambda key: os.environ.get(key) or overlay.get(key) or None
 
 
 def _clean(value: str | None) -> str | None:
@@ -335,15 +367,24 @@ def provider_available_for_repo(repo_path: Path | str) -> bool:
     Mirrors the CLI's resolution order: an explicit choice is checked for
     usability, auto-detection asks only whether credentials name a provider.
     Reporting-only, so it answers False rather than raising on a broken config.
+
+    Resolution reads the repo's own ``.repowise/.env`` as well as the process
+    environment. Asking ``os.environ`` alone made this disagree with the
+    pipeline, which gates the capture lanes on a real client: a repo with its
+    key in ``.repowise/.env`` was told its ``pr``, ``comment`` and
+    ``git_archaeology`` lanes had no provider while those lanes were running.
     """
     try:
         from repowise.core.repo_config import load_repo_config
 
-        configured = (os.environ.get("REPOWISE_PROVIDER") or "").strip()
+        getenv = repo_env_lookup(repo_path)
+        configured = (getenv("REPOWISE_PROVIDER") or "").strip()
         if not configured:
             configured = str(load_repo_config(repo_path).get("provider") or "").strip()
         if configured:
-            return provider_is_usable(configured)
-        return any(provider_credentials_present(name) for name in PROVIDER_AUTODETECT_ORDER)
+            return provider_is_usable(configured, getenv)
+        return any(
+            provider_credentials_present(name, getenv) for name in PROVIDER_AUTODETECT_ORDER
+        )
     except Exception:
         return False
