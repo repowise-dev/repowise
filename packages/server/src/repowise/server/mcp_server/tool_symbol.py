@@ -47,7 +47,7 @@ import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
@@ -131,32 +131,91 @@ _MAX_CALLEE_DEPTH = 3
 # Total chars of callee source served. Sized against the symbol cap above: a
 # handful of ordinary bodies, and a hub is truncated rather than serialised.
 _CALLEE_CHAR_BUDGET = 24_000
-# Per-hop fan-out cap, applied before any body is read.
+# Per-hop fan-out cap, applied before any body is read. Enforced across the
+# whole frontier, not per node: passing it only to the per-node edge query let a
+# hop of N nodes yield up to 12xN callees, and on a 12-node frontier whose nodes
+# call 14 each the walk produced **144 rows against this documented cap of 12**.
+# The constant's name meant a hop; the code meant a node.
 _MAX_CALLEES_PER_HOP = 12
 # Callee bodies are context for the root symbol, not the subject of the call,
 # so they are bounded tighter than the root's ~600.
 _MAX_CALLEE_BODY_LINES = 150
 
 
-async def _expand_callees(
+class _CalleeHop(NamedTuple):
+    """One hop of the walk: its true graph distance and the rows it produced.
+
+    ``over_cap`` counts rows the per-hop fan-out cap dropped. They are reported
+    as a number rather than as entries: listing them individually is the payload
+    the cap exists to prevent, and saying nothing would make a silent cut out of
+    a bound this module otherwise always makes recoverable. It is a floor over
+    the indexed graph, not a total — the per-node edge query carries its own
+    limit, so callees it never returned are not counted here either.
+    """
+
+    number: int
+    rows: list[WikiSymbol]
+    over_cap: int
+
+
+class _CalleeBody(NamedTuple):
+    """One callee's rendered body, sliced once and costed by its own length.
+
+    ``declared_*`` are the bounds the verified row claims; ``start``/``end`` are
+    what the line cap actually served, so ``end < declared_end`` is exactly the
+    truncation case.
+    """
+
+    source: str
+    start: int
+    end: int
+    declared_start: int
+    declared_end: int
+    verified: bool
+
+
+def _slice_callee_body(row: WikiSymbol, text: str) -> _CalleeBody:
+    """Slice *row* out of *text* under the callee line cap.
+
+    Bounds are checked so ``verified`` is honest, but a correction is not
+    written back here: healing belongs to the read that asked for the symbol,
+    not to a neighbour swept up by a graph walk.
+    """
+    check = check_symbol_bounds(row, text)
+    source, start, end, _total = _slice_text(
+        text, check.start_line, check.end_line, 0, max_lines=_MAX_CALLEE_BODY_LINES
+    )
+    return _CalleeBody(
+        source=_number_lines(source, start),
+        start=start,
+        end=end,
+        declared_start=check.start_line,
+        declared_end=check.end_line,
+        verified=check.verified,
+    )
+
+
+async def _discover_callee_hops(
     session,
     repo_id: str,
     root_row: WikiSymbol,
-    repo_root: Path,
     depth: int,
     exclude_spec: Any,
-    repository: str = "default",
-) -> dict[str, Any] | None:
-    """Breadth-first walk of the call graph from *root_row*, bodies included.
+) -> list[_CalleeHop]:
+    """Walk the call graph and return the rows of each hop, no bodies read.
+
+    Discovery is separate from rendering so the renderer knows, before it
+    spends the first character, how many hops actually produced rows. Reserving
+    a slice of the budget for a hop that turns out to be empty costs a body
+    that would otherwise have been served.
 
     Symbol graph nodes are keyed by the same ``"{path}::{Name}"`` string as
     ``WikiSymbol.symbol_id``, so each hop is one edge query plus one row query
-    regardless of fan-out. Every symbol is served at most once and at the
-    shallowest depth it was reached from, which keeps a diamond in the call
-    graph from being serialised twice.
-
-    Returns None when the root has no outbound call edges, so the caller adds
-    no empty block to an ordinary response.
+    regardless of fan-out. Every symbol is reached at most once, at the
+    shallowest depth that reaches it, which keeps a diamond in the call graph
+    from being serialised twice. A symbol past the per-hop fan-out cap is not
+    re-offered at a deeper hop: it would then be labelled with a distance that
+    is not its own. It is counted in ``over_cap`` instead.
     """
     from repowise.core.persistence.crud import get_graph_edges_for_node
     from repowise.server.mcp_server.tool_context.enrichment import (
@@ -166,15 +225,13 @@ async def _expand_callees(
 
     seen: set[str] = {root_row.symbol_id}
     frontier = [root_row.symbol_id]
-    entries: list[dict[str, Any]] = []
-    omitted: list[dict[str, Any]] = []
-    text_cache: dict[str, str | None] = {}
-    remaining = _CALLEE_CHAR_BUDGET
+    hops: list[_CalleeHop] = []
 
-    for hop in range(1, depth):
+    for hop_number in range(1, depth):
         if not frontier:
             break
         next_ids: list[str] = []
+        confidence_of: dict[str, float] = {}
         for node_id in frontier:
             edges = await get_graph_edges_for_node(
                 session,
@@ -190,6 +247,7 @@ async def _expand_callees(
                 if e.target_node_id not in seen:
                     seen.add(e.target_node_id)
                     next_ids.append(e.target_node_id)
+                    confidence_of[e.target_node_id] = e.confidence or 0
         if not next_ids:
             break
 
@@ -200,75 +258,162 @@ async def _expand_callees(
             )
         )
         rows = [r for r in res.scalars().all() if not is_excluded(r.file_path, exclude_spec)]
+        # The cap the constant documents: one hop, not one frontier node. It is
+        # applied *after* the row lookup and the exclusion filter, so a dangling
+        # edge or an excluded path cannot spend a slot — cutting the ids first
+        # let a hop whose twelve most confident targets all sat under an
+        # excluded prefix come back empty while valid callees waited behind it.
+        # The cut itself is ranked by edge confidence, which is the contract
+        # ``get_graph_edges_for_node`` already documents for its own limit: an
+        # unranked cut is deterministic and still the wrong rows.
+        rows.sort(key=lambda r: (-confidence_of.get(r.symbol_id or "", 0.0), r.symbol_id or ""))
+        over_cap = max(len(rows) - _MAX_CALLEES_PER_HOP, 0)
+        rows = rows[:_MAX_CALLEES_PER_HOP]
         # Stable order so the same call returns the same payload twice.
         rows.sort(key=lambda r: (r.file_path or "", r.start_line or 0, r.symbol_id or ""))
+        if rows:
+            # The hop number is carried, not inferred from the position in this
+            # list: a hop whose rows were all excluded or all dangling would
+            # otherwise renumber every hop behind it, and a grandchild would be
+            # served claiming to be a direct callee.
+            hops.append(_CalleeHop(number=hop_number, rows=rows, over_cap=over_cap))
+        frontier = next_ids
 
-        for row in rows:
+    return hops
+
+
+async def _expand_callees(
+    session,
+    repo_id: str,
+    root_row: WikiSymbol,
+    repo_root: Path,
+    depth: int,
+    exclude_spec: Any,
+    repository: str = "default",
+) -> dict[str, Any] | None:
+    """Breadth-first walk of the call graph from *root_row*, bodies included.
+
+    Bodies are served against a per-hop share of the character budget rather
+    than in loop order. Spending in loop order meant every hop-1 body was
+    served before hop 2 was reached, so a handful of large direct callees
+    exhausted the budget and the deeper hops the caller asked for arrived as
+    references. Measured on a 20x3 hub: 10 hop-1 bodies and **zero** at hop 2;
+    with a reserved share, 5 and 5.
+
+    The reservation is taken only across hops that discovery found rows for,
+    and whatever the reserve leaves unspent is refilled to the bodies it
+    deferred, in hop order — so a direct callee is first in line for a share
+    the deeper hops did not use. Both matter: a naive reserve cost a two-leaf
+    root at depth 3 one of its two bodies in exchange for a hop 2 that was
+    empty, and a reserve that only bound the shallow hops let hop 2 drain the
+    budget a deferred hop-1 body was waiting on.
+
+    Returns None when the root has no outbound call edges, so the caller adds
+    no empty block to an ordinary response.
+    """
+    hops = await _discover_callee_hops(session, repo_id, root_row, depth, exclude_spec)
+    if not hops:
+        return None
+
+    text_cache: dict[str, str | None] = {}
+    remaining = _CALLEE_CHAR_BUDGET
+    reserve_per_hop = _CALLEE_CHAR_BUDGET // len(hops)
+    # One ordered record per discovered row, ``(entry, file_path, body)``, with
+    # ``body`` None when the file could not be read. Order is fixed here so the
+    # refill pass cannot reshuffle the payload, and each body is sliced once so
+    # its cost and what is emitted can never disagree.
+    prepared: list[tuple[dict[str, Any], str, _CalleeBody | None]] = []
+    for hop in hops:
+        for row in hop.rows:
             entry: dict[str, Any] = {
                 "symbol_id": symbol_identity(row.symbol_id),
                 "name": row.name,
                 "file": row.file_path,
                 "kind": row.kind,
                 "signature": _clean_symbol_signature(row.signature),
-                "depth": hop,
+                "depth": hop.number,
             }
             if row.file_path not in text_cache:
                 text_cache[row.file_path] = _read_file_text(repo_root, row.file_path)
             text = text_cache[row.file_path]
-            if text is None:
-                entry["note"] = "source file could not be read"
-                omitted.append(entry)
-                continue
+            body = None if text is None else _slice_callee_body(row, text)
+            prepared.append((entry, row.file_path, body))
 
-            # Bounds are checked so ``verified`` is honest, but a correction is
-            # not written back here: healing belongs to the read that asked for
-            # the symbol, not to a neighbour swept up by a graph walk.
-            check = check_symbol_bounds(row, text)
-            source, start, end, _total = _slice_text(
-                text, check.start_line, check.end_line, 0, max_lines=_MAX_CALLEE_BODY_LINES
+    def _render(entry: dict[str, Any], file_path: str, body: _CalleeBody) -> None:
+        entry.update(
+            {
+                "start_line": body.start,
+                "end_line": body.end,
+                "source": body.source,
+                "verified": body.verified,
+            }
+        )
+        if body.end < body.declared_end:
+            entry["truncated"] = True
+            continuation_reference = source_reference(
+                repository,
+                file_path,
+                lines=[body.end + 1, body.declared_end],
+                verification_basis="live",
+                source_kind="source",
             )
-            numbered = _number_lines(source, start)
-            if len(numbered) > remaining:
-                # Out of budget: name the read that fetches it rather than
-                # dropping the symbol silently.
-                fetch_reference = source_reference(
-                    repository,
-                    row.file_path,
-                    lines=[check.start_line, check.end_line],
-                    verification_basis="live",
-                    source_kind="source",
-                )
-                entry["fetch_with"] = fetch_reference["id"]
-                entry["fetch_reference"] = fetch_reference
-                omitted.append(entry)
+            entry["continuation"] = continuation_reference["id"]
+            entry["continuation_reference"] = continuation_reference
+
+    # Pass 1: every hop spends its own share and no more — including the last,
+    # which is why this is a cap and not a floor. Subtracting only the shares
+    # still owed to *deeper* hops let unspent budget flow forward: a hop-1 body
+    # one character over its share was deferred, the deeper hops then drained
+    # everything behind it, and the direct callee — the most relevant body in
+    # the response — came back as a reference. That is worse than the code this
+    # replaces. Leftovers are redistributed by pass 2 instead, in hop order.
+    for hop in hops:
+        spendable = min(reserve_per_hop, remaining)
+        for entry, file_path, body in prepared:
+            if entry["depth"] != hop.number or body is None or "source" in entry:
                 continue
-            remaining -= len(numbered)
-            entry.update(
-                {
-                    "start_line": start,
-                    "end_line": end,
-                    "source": numbered,
-                    "verified": check.verified,
-                }
-            )
-            if end < check.end_line:
-                entry["truncated"] = True
-                continuation_reference = source_reference(
-                    repository,
-                    row.file_path,
-                    lines=[end + 1, check.end_line],
-                    verification_basis="live",
-                    source_kind="source",
-                )
-                entry["continuation"] = continuation_reference["id"]
-                entry["continuation_reference"] = continuation_reference
+            if len(body.source) > spendable:
+                continue
+            _render(entry, file_path, body)
+            remaining -= len(body.source)
+            spendable -= len(body.source)
+
+    # Pass 2: a reserve nobody claimed goes back to whatever it deferred, in
+    # hop order, so an empty deeper hop costs the caller nothing.
+    for entry, file_path, body in prepared:
+        if body is None or "source" in entry or len(body.source) > remaining:
+            continue
+        _render(entry, file_path, body)
+        remaining -= len(body.source)
+
+    entries: list[dict[str, Any]] = []
+    omitted: list[dict[str, Any]] = []
+    for entry, file_path, body in prepared:
+        if "source" in entry:
             entries.append(entry)
+        elif body is None:
+            entry["note"] = "source file could not be read"
+            omitted.append(entry)
+        else:
+            # Out of budget: name the read that fetches it rather than
+            # dropping the symbol silently.
+            fetch_reference = source_reference(
+                repository,
+                file_path,
+                lines=[body.declared_start, body.declared_end],
+                verification_basis="live",
+                source_kind="source",
+            )
+            entry["fetch_with"] = fetch_reference["id"]
+            entry["fetch_reference"] = fetch_reference
+            omitted.append(entry)
 
-        frontier = next_ids
-
-    if not entries and not omitted:
-        return None
     block: dict[str, Any] = {"depth": depth, "callees": entries}
+    fan_out_capped = [
+        {"depth": hop.number, "omitted": hop.over_cap} for hop in hops if hop.over_cap
+    ]
+    if fan_out_capped:
+        block["fan_out_capped"] = fan_out_capped
     if omitted:
         block["not_rendered"] = omitted
         block["note"] = (
