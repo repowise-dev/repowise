@@ -27,7 +27,13 @@ from .models import (
     ScopeCounts,
 )
 from .perf_delta import PerfOpportunityView, index_by_finding, opportunities_for
-from .sources import FileChange, GitRevisionSource, RevisionPair, RevisionSource
+from .sources import (
+    FileChange,
+    GitRevisionSource,
+    RevisionPair,
+    RevisionSource,
+    filter_changes,
+)
 
 #: Changed files above this count are refused rather than analysed twice.
 MAX_CHANGED_FILES = 300
@@ -338,25 +344,11 @@ class ChangeHealthDeltaService:
 
 def _filter(changes: list[FileChange], request: DeltaRequest) -> list[FileChange]:
     """Apply the caller's extension and exclusion filters to the change set."""
-    import pathspec
-
-    spec = (
-        pathspec.PathSpec.from_lines("gitwildmatch", request.exclude_patterns)
-        if request.exclude_patterns
-        else None
+    return filter_changes(
+        changes,
+        extensions=request.extensions,
+        exclude_patterns=request.exclude_patterns,
     )
-    exts = {e if e.startswith(".") else f".{e}" for e in request.extensions}
-    out = []
-    for change in changes:
-        path = change.head_path or change.base_path or ""
-        if not path:
-            continue
-        if spec is not None and spec.match_file(path):
-            continue
-        if exts and not any(path.endswith(e) for e in exts):
-            continue
-        out.append(change)
-    return out
 
 
 def _skip_reason(change: FileChange) -> str:

@@ -36,6 +36,7 @@ from .sources import (
     MappingRevisionSource,
     RevisionPair,
     RevisionSource,
+    filter_changes,
 )
 
 __all__ = [
@@ -64,6 +65,7 @@ __all__ = [
     "RevisionSource",
     "ScopeCounts",
     "change_finding_id",
+    "filter_changes",
     "finding_key",
     "opportunities_for",
 ]

@@ -325,6 +325,39 @@ class MappingRevisionSource:
         return {path: self._head[path] for path in paths if path in self._head}
 
 
+def filter_changes(
+    changes: list[FileChange],
+    *,
+    extensions: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
+) -> list[FileChange]:
+    """Drop the changes a caller's extension and exclusion filters exclude.
+
+    One implementation, because a change the health comparison counted and one
+    the change manifest counted have to be the same change; two copies of this
+    rule drift the moment either grows a case.
+    """
+    import pathspec
+
+    spec = (
+        pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
+        if exclude_patterns
+        else None
+    )
+    exts = {e if e.startswith(".") else f".{e}" for e in extensions}
+    return [change for change in changes if _counts(change, spec, exts)]
+
+
+def _counts(change: FileChange, spec: object | None, exts: set[str]) -> bool:
+    """Whether *change* survives the caller's filters. One path, one decision."""
+    path = change.head_path or change.base_path or ""
+    if not path:
+        return False
+    if spec is not None and spec.match_file(path):  # type: ignore[attr-defined]
+        return False
+    return not exts or any(path.endswith(ext) for ext in exts)
+
+
 def _iter_name_status(raw: str) -> Iterator[tuple[str, str, str]]:
     """Yield ``(code, base_path, head_path)`` from ``--name-status -z`` output."""
     fields = [f for f in raw.split("\0") if f != ""]
