@@ -55,7 +55,7 @@ class ResponseBudgetContract:
 
 
 #: Arguments whose presence asks for the projection that answers them.
-_IMPLICIT_REQUEST_ARGUMENTS = ("query", "id", "reference", "changed_files")
+_IMPLICIT_REQUEST_ARGUMENTS = ("query", "id", "reference", "changed_files", "targets")
 
 
 #: What a tool gets when it declares no priority of its own. An empty shed
@@ -99,7 +99,10 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
                     "pr_blast_radius.guarding_tests",
                 ),
             ),
-            ("graph", ("targets[]",)),
+            # targets is required, so it is always asked for. Without this the
+            # deferred PR blocks jump ahead of it and the rows the caller
+            # named become the first thing trimmed.
+            ("targets", ("targets[]",)),
         ),
     ),
     "get_change_risk": ResponseBudgetContract(
@@ -461,6 +464,11 @@ def _requested_shed_keys(
     include = bound.get("include") or ()
     if isinstance(include, str):
         include = (include,)
+    elif not isinstance(include, (list, tuple, set, frozenset)):
+        # This layer sits outside the failure shield, so a caller passing a
+        # non-iterable must not raise here: that reaches the agent as a
+        # protocol-level isError.
+        include = ()
     asked = {str(token) for token in include}
     asked.update(name for name in _IMPLICIT_REQUEST_ARGUMENTS if bound.get(name))
 
@@ -474,14 +482,21 @@ def _requested_shed_keys(
 def _prioritised_shed_order(
     order: tuple[str, ...], requested: frozenset[str]
 ) -> tuple[str, ...]:
-    """Move what the caller asked for to the back of the shed order."""
+    """Move what the caller asked for to the back of the shed order.
+
+    Within that tail every trimmable key runs before any whole-block drop, so
+    two requested blocks cannot end with one trimmed to its floor and the
+    other dropped entirely. Relative order is otherwise preserved.
+    """
     if not requested:
         return order
     deferred = tuple(key for key in order if shed_stem(key) in requested)
     if not deferred:
         return order
     kept = tuple(key for key in order if shed_stem(key) not in requested)
-    return kept + deferred
+    trimmable = tuple(key for key in deferred if key.endswith("[]"))
+    whole = tuple(key for key in deferred if not key.endswith("[]"))
+    return kept + trimmable + whole
 
 
 def _stamp_accounting(result: dict[str, Any], *, limit: int, tier: str) -> None:

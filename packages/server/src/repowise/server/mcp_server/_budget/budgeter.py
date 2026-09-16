@@ -183,6 +183,13 @@ def shed_stem(key: str) -> str:
     return key[:-2] if key.endswith("[]") else key
 
 
+def _rows_to_keep(rows: Any, requested: bool) -> int:
+    """Tail-shed floor for one collection: its entitlement, or one row."""
+    if not requested or not isinstance(rows, (list, dict)):
+        return 1
+    return entitled_floor(len(rows))
+
+
 @dataclass(frozen=True)
 class _ShedLimits:
     """The knobs every key in one :func:`fit_to_budget` pass shares."""
@@ -224,6 +231,7 @@ def fit_to_budget(
     which is what ``headroom`` reserves for.
     """
     limits = _ShedLimits(headroom, char_budget, record_counts)
+    requested = entitled or frozenset()
     for key in order:
         if not limits.exceeded(response):
             break
@@ -234,10 +242,7 @@ def fit_to_budget(
         if not isinstance(target, dict):
             continue
         if leaf.endswith("[]"):
-            rows = target.get(leaf[:-2])
-            keep = 1
-            if entitled and shed_stem(key) in entitled:
-                keep = entitled_floor(len(rows) if isinstance(rows, (list, dict)) else 0)
+            keep = _rows_to_keep(target.get(leaf[:-2]), shed_stem(key) in requested)
             _shed_tail(response, target, leaf[:-2], key[:-2], collector, limits, keep)
         elif target.get(leaf):
             value = target.pop(leaf)
@@ -311,21 +316,24 @@ def _record_reduction(
 
     reductions = response.setdefault("_meta", {}).setdefault("reductions", [])
 
-    def visit(node: Any, node_path: str) -> None:
+    def visit(node: Any, node_path: str, parent: dict[str, Any], name: str) -> None:
         if isinstance(node, list):
+            # An earlier tail-shed may already have trimmed this list and left
+            # the population beside it. Reporting len() here would count only
+            # what the trim left, not what the caller lost overall.
             reductions.append(
                 {
                     "field": node_path,
-                    "total": len(node),
+                    "total": max(len(node), int(parent.get(f"{name}_total") or 0)),
                     "emitted": 0,
                     "reason": "response_budget",
                 }
             )
         elif isinstance(node, dict):
-            for name, child in node.items():
-                visit(child, f"{node_path}.{name}")
+            for child_name, child in node.items():
+                visit(child, f"{node_path}.{child_name}", node, child_name)
 
-    visit(value, path)
+    visit(value, path, container, field)
 
 
 def _with_budget_reason(prior_reason: Any) -> str:

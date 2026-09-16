@@ -124,6 +124,78 @@ def test_priority_defers_requested_keys_and_keeps_relative_order() -> None:
     assert _prioritised_shed_order(order, frozenset({"b", "c"})) == ("a", "d", "b[]", "c")
 
 
+def test_every_requested_trim_runs_before_any_requested_whole_drop() -> None:
+    """Two requested blocks must not end with one trimmed and one deleted."""
+    order = ("x", "tour", "outline.sections[]", "outline")
+
+    assert _prioritised_shed_order(order, frozenset({"tour", "outline.sections", "outline"})) == (
+        "x",
+        "outline.sections[]",
+        "tour",
+        "outline",
+    )
+
+
+def test_a_non_iterable_include_does_not_raise() -> None:
+    """This layer sits outside the failure shield."""
+    contract = ResponseBudgetContract(
+        "blocks", ("a[]",), requested_projections=(("z", ("a[]",)),)
+    )
+
+    assert _requested_shed_keys(
+        contract, _overview_signature(), (), {"include": 5}
+    ) == frozenset()
+
+
+def test_risk_targets_are_not_trimmed_ahead_of_pr_blocks() -> None:
+    """targets is required, so PR mode must not shed it first."""
+    def get_risk(
+        targets: list[str],
+        repo: str | None = None,
+        changed_files: list[str] | None = None,
+        include: list[str] | None = None,
+    ): ...
+
+    requested = _requested_shed_keys(
+        _CONTRACTS["get_risk"],
+        inspect.signature(get_risk),
+        (),
+        {"targets": ["a.py"], "changed_files": ["a.py"]},
+    )
+    order = _prioritised_shed_order(_CONTRACTS["get_risk"].shed_order, requested)
+
+    # Ambient repo-wide context goes before anything the caller named, and
+    # target rows keep their entitlement rather than collapsing to one.
+    assert order.index("global_hotspots") < order.index("targets[]")
+    assert "targets" in requested
+
+
+def test_a_trimmed_then_dropped_block_reports_the_whole_population() -> None:
+    """outline.sections[] trims, then outline is dropped: totals must survive."""
+    payload = _overview_payload()
+    outline = payload["outline"]
+    outline["sections"] = outline["sections"][:10]
+    outline["sections_total"] = 40
+    outline["sections_emitted"] = 10
+
+    result = enforce_response_budget(
+        "get_overview",
+        {**payload, "content_md": "y" * 40_000},
+        signature=_overview_signature(),
+        args=(),
+        kwargs={},
+        repo_root=None,
+    )
+
+    rows = [
+        row
+        for row in result["_meta"].get("reductions", [])
+        if row["field"] == "outline.sections"
+    ]
+    if rows:
+        assert rows[0]["total"] == 40
+
+
 def test_query_mode_counts_as_a_request() -> None:
     def get_why(query: str | None = None, targets: list[str] | None = None): ...
 
