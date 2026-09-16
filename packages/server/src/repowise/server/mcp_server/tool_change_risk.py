@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import subprocess
 import threading
 import time
 from collections import OrderedDict
-from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
 import pathspec
 import structlog
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 from repowise.core.analysis.change_health.service import (
     ChangeHealthDeltaService,
@@ -27,6 +25,16 @@ from repowise.core.analysis.change_risk import (
     score_live_change,
 )
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
+from repowise.core.analysis.prior_fix_impact import (
+    FixRecord,
+    PriorFixFile,
+    PriorFixImpact,
+    dominant_file,
+    parse_old_ranges,
+    summarize_prior_fixes,
+    unavailable_prior_fixes,
+    unsupported_prior_fixes,
+)
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._budget.contracts import response_budget_shed_order
@@ -775,14 +783,80 @@ async def _prior_fixes_block(ctx: Any, changed: dict[str, set[int]]) -> dict[str
     per-file fix count beside it carries no such caveat.
 
     Silent (``None``) when the index has no fix events for these files at all,
-    so a repo without the feature grows no noise block.
+    so a repo without the feature grows no noise block. A read that *failed* is
+    not silent: it renders with ``status: "unavailable"``, because "we could not
+    look" and "nothing has broken here" are opposite claims about the change.
+    """
+    impact = await _read_prior_fixes(ctx, changed)
+    if impact.status == "unsupported" or (impact.status == "available" and impact.is_empty):
+        return None
+    if impact.status != "available":
+        return {
+            "status": impact.status,
+            "reason": impact.reason,
+            "summary": (
+                "The bug-fix record for these files could not be read, so this "
+                "change is not cleared of a fix-prone history."
+            ),
+        }
+
+    shown = impact.files[:_PRIOR_FIXES_LIMIT]
+    block = {
+        "files": [_prior_fix_row(f) for f in shown],
+        "truncated": len(impact.files) > _PRIOR_FIXES_LIMIT,
+        "total_fixes": impact.total_fixes,
+        "files_with_fixes": impact.files_with_fixes,
+        "changed_lines_in_fixed_files": impact.changed_lines_in_fixed_files,
+        "line_overlap": impact.line_overlap_basis,
+        "summary": (
+            f"{impact.total_fixes} past bug-fix commit(s) touched "
+            f"{impact.files_with_fixes} of the changed file(s). "
+            "Line overlap is approximate (past ranges are numbered on their own "
+            "parent commit); the per-file counts are not."
+        ),
+    }
+    # Only over the files actually returned, so the sentence never names a path
+    # the reader cannot find anywhere else in the block.
+    top = dominant_file(shown)
+    if top is not None:
+        block["concentration"] = (
+            f"{top.file_path} carries {top.share_of_change:.0%} of the changed lines "
+            f"and {top.fix_count} past bug fix(es)."
+        )
+    return block
+
+
+def _prior_fix_row(entry: PriorFixFile) -> dict[str, Any]:
+    """One core row on the wire, keeping the historical key set and order."""
+    row: dict[str, Any] = {
+        "file_path": entry.file_path,
+        "fix_count": entry.fix_count,
+        "overlapping_lines": entry.overlapping_lines,
+        "changed_lines": entry.changed_lines,
+        "share_of_change": entry.share_of_change,
+    }
+    # Absent rather than null when no event carried a date, as before.
+    if entry.last_fix_days_ago is not None:
+        row["last_fix_days_ago"] = entry.last_fix_days_ago
+    return row
+
+
+async def _read_prior_fixes(ctx: Any, changed: dict[str, set[int]]) -> PriorFixImpact:
+    """Collect fix events from the index. Collection only; core summarizes.
+
+    The four ways this can come back empty are not one state. An index that
+    predates fix events has nothing to read (``unsupported``), while a query
+    that failed means the record exists and was not read (``unavailable``).
+    Collapsing those is how a failure reads as a clean bill.
     """
     from repowise.core.persistence.database import get_session
     from repowise.core.persistence.models import FixEvent
 
     session_factory = getattr(ctx, "session_factory", None)
-    if session_factory is None or not changed:
-        return None
+    if session_factory is None:
+        return unsupported_prior_fixes("this repository has no index to read a fix record from")
+    if not changed:
+        return unsupported_prior_fixes("no changed lines were counted for this change")
 
     try:
         async with get_session(session_factory) as session:
@@ -796,70 +870,59 @@ async def _prior_fixes_block(ctx: Any, changed: dict[str, set[int]]) -> dict[str
             )
             events = list(res.scalars().all())
     except LookupError:
-        return None
-    except SQLAlchemyError:
-        # A pre-fix-events index has no table to read; that is silence, not an
-        # error the caller should have to handle.
-        return None
+        return unsupported_prior_fixes("this repository is not indexed")
+    except OperationalError as exc:
+        # An index built before fix events existed has no table to read. That is
+        # silence, not an error the caller should have to handle -- but a locked
+        # or unreadable database is a real failure and falls through below.
+        if _is_missing_table(exc):
+            return unsupported_prior_fixes("this index predates the bug-fix record")
+        return unavailable_prior_fixes(_read_failure(exc))
+    except SQLAlchemyError as exc:
+        return unavailable_prior_fixes(_read_failure(exc))
 
-    if not events:
-        return None
-
-    # Share of the change's own churn, so the fix counts below say where in this
-    # change the risk sits rather than only that some touched file has a past.
-    total_changed = sum(len(lines) for lines in changed.values())
-    per_file: dict[str, dict[str, Any]] = {}
-    for event in events:
-        entry = per_file.setdefault(
-            event.file_path,
-            {
-                "file_path": event.file_path,
-                "fix_count": 0,
-                "overlapping_lines": 0,
-                "changed_lines": len(changed[event.file_path]),
-                "share_of_change": round(len(changed[event.file_path]) / total_changed, 3)
-                if total_changed
-                else 0.0,
-            },
-        )
-        entry["fix_count"] += 1
-        entry["overlapping_lines"] += _overlap_count(
-            changed[event.file_path], event.old_ranges_json
-        )
-        committed_at = event.committed_at
-        if isinstance(committed_at, datetime):
-            moment = committed_at if committed_at.tzinfo else committed_at.replace(tzinfo=UTC)
-            days = max(0, (datetime.now(UTC) - moment).days)
-            entry["last_fix_days_ago"] = min(entry.get("last_fix_days_ago", days), days)
-
-    files = sorted(
-        per_file.values(),
-        key=lambda f: (-f["overlapping_lines"], -f["fix_count"], f["file_path"]),
-    )
-    # Distinct commits, not rows. There is one row per (fix_sha, file_path), so
-    # summing per-file counts would report one commit that fixed three of the
-    # changed files as "3 past bug fixes". The per-file counts are per-file and
-    # stay as they are.
-    total = len({event.fix_sha for event in events})
-    block = {
-        "files": files[:_PRIOR_FIXES_LIMIT],
-        "truncated": len(files) > _PRIOR_FIXES_LIMIT,
-        "total_fixes": total,
-        "files_with_fixes": len(files),
-        "changed_lines_in_fixed_files": sum(f["changed_lines"] for f in per_file.values()),
-        "line_overlap": "approximate",
-        "summary": (
-            f"{total} past bug-fix commit(s) touched {len(files)} of the changed file(s). "
-            "Line overlap is approximate (past ranges are numbered on their own "
-            "parent commit); the per-file counts are not."
+    return summarize_prior_fixes(
+        (
+            FixRecord(
+                fix_sha=event.fix_sha,
+                file_path=event.file_path,
+                old_ranges=parse_old_ranges(event.old_ranges_json),
+                committed_at=event.committed_at,
+            )
+            for event in events
         ),
-    }
-    # Only over the files actually returned, so the sentence never names a path
-    # the reader cannot find anywhere else in the block.
-    concentration = _concentration(files[:_PRIOR_FIXES_LIMIT])
-    if concentration is not None:
-        block["concentration"] = concentration
-    return block
+        changed,
+    )
+
+
+def _read_failure(exc: SQLAlchemyError) -> str:
+    """Name the failure without quoting the driver.
+
+    Driver text can carry connection-string fragments, and this string goes out
+    on the wire. The class of failure is what a caller can act on; the detail
+    belongs in the server log, where it already is.
+    """
+    log.warning("prior_fixes_read_failed", error=str(exc))
+    return f"the fix record could not be read ({type(exc).__name__})"
+
+
+def _is_missing_table(exc: OperationalError) -> bool:
+    """Whether *exc* is "that table is not there" rather than a real failure.
+
+    Backend-specific wording, so this is a substring check and not a code. It
+    fails toward ``unavailable``: mistaking a missing table for a failure costs
+    a visible block that should have been silent, while the reverse would let a
+    genuine failure render as a clean bill.
+
+    Every clause is table-scoped for that reason. Postgres says "does not
+    exist" for a missing column, database, function or role too, and each of
+    those is real schema drift or misconfiguration -- swallowing them here
+    would rebuild the exact silence this block exists to break.
+    """
+    text = str(getattr(exc, "orig", "") or exc).lower()
+    if "no such table" in text or "undefined table" in text:
+        return True
+    return "does not exist" in text and ("relation" in text or "table" in text)
 
 
 async def _independent_changes_block(
@@ -972,53 +1035,6 @@ async def _branch_overlap_block(
             label=f"branch_overlap.branches[{i}].files beyond cap={_BRANCH_OVERLAP_FILES_LIMIT}",
         )
     return block
-
-
-#: A file has to carry this much of the change's lines before the response will
-#: say the risk sits there. Below it the change is spread out and naming one
-#: file would be a stronger claim than the numbers support.
-_CONCENTRATION_SHARE = 0.5
-
-
-def _concentration(files: list[dict[str, Any]]) -> str | None:
-    """Name the fix-carrying file that holds most of this change, if one does.
-
-    The score itself is whole-change, so this is the only place the response
-    says *where* the risk sits: the file with both the past and the churn.
-    """
-    if not files:
-        return None
-    # Negated path so ties break toward the first file the sorted list shows,
-    # matching the ascending file_path tiebreak the block is sorted by.
-    top = min(files, key=lambda f: (-f["share_of_change"], -f["fix_count"], f["file_path"]))
-    if top["share_of_change"] < _CONCENTRATION_SHARE:
-        return None
-    return (
-        f"{top['file_path']} carries {top['share_of_change']:.0%} of the changed lines "
-        f"and {top['fix_count']} past bug fix(es)."
-    )
-
-
-def _overlap_count(changed_lines_now: set[int], old_ranges_json: str) -> int:
-    """How many of the change's lines fall inside a past fix's replaced ranges."""
-    try:
-        ranges = json.loads(old_ranges_json or "[]")
-    except (TypeError, ValueError):
-        return 0
-    if not isinstance(ranges, list):
-        return 0
-    hits = 0
-    for span in ranges:
-        if not isinstance(span, (list, tuple)) or len(span) != 2:
-            continue
-        try:
-            lo, hi = int(span[0]), int(span[1])
-        except (TypeError, ValueError):
-            # Same defensiveness as the json.loads above: a malformed range must
-            # not take down the whole get_change_risk call.
-            continue
-        hits += sum(1 for line in changed_lines_now if lo <= line <= hi)
-    return hits
 
 
 def _cap_tests(tests: list[str], collector: OmissionCollector, label: str) -> list[str]:

@@ -17,25 +17,40 @@ from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from repowise.core.analysis.prior_fix_impact import (
+    FixRecord,
+    parse_old_ranges,
+    summarize_prior_fixes,
+)
 from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import FixEvent, Repository, _new_uuid
-from repowise.server.mcp_server.tool_change_risk import _overlap_count, _prior_fixes_block
+from repowise.server.mcp_server.tool_change_risk import _prior_fixes_block
+
+
+def _overlap(changed: set[int], old_ranges_json: str) -> int:
+    """Changed lines landing inside a stored fix's replaced ranges.
+
+    Both halves now live in core -- the tolerant parse and the count -- so this
+    asserts them together the way the block consumes them.
+    """
+    record = FixRecord(fix_sha="a", file_path="f", old_ranges=parse_old_ranges(old_ranges_json))
+    return summarize_prior_fixes([record], {"f": changed}).files[0].overlapping_lines
 
 
 def test_overlap_counts_only_lines_inside_a_replaced_range():
     changed = {5, 6, 7, 40}
-    assert _overlap_count(changed, json.dumps([[4, 7]])) == 3
-    assert _overlap_count(changed, json.dumps([[4, 7], [39, 41]])) == 4
-    assert _overlap_count(changed, json.dumps([[100, 120]])) == 0
+    assert _overlap(changed, json.dumps([[4, 7]])) == 3
+    assert _overlap(changed, json.dumps([[4, 7], [39, 41]])) == 4
+    assert _overlap(changed, json.dumps([[100, 120]])) == 0
 
 
 def test_overlap_tolerates_missing_and_malformed_ranges():
     """A pure insertion stores an empty range list; that is 0, not a crash."""
-    assert _overlap_count({1}, "[]") == 0
-    assert _overlap_count({1}, "") == 0
-    assert _overlap_count({1}, "not json") == 0
-    assert _overlap_count({1}, json.dumps([[1]])) == 0
-    assert _overlap_count({1}, json.dumps({"a": 1})) == 0
+    assert _overlap({1}, "[]") == 0
+    assert _overlap({1}, "") == 0
+    assert _overlap({1}, "not json") == 0
+    assert _overlap({1}, json.dumps([[1]])) == 0
+    assert _overlap({1}, json.dumps({"a": 1})) == 0
 
 
 async def test_block_is_silent_without_an_index():
