@@ -18,6 +18,7 @@ from repowise.server.mcp_server._budget.budgeter import (
     effective_char_budget,
     fit_to_budget,
     response_chars,
+    shed_stem,
     truncate_to_budget,
 )
 from repowise.server.mcp_server._budget.collector import OmissionCollector
@@ -45,6 +46,16 @@ class ResponseBudgetContract:
     #: uncounted rather than proven absent, so the count is a lower bound.
     #: A ``<field>_total`` name here is also read as a reduction total.
     floor_fields: tuple[str, ...] = ()
+    #: ``(request token, shed-order keys)``. The token is an ``include`` value
+    #: or an argument whose presence is itself the request. Keys named here
+    #: shed last and trim to :func:`entitled_floor`; the ceiling still wins, so
+    #: this is priority, not immunity. Declaring nothing keeps a tool's
+    #: existing behaviour.
+    requested_projections: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+
+#: Arguments whose presence asks for the projection that answers them.
+_IMPLICIT_REQUEST_ARGUMENTS = ("query", "id", "reference", "changed_files")
 
 
 #: What a tool gets when it declares no priority of its own. An empty shed
@@ -76,6 +87,19 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "dependents_total",
             "impact_surface_total",
             "co_change_partners_total",
+        ),
+        requested_projections=(
+            (
+                "changed_files",
+                (
+                    "directive.test_recommendations[]",
+                    "directive.tests_to_run[]",
+                    "directive.may_break[]",
+                    "pr_blast_radius",
+                    "pr_blast_radius.guarding_tests",
+                ),
+            ),
+            ("graph", ("targets[]",)),
         ),
     ),
     "get_change_risk": ResponseBudgetContract(
@@ -113,6 +137,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "retrieval[]",
             "retrieval",
             "code_rationale",
+            "quotes[]",
             "quotes",
             "symbol_bodies[]",
             "symbol_bodies",
@@ -125,6 +150,20 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         ),
         expansion_argument="include",
         protected=("answer", "confidence", "citations", "next_action_hint", "degraded"),
+        requested_projections=(
+            (
+                "evidence",
+                (
+                    "retrieval[]",
+                    "retrieval",
+                    "symbol_bodies[]",
+                    "symbol_bodies",
+                    "quotes[]",
+                    "quotes",
+                    "code_rationale",
+                ),
+            ),
+        ),
     ),
     # Whole-block drops served 0 of 50 pages, 0 of 12 episodes and 0 of 58
     # mined rationale comments across the two modes. Trimming runs to
@@ -162,6 +201,21 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "candidates",
             "origin_story",
         ),
+        requested_projections=(
+            (
+                "query",
+                (
+                    "decisions[]",
+                    "candidates[]",
+                    "history[]",
+                    "related_documentation[]",
+                    "code_rationale[]",
+                    "episodes[]",
+                ),
+            ),
+            ("id", ("decisions[]",)),
+            ("reference", ("decisions[]",)),
+        ),
         expansion_argument=None,
         protected=(
             "mode",
@@ -188,6 +242,9 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "knowledge_map",
             "key_decisions",
             "outline_hint",
+            # Trim the sections before dropping the block: shed as one unit it
+            # served 0 of 40 while 73% of the budget went unspent.
+            "outline.sections[]",
             "outline",
             "tool_surface",
             "repos[]",
@@ -195,6 +252,15 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "content_md",
         ),
         protected=("title", "architecture", "entry_points"),
+        requested_projections=(
+            ("outline", ("outline.sections[]", "outline", "outline_hint")),
+            ("tour", ("guided_tour", "guided_tour_hint", "reading_order",
+                      "reading_order_hint")),
+            ("decisions", ("key_decisions",)),
+            ("graph", ("community_summary",)),
+            ("ownership", ("knowledge_map",)),
+            ("content", ("content_md",)),
+        ),
     ),
     "get_health": ResponseBudgetContract(
         "blocks",
@@ -267,7 +333,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
     # metadata that followed added roughly 2.6k.
     "search_codebase": ResponseBudgetContract(
         "blocks",
-        ("candidates", "results[]"),
+        ("candidates[]", "candidates", "results[]"),
         expansion_argument=None,
         protected=("results", "mode", "exact_match"),
     ),
@@ -376,6 +442,46 @@ def _call_uses_expansion(
     except TypeError:
         return bool(kwargs.get(contract.expansion_argument))
     return bool(bound.arguments.get(contract.expansion_argument))
+
+
+def _requested_shed_keys(
+    contract: ResponseBudgetContract,
+    signature: inspect.Signature,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> frozenset[str]:
+    """Shed-order stems this particular call asked for."""
+    if not contract.requested_projections:
+        return frozenset()
+    try:
+        bound = dict(signature.bind_partial(*args, **kwargs).arguments)
+    except TypeError:
+        bound = dict(kwargs)
+
+    include = bound.get("include") or ()
+    if isinstance(include, str):
+        include = (include,)
+    asked = {str(token) for token in include}
+    asked.update(name for name in _IMPLICIT_REQUEST_ARGUMENTS if bound.get(name))
+
+    keys: set[str] = set()
+    for token, paths in contract.requested_projections:
+        if token in asked:
+            keys.update(shed_stem(path) for path in paths)
+    return frozenset(keys)
+
+
+def _prioritised_shed_order(
+    order: tuple[str, ...], requested: frozenset[str]
+) -> tuple[str, ...]:
+    """Move what the caller asked for to the back of the shed order."""
+    if not requested:
+        return order
+    deferred = tuple(key for key in order if shed_stem(key) in requested)
+    if not deferred:
+        return order
+    kept = tuple(key for key in order if shed_stem(key) not in requested)
+    return kept + deferred
 
 
 def _stamp_accounting(result: dict[str, Any], *, limit: int, tier: str) -> None:
@@ -487,6 +593,7 @@ def _emergency_fit(
     contract: ResponseBudgetContract,
     collector: OmissionCollector,
     limit: int,
+    requested: frozenset[str] = frozenset(),
 ) -> None:
     """Bound an unexpectedly huge protected core without a false fit claim."""
     protected = {*contract.protected, "_meta"}
@@ -497,7 +604,12 @@ def _emergency_fit(
         and key not in {"truncated", "omission_marker"}
         and not key.endswith(("_total", "_emitted", "_reduced_reason"))
     ]
-    for key in sorted(removable, key=lambda item: response_chars(result[item]), reverse=True):
+    # Biggest first, but never a requested block while an unrequested one is
+    # still there to drop.
+    def order(item: str) -> tuple[bool, int]:
+        return (item in requested, -response_chars(result[item]))
+
+    for key in sorted(removable, key=order):
         if response_chars(result) <= limit:
             return
         value = result.pop(key)
@@ -617,6 +729,7 @@ def enforce_response_budget(
     collector = OmissionCollector(tool, repo_root=repo_root)
     headroom = min(_FINAL_HEADROOM_CHARS, max(100, limit // 4))
     working_limit = max(1, limit - headroom)
+    requested = _requested_shed_keys(contract, signature, args, kwargs)
     if contract.strategy == "targets":
         truncate_to_budget(
             result,
@@ -627,18 +740,19 @@ def enforce_response_budget(
     else:
         fit_to_budget(
             result,
-            contract.shed_order,
+            _prioritised_shed_order(contract.shed_order, requested),
             collector,
             char_budget=working_limit,
             headroom=0,
             record_counts=True,
+            entitled=requested,
         )
         run_post_shed(tool, result, collector)
         collector.attach(result)
 
     if response_chars(result) > limit:
         emergency = OmissionCollector(tool, repo_root=repo_root)
-        _emergency_fit(result, contract, emergency, working_limit)
+        _emergency_fit(result, contract, emergency, working_limit, requested)
         emergency.attach(result)
 
     run_post_enforce(tool, result)

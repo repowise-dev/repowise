@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from collections.abc import Sequence
 from typing import Any
@@ -164,6 +165,23 @@ def over_budget(
     return response_chars(response) > budget - headroom
 
 
+#: A requested collection keeps whichever of these is larger.
+REQUESTED_MIN_ROWS = 3
+REQUESTED_MIN_SHARE = 0.25
+
+
+def entitled_floor(total: int) -> int:
+    """Rows a caller-requested collection keeps before anything else sheds."""
+    if total <= REQUESTED_MIN_ROWS:
+        return total
+    return min(total, max(REQUESTED_MIN_ROWS, math.ceil(total * REQUESTED_MIN_SHARE)))
+
+
+def shed_stem(key: str) -> str:
+    """The response path a shed-order key names, with the ``[]`` form removed."""
+    return key[:-2] if key.endswith("[]") else key
+
+
 def fit_to_budget(
     response: dict[str, Any],
     order: Sequence[str],
@@ -172,6 +190,7 @@ def fit_to_budget(
     headroom: int = FIT_HEADROOM_CHARS,
     char_budget: int | None = None,
     record_counts: bool = False,
+    entitled: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Shed whole blocks named by *order* until *response* fits the budget.
 
@@ -180,6 +199,10 @@ def fit_to_budget(
     from the tail of a ranked list instead of the list itself, keeping the
     first. Shedding stops the moment the response fits, so an under-budget
     response — the common case — is untouched.
+
+    *entitled* names stems the caller asked for; their ``[]`` passes stop at
+    :func:`entitled_floor` instead of one row. The order still decides when a
+    block is reached, and the ceiling still wins.
 
     Drops go to *collector* as expandable ``[repowise#<ref>]`` markers and set
     ``truncated``. Call before the caller's :meth:`OmissionCollector.attach`,
@@ -204,6 +227,7 @@ def fit_to_budget(
                 headroom,
                 char_budget,
                 record_counts,
+                bool(entitled and shed_stem(key) in entitled),
             )
         elif target.get(leaf):
             value = target.pop(leaf)
@@ -223,14 +247,16 @@ def _shed_tail(
     headroom: int,
     char_budget: int | None,
     record_counts: bool,
+    entitled: bool = False,
 ) -> None:
     """Drop ranked rows from the tail of ``container[leaf]`` until it fits."""
     rows = container.get(leaf)
     if not isinstance(rows, (list, dict)):
         return
     total = len(rows)
+    floor = entitled_floor(total) if entitled else 1
     dropped: list[Any] = []
-    while len(rows) > 1 and over_budget(
+    while len(rows) > floor and over_budget(
         response, headroom=headroom, char_budget=char_budget
     ):
         if isinstance(rows, list):
