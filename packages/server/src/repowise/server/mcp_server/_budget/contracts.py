@@ -447,6 +447,19 @@ def _call_uses_expansion(
     return bool(bound.arguments.get(contract.expansion_argument))
 
 
+def _include_tokens(value: Any) -> set[str]:
+    """Normalise an ``include`` argument to a set of tokens.
+
+    This layer sits outside the failure shield, so anything the caller can
+    send has to come back as a set rather than an exception.
+    """
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return {str(token) for token in value}
+    return set()
+
+
 def _requested_shed_keys(
     contract: ResponseBudgetContract,
     signature: inspect.Signature,
@@ -461,15 +474,7 @@ def _requested_shed_keys(
     except TypeError:
         bound = dict(kwargs)
 
-    include = bound.get("include") or ()
-    if isinstance(include, str):
-        include = (include,)
-    elif not isinstance(include, (list, tuple, set, frozenset)):
-        # This layer sits outside the failure shield, so a caller passing a
-        # non-iterable must not raise here: that reaches the agent as a
-        # protocol-level isError.
-        include = ()
-    asked = {str(token) for token in include}
+    asked = _include_tokens(bound.get("include"))
     asked.update(name for name in _IMPLICIT_REQUEST_ARGUMENTS if bound.get(name))
 
     keys: set[str] = set()
