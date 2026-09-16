@@ -8,7 +8,6 @@ LanceDB-specific tests are skipped if lancedb is not installed.
 from __future__ import annotations
 
 import logging
-
 import math
 
 import pytest
