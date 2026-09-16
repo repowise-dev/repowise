@@ -207,14 +207,151 @@ def test_query_mode_counts_as_a_request() -> None:
     assert "episodes" in requested
 
 
-def test_no_query_asks_for_nothing() -> None:
+def test_targets_alone_ask_for_what_path_mode_answers_with() -> None:
+    """targets and no query is path mode, whose answer is the origin story."""
     def get_why(query: str | None = None, targets: list[str] | None = None): ...
 
     requested = _requested_shed_keys(
         _CONTRACTS["get_why"], inspect.signature(get_why), (), {"targets": ["a.py"]}
     )
 
-    assert requested == frozenset()
+    assert "origin_story" in requested
+    assert "git_archaeology.file_commits" in requested
+    # The linked titles the decisions lane already carries stay the cheapest
+    # loss in the response; asking about a file does not ask for them twice.
+    assert "origin_story.linked_decisions" not in requested
+
+
+def test_the_same_answer_is_entitled_the_same_through_either_argument() -> None:
+    """query="a.py" and targets=["a.py"] are one mode and one answer."""
+    def get_why(query: str | None = None, targets: list[str] | None = None): ...
+
+    signature = inspect.signature(get_why)
+    by_query = _requested_shed_keys(
+        _CONTRACTS["get_why"], signature, (), {"query": "app/main.py"}
+    )
+    by_target = _requested_shed_keys(
+        _CONTRACTS["get_why"], signature, (), {"targets": ["app/main.py"]}
+    )
+
+    assert by_query == by_target
+    assert {"origin_story", "git_archaeology.git_log", "decisions"} <= by_target
+
+
+def test_path_mode_sheds_the_origin_story_after_unasked_lanes() -> None:
+    contract = _CONTRACTS["get_why"]
+
+    def get_why(query: str | None = None, targets: list[str] | None = None): ...
+
+    requested = _requested_shed_keys(
+        contract, inspect.signature(get_why), (), {"targets": ["a.py"]}
+    )
+    order = _prioritised_shed_order(contract.shed_order, requested)
+
+    # The linked titles are the one thing here the decisions lane already
+    # carries, so they stay ahead of the block they duplicate.
+    assert order.index("origin_story.linked_decisions") < order.index("origin_story")
+    # Trims of the archaeology the ungoverned branch answers with run before
+    # any of it is dropped whole.
+    assert order.index("git_archaeology.file_commits[]") < order.index(
+        "code_rationale"
+    )
+
+
+def _why_signature() -> inspect.Signature:
+    def get_why(
+        query: str | None = None,
+        targets: list[str] | None = None,
+        repo: str | None = None,
+    ): ...
+
+    return inspect.signature(get_why)
+
+
+def _path_mode_payload() -> dict[str, Any]:
+    """An ungoverned file: the origin story and archaeology are the answer.
+
+    Shaped after what ``_why_path`` actually emits — no ``related_documentation``,
+    which belongs to search mode.
+    """
+    return {
+        "mode": "path",
+        "path": "a.py",
+        "alignment": {"score": 0.0},
+        "answer_basis": "archaeology",
+        "decisions": [],
+        "origin_story": {
+            "summary": "s" * 2000,
+            "key_commits": [
+                {"sha": f"{i:040x}", "subject": "c" * 400} for i in range(20)
+            ],
+        },
+        "git_archaeology": {
+            "file_commits": [
+                {"sha": f"{i:040x}", "subject": "f" * 400} for i in range(20)
+            ],
+            "cross_references": [
+                {"path": f"p{i}.py", "why": "x" * 400} for i in range(20)
+            ],
+            "git_log": [{"sha": f"{i:040x}", "subject": "g" * 400} for i in range(20)],
+        },
+        "code_rationale": [{"text": "r" * 900} for _ in range(20)],
+        "episodes": [{"title": f"ep {i}", "body": "e" * 600} for i in range(12)],
+        "_meta": {"contract_version": 1},
+    }
+
+
+def _archaeology_rows(result: dict[str, Any]) -> int:
+    block = result.get("git_archaeology") or {}
+    return sum(
+        len(block.get(key, []))
+        for key in ("file_commits", "cross_references", "git_log")
+    )
+
+
+def _enforce_why(**kwargs: Any) -> dict[str, Any]:
+    return enforce_response_budget(
+        "get_why",
+        _path_mode_payload(),
+        signature=_why_signature(),
+        args=(),
+        kwargs=kwargs,
+        repo_root=None,
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"query": "a.py"}, {"targets": ["a.py"]}],
+    ids=["query", "targets"],
+)
+def test_path_mode_keeps_its_own_answer_under_pressure(kwargs: dict[str, Any]) -> None:
+    """The shipped regression: a path response dropped the origin story it was for."""
+    result = _enforce_why(**kwargs)
+
+    assert result["origin_story"]["key_commits"]
+    assert _archaeology_rows(result) >= entitled_floor(20)
+    assert result["code_rationale"]
+    budget = result["_meta"]["response_budget"]
+    assert budget["serialized_chars"] <= budget["limit_chars"]
+
+
+def test_either_argument_delivers_the_same_path_response() -> None:
+    """One mode, one answer, whichever argument reached it."""
+    by_query = _enforce_why(query="a.py")
+    by_target = _enforce_why(targets=["a.py"])
+
+    assert _archaeology_rows(by_query) == _archaeology_rows(by_target)
+    assert len(by_query["code_rationale"]) == len(by_target["code_rationale"])
+    assert by_query["origin_story"] == by_target["origin_story"]
+
+
+def test_an_unasked_path_response_still_fits() -> None:
+    """Entitlement is what changes, not the ceiling."""
+    result = _enforce_why()
+
+    budget = result["_meta"]["response_budget"]
+    assert budget["serialized_chars"] <= budget["limit_chars"]
 
 
 @pytest.mark.parametrize("tool", sorted(_CONTRACTS))

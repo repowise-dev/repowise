@@ -58,6 +58,26 @@ class ResponseBudgetContract:
 _IMPLICIT_REQUEST_ARGUMENTS = ("query", "id", "reference", "changed_files", "targets")
 
 
+#: Every lane ``get_why`` answers a question about code with, across its modes:
+#: the decision records and their queue, the origin story, and the rationale,
+#: documentation and archaeology the ungoverned branch falls back to. Only the
+#: stems matter, because :func:`_requested_shed_keys` collapses these to stems
+#: and :func:`_prioritised_shed_order` re-derives the trim-before-drop order
+#: from the shed order itself.
+_WHY_ANSWER_PROJECTION = (
+    "decisions[]",
+    "candidates[]",
+    "history[]",
+    "related_documentation[]",
+    "code_rationale[]",
+    "episodes[]",
+    "git_archaeology.file_commits[]",
+    "git_archaeology.cross_references[]",
+    "git_archaeology.git_log[]",
+    "origin_story",
+)
+
+
 #: What a tool gets when it declares no priority of its own. An empty shed
 #: order leaves the ordinary pass a no-op; the final size guard is what this
 #: buys. Declining to rank your evidence has the guard rank it, and is never a
@@ -205,17 +225,14 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "origin_story",
         ),
         requested_projections=(
-            (
-                "query",
-                (
-                    "decisions[]",
-                    "candidates[]",
-                    "history[]",
-                    "related_documentation[]",
-                    "code_rationale[]",
-                    "episodes[]",
-                ),
-            ),
+            # A query is a question or a path, and targets with no query is
+            # path mode too — a single target is path mode outright. All three
+            # get the same entitlement, because the same call answered through
+            # a different argument is the same answer. Naming a lane the mode
+            # did not emit costs the other modes nothing: deferring an absent
+            # key sheds nothing.
+            ("query", _WHY_ANSWER_PROJECTION),
+            ("targets", _WHY_ANSWER_PROJECTION),
             ("id", ("decisions[]",)),
             ("reference", ("decisions[]",)),
         ),
