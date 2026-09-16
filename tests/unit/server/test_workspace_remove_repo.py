@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+from repowise.server.deps import verify_api_key
 from repowise.server.routers import repos, workspace
 
 
@@ -43,6 +44,13 @@ def _make_workspace_app(
 
     app.include_router(workspace.router)
     app.include_router(repos.router)
+
+    # Override auth so ASGI test transport (where request.client is None)
+    # doesn't reject every request with 403 when REPOWISE_API_KEY is unset.
+    async def _noop_auth() -> None:
+        return None
+
+    app.dependency_overrides[verify_api_key] = _noop_auth
     return app
 
 
@@ -65,7 +73,6 @@ async def test_remove_workspace_repo_success(tmp_path: Path):
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"X-API-Key": "test"},
     ) as client:
         resp = await client.delete("/api/workspace/repos/frontend")
         assert resp.status_code == 200
@@ -100,7 +107,6 @@ async def test_remove_workspace_repo_not_found(tmp_path: Path):
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"X-API-Key": "test"},
     ) as client:
         resp = await client.delete("/api/workspace/repos/unknown-repo")
         assert resp.status_code == 404
@@ -115,7 +121,6 @@ async def test_remove_workspace_repo_not_workspace_mode():
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"X-API-Key": "test"},
     ) as client:
         resp = await client.delete("/api/workspace/repos/backend")
         assert resp.status_code == 404
@@ -135,7 +140,6 @@ async def test_delete_synthetic_repo_via_repos_router(tmp_path: Path):
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"X-API-Key": "test"},
     ) as client:
         resp = await client.delete("/api/repos/ws:missing-folder")
         assert resp.status_code == 200
