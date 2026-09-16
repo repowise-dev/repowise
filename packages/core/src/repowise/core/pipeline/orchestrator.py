@@ -37,6 +37,7 @@ from .phases._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pager
 from .phases.analysis import (
     _run_dead_code_analysis,
     _run_decision_extraction,
+    _run_doc_drift_analysis,
     _run_health_analysis,
 )
 from .phases.generation import run_generation
@@ -114,6 +115,9 @@ class PipelineResult:
 
     health_report: Any | None = None
     """``HealthReport`` or None — populated by ``_run_health_analysis``."""
+
+    doc_drift_report: Any | None = None
+    """``DocDriftReport`` or None — populated by ``_run_doc_drift_analysis``."""
 
     # Traversal stats
     traversal_stats: Any | None = None
@@ -480,6 +484,7 @@ async def run_pipeline(
     dead_code_report = None
     health_report = None
     decision_report = None
+    doc_drift_report = None
     # Reports actually fed to generation + KG — rehydrated on the skip path,
     # the freshly computed ones otherwise.
     gen_dead_code_report = None
@@ -497,12 +502,17 @@ async def run_pipeline(
             skip_analysis = False
 
     if not skip_analysis:
-        # The three analyses share read-only inputs (graph, git_meta_map,
+        # The four analyses share read-only inputs (graph, git_meta_map,
         # parsed_files; the lazy metric caches were warmed during ingestion)
         # and have no data dependency on each other, so run them concurrently:
         # decision extraction is I/O/LLM-bound and its wall clock hides
         # entirely behind the CPU-bound dead-code + health work.
-        dead_code_report, health_report, decision_report = await asyncio.gather(
+        (
+            dead_code_report,
+            health_report,
+            decision_report,
+            doc_drift_report,
+        ) = await asyncio.gather(
             _run_dead_code_analysis(
                 graph_builder,
                 git_meta_map,
@@ -526,6 +536,11 @@ async def run_pipeline(
                 git_meta_map=git_meta_map,
                 parsed_files=parsed_files,
                 source_map=source_map,
+                progress=progress,
+            ),
+            _run_doc_drift_analysis(
+                source_map,
+                file_infos=file_infos,
                 progress=progress,
             ),
         )
@@ -653,6 +668,7 @@ async def run_pipeline(
             dead_code_report=dead_code_report,
             health_report=health_report,
             decision_report=decision_report,
+            doc_drift_report=doc_drift_report,
             git_metadata_list=git_metadata_list,
             progress=progress,
         )
@@ -917,6 +933,7 @@ async def run_pipeline(
         dead_code_report=dead_code_report,
         decision_report=decision_report,
         health_report=health_report,
+        doc_drift_report=doc_drift_report,
         execution_flow_report=execution_flow_report,
         knowledge_graph_result=knowledge_graph_result,
         generated_pages=generated_pages,

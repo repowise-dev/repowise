@@ -1383,6 +1383,57 @@ class DeadCodeFinding(Base):
     __table_args__ = (Index("ix_dead_code_repo_path", "repository_id", "file_path"),)
 
 
+class DocDriftFinding(Base):
+    """An assertion a document makes that the repository no longer satisfies.
+
+    ``file_path`` is the **document** that is wrong, not the target it names:
+    that is the file a reader has to edit, so it is the one the finding is
+    filed against.
+
+    Persisted on the security-findings pattern rather than dead code's, because
+    a drift finding is a line-level hit rather than a graph-derived aggregate.
+    The ``(repository_id, file_path, kind, line_number, target)`` constraint
+    makes re-runs idempotent. ``target`` is in the key because one line can
+    carry two references --- a markdown link yields both a ``link`` row and an
+    ``anchor`` row --- and dropping it would silently collapse them.
+    """
+
+    __tablename__ = "doc_drift_findings"
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_id",
+            "file_path",
+            "kind",
+            "line_number",
+            "target",
+            name="uq_doc_drift_finding_site",
+        ),
+        Index("ix_doc_drift_repo_path", "repository_id", "file_path"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    target: Mapped[str] = mapped_column(String(1024), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Which named resolution strategy concluded this, from ``DriftOrigin``.
+    #: Every origin carries a fixed confidence, so the origin distribution and
+    #: the confidence histogram are two views of the same data.
+    origin: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    #: The reference exactly as written, and the line it was written on.
+    raw: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    context: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+
 class HealthFinding(Base):
     """One biomarker hit produced by the code-health analyzer."""
 

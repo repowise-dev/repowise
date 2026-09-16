@@ -1068,6 +1068,7 @@ async def prune_deleted_file_rows(
     from repowise.core.analysis.dead_code.analyzer import _is_synthetic_node
     from repowise.core.persistence.models import (
         DeadCodeFinding,
+        DocDriftFinding,
         GitMetadata,
         GraphEdge,
         GraphMetric,
@@ -1161,6 +1162,12 @@ async def prune_deleted_file_rows(
     await _prune_table(WikiSymbol, WikiSymbol.file_path, "wiki_symbols")
     await _prune_table(SecurityFinding, SecurityFinding.file_path, "security_findings")
     await _prune_table(DeadCodeFinding, DeadCodeFinding.file_path, "dead_code_findings")
+    # Keyed on the DOCUMENT, and the drift pass does not run on the
+    # incremental path, so without this a deleted document's findings are
+    # never recomputed and never removed: they outlive the file until the
+    # next full index. ``_FileLiveness`` asks disk and ``git ls-files``
+    # rather than the parse, so a ``.md`` path is judged correctly here.
+    await _prune_table(DocDriftFinding, DocDriftFinding.file_path, "doc_drift_findings")
     await _prune_table(HealthFileMetric, HealthFileMetric.file_path, "health_file_metrics")
     await _prune_table(HealthFinding, HealthFinding.file_path, "health_findings")
     # git_metadata is keyed off the git indexer on a full run, but an
@@ -1897,16 +1904,17 @@ async def save_full_health_report(
 
 
 async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
-    """Persist analysis-phase outputs: dead code, health, decisions, governance.
+    """Persist analysis-phase outputs: dead code, health, decisions, drift.
 
-    Dead-code and health writes are repo-wide DELETE-THEN-INSERT (so they
-    converge on re-run but don't support partial-within-phase resume);
+    Dead-code, health and doc-drift writes are repo-wide DELETE-THEN-INSERT (so
+    they converge on re-run but don't support partial-within-phase resume);
     decisions/governance are idempotent. Intended to run once the analysis
     phase has fully completed.
     """
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
         recompute_decision_staleness,
+        replace_doc_drift_findings,
         save_coverage_files,
         save_dead_code_findings,
         upsert_git_function_blame_bulk,
@@ -1915,6 +1923,32 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     # ---- Dead code findings --------------------------------------------------
     if result.dead_code_report and result.dead_code_report.findings:
         await save_dead_code_findings(session, repo_id, result.dead_code_report.findings)
+
+    # ---- Documentation drift findings ---------------------------------------
+    # Written even when the finding list is empty, unlike dead code above: a
+    # run that fixed the last drifted reference must clear the rows, and a
+    # guard on ``.findings`` would leave the old ones standing as though the
+    # documents were still wrong. ``authoritative_paths`` is None on a full
+    # run, so the replace is repo-wide.
+    drift = getattr(result, "doc_drift_report", None)
+    if drift is not None:
+        try:
+            # Inside a savepoint because this is a DELETE followed by an
+            # INSERT and the failure is swallowed. Without one, a failing
+            # insert leaves the DELETE buffered in the caller's still-live
+            # transaction, which then commits it: every drift row for the
+            # repository wiped, reported only as a warning. On Postgres the
+            # same failure poisons the transaction and takes health,
+            # coverage and decisions down with it.
+            async with session.begin_nested():
+                await replace_doc_drift_findings(
+                    session,
+                    repo_id,
+                    drift.findings,
+                    scope=drift.authoritative_paths,
+                )
+        except Exception as exc:
+            logger.warning("doc_drift_persist_skipped", error=str(exc))
 
     # ---- Health findings + per-file metrics ---------------------------------
     if getattr(result, "health_report", None):

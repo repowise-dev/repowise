@@ -129,6 +129,7 @@ from .models import (
     DecisionEvidence,
     DecisionNodeLink,
     DecisionRecord,
+    DocDriftFinding,
     ExternalSystem,
     GenerationJob,
     GitCommit,
@@ -168,6 +169,7 @@ __all__ = [
     "DecisionEvidence",
     "DecisionNodeLink",
     "DecisionRecord",
+    "DocDriftFinding",
     # embedder
     "Embedder",
     "ExternalSystem",

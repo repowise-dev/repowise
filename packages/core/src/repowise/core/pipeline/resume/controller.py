@@ -193,6 +193,7 @@ class ResumeController:
         health_report: Any | None,
         decision_report: Any | None,
         git_metadata_list: list[dict],
+        doc_drift_report: Any | None = None,
         vector_store: Any | None = None,
         progress: Any | None = None,
     ) -> None:
@@ -211,6 +212,7 @@ class ResumeController:
             dead_code_report=dead_code_report,
             health_report=health_report,
             decision_report=decision_report,
+            doc_drift_report=doc_drift_report,
             git_metadata_list=git_metadata_list,
             generated_pages=None,
             vector_store=vector_store,

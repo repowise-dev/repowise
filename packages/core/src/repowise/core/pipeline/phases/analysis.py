@@ -107,6 +107,61 @@ async def _run_dead_code_analysis(
         return None
 
 
+async def _run_doc_drift_analysis(
+    source_map: dict[str, bytes] | None,
+    *,
+    file_infos: list[Any] | None = None,
+    repo_id: str = "",
+    progress: ProgressCallback | None,
+) -> Any | None:
+    """Check the repository's own markdown against the tree (no LLM).
+
+    Reads bytes ingestion already decoded rather than re-walking the tree: this
+    runs on every ``init`` and every ``update``, so a second pass over the
+    repository would be a real regression.
+    """
+    try:
+        from repowise.core.analysis.doc_drift import DocDriftAnalyzer
+
+        # analyze() drives three stages: collect, index, resolve.
+        if progress:
+            progress.on_phase_start("doc_drift", 3)
+
+        # Built here rather than at the call site: the gather has no
+        # per-member exception wrapper, so an argument expression evaluated in
+        # the caller's frame would raise outside this try and abort the whole
+        # index run.
+        tracked_paths = {fi.path for fi in file_infos} if file_infos else None
+
+        analyzer = DocDriftAnalyzer(
+            repo_id,
+            source_map=source_map,
+            tracked_paths=tracked_paths,
+        )
+
+        def _step(_stage: str) -> None:
+            if progress:
+                progress.on_item_done("doc_drift")
+
+        report = await asyncio.to_thread(analyzer.analyze, None, on_step=_step)
+
+        if progress and report.documents_scanned:
+            progress.on_message(
+                "info",
+                f"→ {report.total_findings} drift findings across "
+                f"{report.documents_scanned} documents "
+                f"({report.references_checked:,} references checked)",
+            )
+
+        _phase_done(progress, "doc_drift")
+        return report
+    except Exception as exc:
+        if progress:
+            progress.on_message("warning", f"Documentation drift check skipped: {exc}")
+        _phase_done(progress, "doc_drift")
+        return None
+
+
 def _build_pipeline_coverage(
     repo_path: Path,
     parsed_files: list[Any],

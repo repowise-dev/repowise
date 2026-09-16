@@ -8,7 +8,15 @@ imports are unaffected.
 
 from __future__ import annotations
 
-from . import coverage, coverage_map, dead_code, health, performance, refactoring  # noqa: F401
+from . import (  # noqa: F401
+    coverage,
+    coverage_map,
+    dead_code,
+    doc_drift,
+    health,
+    performance,
+    refactoring,
+)
 from .coverage import (
     get_coverage_summary,
     load_coverage_for_repo,
@@ -28,6 +36,11 @@ from .dead_code import (
     replace_dead_code_findings,
     save_dead_code_findings,
     update_dead_code_status,
+)
+from .doc_drift import (
+    get_doc_drift_findings,
+    replace_doc_drift_findings,
+    summarize_confidence_rows,
 )
 from .health import (
     FILE_TREND_SNAPSHOT_WINDOW,
@@ -106,6 +119,7 @@ __all__ = [
     "get_dead_code_findings",
     "get_dead_code_summary",
     "get_deduction_by_path",
+    "get_doc_drift_findings",
     "get_file_language_map",
     "get_health_finding_by_public_id",
     "get_health_findings",
@@ -135,6 +149,7 @@ __all__ = [
     "prune_unscored_health_rows",
     "refactoring_facet_counts",
     "replace_dead_code_findings",
+    "replace_doc_drift_findings",
     "replace_governance_findings",
     "save_coverage_files",
     "save_dead_code_findings",
@@ -144,6 +159,7 @@ __all__ = [
     "save_refactoring_suggestions",
     "save_test_coverage",
     "sort_metrics_worst_first",
+    "summarize_confidence_rows",
     "tests_covering",
     "tests_covering_files",
     "update_dead_code_status",
