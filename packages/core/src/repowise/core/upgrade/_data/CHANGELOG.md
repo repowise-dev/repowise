@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **`HEALTH_ANALYZER_VERSION` is 12.** Pascal's `for x in collection do` parses as its own `foreach` node, distinct from the counted `for`, and was missing from `loop_kinds` — the walker skipped it entirely, so any Pascal function using a for-in loop understated both CCN and nesting depth. Pascal also gained a `PerfDialect` (filesystem and subprocess sinks by RTL/VCL/FPC call name, e.g. `CopyFile` / `TFileStream.SaveToFile` / `ShellExecute`), so `io_in_loop` / `hot_path_sync_io` now fire for it instead of the performance pass silently skipping every Pascal file. Existing indexes re-score on their next update; `STORE_FORMAT_VERSION` and `PARSER_SCHEMA_VERSION` are unchanged.
+
 ## [0.50.0] - 2026-09-11
 
 Code health had six different vocabularies for one number, and roughly half of what it measured was change history, which rises as a file is worked on. A week of refactoring could drop the headline and print "Declining health" in error red at the person who did the work. This release rebuilds that reading end to end: one absolute band scale wherever a score appears, one figure at the top of the page, a control that says whether you are counting code shape alone or code shape plus history, and a decline that names which half moved and whether an edit can settle it. No score moves. What changes is what the product tells you a score means. Next to it, findings stop being a list you scroll and become a queue you work, with a disposition you record once and never have re-proposed at you. The other change you will notice first is chat: it is no longer a widget in a corner, it is reachable from the row you are already looking at, pointed at that row, with its first answer grounded in the page you asked from.
