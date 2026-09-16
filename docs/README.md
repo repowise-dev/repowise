@@ -41,6 +41,7 @@ your agent in under five minutes, with no API key.
 | [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The ten task-shaped tools, what each answers, and worked multi-tool examples |
 | [agent/HOOKS.md](agent/HOOKS.md) | Proactive delivery: context and warnings that arrive without the agent asking |
 | [agent/DISTILL.md](agent/DISTILL.md) | `repowise distill`: compress noisy command output before your agent reads it |
+| [agent/CHANGE_REVIEW.md](agent/CHANGE_REVIEW.md) | Reviewing a change from Python, with or without a checkout, and what each evidence state means |
 | [agent/VSCODE.md](agent/VSCODE.md) | The VS Code extension: health in the gutter, risk before you push, dashboards in the editor |
 | [agent/CODEX.md](agent/CODEX.md) | Wiring repowise into the Codex CLI |
 | [agent/OPENCODE.md](agent/OPENCODE.md) | Wiring repowise into opencode |
