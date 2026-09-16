@@ -78,7 +78,7 @@ def test_the_digest_keeps_what_changes_how_an_answer_reads() -> None:
     assert compact["full"] == "get_overview()"
 
 
-def test_the_digest_is_a_tenth_of_the_scope_it_stands_for() -> None:
+def test_the_digest_is_a_fraction_of_the_scope_it_stands_for() -> None:
     scope = resolve_index_scope(_FULL_STATE)
 
     assert _chars(compact_index_scope(scope)) < _chars(scope) * 0.5
@@ -175,18 +175,156 @@ def test_the_environment_restores_the_old_shape_everywhere(
     assert "projection" not in out["index_scope"]
 
 
-def test_the_digest_costs_a_fraction_of_a_small_response(tmp_path: Path) -> None:
-    """The measured regression: ~900 of 2,541 characters, about 35%."""
-    repository = _write_state(tmp_path, _FULL_STATE)
-    compact = _meta.build_meta(repository=repository)["index_scope"]
-    full = _meta.build_meta_with_full_scope(repository=repository)["index_scope"]
+def test_the_digest_stays_under_a_fixed_ceiling(tmp_path: Path) -> None:
+    """The measured regression was ~900 characters on every response.
 
-    # A small response is about 1,650 characters once the scope is taken out.
-    small_response = 2_541 - _chars(full)
-    assert _chars(compact) < (small_response + _chars(compact)) * 0.10
+    A fixed ceiling rather than a ratio against the canonical object: tying
+    the digest's budget to the size of the thing it replaced would tighten
+    this bar every time a diagnostic is added to that object, and fail a test
+    about the digest for a reason that has nothing to do with it.
+    """
+    compact = _meta.build_meta(repository=_write_state(tmp_path, _FULL_STATE))
+
+    assert _chars(compact["index_scope"]) <= 300
 
 
 def test_a_repo_with_no_state_still_carries_no_scope(tmp_path: Path) -> None:
     out = _meta.build_meta(repository=_Repo(tmp_path))
 
     assert "index_scope" not in out
+
+
+# --- absence of evidence is not completeness -------------------------------
+
+
+def test_an_index_that_never_recorded_its_coverage_says_unknown() -> None:
+    """The invariant: a missing result is never reported as a clean result.
+
+    Every field the fold reads projects as ``unknown``/``None`` for a legacy
+    index, and reading that as "nothing is wrong" would launder silence into
+    a claim of completeness.
+    """
+    assert compact_index_scope(resolve_index_scope({}))["status"] == "unknown"
+
+
+def test_an_index_with_no_scope_key_says_unknown() -> None:
+    state = {"run_mode": "standard", "git_tier": "full", "docs_mode": "llm"}
+
+    assert compact_index_scope(resolve_index_scope(state))["status"] == "unknown"
+
+
+@pytest.mark.parametrize("leg", ["full_text", "semantic"])
+def test_an_unavailable_search_leg_is_degraded(leg: str) -> None:
+    state = {
+        **_FULL_STATE,
+        "index_scope": {
+            **_FULL_STATE["index_scope"],
+            "search": {"full_text": "available", "semantic": "available", leg: "unavailable"},
+        },
+    }
+
+    assert compact_index_scope(resolve_index_scope(state))["status"] == "degraded"
+
+
+@pytest.mark.parametrize("leg", ["full_text", "semantic"])
+def test_a_pending_search_leg_is_partial(leg: str) -> None:
+    """Pending means not usable yet — smaller than failed, larger than fine."""
+    state = {
+        **_FULL_STATE,
+        "index_scope": {
+            **_FULL_STATE["index_scope"],
+            "file_pages": {"eligible": 10, "generated": 10, "omitted": 0},
+            "search": {"full_text": "available", "semantic": "available", leg: "pending"},
+        },
+    }
+
+    assert compact_index_scope(resolve_index_scope(state))["status"] == "partial"
+
+
+def test_skipped_analysis_is_partial() -> None:
+    state = {
+        **_FULL_STATE,
+        "index_scope": {
+            **_FULL_STATE["index_scope"],
+            "file_pages": {"eligible": 10, "generated": 10, "omitted": 0},
+            "analysis": {"skipped": ["performance"]},
+        },
+    }
+
+    assert compact_index_scope(resolve_index_scope(state))["status"] == "partial"
+
+
+def test_a_degraded_index_names_what_degraded() -> None:
+    """"health failed" and "the graph failed" are not the same warning."""
+    state = {**_FULL_STATE, "degraded": ["health"]}
+
+    compact = compact_index_scope(resolve_index_scope(state))
+
+    assert compact["status"] == "degraded"
+    assert compact["degraded_analyses"] == ["health"]
+
+
+def test_a_sound_index_carries_no_degraded_names() -> None:
+    assert "degraded_analyses" not in compact_index_scope(
+        resolve_index_scope(_FULL_STATE)
+    )
+
+
+# --- the fingerprint has to be on both shapes ------------------------------
+
+
+def test_the_held_copy_carries_the_fingerprint_too(tmp_path: Path) -> None:
+    """Checking a held copy needs the fingerprint on the copy, not only the
+    digest that would be compared against it."""
+    repository = _write_state(tmp_path, _FULL_STATE)
+
+    compact = _meta.build_meta(repository=repository)["index_scope"]
+    full = _meta.build_meta_with_full_scope(repository=repository)["index_scope"]
+
+    assert full["fingerprint"] == compact["fingerprint"]
+
+
+def test_the_fingerprint_refuses_what_it_cannot_canonicalise() -> None:
+    """A silent str() fallback would churn the digest every process."""
+    with pytest.raises(TypeError):
+        index_scope_fingerprint({"version": 1, "odd": object()})
+
+
+# --- where the rest actually lives -----------------------------------------
+
+
+def test_the_pointer_names_the_repo_argument_in_workspace_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """get_overview() with no repo returns the listing, which carries no scope."""
+    from repowise.server.mcp_server import _state
+
+    monkeypatch.setattr(_state, "_registry", object(), raising=False)
+
+    out = _meta.build_meta(repository=_write_state(tmp_path, _FULL_STATE))
+
+    assert out["index_scope"]["full"] == "get_overview(repo=...)"
+
+
+def test_the_pointer_is_a_plain_call_for_a_single_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.server.mcp_server import _state
+
+    monkeypatch.setattr(_state, "_registry", None, raising=False)
+
+    out = _meta.build_meta(repository=_write_state(tmp_path, _FULL_STATE))
+
+    assert out["index_scope"]["full"] == "get_overview()"
+
+
+def test_the_window_opens_without_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client spawns this server; it cannot be told to start again."""
+    repository = _write_state(tmp_path, _FULL_STATE)
+    assert _meta.build_meta(repository=repository)["index_scope"]["projection"]
+
+    monkeypatch.setenv(INDEX_SCOPE_ENV, "full")
+
+    assert "projection" not in _meta.build_meta(repository=repository)["index_scope"]

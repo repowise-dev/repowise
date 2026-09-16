@@ -270,6 +270,8 @@ See [WORKTREES.md](../scale/WORKTREES.md).
 
 `state.json:index_scope` is the canonical machine-readable description used by `status --format json`, `/api/repos`, generated agent guidance, and MCP `_meta.index_scope`. It separately records run mode, content provenance (`none`, `template`, or `model`), Git tier, configured commit cap, achieved Git-history coverage, configured/effective file-page caps, eligible/generated/omitted file-page counts, unavailable/skipped analysis, search availability, provider choices, and upgrade state. Older indexes project missing facts as `unknown`/`null`; a configured cap is never reported as achieved coverage and a missing analysis result is never reported as a clean result.
 
+Over MCP, an ordinary tool response carries a **compact projection** of this object rather than all of it: the run mode, content provenance, Git tier, a `status` of `complete`, `partial`, `degraded`, `upgrading` or `unknown`, the names of any degraded analyses, and a `fingerprint` identifying the canonical object. `get_overview` carries the canonical object in full, with the same `fingerprint` beside it, so a held copy can be checked against a later digest without either side resending it. `status` reaches `complete` only when the evidence exists and is clean; an index whose coverage was never recorded reports `unknown`. Set `REPOWISE_MCP_INDEX_SCOPE=full` to put the canonical object on every MCP response, as builds before `_meta.contract_version` 2 did.
+
 **Examples:**
 
 ```bash
