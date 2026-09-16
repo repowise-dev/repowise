@@ -16,12 +16,44 @@ from typing import Any
 
 INDEX_SCOPE_VERSION = 1
 
+# repo dir -> (identity of the files it was built from, scope). Every MCP
+# response embeds this, so without a cache each one re-reads state.json and
+# re-parses config.yaml. Keyed on mtime+size so an index rebuild invalidates it.
+_SCOPE_CACHE: dict[str, tuple[tuple[Any, ...], dict[str, Any] | None]] = {}
+_SCOPE_CACHE_MAX = 16
+
+
+def _file_identity(path: Path) -> tuple[Any, ...]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return ()
+    return (stat.st_mtime_ns, stat.st_size)
+
 
 def load_index_scope(repo_path: str | Path) -> dict[str, Any] | None:
     """Load a repository's scope; return ``None`` when no readable state exists."""
     repowise_dir = Path(repo_path) / ".repowise"
+    state_file = repowise_dir / "state.json"
+    config_file = repowise_dir / "config.yaml"
+
+    key = str(repowise_dir)
+    identity = (_file_identity(state_file), _file_identity(config_file))
+    cached = _SCOPE_CACHE.get(key)
+    if cached is not None and cached[0] == identity:
+        # Callers embed this in a response that later passes get mutated.
+        return deepcopy(cached[1])
+
+    scope = _read_index_scope(state_file, config_file)
+    if len(_SCOPE_CACHE) >= _SCOPE_CACHE_MAX:
+        _SCOPE_CACHE.clear()
+    _SCOPE_CACHE[key] = (identity, scope)
+    return deepcopy(scope)
+
+
+def _read_index_scope(state_file: Path, config_file: Path) -> dict[str, Any] | None:
     try:
-        state = json.loads((repowise_dir / "state.json").read_text(encoding="utf-8"))
+        state = json.loads(state_file.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError):
         return None
 
@@ -30,7 +62,7 @@ def load_index_scope(repo_path: str | Path) -> dict[str, Any] | None:
     except ImportError:
         return resolve_index_scope(state)
     try:
-        config = yaml.safe_load((repowise_dir / "config.yaml").read_text(encoding="utf-8")) or {}
+        config = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
     except (OSError, TypeError, ValueError, yaml.YAMLError):
         config = {}
     return resolve_index_scope(state, config)
