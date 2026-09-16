@@ -7,7 +7,7 @@ import contextlib
 import os
 import sys
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, NoReturn
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -835,6 +835,34 @@ def group_leaves(exc: BaseException, *, _depth: int = 0) -> list[BaseException]:
     return [leaf for child in exc.exceptions for leaf in group_leaves(child, _depth=_depth + 1)]
 
 
+def _raise_group_leaf(
+    group: BaseExceptionGroup, transport: str, leaves: list[BaseException] | None = None
+) -> NoReturn:
+    """Log every leaf of a failed task group and re-raise the first.
+
+    The first carries the class names of all of them in
+    :data:`GROUP_LEAF_TYPES_ATTR`, which is what lets the layer recording the
+    outcome say whether one fault or several killed the server without
+    reaching back in here to re-derive it.
+    """
+    found = leaves if leaves is not None else group_leaves(group)
+    for leaf in found:
+        # A cancelled run is how a client-initiated shutdown looks, not a fault.
+        if isinstance(leaf, Exception):
+            _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
+    log_outcome(SERVER_FAULT, transport, type(found[0]).__name__)
+    first = found[0]
+    # Best effort: a leaf class with __slots__ refuses the attribute, and the
+    # sibling names are not worth losing the exception over.
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(
+            first,
+            GROUP_LEAF_TYPES_ATTR,
+            tuple(sorted({type(leaf).__name__ for leaf in found})),
+        )
+    raise first from group
+
+
 def _warn_on_open_bind(transport: str, host: str) -> None:
     """One line when a network transport is reachable and unauthenticated."""
     if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
@@ -899,13 +927,15 @@ def run_mcp(
 
     A task-group failure is unwrapped over the whole body, not around ``mcp.run``
     alone: surface construction and transport security run outside that call, and
-    a group raised by either escaped with its wrapper class intact. Every leaf is
-    logged, and the first is re-raised carrying the class names of all of them in
-    :data:`GROUP_LEAF_TYPES_ATTR`. That is what lets the layer recording the
-    outcome say whether one fault or several killed the server, without reaching
-    back in here to re-derive it.
+    a group raised by either escaped with its wrapper class intact. See
+    :func:`_raise_group_leaf` for what travels out of one.
     """
     stray_writes = 0
+    # Startup and the transport run are caught separately. Both unwrap a task
+    # group, but only the run may end in a closure: a corrupt index artifact
+    # read during surface construction raises EOFError, which is a hang-up
+    # class, and classifying it as one would have reported a broken index as a
+    # clean session and exited 0.
     try:
         _state._repo_path = repo_path
         _state._force_single_repo = not workspace_mode
@@ -914,36 +944,26 @@ def run_mcp(
 
         ensure_full_surface()
         apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    except BaseExceptionGroup as group:
+        _raise_group_leaf(group, transport)
 
+    try:
         if transport in ("sse", "streamable-http"):
             _run_network_transport(transport, host, port)
         else:
             stray_writes = _run_stdio_transport()
     except BaseExceptionGroup as group:
-        outcome = classify_termination(transport, group, leaves=group_leaves)
         leaves = group_leaves(group)
-        if outcome == CLIENT_CLOSED:
-            log_outcome(outcome, transport, type(leaves[0]).__name__)
-            return outcome
-        for leaf in leaves:
-            # A cancelled run is how a client-initiated shutdown looks, not a fault.
-            if isinstance(leaf, Exception):
-                _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
-        log_outcome(SERVER_FAULT, transport, type(leaves[0]).__name__)
-        first = leaves[0]
-        # Best effort: a leaf class with __slots__ refuses the attribute, and the
-        # sibling names are not worth losing the exception over.
-        with contextlib.suppress(AttributeError, TypeError):
-            setattr(
-                first,
-                GROUP_LEAF_TYPES_ATTR,
-                tuple(sorted({type(leaf).__name__ for leaf in leaves})),
-            )
-        raise first from group
+        if classify_termination(transport, group, leaves=group_leaves) == CLIENT_CLOSED:
+            log_outcome(CLIENT_CLOSED, transport, type(leaves[0]).__name__)
+            return CLIENT_CLOSED
+        _raise_group_leaf(group, transport, leaves=leaves)
     except client_closure_types() as exc:
         # An ungrouped hang-up: the pipe broke, or the run was cancelled under
         # us. The clause names those classes rather than catching broadly, so
         # an interrupt and a server fault are never swallowed here.
+        if transport != "stdio":
+            raise
         log_outcome(CLIENT_CLOSED, transport, type(exc).__name__)
         return CLIENT_CLOSED
 

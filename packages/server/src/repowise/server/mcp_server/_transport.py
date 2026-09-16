@@ -110,8 +110,20 @@ def classify_termination(
     *error* is what ended the run, or ``None`` when it returned on its own.
     *leaves* unwraps a task group; a group counts as a closure only when every
     leaf does, because one genuine fault beside a hang-up is still a fault.
+
+    Only stdio can end in a closure. A network server does not hold a pipe
+    some particular client owns, so a reset socket there is one connection
+    failing inside a server that is still running, never the end of its life.
+
+    ``stray_writes`` outranks a clean stdio close on purpose: how a session
+    ended matters less than the discovery that something was writing down the
+    protocol channel while it ran, and that is the outcome worth acting on.
+    Only a clean run reports it — a session that ended some other way reports
+    that, and the guard's own warning still carries the count.
     """
     if error is not None:
+        if transport != "stdio":
+            return SERVER_FAULT
         found = leaves(error) if leaves is not None else [error]
         return CLIENT_CLOSED if all(map(is_client_closure, found)) else SERVER_FAULT
     if stray_writes:
@@ -121,6 +133,30 @@ def classify_termination(
     return CLIENT_CLOSED if transport == "stdio" else SERVER_STOPPED
 
 
+def _ensure_outcome_sink() -> None:
+    """Give this module's logger a stderr handler, once.
+
+    ``repowise mcp`` configures no logging, so a record with no handler falls
+    through to logging's last-resort sink — which is WARNING-only. Measured:
+    the fault line printed and ``client_closed`` printed nothing, which left
+    the clean outcomes exactly as silent as before.
+
+    The alternatives are worse. Raising every outcome to WARNING says a
+    client hanging up is a problem, and turning on INFO for the whole server
+    puts a session's worth of chatter on the same stderr a host is reading.
+    One line per process, from the one logger that must always be heard, gets
+    its own sink instead. ``propagate`` stays off so a host that does
+    configure logging gets it once, not twice.
+    """
+    if _log.handlers:
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    _log.addHandler(handler)
+    _log.setLevel(logging.INFO)
+    _log.propagate = False
+
+
 def log_outcome(outcome: str, transport: str, detail: str = "") -> None:
     """Emit the one line that says how a session ended, on stderr.
 
@@ -128,6 +164,7 @@ def log_outcome(outcome: str, transport: str, detail: str = "") -> None:
     ends without a word is the case this exists to remove: it reads as a
     server that answered nothing, which is also what a crash looks like.
     """
+    _ensure_outcome_sink()
     tail = f" ({detail})" if detail else ""
     level = logging.ERROR if outcome == SERVER_FAULT else logging.INFO
     if outcome == PROTOCOL_CORRUPTED:
@@ -147,9 +184,15 @@ class _StrayStdout(io.TextIOBase):
     ``buffer`` is the real one, which is what keeps the SDK writing frames to
     the client rather than into stderr with everything else.
 
-    :class:`io.TextIOBase` supplies the rest of the text-stream protocol —
-    ``writelines``, ``writable``, ``closed`` and the no-op close — so only what
-    actually differs from a text stream is written out here.
+    :class:`io.TextIOBase` supplies ``writelines`` (which routes through the
+    override below, so the count stays right), ``closed`` and the no-op close.
+    It does not supply ``writable``, which defaults to False on ``IOBase`` and
+    would tell a caller that checks before writing that stdout is read-only.
+
+    ``fileno`` is deliberately the real descriptor, so anything writing
+    straight to fd 1 bypasses this and still corrupts the channel. Nothing in
+    this process does, and a guard that lied about the descriptor would break
+    subprocesses that inherit it.
     """
 
     def __init__(self, real: Any, stderr: Any) -> None:
@@ -180,6 +223,13 @@ class _StrayStdout(io.TextIOBase):
 
     def isatty(self) -> bool:
         return False
+
+    def writable(self) -> bool:
+        return True
+
+    @property
+    def name(self) -> str:
+        return getattr(self._real, "name", "<stdout>")
 
 
 @contextlib.contextmanager

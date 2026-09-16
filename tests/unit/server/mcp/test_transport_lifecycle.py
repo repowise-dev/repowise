@@ -15,9 +15,10 @@ import sys
 import anyio
 import pytest
 
-from repowise.server.mcp_server import _server
+from repowise.server.mcp_server import _server, _transport
 from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
+    CLIENT_GONE,
     PROTOCOL_CORRUPTED,
     SERVER_FAULT,
     SERVER_STOPPED,
@@ -96,25 +97,68 @@ def test_one_real_fault_beside_a_hang_up_is_a_fault() -> None:
     )
 
 
-def test_every_outcome_is_logged_including_the_clean_ones(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Silence is the thing this replaces: it reads exactly like a crash."""
-    with caplog.at_level(logging.INFO, logger="repowise.server.mcp_server._transport"):
+def test_a_clean_outcome_reaches_stderr_with_no_logging_configured(capsys) -> None:
+    """The regression a level-forcing test hid.
+
+    ``repowise mcp`` configures no logging, so an INFO record fell through to
+    logging's last-resort sink, which is WARNING-only: the fault line printed
+    and the clean ones printed nothing at all. Asserting at the default level
+    is the whole point — do not add ``caplog.at_level`` here.
+    """
+    _transport._log.handlers.clear()
+    _transport._log.propagate = True
+    try:
         log_outcome(CLIENT_CLOSED, "stdio")
+    finally:
+        _transport._log.handlers.clear()
+        _transport._log.propagate = True
 
-    assert "client_closed" in caplog.text
+    assert "client_closed" in capsys.readouterr().err
 
 
-def test_a_fault_is_logged_at_error_and_a_close_is_not(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    with caplog.at_level(logging.INFO, logger="repowise.server.mcp_server._transport"):
+def test_the_sink_is_attached_once(capsys) -> None:
+    """One line per process; a handler per call would multiply it."""
+    _transport._log.handlers.clear()
+    _transport._log.propagate = True
+    try:
+        log_outcome(CLIENT_CLOSED, "stdio")
+        log_outcome(SERVER_STOPPED, "sse")
+        handlers = len(_transport._log.handlers)
+    finally:
+        _transport._log.handlers.clear()
+        _transport._log.propagate = True
+
+    assert handlers == 1
+    assert capsys.readouterr().err.count("MCP session") == 2
+
+
+def test_a_fault_is_logged_at_error_and_a_close_is_not() -> None:
+    """A client hanging up is not a problem; only a fault is.
+
+    Read off this module's own logger rather than caplog: the sink sets
+    ``propagate = False``, so records never reach the root handler caplog
+    attaches to. That is deliberate — see :func:`_ensure_outcome_sink`.
+    """
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    _transport._log.handlers.clear()
+    _transport._log.addHandler(_Capture())
+    _transport._log.setLevel(logging.INFO)
+    try:
         log_outcome(CLIENT_CLOSED, "stdio")
         log_outcome(SERVER_FAULT, "stdio", "PermissionError")
+    finally:
+        _transport._log.handlers.clear()
+        _transport._log.propagate = True
 
-    levels = {record.message.split("ended: ")[1].split()[0]: record.levelno
-              for record in caplog.records}
+    levels = {
+        record.getMessage().split("ended: ")[1].split()[0]: record.levelno
+        for record in records
+    }
     assert levels["client_closed"] == logging.INFO
     assert levels["server_fault"] == logging.ERROR
 
@@ -211,3 +255,100 @@ def test_a_network_transport_reports_its_own_shutdown(
     monkeypatch.setattr(_server.mcp, "run", lambda **_kw: None)
 
     assert _server.run_mcp(transport="streamable-http") == SERVER_STOPPED
+
+
+def test_a_network_transport_never_reports_a_closure() -> None:
+    """An HTTP server holds no pipe a particular client owns."""
+    assert classify_termination("streamable-http", BrokenPipeError()) == SERVER_FAULT
+
+
+def test_a_startup_fault_is_never_read_as_a_clean_close(
+    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+) -> None:
+    """A truncated index artifact raises EOFError, which is a hang-up class.
+
+    Classifying it as one reported a broken index as an ordinary session and
+    exited 0, which is the failure this whole module exists to prevent.
+    """
+    def boom():
+        raise EOFError("compressed file ended before the end-of-stream marker")
+
+    monkeypatch.setattr("repowise.server.mcp_server.ensure_full_surface", boom)
+
+    with pytest.raises(EOFError):
+        _server.run_mcp(transport="stdio")
+
+
+def test_a_grouped_startup_fault_is_not_a_closure_either(
+    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+) -> None:
+    def boom():
+        raise ExceptionGroup("startup", [EOFError("truncated artifact")])
+
+    monkeypatch.setattr("repowise.server.mcp_server.ensure_full_surface", boom)
+
+    with pytest.raises(EOFError):
+        _server.run_mcp(transport="stdio")
+
+
+def test_an_interrupt_is_not_a_closure(
+    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+) -> None:
+    """Ctrl-C ends a server; it is not the client hanging up."""
+    monkeypatch.setattr(
+        _server.mcp, "run", lambda **_kw: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        _server.run_mcp(transport="stdio")
+
+
+def test_an_unopenable_store_is_not_a_closure(
+    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+) -> None:
+    monkeypatch.setattr(
+        _server.mcp,
+        "run",
+        lambda **_kw: (_ for _ in ()).throw(_server.StoreUnavailableError("locked")),
+    )
+
+    with pytest.raises(_server.StoreUnavailableError):
+        _server.run_mcp(transport="stdio")
+
+
+def test_the_watchdog_speaks_the_shared_vocabulary(capsys, monkeypatch) -> None:
+    """A dead client and a dead server must be one grep apart."""
+    from repowise.server.mcp_server import _watchdog
+
+    _transport._log.handlers.clear()
+    _transport._log.propagate = True
+    try:
+        _watchdog.log_outcome(CLIENT_GONE, "stdio", "ancestor code(123) is gone")
+    finally:
+        _transport._log.handlers.clear()
+        _transport._log.propagate = True
+
+    err = capsys.readouterr().err
+    assert "client_gone" in err
+    assert "code(123)" in err
+
+
+def test_a_session_that_printed_and_then_hung_up_reports_the_hang_up(
+    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+) -> None:
+    """How it ended outranks what happened during it; the guard still warns."""
+    def print_then_hang_up(**_kw):
+        print("stray")
+        raise BrokenPipeError("hung up")
+
+    monkeypatch.setattr(_server.mcp, "run", print_then_hang_up)
+
+    assert _server.run_mcp(transport="stdio") == CLIENT_CLOSED
+
+
+def test_the_guard_says_stdout_is_writable() -> None:
+    """io.TextIOBase defaults writable() to False, which would read as a
+    read-only stdout to anything that checks before writing."""
+    with guard_stdout() as guard:
+        assert guard.writable() is True
+        assert sys.stdout.writable() is True
