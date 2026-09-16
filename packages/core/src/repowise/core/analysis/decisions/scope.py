@@ -11,13 +11,34 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-__all__ = ["derive_decision_scope", "resolve_module_nodes"]
+__all__ = ["commit_scope_files", "derive_decision_scope", "resolve_module_nodes"]
 
 #: Upper bound on the directories one record may claim. A record naming files
 #: across more directories than this is not scoped by its module list anyway —
 #: its files are the scope — and an unbounded list is what turns a stored
 #: column into a second copy of the tree.
 _MAX_MODULES = 12
+
+#: Upper bound on the files a commit-derived record may claim. ``git_archaeology``
+#: and ``pr`` read one decision out of one commit and then took that commit's
+#: whole file list, so a decision mined from a large refactor claimed every file
+#: the refactor touched. Measured over the 625-record dev store: scope runs
+#: median 5, p75 16, p90 30, max 59, and the 103 records claiming more than 20
+#: files (17 ``git_archaeology``, 86 ``pr``) carry 1,468 scope entries beyond
+#: it. 20 keeps the p75 record whole and matches the number ``inline_marker``
+#: already caps its graph neighbours at — a different quantity, but reusing the
+#: value avoids a third cap to reason about.
+_MAX_FILES = 20
+
+
+def commit_scope_files(files: Sequence[str] | None) -> list[str]:
+    """The files a decision mined from one commit may claim to govern.
+
+    Sorted before truncating so which files survive the cap is reproducible,
+    rather than depending on the order git happened to list them in.
+    """
+    seen = {f.replace("\\", "/").strip() for f in files or [] if f and f.strip()}
+    return sorted(seen)[:_MAX_FILES]
 
 
 def resolve_module_nodes(files: Sequence[str] | None) -> list[str]:

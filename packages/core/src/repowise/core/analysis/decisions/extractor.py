@@ -52,7 +52,7 @@ from repowise.core.analysis.decisions.policy import (
     DecisionPolicy,
     resolve_policy,
 )
-from repowise.core.analysis.decisions.scope import resolve_module_nodes
+from repowise.core.analysis.decisions.scope import commit_scope_files, resolve_module_nodes
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.ingestion.traverser import load_gitignore_spec
 
@@ -577,7 +577,10 @@ class DecisionExtractor:
         return ExtractedDecision(
             title=_truncate_title(marker["text"], 100),
             decision=marker["text"],
-            context=f"Found in {file_path}:{marker['line']}",
+            # No context. This lane has only the marker's own text, and
+            # `evidence_file`/`evidence_line` below already say where it was
+            # found, so the location string it used to carry was a restatement
+            # that made a record with no stated reason read as having one.
             source="inline_marker",
             status="active",
             confidence=0.7,
@@ -719,7 +722,7 @@ class DecisionExtractor:
                             break
                 if sha:
                     d.evidence_commits = [sha]
-                    d.affected_files = commit_files.get(sha, [])
+                    d.affected_files = commit_scope_files(commit_files.get(sha))
                     d.source_text = source_by_sha.get(sha, "")
                 d.source = "git_archaeology"
                 d.status = "proposed"
@@ -981,7 +984,7 @@ class DecisionExtractor:
                             break
                 if sha:
                     d.evidence_commits = [sha]
-                    d.affected_files = files_by_sha.get(sha, [])
+                    d.affected_files = commit_scope_files(files_by_sha.get(sha))
                     d.source_text = source_by_sha.get(sha, "")
                 d.source = "pr"
                 d.status = "proposed"
