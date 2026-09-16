@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import logging
 import sys
 from collections.abc import Iterator
@@ -47,8 +48,11 @@ SERVER_STOPPED = "server_stopped"
 SERVER_FAULT = "server_fault"
 
 
-def _client_closure_types() -> tuple[type[BaseException], ...]:
+def client_closure_types() -> tuple[type[BaseException], ...]:
     """Exception classes that mean the far end of the transport went away.
+
+    Public because an ``except`` clause naming exactly these is how the caller
+    catches a hang-up without also catching an interrupt or a fault.
 
     Resolved per call rather than at import: anyio's cancelled class is
     backend-dependent, and importing it at module scope would pull anyio into
@@ -87,7 +91,7 @@ def _client_closure_types() -> tuple[type[BaseException], ...]:
 
 def is_client_closure(exc: BaseException) -> bool:
     """Whether *exc* is the far end hanging up rather than a fault here."""
-    return isinstance(exc, _client_closure_types())
+    return isinstance(exc, client_closure_types())
 
 
 class _LeafReader(Protocol):
@@ -131,7 +135,7 @@ def log_outcome(outcome: str, transport: str, detail: str = "") -> None:
     _log.log(level, "MCP session (%s) ended: %s%s", transport, outcome, tail)
 
 
-class _StrayStdout:
+class _StrayStdout(io.TextIOBase):
     """Stands in for ``sys.stdout`` while a stdio session runs.
 
     The MCP SDK re-wraps ``sys.stdout.buffer`` in its own text layer and writes
@@ -142,9 +146,14 @@ class _StrayStdout:
 
     ``buffer`` is the real one, which is what keeps the SDK writing frames to
     the client rather than into stderr with everything else.
+
+    :class:`io.TextIOBase` supplies the rest of the text-stream protocol —
+    ``writelines``, ``writable``, ``closed`` and the no-op close — so only what
+    actually differs from a text stream is written out here.
     """
 
     def __init__(self, real: Any, stderr: Any) -> None:
+        super().__init__()
         self._real = real
         self._stderr = stderr
         self.writes = 0
@@ -157,18 +166,10 @@ class _StrayStdout:
     def encoding(self) -> str:
         return getattr(self._real, "encoding", "utf-8")
 
-    @property
-    def errors(self) -> str | None:
-        return getattr(self._real, "errors", None)
-
     def write(self, data: str) -> int:
         if data:
             self.writes += 1
         return self._stderr.write(data)
-
-    def writelines(self, lines: Any) -> None:
-        for line in lines:
-            self.write(line)
 
     def flush(self) -> None:
         with contextlib.suppress(ValueError):
@@ -179,19 +180,6 @@ class _StrayStdout:
 
     def isatty(self) -> bool:
         return False
-
-    def writable(self) -> bool:
-        return True
-
-    def readable(self) -> bool:
-        return False
-
-    def seekable(self) -> bool:
-        return False
-
-    @property
-    def closed(self) -> bool:
-        return bool(getattr(self._real, "closed", False))
 
 
 @contextlib.contextmanager

@@ -31,8 +31,8 @@ from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
     SERVER_FAULT,
     classify_termination,
+    client_closure_types,
     guard_stdout,
-    is_client_closure,
     log_outcome,
 )
 
@@ -835,6 +835,49 @@ def group_leaves(exc: BaseException, *, _depth: int = 0) -> list[BaseException]:
     return [leaf for child in exc.exceptions for leaf in group_leaves(child, _depth=_depth + 1)]
 
 
+def _warn_on_open_bind(transport: str, host: str) -> None:
+    """One line when a network transport is reachable and unauthenticated."""
+    if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
+        _log.warning(
+            "SECURITY WARNING: MCP server (%s) is binding to %s without "
+            "REPOWISE_API_KEY. All tools are unauthenticated and "
+            "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
+            transport,
+            host,
+        )
+
+
+def _run_network_transport(transport: str, host: str, port: int) -> None:
+    mcp.settings.host = host
+    mcp.settings.port = port
+    _configure_transport_security(host)
+    _warn_on_open_bind(transport, host)
+    mcp.run(transport=transport)
+
+
+def _run_stdio_transport() -> int:
+    """Run the stdio transport; returns how many stray stdout writes it saw."""
+    # stdout is the JSON-RPC channel on stdio, so every log line written there
+    # arrives at the client as a malformed protocol frame. Move the log sinks
+    # to stderr before anything can log.
+    from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
+
+    route_logging_to_stderr()
+    # stdio servers are spawned per-session by the MCP client; when the client
+    # dies abnormally the stdio loop doesn't exit (and Windows never kills
+    # children), leaking servers that hold wiki.db handles. The watchdog exits
+    # this process once the client is gone.
+    from repowise.server.mcp_server._watchdog import start_parent_watchdog
+
+    start_parent_watchdog()
+    # The SDK writes frames through stdout's buffer, so anything arriving at
+    # the text layer is a stray print. The guard moves it to stderr, counts it,
+    # and the count is what names the session protocol_corrupted.
+    with guard_stdout() as guard:
+        mcp.run(transport="stdio")
+    return guard.writes
+
+
 def run_mcp(
     transport: str = "stdio",
     repo_path: str | None = None,
@@ -872,50 +915,10 @@ def run_mcp(
         ensure_full_surface()
         apply_tool_selection(mcp, repo_path=repo_path, override=tools)
 
-        if transport == "sse":
-            mcp.settings.host = host
-            mcp.settings.port = port
-            _configure_transport_security(host)
-            if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
-                _log.warning(
-                    "SECURITY WARNING: MCP server (sse) is binding to %s without "
-                    "REPOWISE_API_KEY. All tools are unauthenticated and "
-                    "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
-                    host,
-                )
-            mcp.run(transport="sse")
-        elif transport == "streamable-http":
-            mcp.settings.host = host
-            mcp.settings.port = port
-            _configure_transport_security(host)
-            if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
-                _log.warning(
-                    "SECURITY WARNING: MCP server (streamable-http) is binding to %s without "
-                    "REPOWISE_API_KEY. All tools are unauthenticated and "
-                    "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
-                    host,
-                )
-            mcp.run(transport="streamable-http")
+        if transport in ("sse", "streamable-http"):
+            _run_network_transport(transport, host, port)
         else:
-            # stdout is the JSON-RPC channel on stdio, so every log line written
-            # there arrives at the client as a malformed protocol frame. Move the
-            # log sinks to stderr before anything can log.
-            from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
-
-            route_logging_to_stderr()
-            # stdio servers are spawned per-session by the MCP client; when the
-            # client dies abnormally the stdio loop doesn't exit (and Windows
-            # never kills children), leaking servers that hold wiki.db handles.
-            # The watchdog exits this process once the client is gone.
-            from repowise.server.mcp_server._watchdog import start_parent_watchdog
-
-            start_parent_watchdog()
-            # stdout is the protocol channel and the SDK writes frames through
-            # its buffer, so anything arriving at the text layer is a stray
-            # print. The guard moves it to stderr and counts it.
-            with guard_stdout() as guard:
-                mcp.run(transport="stdio")
-            stray_writes = guard.writes
+            stray_writes = _run_stdio_transport()
     except BaseExceptionGroup as group:
         outcome = classify_termination(transport, group, leaves=group_leaves)
         leaves = group_leaves(group)
@@ -937,11 +940,10 @@ def run_mcp(
                 tuple(sorted({type(leaf).__name__ for leaf in leaves})),
             )
         raise first from group
-    except BaseException as exc:
+    except client_closure_types() as exc:
         # An ungrouped hang-up: the pipe broke, or the run was cancelled under
-        # us. Everything else is this server's fault and still raises.
-        if not is_client_closure(exc):
-            raise
+        # us. The clause names those classes rather than catching broadly, so
+        # an interrupt and a server fault are never swallowed here.
         log_outcome(CLIENT_CLOSED, transport, type(exc).__name__)
         return CLIENT_CLOSED
 
