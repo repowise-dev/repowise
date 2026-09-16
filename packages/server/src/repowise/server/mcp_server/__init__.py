@@ -101,13 +101,15 @@ def tool_middleware(fn: Any) -> Any:
        the ledger measures the payload as actually delivered.
     4. ``budget`` — caps the delivered shape before savings are measured.
     5. ``instrument`` — records the bounded result and adds savings metadata.
-    6. ``budget`` — accounts for those final middleware fields and rechecks.
+    6. ``timed`` — stamps ``_meta.timing_ms`` for any tool that did not.
+    7. ``budget`` — accounts for those final middleware fields and rechecks.
 
     Named rather than inlined at the ``apply`` call so tests can wrap a tool in
     the real composition; ``tests/unit/server/mcp/test_number_precision.py``
     relies on that to prove no raw double reaches an agent.
     """
     import inspect
+    import time
     from functools import wraps
 
     from repowise.server.mcp_server._budget import (
@@ -128,6 +130,25 @@ def tool_middleware(fn: Any) -> Any:
             return finalize_trust_envelope(
                 await inner(*args, **kwargs), evidence_kind=evidence_kind
             )
+
+        return wrapped
+
+    def timed(inner: Any) -> Any:
+        """Stamp elapsed time for the tools that do not thread it themselves.
+
+        A tool that already reports ``timing_ms`` keeps its own number, which
+        measures its retrieval rather than the middleware around it.
+        """
+
+        @wraps(inner)
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            started = time.perf_counter()
+            result = await inner(*args, **kwargs)
+            if isinstance(result, dict):
+                meta = result.setdefault("_meta", {})
+                if isinstance(meta, dict) and meta.get("timing_ms") is None:
+                    meta["timing_ms"] = round((time.perf_counter() - started) * 1000, 2)
+            return result
 
         return wrapped
 
@@ -155,7 +176,7 @@ def tool_middleware(fn: Any) -> Any:
 
         return wrapped
 
-    return budget(instrument(budget(quantize(trust(shield(fn))))))
+    return budget(timed(instrument(budget(quantize(trust(shield(fn)))))))
 
 
 def ensure_full_surface() -> Any:
