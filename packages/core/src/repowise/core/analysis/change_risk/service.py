@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -183,17 +184,11 @@ def score_live_change(
         # which is the honest answer for the first commit in a repository.
         history_ref = f"{target}^"
 
-    risk = score_change(features)
     try:
-        pressure = fix_pressure(repo_path, history_ref)
-        fix_history_available = True
+        pressure: dict[str, float] | None = fix_pressure(repo_path, history_ref)
     except FixHistoryUnavailableError:
-        pressure, fix_history_available = {}, False
-    density = change_fix_density(pressure, features.file_churn)
-    fix_bearing = hot_files(pressure, features.file_churn)
-    percentile: float | None = None
-    priority: str | None = None
-    baseline_sample_size = 0
+        pressure = None
+
     samples: list[BaselineSample] = []
     if baseline:
         samples = baseline_samples_cached(
@@ -203,29 +198,75 @@ def score_live_change(
             extensions,
             exclude_patterns=effective_excludes,
         )
-        scores = scores_excluding(samples, excluded_ref)
-        baseline_sample_size = len(scores)
-        if len(scores) >= _MIN_BASELINE:
-            normalizer = RiskNormalizer.from_scores(scores)
-            rank_score = score_change(replace(features, exp=None)).score
-            percentile = normalizer.percentile(rank_score)
-            priority = normalizer.priority(rank_score)
+
+    return assess_change(
+        features,
+        fix_pressure=pressure,
+        baseline_scores=scores_excluding(samples, excluded_ref),
+        baseline_fix_densities=densities_excluding(samples, excluded_ref, pressure or {}),
+        working_tree=working_tree,
+        riskignore_excludes=from_riskignore,
+        request_excludes=exclude_patterns,
+    )
+
+
+def assess_change(
+    features: ChangeFeatures,
+    *,
+    fix_pressure: Mapping[str, float] | None = None,
+    baseline_scores: Sequence[float] = (),
+    baseline_fix_densities: Sequence[float] = (),
+    min_baseline: int = _MIN_BASELINE,
+    working_tree: bool = False,
+    riskignore_excludes: tuple[str, ...] = (),
+    request_excludes: tuple[str, ...] = (),
+) -> ChangeRiskResult:
+    """Score an already-extracted change. The whole risk composition, no IO.
+
+    This is the pure tail of :func:`score_live_change`: model scoring, the
+    fix-history load the change stands on, and the repo-relative ranking.
+    Everything upstream of it -- resolving a revspec, walking git for features,
+    walking git for fix pressure, sampling a baseline -- is IO, and stays with
+    the caller. A consumer holding file stats from an API rather than a
+    checkout reaches this directly and gets the same numbers, because they come
+    from the same composition rather than a second copy of it.
+
+    ``fix_pressure`` of ``None`` means the history walk could not run, which is
+    reported as ``fix_history_available=False``. An empty mapping is different:
+    the walk ran and found no fixes.
+
+    ``baseline_scores`` ranks this change against its cohort. Fewer than
+    *min_baseline* of them leaves ``percentile`` and ``priority`` as ``None`` --
+    an honest "no cohort to rank against" rather than a percentile computed from
+    too little to mean anything.
+    """
+    risk = score_change(features)
+    pressure = dict(fix_pressure or {})
+    density = change_fix_density(pressure, features.file_churn)
+
+    percentile: float | None = None
+    priority: str | None = None
+    if len(baseline_scores) >= min_baseline:
+        normalizer = RiskNormalizer.from_scores(list(baseline_scores))
+        # Author experience is a property of the author, not of the change, so
+        # it is excluded from the score this change is *ranked* by.
+        rank_score = score_change(replace(features, exp=None)).score
+        percentile = normalizer.percentile(rank_score)
+        priority = normalizer.priority(rank_score)
 
     return ChangeRiskResult(
         features=features,
         risk=risk,
         percentile=percentile,
         priority=priority,
-        baseline_sample_size=baseline_sample_size,
-        riskignore_excludes=from_riskignore,
-        request_excludes=exclude_patterns,
+        baseline_sample_size=len(baseline_scores),
+        riskignore_excludes=riskignore_excludes,
+        request_excludes=request_excludes,
         working_tree=working_tree,
         fix_density=round(density, 3),
-        fix_percentile=fix_density_percentile(
-            densities_excluding(samples, excluded_ref, pressure), density
-        ),
-        hot_files=fix_bearing,
-        fix_history_available=fix_history_available,
+        fix_percentile=fix_density_percentile(list(baseline_fix_densities), density),
+        hot_files=hot_files(pressure, features.file_churn),
+        fix_history_available=fix_pressure is not None,
     )
 
 
