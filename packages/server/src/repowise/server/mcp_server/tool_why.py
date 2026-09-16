@@ -14,6 +14,7 @@ from sqlalchemy import select
 from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.analysis.decisions.lifecycle import is_governing, status_rank
 from repowise.core.persistence.crud.authority import (
+    accepted_decision_ids,
     decision_currencies,
     resolve_decision_id,
 )
@@ -59,8 +60,11 @@ from repowise.server.mcp_server._why_evidence import (
 )
 from repowise.server.mcp_server._why_relevance import (
     clears_floor,
+    query_scorer,
     question_terms,
+    recovery_note,
     redirect_for,
+    redirect_when_served,
     relevance,
     term_idf,
 )
@@ -79,13 +83,40 @@ def _has_archaeology(archaeology: Any) -> bool:
     )
 
 
+def _is_accepted_row(row: Any) -> bool:
+    """Whether an emitted decision row rests on an acceptance.
+
+    Reads the ``authority`` key this module stamps rather than ``status``, for
+    the reason ``decision_currencies`` gives: the column is a projection every
+    writer keeps in step, and it agrees right up until something writes it
+    without an acceptance. A row with no ``authority`` at all is a semantic hit
+    projected from the vector store, which carries no record to join on and so
+    cannot be claimed as accepted either.
+    """
+    return isinstance(row, dict) and row.get("authority") == "accepted"
+
+
 def _stamp_answer_basis(result: dict) -> dict:
     """Name the strongest lane the response actually rests on.
 
     This tool serves commit messages and mined comments beside decision
-    records. Only a decision is a ruling; the rest are evidence a reader has to
-    weigh. Per-row ``provenance`` answers that one row at a time, which is no
-    help in deciding how much of the whole response to trust.
+    records. Only an *accepted* decision is a ruling; the rest are evidence a
+    reader has to weigh. Per-row ``provenance`` answers that one row at a time,
+    which is no help in deciding how much of the whole response to trust.
+
+    ``decision`` requires an acceptance, not a record. A ``DecisionRecord`` is a
+    candidate until a ``DecisionAcceptance`` row exists for it, and accepting is
+    a deliberate manual step, so a store of nothing but candidates is the state
+    every user who has not worked through the acceptance UI is in — the common
+    case, not an edge one. Stamping ``decision`` off the mere presence of a
+    record therefore claimed a ruling on most calls this tool ever serves, and
+    it did so beside titles like "Do not ship UI components yet": session
+    artifacts nobody confirmed, presented as governing.
+
+    ``candidate`` sits *below* every evidence lane rather than above them for
+    the same reason. A mined comment or a commit message is something a reader
+    can weigh; an unconfirmed candidate is a guess about what somebody once
+    meant, so it must not outrank the lanes that carry real evidence.
 
     Absent when nothing was served, so a refusal cannot read as an answer.
     Re-derived after the budget pass has shed, so the claim cannot outlive the
@@ -95,7 +126,15 @@ def _stamp_answer_basis(result: dict) -> dict:
     entries = [
         e for e in (result.get("target_context") or {}).values() if isinstance(e, dict)
     ]
-    if result.get("decisions") or any(e.get("governing_decisions") for e in entries):
+    decision_rows = [
+        *(result.get("decisions") or []),
+        *(r for e in entries for r in (e.get("governing_decisions") or [])),
+    ]
+    candidate_rows = [
+        *(r for e in entries for r in (e.get("candidate_decisions") or [])),
+        *(r for r in decision_rows if not _is_accepted_row(r)),
+    ]
+    if any(_is_accepted_row(r) for r in decision_rows):
         result["answer_basis"] = "decision"
     elif result.get("episodes"):
         result["answer_basis"] = "episode"
@@ -107,6 +146,8 @@ def _stamp_answer_basis(result: dict) -> dict:
         result["answer_basis"] = "archaeology"
     elif result.get("related_documentation"):
         result["answer_basis"] = "documentation"
+    elif candidate_rows:
+        result["answer_basis"] = "candidate"
     return result
 
 
@@ -150,10 +191,12 @@ async def get_why(
     (decision health dashboard). Falls back to git archaeology when no
     decisions exist for a path — never empty. Evidence-bearing rows carry an
     explicit ``provenance`` and self-contained ``evidence_refs``; matching ids
-    mean shared evidence, not independent corroboration. ``answer_basis`` names
-    the strongest lane the response rests on (decision, episode, rationale,
-    archaeology, documentation); only a decision is a ruling, the rest are
-    evidence to weigh.
+    mean shared evidence, not independent corroboration. Every decision row
+    carries ``authority``: ``accepted`` means somebody signed it, ``candidate``
+    means nobody has yet. ``answer_basis`` names the strongest lane the response
+    rests on (decision, episode, rationale, archaeology, documentation,
+    candidate); only ``decision`` is a ruling, and ``candidate`` is the weakest
+    -- it means nothing cleared that bar.
 
     Args:
         query: question, file/module path, or omit for the dashboard.
@@ -212,7 +255,7 @@ async def _why_reference(
 ) -> dict[str, Any]:
     """Resolve one emitted decision/evidence id without relevance search."""
 
-    ctx, repository, records, _target_git = await _load_corpus(repo, None)
+    ctx, repository, records, _target_git, accepted = await _load_corpus(repo, None)
     async with get_session(ctx.session_factory) as session:
         await _attach_decision_evidence(session, records)
         # This tool tells callers to hold onto the ids it emits, so an id quoted
@@ -234,6 +277,7 @@ async def _why_reference(
                     _get_exclude_spec(ctx.path),
                 ),
                 [],
+                accepted=accepted,
             )
             for record in records
         ]
@@ -613,6 +657,18 @@ _MAX_HEALTH_PROPOSED = 5
 _MAX_HEALTH_UNGOVERNED = 8
 
 
+def _authority_of(decision_id: str, accepted: set[str]) -> str:
+    """``"accepted"`` when an acceptance binds this record, else ``"candidate"``.
+
+    The one test that separates the two entities, per
+    :func:`~repowise.core.persistence.crud.authority.decision_currencies`:
+    membership of the acceptance set, never ``status``. Stamped on every row
+    this tool emits so a reader — and :func:`_stamp_answer_basis` — can tell a
+    ruling from a guess without a second call.
+    """
+    return "accepted" if decision_id in accepted else "candidate"
+
+
 def _path_decision_sort_key(d: Any) -> tuple[int, float, float]:
     return (
         status_rank(d.status),
@@ -626,12 +682,14 @@ def _governing_decision_entry(
     affected_files: list,
     lineage: list[dict],
     collector: OmissionCollector | None = None,
+    accepted: set[str] | None = None,
 ) -> dict:
     """Serialize a decision that governs a path, including its lineage chain."""
     entry = {
         "id": d.id,
         "title": d.title,
         "status": d.status,
+        "authority": _authority_of(d.id, accepted or set()),
         "context": d.context,
         "decision": _decision_body(d),
         "rationale": d.rationale,
@@ -969,6 +1027,7 @@ async def _why_path(query: str, repo: str | None) -> dict:
             )
             currency = currencies.get(d.id)
             if currency is None:
+                entry["authority"] = "candidate"
                 # Never accepted. It goes in its own lane, labelled, rather
                 # than into the list an agent reads as the rules for this file.
                 entry["review_state"] = "open"
@@ -976,8 +1035,12 @@ async def _why_path(query: str, repo: str | None) -> dict:
                 continue
             entry["currency"] = currency
             if is_governing(currency):
+                entry["authority"] = "accepted"
                 governing.append(entry)
             else:
+                # Accepted once, withdrawn since: not a ruling any more, so it
+                # must not read as one to ``_stamp_answer_basis`` either.
+                entry["authority"] = "withdrawn"
                 # Accepted once and withdrawn since. Not a rule and not a
                 # review request, so it gets a third lane rather than being
                 # dropped: on a file whose only record was superseded, dropping
@@ -1140,15 +1203,6 @@ async def _load_target_git(
     return target_git
 
 
-def _governs_any(d: Any, targets: set[str]) -> bool:
-    """Whether *d* names any of *targets* among its files or modules."""
-    if not targets:
-        return False
-    affected = set(json.loads(d.affected_files_json))
-    modules = json.loads(d.affected_modules_json)
-    return any(t in affected or any(t.startswith(m + "/") for m in modules) for t in targets)
-
-
 def _score_keyword_matches(
     all_decisions: list, query: str, target_set: set[str]
 ) -> list[tuple[tuple[float, float, int], Any]]:
@@ -1169,11 +1223,22 @@ def _score_keyword_matches(
 
     scored_decisions: list[tuple[float, float, int, Any]] = []
     for d in all_decisions:
-        # A record governing a file the caller named is relevant by
-        # construction: they pointed at it instead of describing it, so it owes
-        # the question no vocabulary.
-        governs = _governs_any(d, target_set)
-        score = 1.0 if governs else relevance(texts[id(d)], idf)
+        # Naming a file used to be a floor bypass: a record governing a target
+        # scored 1.0 outright, on the reasoning that a caller who pointed at a
+        # file instead of describing it left the record owing the question no
+        # vocabulary. That reasoning holds for a call with *no* query, and this
+        # function is never reached without one. With a query it meant the same
+        # store, the same question and the same second refused without targets
+        # and answered with them — measured on this repo, "why does
+        # changed_lines() drop deletion-only files" came back led by "Move risk
+        # scale reference metadata behind opt-in inclusion", whose only claim to
+        # the question was appearing in the same directory.
+        #
+        # So every record is scored on what it says about the question. Naming a
+        # target stays worth 5.0 in the ``_score_decision`` tie-break below, so a
+        # governing record still outranks an equally relevant stranger; it just
+        # no longer enters on a file path alone.
+        score = relevance(texts[id(d)], idf)
         if not clears_floor(score):
             continue
         scored_decisions.append(
@@ -1417,6 +1482,7 @@ def _merge_decisions(
     decision_results: list,
     lineage_by_id: dict[str, list[dict]],
     collector: OmissionCollector | None = None,
+    accepted: set[str] | None = None,
 ) -> list[dict]:
     """Project collapsed keyword hits, then append semantic hits not already in.
 
@@ -1435,6 +1501,7 @@ def _merge_decisions(
             "id": d.id,
             "title": d.title,
             "status": d.status,
+            "authority": _authority_of(d.id, accepted or set()),
             "decision": _decision_body(d),
             "rationale": d.rationale,
             "context": d.context,
@@ -1472,6 +1539,7 @@ def _merge_decisions(
                 "title": r.title,
                 "snippet": r.snippet,
                 "relevance_score": r.score,
+                "authority": _authority_of(real_id, accepted or set()),
             }
         )
     return merged_decisions
@@ -1484,8 +1552,21 @@ async def _build_target_context(
     target_git: dict[str, Any],
     targets: list[str],
     collector: OmissionCollector | None = None,
+    accepted: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Per-target governing decisions + origin story, with archaeology fallback."""
+    """Per-target governing decisions + origin story, with archaeology fallback.
+
+    ``governing_decisions`` holds only records an acceptance binds; unaccepted
+    ones go to ``candidate_decisions`` under the name they have earned. The two
+    lanes were one, and on a store with no acceptances — the state of every
+    repository whose maintainer has not worked through the acceptance UI — that
+    one lane presented candidates as governing the file.
+
+    The archaeology fallback is therefore keyed on the *accepted* lane. A file
+    whose only records are candidates is a file no decision governs, which is
+    exactly the case the fallback exists for, and its commits are stronger
+    evidence than an unconfirmed candidate is.
+    """
     async with get_session(ctx.session_factory) as session2:
         # Load all git metadata for cross-file search
         all_git_res = await session2.execute(
@@ -1504,15 +1585,19 @@ async def _build_target_context(
                 if t in affected or any(t.startswith(m + "/") for m in affected_mods):
                     governing_records.append(d)
             governing_records.sort(key=_path_decision_sort_key)
-            t_governing = [
+            accepted_ids = accepted or set()
+            rows = [
                 {
                     "id": d.id,
                     "title": d.title,
                     "status": d.status,
                     "source": d.source,
+                    "authority": _authority_of(d.id, accepted_ids),
                 }
                 for d in governing_records
             ]
+            t_governing = [r for r in rows if r["authority"] == "accepted"]
+            t_candidates = [r for r in rows if r["authority"] != "accepted"]
             git_m = target_git.get(t)
             origin = (
                 _build_origin_story(t, git_m, t_governing)
@@ -1526,7 +1611,9 @@ async def _build_target_context(
                 "governing_decisions": t_governing,
                 "origin": origin,
             }
-            # Git archaeology fallback when no decisions found
+            if t_candidates:
+                ctx_entry["candidate_decisions"] = t_candidates
+            # Git archaeology fallback when no *accepted* decision governs
             if not t_governing:
                 ctx_entry["git_archaeology"] = await _git_archaeology_fallback(
                     t,
@@ -1539,23 +1626,125 @@ async def _build_target_context(
         return target_context
 
 
+def _focus_target_context(
+    target_context: dict[str, Any],
+    query: str,
+    targets: list[str],
+    corpus: list[str],
+) -> None:
+    """Drop from each target card whatever does not bear on *query*, in place.
+
+    A target card is built from a path, so without this it answers the same
+    bytes to every question asked about that file. Measured on this repo, two
+    unrelated questions about ``changed_lines.py`` returned byte-identical
+    ``candidate_decisions``, ``origin`` and ``git_archaeology``, together 13,397
+    of a 20,000-char response, while the mined comment that answered both sat
+    below them.
+
+    Only when a query is present. A call with targets and no query *is* the
+    dashboard for those files, and there is nothing to be relevant to.
+
+    Each block reduces to a count and the call that recovers it in full, never
+    to silence: "no history mentions what you asked" and "no history" are
+    different answers and the reader has to be able to tell them apart.
+    """
+    recall = f"get_why(targets={json.dumps(targets)})"
+    # One scorer for the whole response, built from the decision corpus — the
+    # same vocabulary the ranked lane is judged against, so one question gets
+    # one set of term weights everywhere in the answer.
+    #
+    # Deriving rarity from the card's own handful of strings was tried first and
+    # is the degeneracy ``term_idf`` warns about: over three short rows, a word
+    # none of them happens to contain outweighs the two that identify the
+    # answer, and "why is JWT used for authentication" scored the row titled
+    # "Use JWT for authentication" at 0.489 — under the floor, on the strength
+    # of the word "used".
+    score = query_scorer(query, corpus)
+    for entry in target_context.values():
+        if not isinstance(entry, dict):
+            continue
+
+        # ``governing_decisions`` is exempt. An accepted decision binds this
+        # file whatever the question was, so a reader asking anything about it
+        # is owed the rules — suppressing one for sharing no vocabulary with the
+        # question would hide a ruling from the person about to edit the file.
+        # A candidate binds nothing, so it has to earn its place like any other
+        # unranked text.
+        rows = entry.get("candidate_decisions")
+        if isinstance(rows, list) and rows:
+            kept = [r for r in rows if clears_floor(score(json.dumps(r, default=str)))]
+            if kept:
+                entry["candidate_decisions"] = kept
+            else:
+                entry.pop("candidate_decisions", None)
+                entry["candidate_decisions_omitted"] = recovery_note(
+                    len(rows), recall
+                )
+
+        # Only the origin story's decision lane, not the story. Reducing the
+        # whole block was tried and was the wrong cut: it saved ~700 of the
+        # 13,397 chars at issue while costing ``primary_author`` and the first
+        # commit — facts a reader wants whatever they asked, and cheap. The
+        # lane inside it is the query-blind part, because it is decisions again.
+        origin = entry.get("origin")
+        if isinstance(origin, dict):
+            linked = origin.get("linked_decisions")
+            if isinstance(linked, list) and linked:
+                kept = [
+                    d for d in linked if clears_floor(score(json.dumps(d, default=str)))
+                ]
+                if kept:
+                    origin["linked_decisions"] = kept
+                else:
+                    origin.pop("linked_decisions", None)
+                    origin["linked_decisions_omitted"] = recovery_note(
+                        len(linked), recall
+                    )
+
+        arch = entry.get("git_archaeology")
+        if isinstance(arch, dict):
+            _focus_archaeology(arch, score, recall)
+
+
+def _focus_archaeology(
+    arch: dict[str, Any], score: Any, recall: str
+) -> None:
+    """Keep the commits that carry the question's terms, count the rest.
+
+    Filtered rather than dropped, unlike the decision lanes. A commit message is
+    prose somebody wrote about this file, so "which of these commits mention
+    what I asked about" is a question it can actually answer — and on the branch
+    this block is reached from, no decision cleared the floor, which makes these
+    commits the best evidence left.
+    """
+    for lane in ("file_commits", "cross_references", "git_log"):
+        rows = arch.get(lane)
+        if not isinstance(rows, list) or not rows:
+            continue
+        kept = [r for r in rows if clears_floor(score(json.dumps(r, default=str)))]
+        if kept:
+            arch[lane] = kept
+        else:
+            arch.pop(lane, None)
+            arch[f"{lane}_omitted"] = recovery_note(len(rows), recall)
+
+
 def _cap_target_context(
     target_context: dict[str, Any], collector: OmissionCollector
 ) -> None:
     """Cap evidence-enriched per-target decision lanes independently."""
     for target, entry in target_context.items():
-        decisions = entry.get("governing_decisions")
-        if isinstance(decisions, list):
-            cap_collection(
-                entry,
-                "governing_decisions",
-                decisions,
-                _MAX_PATH_DECISIONS,
-                collector,
-                label=(
-                    f"{target} :: governing_decisions beyond cap={_MAX_PATH_DECISIONS}"
-                ),
-            )
+        for lane in ("governing_decisions", "candidate_decisions"):
+            decisions = entry.get(lane)
+            if isinstance(decisions, list):
+                cap_collection(
+                    entry,
+                    lane,
+                    decisions,
+                    _MAX_PATH_DECISIONS,
+                    collector,
+                    label=f"{target} :: {lane} beyond cap={_MAX_PATH_DECISIONS}",
+                )
 
 
 async def _why_no_match(
@@ -1565,6 +1754,7 @@ async def _why_no_match(
     repository: Any,
     all_decisions: list,
     target_git: dict[str, Any],
+    accepted: set[str] | None = None,
 ) -> dict[str, Any]:
     """The whole response when no record clears the relevance floor.
 
@@ -1595,7 +1785,7 @@ async def _why_no_match(
     if targets:
         collector = OmissionCollector("get_why", repo_root=ctx.path)
         result["target_context"] = await _build_target_context(
-            ctx, repository, all_decisions, target_git, targets, collector
+            ctx, repository, all_decisions, target_git, targets, collector, accepted
         )
         rationale = _mine_rationale(
             ctx.path, targets, query, max_results=1000, truncate_blocks=False
@@ -1607,8 +1797,35 @@ async def _why_no_match(
         result, ctx.alias, all_decisions, repo_root=ctx.path
     )
     if collector is not None:
+        _focus_target_context(
+            result["target_context"],
+            query,
+            list(targets or []),
+            [_record_text(d) for d in all_decisions],
+        )
         _cap_supporting_lanes(result, collector, label=query)
         _cap_target_context(result["target_context"], collector)
+    # The redirect is stapled on before the target lanes are built, because
+    # without targets there is nothing else this branch can serve. With them
+    # there often is, and pointing away from an answer it is holding is the
+    # padding-by-another-name the redirect exists to prevent.
+    served = [
+        label
+        for key, label in (
+            ("code_rationale", "rationale comments"),
+            ("git_archaeology", "commit history"),
+        )
+        if result.get(key)
+        or any(
+            isinstance(e, dict) and _has_archaeology(e.get(key))
+            for e in (result.get("target_context") or {}).values()
+        )
+    ]
+    if served:
+        result.pop("try_instead", None)
+        result.update(
+            redirect_when_served(served, f"get_why(targets={json.dumps(targets)})")
+        )
     result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
     if collector is not None:
         collector.attach(result)
@@ -1696,7 +1913,7 @@ async def _hydrate_response_decision_evidence(
 
 
 async def _load_corpus(repo: str | None, targets: list[str] | None) -> tuple:
-    """Repo context, the rankable decision corpus, and git metadata for targets.
+    """Repo context, corpus, git metadata for targets, and the acceptance set.
 
     The prologue both target-aware modes open with. Shared so the corpus is
     filtered once: a record anchored entirely in excluded paths is noise for
@@ -1707,9 +1924,14 @@ async def _load_corpus(repo: str | None, targets: list[str] | None) -> tuple:
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         all_decisions = await _decision_corpus(session, repository.id, _get_exclude_spec(ctx.path))
+        # ``governing_only`` drops the ones whose authority was withdrawn, so
+        # what comes back is what still binds rather than what was ever signed.
+        accepted = await accepted_decision_ids(
+            session, repository.id, governing_only=True
+        )
         # Load git metadata for targets (for origin context in results)
         target_git = await _load_target_git(session, repository.id, targets)
-    return ctx, repository, all_decisions, target_git
+    return ctx, repository, all_decisions, target_git, accepted
 
 
 async def _why_targets(targets: list[str], repo: str | None) -> dict:
@@ -1725,13 +1947,15 @@ async def _why_targets(targets: list[str], repo: str | None) -> dict:
     if len(targets) == 1:
         return await _why_path(targets[0], repo)
 
-    ctx, repository, all_decisions, target_git = await _load_corpus(repo, targets)
+    ctx, repository, all_decisions, target_git, accepted = await _load_corpus(
+        repo, targets
+    )
     collector = OmissionCollector("get_why", repo_root=ctx.path)
     result_data = {
         "mode": "path",
         "paths": targets,
         "target_context": await _build_target_context(
-            ctx, repository, all_decisions, target_git, targets, collector
+            ctx, repository, all_decisions, target_git, targets, collector, accepted
         ),
         "_meta": _build_meta(repository=repository, targets=targets),
     }
@@ -1747,14 +1971,18 @@ async def _why_targets(targets: list[str], repo: str | None) -> dict:
 
 async def _why_search(query: str, targets: list[str] | None, repo: str | None) -> dict:
     """Mode 3: natural-language, target-aware decision + documentation search."""
-    ctx, repository, all_decisions, target_git = await _load_corpus(repo, targets)
+    ctx, repository, all_decisions, target_git, accepted = await _load_corpus(
+        repo, targets
+    )
 
     target_set = set(targets) if targets else set()
     # Rank wide, collapse restatements, then cap — so the cap spends its slots on
     # distinct decisions — and only walk lineage for what survives.
     ranked = _rank_keyword_matches(all_decisions, query, target_set)
     if not ranked:
-        return await _why_no_match(query, targets, ctx, repository, all_decisions, target_git)
+        return await _why_no_match(
+            query, targets, ctx, repository, all_decisions, target_git, accepted
+        )
     collector = OmissionCollector("get_why", repo_root=ctx.path)
     collapsed = _collapse_restatements(ranked)
     decision_results, doc_results = await _semantic_lanes(ctx, query)
@@ -1762,7 +1990,7 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         ctx, [d for d, _ in collapsed], all_decisions
     )
     merged_decisions = _merge_decisions(
-        collapsed, decision_results, lineage_by_id, collector
+        collapsed, decision_results, lineage_by_id, collector, accepted
     )
 
     # No further slice: the cap is on *bodies*, applied to ``collapsed`` above.
@@ -1788,7 +2016,7 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     # If targets provided, include target context
     if targets:
         result_data["target_context"] = await _build_target_context(
-            ctx, repository, all_decisions, target_git, targets, collector
+            ctx, repository, all_decisions, target_git, targets, collector, accepted
         )
         # The comment-mining fallback that used to sit here was gated on
         # ``not merged_decisions``, which nothing ever reached. It now lives in
@@ -1804,6 +2032,22 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         query=None if targets else query,
         full_population=episode_population,
     )
+    if episodes and targets:
+        # ``episode_evidence`` takes *either* a scope or a query, and a scope
+        # wins, so the targeted lane never saw the question: the same three
+        # episodes came back for every question asked about a file. Scoping is
+        # still the right retrieval — these are the episodes bound to the file
+        # asked about — but what survives has to bear on what was asked.
+        score = query_scorer(query, [_record_text(d) for d in all_decisions])
+        kept = [
+            e
+            for e in episode_population
+            if clears_floor(score(json.dumps(e, default=str)))
+        ]
+        if len(kept) != len(episode_population):
+            episodes = [e for e in episodes if e in kept]
+            episode_population[:] = kept
+            pending = [t for t in pending if t[0] in kept]
     if episodes:
         collector = _prepare_episode_bodies(
             episode_population, len(episodes), pending, collector, ctx.path
@@ -1815,6 +2059,12 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         result_data, ctx.alias, all_decisions, repo_root=ctx.path
     )
     if targets:
+        _focus_target_context(
+            result_data["target_context"],
+            query,
+            list(targets),
+            [_record_text(d) for d in all_decisions],
+        )
         _cap_supporting_lanes(result_data, collector, label=query)
         _cap_target_context(result_data["target_context"], collector)
     else:
@@ -1863,8 +2113,8 @@ def _weighted_fields(d: Any) -> list[tuple[float, str]]:
     occur somewhere in 83 paths, and it became the top hit for three of five
     probe questions including one about ruff. A scope is not question text.
     The legitimate use of that field — does this record govern the file the
-    caller named — is the exact set membership in :func:`_governs_any` and in
-    the target boost inside :func:`_score_decision`.
+    caller named — is the exact set membership in the target boost inside
+    :func:`_score_decision`.
     """
     return [
         (3.0, d.title.lower()),

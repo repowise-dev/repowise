@@ -28,6 +28,14 @@ def _row_by_id(result: dict, decision_id: str) -> dict:
         for row in result.get(lane) or []:
             if row["id"] == decision_id:
                 return row
+    # Search mode splits a target's card the same way path mode splits the
+    # response, and a record that misses the question's vocabulary is reachable
+    # only there.
+    for entry in (result.get("target_context") or {}).values():
+        for lane in ("governing_decisions", "candidate_decisions"):
+            for row in entry.get(lane) or []:
+                if row["id"] == decision_id:
+                    return row
     raise AssertionError(f"{decision_id} is in no lane of {sorted(result)}")
 
 
@@ -449,15 +457,28 @@ def test_evidence_ids_are_order_independent_and_repository_scoped(
 def test_target_governing_record_ranks_before_unrelated_standing_decision(
     sealed_evidence_fixture,
 ) -> None:
+    """Naming a target breaks a tie. It no longer creates one.
+
+    Both records carry the whole of this question's vocabulary, so relevance
+    scores them identically and the target boost in ``_score_decision`` is the
+    only thing left to separate them — which is the rule this pins.
+
+    The question used to be "why is the cache guidance bounded", which
+    ``standing`` carries two thirds of and ``governing`` one sixth. ``governing``
+    won it anyway, because governing a named target was a floor bypass worth a
+    flat 1.0. That bypass is gone, so the question had to become one both
+    records actually answer.
+    """
     records, _ = sealed_evidence_fixture
     by_id = {record.id: record for record in records}
     ranked = _rank_keyword_matches(
         [by_id["standing"], by_id["governing"]],
-        "why is the cache guidance bounded",
+        "why the cache",
         {"src/cache.py"},
     )
 
     assert ranked[0].id == "governing"
+
 
 
 @pytest.mark.asyncio
@@ -478,8 +499,11 @@ async def test_every_single_repository_query_mode_keeps_the_exact_public_referen
     }
     calls = [
         await get_why("why is JWT used for authentication"),
+        # Anchored to a target *and* carrying the record's vocabulary. A
+        # target-anchored question the record does not answer is withheld now,
+        # and a row that is not emitted has no public reference to hold.
         await get_why(
-            "authentication approach",
+            "why is JWT used for authentication",
             targets=["src/auth/service.py"],
         ),
         await get_why("src/auth/service.py"),
@@ -496,13 +520,16 @@ async def test_every_single_repository_query_mode_keeps_the_exact_public_referen
         targets=["src/auth/service.py", "src/auth/middleware.py"]
     )
     target_decision = multi_target["target_context"]["src/auth/service.py"][
-        "governing_decisions"
+        "candidate_decisions"
     ][0]
     assert target_decision == {
         "id": "dec1",
         "title": "Use JWT for authentication",
         "status": "proposed",
         "source": "readme_mining",
+        # The lane already says it, and the row says it again: no acceptance
+        # binds this record, so it is not a rule about this file.
+        "authority": "candidate",
         "provenance": "historical",
         "evidence_refs": [expected],
     }

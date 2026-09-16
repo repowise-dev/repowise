@@ -75,9 +75,10 @@ async def test_get_why_file_path_commit_decision_linkage(setup_mcp):
 async def test_get_why_natural_language_with_targets(setup_mcp):
     from repowise.server.mcp_server import get_why
 
-    # Search with targets — decisions governing service.py should be boosted
+    # Search with targets — a record governing service.py and carrying the
+    # question's words is boosted above one that only carries the words.
     result = await get_why(
-        "authentication approach",
+        "why is JWT used for authentication",
         targets=["src/auth/service.py"],
     )
     assert result["mode"] == "search"
@@ -86,9 +87,13 @@ async def test_get_why_natural_language_with_targets(setup_mcp):
     # target_context should be present
     assert "target_context" in result
     ctx = result["target_context"]["src/auth/service.py"]
-    assert len(ctx["governing_decisions"]) >= 1
     assert ctx["origin"]["available"] is True
     assert ctx["origin"]["primary_author"] == "Alice"
+    # Nobody has accepted the fixture's records, so they are candidates and the
+    # rules lane is empty. Claiming otherwise is what this split exists to stop.
+    assert ctx["governing_decisions"] == []
+    assert ctx["candidate_decisions"]
+    assert result["answer_basis"] != "decision"
 
 
 @pytest.mark.asyncio

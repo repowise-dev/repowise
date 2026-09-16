@@ -635,11 +635,19 @@ async def test_why_real_adversarial_wire_recovers_decisions_docs_and_episodes(
         population: list[dict[str, Any]] = []
         pending: list[tuple[dict[str, Any], str, str]] = []
         for i in range(8):
-            body = f"EPISODE_SENTINEL_{i}_START_" + "e" * 1100 + f"_END_{i}"
+            # Bodies carry the question's terms. Search mode ranks a
+            # target-scoped episode against the query now, so filler would be
+            # dropped as irrelevant before it ever reached the cap this test is
+            # about — and then there would be nothing capped to recover.
+            body = (
+                f"EPISODE_SENTINEL_{i}_START_ why use sealed response contract "
+                + "e" * 1100
+                + f"_END_{i}"
+            )
             entry = {
                 "tier": "git",
                 "kind": "sealed",
-                "subject": f"Episode {i}",
+                "subject": f"Episode {i} sealed response contract",
                 "recorded": body[:900],
                 "evidence": {"commit": f"{i:040x}"},
                 "scope": ["src/auth/service.py"],
@@ -666,7 +674,9 @@ async def test_why_real_adversarial_wire_recovers_decisions_docs_and_episodes(
     assert result["related_documentation_total"] == 8
     assert result["episodes_total"] == 8
     context = result["target_context"]["src/auth/service.py"]
-    assert context["governing_decisions_total"] >= 9
+    # Nobody accepted the seeded records, so the card's populated lane is the
+    # candidate one and the rules lane is empty.
+    assert context["candidate_decisions_total"] >= 9
 
     recovered = await _recover_one(
         result,
@@ -783,8 +793,10 @@ async def test_why_health_and_targets_only_modes_are_bounded_and_recoverable(
     )
     _assert_wire(targets_only, "mode", DEFAULT_RESPONSE_CHARS)
     context = targets_only["target_context"]["src/auth/service.py"]
-    assert context["governing_decisions_total"] >= 9
-    assert context["governing_decisions_emitted"] == 8
+    # Nobody accepted the seeded records, so the card's populated lane is the
+    # candidate one and the rules lane is empty.
+    assert context["candidate_decisions_total"] >= 9
+    assert context["candidate_decisions_emitted"] == 8
     recovered = await _recover_one(targets_only, "sealed-why-8")
     assert "sealed-why-8" in recovered
     assert '"evidence_refs"' in recovered

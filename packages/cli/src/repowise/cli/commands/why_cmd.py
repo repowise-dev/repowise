@@ -96,6 +96,13 @@ def _project_target_entry(entry: dict) -> dict:
     ``git_archaeology`` the same three capped layers.
     """
     out: dict = {"governing_decisions": entry.get("governing_decisions") or []}
+    # Both authority lanes. Dropping the candidate one here would print an
+    # empty card for every repository with no acceptances, which is most of
+    # them: the tool moved unaccepted records out of ``governing_decisions``
+    # precisely so they stop reading as rules, not so they stop being shown.
+    for key in ("candidate_decisions", "candidate_decisions_omitted"):
+        if entry.get(key):
+            out[key] = entry[key]
     origin = entry.get("origin") or {}
     if origin:
         out["origin"] = {
@@ -373,6 +380,19 @@ def _render(projected: dict) -> None:
         for governing in entry.get("governing_decisions") or []:
             console.print(
                 f"  {governing.get('title', '')} [dim]({governing.get('status', '')})[/dim]"
+            )
+        for candidate in entry.get("candidate_decisions") or []:
+            # Labelled, never printed beside the rules unmarked. Nobody has
+            # accepted these, so they are a review request and not a rule.
+            console.print(
+                f"  [dim]candidate:[/dim] {candidate.get('title', '')} "
+                f"[dim]({candidate.get('status', '')})[/dim]"
+            )
+        omitted = entry.get("candidate_decisions_omitted") or {}
+        if omitted.get("suppressed"):
+            console.print(
+                f"  [dim]{omitted['suppressed']} candidate(s) not matching the "
+                f"question. {omitted.get('recover_with', '')}[/dim]"
             )
         origin = entry.get("origin") or {}
         if origin.get("summary"):
