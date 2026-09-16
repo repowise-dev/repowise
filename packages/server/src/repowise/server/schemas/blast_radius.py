@@ -63,7 +63,11 @@ class TestRecommendation(BaseModel):
 
 class TestImpactFile(BaseModel):
     source_file: str
-    status: Literal["measured", "inferred", "unknown"]
+    status: Literal["measured", "inferred", "unknown", "deleted"]
+    #: The path's transition, when the caller supplied one.
+    change_status: str | None = None
+    #: False for a path the change deletes: it has no head side to cover.
+    head_present: bool = True
     measured_tests: list[str]
     measured_tests_total: int
     inferred_tests: list[str]
@@ -119,6 +123,8 @@ class TestImpactResponse(BaseModel):
     files_total: int
     files_without_measured_tests: list[str]
     unknown_files: list[str]
+    #: Changed paths the change deletes. Not a coverage gap.
+    deleted_files: list[str] = []
     coverage: TestImpactCoverage
     inference: TestImpactInference
     analysis: TestImpactAnalysis

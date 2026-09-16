@@ -9,6 +9,7 @@ from an empty recommendation population.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import select
@@ -92,12 +93,18 @@ async def analyze_test_impact(
     *,
     repository_alias: str | None = None,
     exclude_spec: Any = None,
+    change_status: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return one typed, untruncated recommendation population.
 
     The same result is consumed by MCP PR mode and the REST blast-radius route.
     Coverage and graph inference are both evaluated; de-duplication keeps every
     evidence basis on the surviving recommendation.
+
+    *change_status* maps path to ``added``/``modified``/``deleted``/``renamed``.
+    A deleted path has no head side to cover, so "no measured tests" there is a
+    consequence of the deletion and not a coverage gap. Without it every path is
+    treated as present, which is the historical behaviour.
     """
     from repowise.core.analysis.test_reachability import tests_reaching_by_tier
     from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
@@ -122,6 +129,7 @@ async def analyze_test_impact(
             "files_total": 0,
             "files_without_measured_tests": [],
             "unknown_files": [],
+            "deleted_files": [],
             "coverage": {
                 "status": "unavailable",
                 "reason": "no_changed_files",
@@ -300,15 +308,28 @@ async def analyze_test_impact(
         "candidates_before_dedup": sum(inferred_totals_by_file.values()),
     }
 
+    statuses = dict(change_status or {})
     files = []
     for path in changed:
         measured_tests = sorted(set(measured_by_file[path]))
         inferred_tests = sorted(set(inferred_by_file[path]))
-        status = "measured" if measured_tests else "inferred" if inferred_tests else "unknown"
+        deleted = statuses.get(path) == "deleted"
+        if measured_tests:
+            status = "measured"
+        elif inferred_tests:
+            status = "inferred"
+        elif deleted:
+            # The path is gone at head. Nothing covers it because there is
+            # nothing to cover, which is an answer rather than a missing map.
+            status = "deleted"
+        else:
+            status = "unknown"
         files.append(
             {
                 "source_file": path,
                 "status": status,
+                "change_status": statuses.get(path),
+                "head_present": not deleted,
                 "measured_tests": measured_tests,
                 "measured_tests_total": len(measured_tests),
                 "inferred_tests": inferred_tests,
@@ -326,8 +347,15 @@ async def analyze_test_impact(
     else:
         analysis_status = "available"
 
-    no_measured = [row["source_file"] for row in files if not row["measured_tests"]]
+    # A deleted path is excluded from both: it has no head side to be
+    # uncovered, so counting it as a gap would overstate the coverage debt.
+    no_measured = [
+        row["source_file"]
+        for row in files
+        if not row["measured_tests"] and row["status"] != "deleted"
+    ]
     unknown = [row["source_file"] for row in files if row["status"] == "unknown"]
+    deleted_paths = [row["source_file"] for row in files if row["status"] == "deleted"]
     total = len(recommendations)
     basis_totals = {
         basis: sum(row["basis"] == basis for row in recommendations)
@@ -344,6 +372,7 @@ async def analyze_test_impact(
         "files_total": len(files),
         "files_without_measured_tests": no_measured,
         "unknown_files": unknown,
+        "deleted_files": deleted_paths,
         "coverage": coverage,
         "inference": inference,
         "analysis": {
