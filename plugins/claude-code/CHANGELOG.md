@@ -2,6 +2,19 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.51.0
+
+### Fixed
+- The `reindex` command documented `--batch-size` as defaulting to 20. The CLI
+  default is 32, and the flag now rejects values below 1 rather than accepting
+  them and failing later.
+
+### Changed
+- No tool-surface change this cycle: every tool named in a command or skill is
+  one the server still lists, and `hooks.json` still mirrors `claude_config.py`.
+  `set_finding_status` remains live and deliberately unreferenced, since it
+  mutates.
+
 ## 0.50.0
 
 ### Changed
