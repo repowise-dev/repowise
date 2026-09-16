@@ -73,7 +73,7 @@ def test_build_meta_exposes_the_persisted_index_scope(tmp_path, monkeypatch):
     monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
 
     out = _meta.build_meta(repository=_repo(tmp_path))
-    whole = _meta.build_meta(repository=_repo(tmp_path), scope_detail="full")
+    whole = _meta.build_meta_with_full_scope(repository=_repo(tmp_path))
 
     # An ordinary response carries the digest; what it says about the run is
     # the same, and the diagnostics it leaves out are one get_overview away.

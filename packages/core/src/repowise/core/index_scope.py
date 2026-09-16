@@ -202,6 +202,33 @@ def index_scope_fingerprint(scope: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
+#: Upgrade states that mean the index is still being built. Reported ahead of
+#: everything else: they explain the rest and they resolve on their own.
+_UPGRADE_IN_FLIGHT = frozenset({"pending", "running", "resumable"})
+
+
+def _section(scope: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    """One sub-block of a scope, or an empty one when it is missing or junk."""
+    section = scope.get(name)
+    return section if isinstance(section, Mapping) else {}
+
+
+def _is_degraded(upgrade: Mapping[str, Any], scope: Mapping[str, Any]) -> bool:
+    """Whether some part of the index was meant to exist and does not."""
+    return (
+        upgrade.get("status") == "failed"
+        or bool(_section(scope, "analysis").get("unavailable"))
+        or "unavailable" in _section(scope, "search").values()
+    )
+
+
+def _is_partial(scope: Mapping[str, Any]) -> bool:
+    """Whether the index is sound but does not cover everything eligible."""
+    return bool(_number(_section(scope, "file_pages").get("omitted"))) or bool(
+        _section(scope, "analysis").get("skipped")
+    )
+
+
 def _scope_status(scope: Mapping[str, Any]) -> str:
     """One word for how much of the intended index actually exists.
 
@@ -211,21 +238,12 @@ def _scope_status(scope: Mapping[str, Any]) -> str:
     is only reached when nothing else applies, so it never stands in for
     evidence that is merely unexamined.
     """
-    upgrade = scope.get("upgrade") if isinstance(scope.get("upgrade"), Mapping) else {}
-    if upgrade.get("status") in {"pending", "running", "resumable"}:
+    upgrade = _section(scope, "upgrade")
+    if upgrade.get("status") in _UPGRADE_IN_FLIGHT:
         return "upgrading"
-    analysis = scope.get("analysis") if isinstance(scope.get("analysis"), Mapping) else {}
-    search = scope.get("search") if isinstance(scope.get("search"), Mapping) else {}
-    degraded = (
-        upgrade.get("status") == "failed"
-        or bool(analysis.get("unavailable"))
-        or search.get("full_text") == "unavailable"
-        or search.get("semantic") == "unavailable"
-    )
-    if degraded:
+    if _is_degraded(upgrade, scope):
         return "degraded"
-    pages = scope.get("file_pages") if isinstance(scope.get("file_pages"), Mapping) else {}
-    if _number(pages.get("omitted")) or analysis.get("skipped"):
+    if _is_partial(scope):
         return "partial"
     return "complete"
 

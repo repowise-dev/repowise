@@ -25,7 +25,6 @@ from typing import Any
 
 from repowise.core.index_scope import (
     CANONICAL_INDEX_SCOPE_PROJECTION,
-    COMPACT_INDEX_SCOPE_PROJECTION,
     INDEX_SCOPE_ENV,
     compact_index_scope,
     load_index_scope,
@@ -117,29 +116,23 @@ def read_index_scope(local_path: str | None) -> dict[str, Any] | None:
     return load_index_scope(local_path)
 
 
-def _wants_canonical_scope(scope_detail: str) -> bool:
-    """Whether this response serves the whole scope rather than the digest.
+def _canonical_scope_requested() -> bool:
+    """Whether the environment asks for the whole scope on every response.
 
-    Two ways to ask: the caller says so — which is what an orientation or
-    diagnostic call does — or the environment does, for a reader that parses
-    the full object and has no way yet to ask for it by name. The environment
-    is the compatibility window and is read per call, so turning it on does
-    not need a restart of a server a client spawned.
+    The compatibility window, for a reader that parses the full object and has
+    no way yet to ask for it by name. Read per call, so turning it on does not
+    need a restart of a server a client spawned.
     """
-    if scope_detail == CANONICAL_INDEX_SCOPE_PROJECTION:
-        return True
     return (
         os.environ.get(INDEX_SCOPE_ENV, "").strip().lower()
         == CANONICAL_INDEX_SCOPE_PROJECTION
     )
 
 
-def index_scope_for_response(
-    local_path: str | None, scope_detail: str
-) -> dict[str, Any] | None:
-    """The scope this response carries: the digest, or the whole object."""
+def index_scope_for_response(local_path: str | None) -> dict[str, Any] | None:
+    """The scope an ordinary response carries: the digest, unless asked."""
     scope = read_index_scope(local_path)
-    if scope is None or _wants_canonical_scope(scope_detail):
+    if scope is None or _canonical_scope_requested():
         return scope
     return compact_index_scope(scope)
 
@@ -360,7 +353,6 @@ def build_meta(
     repository: Any | None = None,
     targets: list[str] | None = None,
     extra: dict[str, Any] | None = None,
-    scope_detail: str = COMPACT_INDEX_SCOPE_PROJECTION,
 ) -> dict[str, Any]:
     """Construct a `_meta` envelope. All fields optional, omitted if falsy.
 
@@ -372,10 +364,10 @@ def build_meta(
     :func:`freshness_from_repo`.
 
     ``index_scope`` rides on every response, so it carries the compact
-    projection by default: the run mode, the provenance, the git tier, one
-    word for whether the index is whole, and a fingerprint identifying the
-    canonical object. Pass ``scope_detail="full"`` from an orientation or
-    diagnostic call that is worth spending the bytes on.
+    projection: the run mode, the provenance, the git tier, one word for
+    whether the index is whole, and a fingerprint identifying the canonical
+    object. See :func:`build_meta_with_full_scope` for the calls that are
+    worth the whole thing.
 
     Stable shape:
       {
@@ -397,9 +389,7 @@ def build_meta(
         out["cached"] = True
     if repository is not None:
         out.update(freshness_from_repo(repository, targets=targets))
-        scope = index_scope_for_response(
-            getattr(repository, "local_path", None), scope_detail
-        )
+        scope = index_scope_for_response(getattr(repository, "local_path", None))
         if scope is not None:
             out["index_scope"] = scope
     out.update(_embedder_meta())
@@ -407,6 +397,23 @@ def build_meta(
     if extra:
         out.update(extra)
     return out
+
+
+def build_meta_with_full_scope(**kwargs: Any) -> dict[str, Any]:
+    """:func:`build_meta` for an orientation call: the whole ``index_scope``.
+
+    A separate function rather than a parameter on ``build_meta``, which has
+    68 call sites that all want the digest and one that wants this. A knob
+    every caller must read past to learn it does not apply to them belongs
+    beside the one caller it does.
+    """
+    meta = build_meta(**kwargs)
+    repository = kwargs.get("repository")
+    if repository is not None:
+        scope = read_index_scope(getattr(repository, "local_path", None))
+        if scope is not None:
+            meta["index_scope"] = scope
+    return meta
 
 
 def persisted_analysis_meta(

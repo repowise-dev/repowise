@@ -155,8 +155,8 @@ def test_a_routine_response_carries_the_digest(tmp_path: Path) -> None:
 
 
 def test_an_orientation_call_carries_the_whole_scope(tmp_path: Path) -> None:
-    out = _meta.build_meta(
-        repository=_write_state(tmp_path, _FULL_STATE), scope_detail="full"
+    out = _meta.build_meta_with_full_scope(
+        repository=_write_state(tmp_path, _FULL_STATE)
     )
 
     assert out["index_scope"]["git_history_coverage"]["eligible_files"] == 4024
@@ -179,7 +179,7 @@ def test_the_digest_costs_a_fraction_of_a_small_response(tmp_path: Path) -> None
     """The measured regression: ~900 of 2,541 characters, about 35%."""
     repository = _write_state(tmp_path, _FULL_STATE)
     compact = _meta.build_meta(repository=repository)["index_scope"]
-    full = _meta.build_meta(repository=repository, scope_detail="full")["index_scope"]
+    full = _meta.build_meta_with_full_scope(repository=repository)["index_scope"]
 
     # A small response is about 1,650 characters once the scope is taken out.
     small_response = 2_541 - _chars(full)
