@@ -483,3 +483,43 @@ def test_an_interrupt_is_not_reported_as_a_crash(monkeypatch, tmp_path: Path) ->
     CliRunner().invoke(cli, ["mcp", str(tmp_path)])
 
     assert "error_leaves" not in recorded
+
+
+def test_the_way_a_session_ended_reaches_the_invocation_outcome(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A clean end is recorded, not inferred from the absence of an error."""
+    from repowise.cli.platform import telemetry
+
+    (tmp_path / ".repowise").mkdir()
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr(telemetry, "add_command_outcome", recorded.update)
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.run_mcp", lambda **_kw: "client_closed"
+    )
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert recorded["transport_outcome"] == "client_closed"
+    assert recorded["transport"] == "stdio"
+
+
+def test_a_client_hanging_up_is_not_an_error_exit(monkeypatch, tmp_path: Path) -> None:
+    """A broken pipe used to leave a traceback the host respawns on."""
+    from repowise.server.mcp_server import _server
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(
+        "repowise.server.mcp_server._watchdog.start_parent_watchdog", lambda: None
+    )
+    monkeypatch.setattr(
+        _server.mcp,
+        "run",
+        lambda **_kw: (_ for _ in ()).throw(BrokenPipeError("hung up")),
+    )
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Traceback" not in result.output

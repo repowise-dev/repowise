@@ -196,7 +196,7 @@ def mcp_command(
     tools_override: str | None = "all" if all_tools else tools
 
     try:
-        run_mcp(
+        outcome = run_mcp(
             transport=transport,
             repo_path=str(repo_path),
             host=resolved_host,
@@ -207,3 +207,10 @@ def mcp_command(
     except StoreUnavailableError as exc:
         # One line on stderr and exit 1, not a traceback the host respawns on.
         raise click.ClickException(str(exc)) from exc
+
+    # Which of the ways a session can end this one was. A client closing a
+    # transport it owns exits 0, like the ordinary end it is; the fault case
+    # never reaches here, because it raised.
+    from repowise.cli.platform import telemetry
+
+    telemetry.add_command_outcome(transport=transport, transport_outcome=outcome)

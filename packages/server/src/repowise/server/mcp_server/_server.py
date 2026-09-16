@@ -27,6 +27,14 @@ from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
 from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._transport import (
+    CLIENT_CLOSED,
+    SERVER_FAULT,
+    classify_termination,
+    guard_stdout,
+    is_client_closure,
+    log_outcome,
+)
 
 _log = __import__("logging").getLogger("repowise.mcp")
 
@@ -834,12 +842,17 @@ def run_mcp(
     port: int = 7338,
     tools: str | list[str] | None = None,
     workspace_mode: bool = True,
-) -> None:
-    """Run the MCP server with the specified transport.
+) -> str:
+    """Run the MCP server with the specified transport, and name how it ended.
 
     ``tools`` overrides which tools are advertised (see
     :func:`repowise.server.mcp_server._tool_selection.apply_tool_selection`);
     when omitted, the ``mcp.tools`` config block is honoured.
+
+    Returns one of the outcomes in :mod:`._transport`. A client closing a
+    transport it owns is one of them and returns normally: it is how a stdio
+    session ends, and raising there made an ordinary hang-up look like the
+    crash a host should respawn on. Only a genuine fault still raises.
 
     A task-group failure is unwrapped over the whole body, not around ``mcp.run``
     alone: surface construction and transport security run outside that call, and
@@ -849,6 +862,7 @@ def run_mcp(
     outcome say whether one fault or several killed the server, without reaching
     back in here to re-derive it.
     """
+    stray_writes = 0
     try:
         _state._repo_path = repo_path
         _state._force_single_repo = not workspace_mode
@@ -896,13 +910,23 @@ def run_mcp(
             from repowise.server.mcp_server._watchdog import start_parent_watchdog
 
             start_parent_watchdog()
-            mcp.run(transport="stdio")
+            # stdout is the protocol channel and the SDK writes frames through
+            # its buffer, so anything arriving at the text layer is a stray
+            # print. The guard moves it to stderr and counts it.
+            with guard_stdout() as guard:
+                mcp.run(transport="stdio")
+            stray_writes = guard.writes
     except BaseExceptionGroup as group:
+        outcome = classify_termination(transport, group, leaves=group_leaves)
         leaves = group_leaves(group)
+        if outcome == CLIENT_CLOSED:
+            log_outcome(outcome, transport, type(leaves[0]).__name__)
+            return outcome
         for leaf in leaves:
             # A cancelled run is how a client-initiated shutdown looks, not a fault.
             if isinstance(leaf, Exception):
                 _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
+        log_outcome(SERVER_FAULT, transport, type(leaves[0]).__name__)
         first = leaves[0]
         # Best effort: a leaf class with __slots__ refuses the attribute, and the
         # sibling names are not worth losing the exception over.
@@ -913,3 +937,14 @@ def run_mcp(
                 tuple(sorted({type(leaf).__name__ for leaf in leaves})),
             )
         raise first from group
+    except BaseException as exc:
+        # An ungrouped hang-up: the pipe broke, or the run was cancelled under
+        # us. Everything else is this server's fault and still raises.
+        if not is_client_closure(exc):
+            raise
+        log_outcome(CLIENT_CLOSED, transport, type(exc).__name__)
+        return CLIENT_CLOSED
+
+    outcome = classify_termination(transport, None, stray_writes=stray_writes)
+    log_outcome(outcome, transport)
+    return outcome
