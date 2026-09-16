@@ -345,8 +345,11 @@ def test_candidate_hash_is_content_stable():
 
 
 def test_session_mining_enabled_parsing():
-    assert session_mining_enabled(None) is True
-    assert session_mining_enabled({}) is True
+    # The lane ships off, so an absent or unreadable `decisions:` block means
+    # no transcript is read until somebody asks for it.
+    assert session_mining_enabled(None) is False
+    assert session_mining_enabled({}) is False
+    assert session_mining_enabled({"decisions": "garbage"}) is False
+    assert session_mining_enabled({"decisions": {"sources": {"session": True}}}) is True
     assert session_mining_enabled({"decisions": {"session_mining": True}}) is True
     assert session_mining_enabled({"decisions": {"session_mining": False}}) is False
-    assert session_mining_enabled({"decisions": "garbage"}) is True

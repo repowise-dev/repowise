@@ -255,10 +255,10 @@ history, or the graph it just built.
 | Conventions | `conventions` | Import edges and wrapper bodies | Off by default (`repowise decision source set conventions --on`), no model. A wrapper of an I/O library (HTTP client, database driver, subprocess, filesystem, lock) that most files reach the library through while few import it directly; the record states the counts and names the direct importers. Go and Java are counted by package. Up to 10 per index. |
 
 Three more sources sit outside the index-time set: `session` (deterministic
-gates over your coding-agent transcripts, below), `session_discovery` (one
-broad model pass over the same transcript prose, below, off unless you enable
-it), and `cli` (a decision you typed yourself, the most authoritative source
-there is).
+gates over your coding-agent transcripts, below, off unless you enable it),
+`session_discovery` (one broad model pass over the same transcript prose,
+below, also off unless you enable it), and `cli` (a decision you typed
+yourself, the most authoritative source there is).
 
 ### Controlling capture
 
@@ -492,11 +492,24 @@ Three stages, in order:
    govern. Repeated observations accrete evidence rows and raise confidence
    without ever creating authority.
 
+**This source ships off.** What it captured on this repository read as working
+agreements from a transcript — "pause before pushing", "avoid duplication" —
+rather than decisions the codebase had taken: of 139 records, none carried a
+context and 115 carried neither a context nor a rationale. Turn it on with
+`repowise decision source set session --on`; the `local_only`, `balanced` and
+`full` presets carry it already.
+
 Everything stays on your machine. Transcripts are read locally, staging lives in
 `.repowise/sessions/sessions.db`, and only the distilled decision text about the
-codebase is stored. Turn the pipeline off with
-`repowise decision source set session --off`, or keep the transcript reading and
-drop only the structuring call with `--no-llm`.
+codebase is stored. `--off` turns the pipeline back off, or keep the transcript
+reading and drop only the structuring call with `--no-llm`.
+
+This switch is the transcript boundary, so two things ride on it. Injected-
+decision feedback is inert without it — its only evidence is this lane's mined
+corrections — and update-time hook-efficacy replay stops, which leaves
+`repowise hook stats` with what the live hook recorded first-hand and without
+the columns only a replay can fill. `repowise hook backfill` fills those on
+demand.
 
 ### Broad session discovery
 

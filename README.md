@@ -144,11 +144,14 @@ a file with a run of recent bug fixes, a compact briefing at session start. Repo
 also generates your `CLAUDE.md` and `AGENTS.md` from the real index, so even an agent
 with no MCP support starts informed.
 
-**It learns from how you actually work.** Repowise reads your own agent transcripts
-for the corrections you keep making ("use the shared HTTP client, not raw requests")
-and turns the durable ones into tracked decisions it delivers back later. The wiki
-generation budget tilts toward the modules you and your agent ask about most. All
-local, all deterministic, no extra LLM calls.
+**It learns from how you actually work.** Switch on transcript capture
+(`repowise decision source set session --on`) and Repowise reads your own agent
+transcripts for the corrections you keep making ("use the shared HTTP client,
+not raw requests"), turning the durable ones into tracked decisions it delivers
+back later. Transcripts never leave your machine; one batched model call per
+update turns the candidates that clear the deterministic gates into records, and
+`--no-llm` keeps the gates and drops that call. The wiki generation budget tilts
+toward the modules you and your agent ask about most, with no switch needed.
 
 <details>
 <summary><strong>What the index builds</strong></summary>

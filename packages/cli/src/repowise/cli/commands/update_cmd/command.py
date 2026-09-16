@@ -1846,8 +1846,8 @@ def run_update(
     # Session-sourced decisions: mine agent transcript lines appended since
     # the last update, structure new candidates in one batched LLM pass, and
     # collect the observation-qualified promotions. They ride the same
-    # decision upsert as the marker re-scan below. Everything stays local;
-    # `decisions.session_mining: false` in .repowise/config.yaml disables it.
+    # decision upsert as the marker re-scan below. Everything stays local, and
+    # the lane ships off: `decision source set session --on` enables it.
     session_decisions: list = []
     try:
         from repowise.core.sessions.miners.decisions import mine_session_decisions
@@ -1902,6 +1902,13 @@ def run_update(
     # sessions are judged against those sessions' mined corrections (followed
     # -> staleness relaxes, contradicted -> staleness bumps). Pure SQLite over
     # the staging sidecar + decision_records; no LLM.
+    #
+    # Gated on the ``session`` source even though it judges injected decisions
+    # of *every* source: its only evidence is that session's mined user
+    # corrections, which no other lane writes. With the lane off, every row
+    # would be judgeable=False and settle as ``unjudgeable`` — and
+    # ``mark_injection_evaluated`` is terminal, so turning the lane on later
+    # could never recover them. Inert without the lane, like session discovery.
     try:
         from repowise.core.sessions.miners.decisions import apply_injection_feedback
 
@@ -1946,6 +1953,13 @@ def run_update(
     # so they are judged by what the agent did next — which only the transcript
     # knows. Scoped to transcripts touched since the last update; the whole
     # history is a one-off `repowise hook backfill`.
+    #
+    # Gated on the ``session`` source because that switch is documented as what
+    # stops repowise reading your transcripts, and this reads them. It is the
+    # privacy boundary, not a statement about what the rows are for, so it fails
+    # closed: with the lane off the live hook still records its own firings and
+    # only the replay-filled columns are missing, which `repowise hook backfill`
+    # fills on demand.
     try:
         from repowise.core.sessions.efficacy import ingest_transcript_efficacy
 

@@ -123,7 +123,15 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         deterministic=True,
         llm=True,
         authority="machine",
-        default_enabled=True,
+        # Off by default. Measured over this repo's own 626-record store: the
+        # lane produced 139 records (22%), all 139 with no context and 115 with
+        # neither context nor rationale — the shape the acceptance gate now
+        # blocks outright. It was tolerated while it looked like the only lane
+        # still producing, and that reading came from the provider-reporting bug
+        # PR #2279 fixed: `pr`, `comment` and `git_archaeology` were running all
+        # along. Still switchable with `decision source set session --on`, and
+        # `local_only` keeps it, being the preset for a machine with no key.
+        default_enabled=False,
     ),
     SourceSpec(
         key="session_discovery",
@@ -162,6 +170,16 @@ _SPECS_BY_KEY: dict[str, SourceSpec] = {spec.key: spec for spec in SOURCE_SPECS}
 CAPTURE_SOURCE_KEYS: tuple[str, ...] = tuple(
     spec.key for spec in SOURCE_SPECS if spec.authority == "machine"
 )
+
+#: Sources that did not exist when the presets did. Only these are treated as
+#: absent-because-new when a config names a preset *and* enumerates its sources;
+#: see the note at that check in :func:`resolve_policy`. Deliberately a list of
+#: names rather than ``not default_enabled``: a source that shipped on and was
+#: later turned off by default — ``session`` — is missing from such an
+#: enumeration because it predates it, not because it is new, and reading it the
+#: other way would switch it off under ``local_only`` and ``full``, which both
+#: name it explicitly.
+_POST_PRESET_SOURCES: frozenset[str] = frozenset({"session_discovery", "conventions"})
 
 #: Index-time sources, in the order ``DecisionExtractor.extract_all`` runs them.
 #: ``session`` is mined separately by the transcript miner.
@@ -251,7 +269,12 @@ PRESETS: dict[str, dict[str, Any]] = {
     "balanced": {
         "enabled": True,
         "llm": True,
-        "sources": _preset(comment=_OFF, session_discovery=_ON),
+        # ``session`` is named explicitly although it used to come from the
+        # spec default: ``session_discovery``'s queue is filled by the span
+        # collector inside the transcript miner, so discovery without the
+        # session lane is a switch that can never produce. The maintainer's
+        # call was that only the *default* preset drops the lane.
+        "sources": _preset(comment=_OFF, session=_ON, session_discovery=_ON),
     },
     "full": {
         "enabled": True,
@@ -264,8 +287,10 @@ PRESET_NAMES: tuple[str, ...] = tuple(PRESETS)
 
 #: What an absent ``decisions:`` block resolves to: every source whose spec
 #: says it shipped on, with the model enabled, because that is what a repo
-#: indexed before this module existed already did and a config-less repo must
-#: not change behavior on upgrade. Deliberately *not* ``full``: ``full`` means
+#: indexed before this module existed already did, so a config-less repo does
+#: not change behavior on upgrade — except where a spec default is deliberately
+#: flipped, as ``session`` was on the evidence recorded beside it, which is the
+#: one way this default is allowed to move. Deliberately *not* ``full``: ``full`` means
 #: every source there is, so a source added later joins it, and reusing it here
 #: would switch that source on for every repository that never asked for it.
 #: New repos pick a preset explicitly instead of inheriting a hidden default.
@@ -546,6 +571,17 @@ def _as_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _states_enabled(raw_source: Any) -> bool:
+    """Does a raw ``sources.<key>`` entry state an on/off of its own?
+
+    ``{"llm": false}`` configures the source without saying whether it runs, so
+    it must not count as an opinion the legacy ``session_mining`` key defers to.
+    """
+    if isinstance(raw_source, bool):
+        return True
+    return isinstance(raw_source, dict) and isinstance(raw_source.get("enabled"), bool)
+
+
 def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     """Resolve a loaded ``.repowise/config.yaml`` dict into one policy.
 
@@ -600,7 +636,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     # live declaration and does get the preset's current membership.
     if preset_name and enumerated:
         for spec in SOURCE_SPECS:
-            if spec.togglable and not spec.default_enabled and spec.key not in raw_sources:
+            if spec.togglable and spec.key in _POST_PRESET_SOURCES and spec.key not in raw_sources:
                 sources[spec.key] = SourceSetting(enabled=False, llm=spec.llm)
 
     for key, value in raw_sources.items():
@@ -633,19 +669,31 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
                 f"`decisions.sources.{spec.key}` must be a boolean or a mapping; ignoring it."
             )
 
-    # Legacy: session_mining gated the whole transcript miner. It only narrows,
-    # so it is ANDed with sources.session rather than shadowed by it. Letting an
-    # explicit `sources.session: true` win would start reading transcripts on a
-    # config that had switched them off, which is the one thing this resolver
-    # must never do.
+    # Legacy: session_mining gated the whole transcript miner, and it is still
+    # the statement the user wrote, in both directions. It replaces the *spec
+    # default* for `session` — and only that. Anything newer is a stated
+    # opinion the legacy key may narrow but never widen: an explicit
+    # `sources.session`, and a `preset:`, which postdates this key entirely.
+    # Letting `sources.session: true` win over `session_mining: false` would
+    # start reading transcripts on a config that switched them off, which is the
+    # one thing this resolver must never do — and, since `session` ships off,
+    # dropping a legacy `true` on the floor would silently read a config that
+    # says on as off, which is the same defect pointed the other way.
     session_mining = raw.get("session_mining")
     if session_mining is not None:
         legacy.append("session_mining")
         if isinstance(session_mining, bool):
             current = sources["session"]
-            sources["session"] = SourceSetting(
-                enabled=current.enabled and session_mining, llm=current.llm
-            )
+            stated = bool(preset_name) or _states_enabled(raw_sources.get("session"))
+            enabled_session = current.enabled and session_mining if stated else session_mining
+            if session_mining and not enabled_session and preset_name:
+                # Written `true` and resolved off. Say so: a discarded opt-in
+                # that reads as a working switch is the defect P1f fixed.
+                warnings.append(
+                    f"`decisions.session_mining: true` is overridden by "
+                    f"`preset: {preset_name}`, which switches this source off."
+                )
+            sources["session"] = SourceSetting(enabled=enabled_session, llm=current.llm)
         else:
             warnings.append("`decisions.session_mining` is not a boolean; ignoring it.")
 

@@ -397,8 +397,8 @@ decisions:
     adr: true               # ADR files
     pr: true                # PR / squash-merge bodies
     comment: false          # comment archaeology on top central files
-    session:                # long form: run the source, skip its model stage
-      enabled: true
+    session:                # off by default; long form runs the deterministic
+      enabled: true         #   parse and skips the model stage
       llm: false
     session_discovery: true # one broad model pass over new transcript prose
     conventions: false      # import patterns the graph proves, no model
@@ -411,7 +411,11 @@ Every key is optional. **A config with no `decisions:` block behaves exactly as
 it did before these switches existed**: every source that shipped on is on,
 model stages on. That resolved policy is named `default`. A source added after
 those switches existed (`session_discovery` and `conventions`) stays off until you
-ask for it, so upgrading never starts a model call nobody enabled. The same
+ask for it, so upgrading never starts a model call nobody enabled. `session` is
+the one default that has moved: it now ships **off**, because what it captured
+read as working agreements from a transcript rather than decisions the codebase
+had taken. `repowise decision source set session --on` turns it back on, and
+`local_only` still carries it. The same
 holds for a config that names a preset *and* lists its sources: that list is
 what the preset covered when it was written, so a source added to that preset
 later does not join it retroactively. Re-apply the preset to pick it up.
@@ -433,10 +437,10 @@ still loads, it just says which key it ignored.
 
 | Preset | Effect |
 |--------|--------|
-| `default` | What a config with no `decisions:` block resolves to. Every long-standing source on, broad discovery off. |
+| `default` | What a config with no `decisions:` block resolves to. Every long-standing source on; session mining and broad discovery off. |
 | `off` | No automatic capture. Stored decisions and manual entry keep working. |
-| `local_only` | Deterministic capture only. Zero decision-extraction model calls. |
-| `balanced` | The high-signal sources plus session mining and broad session discovery; comment archaeology off. |
+| `local_only` | Deterministic capture only, session mining included — it is the only lane that produces without a key. Zero decision-extraction model calls. |
+| `balanced` | The high-signal sources plus session mining and broad session discovery, which is fed by it; comment archaeology off. |
 | `full` | Every source, every model stage. |
 
 Editing any individual key after applying a preset drops the `preset` line and
@@ -464,8 +468,10 @@ and `--format json` for scripts. Writes are atomic and preserve every unrelated
 key in `config.yaml`.
 
 The legacy `decisions.session_mining: true|false` key is still honoured and
-resolves to the `session` source. The first write through the CLI or the API
-replaces it with `sources.session`.
+resolves to the `session` source, in both directions: since that source now
+ships off, a config that says `true` still switches it on. An explicit
+`sources.session` may narrow that, never widen it. The first write through the
+CLI or the API replaces the legacy key with `sources.session`.
 
 ### `.repowise/decisions.yaml`
 
@@ -477,7 +483,8 @@ reconciles the store to it, with the file as the authority. Its format carries
 its own `version`, and a file written by a newer repowise is refused rather than
 downgraded. See [DECISIONS.md](../layers/DECISIONS.md) for the round trip.
 
-`session` mining lets `repowise update` read coding-agent session transcripts
+`session` mining is **off by default**. Switched on, it lets `repowise update`
+read coding-agent session transcripts
 (Claude Code's `~/.claude/projects/`) for durable decisions: user corrections,
 explicit choices with a stated reason, and failed approaches replaced by working
 ones. Candidates pass deterministic gates first, then one batched LLM

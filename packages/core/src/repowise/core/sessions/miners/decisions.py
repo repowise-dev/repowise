@@ -20,7 +20,7 @@ those moments into ``decision_records`` rows via three stages:
    from surrounding tool activity.
 
 2. **One batched LLM structuring pass** per ``repowise update``
-   (config-gated ``decisions.session_mining``, default on): candidates to
+   (config-gated ``decisions.sources.session``, off by default): candidates to
    ``{title, decision, rationale, affected_files, source_quote}``. Every
    produced field is then grounded against the verbatim quotes with the
    shared :func:`~repowise.core.analysis.decisions.provenance.verify_quote`
@@ -37,8 +37,9 @@ those moments into ``decision_records`` rows via three stages:
 
 Privacy: transcripts never leave the machine. Mining is local and the only
 thing stored is distilled decision text about the codebase, with verbatim
-quotes as evidence. Kill switch: ``decisions.session_mining: false`` in
-``.repowise/config.yaml``.
+quotes as evidence. The lane ships off; ``repowise decision source set
+session --on`` (or ``decisions.sources.session: true`` in
+``.repowise/config.yaml``) turns it back on.
 """
 
 from __future__ import annotations

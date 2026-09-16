@@ -71,6 +71,23 @@ def test_legacy_session_mining_is_reported_not_swallowed():
     assert resolution.legacy_keys == ("session_mining",)
 
 
+def test_legacy_session_mining_true_still_enables_an_off_by_default_lane():
+    """`session` ships off, so a config that says on must still read as on."""
+    policy = resolve_policy({"decisions": {"session_mining": True}}).policy
+
+    assert policy.source_enabled("session") is True
+
+
+def test_legacy_session_mining_defers_only_to_a_stated_source_enabled():
+    """`{"llm": false}` configures the source without saying whether it runs."""
+    policy = resolve_policy(
+        {"decisions": {"session_mining": True, "sources": {"session": {"llm": False}}}}
+    ).policy
+
+    assert policy.source_enabled("session") is True
+    assert policy.llm_allowed("session") is False
+
+
 def test_legacy_session_mining_off_cannot_be_widened_by_a_source_key():
     """The kill switch wins. Widening past it would start reading transcripts
     on a config that had switched them off."""
@@ -371,6 +388,90 @@ def test_discovery_is_off_by_default_and_on_in_the_discovery_presets():
     assert preset_policy("local_only").llm_allowed("session_discovery") is False
     assert preset_policy("balanced").llm_allowed("session_discovery") is True
     assert preset_policy("full").llm_allowed("session_discovery") is True
+
+
+def test_session_is_off_in_the_default_preset_only():
+    """`default` is the one preset that drops the lane."""
+    assert preset_policy("default").source_enabled("session") is False
+    assert resolve_policy(None).policy.source_enabled("session") is False
+    # `local_only` is the preset for a machine with no key, where the
+    # transcript miner is the only lane that produces anything at all;
+    # `balanced` needs it to feed discovery; `full` means every source.
+    for preset in ("local_only", "balanced", "full"):
+        assert preset_policy(preset).source_enabled("session") is True, preset
+
+
+def test_session_off_by_default_is_still_switchable_back_on():
+    """`decision source set session --on` must reach it, config-less."""
+    assert resolve_policy(None).policy.with_source("session", enabled=True).source_enabled(
+        "session"
+    )
+    written = resolve_policy({"decisions": {"sources": {"session": True}}}).policy
+    assert written.source_enabled("session") is True
+
+
+@pytest.mark.parametrize("preset", ["local_only", "full", "balanced"])
+def test_a_partial_enumeration_does_not_switch_off_a_source_older_than_presets(preset):
+    """`session` is missing from a hand-written list because it predates it.
+
+    The absent-means-new rule exists for sources added after the presets. A
+    source that shipped on and was later defaulted off is not one of those, and
+    reading it that way would drop it from the two presets that name it.
+    """
+    policy = resolve_policy({"decisions": {"preset": preset, "sources": {"comment": False}}}).policy
+
+    assert policy.source_enabled("session") is True
+    # The rule itself still holds for the sources it was written for.
+    assert policy.source_enabled("session_discovery") is False
+
+
+def test_every_default_off_source_is_declared_new_or_deliberately_flipped():
+    """Guards `_POST_PRESET_SOURCES`, which a new source must be added to.
+
+    `off` and `full` enrol every machine source automatically, so a source
+    added tomorrow joins `full`. If it is not also named here, a config that
+    stored `preset: full` with its sources enumerated *before* that source
+    existed would silently acquire it — the exact thing the absent-means-new
+    rule prevents. The set is hand-maintained because `default_enabled` can no
+    longer distinguish "new" from "shipped on and later flipped off"; this
+    test is what keeps the two readings in sync.
+    """
+    from repowise.core.analysis.decisions.policy import _POST_PRESET_SOURCES
+
+    default_off = {spec.key for spec in SOURCE_SPECS if spec.togglable and not spec.default_enabled}
+
+    # `session` is the one deliberate flip: it predates the presets, so it is
+    # absent from an old enumeration because it was always there.
+    assert default_off - _POST_PRESET_SOURCES == {"session"}
+    assert default_off >= _POST_PRESET_SOURCES
+
+
+def test_a_preset_overriding_the_legacy_key_says_so():
+    """Silently discarding a written `true` is what P1f was about."""
+    resolution = resolve_policy({"decisions": {"preset": "default", "session_mining": True}})
+
+    assert resolution.policy.source_enabled("session") is False
+    assert any("session_mining" in w and "preset" in w for w in resolution.warnings), (
+        resolution.warnings
+    )
+
+
+def test_balanced_keeps_the_lane_its_discovery_pass_depends_on():
+    """Discovery's queue is filled by the transcript miner; without it the
+    switch cannot produce."""
+    policy = preset_policy("balanced")
+
+    assert policy.source_enabled("session_discovery") is True
+    assert policy.source_enabled("session") is True
+
+
+def test_a_preset_outranks_the_legacy_session_key():
+    """`session_mining` predates presets, so it may narrow one, never widen it."""
+    policy = resolve_policy({"decisions": {"preset": "off", "session_mining": True}}).policy
+
+    assert policy.source_enabled("session") is False
+    assert policy.sources["session"].enabled is False
+    assert policy.preset_name() == "off"
 
 
 def test_the_legacy_default_is_not_the_full_preset():

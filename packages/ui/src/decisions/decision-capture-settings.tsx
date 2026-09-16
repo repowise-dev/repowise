@@ -56,10 +56,10 @@ const MICRO_LABEL =
  * button rather than disappearing.
  */
 const PRESET_BLURB: Record<string, string> = {
-  default: "The deterministic sources, and no broad model pass.",
+  default: "The deterministic sources, without transcripts or a broad model pass.",
   off: "Capture nothing. Decisions you record by hand still work.",
   local_only: "Only what this checkout can see, with no model call at all.",
-  balanced: "The deterministic sources plus one broad pass over new sessions.",
+  balanced: "The deterministic sources plus transcripts and one broad pass over new sessions.",
   full: "Every source, model stages included.",
 };
 
