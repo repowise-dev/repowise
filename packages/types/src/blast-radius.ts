@@ -74,7 +74,11 @@ export interface TestImpactResponse {
   recommendations_by_primary_basis: Record<TestRecommendationBasis, number>;
   files: Array<{
     source_file: string;
-    status: "measured" | "inferred" | "unknown";
+    status: "measured" | "inferred" | "unknown" | "deleted";
+    /** The path's transition, when the caller supplied one. */
+    change_status?: string | null;
+    /** False for a path the change deletes: it has no head side to cover. */
+    head_present?: boolean;
     measured_tests: string[];
     measured_tests_total: number;
     inferred_tests: string[];
@@ -83,6 +87,8 @@ export interface TestImpactResponse {
   files_total: number;
   files_without_measured_tests: string[];
   unknown_files: string[];
+  /** Changed paths the change deletes. Not a coverage gap. */
+  deleted_files?: string[];
   coverage: {
     status: "available" | "partial" | "unavailable" | "degraded";
     reason: string | null;
