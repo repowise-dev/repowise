@@ -62,6 +62,20 @@ def _chars(value: Any) -> int:
     return len(json.dumps(value, separators=(",", ":"), default=str))
 
 
+_WHOLE_PAGES = {"eligible": 10, "generated": 10, "omitted": 0}
+
+
+def _scope_with(**overrides: Any) -> dict[str, Any]:
+    """A canonical scope from the full fixture, with sub-blocks replaced."""
+    return resolve_index_scope(
+        {**_FULL_STATE, "index_scope": {**_FULL_STATE["index_scope"], **overrides}}
+    )
+
+
+def _status_of(**overrides: Any) -> str:
+    return compact_index_scope(_scope_with(**overrides))["status"]
+
+
 # --- the projection itself -------------------------------------------------
 
 
@@ -113,15 +127,7 @@ def test_omitted_pages_are_never_reported_as_complete() -> None:
 
 
 def test_a_whole_index_says_so() -> None:
-    state = {
-        **_FULL_STATE,
-        "index_scope": {
-            **_FULL_STATE["index_scope"],
-            "file_pages": {"eligible": 10, "generated": 10, "omitted": 0},
-        },
-    }
-
-    assert compact_index_scope(resolve_index_scope(state))["status"] == "complete"
+    assert _status_of(file_pages=_WHOLE_PAGES) == "complete"
 
 
 # --- the fingerprint -------------------------------------------------------
@@ -213,45 +219,29 @@ def test_an_index_with_no_scope_key_says_unknown() -> None:
     assert compact_index_scope(resolve_index_scope(state))["status"] == "unknown"
 
 
+def _legs(**override: str) -> dict[str, str]:
+    return {"full_text": "available", "semantic": "available", **override}
+
+
 @pytest.mark.parametrize("leg", ["full_text", "semantic"])
 def test_an_unavailable_search_leg_is_degraded(leg: str) -> None:
-    state = {
-        **_FULL_STATE,
-        "index_scope": {
-            **_FULL_STATE["index_scope"],
-            "search": {"full_text": "available", "semantic": "available", leg: "unavailable"},
-        },
-    }
-
-    assert compact_index_scope(resolve_index_scope(state))["status"] == "degraded"
+    assert _status_of(search=_legs(**{leg: "unavailable"})) == "degraded"
 
 
 @pytest.mark.parametrize("leg", ["full_text", "semantic"])
 def test_a_pending_search_leg_is_partial(leg: str) -> None:
     """Pending means not usable yet — smaller than failed, larger than fine."""
-    state = {
-        **_FULL_STATE,
-        "index_scope": {
-            **_FULL_STATE["index_scope"],
-            "file_pages": {"eligible": 10, "generated": 10, "omitted": 0},
-            "search": {"full_text": "available", "semantic": "available", leg: "pending"},
-        },
-    }
+    status = _status_of(file_pages=_WHOLE_PAGES, search=_legs(**{leg: "pending"}))
 
-    assert compact_index_scope(resolve_index_scope(state))["status"] == "partial"
+    assert status == "partial"
 
 
 def test_skipped_analysis_is_partial() -> None:
-    state = {
-        **_FULL_STATE,
-        "index_scope": {
-            **_FULL_STATE["index_scope"],
-            "file_pages": {"eligible": 10, "generated": 10, "omitted": 0},
-            "analysis": {"skipped": ["performance"]},
-        },
-    }
+    status = _status_of(
+        file_pages=_WHOLE_PAGES, analysis={"skipped": ["performance"]}
+    )
 
-    assert compact_index_scope(resolve_index_scope(state))["status"] == "partial"
+    assert status == "partial"
 
 
 def test_a_degraded_index_names_what_degraded() -> None:
