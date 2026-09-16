@@ -179,3 +179,49 @@ def test_scores_excluding_omits_target_ref(git_repo: Path) -> None:
     assert len(scores_excluding(samples, head)) == 1
     assert len(scores_excluding(samples, head[:7])) == 1
     assert len(scores_excluding(samples, "")) == 2
+
+
+async def test_route_scores_through_the_shared_facade(
+    client: AsyncClient, git_repo: Path, tmp_path: Path
+) -> None:
+    """The route must not carry its own copy of the scoring composition.
+
+    It once repeated the features -> score -> fix-history -> baseline sequence
+    inline, with comments saying it matched the other surfaces. Two copies that
+    agree only by comment drift the first time one is edited, so this pins the
+    route's numbers to the facade every other surface uses.
+    """
+    from repowise.core.analysis.change_risk import (
+        assess_change,
+        extract_range_features,
+        fix_pressure,
+        range_anchor,
+    )
+
+    repo = await create_test_repo(client, tmp_path)
+    _commit(git_repo, {"src/f.py": "a = 1\nb = 2\n"}, "feat: f")
+    _commit(git_repo, {"src/g.py": "c = 3\n"}, "fix: crash")
+
+    response = await client.get(
+        f"/api/repos/{repo['id']}/risk/range",
+        params={"base": "HEAD~2", "head": "HEAD"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    anchor = range_anchor(str(git_repo), "HEAD~2", "HEAD")
+    samples = baseline_samples(str(git_repo), anchor, 200, ())
+    pressure = fix_pressure(str(git_repo), anchor)
+    expected = assess_change(
+        extract_range_features(str(git_repo), "HEAD~2", "HEAD"),
+        fix_pressure=pressure,
+        baseline_scores=scores_excluding(samples, ""),
+        baseline_fix_densities=densities_excluding(samples, "", pressure),
+    )
+
+    assert body["score"] == expected.risk.score
+    assert body["risk_percentile"] == expected.percentile
+    assert body["review_priority"] == expected.priority
+    assert body["fix_history"]["density"] == expected.fix_density
+    assert body["fix_history"]["percentile"] == expected.fix_percentile
+    assert body["fix_history"]["available"] == expected.fix_history_available

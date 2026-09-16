@@ -6,7 +6,6 @@ import json
 import os
 import subprocess
 from collections import Counter
-from dataclasses import replace
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,17 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.change_risk import (
     SCORE_MEASURES,
     SCORE_UNIT,
-    BaselineSample,
     FixHistoryUnavailableError,
     RiskNormalizer,
+    assess_change,
     baseline_samples,
     change_features_from_stored,
-    change_fix_density,
     densities_excluding,
     extract_range_features,
-    fix_density_percentile,
     fix_pressure,
-    hot_files,
     range_anchor,
     review_priority_classification,
     score_change,
@@ -67,10 +63,6 @@ from repowise.server.schemas import (
 )
 from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
-
-# Below this many sampled commits a percentile isn't worth showing; mirrors
-# the CLI's ``repowise risk`` threshold so the two surfaces agree.
-_MIN_BASELINE = 8
 
 router = APIRouter(
     prefix="/api/repos",
@@ -701,43 +693,34 @@ def get_risk_range(
             status_code=400, detail=f"Could not read range {base!r}..{head!r}: {exc}"
         ) from exc
 
-    risk = score_change(features)
-
-    percentile: float | None = None
-    priority: str | None = None
-    samples: list[BaselineSample] = []
-    if baseline:
-        # Same anchor rule as the CLI/MCP scorer, so both surfaces rank a range
-        # against the history it forked from rather than against its own commits.
-        samples = baseline_samples(local_path, range_anchor(local_path, base, head), baseline, ())
-        scores = scores_excluding(samples, "")
-        if len(scores) >= _MIN_BASELINE:
-            normalizer = RiskNormalizer.from_scores(scores)
-            # Rank with experience unknown, matching the baseline (diff-shape
-            # percentile within the repo), keeping the comparison like-with-like.
-            rank_score = score_change(replace(features, exp=None)).score
-            percentile = normalizer.percentile(rank_score)
-            priority = normalizer.priority(rank_score)
-
-    # Read at the fork point, matching the CLI/MCP scorer: the record predates
-    # the change rather than counting fixes the range itself brought in.
+    # The fork point anchors both the baseline cohort and the fix record, so a
+    # range is ranked against the history it forked from and is never credited
+    # with fixes it brought in itself.
+    anchor = range_anchor(local_path, base, head)
+    samples = baseline_samples(local_path, anchor, baseline, ()) if baseline else []
     try:
-        pressure = fix_pressure(local_path, range_anchor(local_path, base, head))
-        fix_available = True
+        pressure: dict[str, float] | None = fix_pressure(local_path, anchor)
     except FixHistoryUnavailableError:
-        pressure, fix_available = {}, False
-    density = change_fix_density(pressure, features.file_churn)
+        pressure = None
+
+    assessed = assess_change(
+        features,
+        fix_pressure=pressure,
+        baseline_scores=scores_excluding(samples, ""),
+        baseline_fix_densities=densities_excluding(samples, "", pressure or {}),
+    )
+    risk, percentile, priority = assessed.risk, assessed.percentile, assessed.priority
 
     return RiskRangeResponse(
         base=base,
         head=head,
         fix_history=FixHistoryResponse(
-            available=fix_available,
-            density=round(density, 3),
-            percentile=fix_density_percentile(densities_excluding(samples, "", pressure), density),
+            available=assessed.fix_history_available,
+            density=assessed.fix_density,
+            percentile=assessed.fix_percentile,
             files=[
                 FixHistoryFileResponse(path=path, churn=churn, fix_pressure=p)
-                for path, churn, p in hot_files(pressure, features.file_churn)
+                for path, churn, p in assessed.hot_files
             ],
         ),
         risk_authority=change_risk_authority(),
