@@ -73,10 +73,16 @@ def test_build_meta_exposes_the_persisted_index_scope(tmp_path, monkeypatch):
     monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
 
     out = _meta.build_meta(repository=_repo(tmp_path))
+    whole = _meta.build_meta(repository=_repo(tmp_path), scope_detail="full")
 
+    # An ordinary response carries the digest; what it says about the run is
+    # the same, and the diagnostics it leaves out are one get_overview away.
     assert out["index_scope"]["run_mode"] == "fast"
     assert out["index_scope"]["content_provenance"] == "none"
-    assert out["index_scope"]["git_history_coverage"] is None
+    assert out["index_scope"]["projection"] == "compact"
+    assert whole["index_scope"]["run_mode"] == "fast"
+    assert whole["index_scope"]["content_provenance"] == "none"
+    assert whole["index_scope"]["git_history_coverage"] is None
 
 
 def test_served_target_changed_warns(tmp_path, monkeypatch):

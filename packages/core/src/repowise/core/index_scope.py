@@ -8,6 +8,7 @@ complete from a configured limit or from the absence of a finding.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from copy import deepcopy
@@ -174,6 +175,81 @@ def resolve_index_scope(
             "semantic": _choice(search.get("semantic"), {"available", "unavailable", "pending"}),
             "next_command": _string(search.get("next_command")),
         },
+    }
+
+
+#: What a routine response says instead of the whole canonical scope. The full
+#: object is roughly 900 characters, which on a small ``get_symbol`` response
+#: was about a third of everything the agent received — paid for on every call
+#: to answer a question almost none of them asked.
+COMPACT_INDEX_SCOPE_PROJECTION = "compact"
+CANONICAL_INDEX_SCOPE_PROJECTION = "full"
+
+#: Set to ``full`` to serve the canonical scope everywhere, as builds before
+#: the compact projection did. The compatibility window for a reader that
+#: parses the whole object and cannot yet ask for it by name.
+INDEX_SCOPE_ENV = "REPOWISE_MCP_INDEX_SCOPE"
+
+
+def index_scope_fingerprint(scope: Mapping[str, Any]) -> str:
+    """A short stable digest of one canonical scope.
+
+    Two responses carrying the same fingerprint were built against the same
+    scope, so a caller holding the full object from an earlier call knows its
+    copy still describes this one — without either side resending it.
+    """
+    canonical = json.dumps(scope, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
+def _scope_status(scope: Mapping[str, Any]) -> str:
+    """One word for how much of the intended index actually exists.
+
+    Ordered worst-first on purpose: an index that is both mid-upgrade and
+    missing pages reports the upgrade, because that is the condition that
+    explains the rest and the one that will change on its own. ``complete``
+    is only reached when nothing else applies, so it never stands in for
+    evidence that is merely unexamined.
+    """
+    upgrade = scope.get("upgrade") if isinstance(scope.get("upgrade"), Mapping) else {}
+    if upgrade.get("status") in {"pending", "running", "resumable"}:
+        return "upgrading"
+    analysis = scope.get("analysis") if isinstance(scope.get("analysis"), Mapping) else {}
+    search = scope.get("search") if isinstance(scope.get("search"), Mapping) else {}
+    degraded = (
+        upgrade.get("status") == "failed"
+        or bool(analysis.get("unavailable"))
+        or search.get("full_text") == "unavailable"
+        or search.get("semantic") == "unavailable"
+    )
+    if degraded:
+        return "degraded"
+    pages = scope.get("file_pages") if isinstance(scope.get("file_pages"), Mapping) else {}
+    if _number(pages.get("omitted")) or analysis.get("skipped"):
+        return "partial"
+    return "complete"
+
+
+def compact_index_scope(scope: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The routine-response projection of a canonical scope.
+
+    Keeps what changes how an answer should be read — the run mode, where the
+    prose came from, how much git there is, and whether the index is whole —
+    plus a fingerprint that identifies the full object and the call that
+    returns it. Everything else is a diagnostic, and a diagnostic that rides on
+    every response is a tax, not a disclosure.
+    """
+    if not isinstance(scope, Mapping):
+        return None
+    return {
+        "version": scope.get("version", INDEX_SCOPE_VERSION),
+        "projection": COMPACT_INDEX_SCOPE_PROJECTION,
+        "run_mode": scope.get("run_mode", "unknown"),
+        "content_provenance": scope.get("content_provenance", "unknown"),
+        "git_tier": scope.get("git_tier", "unknown"),
+        "status": _scope_status(scope),
+        "fingerprint": index_scope_fingerprint(scope),
+        "full": "get_overview()",
     }
 
 

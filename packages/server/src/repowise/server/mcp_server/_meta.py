@@ -18,11 +18,18 @@ Rules of thumb baked into the hint generators:
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from repowise.core.index_scope import load_index_scope
+from repowise.core.index_scope import (
+    CANONICAL_INDEX_SCOPE_PROJECTION,
+    COMPACT_INDEX_SCOPE_PROJECTION,
+    INDEX_SCOPE_ENV,
+    compact_index_scope,
+    load_index_scope,
+)
 
 MCP_CONTRACT_VERSION = 1
 
@@ -108,6 +115,33 @@ def read_index_scope(local_path: str | None) -> dict[str, Any] | None:
     if not local_path:
         return None
     return load_index_scope(local_path)
+
+
+def _wants_canonical_scope(scope_detail: str) -> bool:
+    """Whether this response serves the whole scope rather than the digest.
+
+    Two ways to ask: the caller says so — which is what an orientation or
+    diagnostic call does — or the environment does, for a reader that parses
+    the full object and has no way yet to ask for it by name. The environment
+    is the compatibility window and is read per call, so turning it on does
+    not need a restart of a server a client spawned.
+    """
+    if scope_detail == CANONICAL_INDEX_SCOPE_PROJECTION:
+        return True
+    return (
+        os.environ.get(INDEX_SCOPE_ENV, "").strip().lower()
+        == CANONICAL_INDEX_SCOPE_PROJECTION
+    )
+
+
+def index_scope_for_response(
+    local_path: str | None, scope_detail: str
+) -> dict[str, Any] | None:
+    """The scope this response carries: the digest, or the whole object."""
+    scope = read_index_scope(local_path)
+    if scope is None or _wants_canonical_scope(scope_detail):
+        return scope
+    return compact_index_scope(scope)
 
 
 def resolve_indexed_commit(head_commit: str | None, local_path: str | None) -> str | None:
@@ -326,6 +360,7 @@ def build_meta(
     repository: Any | None = None,
     targets: list[str] | None = None,
     extra: dict[str, Any] | None = None,
+    scope_detail: str = COMPACT_INDEX_SCOPE_PROJECTION,
 ) -> dict[str, Any]:
     """Construct a `_meta` envelope. All fields optional, omitted if falsy.
 
@@ -335,6 +370,12 @@ def build_meta(
     without an extra round-trip. Pass ``targets`` (the paths this response
     serves) to scope ``stale_warning`` to actually-affected content — see
     :func:`freshness_from_repo`.
+
+    ``index_scope`` rides on every response, so it carries the compact
+    projection by default: the run mode, the provenance, the git tier, one
+    word for whether the index is whole, and a fingerprint identifying the
+    canonical object. Pass ``scope_detail="full"`` from an orientation or
+    diagnostic call that is worth spending the bytes on.
 
     Stable shape:
       {
@@ -356,7 +397,9 @@ def build_meta(
         out["cached"] = True
     if repository is not None:
         out.update(freshness_from_repo(repository, targets=targets))
-        scope = read_index_scope(getattr(repository, "local_path", None))
+        scope = index_scope_for_response(
+            getattr(repository, "local_path", None), scope_detail
+        )
         if scope is not None:
             out["index_scope"] = scope
     out.update(_embedder_meta())

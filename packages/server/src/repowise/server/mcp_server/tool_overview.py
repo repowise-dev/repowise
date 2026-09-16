@@ -1109,7 +1109,10 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
 
         result["tool_surface"] = _tool_surface_guide(is_workspace=_state._registry is not None)
 
-        result["_meta"] = _build_meta(repository=repository)
+        # The orientation call, and the one place the whole scope is worth its
+        # bytes: it is made once per session and it is what the compact
+        # projection on every other response points at.
+        result["_meta"] = _build_meta(repository=repository, scope_detail="full")
         collector.attach(result)
         return result
 
