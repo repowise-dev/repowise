@@ -195,6 +195,45 @@ def _slice_callee_body(row: WikiSymbol, text: str) -> _CalleeBody:
     )
 
 
+async def _unseen_callees_of(
+    session,
+    repo_id: str,
+    frontier: list[str],
+    seen: set[str],
+) -> tuple[list[str], dict[str, float]]:
+    """Call targets of *frontier* not already in *seen*, with their confidence.
+
+    Mutates *seen*, which is what keeps a diamond from being walked twice.
+    Edges below the confidence floor are dropped here: tier-3 resolution
+    invents edges, and a guessed one drags a whole unrelated body into the
+    payload.
+    """
+    from repowise.core.persistence.crud import get_graph_edges_for_node
+    from repowise.server.mcp_server.tool_context.enrichment import (
+        _CALL_EDGE_TYPES,
+        _MIN_CALL_CONFIDENCE,
+    )
+
+    next_ids: list[str] = []
+    confidence_of: dict[str, float] = {}
+    for node_id in frontier:
+        edges = await get_graph_edges_for_node(
+            session,
+            repo_id,
+            node_id,
+            direction="callees",
+            edge_types=_CALL_EDGE_TYPES,
+            limit=_MAX_CALLEES_PER_HOP,
+        )
+        for e in edges:
+            if (e.confidence or 0) < _MIN_CALL_CONFIDENCE or e.target_node_id in seen:
+                continue
+            seen.add(e.target_node_id)
+            next_ids.append(e.target_node_id)
+            confidence_of[e.target_node_id] = e.confidence or 0
+    return next_ids, confidence_of
+
+
 async def _discover_callee_hops(
     session,
     repo_id: str,
@@ -217,12 +256,6 @@ async def _discover_callee_hops(
     re-offered at a deeper hop: it would then be labelled with a distance that
     is not its own. It is counted in ``over_cap`` instead.
     """
-    from repowise.core.persistence.crud import get_graph_edges_for_node
-    from repowise.server.mcp_server.tool_context.enrichment import (
-        _CALL_EDGE_TYPES,
-        _MIN_CALL_CONFIDENCE,
-    )
-
     seen: set[str] = {root_row.symbol_id}
     frontier = [root_row.symbol_id]
     hops: list[_CalleeHop] = []
@@ -230,24 +263,7 @@ async def _discover_callee_hops(
     for hop_number in range(1, depth):
         if not frontier:
             break
-        next_ids: list[str] = []
-        confidence_of: dict[str, float] = {}
-        for node_id in frontier:
-            edges = await get_graph_edges_for_node(
-                session,
-                repo_id,
-                node_id,
-                direction="callees",
-                edge_types=_CALL_EDGE_TYPES,
-                limit=_MAX_CALLEES_PER_HOP,
-            )
-            for e in edges:
-                if (e.confidence or 0) < _MIN_CALL_CONFIDENCE:
-                    continue
-                if e.target_node_id not in seen:
-                    seen.add(e.target_node_id)
-                    next_ids.append(e.target_node_id)
-                    confidence_of[e.target_node_id] = e.confidence or 0
+        next_ids, confidence_of = await _unseen_callees_of(session, repo_id, frontier, seen)
         if not next_ids:
             break
 
@@ -280,6 +296,36 @@ async def _discover_callee_hops(
         frontier = next_ids
 
     return hops
+
+
+def _prepare_callee_entries(
+    hops: list[_CalleeHop], repo_root: Path
+) -> list[tuple[dict[str, Any], str, _CalleeBody | None]]:
+    """One ordered record per discovered row: ``(entry, file_path, body)``.
+
+    ``body`` is None when the file could not be read. The order is fixed here,
+    so the later refill pass cannot reshuffle the payload, and each body is
+    sliced exactly once, so what a body costs and what is emitted for it can
+    never disagree.
+    """
+    text_cache: dict[str, str | None] = {}
+    prepared: list[tuple[dict[str, Any], str, _CalleeBody | None]] = []
+    for hop in hops:
+        for row in hop.rows:
+            entry: dict[str, Any] = {
+                "symbol_id": symbol_identity(row.symbol_id),
+                "name": row.name,
+                "file": row.file_path,
+                "kind": row.kind,
+                "signature": _clean_symbol_signature(row.signature),
+                "depth": hop.number,
+            }
+            if row.file_path not in text_cache:
+                text_cache[row.file_path] = _read_file_text(repo_root, row.file_path)
+            text = text_cache[row.file_path]
+            body = None if text is None else _slice_callee_body(row, text)
+            prepared.append((entry, row.file_path, body))
+    return prepared
 
 
 async def _expand_callees(
@@ -315,29 +361,9 @@ async def _expand_callees(
     if not hops:
         return None
 
-    text_cache: dict[str, str | None] = {}
     remaining = _CALLEE_CHAR_BUDGET
     reserve_per_hop = _CALLEE_CHAR_BUDGET // len(hops)
-    # One ordered record per discovered row, ``(entry, file_path, body)``, with
-    # ``body`` None when the file could not be read. Order is fixed here so the
-    # refill pass cannot reshuffle the payload, and each body is sliced once so
-    # its cost and what is emitted can never disagree.
-    prepared: list[tuple[dict[str, Any], str, _CalleeBody | None]] = []
-    for hop in hops:
-        for row in hop.rows:
-            entry: dict[str, Any] = {
-                "symbol_id": symbol_identity(row.symbol_id),
-                "name": row.name,
-                "file": row.file_path,
-                "kind": row.kind,
-                "signature": _clean_symbol_signature(row.signature),
-                "depth": hop.number,
-            }
-            if row.file_path not in text_cache:
-                text_cache[row.file_path] = _read_file_text(repo_root, row.file_path)
-            text = text_cache[row.file_path]
-            body = None if text is None else _slice_callee_body(row, text)
-            prepared.append((entry, row.file_path, body))
+    prepared = _prepare_callee_entries(hops, repo_root)
 
     def _render(entry: dict[str, Any], file_path: str, body: _CalleeBody) -> None:
         entry.update(
