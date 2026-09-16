@@ -100,7 +100,7 @@ async def _seed_decision(session, repo_id: str) -> str:
             {
                 "title": "Use MySQL for storage",
                 "decision": "use MySQL as the primary datastore",
-                "rationale": "",
+                "rationale": "the team already ran MySQL in production",
                 "source": "inline_marker",
                 "status": "proposed",
                 "affected_files": ["src/db.py"],

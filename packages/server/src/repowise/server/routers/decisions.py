@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -534,12 +535,14 @@ async def create_decision(
     rather than written straight into the status column, so this surface and
     the CLI agree about what made the record govern.
 
-    A record naming no file or module is stored as a candidate instead of
-    being refused, which is what ``repowise decision add`` does with the same
-    input. It cannot be checked against the code and cannot reach an agent
-    editing a governed file, so it cannot govern; discarding the fields the
-    author did fill in would be worse. The response's ``status`` says which of
-    the two happened, and a form can predict it from the same one field.
+    A record the acceptance contract will not take is stored as a candidate
+    instead of being refused, which is what ``repowise decision add`` does with
+    the same input. That covers a record naming no file or module, which cannot
+    be checked against the code or reach an agent editing a governed file, and
+    a record stating no reason, which has not said why it binds. Discarding the
+    fields the author did fill in would be worse than keeping the entry
+    unaccepted. The response's ``status`` says which of the two happened, and a
+    form can predict it from the same one field.
     """
     # ``upsert_decision`` dedups on the title and overwrites the scope with
     # whatever the body carries, so a second post of an accepted decision's
@@ -581,10 +584,13 @@ async def create_decision(
         confidence=1.0,
     )
     if scoped:
-        try:
+        # Same rule as the scope-less case above: what the contract will not
+        # accept is kept as a candidate, not refused. An entry stating no
+        # reason reaches here, and discarding everything the author typed over
+        # a missing rationale would be the worse answer. The response's
+        # ``status`` reports which of the two happened.
+        with contextlib.suppress(crud.AcceptanceRefusedError):
             await crud.accept_decision(session, rec, accepter="web")
-        except crud.AcceptanceRefusedError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
     return DecisionRecordResponse.from_orm(rec)
 
 

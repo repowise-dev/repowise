@@ -115,6 +115,37 @@ async def test_an_unscoped_candidate_is_flagged_and_sorts_last(async_session):
     assert [rec.title for rec in page] == ["Ready to accept", "No scope"]
 
 
+async def test_the_decision_body_is_not_a_reason(async_session):
+    """A record that says only what was chosen has not said why.
+
+    ``context`` answers "what forced this decision?" and stands in for a blank
+    rationale; ``decision`` is the choice itself and must not. Reading it as a
+    reason is what kept 54 records of the dev store acceptable whose rationale
+    and context are both blank.
+    """
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [
+            _decision("Only the what", rationale="", context=""),
+            _decision("Context carries it", rationale="", context="restarts dropped sessions"),
+        ],
+    )
+
+    bare = await _record(async_session, "Only the what")
+    assert bare.decision
+    assert record_blockers(bare) == ["no rationale or explicit constraint reason"]
+    meta = await async_session.get(DecisionCandidateMeta, bare.id)
+    assert meta is not None and meta.review_priority == 0.0
+
+    carried = await _record(async_session, "Context carries it")
+    assert record_blockers(carried) == []
+
+    rows = await list_candidates(async_session, repo.id)
+    assert [rec.title for rec, _ in rows] == ["Context carries it", "Only the what"]
+
+
 async def test_re_extraction_refreshes_priority_without_reopening_review(async_session):
     repo = await insert_repo(async_session)
     await bulk_upsert_decisions(

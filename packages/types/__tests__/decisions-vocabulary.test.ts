@@ -134,14 +134,22 @@ describe("the acceptance contract, mirrored", () => {
     ).toContain("no scope: name the files or modules it governs");
   });
 
-  it("falls back to the decision body when there is no rationale", () => {
+  it("falls back to the context when there is no rationale", () => {
     expect(
       decisionAcceptanceBlockers({
         ...accepted,
         rationale: "",
-        decision: "Issue signed JWTs",
+        context: "sessions were lost on every deploy",
       }),
     ).toEqual([]);
+  });
+
+  it("does not let the decision body stand in for the reason", () => {
+    // The what is not the why. Reading `decision` here is what marked records
+    // acceptable that say only what was chosen.
+    expect(
+      decisionAcceptanceBlockers({ ...accepted, rationale: "", context: "" }),
+    ).toEqual(["no rationale or explicit constraint reason"]);
   });
 
   it("requires evidence from a mined record and not from a typed one", () => {

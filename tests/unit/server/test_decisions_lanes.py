@@ -391,6 +391,7 @@ async def test_creating_with_a_scope_records_an_acceptance(
         json={
             "title": "Use JWT",
             "decision": "Issue signed JWTs",
+            "rationale": "sessions did not survive a restart",
             "affected_files": ["src/auth/service.py"],
         },
     )
@@ -430,6 +431,52 @@ async def test_creating_without_a_scope_lands_a_candidate_rather_than_failing(
 
 
 @pytest.mark.asyncio
+async def test_a_scoped_entry_with_no_reason_also_lands_a_candidate(
+    client: AsyncClient, app
+) -> None:
+    """A scope is not enough on its own: the entry has to say why it binds.
+
+    Same rule as the scope-less case above, and the same reason for it. The
+    author's fields are kept rather than refused, and the record waits in
+    review until somebody states the reason.
+    """
+    repo = await create_test_repo(client)
+
+    res = await client.post(
+        f"/api/repos/{repo['id']}/decisions",
+        json={
+            "title": "Use JWT",
+            "decision": "Issue signed JWTs",
+            "affected_files": ["src/auth/service.py"],
+        },
+    )
+
+    assert res.status_code == 201, res.text
+    assert res.json()["status"] == "proposed"
+    assert res.json()["affected_files"] == ["src/auth/service.py"]
+    assert await _lane(client, repo["id"], "governing") == []
+
+
+@pytest.mark.asyncio
+async def test_a_context_is_reason_enough_to_accept(client: AsyncClient, app) -> None:
+    """``context`` is what forced the decision, so it is a why and it counts."""
+    repo = await create_test_repo(client)
+
+    res = await client.post(
+        f"/api/repos/{repo['id']}/decisions",
+        json={
+            "title": "Use JWT",
+            "decision": "Issue signed JWTs",
+            "context": "sessions were lost on every deploy",
+            "affected_files": ["src/auth/service.py"],
+        },
+    )
+
+    assert res.status_code == 201, res.text
+    assert res.json()["status"] == "active"
+
+
+@pytest.mark.asyncio
 async def test_a_module_only_scope_is_enough_to_accept(
     client: AsyncClient, app
 ) -> None:
@@ -441,6 +488,7 @@ async def test_a_module_only_scope_is_enough_to_accept(
         json={
             "title": "Keep the resolver pure",
             "decision": "No I/O in resolvers",
+            "rationale": "a resolver that reads the disk cannot be memoised",
             "affected_modules": ["src/resolvers"],
         },
     )
@@ -464,6 +512,7 @@ async def test_recording_a_title_again_cannot_withdraw_its_scope(
     body = {
         "title": "Use JWT",
         "decision": "Issue signed JWTs",
+        "rationale": "sessions did not survive a restart",
         "affected_files": ["src/auth/service.py"],
     }
     first = await client.post(f"/api/repos/{repo['id']}/decisions", json=body)
@@ -490,6 +539,7 @@ async def test_recording_a_title_again_with_a_scope_still_works(
     body = {
         "title": "Use JWT",
         "decision": "Issue signed JWTs",
+        "rationale": "sessions did not survive a restart",
         "affected_files": ["src/auth/service.py"],
     }
     await client.post(f"/api/repos/{repo['id']}/decisions", json=body)

@@ -31,7 +31,8 @@ def _decision(title: str, *, source: str = "changelog", status: str = "proposed"
     return {
         "title": title,
         "decision": f"{title} because reasons",
-        "rationale": "",
+        # A reason, so these records can be accepted: the decision body is not one.
+        "rationale": f"{title} was the cheaper of the two options",
         "source": source,
         "status": status,
         # A scope, so these records can be accepted: acceptance is what the

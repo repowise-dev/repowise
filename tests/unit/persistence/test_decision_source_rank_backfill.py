@@ -214,6 +214,7 @@ async def test_purge_keeps_what_a_human_confirmed(async_session):
             {
                 "title": "Kept because someone confirmed it",
                 "decision": "mined from a changelog, then confirmed by a human",
+                "rationale": "the changelog entry gave the reason",
                 "source": "changelog",
                 "status": "proposed",
                 "affected_files": ["src/changelog.py"],

@@ -401,8 +401,14 @@ def _requirement(
     resolved_evidence = evidence if evidence is not None else _record_evidence(record)
     if not resolved_evidence and self_authored:
         resolved_evidence = [f"accepted by {accepter}"]
+    # The why may come from `rationale` or from `context` ("what forced this
+    # decision?"), never from `decision`, which is the what. Measured over the
+    # dev store's 513 acceptable records: 199 have a blank rationale, but 145
+    # of those give their reason in `context`, so stopping at `rationale` would
+    # block 145 records a hand-read sample of 20 judged worth keeping. Stopping
+    # at `context` blocks the other 54, each blank in both fields.
     return AcceptanceRequirement(
-        reason=_first_non_blank(reason, record.rationale, record.decision),
+        reason=_first_non_blank(reason, record.rationale, record.context),
         scope=scope if scope is not None else _record_scope(record),
         evidence=resolved_evidence,
         accepter=accepter,

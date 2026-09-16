@@ -443,10 +443,14 @@ export const DECISION_PRESETS = [
  * `selfAuthored` is the exemption for a record somebody typed: they wrote the
  * claim rather than reviewing an inference, so the entry is its own provenance.
  * The engine grants it to `source === "cli"` when an accepter is known.
+ *
+ * The reason reads `rationale` then `context`, never `decision`: `context` is
+ * what forced the choice, `decision` is the choice itself, and letting the what
+ * stand in for the why is what marked empty records acceptable.
  */
 export function decisionAcceptanceBlockers(record: {
   rationale?: string;
-  decision?: string;
+  context?: string;
   affected_files?: string[];
   affected_modules?: string[];
   evidence_commits?: string[];
@@ -457,7 +461,7 @@ export function decisionAcceptanceBlockers(record: {
   const nonBlank = (values: (string | null | undefined)[]) =>
     values.some((v) => (v ?? "").trim().length > 0);
 
-  if (!nonBlank([record.rationale, record.decision])) {
+  if (!nonBlank([record.rationale, record.context])) {
     blockers.push("no rationale or explicit constraint reason");
   }
   if (

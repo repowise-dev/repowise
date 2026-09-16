@@ -50,6 +50,7 @@ async def _add_decision(
         repository_id=repo_id,
         title=title,
         decision=f"{title} because reasons",
+        rationale=f"the alternative to {title} was measured worse",
         status=status,
         staleness_score=staleness,
         confidence=confidence,
