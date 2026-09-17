@@ -223,9 +223,9 @@ async def test_context_used_by_and_relations_recover_in_one_bounded_query_shape(
                 GraphEdge(
                     id=f"sealed-import-{index}",
                     repository_id=setup_mcp,
-                    source_node_id=file_id,
-                    target_node_id="src/auth/service.py",
-                    edge_type="imports",
+                    source_node_id=f"{file_id}::Use{index:03d}",
+                    target_node_id="src/auth/service.py::AuthService",
+                    edge_type="references",
                     imported_names_json='["AuthService"]',
                     created_at=_NOW,
                 ),
