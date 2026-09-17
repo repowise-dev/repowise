@@ -162,6 +162,75 @@ async def test_preflight_reports_provider_and_estimate(
 
 
 @pytest.mark.asyncio
+async def test_preflight_prices_repo_config_provider_not_chat_picker(
+    client: AsyncClient, tmp_path, monkeypatch
+) -> None:
+    """Issue #2265: preflight must quote what the job will run with."""
+    from repowise.server import provider_config as pc
+
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path / "server"))
+    repo_dir = _make_fake_repo(tmp_path)
+    (repo_dir / ".repowise").mkdir()
+    (repo_dir / ".repowise" / "config.yaml").write_text(
+        "provider: claude_cli\nmodel: claude_cli/claude-sonnet-4-6\nembedder: mock\n",
+        encoding="utf-8",
+    )
+    created = await client.post(
+        "/api/repos",
+        json={"name": "fresh-repo", "local_path": str(repo_dir), "index": False},
+    )
+    repo_id = created.json()["id"]
+    pc.set_active_provider("gemini", "gemini-3.1-pro-preview", repo_id=repo_id)
+
+    def fake_get_provider(provider_id, **kwargs):
+        return SimpleNamespace(
+            provider_name=provider_id,
+            model_name=kwargs.get("model"),
+            generate=AsyncMock(return_value="OK"),
+        )
+
+    monkeypatch.setattr("repowise.core.providers.llm.registry.get_provider", fake_get_provider)
+
+    resp = await client.post(f"/api/repos/{repo_id}/preflight")
+
+    assert resp.status_code == 200
+    assert resp.json()["provider"]["name"] == "claude_cli"
+    assert resp.json()["provider"]["model"] == "claude_cli/claude-sonnet-4-6"
+
+
+@pytest.mark.asyncio
+async def test_preflight_quotes_picker_when_repo_has_no_configured_provider(
+    client: AsyncClient, tmp_path, monkeypatch
+) -> None:
+    """The other half of #2265: preflight ignored the picker the job uses."""
+    from repowise.server import provider_config as pc
+
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path / "server"))
+    repo_dir = _make_fake_repo(tmp_path)
+    created = await client.post(
+        "/api/repos",
+        json={"name": "fresh-repo", "local_path": str(repo_dir), "index": False},
+    )
+    repo_id = created.json()["id"]
+    pc.set_active_provider("gemini", "gemini-3.1-pro-preview", repo_id=repo_id)
+
+    def fake_get_provider(provider_id, **kwargs):
+        return SimpleNamespace(
+            provider_name=provider_id,
+            model_name=kwargs.get("model"),
+            generate=AsyncMock(return_value="OK"),
+        )
+
+    monkeypatch.setattr("repowise.core.providers.llm.registry.get_provider", fake_get_provider)
+
+    resp = await client.post(f"/api/repos/{repo_id}/preflight")
+
+    assert resp.status_code == 200
+    assert resp.json()["provider"]["name"] == "gemini"
+    assert resp.json()["provider"]["model"] == "gemini-3.1-pro-preview"
+
+
+@pytest.mark.asyncio
 async def test_preflight_surfaces_provider_failure(client: AsyncClient, tmp_path) -> None:
     repo_dir = _make_fake_repo(tmp_path)
     created = await client.post(

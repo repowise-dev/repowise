@@ -358,9 +358,7 @@ async def execute_job(
             mode = str(config.get("mode") or "sync")
             if mode not in VALID_JOB_MODES:
                 valid_str = ", ".join(sorted(VALID_JOB_MODES))
-                raise ValueError(
-                    f"Invalid job mode '{mode}'. Expected one of: {valid_str}"
-                )
+                raise ValueError(f"Invalid job mode '{mode}'. Expected one of: {valid_str}")
 
             is_full_resync = mode == "full_resync"
             is_initial_index = mode == "initial_index"
@@ -391,16 +389,14 @@ async def execute_job(
         docs_skip_reason: str | None = None
         if not is_index_only:
             try:
-                from repowise.server.provider_config import get_chat_provider_instance
+                from repowise.server.provider_config import get_writer_provider_instance
 
-                # Pass the repo id *and* path so the job resolves exactly what
-                # the UI's provider picker chose. The picker persists its choice
-                # per repo, under ``repos[repo_id]`` — the most specific step in
-                # the resolver and the only one that carries a deliberate user
-                # decision. Resolving on path alone skipped it entirely, so a
-                # repo whose settings named a provider still fell through to the
-                # auto-detect step and indexed with whatever it guessed.
-                llm_client = get_chat_provider_instance(repo_path=repo_path, repo_id=repo_id)
+                # Writer resolution: the repo's own config.yaml outranks the
+                # chat model picker, so a wiki build uses the provider set at
+                # init rather than whatever chat was last switched to. Pass the
+                # repo id *and* path so the picker still applies as the
+                # fallback when no provider is configured yet.
+                llm_client = get_writer_provider_instance(repo_path=repo_path, repo_id=repo_id)
             except Exception as exc:
                 docs_skip_reason = f"no provider configured: {exc}"
                 logger.warning("no_provider_configured", error=str(exc))
