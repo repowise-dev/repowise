@@ -564,14 +564,16 @@ async def test_unmatched_module_does_not_serve_repo_wide_refactoring(
 
     ``file_paths`` reaches the queue as a tuple, and an empty tuple is falsy, so
     it was read as "no scope" and answered with the repository's worst files.
-    The neighbouring blocks do not have that hole: plans and coverage are gated
+    The neighbouring queues do not have that hole: plans and coverage are gated
     on ``nothing_resolved``, the dashboard directive on ``not scoped``, and the
     performance queue passes its tuple through to an ``IN ()`` that matches
-    nothing. Only refactoring turned an unresolved target into a repo-wide
-    answer, in the one response that also says the target was unresolved.
-    """
-    import json
+    nothing.
 
+    The rollup beside the queue cannot be filtered the same way — it is read by
+    repository id — so it is withheld instead, along with the facets it carries.
+    Both halves are asserted here: a call that resolved nothing must not be
+    answered with the repository, by either route.
+    """
     from repowise.core.analysis.health.refactoring.identity import (
         REFACTORING_MODEL_VERSION,
     )
@@ -594,8 +596,13 @@ async def test_unmatched_module_does_not_serve_repo_wide_refactoring(
     leaked = await get_health(targets=["module:nope"], include=["refactoring"])
 
     assert leaked["unresolved"] == [{"target": "module:nope", "reason": "no_such_module"}]
-    assert leaked.get("refactoring_opportunities", []) == []
-    assert leaked.get("refactoring_opportunities_total", 0) == 0
+    # Indexed, not ``.get``: a renamed key must fail here rather than pass by
+    # defaulting to the value the assertion wants.
+    assert leaked["refactoring_opportunities"] == []
+    assert leaked["refactoring_opportunities_total"] == 0
+    # The rollup carries the repository's worst file as its ``lead``, which is
+    # the same answer the queue was giving, by another route.
+    assert "refactoring_summary" not in leaked
 
     # The same seed is reachable when the scope does resolve to that file, so
     # the assertion above is about the scope and not about an empty table.

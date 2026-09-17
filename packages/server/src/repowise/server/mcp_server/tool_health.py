@@ -314,6 +314,12 @@ async def _refactoring_blocks(
     """
     page = None
     ignored: dict[str, str] = {}
+    # A scope that resolved to no file is not the dashboard. The queue below
+    # honours it through an ``IN ()``, but the rollup and its facets are read
+    # by repository id and have no scope to honour, so they have to be withheld
+    # rather than filtered — the same reason ``directive`` is dashboard-only.
+    resolved_scope = not (scoped and not file_paths)
+    rollup_wanted = included and wants("refactoring_summary") and resolved_scope
     if included:
         emits_queue = wants("refactoring_opportunities")
         query, ignored = parse_refactoring_query(
@@ -328,11 +334,11 @@ async def _refactoring_blocks(
         page = await service.page(
             query,
             steps_per_item=_REFACTORING_STEP_CAP if emits_queue else 0,
-            with_facets=wants("refactoring_summary"),
+            with_facets=rollup_wanted,
         )
     return _RefactoringBlocks(
         page=page,
-        summary=await service.summary() if included and wants("refactoring_summary") else None,
+        summary=await service.summary() if rollup_wanted else None,
         # The dashboard lead only. A targeted call is already about a file the
         # caller named, so pointing it at the repository's worst file elsewhere
         # would be answering a question nobody asked.
