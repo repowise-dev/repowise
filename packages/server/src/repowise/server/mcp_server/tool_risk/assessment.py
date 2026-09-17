@@ -513,16 +513,22 @@ def _load_commit_categories(meta: Any) -> dict:
 def _unresolved_reason(target: str, lookup_path: str, repo_root: str | None) -> str:
     """Why *target* names nothing this tool can score, in the caller's terms.
 
-    Mirrors the vocabulary ``get_health._unresolved_targets`` already serves, so
-    the two tools in this family answer a bad target the same way.
-    ``no_such_module`` means ``get_risk`` has no module vocabulary at all (unlike
-    ``get_health``, which expands ``module:`` into its files); ``directory``
-    means the path exists but risk is scored per file; ``not_indexed`` means the
-    file is on disk but absent from this index, so ``repowise update`` is the
-    fix; ``no_such_path`` means a typo.
+    ``not_indexed`` (the file is on disk but absent from this index, so
+    ``repowise update`` is the fix) and ``no_such_path`` (a typo) are spelled
+    the same as in ``get_health._unresolved_targets``, because they mean the
+    same thing and an agent branching on the reason should branch the same way.
+
+    The other two are this tool's own, and deliberately not borrowed:
+    ``unsupported_target_kind`` is a ``module:`` id, which ``get_health``
+    expands into files and ``get_risk`` has no vocabulary for at all — so
+    ``get_health``'s ``no_such_module``, which means "that module name matched
+    nothing", would say the module does not exist when the module may well.
+    ``directory`` has no counterpart there either: ``get_health`` resolves a
+    directory through ``exists()`` and reports ``not_indexed``, which would send
+    a caller to run an update that cannot help, because risk is scored per file.
     """
     if target.startswith("module:"):
-        return "no_such_module"
+        return "unsupported_target_kind"
     try:
         on_disk = Path(repo_root) / lookup_path if repo_root else Path(lookup_path)
         if on_disk.is_dir():

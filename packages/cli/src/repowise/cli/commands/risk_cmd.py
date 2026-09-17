@@ -214,8 +214,9 @@ def _render_card(name: str, card: dict) -> None:
     if summary:
         console.print(f"  {escape(str(summary))}")
     if card.get("resolved") is False:
-        # Nothing below this was measured for the target, and every line
-        # beneath defaults a missing field to a number. Printing "0 direct
+        # Nothing below this was measured for the target, and the line that
+        # follows is the one that defaults its missing fields to numbers
+        # rather than gating on their presence. Printing "0 direct
         # dependents" for a path the tool never resolved is the same lie in
         # a different surface, so stop at the reason.
         reason = escape(str(card.get("unresolved_reason") or "unknown"))

@@ -14,6 +14,11 @@ import pytest
 
 #: Every numeric field a reader could mistake for a measurement. None of these
 #: may appear on a card the tool did not resolve.
+#:
+#: Four of them — the ``*_total`` counts and ``direct``/``transitive`` — are
+#: also ``include=["graph"]`` keys that ``_drop_opt_in_blocks`` pops off every
+#: card when ``include`` is empty, so asserting their absence without asking
+#: for the block proves nothing. Tests covering them pass ``include=["graph"]``.
 _MEASUREMENT_KEYS = (
     "dependents_count",
     "dependents_total",
@@ -34,11 +39,14 @@ _MEASUREMENT_KEYS = (
 async def test_module_target_is_rejected_not_zeroed(setup_mcp):
     from repowise.server.mcp_server import get_risk
 
-    result = await get_risk(["module:auth"])
+    result = await get_risk(["module:auth"], include=["graph", "churn"])
     card = result["targets"]["module:auth"]
 
     assert card["resolved"] is False
-    assert card["unresolved_reason"] == "no_such_module"
+    # Not ``no_such_module``: that is get_health's token for "no module of that
+    # name", and ``auth`` is a real module there. get_risk has no module
+    # vocabulary at all, which is a different answer.
+    assert card["unresolved_reason"] == "unsupported_target_kind"
     for key in _MEASUREMENT_KEYS:
         assert key not in card, f"{key} must be absent, not zero, on an unresolved target"
     assert "not resolved" in card["risk_summary"]
@@ -51,7 +59,7 @@ async def test_directory_target_is_rejected_not_zeroed(setup_mcp, tmp_path):
 
     (tmp_path / "src" / "auth").mkdir(parents=True, exist_ok=True)
 
-    result = await get_risk(["src/auth"])
+    result = await get_risk(["src/auth"], include=["graph", "churn"])
     card = result["targets"]["src/auth"]
 
     assert card["resolved"] is False
@@ -86,6 +94,9 @@ async def test_a_real_file_keeps_its_real_counts(setup_mcp):
     assert "unresolved_reason" not in card
     assert card["dependents_count"] >= 1
     assert card["hotspot_score"] == 0.92
+    # Also pins the ``include=["graph"]`` gate open, which is what makes the
+    # ``*_total`` absences asserted for unresolved targets mean anything.
+    assert card["dependents_total"] >= 1
 
 
 @pytest.mark.asyncio
@@ -166,3 +177,24 @@ async def test_symbol_targets_are_not_rejected(setup_mcp):
 
     assert "resolved" not in card
     assert card["dependents_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_pr_mode_does_not_stamp_counts_back_onto_an_unresolved_card(setup_mcp, tmp_path):
+    """PR mode re-walks every target card after assessment.
+
+    It trims co-change lists and restates their emitted/truncated counts, and
+    it reads the cards straight off the response rather than the assessed set —
+    so without a skip it puts two of the structural zeros back on a card that
+    resolved nothing.
+    """
+    from repowise.server.mcp_server import get_risk
+
+    (tmp_path / "src" / "auth").mkdir(parents=True, exist_ok=True)
+
+    result = await get_risk(["src/auth"], changed_files=["src/auth/service.py"])
+    card = result["targets"]["src/auth"]
+
+    assert card["resolved"] is False
+    assert "co_change_partners_emitted" not in card
+    assert "co_change_partners_truncated" not in card

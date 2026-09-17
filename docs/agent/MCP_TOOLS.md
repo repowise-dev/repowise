@@ -509,8 +509,11 @@ Modification risk assessment for files or a set of changed files.
 > (`get_risk` has no module vocabulary, unlike `get_health`), a directory, an
 > unindexed path, or a typo - comes back as `{"resolved": false,
 > "unresolved_reason": ...}` with no counts at all. The reasons are
-> `no_such_module`, `directory`, `not_indexed` (run `repowise update`) and
-> `no_such_path`, matching `get_health`'s `unresolved` vocabulary. Counts are
+> `unsupported_target_kind` (a `module:` id, which this tool has no vocabulary
+> for), `directory`, `not_indexed` (run `repowise update`) and `no_such_path`.
+> The last two are spelled as `get_health` spells them; the first two have no
+> counterpart there, since `get_health` expands `module:` into files and
+> resolves a directory to `not_indexed`. Counts are
 > omitted rather than zeroed because a structural zero is indistinguishable from
 > a measured one: a directory used to report `dependents_count: 0` while a file
 > inside it reported 59.
