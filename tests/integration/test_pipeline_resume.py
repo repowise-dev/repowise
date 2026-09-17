@@ -140,3 +140,32 @@ async def test_resume_skips_analysis_recompute(sf, sample_repo_path: Path, monke
         resume_controller=ResumeController(sf, repo_id, resume=True),
     )
     assert result.parsed_files, "resume should still produce a usable index"
+
+
+async def test_analysis_checkpoint_receives_the_runs_vector_store(
+    sf, sample_repo_path: Path, monkeypatch
+) -> None:
+    """The store a caller hands ``run_pipeline`` has to reach the checkpoint.
+
+    The checkpoint is where a decision record is first written, so it is the
+    only pass that can fold a paraphrase into an existing one — by the
+    end-of-run persist every group matches on title and the semantic branch is
+    unreachable. Dropping the store here is invisible: the run still succeeds
+    and still embeds, it just stores the duplicate.
+    """
+    repo_id = await _make_repo(sf, sample_repo_path)
+    seen: list[object] = []
+
+    async def _capture(_self: object, **kwargs: object) -> None:
+        seen.append(kwargs.get("vector_store"))
+
+    monkeypatch.setattr(ResumeController, "checkpoint_analysis", _capture)
+
+    store = object()
+    await run_pipeline(
+        sample_repo_path,
+        vector_store=store,
+        resume_controller=ResumeController(sf, repo_id, resume=False),
+    )
+
+    assert seen == [store]

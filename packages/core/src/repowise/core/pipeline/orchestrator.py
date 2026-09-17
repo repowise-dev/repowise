@@ -647,6 +647,15 @@ async def run_pipeline(
     # complete, so an interrupt during the long generation phase below can
     # resume past analysis instead of recomputing it. Skipped when we already
     # rehydrated analysis (it's by definition persisted) — best-effort.
+    #
+    # The store goes with them. On ``init`` — the one production caller that
+    # reaches here, being the only one that passes a resume controller — this
+    # checkpoint is where a decision record is first written, so it is the only
+    # pass that can fold a paraphrase into an existing record: by the end-of-run
+    # persist the record exists under its own title, every group matches on
+    # title, and the semantic residual branch is unreachable. Measured by
+    # re-indexing Crow twice: with no store here the second run left 5 pairs
+    # above the dedup threshold stored as separate records, and 0 with one.
     if resume_controller is not None and not skip_analysis:
         await resume_controller.checkpoint_analysis(
             parsed_files=parsed_files,
@@ -654,6 +663,7 @@ async def run_pipeline(
             health_report=health_report,
             decision_report=decision_report,
             git_metadata_list=git_metadata_list,
+            vector_store=vector_store,
             progress=progress,
         )
 

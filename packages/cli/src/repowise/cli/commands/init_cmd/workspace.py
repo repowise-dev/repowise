@@ -205,14 +205,13 @@ def _run_workspace_deterministic_generation(
     # so only the per-repo pin is folded in here — the flag already accounts for
     # the flag and env var, and re-reading them would override a caller that
     # decided otherwise. ``mock`` is not a pin anyone chose, so it does not count.
-    from repowise.cli.providers.embedders import pin_names_an_embedder
+    from repowise.cli.providers.embedders import pin_names_an_embedder, template_run_embedder
     from repowise.core.generation import GenerationConfig
     from repowise.core.providers.llm.template import TemplateProvider
 
     repo_config = load_config(repo_path)
     requested = embedder_was_requested or pin_names_an_embedder(repo_config.get("embedder"))
-    hosted = embedder_name_resolved not in ("mock", "ollama")
-    embedder = "mock" if hosted and not requested else embedder_name_resolved
+    embedder = template_run_embedder(embedder_name_resolved, requested)
 
     gen_config = GenerationConfig.from_repo_config(
         repo_config,

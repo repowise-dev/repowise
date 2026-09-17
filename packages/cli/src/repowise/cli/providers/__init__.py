@@ -19,6 +19,7 @@ from repowise.cli.providers.embedders import (
     pin_names_an_embedder,
     resolve_embedder,
     resolve_embedder_for_repo,
+    template_run_embedder,
 )
 from repowise.cli.providers.vector_store import build_vector_store, existing_vector_dim
 
@@ -34,4 +35,5 @@ __all__ = [
     "pin_names_an_embedder",
     "resolve_embedder",
     "resolve_embedder_for_repo",
+    "template_run_embedder",
 ]
