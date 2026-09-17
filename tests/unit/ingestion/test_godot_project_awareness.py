@@ -137,8 +137,9 @@ class TestSceneExtraction:
         assert _paths(extract_godot_imports(line)) == ["res://a.gd"]
 
     def test_uid_only_ext_resource_yields_nothing(self) -> None:
-        # Godot 4.4 may omit path=. Documented ceiling, recorded as no edge
-        # rather than a guess.
+        # A uid with no path= on the same header. Godot writes both together
+        # on real files, so this shape has no edge to give: recorded as no
+        # edge rather than a guess.
         line = '[ext_resource type="Script" uid="uid://bxyz" id="1_a"]\n'
         assert extract_godot_imports(line) == []
 

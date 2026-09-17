@@ -415,8 +415,9 @@ def _warmup_godot(ctx: ResolverContext) -> None:
     of these manifests is an execution start.
 
     Two deliberate imprecisions here. An autoload named by ``uid://`` rather
-    than ``res://`` cannot be resolved (the ``.uid`` sidecars are build-cache
-    artifacts the spec blocks) and goes unstamped. And a ``plugin.cfg`` script
+    than ``res://`` is unstamped when the uid names a scene, which has no
+    ``.uid`` sidecar to map it (a uid naming a script resolves and is
+    stamped). And a ``plugin.cfg`` script
     is stamped whether or not ``project.godot``'s ``[editor_plugins] enabled=``
     lists it: a checked-in but switched-off plugin is not dead code, it is
     off.

@@ -407,7 +407,11 @@ cannot check.
 - **Razor has no import edges**, and an attribute-bound handler carries none.
 - **Object Pascal's `extends`/`implements` split is a naming heuristic**,
   inferred from the `I`-prefix convention rather than a language guarantee.
-- **GDScript resolves no `uid://` path and no string dispatch**, and a script
+- **A GDScript `uid://` resolves through the `.uid` sidecar Godot writes for
+  scripts**, so a `preload` naming one reaches its file. A uid naming a scene
+  does not: Godot writes no sidecar for `.tscn` / `.tres`, and the
+  `[ext_resource]` header carrying such a uid also carries a `path=`, which is
+  what resolves. String dispatch is still unresolved, and a script
   without `class_name` gets no class symbol.
 - **A Godot `addons/` tree is exempt from dead-code reporting** only when a
   `project.godot` sits above it, so a plugin's own repo reports normally.
