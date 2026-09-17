@@ -171,7 +171,11 @@ def parse_query(
             effort=admit("effort", effort, _EFFORTS),
             mechanical_only=bool(mechanical),
             addresses_primary=addresses_primary,
-            file_paths=tuple(file_paths) if file_paths else None,
+            # ``is not None``, not truthiness: an empty sequence is a scope that
+            # resolved to no file, and the store turns that into ``IN ()``.
+            # Reading it as "unscoped" answers a question about nothing with
+            # the whole repository.
+            file_paths=tuple(file_paths) if file_paths is not None else None,
             path_contains=(search or "").strip() or None,
             view=resolved_view,
             order=admit("order", order, CANONICAL_ORDERS),
@@ -239,7 +243,7 @@ class RefactoringHealthService:
             lead_types=list(query.lead_types) if query.lead_types else None,
             confidence=query.confidence,
             effort=query.effort,
-            file_paths=list(query.file_paths) if query.file_paths else None,
+            file_paths=list(query.file_paths) if query.file_paths is not None else None,
             path_contains=query.path_contains,
             mechanical_only=query.mechanical_only,
             addresses_primary=query.addresses_primary,

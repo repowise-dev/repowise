@@ -321,7 +321,7 @@ async def _refactoring_blocks(
             lead_type=lead_type,
             confidence=confidence,
             effort=effort,
-            file_paths=list(file_paths) if file_paths else None,
+            file_paths=list(file_paths) if file_paths is not None else None,
             limit=min(max(limit, 0), _REFACTORING_COLLECTION_CAP) if emits_queue else 1,
             offset=cursor if emits_queue else 0,
         )
