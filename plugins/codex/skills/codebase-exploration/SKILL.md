@@ -33,8 +33,8 @@ plain file reads don't, usually in one round-trip instead of many.
 4. More files around a concept → `search_codebase`, then `get_context` on the
    hits (batched), then `get_symbol` only for the bodies you actually need.
 
-Fall back to raw Read/Grep only when the indexed context doesn't cover the
-specific detail the user asked about.
+Fall back to your own file-reading and searching tools only when the indexed
+context doesn't cover the specific detail the user asked about.
 
 ## Trust signals — verify when
 

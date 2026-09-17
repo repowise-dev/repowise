@@ -56,8 +56,9 @@ def _shape_not_indexed() -> dict[str, Any]:
         ),
         "guidance": (
             "Until an index exists, every repowise tool will return this "
-            "notice. Answer questions about this repo with your built-in "
-            "tools (Read/Grep/Glob) for the rest of the session."
+            "notice. Answer questions about this repo with your own "
+            "file-reading and searching tools, whatever they are called, "
+            "for the rest of the session."
         ),
     }
 
@@ -132,8 +133,8 @@ def _shape_stale_index(exc: Exception) -> dict[str, Any]:
         "guidance": (
             "If the retry returns this notice too, every repowise tool will "
             "keep returning it until the index is rebuilt. Answer questions "
-            "about this repo with your built-in tools (Read/Grep/Glob) for the "
-            "rest of the session."
+            "about this repo with your own file-reading and searching tools, "
+            "whatever they are called, for the rest of the session."
         ),
     }
 
