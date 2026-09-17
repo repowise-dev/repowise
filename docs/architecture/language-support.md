@@ -562,7 +562,7 @@ remove. The distinctions that matter most when consuming the graph:
 | `dynamic_*` | A dynamic-dispatch hint, prefixed by kind (`dynamic_url_route`, `dynamic_uses`, `dynamic_imports`) | A static edge. Note the prefix: a consumer matching bare `"dynamic"` matches none of these |
 
 Three derived sets are what consumers should read rather than re-deriving their
-own filter: `FILE_CODE_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, and
+own filter: `FILE_DEPENDENCY_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, and
 `REACHABILITY_USE_EDGE_TYPES` (the symbol set plus `type_use`).
 
 ### Flow termination
