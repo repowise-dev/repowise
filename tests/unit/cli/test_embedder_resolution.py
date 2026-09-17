@@ -847,24 +847,14 @@ def test_a_repo_pin_outranks_the_global_config(
 @pytest.mark.parametrize(
     ("resolved", "requested", "expected"),
     [
-        # Inferred from an LLM key nobody pointed at embedding: downgraded, so a
-        # run sold as costing nothing does not put a hosted embedder on the bill.
-        ("openai", False, "mock"),
-        # Named through --embedder or REPOWISE_EMBEDDER: honoured.
-        ("openai", True, "openai"),
-        # Already free, so there is nothing to downgrade to.
-        ("mock", False, "mock"),
+        ("openai", False, "mock"),  # inferred from an LLM key: downgraded
+        ("openai", True, "openai"),  # named by the user: honoured
+        ("mock", False, "mock"),  # already free, nothing to downgrade
         ("ollama", False, "ollama"),
     ],
 )
 def test_template_run_embedder_downgrades_only_an_unasked_hosted_backend(
     resolved: str, requested: bool, expected: str
 ) -> None:
-    """``init`` predicts this answer before the pipeline to build the run's store.
-
-    It builds that store from this name so the analysis checkpoint can dedup
-    decisions against earlier runs; a store built from the name this downgrades
-    away from would embed with a backend the run never chose, and at a different
-    width would drop the existing table.
-    """
+    """``init`` predicts this answer to build the run's store before the pipeline."""
     assert providers.template_run_embedder(resolved, requested) == expected

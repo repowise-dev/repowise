@@ -1403,22 +1403,12 @@ def init_command(
 
     orchestrator_mode = OrchestratorMode.FAST if run_mode == "fast" else OrchestratorMode.STANDARD
 
-    # The store the generation phase would build anyway, hoisted ahead of the
-    # pipeline so the analysis checkpoint inside it can dedup decisions against
-    # what earlier runs embedded; ``run_repo_generation`` reuses this object
-    # rather than building a second one. Never more than that store, so nothing
-    # here creates a table that would otherwise not exist — hence both
-    # exclusions. A dry run builds no resume controller, so there is no
-    # checkpoint to feed and no reason to mkdir .repowise/lancedb. Index-only
-    # fast mode skips generation entirely, so it builds no store and pins no
-    # embedder in config.yaml: embedding decisions into a table it then leaves
-    # unpinned is how the next `update` resolves to the mock and refuses it.
-    #
-    # Built from the name generation will actually use, which on a template-only
-    # run is the downgraded one — the other name would embed with a backend this
-    # run never chose and, at a different width, drop the existing table. Kept
-    # only when it can rank: a keyless store costs a round trip per decision to
-    # answer nothing, and leaving it None keeps the dedup pass off.
+    # The store generation would build anyway, hoisted so the analysis
+    # checkpoint inside the pipeline can dedup decisions against it;
+    # ``run_repo_generation`` reuses this object. Never more than that store,
+    # so the exclusions are the runs that build none: a dry run, and index-only
+    # fast mode, which also pins no embedder for a table to be read back with.
+    # Keyless is dropped rather than handed to a matcher that refuses it.
     index_vector_store = None
     if not dry_run and not (index_only and run_mode == "fast"):
         from repowise.cli.providers import build_embedder, build_vector_store, template_run_embedder

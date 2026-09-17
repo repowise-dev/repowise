@@ -289,12 +289,9 @@ def run_repo_generation(
         announce_file_page_cap(result.parsed_files, gen_config)
 
     embedder_impl: Any = build_embedder(embedder_name_resolved, repo_path)
-    # Reuse the store the caller already built, so one run has one store. init
-    # builds it before the pipeline (the analysis checkpoint dedups decisions
-    # against it) and the object arrives here on ``result``; a caller that
-    # built none gets one here. Only a caller whose embedder matches
-    # ``embedder_name_resolved`` may pre-set it — a narrower one would embed
-    # this run's pages with an embedder the caller never chose.
+    # One run, one store: ``init`` builds it before the pipeline and it arrives
+    # on ``result``. Only a caller whose embedder matches
+    # ``embedder_name_resolved`` may pre-set it.
     vector_store: Any = getattr(result, "vector_store", None)
     if vector_store is None:
         vector_store = build_vector_store(repo_path, embedder_impl)

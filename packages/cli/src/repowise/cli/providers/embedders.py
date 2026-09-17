@@ -127,18 +127,13 @@ def embedder_was_requested(embedder_flag: str | None, pinned_embedder: Any = Non
 def template_run_embedder(embedder_name_resolved: str, embedder_was_requested: bool) -> str:
     """The embedder a template-only run actually embeds with.
 
-    That mode is sold as "no key, no spend", and embedding 2000+ pages through a
-    hosted embedder is a real bill. :func:`resolve_embedder` infers one from any
-    LLM key it finds in the environment, which is the right default for a run
-    already paying a model and the wrong one here: nobody who typed
-    ``--index-only`` asked to be charged. So a hosted embedder is used only when
-    the user named it, and anything else falls back to the mock, which keeps
-    full-text search working and leaves semantic search to ``repowise reindex``.
+    That mode is sold as "no key, no spend", and :func:`resolve_embedder` infers
+    a hosted embedder from any LLM key in the environment — right for a run
+    already paying a model, wrong for one that promised nothing. So a hosted
+    embedder is used only when the user named it.
 
-    Here rather than at either caller because ``init`` has to *predict* this
-    answer: it builds the run's vector store before the pipeline so the analysis
-    checkpoint can dedup decisions against it, and a store built from the name
-    this downgrades away from would embed with a backend the run never chose.
+    Shared because ``init`` has to predict this answer before the pipeline, to
+    build the run's vector store with the backend generation will actually use.
     """
     hosted = embedder_name_resolved not in ("mock", "ollama")
     return "mock" if hosted and not embedder_was_requested else embedder_name_resolved

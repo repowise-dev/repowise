@@ -147,11 +147,8 @@ async def test_analysis_checkpoint_receives_the_runs_vector_store(
 ) -> None:
     """The store a caller hands ``run_pipeline`` has to reach the checkpoint.
 
-    The checkpoint is where a decision record is first written, so it is the
-    only pass that can fold a paraphrase into an existing one — by the
-    end-of-run persist every group matches on title and the semantic branch is
-    unreachable. Dropping the store here is invisible: the run still succeeds
-    and still embeds, it just stores the duplicate.
+    Dropping it there is invisible: the run still succeeds and still embeds, it
+    just stores a duplicate instead of folding it.
     """
     repo_id = await _make_repo(sf, sample_repo_path)
     seen: list[object] = []
