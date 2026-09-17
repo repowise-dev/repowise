@@ -79,6 +79,13 @@ repowise init --provider claude_cli --model claude-opus-4-6
 because a subscription is not per-token API spend. The CLI's own reported cost is
 kept under `usage.reported_cost_usd` for auditing.
 
+The token volume is real and reported: Claude Code splits a prompt across
+`input_tokens` (the uncached remainder), `cache_creation_input_tokens` (a cache
+write) and `cache_read_input_tokens` (a cache read), and only the first is
+usually more than a couple of tokens for a page prompt. Repowise records the sum
+as the run's input tokens, so `repowise status` and `repowise costs` show the
+prompt the model actually read rather than a figure near zero.
+
 What it does consume is your **subscription rate limits**, the same ones your
 interactive Claude Code sessions use. Budget roughly 9k output tokens and a few
 minutes per page. A full wiki on a large repo is a real chunk of usage, so scope

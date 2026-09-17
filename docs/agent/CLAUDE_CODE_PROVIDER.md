@@ -62,15 +62,24 @@ content and mapping `usage`:
 
 | Claude Code field | Repowise field |
 |---|---|
-| `usage.input_tokens` | `input_tokens` |
+| `usage.input_tokens` + `usage.cache_read_input_tokens` + `usage.cache_creation_input_tokens` | `input_tokens` |
+| `usage.input_tokens` (alone) | `usage.uncached_input_tokens` |
 | `usage.output_tokens` | `output_tokens` |
 | `usage.cache_read_input_tokens` | `cached_tokens` |
 | `usage.cache_creation_input_tokens` | recorded in `usage`, not counted as cached |
 | `stop_reason` | normalised `stop_reason` |
 
+Claude Code bills a prompt across three disjoint fields, and only the uncached
+remainder lands in `input_tokens`. A page prompt carries a large stable prefix,
+so the bulk of it is a cache *write* on the first page of a page type and a
+cache *read* on every later one, which left `input_tokens` at a couple of tokens
+per page. Repowise sums the three, so the token volume `repowise status`,
+`repowise costs` and the run report show is the prompt the model actually read.
+
 `claude_cli/*` models are priced at **$0.00**, because billing is handled by the
 subscription rather than per-token API spend. The CLI's own `total_cost_usd` is
-still recorded under `usage.reported_cost_usd` for auditing.
+still recorded under `usage.reported_cost_usd` for auditing, and each call is
+booked into the `llm_costs` ledger (at $0.00) so `repowise costs` shows the run.
 
 ### Default model
 
