@@ -17,10 +17,31 @@ from repowise.core.analysis.health.complexity.mock_walk import file_may_contain_
 from repowise.core.analysis.health.models import Severity
 
 
-def _walk(source: str) -> dict[str, tuple[int, int]]:
-    """``{function: (mock_setup_count, assertion_count)}`` for Python source."""
-    fc = walk_file("tests/test_sample.py", "python", source.encode("utf-8"))
+def _walk(
+    source: str, path: str = "tests/test_sample.py", language: str = "python"
+) -> dict[str, tuple[int, int]]:
+    """``{function: (mock_setup_count, assertion_count)}`` for one file."""
+    fc = walk_file(path, language, source.encode("utf-8"))
     return {f.name: (f.mock_setup_count, f.assertion_count) for f in fc.functions}
+
+
+def _rows(source: str, path: str, language: str) -> list[tuple[int, int]]:
+    """``(mock_setup_count, assertion_count)`` per function, in document order.
+
+    Unlike :func:`_walk`, keeps every row: a file's ``it`` callbacks all share
+    one name and a name-keyed view would collapse them.
+    """
+    fc = walk_file(path, language, source.encode("utf-8"))
+    return [(f.mock_setup_count, f.assertion_count) for f in fc.functions]
+
+
+def _require(language: str) -> None:
+    try:
+        from repowise.core.ingestion.parser import _get_language
+    except Exception:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    if _get_language(language) is None:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
 
 
 def _detect(source: str, path: str = "tests/test_sample.py", language: str = "python"):
@@ -32,6 +53,7 @@ def _detect(source: str, path: str = "tests/test_sample.py", language: str = "py
         has_test_file=True,
         module=None,
         function_metrics={f.name: f for f in fc.functions},
+        all_functions=tuple(fc.functions),
     )
     return BIOMARKER.detect(ctx)
 
@@ -349,25 +371,167 @@ def test_very_saturated():
 
 
 def test_a_language_with_no_dialect_produces_no_signal():
-    """Phase 1 is Python only; every other language must stay silent."""
-    findings = _detect(
+    """A language absent from ``MOCK_DIALECTS`` stays silent.
+
+    Go is the case that matters: it is absent deliberately, not by omission,
+    because its assertion count is best-effort for testify only.
+    """
+    _require("go")
+    source = """
+func TestThing(t *testing.T) {
+	a := mockThing()
+	b := mockThing()
+	c := mockThing()
+	d := mockThing()
+	e := mockThing()
+	f := mockThing()
+	assert.NotNil(t, a)
+}
+"""
+    # Assert the walk saw the function first, so a missing grammar cannot make
+    # this pass by producing no rows at all.
+    assert _walk(source, "thing_test.go", "go")["TestThing"] == (0, 1)
+    assert _detect(source, path="thing_test.go", language="go") == []
+
+
+# ---------------------------------------------------------------------------
+# TypeScript / JavaScript
+# ---------------------------------------------------------------------------
+
+
+_TS_SATURATED = """
+describe("thing", () => {
+  it("passes whatever the code does", () => {
+    const a = vi.fn();
+    const b = vi.fn();
+    const c = vi.fn();
+    const d = vi.fn();
+    const e = vi.fn();
+    const f = vi.fn();
+    expect(a).toBeDefined();
+  });
+});
+"""
+
+
+@pytest.mark.parametrize(
+    ("language", "path"),
+    [("typescript", "tests/thing.test.ts"), ("javascript", "tests/thing.test.js")],
+)
+def test_a_saturated_it_callback_fires(language: str, path: str) -> None:
+    """The dialect reaches both tags, which share one row."""
+    _require(language)
+    findings = _detect(_TS_SATURATED, path=path, language=language)
+    assert len(findings) == 1
+    assert findings[0].details["mock_setup_count"] == 6
+    assert findings[0].details["assertion_count"] == 1
+
+
+def test_each_it_callback_is_counted_separately() -> None:
+    """A ``describe`` body is not a function entry, so its ``it``s are.
+
+    Both callbacks are named ``"it callback"``; a name-keyed view keeps one.
+    """
+    _require("typescript")
+    rows = _rows(
+        """
+describe("thing", () => {
+  it("first", () => {
+    const a = vi.fn();
+    expect(a).toBeDefined();
+  });
+  it("second", () => {
+    const b = vi.fn();
+    const c = vi.fn();
+    expect(b).toBeDefined();
+  });
+});
+""",
+        "tests/thing.test.ts",
+        "typescript",
+    )
+    assert sorted(rows) == [(1, 1), (2, 1)]
+
+
+def test_both_it_callbacks_reach_the_detector() -> None:
+    """The collapse this guards against silently hid every test but one."""
+    _require("typescript")
+    source = """
+describe("thing", () => {
+  it("one", () => {
+    const a = vi.fn();
+    const b = vi.fn();
+    const c = vi.fn();
+    const d = vi.fn();
+    const e = vi.fn();
+    const f = vi.fn();
+    expect(a).toBeDefined();
+  });
+  it("two", () => {
+    const g = vi.fn();
+    const h = vi.fn();
+    const i = vi.fn();
+    const j = vi.fn();
+    const k = vi.fn();
+    const l = vi.fn();
+    expect(g).toBeDefined();
+  });
+});
+"""
+    findings = _detect(source, path="tests/thing.test.ts", language="typescript")
+    assert len(findings) == 2, "a name-keyed view would report only one"
+
+
+def test_arranging_the_test_environment_is_not_mock_setup() -> None:
+    """``vi.useFakeTimers`` arranges the run; only doubling counts.
+
+    The same split ``monkeypatch.setenv`` forced for Python.
+    """
+    _require("typescript")
+    counts = _rows(
         """
 describe("thing", () => {
   it("works", () => {
-    const a = jest.fn();
-    const b = jest.fn();
-    const c = jest.fn();
-    const d = jest.fn();
-    const e = jest.fn();
-    const f = jest.fn();
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    vi.stubEnv("MODE", "test");
+    const a = vi.fn();
     expect(a).toBeDefined();
   });
 });
 """,
-        path="tests/thing.test.ts",
-        language="typescript",
+        "tests/thing.test.ts",
+        "typescript",
     )
-    assert findings == []
+    assert counts == [(1, 1)]
+
+
+def test_java_verify_is_not_an_assertion() -> None:
+    """``verify(...)`` must never satisfy the assertion count.
+
+    SonarQube's S2699 treats it as satisfying a test's assertion requirement.
+    Ours must not: a test built entirely of mocks and verifies is the thing
+    this marker measures, and counting verifies would hide exactly that.
+    This is also why Java carries no dialect -- with its real checks excluded,
+    an over-mocked Java test reaches the ratio with a vacuous denominator.
+    """
+    _require("java")
+    counts = _walk(
+        """
+class ThingTest {
+  @Test
+  void sendsTheMessage() {
+    Mockito.verify(repository).save(entity);
+    Mockito.verify(sender).send(message);
+    verify(listener).onDone();
+    assertEquals(1, result);
+  }
+}
+""",
+        "src/test/java/ThingTest.java",
+        "java",
+    )
+    assert counts["sendsTheMessage"][1] == 1, "only assertEquals is an assertion"
 
 
 # ---------------------------------------------------------------------------

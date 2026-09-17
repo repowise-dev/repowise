@@ -6,8 +6,12 @@ This mirrors the per-language plugin idiom used by ``perf/dialects/`` and
 ``ingestion/resolvers/`` - one entry per language, registered in a dict, zero
 edits to the walker to add one - but the dialect is a frozen dataclass rather
 than a subclass, because every language difference here is vocabulary and none
-of it is behaviour. Adding a language is one row plus, if its grammar needs
-them, ``decorator_kinds`` / ``block_kinds`` on its ``LanguageNodeMap``.
+of it is behaviour. Adding a language is one row, plus ``block_kinds`` and
+``call_kinds`` on its ``LanguageNodeMap``. Two things a row alone will not tell
+you: ``file_markers`` must be set or the file is skipped before the walk and
+counts zero silently, and the language needs an honest ``assert_call_kinds``,
+since the assertion count is this marker's denominator. That last one is why Go
+and Java have no row.
 
 A language absent from ``MOCK_DIALECTS`` produces no mock signal at all, which
 is the safe default the precision-first house contract requires.
@@ -62,6 +66,14 @@ class MockDialect:
     #: language cannot tell from the name.
     test_name_prefixes: tuple[str, ...] = field(default=())
 
+    #: Extra lowercase substrings that mean "this file may mock", beyond
+    #: :data:`MOCK_IDENTIFIER_TOKENS`. The whole-file precheck is the union of
+    #: these, so a dialect whose vocabulary carries no test-double token in its
+    #: names MUST declare them here or its files are skipped before the walk.
+    #: Over-inclusive is safe and only costs time; under-inclusive silently
+    #: counts nothing. Keep them selective: the union is scanned per file.
+    file_markers: frozenset[str] = frozenset()
+
 
 _PYTHON = MockDialect(
     # ``unittest.mock`` members with no mock token in their names.
@@ -75,15 +87,83 @@ _PYTHON = MockDialect(
     },
     config_attributes=frozenset({"return_value", "side_effect"}),
     test_name_prefixes=("test",),
+    file_markers=frozenset({"patch"}),
+)
+
+
+_JS_TS = MockDialect(
+    # Listed by receiver because each namespace mixes doubling with test-
+    # environment arrangement, the same split ``monkeypatch`` forced for Python:
+    # ``vi.fn`` installs a double, ``vi.useFakeTimers`` / ``vi.stubEnv`` arrange
+    # the run, ``vi.clearAllMocks`` tears down.
+    receiver_methods={
+        "vi": frozenset(
+            {
+                "fn",
+                "mock",
+                "domock",
+                "spyon",
+                "mocked",
+                "mockobject",
+                "hoisted",
+                "stubglobal",
+                "importmock",
+            }
+        ),
+        "jest": frozenset(
+            {
+                "fn",
+                "mock",
+                "domock",
+                "spyon",
+                "mocked",
+                "createmockfrommodule",
+                "genmockfrommodule",
+                "requiremock",
+                "replaceproperty",
+            }
+        ),
+        # ``sinon.fake.returns(...)`` reaches here as one call with ``fake`` in
+        # the receiver chain, so the configuring verbs must be listed too: an
+        # exhaustive root has no inner call to fall back on.
+        "sinon": frozenset(
+            {
+                "stub",
+                "spy",
+                "fake",
+                "mock",
+                "createstubinstance",
+                "replace",
+                "replacegetter",
+                "replacesetter",
+                "returns",
+                "resolves",
+                "rejects",
+                "throws",
+                "yields",
+            }
+        ),
+        "jasmine": frozenset({"createspy", "createspyobj"}),
+    },
+    # A JS test is an anonymous callback inside ``it(...)``, so there is no
+    # name to gate on. Empty degrades to "no extra gate", which is correct.
+    test_name_prefixes=(),
+    # ``vi.fn()`` / ``jest.fn()`` carry no test-double token anywhere in the
+    # call, so without these a file that mocks only through them is skipped.
+    file_markers=frozenset({"vi.fn", "jest.fn", "sinon", "jasmine"}),
 )
 
 
 # Keyed by ``LanguageTag`` (``ingestion/models.py``); one dialect may serve
-# several tags. Go stays out until it has an assertion vocabulary beyond
-# testify: its ``t.Error`` tests are invisible to the assert/expect prefix
-# match, which would make every ratio wrong.
+# several tags. Go and Java are deliberately absent: neither can be given a
+# trustworthy assertion count, which is the denominator of every ratio here. Go
+# has no assertion vocabulary beyond testify; Java states its real checks as
+# Mockito ``verify(...)``, correctly not an assertion. Both measurements and the
+# reasoning: LANGUAGE_SUPPORT.md#code-health-coverage.
 MOCK_DIALECTS: dict[str, MockDialect] = {
     "python": _PYTHON,
+    "javascript": _JS_TS,
+    "typescript": _JS_TS,
 }
 
 

@@ -99,7 +99,11 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: ``mock_saturated_test`` landed and the walker records two new
+# Current stamp: ``mock_saturated_test`` gained a TypeScript / JavaScript
+# vocabulary, so a TS or JS file's ``mock_setup_count`` changes from the zero a
+# cached v12 walk stored for it.
+#
+# v12: ``mock_saturated_test`` landed and the walker records two new
 # ``FunctionComplexity`` fields, which a cached v11 walk does not carry.
 #
 # v11: F# and Objective-C gained working complexity node maps and Elixir lost
@@ -122,7 +126,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 12
+HEALTH_ANALYZER_VERSION = 13
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -1039,9 +1043,10 @@ class HealthAnalyzer:
         # exist for symbol stamping and the sql_high_complexity marker
         # (maintainability). Keeping them out of function_metrics keeps the
         # calibrated method biomarkers (defect dimension) from firing on SQL.
-        fn_metrics: dict[str, FunctionComplexity] = (
-            {} if pf.file_info.language == "sql" else {fc.name: fc for fc in fc_list}
+        fns: tuple[FunctionComplexity, ...] = (
+            () if pf.file_info.language == "sql" else tuple(fc_list)
         )
+        fn_metrics: dict[str, FunctionComplexity] = {fc.name: fc for fc in fns}
         max_ccn = max((fc.ccn for fc in fc_list), default=1)
         max_nesting = max((fc.max_nesting for fc in fc_list), default=0)
         nloc = fcx.file_nloc
@@ -1093,6 +1098,7 @@ class HealthAnalyzer:
             reached_by_tests=file_path in self._files_reached_by_tests(),
             module=module,
             function_metrics=fn_metrics,
+            all_functions=fns,
             class_metrics=fcx.classes,
             git_meta=file_git_meta,
             dependents_count=dependents_count,

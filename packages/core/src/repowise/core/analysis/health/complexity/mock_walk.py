@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..mocks.lexicon import MOCK_IDENTIFIER_TOKENS, MockDialect
+from ..mocks.lexicon import MOCK_DIALECTS, MOCK_IDENTIFIER_TOKENS, MockDialect
 from .assertions import _is_assertion_statement
 from .ast_utils import _IDENTIFIER_SUFFIX
 from .languages import LanguageNodeMap
@@ -35,9 +35,16 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
 # Whole-file precheck, so production code pays one substring scan and nothing
-# else. Matched against a lowercased copy, so casing never matters.
+# else. Matched against a lowercased copy, so casing never matters. Built from
+# every dialect's ``file_markers`` so that adding a language stays one row.
 _FILE_MARKERS: tuple[bytes, ...] = tuple(
-    sorted(tok.encode() for tok in (*MOCK_IDENTIFIER_TOKENS, "patch"))
+    sorted(
+        tok.encode()
+        for tok in {
+            *MOCK_IDENTIFIER_TOKENS,
+            *(m for d in MOCK_DIALECTS.values() for m in d.file_markers),
+        }
+    )
 )
 
 
@@ -166,8 +173,7 @@ def _count_decorators(fn_node: Node, lmap: LanguageNodeMap, dialect: MockDialect
     ``@patch("a.b")`` injects a double exactly as a ``patch(...)`` call in the
     body would. Grammars that park decorators on a wrapper node declare it via
     ``decorated_definition_kinds``; the rest keep them inside the function node.
-    The scan descends one level, since C# groups attributes under an
-    ``attribute_list`` and Java annotations under ``modifiers``.
+    The scan descends one level, for grammars that group them under a wrapper.
     """
     if not lmap.decorator_kinds:
         return 0

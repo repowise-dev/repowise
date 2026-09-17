@@ -433,18 +433,20 @@ make a review verdict blocking.
 
 | Marker | Languages | What it measures |
 |---|---|---|
-| `mock_saturated_test` | Python | Mock-setup statements per assertion in a test function |
+| `mock_saturated_test` | Python · TypeScript / JavaScript | Mock-setup statements per assertion in a test function |
 
 A marker earns weight by clearing the house precision bar (roughly 70%
-hand-labelled) on a real corpus. `mock_saturated_test` has not: a 32-finding
-hand-labelled sample scored 44% at its loosest useful gate and 67% at the gate it
-ships with. It stays advisory until two false-positive families are separated:
-value-object builders named `Fake*` passed as input to real logic, and boundary
-isolation where the assertion reads a real artifact. Telling
-either from genuine saturation needs to know whether an assertion observes a
-double or production output, which is a dataflow question the pass does not ask.
+hand-labelled) on a real corpus. `mock_saturated_test` has not, and precision is
+measured per language because it does not transfer: **67%** on Python (32
+findings) and **40%** on TypeScript (30 findings), each the complete population
+at the shipped gate. It stays advisory until two false-positive families are
+separated: value-object builders named `Fake*` passed as input to real logic, and
+boundary isolation where the assertion reads a real artifact. Both turn on
+whether an assertion observes a double or production output, which is a dataflow
+question the pass does not ask — and on the TypeScript sample that one question
+accounted for every false positive.
 
-Per-language coverage and why Go is blocked:
+Per-language coverage and why Go and Java are blocked:
 [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage).
 
 ## Performance risk

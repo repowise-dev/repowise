@@ -33,9 +33,11 @@ class MockSaturatedTestDetector:
     name = "mock_saturated_test"
     category = "test_quality"
 
-    # Hand-labelled over 32 findings: 44% at a floor of 4, 67% at 6. Precision
-    # follows the floor, not the ratio, so the floor does the work and the ratio
-    # only keeps wide integration tests out. Raise them rather than lower them.
+    # Hand-labelled per language, because precision does not transfer: 67% on
+    # Python (32 findings), 40% on TypeScript (30). Precision follows the floor
+    # and not the ratio -- Python measured 44% at a floor of 4 against 67% at 6 --
+    # so the floor does the work and the ratio only keeps wide integration tests
+    # out. Raise them rather than lower them.
     _MIN_MOCK_SETUP = 6
     _MIN_RATIO = 3.0
     _HIGH_RATIO = 8.0  # setup:assertion at which the test is nearly all scaffolding
@@ -45,7 +47,9 @@ class MockSaturatedTestDetector:
             return []
         prefixes = _name_prefixes(ctx.language)
         out: list[BiomarkerResult] = []
-        for fn in ctx.function_metrics.values():
+        # ``all_functions``, not ``function_metrics``: name-keying collapses a
+        # file's anonymous ``it`` callbacks into one row. See ``FileContext``.
+        for fn in ctx.all_functions:
             mocks = fn.mock_setup_count
             asserts = fn.assertion_count
             # No assertion at all means a fixture or a helper, not a saturated

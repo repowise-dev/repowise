@@ -358,9 +358,9 @@ map before markers fire. This table is why a language is Full rather than Good.
 | Language | Complexity / nesting | Class metrics | Assertion smells | Mock saturation | Extract Method | Performance risk |
 |----------|:---:|:---:|:---:|:---:|:---:|:---:|
 | Python | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| TypeScript / JavaScript | ✅ | ✅ | ✅ | later | ✅ | ✅ |
+| TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Svelte · Vue | ✅ | ✅ | ✅ | later | ✅ | ✅ |
-| Java | ✅ | ✅ | ✅ | later | ✅ | ✅ |
+| Java | ✅ | ✅ | ✅ | blocked | ✅ | ✅ |
 | Go | ✅ | n/a | ✅ | blocked | ✅ | ✅ |
 | Rust | ✅ | ✅ | ✅ | later | ✅ | ✅ |
 | C++ | ✅ | ✅ | ✅ | later | ✅ | ✅ |
@@ -382,11 +382,35 @@ grammar**, not unscheduled.
 needs both a mock vocabulary and a trustworthy assertion count. The vocabulary
 is one data row per language in
 `analysis/health/mocks/lexicon.py`; a language with no row produces no signal at
-all. Go is **blocked**, not unscheduled: its `assert_call_kinds` is best-effort
-for testify only, so idiomatic `t.Error` / `t.Fatal` tests are invisible to the
-shared assert/expect prefix match and every ratio computed from them would be
-wrong. Go needs its own assertion vocabulary before the marker can be honest
-there. The marker is advisory and never deducts. See
+all.
+
+Because the marker is advisory it ships below the 70% bar, so the line is not
+drawn on the precision number alone: **a language ships when its false positives
+are the families the marker already declares, and is blocked when its failure is
+a different one the marker cannot name.** TypeScript's every false positive was
+the known assertion-observes-production-output family. The two blocked languages
+fail differently, and for the same underlying reason — the assertion count is the
+denominator of every ratio, so a language whose assertions cannot be counted
+honestly cannot carry the marker at all:
+
+- **Go** — its `assert_call_kinds` is best-effort for testify only, so idiomatic
+  `t.Error` / `t.Fatal` tests are invisible to the shared assert/expect prefix
+  match. Go needs its own assertion vocabulary first.
+- **Java** — Mockito states a test's real checks as `verify(...)`, which is
+  deliberately not an assertion here (counting it would hide the very tests this
+  marker looks for). An over-mocked Java test therefore arrives with one vacuous
+  `assertDoesNotThrow` as its whole denominator, so the marker misses the tests
+  it is for and the ratio peaks instead on large controller tests whose setup is
+  irreducible fixture. Java needs a verification vocabulary of its own first.
+  Measured at 20% precision over 30 hand-labelled findings, flat across every
+  threshold tried — but the mechanism above, not that number, is why it is
+  blocked.
+
+Svelte and Vue stay `later` rather than following TypeScript: an SFC is walked as
+a TypeScript buffer, but a single-file component is essentially never a test
+file, so the row would be untestable rather than useful.
+
+The marker is advisory and never deducts. See
 [CODE_HEALTH.md](CODE_HEALTH.md).
 
 Per-marker mechanics, every per-language precision ceiling and the reasoning
