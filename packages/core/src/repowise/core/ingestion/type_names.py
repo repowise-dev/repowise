@@ -173,18 +173,13 @@ def is_resolvable_type_name(name: str, language: str) -> bool:
 
 
 # The receiver of a C# extension method, as the parameter list spells it.
-#
-# ``this`` is legal as a parameter modifier only on the first parameter of an
-# extension method, so its presence identifies one outright. That matters
-# because the parser keeps no modifiers: ``static`` is dropped from both the
-# class kind and the signature, so the holder class is indistinguishable from
-# any other and the signature is the only surviving evidence.
-#
-# An array receiver is captured so it can be refused: ``this Order[]`` extends
-# the array, not the element, and binding one to the other would be a wrong
-# edge.
+# ``this`` is legal only on an extension method's first parameter, and the
+# parser keeps no modifiers, so this is the only surviving evidence a method is
+# one. Anchored on the signature's first ``(`` because a default value may hold
+# a parenthesised string. An array receiver is captured so it can be refused:
+# ``this Order[]`` extends the array, not the element.
 _CSHARP_EXTENSION_RECEIVER = re.compile(
-    r"\(\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
+    r"\A[^(]*\(\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
     r"(?P<type>[\w.]+(?:<[^>]*>)?(?:\s*\[[,\s]*\])*\??)"
 )
 
@@ -192,12 +187,10 @@ _CSHARP_EXTENSION_RECEIVER = re.compile(
 def csharp_extension_receiver(signature: str) -> str | None:
     """The bare type a C# extension method extends, or None if it is not one.
 
-    Shape only, in keeping with this module: it reports what the parameter list
-    says and applies no policy about whether that type is resolvable. The
-    caller decides that, because the resolver and the type-use path do not want
-    the same answer.
+    Shape only, in keeping with this module: whether the name could resolve is
+    the caller's policy, not this module's.
     """
-    match = _CSHARP_EXTENSION_RECEIVER.search(signature or "")
+    match = _CSHARP_EXTENSION_RECEIVER.match(signature or "")
     if match is None:
         return None
     raw = match.group("type")

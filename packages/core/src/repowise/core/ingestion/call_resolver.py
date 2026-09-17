@@ -59,7 +59,11 @@ from .models import (
     symbol_id_language,
 )
 from .return_types import declared_return_type, normalize_return_type, signature_parameter_count
-from .type_names import POINTER_LIKE_MEMBERS, csharp_extension_receiver
+from .type_names import (
+    POINTER_LIKE_MEMBERS,
+    csharp_extension_receiver,
+    is_resolvable_type_name,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -327,6 +331,14 @@ class CallResolver:
                     self._overload_return_types[key].add(normalized)
         self._known_type_names = frozenset(
             symbol.name for symbol in self._symbols_by_id.values() if symbol.kind in _TYPE_KINDS
+        )
+        # Narrowed to C# for the extension index: the set above is a bare
+        # cross-language name match, so a type of that name in any language
+        # would admit an extension on the BCL type it shadows.
+        self._csharp_type_names = frozenset(
+            symbol.name
+            for symbol in self._symbols_by_id.values()
+            if symbol.kind in _TYPE_KINDS and symbol.language == "csharp"
         )
 
         # Symbols in the index above that are data members, not callables
@@ -841,8 +853,8 @@ class CallResolver:
         # Both feed ``_link_declarations`` once every file has been indexed.
         definitions: dict[tuple[str | None, str], list[tuple[str, str]]] = defaultdict(list)
         declarations: list[tuple[str, str, tuple[str | None, str]]] = []
-        # (extended type, method) -> the symbols claiming it, settled once the
-        # whole repo has been seen because ambiguity is judged repo-wide.
+        # (extended type, method) -> the symbols claiming it. Settled after the
+        # loop, because ambiguity is judged repo-wide.
         extensions: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
 
         for path, parsed in parsed_files.items():
@@ -879,7 +891,11 @@ class CallResolver:
                         if sym.language == "csharp"
                         else None
                     )
-                    if extended is not None and extended in self._known_type_names:
+                    if (
+                        extended is not None
+                        and is_resolvable_type_name(extended, "csharp")
+                        and extended in self._csharp_type_names
+                    ):
                         extensions[(extended, sym.name)].add((path, sym.id))
 
                 # Global indices
@@ -903,14 +919,13 @@ class CallResolver:
     ) -> None:
         """Record every unambiguous extension pair; drop the rest.
 
-        Two holder classes declaring the same ``(type, method)`` cannot be told
-        apart here: C# picks between them by which ``using`` is in scope, which
-        the graph does not model, so picking either mints an edge the call may
-        never reach. Refusing costs an edge; guessing costs correctness.
+        Two holder classes declaring one ``(type, method)`` are told apart by
+        which ``using`` is in scope, which the graph does not model. Refusing
+        costs an edge; guessing costs correctness.
 
-        An overload set is not this case. Every overload of one method in one
-        class shares a symbol id, so a pair stays unambiguous however many rows
-        declare it.
+        An overload set is not this case -- every overload of one method in one
+        class shares a symbol id. A ``partial`` class split across files is,
+        and stays refused.
         """
         for key, sites in candidates.items():
             if len({sym_id for _, sym_id in sites}) != 1:
@@ -1096,12 +1111,17 @@ class CallResolver:
     def _extension_target(self, file_path: str, key: tuple[str, str]) -> tuple[str, str] | None:
         """The extension method a ``(type, method)`` pair names, and its scope.
 
-        Same three scopes as ``_receiver_pair_match``, over the extension index
-        instead of the method index. Gated on the global index first so no
-        merged view is built for a pair no holder class declares.
+        Same three scopes as ``_receiver_pair_match``, over the extension index.
         """
         site = self._extension_methods.get(key)
         if site is None:
+            return None
+        type_name, method_name = key
+        # An import bound the name outside the repo, so a local holder of the
+        # same simple name is not what the call site named.
+        if type_name in self._externally_bound_names(file_path):
+            return None
+        if self._inherits_the_method(type_name, method_name):
             return None
         own = self._file_extension_methods.get(file_path, {})
         if key in own:
@@ -1874,9 +1894,7 @@ class CallResolver:
 
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
         if found is None:
-            # Only once every instance tier has refused. C# dispatches to an
-            # instance method in preference to an extension, so an extension
-            # must never answer a site one of those could have.
+            # Last, because C# prefers an instance method to an extension.
             if language != "csharp":
                 return None
             extension = self._extension_target(file_path, (type_name, call.target_name))
@@ -1948,16 +1966,30 @@ class CallResolver:
             return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_framework_import")
         return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_framework_global")
 
+    def _inherits_the_method(self, type_name: str, method_name: str) -> bool:
+        """Could a class of this name reach *method_name* through an ancestor?
+
+        C# dispatches to an inherited instance method in preference to an
+        extension, and every tier above asks only for the literal
+        ``(type, method)`` pair, so none of them sees one. Asked of every class
+        sharing the simple name: which is meant is not settled here.
+        """
+        for sym_id in self._global_symbols.get(type_name, ()):
+            symbol = self._symbols_by_id.get(sym_id)
+            if symbol is None or symbol.kind not in _TYPE_KINDS:
+                continue
+            if any(self._declares(a, method_name) for a in self._ancestors_of(sym_id)):
+                return True
+        return False
+
     def _extension_typed_call(
         self, caller_id: str, sym_id: str, tier: str, line: int
     ) -> ResolvedCall:
         """Stamp an edge onto a C# extension method.
 
         One family whatever scope typed the receiver, unlike the three-way
-        typed/field/framework split above. What an audit of these has to
-        separate is the extension binding itself: the `this` parameter names
-        the extended type in source, so nothing here is inferred, but the
-        holder class the edge lands in is one no call site mentions.
+        typed/field/framework split above: what an audit needs to separate is
+        the extension binding, whose holder class no call site mentions.
         """
         if tier == "same_file":
             return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_extension_same_file")

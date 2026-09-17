@@ -31,6 +31,7 @@ def _resolve(
     files: dict[str, str],
     caller: str,
     imports: dict[str, set[str]] | None = None,
+    heritage: dict[str, set[str]] | None = None,
 ) -> dict[str, tuple[str, float]]:
     """``{method name: (origin, confidence)}`` for every call the caller makes."""
     for rel, text in files.items():
@@ -44,7 +45,7 @@ def _resolve(
         info = FileInfo(
             path=rel,
             abs_path=str(tmp_path / rel),
-            language="csharp",
+            language="go" if rel.endswith(".go") else "csharp",
             size_bytes=len(text),
             git_hash="",
             last_modified=datetime.now(),
@@ -55,7 +56,9 @@ def _resolve(
         )
         parsed[rel] = parser.parse_file(info, text.encode())
 
-    resolver = CallResolver(parsed, imports or {}, repo_path=str(tmp_path))
+    resolver = CallResolver(
+        parsed, imports or {}, repo_path=str(tmp_path), heritage_parents=heritage
+    )
     by_callee = {}
     for resolved in resolver.resolve_file(caller, parsed[caller].calls):
         by_callee[resolved.callee_id.rpartition("::")[2]] = (
@@ -189,6 +192,57 @@ class TestRefusals:
             ),
         }
         assert "Slug" not in _resolve(tmp_path, files, "src/Consumer.cs")
+
+    def test_refuses_when_the_receiver_inherits_the_method(self, tmp_path: Path) -> None:
+        """C# prefers an inherited instance method, and no tier above sees one."""
+        files = {
+            "src/Base.cs": (
+                "namespace Acme;\npublic class BaseOrder { public int Net() { return 1; } }\n"
+            ),
+            "src/Order.cs": "namespace Acme;\npublic class Order : BaseOrder { }\n",
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static int Net(this Order o) { return 2; }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run() { Order o = new Order(); var z = o.Net(); }\n}\n"
+            ),
+        }
+        heritage = {"src/Order.cs::Order": {"src/Base.cs::BaseOrder"}}
+        assert "Net" not in _resolve(tmp_path, files, "src/Consumer.cs", heritage=heritage)
+
+    def test_a_default_value_is_not_a_parameter_list(self, tmp_path: Path) -> None:
+        """A parenthesised string in a default value must not mint a pair."""
+        files = {
+            "src/Order.cs": ORDER,
+            "src/Auditor.cs": (
+                "namespace Acme;\npublic class Auditor {\n"
+                '  public void Log(string message = "(this Order was rejected)") { }\n}\n'
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run() { Order o = new Order(); o.Log(); }\n}\n"
+            ),
+        }
+        assert "Log" not in _resolve(tmp_path, files, "src/Consumer.cs")
+
+    def test_a_type_of_that_name_in_another_language_does_not_count(
+        self, tmp_path: Path
+    ) -> None:
+        """The receiver must be declared in C#, not merely somewhere in the repo."""
+        files = {
+            "src/task.go": "package main\n\ntype Task struct {}\n",
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Forget(this Task t) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run() { Task t = new Task(); t.Forget(); }\n}\n"
+            ),
+        }
+        assert "Forget" not in _resolve(tmp_path, files, "src/Consumer.cs")
 
     def test_ambiguity_is_terminal(self, tmp_path: Path) -> None:
         """Two holders declaring one pair: C# picks by ``using`` scope, we cannot."""

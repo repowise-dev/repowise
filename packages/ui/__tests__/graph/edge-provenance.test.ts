@@ -112,7 +112,7 @@ describe("isNameMatch", () => {
       [
         "global_unique",
         "receiver_extension_global",
-      "receiver_field_global",
+        "receiver_field_global",
         "receiver_framework_global",
         "receiver_global",
         "receiver_typed_global",
