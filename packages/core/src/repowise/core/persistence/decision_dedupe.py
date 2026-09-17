@@ -71,7 +71,12 @@ from repowise.core.providers.embedding import store_has_semantic_vectors
 # ``_add_alias`` is private but its chain repointing is the load-bearing part:
 # without it a prior alias of a folded record points at an id this sweep deletes.
 from .crud.authority import _add_alias, accepted_decision_ids
-from .crud.decisions import _rederive_headline, list_decision_evidence
+from .crud.decisions import (
+    _json_list,
+    _rederive_headline,
+    list_decision_evidence,
+    record_completeness,
+)
 from .decision_graph import sync_decision_node_links
 from .models import (
     DecisionCandidateMeta,
@@ -160,34 +165,18 @@ class DedupePlan:
         }
 
 
-def _json_list(raw: str | None) -> list[str]:
-    try:
-        value = json.loads(raw or "[]")
-    except (TypeError, ValueError):
-        return []
-    return [str(v) for v in value] if isinstance(value, list) else []
-
-
-def _completeness(rec: DecisionRecord) -> int:
-    """How many of a record's five body fields say anything."""
-    filled = sum(
-        1 for text in (rec.decision, rec.rationale, rec.context) if (text or "").strip()
-    )
-    filled += sum(1 for raw in (rec.consequences_json, rec.alternatives_json) if _json_list(raw))
-    return filled
-
-
 def _canonical_key(rec: DecisionRecord) -> tuple:
     """Rank the members of a cluster; the maximum survives.
 
     Source rank first, because that is what the write path promotes a headline
     on. Completeness breaks the rank ties, so a blank record cannot outrank one
-    that says what was decided; confidence does not read completeness, so it
-    cannot stand in for it. The last two only make the pick deterministic.
+    that says what was decided. Confidence reads completeness too, but it
+    blends it with rank and verification, so it cannot stand in for the term
+    above it. The last two only make the pick deterministic.
     """
     return (
         rank_for_source(rec.source),
-        _completeness(rec),
+        record_completeness(rec),
         rec.confidence or 0.0,
         rec.created_at.isoformat() if rec.created_at else "",
         rec.id,

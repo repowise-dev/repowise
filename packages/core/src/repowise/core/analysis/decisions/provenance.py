@@ -15,13 +15,16 @@ which records a page's source files / KG layer. They share a word, not a concern
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 __all__ = [
+    "BODY_FIELDS",
     "LISTABLE_SOURCES",
     "MAX_SOURCE_RANK",
     "PLACEHOLDER_SOURCES",
     "RETIRED_SOURCES",
     "SOURCE_RANK",
+    "completeness",
     "compute_confidence",
     "normalize_text",
     "rank_for_source",
@@ -117,10 +120,36 @@ def rank_for_source(source: str | None) -> int:
 # ---------------------------------------------------------------------------
 
 
+#: The body fields a decision record can fill: ``decision``, ``rationale``,
+#: ``context``, ``consequences`` and ``alternatives``. The denominator of
+#: :func:`completeness`, and the reason that function has no tuned constant.
+BODY_FIELDS: int = 5
+
+
+def completeness(
+    *,
+    decision: str | None = None,
+    rationale: str | None = None,
+    context: str | None = None,
+    consequences: Sequence[object] | None = None,
+    alternatives: Sequence[object] | None = None,
+) -> int:
+    """How many of a record's five body fields say anything (0-5).
+
+    One definition, because the fold sweep ranks cluster members on it and
+    :func:`compute_confidence` scores records on it, and two copies would be
+    free to disagree about what "says anything" means.
+    """
+    filled = sum(1 for text in (decision, rationale, context) if (text or "").strip())
+    return filled + sum(1 for seq in (consequences, alternatives) if seq)
+
+
 def compute_confidence(
     top_rank: int,
     corroboration_count: int = 1,
     verification: str = "exact",
+    *,
+    filled_fields: int | None = None,
 ) -> float:
     """Confidence for a decision backed by ``corroboration_count`` evidence rows.
 
@@ -129,8 +158,22 @@ def compute_confidence(
     surviving evidence is only fuzzy- or un-verified. Bounded to ``[0, 0.99]``
     (we never claim certainty). Recency decay is deferred — staleness scoring
     already models age separately.
+
+    An extracted record earns its source's authority in proportion to how much
+    it states: the rank-derived credit is scaled by ``filled_fields`` over
+    :data:`BODY_FIELDS`. Without it the score only restates the source, and a
+    thin record outranks a full one wherever the two run opposite.
+
+    ``filled_fields=None`` leaves the score unadjusted, and is right wherever
+    completeness is not evidence about the record: how many fields a *person*
+    filled in says nothing about whether their decision holds. The ``0.4``
+    floor and the corroboration bonus are never scaled, because both are about
+    the evidence rather than the prose.
     """
-    base = 0.4 + 0.5 * (top_rank / MAX_SOURCE_RANK)
+    earned = 0.5 * (top_rank / MAX_SOURCE_RANK)
+    if filled_fields is not None:
+        earned *= min(max(filled_fields, 0), BODY_FIELDS) / BODY_FIELDS
+    base = 0.4 + earned
     corroboration_bonus = min(0.12, 0.04 * max(0, corroboration_count - 1))
     conf = base + corroboration_bonus
     if verification == "fuzzy":

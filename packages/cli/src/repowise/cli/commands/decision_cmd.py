@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 import click
+import structlog
 from rich.panel import Panel
 from rich.table import Table
 
@@ -271,7 +272,7 @@ def decision_add(
                 affected_modules=[],
                 tags=tags_list,
                 source="cli",
-                confidence=1.0,
+                # No confidence: upsert_decision scores a manual entry.
             )
             decision_id = rec.id
             # A decision that names nothing cannot be checked against the code
@@ -297,8 +298,17 @@ def decision_add(
                         f"Cannot accept this decision: {exc}."
                     ) from exc
 
+            embed = (rec.id, rec.title, rec.decision or "", rec.evidence_file)
+            stored_status = rec.status
+
+        # After the session closes, so a network embed does not hold the write
+        # transaction open and cannot leave a vector for an uncommitted record.
+        # ``cli`` is the rank a duplicate should fold into, so a manual entry
+        # with no vector is the worst one to leave unmatched.
+        await _embed_decision(repo_path, *embed)
+
         await engine.dispose()
-        return decision_id, rec.status
+        return decision_id, stored_status
 
     decision_id, stored_status = run_async(_persist())
     if stored_status != "active" and not non_interactive:
@@ -322,6 +332,50 @@ def decision_add(
         f"\n[green]Decision recorded[/green] [dim]({status})[/dim] — "
         f"ID: [bold]{decision_id[:8]}[/bold]"
     )
+
+
+async def _embed_decision(
+    repo_path: Path,
+    decision_id: str,
+    title: str,
+    decision: str,
+    evidence_file: str | None,
+) -> None:
+    """Write a record's ``decision:`` vector, or leave the store untouched.
+
+    Without it a manual entry is invisible to semantic dedup in both
+    directions until the next reindex: it can neither find a duplicate nor be
+    found as one. Best-effort, like the mined write path, and a no-op when the
+    repo has no real embedder, because a keyless user must still be able to
+    record a decision.
+    """
+    from repowise.cli.providers.embedders import build_embedder, resolve_embedder_for_repo
+    from repowise.cli.providers.vector_store import build_vector_store
+    from repowise.core.analysis.decisions.semantic_match import upsert_decision_vector
+    from repowise.core.providers.embedding import is_semantic_embedder
+
+    try:
+        # Before building the store, which would create its directory for a
+        # repo whose embedder cannot fill it.
+        embedder = build_embedder(resolve_embedder_for_repo(repo_path), repo_path)
+        if not is_semantic_embedder(embedder):
+            return
+        store = build_vector_store(repo_path, embedder)
+        if store is None:
+            return
+        await upsert_decision_vector(
+            store,
+            decision_id,
+            title=title,
+            decision=decision,
+            evidence_file=evidence_file,
+        )
+    except Exception as err:
+        # Covers resolving and building the store. The embed call itself
+        # swallows its own failures, so this does not see those.
+        structlog.get_logger(__name__).debug(
+            "decision.embed_skipped", decision_id=decision_id, error=str(err)
+        )
 
 
 # ---------------------------------------------------------------------------

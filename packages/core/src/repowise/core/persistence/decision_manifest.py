@@ -22,6 +22,7 @@ from repowise.core.analysis.decisions.manifest import (
     load_manifest,
     write_manifest,
 )
+from repowise.core.analysis.decisions.provenance import compute_confidence, rank_for_source
 
 from .crud.authority import (
     accepted_decision_ids,
@@ -29,6 +30,7 @@ from .crud.authority import (
     record_acceptance,
     resolve_decision_id,
 )
+from .crud.decisions import _rederive_headline, list_decision_evidence
 from .models import DecisionAlias, DecisionRecord
 
 __all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
@@ -161,6 +163,16 @@ def _differs(
     )
 
 
+def _entry_confidence(entry: ManifestDecision) -> float:
+    """Score a decision the file is the only record of.
+
+    Same shape as the CLI's manual entry: full rank credit, no completeness
+    term, and scored as verified, because a person wrote it and the file holds
+    no quote to check.
+    """
+    return compute_confidence(rank_for_source(entry.source or "cli"), 1, "exact")
+
+
 async def _apply_entry(
     session: AsyncSession, entry: ManifestDecision, record: DecisionRecord
 ) -> None:
@@ -168,6 +180,15 @@ async def _apply_entry(
     record.title = entry.title
     record.decision = entry.decision
     record.rationale = entry.reason
+    # The file exports every accepted decision, most of which were mined and
+    # carry evidence, so re-derive from that where it exists and only score
+    # the entry itself where the file is the whole record. Writing the entry's
+    # score unconditionally would fight the reconcile pass every index.
+    evidence = await list_decision_evidence(session, record.id)
+    if evidence:
+        _rederive_headline(record, evidence)
+    else:
+        record.confidence = _entry_confidence(entry)
     record.affected_files_json = json.dumps(sorted(entry.scope))
     # The successor is an id the file wrote down, and the file can be older
     # than the store it is being read into. Storing it unresolved would put a
@@ -249,7 +270,7 @@ async def import_manifest(
                 affected_files_json=json.dumps(sorted(entry.scope)),
                 evidence_commits_json=json.dumps(sorted(entry.evidence)),
                 superseded_by=entry.superseded_by or None,
-                confidence=1.0,
+                confidence=_entry_confidence(entry),
                 verification="unverified",
             )
             session.add(record)

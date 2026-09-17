@@ -2018,6 +2018,16 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     except Exception as _rank_err:
         logger.debug("decision_rank_reconcile_skipped", error=str(_rank_err))
 
+    # The same repair for the scoring formula, which leaves every input valid
+    # and every stored score stale, so no filter can find it. Its own try, so
+    # a failure here is not logged as the rank repair's.
+    try:
+        from repowise.core.persistence.crud import reconcile_decision_confidence
+
+        await reconcile_decision_confidence(session)
+    except Exception as _conf_err:
+        logger.debug("decision_confidence_reconcile_skipped", error=str(_conf_err))
+
     # Move legacy records onto ids derived from their own identity, before
     # anything else reads or writes one. A random id is re-minted whenever a
     # store is rebuilt rather than updated, which strands every reference held

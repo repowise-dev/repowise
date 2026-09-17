@@ -978,16 +978,19 @@ async def _persist_full_update_async(
             if timings is not None:
                 timings.start("persist.decisions")
             try:
-                # The same three store repairs the full-index path runs, in the
-                # same order (see ``pipeline/persist.py``). They live here too
-                # because a user whose workflow is ``repowise update`` never
-                # takes that path, and every one of them is a repair the store
-                # cannot make for itself: ``superseded`` and the retired-source
-                # backlog both survive re-extraction, and ``source_rank`` is a
-                # value copied into rows rather than derived on read.
+                # The same four store repairs the full-index path runs, in
+                # the same order (see ``pipeline/persist.py``). They live here
+                # too because a user whose workflow is ``repowise update``
+                # never takes that path, and every one of them is a repair the
+                # store cannot make for itself: ``superseded`` and the
+                # retired-source backlog both survive re-extraction,
+                # ``source_rank`` is a value copied into rows rather than
+                # derived on read, and a stored confidence carries no mark of
+                # which formula produced it.
                 from repowise.core.analysis.decision_provenance import RETIRED_SOURCES
                 from repowise.core.persistence.crud import (
                     purge_proposed_decisions_by_source,
+                    reconcile_decision_confidence,
                     reconcile_source_ranks,
                     unretire_auto_superseded,
                 )
@@ -998,6 +1001,7 @@ async def _persist_full_update_async(
                 for _retired in RETIRED_SOURCES:
                     await purge_proposed_decisions_by_source(session, repo_id, _retired)
                 await reconcile_source_ranks(session)
+                await reconcile_decision_confidence(session)
 
                 # Same repairs on the path a ``repowise update`` user takes.
                 # Derived ids come first, so everything after this reads a

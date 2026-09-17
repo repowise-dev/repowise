@@ -60,6 +60,7 @@ from repowise.core.analysis.decisions.discovery.spans import SpanCollector
 from repowise.core.analysis.decisions.extractor import ExtractedDecision
 from repowise.core.analysis.decisions.policy import resolve_policy
 from repowise.core.analysis.decisions.provenance import (
+    completeness,
     compute_confidence,
     rank_for_source,
     verify_quote,
@@ -620,10 +621,16 @@ def promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[ExtractedD
     lane = DISCOVERY_KIND if row.get("kind") == DISCOVERY_KIND else "session"
     files = relative_files(structured.get("affected_files") or row["files"], repo_root)
     modules = resolve_module_nodes(files)
+    # Staging carries a decision and a rationale and no more, so a promoted
+    # record is thin by construction and is scored as such.
     confidence = compute_confidence(
         rank_for_source("session"),
         row["observations"],
         structured.get("verification", "unverified"),
+        filled_fields=completeness(
+            decision=structured.get("decision"),
+            rationale=structured.get("rationale"),
+        ),
     )
     sessions = row["sessions"][-_MAX_EVIDENCE_SESSIONS:] or [None]
     return [

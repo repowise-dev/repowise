@@ -5,7 +5,11 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from repowise.core.analysis.decision_provenance import compute_confidence, rank_for_source
-from repowise.core.persistence.crud import bulk_upsert_decisions, list_decision_evidence
+from repowise.core.persistence.crud import (
+    bulk_upsert_decisions,
+    list_decision_evidence,
+    record_completeness,
+)
 from repowise.core.persistence.crud.authority import latest_acceptance
 from repowise.core.persistence.models import DecisionRecord
 from tests.unit.persistence.helpers import insert_repo
@@ -80,8 +84,13 @@ async def test_two_sources_merge_into_one_record_with_two_evidence_rows(async_se
     # Strongest evidence verification wins; confidence reflects corroboration.
     assert rec.verification == "exact"
     # Two corroborating sources score strictly above the same decision backed
-    # by a single source at the same top rank.
-    solo = compute_confidence(rank_for_source("adr"), corroboration_count=1, verification="exact")
+    # by a single source at the same top rank and saying the same amount.
+    solo = compute_confidence(
+        rank_for_source("adr"),
+        corroboration_count=1,
+        verification="exact",
+        filled_fields=record_completeness(rec),
+    )
     assert rec.confidence > solo
 
 

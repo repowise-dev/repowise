@@ -481,3 +481,67 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
     )
     assert fixed.exit_code == 0, fixed.output
     assert json.loads(fixed.output)["status"] == "active"
+
+
+# --- a manual entry is embedded like a mined one ---------------------------
+
+
+def test_embed_decision_writes_the_records_vector(tmp_path, monkeypatch):
+    """Without this, a manual entry is invisible to semantic dedup until a
+    reindex, in both directions, at the top of the source ladder."""
+    import repowise.cli.providers.embedders as embedders
+    import repowise.cli.providers.vector_store as vector_store
+    from repowise.cli.commands import decision_cmd
+
+    written: list[tuple[str, str]] = []
+
+    class _Store:
+        _embedder = object()
+
+        async def embed_and_upsert(self, page_id, text, metadata):
+            written.append((page_id, text))
+            return True
+
+    monkeypatch.setattr(embedders, "resolve_embedder_for_repo", lambda p: "openai")
+    monkeypatch.setattr(embedders, "build_embedder", lambda name, p: object())
+    monkeypatch.setattr(vector_store, "build_vector_store", lambda p, e: _Store())
+
+    asyncio.run(
+        decision_cmd._embed_decision(
+            tmp_path,
+            "abc123",
+            "Use one cache reader",
+            "Do not write a second cache reader",
+            None,
+        )
+    )
+
+    assert written == [
+        ("decision:abc123", "Use one cache reader\nDo not write a second cache reader")
+    ]
+
+
+def test_decision_add_stays_silent_when_the_repo_has_no_real_embedder(tmp_path, monkeypatch):
+    """A keyless user must still be able to record a decision.
+
+    The sentinel is asserted outside the helper, because the helper catches
+    every exception: an ``AssertionError`` raised inside it would be swallowed
+    and the test would pass against an implementation with no guard at all.
+    """
+    import repowise.cli.providers.embedders as embedders
+    import repowise.cli.providers.vector_store as vector_store
+    from repowise.cli.commands import decision_cmd
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    built: list[object] = []
+
+    monkeypatch.setattr(embedders, "resolve_embedder_for_repo", lambda p: "keyless")
+    monkeypatch.setattr(embedders, "build_embedder", lambda name, p: KeylessEmbedder())
+    monkeypatch.setattr(
+        vector_store, "build_vector_store", lambda p, e: built.append(e) or None
+    )
+
+    asyncio.run(decision_cmd._embed_decision(tmp_path, "abc123", "t", "d", None))
+
+    assert built == [], "no store should be built without a real embedder"
+    assert not (tmp_path / ".repowise" / "lancedb").exists()

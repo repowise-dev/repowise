@@ -19,6 +19,7 @@ from repowise.core import __version__
 from repowise.core.analysis.decisions.lifecycle import DECISION_STATUS_ORDER
 from repowise.core.analysis.decisions.provenance import (
     SOURCE_RANK,
+    completeness,
     compute_confidence,
     rank_for_source,
 )
@@ -202,7 +203,7 @@ async def upsert_decision(
     evidence_commits: list[str] | None = None,
     evidence_file: str | None = None,
     evidence_line: int | None = None,
-    confidence: float = 1.0,
+    confidence: float | None = None,
     verification: str = "unverified",
     last_code_change: datetime | None = None,
     staleness_score: float = 0.0,
@@ -212,11 +213,26 @@ async def upsert_decision(
     """Create or update a decision record.
 
     Dedup key: ``(repository_id, title, source, evidence_file)``.
+
+    This is the manual-entry path, the CLI's ``decision add`` and the HTTP
+    create route. It writes no evidence rows, so nothing re-derives the score
+    later unless a mined decision with the same normalised title lands on the
+    record and brings evidence with it. ``confidence=None`` therefore scores
+    it here. Both call sites used to pass a literal ``1.0``, which is above
+    the formula's own ``0.99`` ceiling and so was never a score at all.
     """
     # Normalise text fields — LLM extractors may return explicit None
     rationale = rationale or ""
     context = context or ""
     decision = decision or ""
+
+    if confidence is None:
+        # Full rank credit, and no completeness term: a person wrote this, and
+        # how many prompts they answered is not evidence about whether the
+        # decision holds. Scored as verified for the same reason, since the
+        # decay it skips discounts a quote that may be hallucinated and this
+        # path takes no quote. ``verification`` still stores what it was given.
+        confidence = compute_confidence(rank_for_source(source), 1, "exact")
 
     q = _dedup_query(
         repository_id, title, source=source, evidence_file=evidence_file
@@ -654,6 +670,15 @@ async def _upsert_decision_evidence(
     )
 
 
+def _json_list(raw: str | None) -> list[str]:
+    """A JSON array column as a list; anything unparsable reads as empty."""
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
 def _best_verification(values: list[str]) -> str:
     """Reduce per-evidence verdicts to the strongest: exact > fuzzy > unverified."""
     if "exact" in values:
@@ -663,17 +688,30 @@ def _best_verification(values: list[str]) -> str:
     return "unverified"
 
 
+def record_completeness(rec: DecisionRecord) -> int:
+    """:func:`completeness` for a stored row, parsing its two JSON columns."""
+    return completeness(
+        decision=rec.decision,
+        rationale=rec.rationale,
+        context=rec.context,
+        consequences=_json_list(rec.consequences_json),
+        alternatives=_json_list(rec.alternatives_json),
+    )
+
+
 def _rederive_headline(rec: DecisionRecord, evidence: list[DecisionEvidence]) -> None:
     """Set a record's confidence + verification from its full evidence set.
 
-    The single definition of how a headline is scored. Both writers use it: the
-    upsert path after accreting a run's evidence, and ``reconcile_source_ranks``
-    after a ladder edit. Kept as one function because the two were briefly
-    copy-pasted and nothing would have forced the copies to stay equal.
+    The single definition of how a headline is scored. Every writer uses it:
+    the upsert path after accreting a run's evidence, ``reconcile_source_ranks``
+    after a ladder edit, and ``reconcile_decision_confidence`` after a formula
+    edit. Kept as one function because two of them were briefly copy-pasted and
+    nothing would have forced the copies to stay equal.
 
     Confidence rises with the best source rank and with the number of
-    *independent* corroborating sources, so it is derived from the whole set
-    rather than from whichever row happened to arrive last. No-op on empty
+    *independent* corroborating sources, and with how much of its body the
+    record fills, so it is derived from the whole set plus the row rather than
+    from whichever evidence row happened to arrive last. No-op on empty
     evidence: a record with nothing behind it keeps whatever it had.
     """
     if not evidence:
@@ -683,6 +721,7 @@ def _rederive_headline(rec: DecisionRecord, evidence: list[DecisionEvidence]) ->
         max(e.source_rank for e in evidence),
         len({e.source for e in evidence}),
         best_ver,
+        filled_fields=record_completeness(rec),
     )
     rec.verification = best_ver
 
@@ -758,6 +797,55 @@ async def reconcile_source_ranks(session: AsyncSession) -> int:
         "decisions.source_ranks_reconciled", evidence_rows=len(moved)
     )
     return len(moved)
+
+
+async def reconcile_decision_confidence(session: AsyncSession) -> int:
+    """Re-score headlines whose stored confidence predates a formula edit.
+
+    The sibling of :func:`reconcile_source_ranks`, for the other half of the
+    same problem. That one repairs a stale *input*, a rank copied into a row
+    before the ladder moved, so it can find its work with an indexed
+    filter. A change to the formula itself leaves every input valid and every
+    stored score wrong, and nothing in a row marks which formula produced it,
+    so the only way to find the work is to recompute and compare.
+
+    Ceiling: two selects that hydrate the whole decision table, which is
+    small; a store large enough for that to hurt would want the comparison
+    pushed into SQL.
+
+    Not repo-scoped, for the reason the ladder is not: the formula is global.
+    Idempotent: 0 once reconciled, which is the steady state. Returns the
+    number of records re-scored, and re-derives verification alongside it.
+
+    A record with no evidence rows is left alone, deliberately: this pass
+    re-derives, it does not invent. The rows in that state are the ones no
+    extractor wrote, manual entries and manifest imports, and both score
+    themselves where they are created.
+    """
+    evidence_by_id: dict[str, list[DecisionEvidence]] = {}
+    for row in (await session.execute(select(DecisionEvidence))).scalars().all():
+        evidence_by_id.setdefault(row.decision_id, []).append(row)
+    if not evidence_by_id:
+        return 0
+
+    now = _now_utc()
+    rescored = 0
+    for rec in (await session.execute(select(DecisionRecord))).scalars().all():
+        evidence = evidence_by_id.get(rec.id)
+        if not evidence:
+            continue  # see the docstring: re-derive, never invent
+        before = (rec.confidence, rec.verification)
+        _rederive_headline(rec, evidence)
+        if (rec.confidence, rec.verification) != before:
+            rec.updated_at = now
+            rescored += 1
+
+    if rescored:
+        await session.flush()
+        structlog.get_logger(__name__).info(
+            "decisions.confidence_reconciled", records=rescored
+        )
+    return rescored
 
 
 #: Prefix ``detect_supersessions_and_conflicts`` stamps on every edge it writes

@@ -38,8 +38,10 @@ from repowise.core.co_change import parse_partners
 
 #: Hard budget for the whole injected block, in estimated tokens (chars/4).
 _TOKEN_CAP = 400
-#: Minimum final score a decision needs to be injected at all.
-_RELEVANCE_FLOOR = 0.25
+#: Minimum final score a decision needs to be injected at all. Rescaled when
+#: confidence stopped being near-constant per source: keeping 0.25 would have
+#: turned this into a gate on how much a record states.
+_RELEVANCE_FLOOR = 0.20
 #: Never inject more than this many decisions regardless of the token cap.
 _MAX_ITEMS = 6
 #: Working-set caps keep the SQL IN-lists and the hop expansion bounded.

@@ -581,7 +581,7 @@ async def create_decision(
         affected_modules=body.affected_modules,
         tags=body.tags,
         source="cli",
-        confidence=1.0,
+        # No confidence: upsert_decision scores a manual entry.
     )
     if scoped:
         # Same rule as the scope-less case above: what the contract will not
