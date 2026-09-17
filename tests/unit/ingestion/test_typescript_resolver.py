@@ -755,6 +755,168 @@ class TestWorkspaceExportsField:
         )
 
 
+class TestNestedSubpackageResolution:
+    """A member may ship sub-packages inside its own tree.
+
+    Each carries its own ``package.json`` and entry point without being a
+    workspace member of its own (solid publishes ``packages/solid/web``
+    this way). The four older probes look for ``<member>/<sub>`` and under
+    the member's own source roots, so ``solid-js/web`` probed
+    ``packages/solid/src/web`` and resolved to nothing. These cover the
+    nested-manifest fallback that runs only after all of them fail.
+    """
+
+    def _member_with_nested(
+        self,
+        tmp_path: Path,
+        member_dir: str,
+        member_name: str,
+        nested_sub: str,
+        nested_name: str,
+        nested_extra: dict,
+    ) -> str:
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        member = tmp_path / member_dir
+        member.mkdir(parents=True)
+        (member / "package.json").write_text(json.dumps({"name": member_name}))
+        nested = member / nested_sub
+        nested.mkdir(parents=True)
+        (nested / "package.json").write_text(
+            json.dumps({"name": nested_name, **nested_extra})
+        )
+        return f"{member_dir}/{nested_sub}"
+
+    def test_nested_manifest_entry_resolves_instead_of_none(self, tmp_path: Path) -> None:
+        # solid's shape: the nested manifest names build output the checkout
+        # does not contain, and the entry that exists is ``web/src/index.ts``.
+        # The member's own ``src`` root is ``packages/solid/src``, so the
+        # source-root fallback probes a different directory entirely.
+        nested = self._member_with_nested(
+            tmp_path,
+            "packages/solid",
+            "solid-js",
+            "web",
+            "solid-js/web",
+            {"main": "./dist/server.cjs", "module": "./dist/server.js"},
+        )
+        ctx = _ctx(tmp_path, [f"{nested}/src/index.ts"])
+        assert (
+            resolve_via_workspaces("solid-js/web", ctx) == f"{nested}/src/index.ts"
+        )
+
+    def test_nested_exports_entry_resolves(self, tmp_path: Path) -> None:
+        nested = self._member_with_nested(
+            tmp_path,
+            "packages/solid",
+            "solid-js",
+            "store",
+            "solid-js/store",
+            {"exports": {".": "./src/store.ts"}},
+        )
+        ctx = _ctx(tmp_path, [f"{nested}/src/store.ts"])
+        assert resolve_via_workspaces("solid-js/store", ctx) == f"{nested}/src/store.ts"
+
+    def test_nested_main_entry_resolves(self, tmp_path: Path) -> None:
+        # No ``exports`` in the nested manifest and no ``index.*`` beside it,
+        # so the nested ``main`` is what answers.
+        nested = self._member_with_nested(
+            tmp_path,
+            "packages/solid",
+            "solid-js",
+            "h",
+            "solid-js/h",
+            {"main": "./entry.ts"},
+        )
+        ctx = _ctx(tmp_path, [f"{nested}/entry.ts"])
+        assert resolve_via_workspaces("solid-js/h", ctx) == f"{nested}/entry.ts"
+
+    def test_nested_resolution_through_the_ts_resolver(self, tmp_path: Path) -> None:
+        # The end-to-end claim from the issue: an import of ``solid-js/web``
+        # becomes an intra-repo edge instead of an ``external:`` node.
+        nested = self._member_with_nested(
+            tmp_path,
+            "packages/solid",
+            "solid-js",
+            "web",
+            "solid-js/web",
+            {"main": "./dist/server.cjs"},
+        )
+        ctx = _ctx(tmp_path, [f"{nested}/src/index.ts", "app/src/main.ts"])
+        assert (
+            resolve_ts_js_import("solid-js/web", "app/src/main.ts", ctx)
+            == f"{nested}/src/index.ts"
+        )
+
+    def test_no_nested_manifest_still_resolves_to_none(self, tmp_path: Path) -> None:
+        # The guard on the fallback: with no manifest under ``web`` there is
+        # no sub-package to bind, so the import stays unresolved rather than
+        # guessing at a file under an ordinary directory.
+        (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))
+        member = tmp_path / "packages" / "solid"
+        member.mkdir(parents=True)
+        (member / "package.json").write_text(json.dumps({"name": "solid-js"}))
+        ctx = _ctx(tmp_path, ["packages/solid/web/src/index.ts"])
+        assert resolve_via_workspaces("solid-js/web", ctx) is None
+
+    def test_direct_probe_still_wins_over_the_nested_manifest(self, tmp_path: Path) -> None:
+        # ``web`` has both a plain ``index.ts`` beside it and a manifest
+        # naming ``src/index.ts``. Every pre-existing probe runs first, so
+        # the fallback cannot retarget an import that already resolved.
+        nested = self._member_with_nested(
+            tmp_path,
+            "packages/solid",
+            "solid-js",
+            "web",
+            "solid-js/web",
+            {"exports": {".": "./src/index.ts"}},
+        )
+        (tmp_path / nested / "index.ts").write_text("export {};\n")
+        ctx = _ctx(tmp_path, [f"{nested}/index.ts", f"{nested}/src/index.ts"])
+        assert resolve_via_workspaces("solid-js/web", ctx) == f"{nested}/index.ts"
+
+    def test_member_source_root_fallback_still_wins(self, tmp_path: Path) -> None:
+        # The member's own ``src`` root resolves the subpath, so the nested
+        # manifest is never consulted and the existing binding is kept.
+        nested = self._member_with_nested(
+            tmp_path,
+            "packages/solid",
+            "solid-js",
+            "web",
+            "solid-js/web",
+            {"exports": {".": "./src/index.ts"}},
+        )
+        (tmp_path / "packages/solid/src/web").mkdir(parents=True)
+        (tmp_path / "packages/solid/src/web/index.ts").write_text("export {};\n")
+        ctx = _ctx(
+            tmp_path,
+            ["packages/solid/src/web/index.ts", f"{nested}/src/index.ts"],
+        )
+        assert (
+            resolve_via_workspaces("solid-js/web", ctx)
+            == "packages/solid/src/web/index.ts"
+        )
+
+    def test_nested_declaration_file_is_not_taken(self, tmp_path: Path) -> None:
+        # The nested entry the ranked condition names is absent and only the
+        # committed type declarations exist. A declaration file carries no
+        # bodies, so binding one would resolve every call through it to a
+        # signature; leaving the import unbound claims nothing.
+        nested = self._member_with_nested(
+            tmp_path,
+            "packages/solid",
+            "solid-js",
+            "web",
+            "solid-js/web",
+            {
+                "exports": {
+                    ".": {"import": "./dist/index.js", "types": "./types/index.d.ts"}
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, [f"{nested}/types/index.d.ts"])
+        assert resolve_via_workspaces("solid-js/web", ctx) is None
+
+
 class TestMtsCtsResolution:
     def test_extensionless_import_resolves_to_mts(self, tmp_path: Path) -> None:
         ctx = _ctx(tmp_path, ["src/module.mts", "src/main.ts"])

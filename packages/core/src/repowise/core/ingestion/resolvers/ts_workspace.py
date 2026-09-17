@@ -489,6 +489,86 @@ def _probe_path(base: str, path_set: set[str]) -> str | None:
     return None
 
 
+def _read_nested_manifest(nested_dir: str, ctx: ResolverContext) -> dict | None:
+    """Parse the ``package.json`` of a sub-package nested inside a member.
+
+    A member may ship sub-packages inside its own tree, each with its own
+    manifest and entry point, without declaring them as workspace members.
+    ``nested_dir`` is the repo-relative, already-normalized directory the
+    specifier names.
+
+    The read goes to disk rather than to ``path_set``: a manifest is not an
+    indexed source file, so the in-memory path set can never say whether one
+    is there. Memoized on the resolver context because the same sub-package
+    is asked about once per import of its specifier.
+
+    Returns None when there is no manifest at that path, when ``repo_path``
+    is unknown, or when the file is not a JSON object.
+    """
+    if ctx.repo_path is None:
+        return None
+    cache = getattr(ctx, "_ts_nested_manifest_cache", None)
+    if cache is None:
+        cache = {}
+        ctx._ts_nested_manifest_cache = cache  # type: ignore[attr-defined]
+    if nested_dir in cache:
+        return cache[nested_dir]
+    manifest: dict | None = None
+    candidate = ctx.repo_path / nested_dir / "package.json"
+    try:
+        if candidate.is_file():
+            parsed = json.loads(candidate.read_text(encoding="utf-8", errors="ignore"))
+            if isinstance(parsed, dict):
+                manifest = parsed
+    except Exception:
+        manifest = None
+    cache[nested_dir] = manifest
+    return manifest
+
+
+def _probe_nested_package(
+    nested_dir: str, manifest: dict, path_set: set[str]
+) -> str | None:
+    """Resolve a nested sub-package's entry point, rooted one level deeper.
+
+    The same order :func:`resolve_via_workspaces` applies to a workspace
+    member, but read from ``manifest`` (the sub-package's own) and probed
+    relative to ``nested_dir``: the ``exports[.]`` map first, then an
+    ``index.*`` probe, then ``module``/``main``, then the entries a package
+    publishing only from a build directory leaves reachable, ahead of the
+    conventional source root. A declaration file is never taken as a
+    fallback entry for the same reason it is refused higher up: it carries
+    no bodies, so binding it resolves every call through the package to a
+    signature.
+    """
+    exports_map = _build_exports_map(manifest)
+    targets = _match_export_key("", exports_map) if exports_map else None
+    if targets:
+        resolved = _probe_path(f"{nested_dir}/{targets[0].lstrip('./')}", path_set)
+        if resolved is not None:
+            return resolved
+    cand = _probe_path(f"{nested_dir}/index", path_set)
+    if cand is not None:
+        return cand
+    for manifest_field in ("module", "main"):
+        value = manifest.get(manifest_field)
+        if isinstance(value, str):
+            cand = _probe_path(f"{nested_dir}/{value.lstrip('./')}", path_set)
+            if cand is not None:
+                return cand
+    for target in (targets or ())[1:]:
+        if target.endswith(_DECLARATION_SUFFIXES):
+            continue
+        resolved = _probe_path(f"{nested_dir}/{target.lstrip('./')}", path_set)
+        if resolved is not None:
+            return resolved
+    for source_root in ("src", "lib"):
+        cand = _probe_path(f"{nested_dir}/{source_root}/index", path_set)
+        if cand is not None:
+            return cand
+    return None
+
+
 def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a bare specifier (``@scope/pkg`` or ``@scope/pkg/sub/file``)
     against the workspace map. Honours each workspace's ``exports``
@@ -581,7 +661,21 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
         cand = _probe_path(f"{dir_posix}/{src_root}/{sub}", ctx.path_set)
         if cand is not None:
             return cand
-    return spare_export_target()
+    cand = spare_export_target()
+    if cand is not None:
+        return cand
+
+    # 4) Nested sub-package fallback — ``sub`` may itself be a package with
+    #    its own manifest and entry point, shipped inside the member's tree
+    #    without being a workspace member of its own (solid publishes
+    #    ``packages/solid/web`` this way). Probed last, so it can only bind a
+    #    specifier every probe above left unresolved: it replaces an external
+    #    node with a real file and never retargets an import that resolves.
+    nested_dir = _normalize_repo_rel(f"{dir_posix}/{sub}")
+    nested_manifest = _read_nested_manifest(nested_dir, ctx)
+    if nested_manifest is not None:
+        return _probe_nested_package(nested_dir, nested_manifest, ctx.path_set)
+    return None
 
 
 # ---------------------------------------------------------------------------
