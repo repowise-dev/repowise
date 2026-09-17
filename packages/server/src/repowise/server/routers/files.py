@@ -18,8 +18,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.server.schemas.files import PinDocResponse
-
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
 from repowise.core.ids import is_external
@@ -43,6 +41,7 @@ from repowise.server.routers.code_health import (
     _score_breakdown_from_findings,
 )
 from repowise.server.routers.git import _hotspot_from_row
+from repowise.server.schemas.files import PinDocResponse
 
 router = APIRouter(
     prefix="/api/repos",
