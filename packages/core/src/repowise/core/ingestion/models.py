@@ -453,6 +453,15 @@ ResolutionOrigin = Literal[
     "receiver_framework_same_package",  # 0.90
     "receiver_framework_import",  # 0.88
     "receiver_framework_global",  # 0.75
+    # A C# extension method, reached through the type its ``this`` parameter
+    # names rather than through the static class holding it. One family rather
+    # than a fourth parallel set of four: the scopes below are the extension
+    # index's own, and no same-package tier reaches them. Kept separable
+    # because the holder class is a file no call site names, so an audit that
+    # cannot isolate these cannot check them.
+    "receiver_extension_same_file",  # 0.93
+    "receiver_extension_import",  # 0.88 — the holder class's file is imported
+    "receiver_extension_global",  # 0.75 — declared somewhere; a name match
     # Chained receiver typed from the inner callee's declared return type.
     "return_type_same_file",  # 0.93
     "return_type_same_package",  # 0.90 (JVM)

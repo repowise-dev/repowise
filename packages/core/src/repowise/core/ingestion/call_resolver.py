@@ -59,7 +59,7 @@ from .models import (
     symbol_id_language,
 )
 from .return_types import declared_return_type, normalize_return_type, signature_parameter_count
-from .type_names import POINTER_LIKE_MEMBERS
+from .type_names import POINTER_LIKE_MEMBERS, csharp_extension_receiver
 
 log = structlog.get_logger(__name__)
 
@@ -287,6 +287,16 @@ class CallResolver:
         # in file-insertion order — replaces the trait-dispatch scan over
         # every file's method dict with one short-list lookup.
         self._global_methods: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+
+        # C# extension methods, keyed on the type they extend rather than on
+        # their holder class: {(type, method): (file_path, symbol_id)} and the
+        # per-file view of the same. Held apart from the method index on
+        # purpose — merging them would leak C# keys into the C++ and JVM tiers
+        # that read ``_global_methods``, and would let an extension answer a
+        # site the instance method the language dispatches to should own.
+        self._extension_methods: dict[tuple[str, str], tuple[str, str]] = {}
+        self._file_extension_methods: dict[str, dict[tuple[str, str], str]] = {}
+        self._merged_import_extensions: dict[str, dict[tuple[str, str], str]] = {}
 
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
         self._global_symbols: dict[str, list[str]] = defaultdict(list)
@@ -831,6 +841,9 @@ class CallResolver:
         # Both feed ``_link_declarations`` once every file has been indexed.
         definitions: dict[tuple[str | None, str], list[tuple[str, str]]] = defaultdict(list)
         declarations: list[tuple[str, str, tuple[str | None, str]]] = []
+        # (extended type, method) -> the symbols claiming it, settled once the
+        # whole repo has been seen because ambiguity is judged repo-wide.
+        extensions: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
 
         for path, parsed in parsed_files.items():
             file_syms: dict[str, str] = {}
@@ -861,6 +874,14 @@ class CallResolver:
                     file_methods[key] = sym.id
                     self._global_methods[key].append((path, sym.id))
 
+                    extended = (
+                        csharp_extension_receiver(sym.signature)
+                        if sym.language == "csharp"
+                        else None
+                    )
+                    if extended is not None and extended in self._known_type_names:
+                        extensions[(extended, sym.name)].add((path, sym.id))
+
                 # Global indices
                 if sym.kind in _NON_CALLABLE_KINDS:
                     self._non_callable_ids.add(sym.id)
@@ -875,6 +896,28 @@ class CallResolver:
             self._file_methods[path] = file_methods
 
         self._decl_to_def = self._link_declarations(declarations, definitions)
+        self._index_extension_methods(extensions)
+
+    def _index_extension_methods(
+        self, candidates: dict[tuple[str, str], set[tuple[str, str]]]
+    ) -> None:
+        """Record every unambiguous extension pair; drop the rest.
+
+        Two holder classes declaring the same ``(type, method)`` cannot be told
+        apart here: C# picks between them by which ``using`` is in scope, which
+        the graph does not model, so picking either mints an edge the call may
+        never reach. Refusing costs an edge; guessing costs correctness.
+
+        An overload set is not this case. Every overload of one method in one
+        class shares a symbol id, so a pair stays unambiguous however many rows
+        declare it.
+        """
+        for key, sites in candidates.items():
+            if len({sym_id for _, sym_id in sites}) != 1:
+                continue
+            path, sym_id = next(iter(sites))
+            self._extension_methods[key] = (path, sym_id)
+            self._file_extension_methods.setdefault(path, {})[key] = sym_id
 
     def _link_declarations(
         self,
@@ -1016,16 +1059,57 @@ class CallResolver:
 
     def _merged_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:
         """Merged ``{(class, method) → symbol_id}`` across imports (see above)."""
-        merged = self._merged_import_methods.get(file_path)
+        return self._merged_over(file_path, self._file_methods, self._merged_import_methods)
+
+    def _merged_extension_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:
+        """Merged ``{(extended type, method) → symbol_id}`` across imports.
+
+        This is the tier C# extensions actually live on: ``using`` is how a
+        holder class is brought into scope, so an imported extension is better
+        evidence here than the repo-wide fallback below it.
+        """
+        return self._merged_over(
+            file_path, self._file_extension_methods, self._merged_import_extensions
+        )
+
+    def _merged_over(
+        self,
+        file_path: str,
+        per_file: dict[str, dict[tuple[str, str], str]],
+        cache: dict[str, dict[tuple[str, str], str]],
+    ) -> dict[tuple[str, str], str]:
+        """One import-merged view over a per-file ``(pair → symbol_id)`` index.
+
+        First import wins, in sorted order, so the merge is deterministic.
+        """
+        merged = cache.get(file_path)
         if merged is None:
             merged = {}
             for imported_file in sorted(self._import_targets.get(file_path, ())):
                 if imported_file.startswith("external:"):
                     continue
-                for key, sym_id in self._file_methods.get(imported_file, {}).items():
+                for key, sym_id in per_file.get(imported_file, {}).items():
                     merged.setdefault(key, sym_id)
-            self._merged_import_methods[file_path] = merged
+            cache[file_path] = merged
         return merged
+
+    def _extension_target(self, file_path: str, key: tuple[str, str]) -> tuple[str, str] | None:
+        """The extension method a ``(type, method)`` pair names, and its scope.
+
+        Same three scopes as ``_receiver_pair_match``, over the extension index
+        instead of the method index. Gated on the global index first so no
+        merged view is built for a pair no holder class declares.
+        """
+        site = self._extension_methods.get(key)
+        if site is None:
+            return None
+        own = self._file_extension_methods.get(file_path, {})
+        if key in own:
+            return own[key], "same_file"
+        merged = self._merged_extension_methods_for(file_path)
+        if key in merged:
+            return merged[key], "import"
+        return site[1], "global"
 
     def resolve_file(self, file_path: str, calls: list[CallSite]) -> list[ResolvedCall]:
         """Resolve all calls in a single file to symbol-level edges."""
@@ -1790,7 +1874,15 @@ class CallResolver:
 
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
         if found is None:
-            return None
+            # Only once every instance tier has refused. C# dispatches to an
+            # instance method in preference to an extension, so an extension
+            # must never answer a site one of those could have.
+            if language != "csharp":
+                return None
+            extension = self._extension_target(file_path, (type_name, call.target_name))
+            if extension is None:
+                return None
+            return self._extension_typed_call(caller_id, *extension, call.line)
         sym_id, tier = found
         if from_framework:
             return self._framework_typed_call(caller_id, sym_id, tier, call.line)
@@ -1855,6 +1947,23 @@ class CallResolver:
         if tier == "import":
             return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_framework_import")
         return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_framework_global")
+
+    def _extension_typed_call(
+        self, caller_id: str, sym_id: str, tier: str, line: int
+    ) -> ResolvedCall:
+        """Stamp an edge onto a C# extension method.
+
+        One family whatever scope typed the receiver, unlike the three-way
+        typed/field/framework split above. What an audit of these has to
+        separate is the extension binding itself: the `this` parameter names
+        the extended type in source, so nothing here is inferred, but the
+        holder class the edge lands in is one no call site mentions.
+        """
+        if tier == "same_file":
+            return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_extension_same_file")
+        if tier == "import":
+            return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_extension_import")
+        return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_extension_global")
 
     def _method_names(self) -> frozenset[str]:
         """Every name declared as a method of some class, built once."""

@@ -24,6 +24,8 @@ This module is a leaf: it reads the language registry and nothing else.
 
 from __future__ import annotations
 
+import re
+
 from .language_data import get_builtin_types
 
 # A qualifier separator in any language we parse. PHP's ``\`` is here rather
@@ -168,3 +170,37 @@ def is_resolvable_type_name(name: str, language: str) -> bool:
     if name in get_builtin_types(language):
         return False
     return not (len(name) == 1 and name.isupper())
+
+
+# The receiver of a C# extension method, as the parameter list spells it.
+#
+# ``this`` is legal as a parameter modifier only on the first parameter of an
+# extension method, so its presence identifies one outright. That matters
+# because the parser keeps no modifiers: ``static`` is dropped from both the
+# class kind and the signature, so the holder class is indistinguishable from
+# any other and the signature is the only surviving evidence.
+#
+# An array receiver is captured so it can be refused: ``this Order[]`` extends
+# the array, not the element, and binding one to the other would be a wrong
+# edge.
+_CSHARP_EXTENSION_RECEIVER = re.compile(
+    r"\(\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
+    r"(?P<type>[\w.]+(?:<[^>]*>)?(?:\s*\[[,\s]*\])*\??)"
+)
+
+
+def csharp_extension_receiver(signature: str) -> str | None:
+    """The bare type a C# extension method extends, or None if it is not one.
+
+    Shape only, in keeping with this module: it reports what the parameter list
+    says and applies no policy about whether that type is resolvable. The
+    caller decides that, because the resolver and the type-use path do not want
+    the same answer.
+    """
+    match = _CSHARP_EXTENSION_RECEIVER.search(signature or "")
+    if match is None:
+        return None
+    raw = match.group("type")
+    if "[" in raw:
+        return None
+    return bare_type_name(raw.rstrip("?")) or None
