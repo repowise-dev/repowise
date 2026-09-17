@@ -490,6 +490,8 @@ async def _why_health_dashboard(repo: str | None) -> dict:
         stale = health["stale_decisions"]
         proposed = health["proposed_awaiting_review"]
         ungoverned = health["ungoverned_hotspots"]
+        retired = health["retired_decisions"]
+        unscoped = health["unscoped_decisions"]
 
         result_data = {
             "mode": "health",
@@ -522,6 +524,24 @@ async def _why_health_dashboard(repo: str | None) -> dict:
             ],
             "ungoverned_hotspots": ungoverned,
             "conflicts": list(health.get("conflicts", [])),
+            # The lanes that used to be a number and nothing else. ``counts``
+            # said three records were superseded and the response named none of
+            # them, and unlike every capped lane here there was nothing to
+            # recover: no filter argument reaches them, no id was emitted to
+            # feed ``get_why(id=...)``, and ``_meta.omitted`` can only return
+            # rows that entered the response. Per-path ``history`` names retired
+            # records, but needs a path per call, which is the opposite of what
+            # this orientation mode is for.
+            #
+            # ``active`` stays count-only on purpose: those ids reach a reader
+            # through query mode and through path mode's governing records, so
+            # it is the one count-only lane that is already recoverable.
+            "retired_decisions": [
+                {"id": d.id, "title": d.title, "lane": lane} for lane, d in retired
+            ],
+            "unscoped_decisions": [
+                {"id": d.id, "title": d.title, "confidence": d.confidence} for d in unscoped
+            ],
             "_meta": _build_meta(repository=repository),
         }
         for entry in result_data["stale_decisions"]:
@@ -545,6 +565,8 @@ async def _why_health_dashboard(repo: str | None) -> dict:
             ("proposed_awaiting_review", _MAX_HEALTH_PROPOSED),
             ("ungoverned_hotspots", _MAX_HEALTH_UNGOVERNED),
             ("conflicts", 10),
+            ("retired_decisions", _MAX_HEALTH_RETIRED),
+            ("unscoped_decisions", _MAX_HEALTH_RETIRED),
         ):
             cap_collection(
                 result_data,
@@ -651,10 +673,22 @@ _KEYWORD_POOL = 24
 #: verdict. Halved now that ``get_decision_health_summary`` ranks what it
 #: returns: cutting an unranked list only makes a list nobody reads shorter,
 #: cutting a ranked one keeps the part that is worth reading. The full sizes stay
-#: legible in ``counts`` and in the summary line, so nothing is silently dropped.
+#: legible in ``counts`` and in the summary line, and every row cut here is
+#: recoverable through the omission collector, so nothing is silently dropped.
+#:
+#: That last clause used to be false for the lanes that had no list at all:
+#: ``counts`` naming three superseded records was not a cap, it was the whole
+#: report, and a cap is only honest when the rows it cut still exist somewhere.
+#: ``retired_decisions`` and ``unscoped_decisions`` give those lanes a list to
+#: be capped out of.
 _MAX_HEALTH_STALE = 5
 _MAX_HEALTH_PROPOSED = 5
 _MAX_HEALTH_UNGOVERNED = 8
+
+#: Retired records (superseded, deprecated, dismissed) and accepted records
+#: naming no file. Same 5 as its peers: this is a pointer into history, not a
+#: place to read history from.
+_MAX_HEALTH_RETIRED = 5
 
 
 def _authority_of(decision_id: str, accepted: set[str]) -> str:

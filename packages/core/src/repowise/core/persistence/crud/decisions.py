@@ -16,7 +16,7 @@ from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core import __version__
-from repowise.core.analysis.decisions.lifecycle import DECISION_STATUS_ORDER
+from repowise.core.analysis.decisions.lifecycle import DECISION_STATUS_ORDER, status_rank
 from repowise.core.analysis.decisions.provenance import (
     SOURCE_RANK,
     compute_confidence,
@@ -1598,6 +1598,14 @@ async def get_decision_health_summary(
     }
     stale_decisions: list[DecisionRecord] = []
     proposed_decisions: list[DecisionRecord] = []
+    # The lanes that were counted and nothing else. ``counts`` says three
+    # records were superseded; a caller had no way to learn *which* three,
+    # because the record is in hand right here and was dropped at the
+    # ``continue``. Naming them costs no extra query. ``retired`` carries its
+    # lane with it, since the lane comes from the acceptance and a record's
+    # ``status`` column can disagree with it.
+    retired_decisions: list[tuple[str, DecisionRecord]] = []
+    unscoped_decisions: list[DecisionRecord] = []
 
     # Files an *accepted* decision names. A candidate naming a hotspot does not
     # make it governed, and counting one did: it removed the file from
@@ -1613,15 +1621,18 @@ async def get_decision_health_summary(
             # never be counted as.
             if d.status in ("dismissed", "deprecated", "superseded"):
                 counts[d.status] = counts.get(d.status, 0) + 1
+                retired_decisions.append((d.status, d))
             else:
                 counts["proposed"] += 1
                 proposed_decisions.append(d)
             continue
         if currency == "superseded":
             counts["superseded"] += 1
+            retired_decisions.append(("superseded", d))
             continue
         if currency == "dismissed":
             counts["dismissed"] += 1
+            retired_decisions.append(("dismissed", d))
             continue
         counts["active"] += 1
         if currency == "needs_review":
@@ -1629,6 +1640,7 @@ async def get_decision_health_summary(
             stale_decisions.append(d)
         if currency == "uncheckable":
             counts["unscoped"] += 1
+            unscoped_decisions.append(d)
         for fp in json.loads(d.affected_files_json):
             governed_files.add(fp)
 
@@ -1670,6 +1682,14 @@ async def get_decision_health_summary(
     # back-filled; the id tiebreak makes the key total, so two runs agree.
     stale_decisions.sort(key=lambda d: (-(d.staleness_score or 0.0), d.id))
     proposed_decisions.sort(key=lambda d: (-(d.confidence or 0.0), d.id))
+    # Retired records rank by lane, history before tombstone, using the one
+    # ordering the rest of the codebase sorts decision lanes by. Not by
+    # ``updated_at``: that column moves on any write, so it says when the row
+    # was last touched and not when the record was retired. ``unscoped`` ranks
+    # by confidence, the same key ``proposed`` uses, because both are lists of
+    # records somebody has to look at rather than lists with a severity.
+    retired_decisions.sort(key=lambda pair: (status_rank(pair[0]), pair[1].id))
+    unscoped_decisions.sort(key=lambda d: (-(d.confidence or 0.0), d.id))
 
     # Phase 3B: surface contradictory active decisions (conflicts_with edges).
     from ..decision_graph import list_conflict_edges
@@ -1697,4 +1717,6 @@ async def get_decision_health_summary(
         "proposed_awaiting_review": proposed_decisions,
         "ungoverned_hotspots": ungoverned,
         "conflicts": conflicts,
+        "retired_decisions": retired_decisions,
+        "unscoped_decisions": unscoped_decisions,
     }

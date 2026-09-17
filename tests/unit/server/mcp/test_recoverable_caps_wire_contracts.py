@@ -751,6 +751,8 @@ async def test_why_health_and_targets_only_modes_are_bounded_and_recoverable(
             "conflicts": [
                 {"detail": f"HEALTH_CONFLICT_{index}"} for index in range(12)
             ],
+            "retired_decisions": [("superseded", record) for record in records],
+            "unscoped_decisions": records,
         }
 
     monkeypatch.setattr(crud_mod, "get_decision_health_summary", sealed_health)
