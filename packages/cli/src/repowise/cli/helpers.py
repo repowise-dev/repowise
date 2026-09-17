@@ -1344,6 +1344,31 @@ class CommandTarget:
             return None
         return (self.ws_root / entry.path).resolve()
 
+    def single_repo_path(self) -> Path:
+        """The one repository to read, narrowing workspace mode to a repo.
+
+        ``--repo <alias>`` resolves to ``mode="workspace"`` with ``repo_path``
+        left ``None``, so a command that reads ``repo_path`` directly refuses
+        every ``--repo`` call it advertises. Three commands already hand-roll
+        this narrowing (``dead-code``, ``health``, ``costs``); this is where it
+        belongs, beside :meth:`primary_path` and :meth:`resolve_repo_alias`.
+
+        Raises ``click.ClickException`` when the alias is unknown or the
+        workspace declares no primary.
+        """
+        if not self.is_workspace:
+            assert self.repo_path is not None
+            return self.repo_path
+        if self.repo_filter is not None:
+            picked = self.resolve_repo_alias(self.repo_filter)
+            if picked is None:
+                raise click.ClickException(f"Unknown repo alias: {self.repo_filter}")
+            return picked
+        primary = self.primary_path()
+        if primary is None:
+            raise click.ClickException("Workspace has no primary repo configured.")
+        return primary
+
     # ------------------------------------------------------------------
     # Notice rendering — every command should call this so users always
     # know which mode they ended up in.

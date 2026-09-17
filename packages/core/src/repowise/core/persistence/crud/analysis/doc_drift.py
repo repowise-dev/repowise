@@ -162,6 +162,54 @@ async def get_doc_drift_findings(
     return list((await session.execute(stmt)).scalars().all())
 
 
+def _decode_evidence(raw: str) -> list[str]:
+    """The stored evidence lines, degrading to none rather than raising.
+
+    Pairs with the ``json.dumps`` in :func:`_row_kwargs`. An index written by an
+    older version is still readable, and a finding whose evidence blob will not
+    parse is worth more to a reader than a traceback.
+    """
+    try:
+        loaded = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(item) for item in loaded] if isinstance(loaded, list) else []
+
+
+def serialize_doc_drift_row(row: DocDriftFinding, *, evidence: bool = True) -> dict:
+    """One stored finding as a dict, for any surface that serves it.
+
+    One function rather than one per surface. The CLI and ``get_health`` serve
+    the same rows, and two hand-maintained dicts are how they would come to
+    disagree about them --- the failure
+    ``tests/unit/dead_code/test_confidence_parity.py`` exists to remember.
+    Placed beside :func:`summarize_confidence_rows` because both are read-side
+    derivations over a row; the no-serializer rule in
+    ``analysis/doc_drift/models.py`` is about the analyzer's dataclass, which
+    neither of these touches.
+
+    ``evidence=False`` drops the evidence lines for a caller under a response
+    budget: their first line restates ``file_path``, ``line_number`` and
+    ``raw``, and the rest is the resolver's own trace.
+    """
+    out = {
+        "file_path": row.file_path,
+        "line_number": row.line_number,
+        "kind": row.kind,
+        "target": row.target,
+        # Rounded in one place, so a future three-decimal tier cannot make one
+        # surface report 0.925 where the other reports 0.93.
+        "confidence": round(row.confidence, 2),
+        "origin": row.origin,
+        "reason": row.reason,
+        "raw": row.raw,
+        "context": row.context,
+    }
+    if evidence:
+        out["evidence"] = _decode_evidence(row.evidence_json)
+    return out
+
+
 def summarize_confidence_rows(rows: list[DocDriftFinding]) -> dict:
     """Re-derive the high/medium/low buckets on read.
 

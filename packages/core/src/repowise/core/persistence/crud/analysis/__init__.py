@@ -41,6 +41,7 @@ from .doc_drift import (
     get_doc_drift_findings,
     replace_doc_drift_findings,
     replace_doc_drift_findings_guarded,
+    serialize_doc_drift_row,
     summarize_confidence_rows,
 )
 from .health import (
@@ -160,6 +161,7 @@ __all__ = [
     "save_health_snapshot",
     "save_refactoring_suggestions",
     "save_test_coverage",
+    "serialize_doc_drift_row",
     "sort_metrics_worst_first",
     "summarize_confidence_rows",
     "tests_covering",

@@ -403,7 +403,8 @@ same deterministic markers as `repowise health`. Zero LLM calls.
 **Parameters:**
 - `targets` (optional) — file paths, or `module:foo`; empty = dashboard mode
 - `include` (optional) — opt-in blocks such as `"biomarkers"`, `"refactoring"`,
-  `"trend"`, `"coverage"`, `"accuracy"`, `"signals"`, `"churn_complexity"`
+  `"trend"`, `"coverage"`, `"accuracy"`, `"signals"`, `"churn_complexity"`,
+  `"doc_drift"`
 - `limit` (optional, int) — max lowest-scoring files (default 20)
 
 **When to use:** Self-check a change before opening a PR, or find the worst

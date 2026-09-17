@@ -2,9 +2,9 @@
 
 Complete reference for all `repowise` commands. For a guided introduction, see the [Quickstart](../start/QUICKSTART.md).
 
-Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `health`, `risk`, `overlap`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
+Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `doc-drift`, `health`, `risk`, `overlap`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
-**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--prose` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `security`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
+**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--prose` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `doc-drift`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `security`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
 
 ## Contents
 
@@ -33,6 +33,7 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`risk`](#repowise-risk-revspec) ·
 [`overlap`](#repowise-overlap) ·
 [`dead-code`](#repowise-dead-code-path) ·
+[`doc-drift`](#repowise-doc-drift-path) ·
 [`security`](#repowise-security) ·
 [`impacted-tests`](#repowise-impacted-tests-revspec) ·
 [`coverage`](#repowise-coverage)
@@ -97,7 +98,7 @@ Most commands auto-detect whether you're in a workspace root and route according
 | `--repo <alias>` | Scope a workspace command to one repo. Available on commands where it makes sense. |
 | `--all` | Fan out across every workspace repo (on `costs`, `search`). |
 
-The commands that grew these flags: `update`, `status`, `watch`, `doctor`, `costs`, `search`, `dead-code`, `decision`, `coverage`, `generate-claude-md`, `hook install/status/uninstall`.
+The commands that grew these flags: `update`, `status`, `watch`, `doctor`, `costs`, `search`, `dead-code`, `doc-drift`, `decision`, `coverage`, `generate-claude-md`, `hook install/status/uninstall`.
 
 ---
 
@@ -729,6 +730,42 @@ repowise dead-code --safe-only --min-confidence 0.8
 repowise dead-code --format json
 repowise dead-code --repo backend        # workspace, single repo
 ```
+
+---
+
+### `repowise doc-drift [PATH]`
+
+Show documentation this repository's own tree no longer satisfies: a path a
+document names that no longer exists, a link pointing at a heading that was
+renamed, a `make` target the manifest no longer declares.
+
+Reads what the last `init` or `update` stored rather than re-scanning, so it
+agrees with `get_health(include=["doc_drift"])` on the same tree.
+
+It checks only references it can resolve. Most references in a typical
+repository are uncheckable by design and are neither counted nor reported, so a
+clean run is not a claim that every sentence is true.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--min-confidence` | Hide findings below this confidence (default: 0.4) |
+| `--kind` | Only this reference class: `path`, `link`, `anchor`, `command`. Repeatable |
+| `--format` | Output: `table` (default), `json` |
+| `--repo` | In workspace mode, target a specific repo (defaults to primary) |
+| `--no-workspace` | Force single-repo mode |
+
+```bash
+repowise doc-drift
+repowise doc-drift --kind anchor            # just the renamed-heading links
+repowise doc-drift --min-confidence 0.9     # the near-certain ones
+repowise doc-drift --format json
+```
+
+Exits non-zero when there is no readable index, or when the index predates
+drift storage; in both cases `--format json` still emits a document naming the
+reason, rather than an empty finding list that would read as a clean tree.
 
 ---
 

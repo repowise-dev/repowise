@@ -10,7 +10,9 @@ from time import perf_counter
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
+from repowise.core.analysis.doc_drift.constants import DETECTION_BASIS
 from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.analysis.health.counts import (
@@ -50,6 +52,7 @@ from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.crud import (
     get_all_git_metadata,
     get_coverage_summary,
+    get_doc_drift_findings,
     get_file_language_map,
     get_git_metadata_bulk,
     get_health_finding_by_public_id,
@@ -59,6 +62,8 @@ from repowise.core.persistence.crud import (
     get_test_file_paths,
     list_health_snapshots,
     load_coverage_for_repo,
+    serialize_doc_drift_row,
+    summarize_confidence_rows,
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -1546,7 +1551,7 @@ async def get_health(
 ) -> dict:
     """Code-health scores and findings from stored analysis.
 
-    No ``targets`` returns a dashboard; targets return ranked files and findings.
+    No ``targets`` returns a dashboard; targets rank files and findings.
     Never recomputes health: commit, then run ``repowise update``.
     Every block and accepted value: docs/agent/MCP_TOOLS.md.
 
@@ -1554,9 +1559,9 @@ async def get_health(
         targets: file paths or ``module:<name>``; empty means dashboard,
             unmatched ones land in ``unresolved``.
         include: ``biomarkers``|``refactoring``|``trend``|``coverage``|
-            ``accuracy``|``signals``|``churn_complexity``, or a dimension;
-            ``performance`` and ``refactoring`` add their queues.
-        only: keys to keep; identity, totals and recovery survive.
+            ``accuracy``|``signals``|``churn_complexity``|``doc_drift``,
+            or a dimension; ``performance``/``refactoring`` add queues.
+        only: keys to keep; identity, totals, recovery survive.
             ``biomarkers``/``accuracy``/``refactoring`` alias their block key;
             ``performance``/``defect``/``maintainability`` do not: they filter
             rows and land in ``unknown_only_keys``.
@@ -1597,6 +1602,7 @@ async def get_health(
         "accuracy",
         "signals",
         "churn_complexity",
+        "doc_drift",
         "performance",
         "defect",
         "maintainability",
@@ -1686,6 +1692,7 @@ async def get_health(
         "modules",
         "churn_complexity",
         "coverage.files",
+        "doc_drift.findings",
         "refactoring_plans",
         "refactoring_opportunities",
         "refactoring_evidence",
@@ -2239,6 +2246,38 @@ async def get_health(
                 signals_by_path[path] = asdict(
                     file_signals(git_meta_by_path.get(path), degrees_by_path.get(path))
                 )
+
+        # Documentation this repository's own tree no longer satisfies. A
+        # finding is filed against the DOCUMENT, so ``targets`` narrows by the
+        # document path: naming ``docs/a.md`` asks about drift in that file.
+        # Targets are matched exactly, as everywhere else in this tool, so a
+        # bare directory resolves to nothing and lands in ``unresolved``.
+        drift_rows: list[Any] = []
+        drift_unavailable: str | None = None
+        if "doc_drift" in include_set:
+            try:
+                # The savepoint is not decoration. This read raises on an index
+                # written before the drift table existed, and on Postgres a
+                # failed statement poisons the transaction, so without it one
+                # missing table would take every later read in this call down
+                # with it. ``replace_doc_drift_findings_guarded`` guards the
+                # write side against the same hazard.
+                async with session.begin_nested():
+                    rows = await get_doc_drift_findings(session, repository.id)
+                # Only the exclude config, NOT ``in_scope_rows``. That helper
+                # also applies the ``production`` scope, whose path set is the
+                # files carrying a health metric --- and no markdown file
+                # carries one. Routing drift through it made
+                # ``scope="production"`` report every document as clean, which
+                # is the one answer this detector must never give by accident.
+                drift_rows = filter_rows_by_attr(rows, "file_path", exclude_spec)
+            except (SQLAlchemyError, OSError, LookupError):
+                # Say the block could not be read rather than serve an empty
+                # list, which would read as a clean bill of health that was
+                # never taken.
+                drift_unavailable = "index_predates_doc_drift"
+            if scoped:
+                drift_rows = [r for r in drift_rows if r.file_path in effective_targets]
 
         # Churn x complexity quadrant for the whole repo (dashboard mode). One
         # git-metadata query joined against the already-loaded metrics.
@@ -2849,6 +2888,33 @@ async def get_health(
         }
         if len(coverage_payload) < len(coverage_rows):
             result["coverage"]["files_reduced_reason"] = "limit"
+
+    if "doc_drift" in include_set:
+        if drift_unavailable is not None:
+            result["doc_drift"] = {"unavailable": drift_unavailable}
+        else:
+            drift_payload = bounded(
+                # ``evidence=False``: its first line restates ``file_path``,
+                # ``line_number`` and ``raw``, and the rest is the resolver's
+                # own trace, which is a poor trade against this budget. The
+                # CLI, which has no budget, keeps it.
+                [serialize_doc_drift_row(r, evidence=False) for r in drift_rows],
+                "doc_drift.findings",
+            )
+            result["doc_drift"] = {
+                "findings": drift_payload,
+                "findings_total": len(drift_rows),
+                "findings_emitted": len(drift_payload),
+                "documents": len({r.file_path for r in drift_rows}),
+                "confidence": summarize_confidence_rows(drift_rows),
+                # The same sentence the CLI prints, under the house ``*_basis``
+                # name for "what this count does and does not cover". A surface
+                # that shows findings without it claims coverage and precision
+                # this detector does not have: most references are uncheckable.
+                "findings_basis": DETECTION_BASIS,
+            }
+            if len(drift_payload) < len(drift_rows):
+                result["doc_drift"]["findings_reduced_reason"] = "limit"
 
     # (The dimension filter — ``include=["performance"]`` and friends, so an
     # agent can ask "show me only the performance risk in this change" — is

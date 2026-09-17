@@ -290,6 +290,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "trend.recent[]",
             "trend.alerts[]",
             "churn_complexity[]",
+            "doc_drift.findings[]",
             "test_findings[]",
             "top_findings[]",
             "findings[]",
@@ -322,6 +323,19 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "distribution",
             "gap_analysis",
         ),
+        # The drift block exists only when it was asked for, so its place in the
+        # shed order above would otherwise guarantee that the one caller who
+        # wants it is the one who loses it first. Declared for this key alone;
+        # every other block keeps the behaviour it has. Only the inner list is
+        # named, as ``coverage.files[]`` is: the block itself is not a shed-order
+        # key, and naming one the order lacks is an entry that does nothing.
+        #
+        # Declaring anything here makes ``_requested_shed_keys`` run on every
+        # call, which folds ``targets`` into the asked-for set through
+        # ``_IMPLICIT_REQUEST_ARGUMENTS``. Inert while no token below is named
+        # ``targets`` --- but adding one would silently entitle every targeted
+        # call, which is not what a projection declaration looks like it does.
+        requested_projections=(("doc_drift", ("doc_drift.findings[]",)),),
     ),
     # The tool caps source at 600 *lines*, and 600 lines of dense code measured
     # 79k chars — far past the ceiling that line cap was sized against. Callee

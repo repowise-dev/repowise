@@ -65,6 +65,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("update", "update_cmd:update_command"),
     ("generate", "generate_cmd:generate_command"),
     ("dead-code", "dead_code_cmd:dead_code_command"),
+    ("doc-drift", "doc_drift_cmd:doc_drift_command"),
     ("health", "health_cmd:health_command"),
     ("risk", "risk_cmd:risk_command"),
     ("overlap", "overlap_cmd:overlap_command"),

@@ -215,3 +215,42 @@ async def test_read_side_buckets_match_the_analyzer(async_session):
 
     rows = await get_doc_drift_findings(async_session, repo.id)
     assert summarize_confidence_rows(rows) == summarize_confidence(findings)
+
+
+async def test_one_serializer_serves_both_surfaces(async_session):
+    """The CLI and ``get_health`` read the same rows, so they serialize them
+    through one function. Two hand-maintained dicts is how they would come to
+    disagree, which is what ``test_confidence_parity`` exists to remember."""
+    from repowise.core.persistence.crud import serialize_doc_drift_row
+
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(async_session, repo.id, [_finding(line=1)])
+    await async_session.commit()
+
+    (row,) = await get_doc_drift_findings(async_session, repo.id)
+    full = serialize_doc_drift_row(row)
+    budgeted = serialize_doc_drift_row(row, evidence=False)
+
+    # The document is what a reader edits, so it is what the finding names.
+    assert full["file_path"] == row.file_path
+    # ``evidence`` is the only difference; everything else must match, or the
+    # terminal and the agent are describing the same row differently.
+    assert set(full) - set(budgeted) == {"evidence"}
+    assert all(budgeted[k] == full[k] for k in budgeted)
+
+
+async def test_unreadable_evidence_degrades_to_none_rather_than_raising():
+    """An index written by an older version is still worth reading."""
+    import types
+
+    from repowise.core.persistence.crud import serialize_doc_drift_row
+
+    def _row(blob):
+        return types.SimpleNamespace(
+            file_path="docs/a.md", line_number=1, kind="path", target="src/gone.py",
+            confidence=0.9, origin="path_no_candidate", reason="r", raw="x", context="c",
+            evidence_json=blob,
+        )
+
+    for blob in ("{not json", '{"a": 1}', "", None):
+        assert serialize_doc_drift_row(_row(blob))["evidence"] == []

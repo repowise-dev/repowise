@@ -878,7 +878,7 @@ get_health(opportunity_id="refop2_...")
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty means dashboard mode. |
-| `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
+| `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), `"doc_drift"` (documentation whose claims about the tree no longer hold), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
 | `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. Note that `refactoring_plans` is the raw
 per-detector list and is now **opt-in**: `include=["refactoring"]` leads with
 `refactoring_opportunities`, the composed unit, and emitting both would ship two
@@ -1039,6 +1039,19 @@ The opt-in enrichments:
   change scatter, 90-day churn, primary / recent owner, and graph in / out
   degree. Honest `null` per field when the underlying row is absent (never an
   imputed zero).
+- **`doc_drift`** returns a `doc_drift` block: `findings` (each naming the
+  **document** to edit, its line, the `target` it wrongly claims exists, a
+  `reason` sentence, `kind`, `origin` and `confidence`), plus `findings_total`,
+  `documents` and the high/medium/low `confidence` split. Its `basis` field is
+  load-bearing: the detector checks only references it can resolve, most
+  references in a typical repository are uncheckable by design, and a finding is
+  evidence to check rather than a proven defect. Every document is re-checked
+  against the live tree on every `init` and every `update`, so a finding does
+  not outlive the sentence that caused it; the exception is a document that
+  could not be read on a given run, whose existing rows are left alone rather
+  than deleted. An index written before findings were stored reports
+  `{"unavailable": "index_predates_doc_drift"}` rather than an empty list. `repowise doc-drift` serves the same rows in a
+  terminal, with the evidence lines this block leaves out.
 - **`churn_complexity`** returns `churn_complexity` points (one per recently-changed
   file: 90-day commit count, max CCN, NLOC, score, churn percentile): the
   refactor zone where volatility and tangle collide.
