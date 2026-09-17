@@ -16,7 +16,7 @@ def test_language_support_edge_type_sets_are_real_model_symbols() -> None:
 
     tree = ast.parse(MODELS.read_text(encoding="utf-8"))
     attributes = {
-        node.name
+        target.id
         for node in tree.body
         if isinstance(node, (ast.Assign, ast.AnnAssign))
         for target in (
