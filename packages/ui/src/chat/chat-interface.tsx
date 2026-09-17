@@ -53,7 +53,7 @@ import { useChatScroll } from "./use-chat-scroll";
 
 const DEFAULT_SUGGESTIONS: readonly ChatSuggestion[] = [
   "Give me an overview of this codebase",
-  "What are the highest-risk files to modify?",
+  "Which files have the worst code health?",
   "Score the change risk of HEAD",
   "What dead code can be safely removed?",
   "What architectural decisions have been made?",
