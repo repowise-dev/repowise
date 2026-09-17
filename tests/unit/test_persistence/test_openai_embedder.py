@@ -189,6 +189,77 @@ async def test_embed_passes_model_and_input():
 
 
 # ---------------------------------------------------------------------------
+# kind="query"|"document" — REPOWISE_EMBED_QUERY_PREFIX / _DOC_PREFIX
+# ---------------------------------------------------------------------------
+
+
+async def _captured_input(emb: OpenAIEmbedder, *, kind: str) -> list[str]:
+    captured: dict = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _make_mock_response([[1.0] + [0.0] * (emb.dimensions - 1)])
+
+    with patch("openai.OpenAI") as mock_client:
+        mock_client.return_value.embeddings.create.side_effect = fake_create
+        await emb.embed(["hello"], kind=kind)
+    return captured["input"]
+
+
+async def test_no_prefix_configured_leaves_the_request_byte_identical(monkeypatch):
+    # A fresh embedder per call: OpenAIEmbedder caches its SDK client on first
+    # use, so a second call on the same instance would talk to the first
+    # call's mock, not the one this call just configured.
+    monkeypatch.delenv("REPOWISE_EMBED_QUERY_PREFIX", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBED_DOC_PREFIX", raising=False)
+    assert await _captured_input(OpenAIEmbedder(api_key="k"), kind="query") == ["hello"]
+    assert await _captured_input(OpenAIEmbedder(api_key="k"), kind="document") == ["hello"]
+
+
+async def test_query_prefix_applied_only_to_query_kind(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBED_QUERY_PREFIX", "query: ")
+    monkeypatch.delenv("REPOWISE_EMBED_DOC_PREFIX", raising=False)
+    assert await _captured_input(OpenAIEmbedder(api_key="k"), kind="query") == ["query: hello"]
+    assert await _captured_input(OpenAIEmbedder(api_key="k"), kind="document") == ["hello"]
+
+
+async def test_document_prefix_applied_only_to_document_kind(monkeypatch):
+    monkeypatch.delenv("REPOWISE_EMBED_QUERY_PREFIX", raising=False)
+    monkeypatch.setenv("REPOWISE_EMBED_DOC_PREFIX", "passage: ")
+    assert await _captured_input(OpenAIEmbedder(api_key="k"), kind="document") == [
+        "passage: hello"
+    ]
+    assert await _captured_input(OpenAIEmbedder(api_key="k"), kind="query") == ["hello"]
+
+
+async def test_prefix_applies_to_every_text_in_the_batch(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBED_QUERY_PREFIX", "query: ")
+    monkeypatch.delenv("REPOWISE_EMBED_DOC_PREFIX", raising=False)
+    emb = OpenAIEmbedder(api_key="k", dimensions=1)
+    captured: dict = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _make_mock_response([[1.0], [1.0]])
+
+    with patch("openai.OpenAI") as mock_client:
+        mock_client.return_value.embeddings.create.side_effect = fake_create
+        await emb.embed(["alpha", "beta"], kind="query")
+
+    assert captured["input"] == ["query: alpha", "query: beta"]
+
+
+async def test_default_kind_is_document():
+    # embed()'s default kind matches the Embedder protocol's default, so a
+    # caller that doesn't think about retrieval direction gets the document
+    # framing — the safer default, since most existing callers upsert.
+    import inspect
+
+    sig = inspect.signature(OpenAIEmbedder.embed)
+    assert sig.parameters["kind"].default == "document"
+
+
+# ---------------------------------------------------------------------------
 # Forwarding the width to the API
 # ---------------------------------------------------------------------------
 
