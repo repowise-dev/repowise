@@ -337,3 +337,62 @@ async def test_status_breaks_ties_without_gating(session, setup_mcp):
     ids = [d["id"] for d in result["decisions"]]
 
     assert ids.index("strong-proposed") < ids.index("weak-active"), ids
+
+
+@pytest.mark.asyncio
+async def test_decisions_dropped_by_the_cap_stay_recoverable_with_their_bodies(
+    session, setup_mcp
+):
+    """The records past the cap are banked whole, not as a list of ids.
+
+    Search mode ranks wide and serves three. What it does with the rest is the
+    reason the projection is built for the whole surviving pool rather than for
+    the three: every dropped record is written to the omission store with its
+    decision body, its rationale and the evidence annotation already attached,
+    so ``repowise expand`` answers the follow-up without a second search.
+
+    Capping the pool before the projection would make that document a list of
+    titles, and nothing else here would notice. This pins what recovery is
+    worth so that trade has to be made deliberately.
+    """
+    from pathlib import Path
+
+    from repowise.core.distill.store import OmissionStore, default_store_path
+    from repowise.server.mcp_server import _state, get_why
+    from repowise.server.mcp_server.tool_why import _MAX_SEARCH_DECISIONS
+
+    total = 9
+    for n in range(total):
+        await _seed(
+            session,
+            setup_mcp,
+            id_=f"zeb{n}",
+            title=f"Zebrafish caching strategy variant {n}",
+            decision=f"body of decision zeb{n}",
+            rationale=f"rationale of decision zeb{n}",
+            # Distinct cited evidence, so the restatement collapse keeps them
+            # apart and the cap is what does the dropping.
+            commits=[f"{n:040x}"],
+            confidence=0.9 - n / 100,
+        )
+
+    result = await get_why("why the zebrafish caching strategy variant")
+
+    served = [d["id"] for d in result["decisions"]]
+    assert len(served) == _MAX_SEARCH_DECISIONS, served
+    assert result["decisions_total"] == total
+    assert result["decisions_omitted"] == total - _MAX_SEARCH_DECISIONS
+
+    refs = result["_meta"]["omitted"]["refs"]
+    assert refs, "a dropped decision must leave a recovery reference"
+    store = OmissionStore(default_store_path(Path(_state._repo_path)))
+    banked = "".join(store.get(ref) or "" for ref in refs)
+
+    dropped = [f"zeb{n}" for n in range(total) if f"zeb{n}" not in served]
+    assert dropped, served
+    for decision_id in dropped:
+        assert f"body of decision {decision_id}" in banked, decision_id
+        assert f"rationale of decision {decision_id}" in banked, decision_id
+    # The annotation runs before the cap, so the banked rows carry provenance
+    # too — an id alone would not tell a caller whether to trust the record.
+    assert banked.count('"provenance"') >= len(dropped)

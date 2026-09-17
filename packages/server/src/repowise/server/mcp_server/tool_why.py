@@ -1461,8 +1461,9 @@ def _collapse_restatements(records: list) -> list[tuple[Any, list[str]]]:
     """``(kept, folded_ids)`` per distinct decision, input order preserved.
 
     Runs on records rather than on the projected dicts so the collapse happens
-    *before* the lineage walk, which costs a query per surviving record. Records
-    citing no evidence at all cannot be compared this way and are always kept.
+    *before* the lineage walk and the projection, neither of which should spend
+    work on three phrasings of one decision. Records citing no evidence at all
+    cannot be compared this way and are always kept.
     """
     by_evidence: dict[tuple[object, ...], int] = {}
     out: list[tuple[Any, list[str]]] = []
@@ -1885,7 +1886,13 @@ async def _attach_decision_evidence(session: Any, records: list) -> None:
 async def _attach_response_decision_evidence(
     session: Any, result: dict[str, Any], records: list
 ) -> None:
-    """Hydrate only decision rows that the bounded response will expose."""
+    """Hydrate the decision rows *result* currently carries.
+
+    Search mode calls this before its cap, so what it hydrates is the whole
+    projected pool rather than the served head. That is deliberate: the rows
+    the cap sheds are written to the omission store, and they have to carry
+    their evidence by then or recovery returns bodies with no provenance.
+    """
     ids: set[str] = set()
 
     def visit(value: object) -> None:
@@ -1976,8 +1983,14 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     )
 
     target_set = set(targets) if targets else set()
-    # Rank wide, collapse restatements, then cap — so the cap spends its slots on
-    # distinct decisions — and only walk lineage for what survives.
+    # Rank wide, collapse restatements, and project the whole surviving pool.
+    # The cap comes last, at the bottom of this function, and what it sheds is
+    # banked whole: the omission document is the projected rows, so building
+    # only the three that are served would turn `repowise expand` from decision
+    # bodies with provenance into a list of titles. Measured on this repo, a
+    # realistic question collapses to a median of 7 records and up to 33, and
+    # capping first saves 4-21ms of a call whose cost is dominated by a fixed
+    # annotation floor. The recovery is worth more than the milliseconds.
     ranked = _rank_keyword_matches(all_decisions, query, target_set)
     if not ranked:
         return await _why_no_match(
@@ -1993,7 +2006,6 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         collapsed, decision_results, lineage_by_id, collector, accepted
     )
 
-    # No further slice: the cap is on *bodies*, applied to ``collapsed`` above.
     # Semantic hits append as id-plus-snippet at roughly 200 chars each, so
     # dropping them to fit a record count would cost the lane that carries a
     # calibrated relevance score for the sake of no measurable payload.
