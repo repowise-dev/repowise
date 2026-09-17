@@ -964,14 +964,15 @@ async def generate_estimate(
     job_config = _generate_job_config(body)
     gen_config = _build_generation_config(repo_path, job_config, wiki_style)
 
-    # Price with the repo's configured provider/model, if one resolves.
+    # Price with the provider the job will actually run with (writer
+    # resolution: repo config.yaml over the chat picker).
     provider_name: str | None = None
     model_name: str | None = None
     provider_error: str | None = None
     try:
-        from repowise.server.provider_config import get_chat_provider_instance
+        from repowise.server.provider_config import get_writer_provider_instance
 
-        llm_client = get_chat_provider_instance(repo_path=str(repo_path))
+        llm_client = get_writer_provider_instance(repo_path=str(repo_path), repo_id=repo_id)
         provider_name = getattr(llm_client, "provider_name", None)
         model_name = getattr(llm_client, "model_name", None)
     except Exception as exc:
@@ -1116,9 +1117,9 @@ async def preflight_index(
     provider_error: str | None = None
     llm_client = None
     try:
-        from repowise.server.provider_config import get_chat_provider_instance
+        from repowise.server.provider_config import get_writer_provider_instance
 
-        llm_client = get_chat_provider_instance(repo_path=repo_path)
+        llm_client = get_writer_provider_instance(repo_path=repo_path, repo_id=repo_id)
         provider_name = getattr(llm_client, "provider_name", None)
         model_name = getattr(llm_client, "model_name", None)
     except Exception as exc:

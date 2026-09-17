@@ -296,3 +296,81 @@ def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
         assert set(provider) == {"id", "name", "models", "default_model", "configured"}
         assert "key" not in provider
         assert "api_key" not in provider
+
+
+# ---------------------------------------------------------------------------
+# Writer resolution (issue #2265): docs jobs follow config.yaml, not the
+# chat model picker.
+# ---------------------------------------------------------------------------
+
+
+def _capture_provider(monkeypatch) -> dict:
+    captured: dict = {}
+
+    def fake_get_provider(provider_id, **kwargs):
+        captured.clear()
+        captured["provider_id"] = provider_id
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("repowise.core.providers.llm.registry.get_provider", fake_get_provider)
+    return captured
+
+
+def test_writer_uses_repo_config_over_chat_picker(clean_env, tmp_path, monkeypatch):
+    repo = _make_repo(
+        tmp_path / "repo",
+        config="provider: claude_cli\nmodel: claude_cli/claude-sonnet-4-6\nembedder: mock\n",
+        env="GEMINI_API_KEY=sk-gem\n",
+    )
+    # User switched *chat* to Gemini for this repo.
+    pc.set_active_provider("gemini", "gemini-3.1-pro-preview", repo_id="r1")
+
+    captured = _capture_provider(monkeypatch)
+    pc.get_writer_provider_instance(repo_path=str(repo), repo_id="r1")
+
+    assert captured["provider_id"] == "claude_cli"
+    assert captured["model"] == "claude_cli/claude-sonnet-4-6"
+    # Chat itself is untouched: the picker still wins there.
+    assert pc.get_active_provider(repo_id="r1", repo_path=str(repo)) == (
+        "gemini",
+        "gemini-3.1-pro-preview",
+    )
+
+
+def test_writer_falls_back_to_picker_without_configured_provider(clean_env, tmp_path, monkeypatch):
+    # PR #2198: a repo added in the UI has no provider in config.yaml yet, so
+    # the first index must still use what the picker chose.
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    pc.set_active_provider("gemini", "gemini-3.1-pro-preview", repo_id="r1")
+
+    captured = _capture_provider(monkeypatch)
+    pc.get_writer_provider_instance(repo_path=str(repo), repo_id="r1")
+
+    assert captured["provider_id"] == "gemini"
+    assert captured["model"] == "gemini-3.1-pro-preview"
+
+
+def test_writer_config_provider_without_model_uses_its_own_default(
+    clean_env, tmp_path, monkeypatch
+):
+    # A model picked for another provider must never be paired with this one.
+    repo = _make_repo(tmp_path / "repo", config="provider: claude_cli\nembedder: mock\n")
+    pc.set_active_provider("gemini", "gemini-3.1-pro-preview", repo_id="r1")
+
+    captured = _capture_provider(monkeypatch)
+    pc.get_writer_provider_instance(repo_path=str(repo), repo_id="r1")
+
+    assert captured["provider_id"] == "claude_cli"
+    assert captured["model"] == "claude_cli/claude-haiku-4-5"  # catalog default
+
+
+def test_writer_unknown_config_provider_falls_back(clean_env, tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path / "repo", config="provider: madeup\nmodel: x\nembedder: mock\n")
+    pc.set_active_provider("gemini", "gemini-3.1-pro-preview", repo_id="r1")
+
+    captured = _capture_provider(monkeypatch)
+    pc.get_writer_provider_instance(repo_path=str(repo), repo_id="r1")
+
+    assert captured["provider_id"] == "gemini"
+    assert captured["model"] == "gemini-3.1-pro-preview"

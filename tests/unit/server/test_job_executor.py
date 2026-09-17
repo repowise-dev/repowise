@@ -768,3 +768,52 @@ async def test_execute_job_dispatches_generate_mode(session_factory, tmp_path):
         await execute_job(job_id, app_state)
 
     run_generate_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_job_writer_prefers_repo_config_over_chat_picker(
+    session_factory, tmp_path, monkeypatch
+):
+    """Issue #2265: a wiki build uses config.yaml's provider, not the chat picker."""
+    from repowise.server import provider_config as pc
+
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path / "server"))
+    repo_dir = tmp_path / "repo"
+    (repo_dir / ".repowise").mkdir(parents=True)
+    (repo_dir / ".repowise" / "config.yaml").write_text(
+        "provider: claude_cli\nmodel: claude_cli/claude-sonnet-4-6\nembedder: mock\n",
+        encoding="utf-8",
+    )
+
+    async with session_factory() as session:
+        repo = await upsert_repository(session, name="r", local_path=str(repo_dir), settings={})
+        job = await upsert_generation_job(
+            session, repository_id=repo.id, config={"mode": "full_resync"}
+        )
+        await session.commit()
+        job_id, repo_id = job.id, repo.id
+
+    # Chat was switched to Gemini for this repo.
+    pc.set_active_provider("gemini", "gemini-3.1-pro-preview", repo_id=repo_id)
+
+    captured: dict = {}
+
+    def fake_get_provider(provider_id, **kwargs):
+        captured["provider_id"] = provider_id
+        captured.update(kwargs)
+        return MagicMock(provider_name=provider_id, model_name=kwargs.get("model"))
+
+    monkeypatch.setattr("repowise.core.providers.llm.registry.get_provider", fake_get_provider)
+
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+    run_pipeline_mock = AsyncMock(return_value=_fake_result())
+    with (
+        patch("repowise.server.job_executor.run_pipeline", run_pipeline_mock),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+    ):
+        await execute_job(job_id, app_state)
+
+    assert captured["provider_id"] == "claude_cli"
+    assert captured["model"] == "claude_cli/claude-sonnet-4-6"
+    llm_client = run_pipeline_mock.await_args.kwargs["llm_client"]
+    assert llm_client.provider_name == "claude_cli"

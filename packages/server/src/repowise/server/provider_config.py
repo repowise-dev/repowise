@@ -13,7 +13,10 @@ resolution chains run here, both most-specific-first:
 **Active provider/model** (:func:`_resolve_active_for_repo`): per-repo UI
 selection > the repo's ``config.yaml`` > server-global active selection >
 ``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env > auto-detect the first provider
-with a usable key. See that function's docstring for the full rationale.
+with a usable key. See that function's docstring for the full rationale. That
+chain drives *chat*; docs-writing jobs resolve through
+:func:`get_writer_provider_instance`, which puts the repo's ``config.yaml``
+first (see its docstring).
 
 Because the CLI resolves keys from ``.repowise/.env`` (step 2) and never sees
 the server store, :func:`set_api_key` mirrors a UI-added key into that file so a
@@ -318,6 +321,11 @@ def _resolve_active_for_repo(
 ) -> tuple[str | None, str | None]:
     """Resolve the (provider, model) for a repo's chat, most specific first.
 
+    Chat only — docs writing goes through
+    :func:`get_writer_provider_instance`, which prefers the repo's
+    ``config.yaml`` over the UI picker.
+
+
     Precedence:
       1. Per-repo UI selection persisted under ``repos[repo_id]`` — an
          explicit override the user made for *this* repo. Stored per-repo so
@@ -549,3 +557,39 @@ def get_chat_provider_instance(
         kwargs["base_url"] = base_url
 
     return get_provider(provider_id, with_rate_limiter=False, **kwargs)
+
+
+def get_writer_provider_instance(
+    repo_path: str | Path | None = None,
+    repo_id: str | None = None,
+):
+    """Create the provider used to *write docs* (index, generate, estimates).
+
+    Differs from :func:`get_chat_provider_instance` in one step: the repo's
+    ``.repowise/config.yaml`` outranks the per-repo UI model picker. The
+    picker is a cheap chat-scoped choice; a wiki build is a long, expensive
+    run whose provider the user set deliberately at ``repowise init``, and
+    letting a chat pick silently redirect it produced pages written by a model
+    nobody chose (issue #2265).
+
+    When ``config.yaml`` names no provider — or one outside the catalog — the
+    full chat chain still applies, which is what lets a freshly added repo
+    index with whatever the UI picked before any config exists (PR #2198).
+    """
+    repo_cfg, _ = _load_repo_context(repo_path)
+    cfg_provider = repo_cfg.get("provider")
+    if cfg_provider:
+        if cfg_provider in _CATALOG_BY_ID:
+            # The override branch pairs it with the configured model, else that
+            # provider's own default — never a model picked for a different
+            # provider.
+            return get_chat_provider_instance(
+                repo_path=repo_path,
+                repo_id=repo_id,
+                provider_override=cfg_provider,
+            )
+        logger.warning(
+            "Repo config names unknown provider %r; falling back to active selection",
+            cfg_provider,
+        )
+    return get_chat_provider_instance(repo_path=repo_path, repo_id=repo_id)

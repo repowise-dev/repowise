@@ -225,6 +225,34 @@ async def test_generate_endpoint_409_when_job_active(client: AsyncClient, app) -
 
 
 @pytest.mark.asyncio
+async def test_generate_estimate_quotes_the_provider_the_job_will_use(
+    client: AsyncClient, tmp_path, monkeypatch
+) -> None:
+    """Issue #2265: the estimate priced a different provider than execute_job ran."""
+    from repowise.server import provider_config as pc
+
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(tmp_path / "server"))
+    repo = await create_test_repo(client, tmp_path)
+    pc.set_active_provider("gemini", "gemini-3.1-pro-preview", repo_id=repo["id"])
+
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.registry.get_provider",
+        lambda provider_id, **kw: SimpleNamespace(
+            provider_name=provider_id, model_name=kw.get("model")
+        ),
+    )
+
+    resp = await client.post(
+        f"/api/repos/{repo['id']}/generate/estimate",
+        json={"selection": {"kind": "unwritten"}},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["provider"]["name"] == "gemini"
+    assert resp.json()["provider"]["model"] == "gemini-3.1-pro-preview"
+
+
+@pytest.mark.asyncio
 async def test_generate_estimate_no_pages(client: AsyncClient) -> None:
     """A repo with no wiki pages returns a zero estimate, not a crash."""
     repo = await create_test_repo(client)
