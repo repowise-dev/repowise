@@ -288,6 +288,124 @@ class TestObjectiveCSourceSanitiser:
         assert prepare_objectivec_source(src) is src
 
 
+TRAILING_MACRO_PROPERTY = b"""\
+#import "Manager.h"
+
+@interface Manager : NSObject
+- (instancetype)initWithTask:(NSURLSessionTask *)task;
+@property (nonatomic, strong) NSMutableData *mutableData;
+#if AF_CAN_INCLUDE_SESSION_TASK_METRICS
+@property (nonatomic, strong) NSURLSessionTaskMetrics *sessionMetrics
+    AF_API_AVAILABLE(ios(10), macosx(10.12), watchos(3), tvos(10));
+#endif
+@property (nonatomic, copy) Handler completionHandler;
+- (void)run;
+@end
+
+@implementation Manager
+- (instancetype)initWithTask:(NSURLSessionTask *)task {
+    _mutableData = [NSMutableData data];
+    return self;
+}
+
+- (void)run {
+    normalise(1);
+}
+@end
+
+static int normalise(int x) { return x; }
+"""
+
+TRAILING_MACRO_METHOD = b"""\
+#import "Manager.h"
+
+static int normalise(int x) { return x; }
+
+@interface Manager : NSObject
+#if AF_CAN_INCLUDE_SESSION_TASK_METRICS
+@property (nonatomic, strong) NSURLSessionTaskMetrics *sessionMetrics
+    AF_API_AVAILABLE(ios(10), macosx(10.12), watchos(3), tvos(10));
+#endif
+@end
+
+@implementation Manager
+- (void)collectMetrics:(NSURLSessionTaskMetrics *)metrics
+    AF_API_AVAILABLE(ios(10), macosx(10.12), watchos(3), tvos(10))
+{
+    normalise(1);
+}
+@end
+"""
+
+
+class TestObjectiveCTrailingAttributeMacros:
+    def test_a_trailing_property_macro_does_not_derail_the_rest_of_the_file(
+        self, parser: ASTParser
+    ) -> None:
+        # The macro is the last token of a declaration the grammar otherwise
+        # reads fine, so it cannot be blanked as a whole line. Left in, it
+        # reads as an unclosable declarator, recovery never resyncs, and the
+        # damage runs from the property through the class and its method
+        # bodies: only the property and the method that precede it survive.
+        result = parser.parse_file(_objc("Manager.m"), TRAILING_MACRO_PROPERTY)
+        assert result.parse_errors == []
+        kinds = {(s.name, s.kind) for s in result.symbols}
+        assert ("Manager", "class") in kinds
+        assert ("sessionMetrics", "variable") in kinds
+        assert ("completionHandler", "variable") in kinds
+        assert ("run", "method") in kinds
+
+    def test_a_trailing_method_macro_keeps_the_enclosing_method_as_caller(
+        self, parser: ASTParser
+    ) -> None:
+        # Same cascade, one declaration later: the method body lands outside
+        # any function the parser recognises, so its call carries no enclosing
+        # symbol and call resolution credits it to the per-file ``__module__``
+        # node instead of the method that really makes the call.
+        result = parser.parse_file(_objc("Manager.m"), TRAILING_MACRO_METHOD)
+        assert result.parse_errors == []
+        call = next(c for c in result.calls if c.target_name == "normalise")
+        assert call.caller_symbol_id == "Manager.m::Manager::collectMetrics:"
+        assert all("__module__" not in (c.caller_symbol_id or "") for c in result.calls)
+
+    def test_the_macro_is_blanked_and_every_other_byte_keeps_its_offset(self) -> None:
+        src = (
+            b"@property (nonatomic, copy) Block done\n"
+            b"    AF_API_AVAILABLE(ios(10), macosx(10.12), watchos(3), tvos(10));\n"
+            b"- (void)run NS_SWIFT_NAME(run());\n"
+        )
+        out = prepare_objectivec_source(src)
+        assert len(out) == len(src)
+        assert out.count(b"\n") == src.count(b"\n")
+        assert b"AF_API_AVAILABLE" not in out
+        assert b"NS_SWIFT_NAME" not in out
+        # The terminator each declaration ends with is still there.
+        assert out.count(b";") == src.count(b";")
+
+    def test_a_method_definition_may_put_its_brace_on_the_next_line(self) -> None:
+        src = b"- (void)collectMetrics:(id)metrics\n    NS_AVAILABLE(10_0)\n{\n}\n"
+        out = prepare_objectivec_source(src)
+        assert b"NS_AVAILABLE" not in out
+        assert out.endswith(b"{\n}\n")
+
+    def test_the_same_name_used_as_a_value_is_untouched(self) -> None:
+        # Only a form that terminates a declaration is an attribute; here the
+        # macro name sits inside an argument list and its parentheses close
+        # before anything that could end a declaration.
+        src = b'log(NS_SWIFT_NAME(x), 2);\nfoo(API_AVAILABLE(ios(10)), 2);\n'
+        assert prepare_objectivec_source(src) == src
+
+    def test_a_longer_identifier_ending_in_the_macro_name_is_untouched(self) -> None:
+        assert prepare_objectivec_source(b"MY_API_AVAILABLE(10);\n") == b"MY_API_AVAILABLE(10);\n"
+
+    def test_an_enum_macro_is_still_untouched(self) -> None:
+        # NS_ENUM leads a declaration whose body the grammar needs; blanking
+        # it would take the enum with it. It is the reason this list is
+        # enumerated by name rather than matching any IDENT(...) before a brace.
+        src = b"typedef NS_ENUM(NSInteger, Kind) { KindA, KindB };\n"
+        assert prepare_objectivec_source(src) == src
+
+
 BLOCK_INVOCATION = b"""\
 @interface Token : NSObject
 @property (nonatomic, copy) SDBlock completionBlock;
