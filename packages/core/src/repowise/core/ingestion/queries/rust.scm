@@ -314,62 +314,60 @@
 ; These positions previously carried ``@call.target``/``@call.site``, which
 ; recorded the enclosing function as *calling* the type: ``fn take(x: MyType)``
 ; became take -> MyType in the call graph. A type is not callable, so every one
-; of those edges was wrong. The nodes captured are unchanged — only the
-; capture name moves to the cross-language ``@param.type``, which
-; parser._extract_type_refs turns into TypeReference records and
-; type_ref_resolution._resolve_rust_type_refs resolves into ``type_use``
-; edges. The dead-code reference the old captures existed to provide is
-; preserved, because type_use is a file-level use edge.
+; of those edges was wrong. The capture name moves to the cross-language
+; ``@param.type``, which parser._extract_type_refs turns into TypeReference
+; records and type_ref_resolution._resolve_rust_type_refs resolves into
+; ``type_use`` edges. The dead-code reference the old captures existed to
+; provide is preserved, because type_use is a file-level use edge.
 ;
-; Each pattern captures the bare ``type_identifier`` rather than the enclosing
-; type node, keeping this a 1:1 move; the Rust head extractor in
-; parser_helpers.py unwraps ``&T`` / ``Box<T>`` / ``dyn T`` / ``std::io::Error``
-; for the day a capture widens, and filters the 55 rust builtins.
+; Each pattern hands the enclosing type node to the Rust head extractor in
+; parser_helpers.py (``_rust_head_type_identifier``), which unwraps ``&T`` /
+; ``&mut T`` / ``*const T`` / ``Box<T>`` / ``dyn T`` / ``impl T`` /
+; ``std::io::Error`` and filters the 55 rust builtins. Capturing the bare
+; ``type_identifier`` instead dropped every wrapped shape, and a borrowed,
+; boxed or path-qualified type is the ordinary way to write Rust, so most
+; type uses went unrecorded. Widening cannot mint a wrong edge: the extractor
+; returns the head name or nothing, and a head naming no repository symbol is
+; dropped by the resolver.
 
-; Type reference in function parameter: fn foo(x: MyType)
+; Parameter type: fn foo(x: MyType), (x: &MyType), (x: Box<MyType>),
+; (x: std::io::Error). The whole type node goes to the extractor, which
+; subsumes the ``&dyn Trait`` and ``impl Trait`` patterns this replaces
+; (go.scm and c.scm capture their parameter positions the same way).
 (parameter
-  type: (type_identifier) @param.type
-)
-
-; Type reference via &dyn: fn foo(x: &dyn MyTrait)
-(parameter
-  type: (reference_type
-    type: (dynamic_type
-      (type_identifier) @param.type
-    )
-  )
-)
-
-; Type reference via impl Trait: fn foo(x: impl MyTrait)
-(parameter
-  type: (abstract_type
-    (type_identifier) @param.type
-  )
+  type: (_) @param.type
 )
 
 ; Trait bound in generic parameter: fn foo<T: MyTrait>()
-; Also matches where clauses: where T: MyTrait + OtherTrait
+; Also matches where clauses: where T: MyTrait + OtherTrait.
+; Wrapped bounds (``ns::Trait``, ``Trait<Foo>``) resolve through the extractor
+; like every other position here.
 (trait_bounds
-  (type_identifier) @param.type
+  (_) @param.type
 )
 
-; Return type reference: fn foo() -> MyType
+; Return type: fn foo() -> MyType, -> &MyType, -> Box<MyType>,
+; -> std::io::Error
 (function_item
-  return_type: (type_identifier) @param.type
+  return_type: (_) @param.type
 )
 
-; dyn Trait in type arguments: Box<dyn MyTrait>, Arc<dyn MyTrait>
+; Type argument: Box<MyType>, Arc<dyn MyTrait>, Wrapper<std::io::Error>,
+; and the turbofish func::<MyType>(...). Anchored at the ``type_arguments``
+; node, so a nested argument is captured recursively by its own node.
+; Restricted to the shapes the extractor unwraps: ``(_)`` would also match
+; the ``type_binding`` of ``Iterator<Item = Foo>``, whose head name is the
+; binding (``Item``), not a type.
 (type_arguments
-  (dynamic_type
-    (type_identifier) @param.type
-  )
-)
-
-; Type argument in turbofish: func::<MyType>(...), Channel::<MyType>::new()
-(generic_function
-  type_arguments: (type_arguments
-    (type_identifier) @param.type
-  )
+  [
+    (type_identifier)
+    (scoped_type_identifier)
+    (generic_type)
+    (reference_type)
+    (pointer_type)
+    (dynamic_type)
+    (abstract_type)
+  ] @param.type
 )
 
 ; ---------------------------------------------------------------------------
