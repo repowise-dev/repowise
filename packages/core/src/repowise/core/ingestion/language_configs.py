@@ -121,6 +121,12 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             # Top-level const/let with a literal value (the .scm pattern is
             # program-anchored). Refined in the parser like Python assignments.
             "variable_declarator": "constant",
+            # Class property holding a function (``static create = () => {}``,
+            # ``handler = function () {}``). The .scm pattern gates on the value
+            # being an arrow_function / function_expression, so no plain data
+            # property (``count = 0``) ever reaches this mapping; a class member
+            # is a member, so the kind is "method".
+            "public_field_definition": "method",
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],

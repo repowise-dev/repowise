@@ -82,6 +82,30 @@
   name: (property_identifier) @symbol.name
 ) @symbol.def
 
+; Class property holding a function: ``static create = (...) => {}`` and
+; ``handler = function () {}``.
+;
+; Gated on the initialiser actually being an arrow_function or a
+; function_expression, so an ordinary data property (``count = 0``,
+; ``label: string``) still mints no symbol. The property's *type annotation*
+; keeps its own pattern further down; this one supplies the callable
+; definition that pattern never carried, which is why the common
+; static-factory idiom was absent from every symbol table.
+;
+; The optional accessibility_modifier capture keeps ``private handler =
+; () => {}`` from reading as public, matching the method patterns above.
+(public_field_definition
+  (accessibility_modifier)? @symbol.modifiers
+  name: [(property_identifier) (private_property_identifier)] @symbol.name
+  value: [
+    (arrow_function parameters: (formal_parameters) @symbol.params)
+    (arrow_function parameter: (identifier) @symbol.params)
+    (function_expression parameters: (formal_parameters) @symbol.params)
+    (arrow_function)
+    (function_expression)
+  ]
+) @symbol.def
+
 ; Top-level const/let bindings — module constants and call-expression
 ; bindings. The declarator (not the lexical_declaration) is @symbol.def so
 ; the kind map can distinguish it from the arrow-function pattern above.
