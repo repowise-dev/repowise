@@ -85,6 +85,14 @@ codex exec --ephemeral --sandbox read-only --json --cd /absolute/path/to/repo -
 
 Repowise sends the prompt on stdin, parses Codex JSONL output, records token usage from `turn.completed.usage`, and treats `codex_cli/*` cost as `$0.00` because subscription billing happens outside Repowise API pricing. `--model` is passed to Codex only when you explicitly configure a model. `--reasoning minimal` maps to Codex `model_reasoning_effort="minimal"` when the selected model advertises a `minimal` level, and falls back to `"low"` when it does not; `low`, `medium`, `high`, and `xhigh` pass through when the model advertises those levels. `off`/`none` maps to `model_reasoning_effort="none"`. `auto` sends no effort at all and lets Codex pick.
 
+Each page is a full `codex exec` process, and subscription limits are per account, so the provider defaults to **4** concurrent subprocesses. Override with:
+
+```bash
+REPOWISE_CODEX_CLI_CONCURRENCY=2 repowise generate --unwritten
+```
+
+That variable raises as well as lowers the limit, so 4 is a default rather than an enforced ceiling. Higher is reasonable on a plan with a larger allowance, and is also the fastest way to trip the account limit mid-run.
+
 Smoke check:
 
 ```bash

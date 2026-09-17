@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -34,6 +35,18 @@ log = structlog.get_logger(__name__)
 _DEFAULT_MODEL_LABEL = "codex_cli/default"
 _EXEC_TIMEOUT_SECONDS = 600
 _CATALOG_TIMEOUT_SECONDS = 5
+
+# Subscription seats are rate limited per account and each call is a full CLI
+# process. Serializing turns a 104-page generate into about 95 minutes; too
+# much concurrency trips the account limit and fails the run. 4 matches the
+# ceiling init applies to the other CLI-backed providers.
+#
+# The env override is a true override, not a clamp: it can raise the fan-out
+# above 4 as well as lower it. Deliberate -- a higher-tier plan can take more
+# than a lower one, and only the operator knows which they have -- but it does
+# mean 4 is a default rather than an enforced cap.
+_DEFAULT_CONCURRENCY = 4
+_CONCURRENCY_ENV = "REPOWISE_CODEX_CLI_CONCURRENCY"
 
 
 async def _close_subprocess_transport(proc: asyncio.subprocess.Process) -> None:
@@ -79,6 +92,18 @@ def _model_label(model: str | None) -> str:
     """Return the persisted attribution label for a Codex CLI model."""
     native = _normalize_model(model)
     return f"codex_cli/{native}" if native else _DEFAULT_MODEL_LABEL
+
+
+def _resolve_concurrency() -> int:
+    raw = os.environ.get(_CONCURRENCY_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_CONCURRENCY
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("codex_cli.concurrency.invalid", value=raw, using=_DEFAULT_CONCURRENCY)
+        return _DEFAULT_CONCURRENCY
+    return max(1, value)
 
 
 def _extract_codex_model_catalog(raw: object) -> dict[str, CodexModelReasoning]:
@@ -347,8 +372,8 @@ class CodexCliProvider(BaseProvider):
             chooses the model. Persisted labels like ``codex_cli/gpt-5.5`` are
             accepted and normalized before calling the CLI.
         repo_path: Working directory passed to ``codex exec --cd``.
-        rate_limiter: Accepted for interface consistency, but the provider
-            serializes subprocess calls by default.
+        rate_limiter: Accepted for interface consistency; the provider also
+            bounds its own subprocess fan-out.
     """
 
     # A process spawn plus a full Codex agent turn. The floor is tens of
@@ -396,7 +421,7 @@ class CodexCliProvider(BaseProvider):
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
         if self._semaphore_loop is not loop:
-            self._subprocess_semaphore = asyncio.Semaphore(1)
+            self._subprocess_semaphore = asyncio.Semaphore(_resolve_concurrency())
             self._semaphore_loop = loop
         return self._subprocess_semaphore  # type: ignore[return-value]
 
