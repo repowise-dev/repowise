@@ -288,6 +288,9 @@ async def update_job_status(
         job.failed_pages = failed_pages
     if current_level is not None:
         job.current_level = current_level
+    # None means "leave unchanged": the caller did not touch the field. An
+    # explicit 0 clears the denominator for a phase that reports no total, so
+    # the two are not interchangeable here.
     if total_pages is not None:
         job.total_pages = total_pages
     if error_message is not None:

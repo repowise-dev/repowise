@@ -14,8 +14,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from repowise.core.persistence.crud import upsert_generation_job, upsert_repository
+from repowise.core.persistence.crud import (
+    get_generation_job,
+    upsert_generation_job,
+    upsert_repository,
+)
 from repowise.server.job_executor import (
+    JobProgressCallback,
     _build_generation_config,
     _incremental_page_regen,
     _plan_incremental_page_regen,
@@ -768,3 +773,71 @@ async def test_execute_job_dispatches_generate_mode(session_factory, tmp_path):
         await execute_job(job_id, app_state)
 
     run_generate_mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Phase-scoped progress counters (issue #2175)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_job_carrying_total(session_factory, repo_path, *, total_pages: int) -> str:
+    """Insert a repo + a job whose record already carries *total_pages*.
+
+    This is the state an earlier phase leaves behind: it knew how many items
+    it had and wrote the denominator, while the counters next to it belonged
+    to that phase.
+    """
+    async with session_factory() as session:
+        repo = await upsert_repository(
+            session, name="test-repo", local_path=str(repo_path), settings={}
+        )
+        job = await upsert_generation_job(
+            session,
+            repository_id=repo.id,
+            total_pages=total_pages,
+            config={"mode": "full_resync"},
+        )
+        await session.commit()
+        return job.id
+
+
+@pytest.mark.asyncio
+async def test_unknown_total_phase_clears_the_stale_denominator(session_factory, tmp_path):
+    """A phase that reports no total must not keep the previous phase's total.
+
+    ``completed_pages`` is phase-scoped: it resets at every phase start, so a
+    flush writes a numerator that counts the current phase. Passing ``None``
+    through for the denominator meant the writer (which reads None as "leave
+    unchanged") kept the old phase's number on the record while the numerator
+    climbed from zero -- the reported "241 / 5 pages".
+    """
+    job_id = await _seed_job_carrying_total(session_factory, tmp_path, total_pages=5)
+
+    progress = JobProgressCallback(job_id, session_factory)
+    progress.on_phase_start("knowledge_graph.skeleton", None)
+    for _ in range(7):
+        progress.on_item_done("knowledge_graph.skeleton")
+    await progress.drain_and_stop()
+
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+    assert job is not None
+    # 7 items done in a phase with no known total: an honest numerator next to
+    # an explicitly cleared denominator, never 7 paired with the stale 5.
+    assert job.completed_pages == 7
+    assert job.total_pages == 0
+
+
+@pytest.mark.asyncio
+async def test_known_total_phase_still_writes_its_denominator(session_factory, tmp_path):
+    """A phase that knows its count writes it (the clear must not over-reach)."""
+    job_id = await _seed_job_carrying_total(session_factory, tmp_path, total_pages=0)
+
+    progress = JobProgressCallback(job_id, session_factory)
+    progress.on_phase_start("parse", 5)
+    await progress.drain_and_stop()
+
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+    assert job is not None
+    assert job.total_pages == 5

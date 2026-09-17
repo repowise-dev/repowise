@@ -164,6 +164,30 @@ async def test_get_generation_job_returns_none_for_missing(async_session):
     assert result is None
 
 
+async def test_update_job_status_explicit_zero_clears_total_pages(async_session):
+    """0 clears the denominator; None means "leave unchanged" (issue #2175).
+
+    Job progress writers depend on the difference: a phase that reports no
+    total writes an explicit 0 so the stale denominator from an earlier phase
+    does not survive it, while a status-only write omits the field entirely.
+    """
+    repo = await insert_repo(async_session)
+    job = await upsert_generation_job(async_session, repository_id=repo.id, total_pages=7)
+    await async_session.commit()
+
+    await update_job_status(async_session, job.id, "running")
+    await async_session.commit()
+    omitted = await get_generation_job(async_session, job.id)
+    assert omitted is not None
+    assert omitted.total_pages == 7
+
+    await update_job_status(async_session, job.id, "running", total_pages=0)
+    await async_session.commit()
+    cleared = await get_generation_job(async_session, job.id)
+    assert cleared is not None
+    assert cleared.total_pages == 0
+
+
 # ---------------------------------------------------------------------------
 # Page CRUD (versioning)
 # ---------------------------------------------------------------------------

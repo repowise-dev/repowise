@@ -172,7 +172,11 @@ class JobProgressCallback:
         self._phase = phase
         if self._events is not None:
             self._events.set_phase(phase, total)
-        # Reset per-phase counters so the bar shows progress within the current phase
+        # Reset per-phase counters so the bar shows progress within the current
+        # phase. ``total`` stays None here for a phase that cannot know its
+        # count; the flush writes that through as an explicit 0 rather than
+        # leaving the previous phase's denominator on the record (see
+        # ``_async_update``).
         self._completed = 0
         self._total = total
         self._pending_flush = 0
@@ -243,6 +247,14 @@ class JobProgressCallback:
         self._pending_tasks.clear()
 
     async def _async_update(self) -> None:
+        # ``completed_pages`` is phase-scoped (it resets at every phase start),
+        # so its denominator has to be written alongside it. The writer reads
+        # None as "leave unchanged", which is what let a phase with an unknown
+        # total keep the previous phase's number while the numerator climbed
+        # from zero (the "241 / 5 pages" readout). An unknown total is written
+        # as an explicit 0, the value both progress components already read as
+        # "no meaningful denominator".
+        total_pages = self._total if self._total is not None else 0
         try:
             async with get_session(self._session_factory) as session:
                 await update_job_status(
@@ -250,7 +262,7 @@ class JobProgressCallback:
                     self._job_id,
                     "running",
                     completed_pages=self._completed,
-                    total_pages=self._total,
+                    total_pages=total_pages,
                     current_level=_PHASE_LEVELS.get(self._phase, 0),
                 )
         except Exception as exc:
