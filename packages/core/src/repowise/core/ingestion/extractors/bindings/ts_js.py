@@ -8,6 +8,86 @@ from ...models import NamedBinding
 from ..helpers import node_text
 
 
+def _bindings_from_object_pattern(
+    name_node: Node, src: str
+) -> tuple[list[str], list[NamedBinding]]:
+    """Names and bindings for an ``object_pattern`` destructuring target.
+
+    ``imported_names`` carries the property keys, i.e. the names as they exist
+    in the *source* module, while the binding keeps the local alias: for
+    ``const { a, b: c } = …`` the names are ``["a", "b"]`` and the second
+    binding is ``local_name="c", exported_name="b"``. Shared by the
+    ``require()`` declarator path and the dynamic-import destructuring path so
+    the two spell the same clause identically.
+    """
+    names: list[str] = []
+    bindings: list[NamedBinding] = []
+
+    for el in name_node.children:
+        if el.type == "shorthand_property_identifier_pattern":
+            local = node_text(el, src)
+            names.append(local)
+            bindings.append(NamedBinding(local_name=local, exported_name=local, source_file=None))
+        elif el.type == "pair_pattern":
+            key = el.child_by_field_name("key")
+            val = el.child_by_field_name("value")
+            if key is not None and val is not None:
+                exported = node_text(key, src)
+                local = node_text(val, src)
+                names.append(exported)
+                bindings.append(
+                    NamedBinding(local_name=local, exported_name=exported, source_file=None)
+                )
+
+    return names, bindings
+
+
+def dynamic_import_bindings(call_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
+    """Bindings for ``const { a, b: c } = await import('./mod')``.
+
+    The dynamic-import query captures the inner ``import(...)`` call, so the
+    destructuring target is not on the captured node: it lives on the parent
+    ``variable_declarator``, behind an ``await_expression``. Returns the
+    ``(["*"], [])`` wildcard sentinel for every other shape, deliberately:
+
+    - ``const mod = await import('./mod')`` assigns the whole namespace
+      object to ``mod``, and
+    - ``() => import('./views/Profile')`` forwards it to the runtime router,
+
+    so in both the developer captures everything the module exports and a
+    wildcard is the honest record. Emitting named bindings for those shapes
+    would make the dead-code analyzer report exports that the file really
+    does consume.
+
+    Ceiling: one hop through ``await_expression`` only. A chained call in
+    between (``const { a } = await import('./m').then(x => x)``) and a
+    binding inside a callback parameter (``import('./m').then(({ a }) => …)``)
+    stay on the wildcard, matching the shapes this issue scopes out.
+    """
+    node = call_node
+    parent = node.parent
+    if parent is not None and parent.type == "await_expression":
+        node = parent
+        parent = parent.parent
+    if parent is None or parent.type != "variable_declarator":
+        return ["*"], []
+
+    value = parent.child_by_field_name("value")
+    if value is None or value.id != node.id:
+        return ["*"], []
+
+    name_node = parent.child_by_field_name("name")
+    if name_node is None or name_node.type != "object_pattern":
+        return ["*"], []
+
+    names, bindings = _bindings_from_object_pattern(name_node, src)
+    # A pattern with nothing extractable (``const {} = …``, a bare rest
+    # element) still consumes the namespace rather than nothing at all.
+    if not names:
+        return ["*"], []
+    return names, bindings
+
+
 def _extract_require_bindings(
     stmt_node: Node, src: str
 ) -> tuple[list[str], list[NamedBinding]] | None:
@@ -46,23 +126,7 @@ def _extract_require_bindings(
             )
         )
     elif name_node.type == "object_pattern":
-        for el in name_node.children:
-            if el.type == "shorthand_property_identifier_pattern":
-                local = node_text(el, src)
-                names.append(local)
-                bindings.append(
-                    NamedBinding(local_name=local, exported_name=local, source_file=None)
-                )
-            elif el.type == "pair_pattern":
-                key = el.child_by_field_name("key")
-                val = el.child_by_field_name("value")
-                if key is not None and val is not None:
-                    exported = node_text(key, src)
-                    local = node_text(val, src)
-                    names.append(exported)
-                    bindings.append(
-                        NamedBinding(local_name=local, exported_name=exported, source_file=None)
-                    )
+        names, bindings = _bindings_from_object_pattern(name_node, src)
 
     return names, bindings
 

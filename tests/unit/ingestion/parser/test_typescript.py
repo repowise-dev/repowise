@@ -663,3 +663,95 @@ class Counter {
         result = parser.parse_file(fi, src)
         call_targets = [c.target_name for c in result.calls]
         assert "#increment" in call_targets
+
+
+# ---------------------------------------------------------------------------
+# Dynamic ESM import destructuring (issue #2230)
+#
+# The dynamic-import query captures the inner ``import(...)`` call, so the
+# parser never saw the ``{ fn, calculate }`` target that lives on the parent
+# ``variable_declarator`` and emitted the ``["*"]`` wildcard instead. ``*``
+# tells the dead-code analyzer every export in the target is live, so a
+# destructured dynamic import masked genuinely unused exports.
+# ---------------------------------------------------------------------------
+
+
+def test_dynamic_import_destructuring_emits_named_bindings(parser: ASTParser) -> None:
+    src = b"""
+    async function load() {
+        const { fn, calculate } = await import('./mod');
+    }
+    """
+    fi = _make_file_info("src/app.ts", "typescript")
+    result = parser.parse_file(fi, src)
+    imp = next(i for i in result.imports if i.module_path == "./mod")
+
+    assert imp.imported_names == ["fn", "calculate"]
+    assert {b.exported_name for b in imp.bindings} == {"fn", "calculate"}
+    assert {b.local_name for b in imp.bindings} == {"fn", "calculate"}
+
+
+def test_dynamic_import_destructuring_alias_keeps_local_and_exported(
+    parser: ASTParser,
+) -> None:
+    """``const { fn: myFn } = await import('./mod')`` mirrors require().
+
+    Same split as the CommonJS destructuring path: ``imported_names`` carries
+    the source-side name (what reachability matches against) and the binding
+    keeps the local alias for call resolution.
+    """
+    src = b"async function load() { const { fn: myFn } = await import('./mod'); }\n"
+    result = parser.parse_file(_make_file_info("src/app.ts", "typescript"), src)
+    imp = next(i for i in result.imports if i.module_path == "./mod")
+
+    assert imp.imported_names == ["fn"]
+    assert [(b.local_name, b.exported_name) for b in imp.bindings] == [("myFn", "fn")]
+
+
+def test_bare_await_import_declarator_stays_wildcard(parser: ASTParser) -> None:
+    """``const mod = await import('./mod')`` captures the namespace object.
+
+    Deliberately a wildcard: the developer holds every export, and naming
+    less would let the dead-code analyzer report exports the file consumes.
+    """
+    src = b"async function load() { const mod = await import('./mod'); return mod; }\n"
+    result = parser.parse_file(_make_file_info("src/app.ts", "typescript"), src)
+    imp = next(i for i in result.imports if i.module_path == "./mod")
+
+    assert imp.imported_names == ["*"]
+    assert imp.bindings == []
+
+
+def test_lazy_route_callback_stays_wildcard(parser: ASTParser) -> None:
+    """``() => import('./views/Profile')`` forwards the namespace to the router.
+
+    The React.lazy / Vue Router shape has no declarator to read, and the
+    runtime owns the whole module object, so the wildcard is required to keep
+    every route component's exports live.
+    """
+    src = b"const routes = [{ component: () => import('./views/Profile') }];\n"
+    result = parser.parse_file(_make_file_info("src/routes.ts", "typescript"), src)
+    imp = next(i for i in result.imports if i.module_path == "./views/Profile")
+
+    assert imp.imported_names == ["*"]
+    assert imp.bindings == []
+
+
+def test_dynamic_import_destructuring_in_javascript(parser: ASTParser) -> None:
+    src = b"async function load() { const { fn, calculate } = await import('./mod'); }\n"
+    result = parser.parse_file(_make_file_info("src/app.js", "javascript"), src)
+    imp = next(i for i in result.imports if i.module_path == "./mod")
+
+    assert imp.imported_names == ["fn", "calculate"]
+    assert {b.exported_name for b in imp.bindings} == {"fn", "calculate"}
+
+
+def test_dynamic_import_destructured_names_are_not_indexed_as_symbols(
+    parser: ASTParser,
+) -> None:
+    """The destructured declarator is an import, not a module-named symbol."""
+    src = b"async function load() { const { fn } = await import('./mod'); return fn; }\n"
+    result = parser.parse_file(_make_file_info("src/app.ts", "typescript"), src)
+
+    assert "fn" not in {s.name for s in result.symbols}
+    assert "load" in {s.name for s in result.symbols}

@@ -56,6 +56,7 @@ from .extractors.bindings.python import expand_bare_relative_imports
 from .extractors.bindings.ts_js import (
     declarator_binds_callable,
     declarator_value_is_module_ref,
+    dynamic_import_bindings,
 )
 from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
@@ -1954,25 +1955,36 @@ class ASTParser:
             # call_expression, which would otherwise fall into the CommonJS
             # branch below and be dropped on the floor — a dynamic import
             # holds no ``require()`` for ``collect_cjs_requires`` to find.
-            # The construct binds a module namespace at runtime, so record a
-            # wildcard rather than a static name.  Downstream unused-export
-            # analysis treats ``*`` as namespace consumption and therefore
-            # keeps the target's exports live without a broad analyzer
-            # exemption.
+            #
+            # ``const { fn, calculate } = await import('./mod')`` names the
+            # exports it consumes, and the destructuring target sits on the
+            # PARENT ``variable_declarator`` (behind the await), so that is
+            # where ``dynamic_import_bindings`` reads it. Every other shape
+            # still records the ``["*"]`` wildcard sentinel: a bare
+            # ``const mod = await import('./mod')`` captures the whole
+            # namespace object, and a lazy route callback
+            # (``() => import('./views/Profile')``) forwards it to the router,
+            # so for both the target's whole export surface is genuinely
+            # consumed. Downstream unused-export analysis treats ``*`` as
+            # namespace consumption and keeps those exports live without a
+            # broad analyzer exemption; narrowing to named bindings is what
+            # lets a destructured dynamic import stop masking genuinely
+            # unused exports in the target module.
             if (
                 file_info.language in _TS_JS_LANGUAGES
                 and stmt_node.type == "call_expression"
                 and (_fn := stmt_node.child_by_field_name("function")) is not None
                 and _fn.type == "import"
             ):
+                imported_names, dyn_bindings = dynamic_import_bindings(stmt_node, src)
                 imports.append(
                     Import(
                         raw_statement=raw,
                         module_path=module_text,
-                        imported_names=["*"],
+                        imported_names=imported_names,
                         is_relative=module_text.startswith("."),
                         resolved_file=None,
-                        bindings=[],
+                        bindings=dyn_bindings,
                         is_reexport=False,
                     )
                 )
