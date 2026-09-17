@@ -259,10 +259,19 @@ class ChangeHealthDeltaService:
         matcher = FindingMatcher(rename)
         # Both sides are restricted to the same comparable set, so an excluded
         # file cannot contribute a one-sided "introduced" or "resolved".
+        # Advisory markers deduct nothing, so adding one is not a regression
+        # and removing one is not a fix. Dropped from BOTH sides before
+        # matching, so every counter derived from the match agrees.
         base_findings = [
-            f for f in base_run.findings if rename.get(f.file_path, f.file_path) in subject
+            f
+            for f in base_run.findings
+            if rename.get(f.file_path, f.file_path) in subject
+            and not is_advisory(f.biomarker_type)
         ]
-        match = matcher.match(base_findings, head_run.findings_for(subject))
+        head_findings = [
+            f for f in head_run.findings_for(subject) if not is_advisory(f.biomarker_type)
+        ]
+        match = matcher.match(base_findings, head_findings)
 
         by_file: dict[str, list[HealthFindingData]] = {}
         for finding in head_run.findings_for(subject):
@@ -271,18 +280,7 @@ class ChangeHealthDeltaService:
         attributor = FindingAttributor(change_map)
         changed_symbols = changed_symbols_for(change_map, by_file)
 
-        # Advisory markers deduct nothing, so "introduced" on one means the
-        # change added a description, not a regression - and every consumer of
-        # this list (introduced/worsened totals, the three-slot top_findings
-        # head, the review directive) reads it as a regression. They are
-        # dropped here rather than filtered per consumer, so a new consumer
-        # cannot miscount them. Surfacing them in their own budget slot is
-        # deliberate later work, not an omission.
-        surfaced = [
-            m
-            for m in match.of_kind("introduced", "worsened")
-            if not is_advisory(getattr(m.head, "biomarker_type", ""))
-        ]
+        surfaced = match.of_kind("introduced", "worsened")
         perf_views = opportunities_for([m.head for m in surfaced])
         perf_index = index_by_finding(perf_views, [m.head for m in surfaced])
 
@@ -305,15 +303,7 @@ class ChangeHealthDeltaService:
             fingerprint=self.fingerprint,
             scope=scope,
             findings=findings,
-            # Symmetry with ``surfaced`` above. A dimension that cannot
-            # regress must not be able to improve either: without this, deleting
-            # an advisory-flagged test is reported as having resolved something
-            # that was defined as never having been a problem.
-            resolved_total=sum(
-                1
-                for f in match.resolved
-                if not is_advisory(getattr(f, "biomarker_type", ""))
-            ),
+            resolved_total=len(match.resolved),
             unchanged_total=match.unchanged_total,
             skipped=skipped,
             limits=_limits(),

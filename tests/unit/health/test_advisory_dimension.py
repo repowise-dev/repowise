@@ -212,3 +212,27 @@ def test_zero_impact_dimensions_is_the_one_owner():
     assert ADVISORY_DIMENSION in ZERO_IMPACT_DIMENSIONS
     assert "performance" in ZERO_IMPACT_DIMENSIONS
     assert "defect" not in ZERO_IMPACT_DIMENSIONS
+
+
+def test_advisory_is_absent_from_every_change_delta_counter():
+    """Introduced, worsened, resolved AND unchanged.
+
+    The counters are derived from one match, so advisory is dropped from both
+    sides before matching rather than filtered per counter. ``unchanged_total``
+    is the one that made this worth doing: an advisory finding present on both
+    sides is not introduced, worsened or resolved, so every per-counter filter
+    missed it while it silently inflated the total beside them.
+    """
+    from repowise.core.analysis.change_health.matcher import FindingMatcher
+
+    advisory = _finding("mock_saturated_test", 0.0, ADVISORY_DIMENSION)
+    scored = _finding("brain_method", 0.5, "defect")
+    keep = [f for f in (advisory, scored) if not is_advisory(f.biomarker_type)]
+
+    both_sides = FindingMatcher({}).match([advisory, scored], [advisory, scored])
+    assert both_sides.unchanged_total == 2, "the matcher itself counts what it is given"
+
+    filtered = FindingMatcher({}).match(keep, keep)
+    assert filtered.unchanged_total == 1
+    assert filtered.resolved == []
+    assert filtered.of_kind("introduced", "worsened") == []
