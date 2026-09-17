@@ -94,6 +94,21 @@ SPEC = LanguageSpec(
             "IComparable",
             "ICloneable",
             "IEquatable",
+            # UI and component base classes matching the VB.NET shared BCL set.
+            "Form",
+            "Control",
+            "UserControl",
+            "Component",
+            "Page",
+            "Window",
+            "Attribute",
+            "EventArgs",
+            "MarshalByRefObject",
+            "INotifyPropertyChanged",
+            "IComparer",
+            "ICollection",
+            "IList",
+            "IDictionary",
         }
     ),
     # Type expressions that never resolve to a user-defined .NET type. Skipping
