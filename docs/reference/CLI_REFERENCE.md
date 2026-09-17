@@ -1796,16 +1796,23 @@ repowise whoami
 
 Delete a repository's index and all stored intelligence (wiki, graph, embeddings,
 git metadata). Does **not** touch your source files. Prompts for confirmation
-unless `--force` is passed.
+unless `--force` is passed. The index may live in a shared database configured
+with `REPOWISE_DB_URL`; no repository-local `.repowise/wiki.db` is required.
 
 | Flag | Description |
 |------|-------------|
 | `--force` / `-f` | Skip the confirmation prompt |
 | `--path` / `-p` | Path to the repository directory |
 
+With `--path`, the repository whose stored `local_path` matches that path is
+selected, so a shared `REPOWISE_DB_URL` (PostgreSQL) database does not prompt
+for a numbered choice. Without `--path` the command lists every repository in
+the database and prompts.
+
 ```bash
 repowise delete                          # delete the current repo's index (prompts)
 repowise delete <repo-id> --force        # delete a specific repo's index, no prompt
+repowise delete --path /workspace/api -f # delete the repo indexed at that path
 ```
 
 ---

@@ -487,6 +487,209 @@ class TestStatusDoctorWithEnvDb:
         assert "wiki.db not found" not in result.output
 
 
+class TestDeleteWithConfiguredDb:
+    """Regression guard for #2320: ``repowise delete`` must reach the configured
+    database, and ``--path`` must select the repository at that path.
+
+    The command checked for a repo-local ``.repowise/wiki.db`` before it
+    resolved the configured URL, so a repository indexed into a shared
+    PostgreSQL store (which has no local file at all) could not be deleted.
+    """
+
+    @pytest.fixture
+    def shared_db(self, tmp_path, monkeypatch):
+        """An external DB holding one indexed repo that has no local store.
+
+        ``REPOWISE_DB_URL`` points outside the repo, the way a PostgreSQL
+        container does. Nothing in the repo is created: the whole scenario is
+        "the rows live in the shared database, the checkout has no wiki.db".
+        """
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_page,
+            upsert_repository,
+        )
+
+        repo_path = tmp_path / "example-repository"
+        repo_path.mkdir()
+        db_path = tmp_path / "shared" / "wiki.db"
+        db_path.parent.mkdir()
+        url = f"sqlite+aiosqlite:///{db_path}"
+        monkeypatch.setenv("REPOWISE_DB_URL", url)
+
+        async def seed(*, pages: int = 1) -> str:
+            engine = create_engine(url)
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=repo_path.name, local_path=str(repo_path.resolve())
+                )
+                for i in range(pages):
+                    await upsert_page(
+                        session,
+                        page_id=f"file_page:src/module_{i}.py",
+                        repository_id=repo.id,
+                        page_type="file_page",
+                        title=f"module_{i}.py",
+                        content=f"# module {i}\n\nBody text for module {i}.",
+                        target_path=f"src/module_{i}.py",
+                        source_hash=f"hash-{i}",
+                        model_name="mock",
+                        provider_name="mock",
+                    )
+            await engine.dispose()
+            return repo.id
+
+        return {"repo_path": repo_path, "db_path": db_path, "seed": seed}
+
+    def test_deletes_from_configured_db_without_local_wiki_db(self, runner, shared_db, monkeypatch):
+        """The reported bug: no ``.repowise/`` at all, rows in the shared DB."""
+        import asyncio
+
+        repo_path = shared_db["repo_path"]
+        repo_id = asyncio.run(shared_db["seed"]())
+        assert not (repo_path / ".repowise").exists()
+
+        result = runner.invoke(
+            cli,
+            ["delete", "--path", str(repo_path), "--force"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Database not found" not in result.output
+        assert "No .repowise/ directory found" not in result.output
+        assert "Deleted" in result.output
+        # The rows really went: the repository is gone from the shared store.
+        assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM repositories") == 0
+        assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM wiki_pages") == 0
+        assert repo_id  # the seed returned a real primary key
+
+    def test_path_selects_the_matching_repo_instead_of_prompting(self, runner, shared_db, tmp_path):
+        """``--path`` names the repository; a second row must not be offered.
+
+        The command listed every repository and prompted for a number even
+        when a path was supplied, so in a shared database the deletion target
+        came from the prompt rather than from the argument.
+        """
+        import asyncio
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            upsert_repository,
+        )
+
+        repo_path = shared_db["repo_path"]
+        asyncio.run(shared_db["seed"]())
+        other_path = tmp_path / "other-repository"
+        other_path.mkdir()
+
+        async def add_other() -> None:
+            engine = create_engine(f"sqlite+aiosqlite:///{shared_db['db_path']}")
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(
+                    session, name=other_path.name, local_path=str(other_path.resolve())
+                )
+            await engine.dispose()
+
+        asyncio.run(add_other())
+
+        result = runner.invoke(
+            cli,
+            ["delete", "--path", str(repo_path), "--force"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Deleted" in result.output
+        assert "Enter number to delete" not in result.output
+        remaining = _db_column(shared_db["db_path"], "SELECT local_path FROM repositories")
+        assert remaining == [str(other_path.resolve())]
+
+    def test_path_with_no_matching_row_does_not_delete_anything(self, runner, shared_db, tmp_path):
+        """A path the database does not know must not fall back to the prompt."""
+        import asyncio
+
+        asyncio.run(shared_db["seed"]())
+        unknown = tmp_path / "never-indexed"
+        unknown.mkdir()
+
+        result = runner.invoke(
+            cli,
+            ["delete", "--path", str(unknown), "--force"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert f"No repository in the database matches {unknown.resolve()}" in result.output
+        assert "Deleted" not in result.output
+        assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM repositories") == 1
+
+    def test_local_sqlite_missing_messages_are_unchanged(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        """With no configured URL the pre-existing messages still fire."""
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+
+        result = runner.invoke(cli, ["delete", "--path", str(dest), "--force"])
+        assert result.exit_code == 0, result.output
+        assert "No .repowise/ directory found. Run 'repowise init' first." in result.output
+
+        (dest / ".repowise").mkdir()
+        result = runner.invoke(cli, ["delete", "--path", str(dest), "--force"])
+        assert result.exit_code == 0, result.output
+        assert "Database not found." in result.output
+
+    def test_deletes_from_local_wiki_db_when_configured(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        """The SQLite path still works: local wiki.db, no configured URL."""
+        import asyncio
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+        db_path = dest / ".repowise" / "wiki.db"
+        db_path.parent.mkdir()
+        url = f"sqlite+aiosqlite:///{db_path}"
+
+        async def seed() -> None:
+            engine = create_engine(url)
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(session, name="repo", local_path=str(dest.resolve()))
+            await engine.dispose()
+
+        asyncio.run(seed())
+
+        result = runner.invoke(
+            cli, ["delete", "--path", str(dest), "--force"], catch_exceptions=False
+        )
+        assert result.exit_code == 0, result.output
+        assert "Deleted" in result.output
+        assert _db_scalar(db_path, "SELECT COUNT(*) FROM repositories") == 0
+
+
 class TestSearchFulltext:
     def test_returns_results_or_no_error(self, runner, work_repo):
         runner.invoke(
