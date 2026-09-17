@@ -118,6 +118,29 @@ async def replace_doc_drift_findings(
     return len(rows)
 
 
+async def replace_doc_drift_findings_guarded(
+    session: AsyncSession,
+    repository_id: str,
+    report: Any,
+) -> int:
+    """:func:`replace_doc_drift_findings` inside a savepoint, from a *report*.
+
+    Every caller reports failure as a warning rather than raising, and this is a
+    DELETE followed by an INSERT. Without the savepoint a failing insert leaves
+    the DELETE buffered in the caller's live transaction, which then commits it:
+    every drift row for the repository wiped, reported only as a warning. On
+    Postgres the same failure poisons the transaction and takes the other
+    analyses down with it.
+    """
+    async with session.begin_nested():
+        return await replace_doc_drift_findings(
+            session,
+            repository_id,
+            report.findings,
+            scope=report.authoritative_paths,
+        )
+
+
 async def get_doc_drift_findings(
     session: AsyncSession,
     repository_id: str,

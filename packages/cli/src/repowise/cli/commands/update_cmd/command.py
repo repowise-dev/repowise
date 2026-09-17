@@ -51,6 +51,7 @@ from .incremental import (
     _load_stored_performance_callers,
     _rebuild_graph_and_git,
     _refresh_knowledge_graph,
+    _run_doc_drift_partial,
     _run_partial_analysis,
 )
 from .mode import _resolve_index_only_mode
@@ -1485,6 +1486,7 @@ def run_update(
         repo_function_mod_p80=repo_function_mod_p80,
         timings=timings,
     )
+    doc_drift_report = _run_doc_drift_partial(graph_builder, source_map, timings=timings)
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
     # the metadata reaches persistence / regeneration so the transient,
@@ -1659,6 +1661,7 @@ def run_update(
                 head,
                 start,
                 persisted_changed_paths,
+                doc_drift_report=doc_drift_report,
                 file_diffs=file_diffs,
                 knowledge_graph_result=knowledge_graph_result,
                 parsed_files=parsed_files,
@@ -2300,6 +2303,7 @@ def run_update(
                 graph_builder=graph_builder,
                 knowledge_graph_result=knowledge_graph_result,
                 degraded=degraded,
+                doc_drift_report=doc_drift_report,
                 decay_paths=affected.decay_only,
                 parsed_files=parsed_files,
                 git_decay_map=git_decay_map,

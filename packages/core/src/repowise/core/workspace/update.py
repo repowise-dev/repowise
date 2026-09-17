@@ -380,6 +380,7 @@ async def _incremental_repo_update(
     from ..pipeline.incremental import (
         persist_incremental_index,
         rebuild_graph_and_git,
+        run_doc_drift_partial,
         run_partial_analysis,
     )
     from ..pipeline.phases.git import drop_transient_git_signals
@@ -484,6 +485,7 @@ async def _incremental_repo_update(
         coverage_map=stored_coverage_map,
         log=_log.info,
     )
+    doc_drift_report = run_doc_drift_partial(graph_builder, source_map, log=_log.info)
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
     # the metadata reaches persistence so the transient, non-serializable
@@ -513,6 +515,7 @@ async def _incremental_repo_update(
         dead_code_report,
         partial_health_report,
         [fd.path for fd in file_diffs],
+        doc_drift_report=doc_drift_report,
         current_graph_file_paths={pf.file_info.path for pf in parsed_files},
         # Tombstones pages for deleted/renamed paths, mirroring the single-repo
         # path — without this a page for a removed file misleads retrieval

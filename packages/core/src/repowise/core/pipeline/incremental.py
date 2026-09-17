@@ -876,6 +876,48 @@ def run_partial_analysis(
     return partial_health_report, dead_code_report
 
 
+def run_doc_drift_partial(
+    graph_builder: Any,
+    source_map: dict[str, bytes] | None,
+    *,
+    log: LogFn | None = None,
+    timings: PhaseTimings | None = None,
+) -> Any | None:
+    """Re-check the repository's own markdown on the incremental path.
+
+    Its own function rather than a third member of
+    :func:`run_partial_analysis`'s tuple, mirroring the full path where drift is
+    its own phase. Returns ``None`` when the pass could not run, which the
+    caller must treat as "write nothing".
+    """
+    log = log or _noop_log
+    if not source_map:
+        return None
+
+    with timed(timings, "analysis.doc_drift"):
+        try:
+            from repowise.core.analysis.doc_drift import DocDriftAnalyzer
+
+            # The traversal, not the parse set. ``source_map`` omits files that
+            # failed to read or parse, and resolving against that narrower tree
+            # turns a live path into a fabricated "missing" finding.
+            tracked_paths = getattr(graph_builder, "traversed_file_paths", None)
+            if not tracked_paths:
+                return None
+
+            report = DocDriftAnalyzer(
+                source_map=source_map,
+                tracked_paths=tracked_paths,
+            ).analyze()
+            report.authoritative_paths = report.documents
+            if report.total_findings:
+                log(f"Doc drift findings: [yellow]{report.total_findings}[/yellow]")
+            return report
+        except Exception as exc:
+            log(f"[yellow]Doc drift analysis skipped: {exc}[/yellow]")
+            return None
+
+
 async def refresh_knowledge_graph(
     repo_path: Any,
     parsed_files: list,
@@ -1677,6 +1719,7 @@ async def persist_incremental_index(
     partial_health_report: Any,
     changed_paths: list[str],
     *,
+    doc_drift_report: Any | None = None,
     current_graph_file_paths: set[str] | None = None,
     file_diffs: list[Any] | None = None,
     knowledge_graph_result: Any | None = None,
@@ -1891,6 +1934,21 @@ async def persist_incremental_index(
                         )
                 except Exception as exc:
                     _skip("Dead-code persist", exc, range_scoped=True)
+
+            if doc_drift_report is not None:
+                try:
+                    from repowise.core.persistence.crud import (
+                        replace_doc_drift_findings_guarded,
+                    )
+
+                    with timed(timings, "persist.doc_drift"):
+                        await replace_doc_drift_findings_guarded(
+                            session, repo_id, doc_drift_report
+                        )
+                except Exception as exc:
+                    # Not range_scoped: the pass re-derives every document each
+                    # run, so a skipped write heals itself on the next update.
+                    _skip("Doc-drift persist", exc)
 
             if partial_health_report is not None:
                 try:

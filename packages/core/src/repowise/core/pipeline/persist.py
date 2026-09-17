@@ -1162,11 +1162,13 @@ async def prune_deleted_file_rows(
     await _prune_table(WikiSymbol, WikiSymbol.file_path, "wiki_symbols")
     await _prune_table(SecurityFinding, SecurityFinding.file_path, "security_findings")
     await _prune_table(DeadCodeFinding, DeadCodeFinding.file_path, "dead_code_findings")
-    # Keyed on the DOCUMENT, and the drift pass does not run on the
-    # incremental path, so without this a deleted document's findings are
-    # never recomputed and never removed: they outlive the file until the
-    # next full index. ``_FileLiveness`` asks disk and ``git ls-files``
-    # rather than the parse, so a ``.md`` path is judged correctly here.
+    # Keyed on the DOCUMENT. The incremental drift pass scopes its write to the
+    # documents it read, so a deleted one is never in scope and its rows would
+    # outlive the file without this. ``_FileLiveness`` asks disk and
+    # ``git ls-files`` rather than the parse, so a ``.md`` path is judged
+    # correctly here. Note the LLM-regenerating update path never reaches this
+    # function, so drift rows for a document deleted there wait for a reindex,
+    # as dead-code and health rows already do.
     await _prune_table(DocDriftFinding, DocDriftFinding.file_path, "doc_drift_findings")
     await _prune_table(HealthFileMetric, HealthFileMetric.file_path, "health_file_metrics")
     await _prune_table(HealthFinding, HealthFinding.file_path, "health_findings")
@@ -1914,7 +1916,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
         recompute_decision_staleness,
-        replace_doc_drift_findings,
+        replace_doc_drift_findings_guarded,
         save_coverage_files,
         save_dead_code_findings,
         upsert_git_function_blame_bulk,
@@ -1933,20 +1935,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     drift = getattr(result, "doc_drift_report", None)
     if drift is not None:
         try:
-            # Inside a savepoint because this is a DELETE followed by an
-            # INSERT and the failure is swallowed. Without one, a failing
-            # insert leaves the DELETE buffered in the caller's still-live
-            # transaction, which then commits it: every drift row for the
-            # repository wiped, reported only as a warning. On Postgres the
-            # same failure poisons the transaction and takes health,
-            # coverage and decisions down with it.
-            async with session.begin_nested():
-                await replace_doc_drift_findings(
-                    session,
-                    repo_id,
-                    drift.findings,
-                    scope=drift.authoritative_paths,
-                )
+            await replace_doc_drift_findings_guarded(session, repo_id, drift)
         except Exception as exc:
             logger.warning("doc_drift_persist_skipped", error=str(exc))
 

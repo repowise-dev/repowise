@@ -117,8 +117,9 @@ async def _run_doc_drift_analysis(
     """Check the repository's own markdown against the tree (no LLM).
 
     Reads bytes ingestion already decoded rather than re-walking the tree: this
-    runs on every ``init`` and every ``update``, so a second pass over the
-    repository would be a real regression.
+    runs on every ``init``, and the update path runs the same analyzer through
+    :func:`~repowise.core.pipeline.incremental.run_doc_drift_partial`, so a
+    second pass over the repository would be a real regression.
     """
     try:
         from repowise.core.analysis.doc_drift import DocDriftAnalyzer

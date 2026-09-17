@@ -155,6 +155,37 @@ async def test_scoped_replace_drops_findings_outside_its_scope(async_session):
     assert {r.file_path for r in await _rows(async_session, repo.id)} == {"docs/a.md"}
 
 
+async def test_an_unreadable_document_keeps_the_findings_it_earned(async_session):
+    """The incremental scope is the documents the pass actually read.
+
+    A document that exists but missed ``source_map`` this run (transient read
+    failure, or markdown over MAX_DOC_BYTES) is absent from the scope, so its
+    rows survive. A repo-wide write would delete them and nothing would put
+    them back: ``prune_deleted_file_rows`` correctly judges the file live.
+    """
+    repo = await insert_repo(async_session)
+    await replace_doc_drift_findings(
+        async_session,
+        repo.id,
+        [_finding(file_path="docs/read.md"), _finding(file_path="docs/unreadable.md")],
+    )
+    await async_session.commit()
+
+    # Second run could not open docs/unreadable.md, so it is not in scope.
+    await replace_doc_drift_findings(
+        async_session,
+        repo.id,
+        [_finding(file_path="docs/read.md")],
+        scope={"docs/read.md"},
+    )
+    await async_session.commit()
+
+    assert {r.file_path for r in await _rows(async_session, repo.id)} == {
+        "docs/read.md",
+        "docs/unreadable.md",
+    }
+
+
 async def test_min_confidence_filter_on_read(async_session):
     repo = await insert_repo(async_session)
     await replace_doc_drift_findings(

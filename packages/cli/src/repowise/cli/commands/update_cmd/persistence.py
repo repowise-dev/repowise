@@ -359,6 +359,7 @@ def _persist_index_only_update(
     head: str | None,
     start: float,
     changed_paths: list[str],
+    doc_drift_report: Any | None = None,
     file_diffs: list | None = None,
     knowledge_graph_result: Any | None = None,
     parsed_files: list | None = None,
@@ -409,6 +410,7 @@ def _persist_index_only_update(
             dead_code_report,
             partial_health_report,
             changed_paths,
+            doc_drift_report=doc_drift_report,
             file_diffs=file_diffs,
             knowledge_graph_result=knowledge_graph_result,
             parsed_files=parsed_files,
@@ -635,6 +637,7 @@ def _persist_full_update(
     graph_builder: Any,
     knowledge_graph_result: Any | None,
     degraded: list[str],
+    doc_drift_report: Any | None = None,
     decay_paths: list[str] | None = None,
     parsed_files: list | None = None,
     git_decay_map: dict | None = None,
@@ -675,6 +678,7 @@ def _persist_full_update(
             graph_builder=graph_builder,
             knowledge_graph_result=knowledge_graph_result,
             degraded=degraded,
+            doc_drift_report=doc_drift_report,
             decay_paths=decay_paths,
             parsed_files=parsed_files,
             git_decay_map=git_decay_map,
@@ -703,6 +707,7 @@ async def _persist_full_update_async(
     graph_builder: Any,
     knowledge_graph_result: Any | None,
     degraded: list[str],
+    doc_drift_report: Any | None = None,
     decay_paths: list[str] | None = None,
     parsed_files: list | None = None,
     git_decay_map: dict | None = None,
@@ -1118,6 +1123,21 @@ async def _persist_full_update_async(
                         )
                 except Exception as exc:
                     _skip("Dead-code persist", exc)
+
+            # Scoped to the documents the pass actually read, so one this run
+            # could not open keeps its findings.
+            if doc_drift_report is not None:
+                try:
+                    from repowise.core.persistence.crud import (
+                        replace_doc_drift_findings_guarded,
+                    )
+
+                    with timed(timings, "persist.doc_drift"):
+                        await replace_doc_drift_findings_guarded(
+                            session, repo_id, doc_drift_report
+                        )
+                except Exception as exc:
+                    _skip("Doc-drift persist", exc)
 
             # Re-persist graph_nodes so symbol-level PageRank / betweenness /
             # community ids reflect the current build.

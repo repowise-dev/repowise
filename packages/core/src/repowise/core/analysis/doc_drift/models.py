@@ -125,6 +125,11 @@ class DocDriftReport:
     """Which renderer's slug algorithm the anchor class used, or the renderer
     that caused it to stand down. See :mod:`~.renderer`."""
     hidden_below_threshold: int = 0
+    documents: frozenset[str] = field(default_factory=frozenset)
+    """Every document this run actually read, of which ``documents_scanned`` is
+    the count. A document that missed ``source_map`` (transient read failure, or
+    markdown over :data:`~.constants.MAX_DOC_BYTES`) is absent, which is what
+    stops a scoped write from deleting findings it never recomputed."""
     authoritative_paths: frozenset[str] | None = field(default=None)
     """Document paths this report may speak for; ``None`` means all of them.
     Mirrors dead code's field of the same name so an incremental re-check can

@@ -40,6 +40,7 @@ from .dead_code import (
 from .doc_drift import (
     get_doc_drift_findings,
     replace_doc_drift_findings,
+    replace_doc_drift_findings_guarded,
     summarize_confidence_rows,
 )
 from .health import (
@@ -150,6 +151,7 @@ __all__ = [
     "refactoring_facet_counts",
     "replace_dead_code_findings",
     "replace_doc_drift_findings",
+    "replace_doc_drift_findings_guarded",
     "replace_governance_findings",
     "save_coverage_files",
     "save_dead_code_findings",

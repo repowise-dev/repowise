@@ -180,6 +180,7 @@ class DocDriftAnalyzer:
             verdict_summary=verdict_counts,
             anchor_renderer=index.renderers.summary(),
             hidden_below_threshold=hidden,
+            documents=frozenset(documents),
         )
 
 
