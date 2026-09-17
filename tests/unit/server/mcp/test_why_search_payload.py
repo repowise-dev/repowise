@@ -341,7 +341,7 @@ async def test_status_breaks_ties_without_gating(session, setup_mcp):
 
 @pytest.mark.asyncio
 async def test_decisions_dropped_by_the_cap_stay_recoverable_with_their_bodies(
-    session, setup_mcp
+    session, setup_mcp, tmp_path
 ):
     """The records past the cap are banked whole, not as a list of ids.
 
@@ -355,11 +355,16 @@ async def test_decisions_dropped_by_the_cap_stay_recoverable_with_their_bodies(
     titles, and nothing else here would notice. This pins what recovery is
     worth so that trade has to be made deliberately.
     """
-    from pathlib import Path
-
-    from repowise.core.distill.store import OmissionStore, default_store_path
-    from repowise.server.mcp_server import _state, get_why
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.distill.store import OmissionStore
+    from repowise.server.mcp_server import get_why
     from repowise.server.mcp_server.tool_why import _MAX_SEARCH_DECISIONS
+
+    # ``default_store_path`` walks up for an existing ``.repowise/`` and falls
+    # back to the user's home, so without this both the collector under test
+    # and the read below land in the developer's real store.
+    (tmp_path / ".repowise").mkdir(exist_ok=True)
+    mcp_mod._repo_path = str(tmp_path)
 
     total = 9
     for n in range(total):
@@ -380,19 +385,24 @@ async def test_decisions_dropped_by_the_cap_stay_recoverable_with_their_bodies(
 
     served = [d["id"] for d in result["decisions"]]
     assert len(served) == _MAX_SEARCH_DECISIONS, served
-    assert result["decisions_total"] == total
-    assert result["decisions_omitted"] == total - _MAX_SEARCH_DECISIONS
+    # ``>=``: the shared fixture corpus is free to grow a record that also
+    # clears the floor. What matters is that the whole pool was counted.
+    assert result["decisions_total"] >= total
 
     refs = result["_meta"]["omitted"]["refs"]
     assert refs, "a dropped decision must leave a recovery reference"
-    store = OmissionStore(default_store_path(Path(_state._repo_path)))
-    banked = "".join(store.get(ref) or "" for ref in refs)
+    with OmissionStore.open_default(tmp_path) as store:
+        banked = "".join(store.get(ref) or "" for ref in refs)
 
-    dropped = [f"zeb{n}" for n in range(total) if f"zeb{n}" not in served]
-    assert dropped, served
-    for decision_id in dropped:
+    for decision_id in (f"zeb{n}" for n in range(total)):
+        if decision_id in served:
+            continue
         assert f"body of decision {decision_id}" in banked, decision_id
         assert f"rationale of decision {decision_id}" in banked, decision_id
-    # The annotation runs before the cap, so the banked rows carry provenance
-    # too — an id alone would not tell a caller whether to trust the record.
-    assert banked.count('"provenance"') >= len(dropped)
+        # Per record, not as a total: the annotation also stamps provenance on
+        # lineage rows, so a count over the whole document would pass on one
+        # well-connected record.
+        start = banked.index(f'"id": "{decision_id}"')
+        nxt = banked.find('"id": "', start + 1)
+        row = banked[start : nxt if nxt != -1 else len(banked)]
+        assert '"provenance"' in row, decision_id

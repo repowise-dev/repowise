@@ -1888,10 +1888,12 @@ async def _attach_response_decision_evidence(
 ) -> None:
     """Hydrate the decision rows *result* currently carries.
 
-    Search mode calls this before its cap, so what it hydrates is the whole
-    projected pool rather than the served head. That is deliberate: the rows
-    the cap sheds are written to the omission store, and they have to carry
-    their evidence by then or recovery returns bodies with no provenance.
+    Shared by all three modes, so what it covers is whatever the caller has
+    built by the time it runs. Search mode calls it before its cap, which
+    means the whole projected pool rather than the served head. That is
+    deliberate: the rows the cap sheds are written to the omission store, and
+    they have to carry their evidence by then or recovery returns bodies with
+    no provenance.
     """
     ids: set[str] = set()
 
@@ -1984,10 +1986,10 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
 
     target_set = set(targets) if targets else set()
     # Rank wide, collapse restatements, and project the whole surviving pool.
-    # The cap comes last, at the bottom of this function, and what it sheds is
-    # banked whole: the omission document is the projected rows, so building
-    # only the three that are served would turn `repowise expand` from decision
-    # bodies with provenance into a list of titles. Measured on this repo, a
+    # The decisions cap comes last, at the bottom of this function, and what it
+    # sheds is banked whole: the omission document is the projected rows, so
+    # building only the three that are served would leave recovery with nothing
+    # to hand back. Measured on this repo, a
     # realistic question collapses to a median of 7 records and up to 33, and
     # capping first saves 4-21ms of a call whose cost is dominated by a fixed
     # annotation floor. The recovery is worth more than the milliseconds.
