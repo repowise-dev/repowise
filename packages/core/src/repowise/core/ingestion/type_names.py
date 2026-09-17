@@ -175,11 +175,11 @@ def is_resolvable_type_name(name: str, language: str) -> bool:
 # The receiver of a C# extension method, as the parameter list spells it.
 # ``this`` is legal only on an extension method's first parameter, and the
 # parser keeps no modifiers, so this is the only surviving evidence a method is
-# one. Anchored on the signature's first ``(`` because a default value may hold
-# a parenthesised string. An array receiver is captured so it can be refused:
-# ``this Order[]`` extends the array, not the element.
+# one. Matched against the parameter list alone, because a default value may
+# hold a parenthesised string. An array receiver is captured so it can be
+# refused: ``this Order[]`` extends the array, not the element.
 _CSHARP_EXTENSION_RECEIVER = re.compile(
-    r"\A[^(]*\(\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
+    r"\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
     r"(?P<type>[\w.]+(?:<[^>]*>)?(?:\s*\[[,\s]*\])*\??)"
 )
 
@@ -190,7 +190,8 @@ def csharp_extension_receiver(signature: str) -> str | None:
     Shape only, in keeping with this module: whether the name could resolve is
     the caller's policy, not this module's.
     """
-    match = _CSHARP_EXTENSION_RECEIVER.match(signature or "")
+    _, opened, params = (signature or "").partition("(")
+    match = _CSHARP_EXTENSION_RECEIVER.match(params) if opened else None
     if match is None:
         return None
     raw = match.group("type")
