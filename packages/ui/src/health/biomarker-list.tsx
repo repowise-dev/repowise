@@ -6,6 +6,7 @@ import { InfoTip } from "../shared/info-tip";
 import {
   biomarkerLabel,
   biomarkerInfo,
+  asBiomarkerDimension,
   biomarkerDimension,
   CATEGORY_LABEL,
   DIMENSION_CHIP,
@@ -41,14 +42,7 @@ export interface BiomarkerFinding {
 
 /** A finding's home pillar, preferring the server value over the glossary. */
 function findingDimension(f: BiomarkerFinding): BiomarkerDimension {
-  if (
-    f.dimension === "defect" ||
-    f.dimension === "maintainability" ||
-    f.dimension === "performance"
-  ) {
-    return f.dimension;
-  }
-  return biomarkerDimension(f.biomarker_type);
+  return asBiomarkerDimension(f.dimension, f.biomarker_type);
 }
 
 export interface BiomarkerListProps {

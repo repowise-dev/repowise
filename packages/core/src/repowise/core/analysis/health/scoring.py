@@ -179,6 +179,9 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "prior_defect": "organizational",
     "large_assertion_block": "test_quality",
     "duplicated_assertion_block": "test_quality",
+    # Never reaches a deduction; mapped so category-grouped surfaces do not
+    # file it under the ``size_and_complexity`` default.
+    "mock_saturated_test": "test_quality",
     "error_handling": "error_handling",
     # Governance biomarkers - written by the additive governance pass
     "ungoverned_hotspot": "organizational",
@@ -202,6 +205,22 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
 # score byte-for-byte for any input. If that drifts, the split is wrong.
 
 DIMENSIONS: tuple[str, ...] = ("defect", "maintainability", "performance")
+
+# The one dimension that does not score. Deliberately NOT in ``DIMENSIONS``,
+# which is exactly the set ``score_file`` returns a number for: keeping it out
+# means there is no weight, category or cap table it can acquire. A marker homes
+# here when no defect corpus labels what it measures, so it can never be
+# calibrated. It still carries a severity, a reason and a home for display.
+ADVISORY_DIMENSION: str = "advisory"
+
+# Every dimension label a finding may carry, scored or not. Surfaces that filter
+# or display by dimension read this; scoring reads ``DIMENSIONS``.
+ALL_DIMENSIONS: tuple[str, ...] = (*DIMENSIONS, ADVISORY_DIMENSION)
+
+# Findings here carry a zero ``health_impact``, so they must stay out of
+# anything ranked or totalled by impact. ``performance`` deducts on its own
+# pillar only; ``advisory`` does not deduct at all.
+ZERO_IMPACT_DIMENSIONS: frozenset[str] = frozenset({"performance", ADVISORY_DIMENSION})
 
 # Which dimensions each biomarker's deduction feeds. Biomarkers not listed here
 # contribute to ``defect`` only - the historical behaviour, since every
@@ -263,6 +282,9 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     "sql_select_star": {"maintainability"},
     "sql_update_delete_without_where": {"maintainability"},
     "sql_cartesian_join": {"performance"},
+    # Advisory. Must also appear in ``_ADVISORY_HOME``: the two tables are
+    # independent, and a marker in only one of them still deducts from defect.
+    "mock_saturated_test": {ADVISORY_DIMENSION},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -467,6 +489,10 @@ _PERFORMANCE_HOME: frozenset[str] = frozenset(
     }
 )
 
+# The display half of the pairing above; ``test_advisory_dimension.py`` locks
+# the two together for every registered biomarker.
+_ADVISORY_HOME: frozenset[str] = frozenset({"mock_saturated_test"})
+
 
 def severity_deduction(sev: Severity) -> float:
     return _SEVERITY_DEDUCTION.get(sev, 0.5)
@@ -495,11 +521,18 @@ def dimensions_for(name: str) -> set[str]:
 
 def biomarker_dimension(name: str) -> str:
     """The finding's single 'home' dimension for display / per-pillar filtering."""
+    if name in _ADVISORY_HOME:
+        return ADVISORY_DIMENSION
     if name in _PERFORMANCE_HOME:
         return "performance"
     if name in _MAINTAINABILITY_HOME:
         return "maintainability"
     return "defect"
+
+
+def is_advisory(name: str) -> bool:
+    """True when *name* is a non-scoring marker (see ``ADVISORY_DIMENSION``)."""
+    return name in _ADVISORY_HOME
 
 
 def maintainability_weight(name: str) -> float:

@@ -21,21 +21,23 @@ own ``FunctionComplexity`` row.
 This module is the orchestrator: ``walk_file`` parses the source once and
 drives the individual passes, each of which lives in its own sibling module:
 
-- ``models``         — the output dataclasses
-- ``ast_utils``      — name/text helpers, function-node collection, params
-- ``nloc``           — non-blank / non-comment line counting
-- ``cyclomatic``     — the CCN / cognitive / nesting engine
-- ``assertions``     — assertion-block detection (test-quality)
-- ``error_handling`` — error-handling anti-patterns
-- ``perf_walk``      — the performance-risk pass
-- ``class_analysis`` — class-level LCOM4 / god-class metrics
+- ``models``:         the output dataclasses
+- ``ast_utils``:      name/text helpers, function-node collection, params
+- ``nloc``:           non-blank / non-comment line counting
+- ``cyclomatic``:     the CCN / cognitive / nesting engine
+- ``assertions``:     assertion blocks + per-function assertion totals
+- ``mock_walk``:      per-function mock-setup counting (test-quality)
+- ``error_handling``: error-handling anti-patterns
+- ``perf_walk``:      the performance-risk pass
+- ``class_analysis``: class-level LCOM4 / god-class metrics
 """
 
 from __future__ import annotations
 
 import structlog
 
-from .assertions import _collect_assertion_blocks
+from ..mocks.lexicon import mock_dialect as _mock_dialect
+from .assertions import _collect_assertion_facts
 from .ast_utils import (
     _collect_function_nodes,
     _count_parameters,
@@ -45,6 +47,7 @@ from .class_analysis import _collect_classes
 from .cyclomatic import _walk_function_body
 from .error_handling import _collect_error_handling
 from .languages import get_language_map
+from .mock_walk import _count_mock_setup, file_may_contain_mocks
 
 # Re-exported so the package façade (``__init__``) and downstream consumers
 # keep importing the output schema from ``complexity.walker`` unchanged.
@@ -129,9 +132,15 @@ def walk_file(
 
     functions: list[FunctionComplexity] = []
     fc_by_node_id: dict[int, FunctionComplexity] = {}
+    # Dialect first: it is a dict hit that rules out most languages before the
+    # byte scan. Keyed on language and bytes only, never the path, which is what
+    # the walk cache keys on.
+    dialect = _mock_dialect(language)
+    mock_dialect = dialect if dialect is not None and file_may_contain_mocks(source) else None
     for fn_node in _collect_function_nodes(tree.root_node, lmap):
         body = fn_node.child_by_field_name("body") or fn_node
         ccn, max_nest, cognitive, bumps, conditions = _walk_function_body(body, lmap)
+        assertion_blocks, assertion_count = _collect_assertion_facts(body, lmap)
         fc = FunctionComplexity(
             name=_find_function_entry_name(fn_node, lmap),
             start_line=fn_node.start_point[0] + 1,
@@ -143,7 +152,9 @@ def walk_file(
             bumps=bumps,
             param_count=_count_parameters(fn_node),
             complex_conditions=conditions,
-            assertion_blocks=_collect_assertion_blocks(body, lmap),
+            assertion_blocks=assertion_blocks,
+            assertion_count=assertion_count,
+            mock_setup_count=_count_mock_setup(fn_node, body, lmap, mock_dialect),
         )
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc

@@ -59,12 +59,19 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     ``coverage_gradient``.
     """
     from .biomarkers.registry import continuous_biomarkers
+    from .scoring import is_advisory
 
     if not findings:
         return None
+    # An advisory finding describes; it never accuses. Leaving it eligible made
+    # it the stated "one reason" for any file whose only open finding was
+    # advisory - printed beside a total deduction of zero.
+    candidates = [item for item in findings if not is_advisory(item.biomarker_type)]
+    if not candidates:
+        return None
     continuous = continuous_biomarkers()
-    discrete = [item for item in findings if item.biomarker_type not in continuous]
-    return max(discrete or findings, key=lambda item: float(item.health_impact or 0.0))
+    discrete = [item for item in candidates if item.biomarker_type not in continuous]
+    return max(discrete or candidates, key=lambda item: float(item.health_impact or 0.0))
 
 
 def split_by_origin(findings: Iterable[Any]) -> tuple[list[Any], list[Any]]:

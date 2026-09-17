@@ -1,10 +1,12 @@
 """Assertion-block detection (test-quality smells).
 
 Finds runs of ≥2 consecutive assertion statements within a function body,
-recorded as ``(start_line, end_line, count)``. Opt-in per language via the
-``LanguageNodeMap`` ``assert_kinds`` / ``assert_call_kinds`` fields; a language
-that maps neither produces nothing (never a false positive). Consumed by the
-``large_assertion_block`` / ``duplicated_assertion_block`` biomarkers.
+recorded as ``(start_line, end_line, count)``, and the body's total assertion
+count. Opt-in per language via the ``LanguageNodeMap`` ``assert_kinds`` /
+``assert_call_kinds`` fields; a language that maps neither produces nothing
+(never a false positive). Consumed by the ``large_assertion_block`` /
+``duplicated_assertion_block`` biomarkers, and by ``mock_saturated_test``,
+which divides mock setup by the total.
 """
 
 from __future__ import annotations
@@ -89,19 +91,32 @@ def _is_assertion_statement(stmt: Node, lmap: LanguageNodeMap) -> bool:
     return call is not None and _callee_matches_assert(call)
 
 
-def _collect_assertion_blocks(body_node: Node, lmap: LanguageNodeMap) -> list[tuple[int, int, int]]:
-    """Runs of ≥2 consecutive assertion statements within a function body.
+def _collect_assertion_facts(
+    body_node: Node, lmap: LanguageNodeMap
+) -> tuple[list[tuple[int, int, int]], int]:
+    """``(blocks, total)`` assertion facts for one function body.
 
-    Each run is recorded as ``(start_line, end_line, count)``. Runs are
-    found per statement-list (a block's direct children), so an assertion
-    sequence broken by a non-assertion statement starts a new run. Nested
-    function bodies are skipped — their assertions belong to them.
+    *blocks* are runs of ≥2 consecutive assertion statements, each recorded as
+    ``(start_line, end_line, count)``. Runs are found per statement-list (a
+    block's direct children), so an assertion sequence broken by a
+    non-assertion statement starts a new run. Nested function bodies are
+    skipped: their assertions belong to them.
+
+    *total* counts assertion **statements** only, at block level. The run scan
+    keeps scanning everywhere, which is a deliberate asymmetry: it feeds the
+    calibrated ``duplicated_assertion_block``, and narrowing it would change
+    scored findings. A run needs two siblings so it rarely fires off a statement
+    list, but a total counts each match on its own and would double-count every
+    assertion in a language whose ``assert_call_kinds`` is its plain call node.
+    Block level also makes it commensurable with ``mock_walk._count_body_setup``.
     """
     if not lmap.assert_kinds and not lmap.assert_call_kinds:
-        return []
+        return [], 0
     blocks: list[tuple[int, int, int]] = []
+    total = 0
 
-    def _scan_siblings(parent: Node) -> None:
+    def _scan_siblings(parent: Node, *, count_total: bool) -> None:
+        nonlocal total
         run_start = 0
         run_end = 0
         run_count = 0
@@ -109,6 +124,8 @@ def _collect_assertion_blocks(body_node: Node, lmap: LanguageNodeMap) -> list[tu
             if not child.is_named:
                 continue
             if _is_assertion_statement(child, lmap):
+                if count_total:
+                    total += 1
                 if run_count == 0:
                     run_start = child.start_point[0] + 1
                 run_end = child.end_point[0] + 1
@@ -121,11 +138,11 @@ def _collect_assertion_blocks(body_node: Node, lmap: LanguageNodeMap) -> list[tu
             blocks.append((run_start, run_end, run_count))
 
     def _visit(node: Node) -> None:
-        _scan_siblings(node)
+        _scan_siblings(node, count_total=node is body_node or node.type in lmap.block_kinds)
         for child in node.children:
             if child.type in lmap.function_kinds:
-                continue  # nested fn — walked as its own entry
+                continue  # nested fn, not collected as its own entry either
             _visit(child)
 
     _visit(body_node)
-    return blocks
+    return blocks, total

@@ -10,7 +10,7 @@ import { BiomarkerDetails, type BiomarkerDetailsRecord } from "../health/biomark
 import {
   biomarkerInfo,
   biomarkerLabel,
-  biomarkerDimension,
+  asBiomarkerDimension,
   CATEGORY_LABEL,
   DIMENSION_LABEL,
   type BiomarkerDimension,
@@ -375,12 +375,5 @@ export function FileHealthTab({
 
 /** A finding's home pillar, preferring the server value over the glossary. */
 function findingDimension(f: { dimension?: string; biomarker_type: string }): BiomarkerDimension {
-  if (
-    f.dimension === "defect" ||
-    f.dimension === "maintainability" ||
-    f.dimension === "performance"
-  ) {
-    return f.dimension;
-  }
-  return biomarkerDimension(f.biomarker_type);
+  return asBiomarkerDimension(f.dimension, f.biomarker_type);
 }

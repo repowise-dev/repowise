@@ -35,7 +35,11 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     hydrate_recommendations,
 )
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, parse_scope
-from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_attr
+from repowise.core.analysis.health.scoring import (
+    ALL_DIMENSIONS,
+    hotspot_health,
+    nloc_weighted_attr,
+)
 from repowise.core.analysis.health.semantics import health_semantics_contract
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
@@ -1600,6 +1604,7 @@ async def get_health(
         "performance",
         "defect",
         "maintainability",
+        "advisory",
     }
     unknown_include_keys = sorted(include_set - known_includes)
     only_list = [_ONLY_ALIASES.get(k, k) for k in (only or [])]
@@ -1621,7 +1626,7 @@ async def get_health(
     # ``include=["biomarkers", "performance"]`` filtered a defect-heavy head down
     # to nothing while the total still reported the whole repo. The filter now
     # decides which rows are eligible for the cap in the first place.
-    dimension_filter = include_set & {"performance", "defect", "maintainability"}
+    dimension_filter = include_set & set(ALL_DIMENSIONS)
     # The ranked findings list is ordered by health impact, and every
     # performance finding carries zero impact by construction, so leaving it
     # in an unfiltered list appends rows that can never rank and cannot be

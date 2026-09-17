@@ -387,9 +387,10 @@ Reports:
 
 ## Three health signals: defect risk, maintainability, and performance
 
-The three signals are computed from the same marker stream by one shared scoring
-kernel against independent weight, category and cap tables. They are co-equal
-views, **never blended into a single number**.
+The three scored signals are computed from the same marker stream by one shared
+scoring kernel against independent weight, category and cap tables. They are
+co-equal views, **never blended into a single number**. A fourth dimension,
+`advisory`, carries markers that never score at all. See below.
 
 **Defect risk** is the calibrated headline: the number on the dashboard ring,
 the band, the badge, and every accuracy claim above.
@@ -415,6 +416,36 @@ Every finding carries a `dimension` naming its pillar, and all three surface
 identically: `summary.*_average` on the REST overview, `kpis.*` on MCP
 `get_health`, per-file scores on every metric row, and a line each in `CLAUDE.md`
 and `repowise status`.
+
+### The fourth dimension: `advisory`, which never scores
+
+Some things are worth measuring and impossible to calibrate. No defect corpus
+labels how much of a test is mock setup, so a mock-density marker has no
+calibration story and never will. Weighting it anyway would move a number that
+claims to predict bugs using evidence that says nothing about bugs.
+
+`advisory` is where those markers live. It is deliberately **not** one of the
+three scored dimensions: there is no weight table, category or cap keyed on it,
+so "never deducts" is structural rather than a promise. Its findings carry a
+`health_impact` of exactly `0.0`, are excluded from every impact-ranked work
+queue, are never counted in a change's introduced/worsened totals, and can never
+make a review verdict blocking.
+
+| Marker | Languages | What it measures |
+|---|---|---|
+| `mock_saturated_test` | Python | Mock-setup statements per assertion in a test function |
+
+A marker earns weight by clearing the house precision bar (roughly 70%
+hand-labelled) on a real corpus. `mock_saturated_test` has not: a 32-finding
+hand-labelled sample scored 44% at its loosest useful gate and 67% at the gate it
+ships with. It stays advisory until two false-positive families are separated:
+value-object builders named `Fake*` passed as input to real logic, and boundary
+isolation where the assertion reads a real artifact. Telling
+either from genuine saturation needs to know whether an assertion observes a
+double or production output, which is a dataflow question the pass does not ask.
+
+Per-language coverage and why Go is blocked:
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage).
 
 ## Performance risk
 

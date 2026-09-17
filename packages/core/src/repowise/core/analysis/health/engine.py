@@ -99,10 +99,11 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: F# and Objective-C gained working complexity node maps and
-# Elixir lost its broken one, so stored complexity changes for files in those
-# languages. It has to move for the cache too: ``HealthWalkCache`` keys on this
-# stamp and the file's bytes, neither of which a node-map change alters.
+# Current stamp: ``mock_saturated_test`` landed and the walker records two new
+# ``FunctionComplexity`` fields, which a cached v11 walk does not carry.
+#
+# v11: F# and Objective-C gained working complexity node maps and Elixir lost
+# its broken one, so stored complexity changes for files in those languages.
 #
 # v10: non-code files stopped being scored and the deduction was split into its
 # structure and history halves, stored per file.
@@ -121,7 +122,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 11
+HEALTH_ANALYZER_VERSION = 12
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.

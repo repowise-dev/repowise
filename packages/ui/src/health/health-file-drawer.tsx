@@ -7,7 +7,7 @@ import { InfoTip } from "../shared/info-tip";
 import {
   biomarkerLabel,
   biomarkerInfo,
-  biomarkerDimension,
+  asBiomarkerDimension,
   CATEGORY_CAP,
   CATEGORY_LABEL,
   DIMENSION_CHIP,
@@ -234,12 +234,7 @@ export function HealthFileDrawer({
                 </span>
               );
             }
-            const dim =
-              f.dimension === "maintainability" ||
-              f.dimension === "defect" ||
-              f.dimension === "performance"
-                ? f.dimension
-                : biomarkerDimension(f.biomarker_type);
+            const dim = asBiomarkerDimension(f.dimension, f.biomarker_type);
             return (
               <span
                 className={`inline-flex items-center rounded px-1.5 py-px text-[10px] font-medium ${DIMENSION_CHIP[dim]}`}

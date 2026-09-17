@@ -202,6 +202,12 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A test function running a long unbroken run of assertions. When one fails, the rest never execute — split into focused cases.",
   },
+  mock_saturated_test: {
+    label: "Mock saturated test",
+    category: "test_quality",
+    description:
+      "A test whose mock setup dwarfs what it checks, so it mostly verifies the collaboration the test itself wired up. Advisory: it costs this file no points.",
+  },
   duplicated_assertion_block: {
     label: "Duplicated assertions",
     category: "test_quality",
@@ -354,7 +360,15 @@ export function biomarkerLabel(name: string): string {
  * Health dimensions: which pillar a biomarker "homes" under
  * ------------------------------------------------------------------ */
 
-export type BiomarkerDimension = "defect" | "maintainability" | "performance";
+export type BiomarkerDimension = "defect" | "maintainability" | "performance" | "advisory";
+
+/**
+ * Biomarkers that home to the non-scoring `advisory` dimension. They measure
+ * something real that no defect corpus labels, so they never deduct and the
+ * chip has to say so rather than borrowing the defect pillar's label. Mirror of
+ * ``_ADVISORY_HOME`` in core's `scoring.py`.
+ */
+export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set(["mock_saturated_test"]);
 
 /**
  * The biomarkers whose "home" pillar is maintainability: the smells the defect
@@ -414,15 +428,37 @@ export const PERFORMANCE_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
  * only the biomarker type is known (e.g. a glossary entry).
  */
 export function biomarkerDimension(name: string): BiomarkerDimension {
+  if (ADVISORY_HOME_BIOMARKERS.has(name)) return "advisory";
   if (PERFORMANCE_HOME_BIOMARKERS.has(name)) return "performance";
   if (MAINTAINABILITY_HOME_BIOMARKERS.has(name)) return "maintainability";
   return "defect";
+}
+
+/**
+ * A finding's home pillar, preferring the server's `dimension` over the
+ * glossary fallback. One owner on purpose: this narrowing was written out three
+ * times (the biomarker list, the file health tab, the file drawer) and every
+ * copy listed the dimensions by hand, so a fourth dimension would have rendered
+ * under the defect pillar's label in all three until each was found.
+ */
+export function asBiomarkerDimension(
+  dimension: string | null | undefined,
+  biomarkerType: string,
+): BiomarkerDimension {
+  // ``Object.hasOwn``, not a property probe: an indexed lookup reaches the
+  // prototype chain, so a server dimension of "constructor" or "toString" would
+  // pass and then render an undefined chip class.
+  if (dimension && Object.hasOwn(DIMENSION_LABEL, dimension)) {
+    return dimension as BiomarkerDimension;
+  }
+  return biomarkerDimension(biomarkerType);
 }
 
 export const DIMENSION_LABEL: Record<BiomarkerDimension, string> = {
   defect: "Code health",
   maintainability: "Maintainability",
   performance: "Performance",
+  advisory: "Advisory",
 };
 
 /** Tailwind chip classes per pillar, matching the surrounding chip palette. */
@@ -430,6 +466,9 @@ export const DIMENSION_CHIP: Record<BiomarkerDimension, string> = {
   defect: "bg-[var(--color-accent-primary)]/10 text-[var(--color-accent-primary)]",
   maintainability: "bg-[var(--color-accent-secondary)]/10 text-[var(--color-accent-secondary)]",
   performance: "bg-[var(--color-info)]/10 text-[var(--color-info)]",
+  // Deliberately the most muted chip in the palette: an advisory finding costs
+  // the file nothing and must not read as urgent beside ones that do.
+  advisory: "bg-[var(--color-text-muted)]/10 text-[var(--color-text-muted)]",
 };
 
 /**

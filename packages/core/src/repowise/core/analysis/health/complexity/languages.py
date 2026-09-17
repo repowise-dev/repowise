@@ -199,6 +199,15 @@ class LanguageNodeMap:
     #     silently drop), so only truly expression-oriented grammars may map it.
     statement_wrapper_kinds: frozenset[str] = frozenset()
 
+    # -- Decorators / annotations (mock-saturation pass) ---------------------
+    #   * ``decorator_kinds`` -- the node a single ``@thing`` is parsed as.
+    #   * ``decorated_definition_kinds`` -- the wrapper node HOLDING them when
+    #     the grammar puts them outside the function node, as Python does.
+    #     Grammars that keep them inside map the first alone.
+    # Both empty (the default) means no decorator signal.
+    decorator_kinds: frozenset[str] = frozenset()
+    decorated_definition_kinds: frozenset[str] = frozenset()
+
 
 _PY = LanguageNodeMap(
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
@@ -232,6 +241,8 @@ _PY = LanguageNodeMap(
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
     with_kinds=frozenset({"with_statement"}),
+    decorator_kinds=frozenset({"decorator"}),
+    decorated_definition_kinds=frozenset({"decorated_definition"}),
 )
 
 _TS = LanguageNodeMap(

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
+from ..health.scoring import ADVISORY_DIMENSION, is_advisory
 from .analyzer import RevisionHealthAnalyzer, language_for, language_of
 from .attribution import FindingAttributor, changed_symbols_for
 from .identity import change_finding_id, finding_key, severity_rank
@@ -48,7 +49,7 @@ _WAIT_TIMEOUT_SECONDS = 30
 #: Wait-then-retry rounds before a caller stops queueing and computes.
 _CLAIM_ATTEMPTS = 2
 
-_DIMENSION_ORDER = {"defect": 0, "maintainability": 1, "performance": 2}
+_DIMENSION_ORDER = {"defect": 0, "maintainability": 1, "performance": 2, ADVISORY_DIMENSION: 3}
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,7 +271,18 @@ class ChangeHealthDeltaService:
         attributor = FindingAttributor(change_map)
         changed_symbols = changed_symbols_for(change_map, by_file)
 
-        surfaced = match.of_kind("introduced", "worsened")
+        # Advisory markers deduct nothing, so "introduced" on one means the
+        # change added a description, not a regression - and every consumer of
+        # this list (introduced/worsened totals, the three-slot top_findings
+        # head, the review directive) reads it as a regression. They are
+        # dropped here rather than filtered per consumer, so a new consumer
+        # cannot miscount them. Surfacing them in their own budget slot is
+        # deliberate later work, not an omission.
+        surfaced = [
+            m
+            for m in match.of_kind("introduced", "worsened")
+            if not is_advisory(getattr(m.head, "biomarker_type", ""))
+        ]
         perf_views = opportunities_for([m.head for m in surfaced])
         perf_index = index_by_finding(perf_views, [m.head for m in surfaced])
 
@@ -293,7 +305,15 @@ class ChangeHealthDeltaService:
             fingerprint=self.fingerprint,
             scope=scope,
             findings=findings,
-            resolved_total=len(match.resolved),
+            # Symmetry with ``surfaced`` above. A dimension that cannot
+            # regress must not be able to improve either: without this, deleting
+            # an advisory-flagged test is reported as having resolved something
+            # that was defined as never having been a problem.
+            resolved_total=sum(
+                1
+                for f in match.resolved
+                if not is_advisory(getattr(f, "biomarker_type", ""))
+            ),
             unchanged_total=match.unchanged_total,
             skipped=skipped,
             limits=_limits(),

@@ -49,6 +49,12 @@ class FunctionComplexity:
     # ``LanguageNodeMap`` opts into assertion detection (``assert_kinds`` /
     # ``assert_call_kinds``). Consumed by the test-quality biomarkers.
     assertion_blocks: list[tuple[int, int, int]] = None  # type: ignore[assignment]
+    # Every assertion statement in the body, runs or not. Same per-language
+    # opt-in as ``assertion_blocks``.
+    assertion_count: int = 0
+    # Mock-setup statements in the body, decorators included. 0 for a language
+    # with no entry in ``analysis/health/mocks/lexicon.py``.
+    mock_setup_count: int = 0
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:

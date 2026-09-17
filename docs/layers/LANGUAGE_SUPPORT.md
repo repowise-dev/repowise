@@ -355,28 +355,39 @@ Health markers run off a per-language walker map that is **independent** of
 `.scm` parsing: a language can parse perfectly for the graph and still need this
 map before markers fire. This table is why a language is Full rather than Good.
 
-| Language | Complexity / nesting | Class metrics | Assertion smells | Extract Method | Performance risk |
-|----------|:---:|:---:|:---:|:---:|:---:|
-| Python | ✅ | ✅ | ✅ | ✅ | ✅ |
-| TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Svelte · Vue | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Java | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Go | ✅ | n/a | ✅ | ✅ | ✅ |
-| Rust | ✅ | ✅ | ✅ | ✅ | ✅ |
-| C++ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| C# | ✅ | ✅ | ✅ | later | ✅ |
-| Kotlin | ✅ | ✅ | ✅ | blocked | ✅ |
-| Scala | ✅ | ✅ | ✅ | later | ✅ |
-| Ruby | ✅ | ✅ | ✅ | later | ✅ |
-| Dart | ✅ | n/a | ✅ | later | ✅ |
-| Object Pascal | ✅ | n/a | later | later | n/a |
-| Razor | ✅ | n/a | n/a | later | ✅ |
-| Shell | ✅ | n/a | n/a | n/a | n/a |
+| Language | Complexity / nesting | Class metrics | Assertion smells | Mock saturation | Extract Method | Performance risk |
+|----------|:---:|:---:|:---:|:---:|:---:|:---:|
+| Python | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| TypeScript / JavaScript | ✅ | ✅ | ✅ | later | ✅ | ✅ |
+| Svelte · Vue | ✅ | ✅ | ✅ | later | ✅ | ✅ |
+| Java | ✅ | ✅ | ✅ | later | ✅ | ✅ |
+| Go | ✅ | n/a | ✅ | blocked | ✅ | ✅ |
+| Rust | ✅ | ✅ | ✅ | later | ✅ | ✅ |
+| C++ | ✅ | ✅ | ✅ | later | ✅ | ✅ |
+| C# | ✅ | ✅ | ✅ | later | later | ✅ |
+| Kotlin | ✅ | ✅ | ✅ | later | blocked | ✅ |
+| Scala | ✅ | ✅ | ✅ | later | later | ✅ |
+| Ruby | ✅ | ✅ | ✅ | later | later | ✅ |
+| Dart | ✅ | n/a | ✅ | later | later | ✅ |
+| Object Pascal | ✅ | n/a | later | n/a | later | n/a |
+| Razor | ✅ | n/a | n/a | n/a | later | ✅ |
+| Shell | ✅ | n/a | n/a | n/a | n/a | n/a |
 
 Every cell is a deliberate call, not an oversight: a language reaches a dialect
 or it stays silent, and an `n/a` records a metric the language cannot carry
 rather than one nobody got to. Kotlin's Extract Method is **blocked on the
 grammar**, not unscheduled.
+
+**Mock saturation** measures a test's mock setup against its assertions, so it
+needs both a mock vocabulary and a trustworthy assertion count. The vocabulary
+is one data row per language in
+`analysis/health/mocks/lexicon.py`; a language with no row produces no signal at
+all. Go is **blocked**, not unscheduled: its `assert_call_kinds` is best-effort
+for testify only, so idiomatic `t.Error` / `t.Fatal` tests are invisible to the
+shared assert/expect prefix match and every ratio computed from them would be
+wrong. Go needs its own assertion vocabulary before the marker can be honest
+there. The marker is advisory and never deducts. See
+[CODE_HEALTH.md](CODE_HEALTH.md).
 
 Per-marker mechanics, every per-language precision ceiling and the reasoning
 behind each `n/a`: [CODE_HEALTH.md](CODE_HEALTH.md) and

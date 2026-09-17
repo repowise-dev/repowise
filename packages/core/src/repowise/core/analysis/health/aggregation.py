@@ -22,6 +22,7 @@ from .scoring import (
     SCORE_MAX,
     biomarker_category,
     biomarker_weight,
+    is_advisory,
     severity_deduction,
 )
 
@@ -140,9 +141,14 @@ def severity_breakdown(findings: Iterable[Any]) -> dict[str, int]:
     ``dict`` keeps the key it was built with — so the returned keys stay plain
     strings even when every finding carried an enum. Do not "fix" that by
     coercing: the wire shape depends on it.
+
+    Advisory findings are excluded so this agrees with ``open_findings``,
+    which is rendered beside it in the same payload.
     """
     out = dict.fromkeys(SEVERITY_ORDER, 0)
     for finding in findings:
+        if is_advisory(field(finding, "biomarker_type", "") or ""):
+            continue
         severity = _severity_key(field(finding, "severity", None))
         if severity in out:
             out[severity] += 1
@@ -197,8 +203,12 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
     """
     per_category: dict[str, list[Any]] = {}
     for finding in findings:
-        category = biomarker_category(field(finding, "biomarker_type", None))
-        per_category.setdefault(category, []).append(finding)
+        biomarker = field(finding, "biomarker_type", None)
+        # No deduction to explain. Left in, it reports a raw deduction the
+        # file never paid and a ``capped`` flag on an uncapped category.
+        if is_advisory(biomarker or ""):
+            continue
+        per_category.setdefault(biomarker_category(biomarker), []).append(finding)
 
     categories: list[dict[str, Any]] = []
     total_deduction = 0.0

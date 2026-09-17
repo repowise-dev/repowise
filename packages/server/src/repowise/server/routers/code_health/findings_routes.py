@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.counts import parse_counts
 from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.scope import parse_scope
+from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.schemas import (
@@ -64,7 +65,7 @@ async def list_health_findings(
         severity=severity,
         dimension=dimension,
         status=parse_status_filter(status),
-        exclude_dimensions=("performance",),
+        exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS)),
     )
     # A finding carries a path, not ``is_test``, so narrowing it needs the
     # metric rows that do. Read them only when the answer depends on them:

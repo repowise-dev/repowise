@@ -12,6 +12,7 @@ from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.models import primary_finding
+from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
@@ -107,7 +108,7 @@ async def health_work_queue(
         # As the findings list does, so a row's count and the list behind it
         # agree. Performance carries zero health impact and ranks by cause on
         # its own surface; ``dimension=performance`` still returns it.
-        exclude_dimensions=("performance",),
+        exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS)),
     )
     metrics, findings = narrow(scope, metrics, findings)
     metrics, findings, _unscored = project(counts, metrics, findings)
