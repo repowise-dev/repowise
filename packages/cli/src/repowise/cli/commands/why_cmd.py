@@ -138,8 +138,9 @@ def project(payload: dict) -> dict:
                         and target_context
     dashboard kept      summary, counts, and the head of each of
                         stale_decisions / proposed_awaiting_review /
-                        ungoverned_hotspots / conflicts, with the
-                        full count beside it
+                        ungoverned_hotspots / conflicts /
+                        retired_decisions / unscoped_decisions, with
+                        the full count beside it
     ==================  ===========================================
 
     Dropped throughout: a decision's ``context``, ``consequences``,
@@ -237,7 +238,14 @@ def project(payload: dict) -> dict:
             for target, entry in payload["target_context"].items()
         }
 
-    for key in ("stale_decisions", "proposed_awaiting_review", "ungoverned_hotspots", "conflicts"):
+    for key in (
+        "stale_decisions",
+        "proposed_awaiting_review",
+        "ungoverned_hotspots",
+        "conflicts",
+        "retired_decisions",
+        "unscoped_decisions",
+    ):
         values = payload.get(key)
         if values:
             out[key] = _capped(values)
@@ -412,6 +420,8 @@ def _render(projected: dict) -> None:
         ("Stale decisions", "stale_decisions"),
         ("Proposed, awaiting review", "proposed_awaiting_review"),
         ("Conflicts", "conflicts"),
+        ("Retired", "retired_decisions"),
+        ("Accepted, naming no file", "unscoped_decisions"),
     ):
         rows = projected.get(key) or []
         if rows:
@@ -464,6 +474,8 @@ _RENDERABLE_BLOCKS = (
     "proposed_awaiting_review",
     "conflicts",
     "ungoverned_hotspots",
+    "retired_decisions",
+    "unscoped_decisions",
     "related_documentation",
     "episodes",
 )

@@ -527,15 +527,20 @@ async def _why_health_dashboard(repo: str | None) -> dict:
             # The lanes that used to be a number and nothing else. ``counts``
             # said three records were superseded and the response named none of
             # them, and unlike every capped lane here there was nothing to
-            # recover: no filter argument reaches them, no id was emitted to
-            # feed ``get_why(id=...)``, and ``_meta.omitted`` can only return
-            # rows that entered the response. Per-path ``history`` names retired
-            # records, but needs a path per call, which is the opposite of what
-            # this orientation mode is for.
+            # recover from the response itself: no id was emitted to feed
+            # ``get_why(id=...)``, and ``_meta.omitted`` can only return rows
+            # that entered the response.
             #
-            # ``active`` stays count-only on purpose: those ids reach a reader
-            # through query mode and through path mode's governing records, so
-            # it is the one count-only lane that is already recoverable.
+            # Not that a retired record is unreachable — query mode ranks over
+            # every record and treats status as a tie-break, never a gate, and
+            # per-path ``history`` names the retired records that name a path.
+            # But both require already knowing the question or the path, and no
+            # mode *enumerates* either lane. That is the opposite of what an
+            # orientation call is for, and ``unscoped`` is worse off again: it
+            # names no path, so path mode can never reach it.
+            #
+            # ``active`` stays count-only because it is the lane every other
+            # mode exists to serve, not because it is short.
             "retired_decisions": [
                 {"id": d.id, "title": d.title, "lane": lane} for lane, d in retired
             ],

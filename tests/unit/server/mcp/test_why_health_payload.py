@@ -14,6 +14,7 @@ import json
 
 import pytest
 
+from repowise.core.analysis.decisions.lifecycle import status_rank
 from repowise.core.persistence.models import DecisionRecord
 from repowise.server.mcp_server.tool_why import (
     _MAX_HEALTH_PROPOSED,
@@ -45,8 +46,22 @@ def oversized_health(monkeypatch):
     stale = [_record(f"s{i}", staleness=1.0 - i / 100) for i in range(20)]
     proposed = [_record(f"p{i}", confidence=1.0 - i / 100) for i in range(20)]
     ungoverned = [f"src/hot_{i}.py" for i in range(20)]
-    retired = [("superseded", _record(f"r{i}")) for i in range(20)]
+    # Fewer ``superseded`` rows than the cap, on purpose: a lane-ranked list
+    # starts with them, so a fixture with five or more of them cannot tell a
+    # real lane from one hardcoded to "superseded". Two means the emitted head
+    # spans two lanes. Inserted out of rank order so an unranked list fails too.
+    retired_lanes = ["dismissed"] * 9 + ["superseded"] * 2 + ["deprecated"] * 9
+    retired = [(lane, _record(f"r{i:02d}")) for i, lane in enumerate(retired_lanes)]
+    retired.sort(key=lambda pair: (status_rank(pair[0]), pair[1].id))
     unscoped = [_record(f"u{i}", confidence=1.0 - i / 100) for i in range(20)]
+    conflicts = [
+        {
+            "src": {"id": "c-src", "title": "Left", "status": "active"},
+            "dst": {"id": "c-dst", "title": "Right", "status": "active"},
+            "confidence": 0.8,
+            "evidence": "both name src/a.py",
+        }
+    ]
 
     async def _fake(session, repository_id):
         return {
@@ -54,7 +69,7 @@ def oversized_health(monkeypatch):
             "stale_decisions": stale,
             "proposed_awaiting_review": proposed,
             "ungoverned_hotspots": ungoverned,
-            "conflicts": [],
+            "conflicts": conflicts,
             "retired_decisions": retired,
             "unscoped_decisions": unscoped,
         }
@@ -133,10 +148,12 @@ async def test_health_names_the_lanes_it_used_to_only_count(setup_mcp, oversized
     _stale, _proposed, _ungoverned, retired, unscoped = oversized_health
     result = await get_why()
 
-    assert [row["id"] for row in result["retired_decisions"]] == [
-        record.id for _lane, record in retired[:5]
+    # Compared pairwise, not on the head: the head of a lane-ranked list is
+    # ``superseded`` whatever the rows say, so asserting only the first one
+    # passes against a hardcoded lane.
+    assert [(row["id"], row["lane"]) for row in result["retired_decisions"]] == [
+        (record.id, lane) for lane, record in retired[:5]
     ]
-    assert result["retired_decisions"][0]["lane"] == "superseded"
     assert [row["id"] for row in result["unscoped_decisions"]] == [
         record.id for record in unscoped[:5]
     ]
@@ -161,9 +178,14 @@ async def test_health_leaves_the_conflicts_lane_alone(setup_mcp, oversized_healt
 
     It was named alongside these lanes and is not one of them: it is richer
     than ``proposed_awaiting_review``, which carries no status field at all.
+    Pinned here so the lane cannot be quietly thinned to match its neighbours.
     """
     from repowise.server.mcp_server import get_why
 
     result = await get_why()
+    conflict = result["conflicts"][0]
 
-    assert result["conflicts"] == []
+    assert conflict["src"] == {"id": "c-src", "title": "Left", "status": "active"}
+    assert conflict["dst"] == {"id": "c-dst", "title": "Right", "status": "active"}
+    assert conflict["confidence"] == 0.8
+    assert conflict["evidence"] == "both name src/a.py"

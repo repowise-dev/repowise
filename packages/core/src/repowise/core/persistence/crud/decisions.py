@@ -1559,10 +1559,15 @@ async def get_decision_health_summary(
 ) -> dict:
     """Return decision health: counts by lane, stale decisions, ungoverned hotspots.
 
-    The three list fields are returned ranked worst-first: stale by staleness,
-    proposed by confidence, ungoverned hotspots by temporal hotspot score. A
+    The five list fields are returned ranked worst-first: stale by staleness,
+    proposed by confidence, ungoverned hotspots by temporal hotspot score,
+    retired by lane (history before tombstone) and unscoped by confidence. A
     caller that shows only the first few shows the few that matter.
     Callers may truncate; they must not re-order.
+
+    ``retired_decisions`` is a list of ``(lane, record)`` pairs rather than
+    bare records, because the lane a record is in is derived from its
+    acceptance and its ``status`` column is allowed to disagree with that.
 
     Counts the acceptance, not the status column. The key names are the ones
     every caller already renders, and they keep their product meaning:
@@ -1602,8 +1607,10 @@ async def get_decision_health_summary(
     # records were superseded; a caller had no way to learn *which* three,
     # because the record is in hand right here and was dropped at the
     # ``continue``. Naming them costs no extra query. ``retired`` carries its
-    # lane with it, since the lane comes from the acceptance and a record's
-    # ``status`` column can disagree with it.
+    # lane with it because the lane is derived: for an accepted record it comes
+    # from the acceptance, which its ``status`` column is allowed to disagree
+    # with, and only where there is no acceptance to derive from is it the
+    # column. A bare record would leave a reader to guess which.
     retired_decisions: list[tuple[str, DecisionRecord]] = []
     unscoped_decisions: list[DecisionRecord] = []
 

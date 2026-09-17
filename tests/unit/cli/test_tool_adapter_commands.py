@@ -935,3 +935,28 @@ def test_why_renders_a_dominant_author_as_a_percentage_not_a_fraction():
     assert _owner_share(0.9956) == "100%"
     assert _owner_share(80.0) == "80%"
     assert _owner_share(None) == "?"
+
+
+def test_why_dashboard_projection_keeps_the_newly_named_lanes():
+    """The CLI projection is a second place a lane can go back to being a count.
+
+    ``project_why`` names the dashboard keys it keeps in a hardcoded tuple, so
+    a lane the tool learned to emit is dropped here until it is added — which
+    is the same "counted, never named" state on the surface most people read.
+    """
+    payload = {
+        "mode": "health",
+        "summary": "1 active",
+        "counts": {"active": 1, "superseded": 2, "unscoped": 1},
+        "retired_decisions": [
+            {"id": "r1", "title": "Retired one", "lane": "superseded"},
+            {"id": "r2", "title": "Retired two", "lane": "dismissed"},
+        ],
+        "unscoped_decisions": [{"id": "u1", "title": "Scopeless", "confidence": 0.4}],
+    }
+
+    out = project_why(payload)
+
+    assert [row["id"] for row in out["retired_decisions"]] == ["r1", "r2"]
+    assert out["retired_decisions"][1]["lane"] == "dismissed"
+    assert [row["id"] for row in out["unscoped_decisions"]] == ["u1"]
