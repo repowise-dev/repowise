@@ -2480,6 +2480,7 @@ export interface Paginated_SymbolResponse_ {
   next_offset?: number | null;
 }
 
+
 /** Branches on changed lines, reported beside patch coverage, never blended into it. */
 export interface PatchCoverageBranches {
   branch_taken: number;
