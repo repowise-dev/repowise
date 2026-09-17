@@ -213,6 +213,14 @@ def _render_card(name: str, card: dict) -> None:
     summary = card.get("risk_summary")
     if summary:
         console.print(f"  {escape(str(summary))}")
+    if card.get("resolved") is False:
+        # Nothing below this was measured for the target, and every line
+        # beneath defaults a missing field to a number. Printing "0 direct
+        # dependents" for a path the tool never resolved is the same lie in
+        # a different surface, so stop at the reason.
+        reason = escape(str(card.get("unresolved_reason") or "unknown"))
+        console.print(f"  [dim]unresolved: {reason}[/dim]")
+        return
     trend = card.get("trend") or "unknown"
     console.print(
         f"  [dim]hotspot {float(card.get('hotspot_score') or 0.0):.0%} ({trend}) · "

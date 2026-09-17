@@ -510,6 +510,30 @@ def _load_commit_categories(meta: Any) -> dict:
     return categories
 
 
+def _unresolved_reason(target: str, lookup_path: str, repo_root: str | None) -> str:
+    """Why *target* names nothing this tool can score, in the caller's terms.
+
+    Mirrors the vocabulary ``get_health._unresolved_targets`` already serves, so
+    the two tools in this family answer a bad target the same way.
+    ``no_such_module`` means ``get_risk`` has no module vocabulary at all (unlike
+    ``get_health``, which expands ``module:`` into its files); ``directory``
+    means the path exists but risk is scored per file; ``not_indexed`` means the
+    file is on disk but absent from this index, so ``repowise update`` is the
+    fix; ``no_such_path`` means a typo.
+    """
+    if target.startswith("module:"):
+        return "no_such_module"
+    try:
+        on_disk = Path(repo_root) / lookup_path if repo_root else Path(lookup_path)
+        if on_disk.is_dir():
+            return "directory"
+        if on_disk.exists():
+            return "not_indexed"
+    except (OSError, ValueError):
+        pass
+    return "no_such_path"
+
+
 async def _assess_one_target(
     session: AsyncSession,
     repository: Repository,
@@ -641,6 +665,31 @@ async def _assess_one_target(
         )
     )
     meta = res.scalar_one_or_none()
+
+    symbol_target = "::" in target
+    if meta is None and lookup_path not in node_meta and not symbol_target:
+        # Neither the graph nor git history knows this path, so nothing below
+        # measured it. Every numeric field the full card carries would be a
+        # structural zero, and a zero is indistinguishable from a measured one:
+        # ``module:ingestion`` and the bare directory
+        # ``packages/core/src/repowise/core/ingestion`` both returned
+        # ``dependents_count: 0`` while a single file inside that directory
+        # returned 59. Name the miss and emit no counts at all, so a caller
+        # cannot read "safe to change" off a target this tool never resolved.
+        # Both conditions are required: a file that is a graph node but has no
+        # git row is a real, scoreable target (a new file, an untracked one)
+        # and keeps the existing card. A ``path::Symbol`` target is excluded
+        # too: symbol ids are an accepted input shape here (``get_context``
+        # takes them, and the episode enricher resolves one to its file), so
+        # rejecting them would be a different change than this one.
+        return {
+            "target": target,
+            "resolved": False,
+            "unresolved_reason": _unresolved_reason(target, lookup_path, repository.local_path),
+            "risk_summary": (
+                f"{target} — not resolved to an indexed file; no risk signal was computed"
+            ),
+        }
 
     if meta is None:
         result_data["hotspot_score"] = 0.0
