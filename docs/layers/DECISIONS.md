@@ -141,9 +141,19 @@ review as though they were the team's.
 | `decision confirm ID...` | Accept, optionally editing the reason and scope on the way. Takes many ids. |
 | `decision confirm ID` on a decision | Reaffirm it after review. |
 | `decision merge ID INTO_ID` | Fold a candidate into an existing decision. The old id resolves to the target. |
+| `decision dedupe` | Fold candidates that duplicate another candidate, in one sweep. Dry run until `--apply`. |
 | `decision split ID` | Flag a candidate as bundling two choices. Never splits it for you. |
 | `decision dismiss ID...` | Tombstone it. On an accepted decision this also withdraws its authority. Takes many ids. |
 | `decision deprecate ID --superseded-by ID2` | Retire it with an explicit lineage edge. |
+
+`merge` folds one pair and needs the target to be an accepted decision, because
+that merge changes what governs. `dedupe` is the other case: a store that has
+been indexed many times accumulates the same decision written several ways, and
+none of those records governs anything yet. It folds each duplicate into the
+candidate it duplicates — evidence, governed files and all — and only ever into
+a record it is directly measured against, so a chain of near-neighbours is not
+collapsed into one decision. Run it without `--apply` first; it prints exactly
+what it would fold.
 
 `confirm` and `dismiss` take a list because a repository accumulates candidates
 faster than anyone reviews them one command at a time. Every id in a batch goes

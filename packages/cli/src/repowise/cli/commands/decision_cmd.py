@@ -70,6 +70,7 @@ def _register_config_commands() -> None:
 
     from repowise.cli.commands.decision_review_cmd import (
         candidates_command,
+        dedupe_command,
         export_command,
         import_command,
         merge_command,
@@ -82,6 +83,7 @@ def _register_config_commands() -> None:
         migrate_command,
         candidates_command,
         merge_command,
+        dedupe_command,
         split_command,
         export_command,
         import_command,

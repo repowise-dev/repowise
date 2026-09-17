@@ -975,6 +975,7 @@ repowise decision candidates [PATH]     # what is awaiting review; these govern 
 repowise decision confirm ID... [PATH]  # accept candidates: this is what makes them govern
 repowise decision dismiss ID... [PATH]  # tombstone them (sticky; never re-proposed)
 repowise decision merge ID INTO_ID      # fold a candidate into an existing decision
+repowise decision dedupe [PATH]         # fold candidates that duplicate another candidate (dry run by default)
 repowise decision split ID [PATH]       # flag a candidate as bundling two choices
 repowise decision deprecate ID [PATH]   # retire a decision, optionally naming its successor
 repowise decision health [PATH]         # health dashboard
