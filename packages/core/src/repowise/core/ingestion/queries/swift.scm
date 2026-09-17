@@ -21,10 +21,17 @@
   (type_identifier) @symbol.name
 ) @symbol.def
 
-; extension Foo: Protocol — name is nested under user_type
+; extension Foo: Protocol: name is nested under user_type.
+; The `.` anchor is load-bearing. A qualified `extension Ns.Type: P {}`
+; parses as one flat user_type holding two type_identifier children, and an
+; unanchored capture matches both, so the qualifier is recorded as a symbol
+; and as a conformance parent of its own. Anchor to the last child so only
+; the trailing identifier is the name. Single-identifier user_types are
+; unaffected.
 (class_declaration
   (user_type
     (type_identifier) @symbol.name
+    .
   )
 ) @symbol.def
 
