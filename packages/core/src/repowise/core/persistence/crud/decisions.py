@@ -184,6 +184,22 @@ async def find_decision_by_title(
     return result.scalar_one_or_none()
 
 
+async def sync_record_links(session: AsyncSession, rec: DecisionRecord) -> None:
+    """Mirror *rec*'s file/module JSON into ``decision_node_links``.
+
+    Every writer of ``affected_files_json`` / ``affected_modules_json`` must
+    call this: augment hooks score decisions by link rows alone, so a scope
+    that exists only in the JSON is invisible to them (issue #2288).
+    """
+    await sync_decision_node_links(
+        session,
+        rec.repository_id,
+        rec.id,
+        files=json.loads(rec.affected_files_json or "[]"),
+        modules=json.loads(rec.affected_modules_json or "[]"),
+    )
+
+
 async def upsert_decision(
     session: AsyncSession,
     *,
@@ -218,9 +234,7 @@ async def upsert_decision(
     context = context or ""
     decision = decision or ""
 
-    q = _dedup_query(
-        repository_id, title, source=source, evidence_file=evidence_file
-    )
+    q = _dedup_query(repository_id, title, source=source, evidence_file=evidence_file)
 
     # No write path creates authority. ``active`` here would be a status a
     # caller asserted rather than an acceptance anyone performed; the caller
@@ -249,6 +263,7 @@ async def upsert_decision(
         existing.superseded_by = superseded_by
         existing.updated_at = _now_utc()
         await session.flush()
+        await sync_record_links(session, existing)
         await _write_candidate_meta(session, repository_id, {}, only={existing.id})
         return existing
 
@@ -256,9 +271,7 @@ async def upsert_decision(
         # An explicit id still wins: the manifest importer carries ids in from
         # a tracked file and those are the record's identity, not ours.
         id=decision_id
-        or derive_decision_id(
-            repository_id, title, source=source, evidence_file=evidence_file
-        ),
+        or derive_decision_id(repository_id, title, source=source, evidence_file=evidence_file),
         repository_id=repository_id,
         title=title,
         status=status,
@@ -282,6 +295,7 @@ async def upsert_decision(
     )
     session.add(rec)
     await session.flush()
+    await sync_record_links(session, rec)
     await _write_candidate_meta(session, repository_id, {}, only={rec.id})
     return rec
 
@@ -375,9 +389,7 @@ async def list_decisions(
 # which excludes dismissed rows, so a key for it would report a count of zero
 # for rows the query never looked at.
 _STATUS_RANK = {
-    status: rank
-    for rank, status in enumerate(DECISION_STATUS_ORDER)
-    if status != "dismissed"
+    status: rank for rank, status in enumerate(DECISION_STATUS_ORDER) if status != "dismissed"
 }
 
 
@@ -456,6 +468,7 @@ async def update_decision_metadata(
         rec.affected_files_json = json.dumps(affected_files)
     rec.updated_at = _now_utc()
     await session.flush()
+    await sync_record_links(session, rec)
     return rec
 
 
@@ -563,6 +576,8 @@ async def update_decision_by_id(
 
     rec.updated_at = _now_utc()
     await session.flush()
+    if "affected_files" in fields or "affected_modules" in fields:
+        await sync_record_links(session, rec)
     return rec
 
 
@@ -1195,13 +1210,7 @@ async def bulk_upsert_decisions(
         # Mirror the JSON file/module arrays into first-class decision→code
         # links so the graph is traversable both directions (Phase 3A). The
         # JSON stays the cheap read cache; these rows are the queryable truth.
-        await sync_decision_node_links(
-            session,
-            repository_id,
-            rec.id,
-            files=json.loads(rec.affected_files_json or "[]"),
-            modules=json.loads(rec.affected_modules_json or "[]"),
-        )
+        await sync_record_links(session, rec)
 
         # (Re-)embed the record into the shared store so it's matchable by
         # later groups in this batch + future runs, and discoverable via

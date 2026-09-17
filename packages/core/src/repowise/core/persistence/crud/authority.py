@@ -31,7 +31,7 @@ from repowise.core.analysis.decisions.lifecycle import (
     legacy_status_for_currency,
 )
 
-from ..decision_graph import upsert_decision_edge
+from ..decision_graph import sync_decision_node_links, upsert_decision_edge
 from ..models import (
     DecisionAcceptance,
     DecisionAlias,
@@ -571,6 +571,15 @@ async def accept_decision(
         record.rationale = reason
     if scope is not None:
         record.affected_files_json = json.dumps(scope)
+        # Links are what augment hooks score by; JSON alone is invisible to
+        # them (issue #2288).
+        await sync_decision_node_links(
+            session,
+            record.repository_id,
+            record.id,
+            files=scope,
+            modules=json.loads(record.affected_modules_json or "[]"),
+        )
     acceptance = await record_acceptance(
         session,
         record,

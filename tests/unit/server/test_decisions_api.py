@@ -15,7 +15,7 @@ from httpx import AsyncClient
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import DecisionEvidence, DecisionNodeLink
+from repowise.core.persistence.models import DecisionEvidence
 from tests.unit.server.conftest import create_test_repo
 
 # ---------------------------------------------------------------------------
@@ -83,20 +83,6 @@ async def _seed_lineage(session_factory, repo_id: str, old_id: str, new_id: str)
             confidence=0.8,
             evidence="Replaced by newer approach.",
         )
-
-
-async def _seed_code_link(session_factory, repo_id: str, decision_id: str) -> None:
-    """Insert a DecisionNodeLink row directly."""
-    async with get_session(session_factory) as session:
-        session.add(
-            DecisionNodeLink(
-                repository_id=repo_id,
-                decision_id=decision_id,
-                node_id="packages/core/src/repowise/core/persistence/database.py",
-                link_type="file",
-            )
-        )
-        await session.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +246,7 @@ async def test_graph_returns_nodes_edges_code_edges(client: AsyncClient, app) ->
     )
     # A supersedes B
     await _seed_lineage(app.state.session_factory, repo["id"], id_b, id_a)
-    # Code link for A
-    await _seed_code_link(app.state.session_factory, repo["id"], id_a)
+    # Code links come from upsert_decision itself (file + module), for A and B.
 
     resp = await client.get(f"/api/repos/{repo['id']}/decisions/graph")
     assert resp.status_code == 200
@@ -289,10 +274,13 @@ async def test_graph_returns_nodes_edges_code_edges(client: AsyncClient, app) ->
     assert "confidence" in edge
     assert "evidence" in edge
 
-    assert len(body["code_edges"]) == 1
-    ce = body["code_edges"][0]
-    assert ce["decision_id"] == id_a
-    assert ce["link_type"] == "file"
+    assert len(body["code_edges"]) == 4
+    assert {(ce["decision_id"], ce["link_type"]) for ce in body["code_edges"]} == {
+        (id_a, "file"),
+        (id_a, "module"),
+        (id_b, "file"),
+        (id_b, "module"),
+    }
 
 
 @pytest.mark.asyncio

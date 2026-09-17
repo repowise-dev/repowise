@@ -194,3 +194,62 @@ async def test_lineage_chain_is_cycle_guarded(async_session):
     )
     chain = await build_lineage_chain(async_session, a)
     assert len(chain) == 2  # A and B, no infinite loop
+
+
+async def test_scope_written_outside_bulk_upsert_syncs_node_links(async_session):
+    """Augment hooks score decisions by link rows only, so a scope that lands
+    in ``affected_files_json`` via ``confirm --scope`` / metadata patch / CLI
+    ``add`` must reach ``decision_node_links`` too (issue #2288)."""
+    from repowise.core.persistence.crud import (
+        update_decision_by_id,
+        update_decision_metadata,
+        upsert_decision,
+    )
+    from repowise.core.persistence.crud.authority import accept_decision
+
+    repo = await insert_repo(async_session)
+
+    # CLI ``add`` → upsert_decision
+    rec = await upsert_decision(
+        async_session,
+        repository_id=repo.id,
+        title="Added by hand",
+        decision="body",
+        rationale="why",
+        affected_files=["src/a.py"],
+        affected_modules=["src"],
+        evidence_commits=["deadbeef"],
+    )
+    assert {
+        (lk.node_id, lk.link_type) for lk in await get_governed_nodes(async_session, rec.id)
+    } == {
+        ("src/a.py", "file"),
+        ("src", "module"),
+    }
+
+    # ``confirm --scope`` replaces the proposed scope → old link gone, new present
+    await accept_decision(async_session, rec, accepter="tester", scope=["src/b.py"])
+    assert {
+        (lk.node_id, lk.link_type) for lk in await get_governed_nodes(async_session, rec.id)
+    } == {
+        ("src/b.py", "file"),
+        ("src", "module"),
+    }
+    assert [d.id for d in await get_governing_decisions(async_session, repo.id, "src/b.py")] == [
+        rec.id
+    ]
+    assert await get_governing_decisions(async_session, repo.id, "src/a.py") == []
+
+    # server PATCH → update_decision_metadata
+    await update_decision_metadata(async_session, rec.id, affected_files=["src/c.py"])
+    assert {lk.node_id for lk in await get_governed_nodes(async_session, rec.id)} == {
+        "src/c.py",
+        "src",
+    }
+
+    # partial update → update_decision_by_id
+    await update_decision_by_id(async_session, rec.id, affected_modules=["pkg"])
+    assert {lk.node_id for lk in await get_governed_nodes(async_session, rec.id)} == {
+        "src/c.py",
+        "pkg",
+    }
