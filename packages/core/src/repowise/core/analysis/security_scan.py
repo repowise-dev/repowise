@@ -228,6 +228,46 @@ SECRET_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secre
 SYMBOL_NAME_KINDS: frozenset[str] = frozenset({"security_sensitive_symbol"})
 
 
+def _mask_secret_snippet(snippet: str, val: str) -> str:
+    """Replace the first occurrence of *val* inside *snippet* with a redacted form.
+
+    Keeps the variable name and surrounding text intact so the finding remains
+    locatable in the source file.  The replacement is ``val[:4] + '****'``
+    (first four characters visible, everything else hidden).  If the value is
+    shorter than four characters, the whole value is replaced with ``'****'``.
+
+    Examples
+    --------
+    >>> _mask_secret_snippet("password = 'super_secret_pass_99'", "super_secret_pass_99")
+    "password = 'supe****'"
+    """
+    if not val:
+        return snippet
+    redacted = (val[:4] + "****") if len(val) >= 4 else "****"
+    return snippet.replace(val, redacted, 1)
+
+
+def _mask_findings(findings: list[dict]) -> None:
+    """Redact the captured secret value from every credential finding's snippet.
+
+    Operates in-place on *findings*.  Only kinds listed in ``SECRET_KINDS`` are
+    touched; every other kind (code-smell patterns, symbol names, spanning
+    patterns not in SECRET_KINDS) is left unchanged.
+
+    This is called as a final post-pass inside ``scan_file`` before returning,
+    so it covers the per-line loop, the spanning-pattern loop, and the
+    ``HistorySecurityScanner`` path in one place.
+    """
+    for finding in findings:
+        if finding.get("kind") not in SECRET_KINDS:
+            continue
+        val: str = finding.get("_secret_val", "")
+        if val:
+            finding["snippet"] = _mask_secret_snippet(finding.get("snippet", ""), val)
+            # Remove the internal key — it must never leave this module.
+            del finding["_secret_val"]
+
+
 def _mask_comments_and_strings(source: str) -> str:
     """Blank common comments/strings while preserving offsets and newlines."""
     chars = list(source)
@@ -443,6 +483,19 @@ class SecurityScanner:
                             continue
                         if is_low_sev_file:
                             severity = "low"
+                        # Trim snippet to keep it concise
+                        snippet = line.strip()[:120]
+                        findings.append(
+                            {
+                                "kind": kind,
+                                "severity": severity,
+                                "snippet": snippet,
+                                "line": lineno,
+                                # Internal: consumed by _mask_findings, never persisted.
+                                "_secret_val": val,
+                            }
+                        )
+                        continue
                     # Trim snippet to keep it concise
                     snippet = line.strip()[:120]
                     findings.append(
@@ -492,6 +545,12 @@ class SecurityScanner:
                     }
                 )
 
+        # Mask secret values before any finding leaves this function.
+        # A single post-pass keyed on SECRET_KINDS covers the per-line loop,
+        # the spanning-pattern loop above, and HistorySecurityScanner (which
+        # calls this same method), so every present and future snippet site is
+        # covered by construction.
+        _mask_findings(findings)
         return findings
 
     def _uses_sqlite(self) -> bool:

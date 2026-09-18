@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
-from repowise.core.analysis.security_scan import SecurityScanner
+from repowise.core.analysis.security_scan import SecurityScanner, _mask_secret_snippet
 
 SNIPPY = b"""import pickle
 
@@ -78,6 +78,15 @@ class TestScanFile:
         assert "eval_call" in kinds
         by_kind = {f["kind"]: f for f in findings}
         assert by_kind["hardcoded_password"]["line"] == 3
+        # The raw secret value must NOT appear in the snippet.
+        pw_snippet = by_kind["hardcoded_password"]["snippet"]
+        assert "super_secret_password_123" not in pw_snippet, (
+            f"secret value leaked into snippet: {pw_snippet!r}"
+        )
+        # The masked form must be present.
+        assert "supe****" in pw_snippet, (
+            f"expected masked form 'supe****' in snippet: {pw_snippet!r}"
+        )
 
     def test_clean_source_yields_nothing(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
@@ -516,3 +525,113 @@ class TestPersistSecurityFindings:
             ("a.py", "hardcoded_password", 1),
             ("a.py", "security_sensitive_symbol", 7),
         ]
+
+
+class TestSecretMasking:
+    """Credential snippets must be masked; non-credential snippets must not."""
+
+    # ------------------------------------------------------------------ #
+    # _mask_secret_snippet — pure-function unit tests                      #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize(
+        ("snippet", "val", "expected"),
+        [
+            # Normal case: first 4 chars kept, rest replaced.
+            ("password = 'super_secret_pass_99'", "super_secret_pass_99", "password = 'supe****'"),
+            # Short-ish value: still 4 chars kept.
+            ("api_key = 'abcd1234'", "abcd1234", "api_key = 'abcd****'"),
+            # Value exactly 4 chars: keep all 4, append ****.
+            ("secret = 'abcd'", "abcd", "secret = 'abcd****'"),
+            # Value shorter than 4 chars: replace entirely.
+            ("secret = 'abc'", "abc", "secret = '****'"),
+            # Empty val: snippet unchanged.
+            ("password = 'something'", "", "password = 'something'"),
+        ],
+    )
+    def test_mask_secret_snippet_helper(
+        self, snippet: str, val: str, expected: str
+    ) -> None:
+        assert _mask_secret_snippet(snippet, val) == expected
+
+    # ------------------------------------------------------------------ #
+    # scan_file — credential kinds are masked                              #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize(
+        ("source", "kind", "raw_val"),
+        [
+            (
+                "password = 'super_secret_password_123'\n",
+                "hardcoded_password",
+                "super_secret_password_123",
+            ),
+            (
+                'API_KEY = "abc123456789"\n',
+                "hardcoded_secret",
+                "abc123456789",
+            ),
+            (
+                'SECRET = "abcd1234"\n',
+                "hardcoded_secret",
+                "abcd1234",
+            ),
+        ],
+    )
+    def test_credential_snippet_is_masked(
+        self, source: str, kind: str, raw_val: str
+    ) -> None:
+        """The plaintext secret value must not appear in any snippet."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == kind]
+        assert hits, f"no finding of kind {kind!r} produced"
+        for hit in hits:
+            assert raw_val not in hit["snippet"], (
+                f"plaintext secret leaked into snippet for {kind!r}: {hit['snippet']!r}"
+            )
+            # Masked form must be present: first 4 chars + ****.
+            expected_mask = raw_val[:4] + "****"
+            assert expected_mask in hit["snippet"], (
+                f"expected masked form {expected_mask!r} not found in {hit['snippet']!r}"
+            )
+
+    def test_credential_finding_has_no_internal_secret_val_key(self) -> None:
+        """The internal ``_secret_val`` key must be consumed by _mask_findings
+        and must never appear in a returned finding."""
+        source = "password = 'super_secret_password_123'\n"
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
+        for f in findings:
+            assert "_secret_val" not in f, (
+                f"internal key '_secret_val' leaked out of scan_file: {f}"
+            )
+
+    # ------------------------------------------------------------------ #
+    # scan_file — non-credential kinds are NOT masked                      #
+    # ------------------------------------------------------------------ #
+
+    def test_non_credential_snippet_is_not_masked(self) -> None:
+        """eval_call and pickle_loads snippets must be the raw matched line."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("a.py", SNIPPY.decode(), symbols=[]))
+        by_kind = {f["kind"]: f for f in findings}
+        # eval_call snippet should contain the raw text.
+        assert "eval" in by_kind["eval_call"]["snippet"]
+        assert "****" not in by_kind["eval_call"]["snippet"]
+        # pickle_loads snippet should contain the raw text.
+        assert "pickle" in by_kind["pickle_loads"]["snippet"]
+        assert "****" not in by_kind["pickle_loads"]["snippet"]
+
+    def test_severity_downgrade_still_masks_credential(self) -> None:
+        """Even when severity is downgraded (test-path), the snippet is masked."""
+        source = "password = 'super_secret_real_password_99'\n"
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(
+            scanner.scan_file("tests/unit/test_auth.py", source, symbols=[])
+        )
+        hits = [f for f in findings if f["kind"] == "hardcoded_password"]
+        assert hits, "finding must still fire on test path (just downgraded)"
+        assert hits[0]["severity"] == "low"
+        assert "super_secret_real_password_99" not in hits[0]["snippet"]
+        assert "supe****" in hits[0]["snippet"]
