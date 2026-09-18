@@ -157,18 +157,18 @@ def tokenize_file(language: str, source: bytes, path: str | None = None) -> list
 
     Returns an empty list when the language is unsupported or parsing
     fails — callers treat that as "no clone candidates from this file".
-    ``path`` is only used by languages whose sanitizer needs it (Pascal,
-    to gate its project-file sanitizer on the extension); omit it for
-    everything else.
+    ``path`` selects the grammar where the language tag does not settle it
+    (a ``.tsx`` file is tagged ``typescript`` and needs the JSX grammar) and
+    gates Pascal's project-file sanitizer. Omitting it costs both.
     """
     try:
         from tree_sitter import Parser
 
-        from repowise.core.ingestion.parser import _get_language
+        from repowise.core.ingestion.parser import _get_language, grammar_tag_for
     except Exception:
         return []
 
-    grammar = _get_language(language)
+    grammar = _get_language(grammar_tag_for(language, path or ""))
     if grammar is None:
         return []
     try:

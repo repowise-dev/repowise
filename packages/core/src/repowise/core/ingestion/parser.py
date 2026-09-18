@@ -945,6 +945,21 @@ def _get_language(tag: str) -> Language | None:
     return _LANGUAGE_REGISTRY.get(tag)
 
 
+def grammar_tag_for(language: str, path: str) -> str:
+    """The grammar a file is read with, which is not always its language tag.
+
+    A ``.tsx`` file arrives tagged ``typescript``, and tree-sitter-typescript's
+    default grammar errors on every ``<Component />``. Only the grammar moves:
+    the language tag keeps selecting dialects and vocabularies, several of
+    which (``mocks/lexicon.py`` among them) carry no ``tsx`` row and would
+    silently degrade if handed one.
+    """
+    # Case-folded, because the extension table that tagged the file is.
+    if language == "typescript" and path.lower().endswith(".tsx"):
+        return "tsx"
+    return language
+
+
 # Private alias for internal use (kept for compatibility with _find_parent)
 _node_text = node_text
 
@@ -998,11 +1013,10 @@ class ASTParser:
             return parsed
 
         config = LANGUAGE_CONFIGS.get(lang)
-        # .tsx files need the JSX-aware grammar; tree-sitter-typescript's
-        # default `language_typescript` errors out on every `<Component />`
-        # and the resulting ERROR-node recovery hoists nested helpers
-        # (handlers defined inside component bodies) to the top level.
-        grammar_tag = "tsx" if lang == "typescript" and file_info.path.endswith(".tsx") else lang
+        # .tsx needs the JSX-aware grammar: the default one's ERROR-node
+        # recovery hoists nested helpers (handlers defined inside component
+        # bodies) to the top level.
+        grammar_tag = grammar_tag_for(lang, file_info.path)
         language = _get_language(grammar_tag)
 
         # tree-sitter-fsharp ships a second grammar (``language_signature``)

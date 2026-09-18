@@ -100,7 +100,19 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: ``assertion_free_test`` landed, and the walker records two new
+# Current stamp: the health pass reads a ``.tsx`` file with the JSX grammar.
+# It arrives tagged ``typescript``, and the grammar that tag selects errors on
+# the first ``<Component />``, so a cached v15 walk stored an ERROR-recovered
+# tree. Three things stored under it change for ``.tsx`` files and nothing
+# else: ``assertion_count`` and ``assertion_blocks`` (assertions after the
+# first element were not seen at all), the clone token stream the duplication
+# detector hashes, and the dataflow CFG. Function names change too -- recovery
+# swallowed whole source spans into the callee name, and those accidentally
+# unique names were defeating ``function_metrics``' name key, so the two
+# calibrated block markers see a ``.tsx`` file the way they have always seen a
+# ``.ts`` one. Non-``.tsx`` files are byte-identical, verified file for file.
+#
+# v15: ``assertion_free_test`` landed, and the walker records two new
 # ``FunctionComplexity`` fields for it (``verification_count``, ``is_test_case``)
 # that a cached v14 walk does not carry. It also widens ``assertion_count`` in
 # every language that counts assertions at all -- a ``with`` header, a
@@ -144,7 +156,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 15
+HEALTH_ANALYZER_VERSION = 16
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -973,8 +985,13 @@ class HealthAnalyzer:
         key = None
         if self._walk_cache is not None:
             from repowise.core.ingestion import compute_content_hash
+            from repowise.core.ingestion.parser import grammar_tag_for
 
-            key = HealthWalkCache.key(language, compute_content_hash(source), vocab.key)
+            # The grammar, not the language: a .tsx file and a byte-identical
+            # .ts file are walked by different grammars and must key apart.
+            key = HealthWalkCache.key(
+                grammar_tag_for(language, path), compute_content_hash(source), vocab.key
+            )
             cached = self._walk_cache.get(key)
             if cached is not None:
                 return cached

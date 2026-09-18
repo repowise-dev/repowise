@@ -525,6 +525,53 @@ from the test that calls it:
 Separating them needs the assertions of a called function to reach its caller,
 which is a cross-function question this pass does not ask.
 
+**A `.tsx` file is read with the JSX grammar.** It arrives tagged `typescript`,
+and the grammar that tag selects fails on the first `<Component />`; everything
+after it lands in ERROR recovery. The health pass picks the grammar from the
+path instead, in all three places it parses: the complexity walk, the clone
+tokenizer and the dataflow CFG. A React suite is read the way a `.ts` suite
+always was. What it was costing, measured on two React corpora (374 and 562
+`.tsx` files):
+
+| | 374-file corpus | 562-file corpus |
+|---|---|---|
+| Assertions counted on `.tsx` | 1,367 to 2,085 | 175 to 377 |
+| Assertion runs on `.tsx` | 264 to 391 | 30 to 69 |
+| `.tsx` files whose clone token stream changed | 365 of 374 | 550 of 562 |
+| Function names over 60 chars, a proxy for recovery wreckage | 124 to 0 | 20 to 3 |
+| `assertion_free_test` on `.tsx` | 15 to 0 | 0 to 1 |
+| Non-`.tsx` files whose walk or token stream moved | 0 of 1,165 | 0 of 1,868 |
+
+Every one of those 15 findings was the grammar rather than the test, which is
+why the marker declined `.tsx` files until now. The second corpus's one new
+finding is a test that genuinely asserts nothing, hidden by that same rule.
+
+Two calibrated markers read the same walk, and both read it through the
+name-keyed `function_metrics`, which keeps one row per distinct function name
+and so drops all but one of a file's anonymous `it` callbacks. That key is the
+thing to understand here. Recovery had been swallowing whole source spans into
+each callback's *name*, and those accidentally unique names were defeating it,
+so a `.tsx` file kept rows that a `.ts` file has always lost. Counting names
+longer than 60 characters as a proxy for that wreckage: 124 of them on the first
+corpus, 0 after. Measured as the share of walked functions that survive the key,
+`.tsx` goes from 44.4% to 22.9%, against a `.ts`/`.js` control of 16.0%.
+
+`large_assertion_block` does not move on either corpus (0 and 0, then 1 and 1).
+Its floor is fifteen assertions in one run and React cases are short, but the
+same name key drops most of the newly visible runs before that floor is ever
+consulted, so the floor is not the whole reason.
+
+`duplicated_assertion_block` falls from 304 to 262 on the first corpus, and this
+is a loss rather than a correction. Six of the lost findings were read by hand
+and every one is a genuine run of consecutive assertions, correctly bounded; the
+rows were real and the clone partner was real. What was not real is the
+mechanism that kept them visible, which was a mangled name defeating a lossy
+key. So `.tsx` files now under-report duplicated assertion blocks exactly as
+`.ts` files always have. The corpus carries more real assertion runs after this
+change, 264 to 391, and the marker reports fewer of them. Re-keying
+`function_metrics` is the fix for that, it moves every calibrated marker at
+once, and it is a change of its own.
+
 Svelte and Vue stay `later` rather than following TypeScript: an SFC is walked as
 a TypeScript buffer, but a single-file component is essentially never a test
 file, so the row would be untestable rather than useful.
