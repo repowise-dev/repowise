@@ -73,6 +73,7 @@ from .models import (
     CallSite,
     FileInfo,
     Import,
+    NamedBinding,
     ParsedFile,
     Symbol,
     TypeReference,
@@ -1403,9 +1404,7 @@ class ASTParser:
                 # A value binding that carries parameter patterns beside its
                 # name is a function the grammar reparsed as a value because
                 # of its return-type annotation.
-                if node_type == "value_declaration_left" and _fsharp_binding_has_params(
-                    def_node
-                ):
+                if node_type == "value_declaration_left" and _fsharp_binding_has_params(def_node):
                     kind = "function"
 
             # Refine "struct" kind for Go type_spec (check if struct or interface body)
@@ -1657,8 +1656,10 @@ class ASTParser:
             # Upgrade function → method when a parent class is detected.
             # F#: a nested module is a parent too (for id uniqueness), but it
             # is not a type, so a `let` inside one stays a function.
-            if parent_name and kind == "function" and (
-                file_info.language != "fsharp" or _fsharp_parent_is_type(def_node)
+            if (
+                parent_name
+                and kind == "function"
+                and (file_info.language != "fsharp" or _fsharp_parent_is_type(def_node))
             ):
                 kind = "method"
 
@@ -1921,7 +1922,6 @@ class ASTParser:
             # one Import per selected name.
             if file_info.language == "scala" and stmt_node.type == "import_declaration":
                 from .extractors.bindings.scala import expand_scala_import_clauses
-                from .models import NamedBinding
 
                 for clause_path, clause_names in expand_scala_import_clauses(stmt_node, src):
                     local = clause_names[0]
@@ -1974,25 +1974,55 @@ class ASTParser:
             # call_expression, which would otherwise fall into the CommonJS
             # branch below and be dropped on the floor — a dynamic import
             # holds no ``require()`` for ``collect_cjs_requires`` to find.
-            # The construct binds a module namespace at runtime, so record a
-            # wildcard rather than a static name.  Downstream unused-export
-            # analysis treats ``*`` as namespace consumption and therefore
-            # keeps the target's exports live without a broad analyzer
-            # exemption.
+            #
+            # When the result is immediately destructured —
+            #   ``const { fn, calc } = await import('./mod')``
+            # — the named bindings are extractable by walking up the AST:
+            #   call_expression → [await_expression →] variable_declarator
+            # If the declarator's ``name`` field is an ``object_pattern`` we
+            # pull the property names, exactly as ``_extract_require_bindings``
+            # does for CJS require().  Without this walk the parser always
+            # emitted ``["*"]``, which marks every export of the target module
+            # as live and creates dead-code false negatives for unused exports.
+            #
+            # Falls back to ``["*"]`` for non-destructured forms (bare module
+            # namespace, lazy-route callbacks: ``() => import('./View')``)
+            # where the wildcard is the honest representation.
             if (
                 file_info.language in _TS_JS_LANGUAGES
                 and stmt_node.type == "call_expression"
                 and (_fn := stmt_node.child_by_field_name("function")) is not None
                 and _fn.type == "import"
             ):
+                from .extractors.bindings.ts_js import extract_dynamic_import_bindings
+
+                dyn_names: list[str] = []
+                dyn_bindings: list[NamedBinding] = []
+
+                # Walk up: call_expression → (await_expression →) variable_declarator
+                _parent = stmt_node.parent
+                if _parent is not None and _parent.type == "await_expression":
+                    _parent = _parent.parent
+                if _parent is not None and _parent.type == "variable_declarator":
+                    _name_node = _parent.child_by_field_name("name")
+                    if _name_node is not None and _name_node.type == "object_pattern":
+                        # Returns None when a rest element is present — fall
+                        # back to wildcard so the remaining namespace stays live.
+                        _dyn = extract_dynamic_import_bindings(_name_node, src)
+                        if _dyn is not None:
+                            dyn_names, dyn_bindings = _dyn
+
                 imports.append(
                     Import(
                         raw_statement=raw,
                         module_path=module_text,
-                        imported_names=["*"],
+                        # Fall back to wildcard when no destructuring was found
+                        # (bare namespace bind, lazy-route callback, or a
+                        # rest-element pattern that consumes the whole module).
+                        imported_names=dyn_names or ["*"],
                         is_relative=module_text.startswith("."),
                         resolved_file=None,
-                        bindings=[],
+                        bindings=dyn_bindings,
                         is_reexport=False,
                     )
                 )

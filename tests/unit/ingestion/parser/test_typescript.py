@@ -193,8 +193,8 @@ export function Card() {
         result = parser.parse_file(fi, src)
         assert result.parse_errors == []
         targets = {c.target_name for c in result.calls}
-        assert "StatRow" in targets   # self-closing JSX captured as call
-        assert "Section" in targets   # paired JSX captured as call
+        assert "StatRow" in targets  # self-closing JSX captured as call
+        assert "Section" in targets  # paired JSX captured as call
 
     def test_ts_file_unrelated_syntax_error_with_html_in_string_preserves_original_parse(
         self, parser: ASTParser
@@ -219,7 +219,6 @@ export function f() {
         result = parser.parse_file(fi, src)
         # The real TypeScript error must still be reported — fallback did not clear it.
         assert result.parse_errors != []
-
 
     def test_jsx_element_registers_as_call_target(self, parser: ASTParser) -> None:
         # Regression: ``<StatRow ... />`` inside the same file as the
@@ -305,9 +304,7 @@ export function MyForm() {
         assert "form" not in targets
         assert "input" not in targets
 
-    def test_jsx_motion_and_styled_components_filtered(
-        self, parser: ASTParser
-    ) -> None:
+    def test_jsx_motion_and_styled_components_filtered(self, parser: ASTParser) -> None:
         # Regression: framer-motion / styled-components bring lowercase member
         # expressions like <motion.div>, <motion.span>, <styled.button> which
         # are HTML wrappers and must NOT be emitted as call targets.
@@ -337,11 +334,10 @@ export function AnimatedCard() {
         assert "Item" in targets
         assert "Form" in receivers
         # Lowercase member properties are HTML wrappers — must be filtered
-        assert "div" not in targets    # motion.div
-        assert "span" not in targets   # motion.span
-        assert "button" not in targets # styled.button
+        assert "div" not in targets  # motion.div
+        assert "span" not in targets  # motion.span
+        assert "button" not in targets  # styled.button
         assert "input" not in targets  # motion.input
-
 
     def test_class_methods_still_extracted(self, parser: ASTParser) -> None:
         # Negative for D5: methods inside class bodies must still be
@@ -378,9 +374,7 @@ const priv = x => x;
         assert fn_symbols["double"].visibility == "public"
         assert fn_symbols["priv"].visibility == "private"
 
-    def test_unparenthesized_arrow_functions_extracted_javascript(
-        self, parser: ASTParser
-    ) -> None:
+    def test_unparenthesized_arrow_functions_extracted_javascript(self, parser: ASTParser) -> None:
         # javascript.scm was also patched — verify the same fix works for .js files.
         src = b"""
 export const double = x => x * 2;
@@ -663,3 +657,105 @@ class Counter {
         result = parser.parse_file(fi, src)
         call_targets = [c.target_name for c in result.calls]
         assert "#increment" in call_targets
+
+
+class TestDynamicESMImportDestructuring:
+    """Dynamic ``import()`` with destructuring extracts named bindings.
+
+    Regression for the gap where ``const { fn } = await import('./mod')``
+    always emitted ``imported_names=["*"]`` instead of ``["fn"]``, causing
+    the dead-code analyzer to treat every export in the target file as live
+    and suppressing legitimate ``unused_export`` findings.
+    """
+
+    def test_await_import_destructuring_extracts_named_bindings(self, parser: ASTParser) -> None:
+        """Simple ``const { a, b } = await import('./mod')`` case."""
+        src = b"""
+async function load() {
+    const { fn, calculate } = await import('./mod');
+}
+"""
+        fi = _make_file_info("src/app.ts", "typescript")
+        result = parser.parse_file(fi, src)
+        imp = next(i for i in result.imports if i.module_path == "./mod")
+        assert imp.imported_names == ["fn", "calculate"]
+        assert {b.exported_name for b in imp.bindings} == {"fn", "calculate"}
+        assert {b.local_name for b in imp.bindings} == {"fn", "calculate"}
+
+    def test_await_import_aliased_destructuring(self, parser: ASTParser) -> None:
+        """``const { realName: localAlias } = await import('./mod')``
+        records the exported name (``realName``) in ``imported_names``
+        and the local alias in ``binding.local_name``, matching the
+        behaviour of static ``import { realName as localAlias } from './mod'``.
+        """
+        src = b"""
+async function load() {
+    const { fn: myFn } = await import('./mod');
+}
+"""
+        fi = _make_file_info("src/app.ts", "typescript")
+        result = parser.parse_file(fi, src)
+        imp = next(i for i in result.imports if i.module_path == "./mod")
+        assert "fn" in imp.imported_names
+        binding = next(b for b in imp.bindings if b.exported_name == "fn")
+        assert binding.local_name == "myFn"
+
+    def test_bare_await_import_namespace_stays_wildcard(self, parser: ASTParser) -> None:
+        """``const mod = await import('./mod')`` — no destructuring LHS,
+        so the whole module namespace is bound. Wildcard is correct here.
+        """
+        src = b"""
+async function load() {
+    const mod = await import('./mod');
+    return mod.fn();
+}
+"""
+        fi = _make_file_info("src/app.ts", "typescript")
+        result = parser.parse_file(fi, src)
+        imp = next(i for i in result.imports if i.module_path == "./mod")
+        assert "*" in imp.imported_names
+
+    def test_lazy_route_callback_stays_wildcard(self, parser: ASTParser) -> None:
+        """``() => import('./View')`` — the result is not destructured at the
+        call site; the consumer is a router that resolves the module at runtime.
+        Wildcard is the appropriate (honest) representation.
+        """
+        src = b"const Route = () => import('./views/Profile');"
+        fi = _make_file_info("src/router.ts", "typescript")
+        result = parser.parse_file(fi, src)
+        imp = next(i for i in result.imports if i.module_path == "./views/Profile")
+        assert "*" in imp.imported_names
+
+    def test_dynamic_import_destructuring_javascript(self, parser: ASTParser) -> None:
+        """Same fix applies to ``.js`` files (JavaScript grammar)."""
+        src = b"""
+async function load() {
+    const { helper } = await import('./utils');
+}
+"""
+        fi = _make_file_info("src/app.js", "javascript")
+        result = parser.parse_file(fi, src)
+        imp = next(i for i in result.imports if i.module_path == "./utils")
+        assert imp.imported_names == ["helper"]
+        assert imp.bindings[0].exported_name == "helper"
+
+    def test_rest_element_in_object_pattern_stays_wildcard(self, parser: ASTParser) -> None:
+        """``const { fn, ...rest } = await import('./mod')`` must remain ``["*"]``.
+
+        The rest element captures the remaining namespace at runtime, so we
+        cannot enumerate what is consumed.  Emitting named bindings only for
+        ``fn`` would tell the dead-code analyzer that every *other* export in
+        ``./mod`` is unused — a false positive.  Wildcard is the only honest
+        representation and must be preserved regardless of how many named
+        properties precede the rest element.
+        """
+        src = b"""
+async function load() {
+    const { fn, ...rest } = await import('./mod');
+}
+"""
+        fi = _make_file_info("src/app.ts", "typescript")
+        result = parser.parse_file(fi, src)
+        imp = next(i for i in result.imports if i.module_path == "./mod")
+        assert imp.imported_names == ["*"]
+        assert imp.bindings == []
