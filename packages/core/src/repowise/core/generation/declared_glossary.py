@@ -401,7 +401,7 @@ def load_declared_glossary(
         candidates.append((None, root / name))
 
     map_path = root / CONTEXT_MAP_FILE
-    text = _readable(map_path, root, spec)
+    text = _readable(map_path, root, spec) if map_path.is_file() else None
     if text:
         candidates.extend(_context_map_entries(text, root))
 
