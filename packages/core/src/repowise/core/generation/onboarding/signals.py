@@ -16,6 +16,7 @@ from typing import Any
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 
 from ..concept_tree.vocabulary import HouseTerm
+from ..declared_glossary import DeclaredTerm
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,12 @@ class OnboardingSignals:
     # nothing, or when nothing it documents was built — all three are logged
     # where the mining happens, because an empty tuple here cannot say which.
     house_terms: tuple[HouseTerm, ...] = ()
+    #: The vocabulary the team authored, read from a root ``CONTEXT.md`` (or
+    #: its siblings) rather than mined. Empty on every repository that has not
+    #: declared one, which is most of them. When it is populated there is one
+    #: canonical word per concept and this is it: the mined terms below it
+    #: corroborate the page, they do not overrule the file.
+    declared_terms: tuple[DeclaredTerm, ...] = ()
     # What the structural side calls the parts of the system: one string per
     # module group, its title followed by its summary. The corroborating
     # artifact for a mined term — a group is cut from the dependency graph and
