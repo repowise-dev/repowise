@@ -119,7 +119,7 @@ graph-extra = [
 ]
 dev = [
     "pytest>=8,<9",
-    "pytest-asyncio>=0.23,<1",
+    "pytest-asyncio>=0.23,<2",
     "pytest-snapshot>=0.9,<1",
     "respx>=0.21,<1",
     "time-machine>=2.14,<3",
@@ -181,7 +181,7 @@ members = [
 [dependency-groups]
 dev = [
     "pytest>=8,<9",
-    "pytest-asyncio>=0.23,<1",
+    "pytest-asyncio>=0.23,<2",
     "pytest-snapshot>=0.9,<1",
     "respx>=0.21,<1",
     "time-machine>=2.14,<3",
