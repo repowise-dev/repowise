@@ -12,6 +12,7 @@ differs by enclosing declaration; TS/JS export position. Each has a
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -28,6 +29,98 @@ def py_visibility(name: str, _mods: list[str]) -> str:
     if name.startswith("_"):
         return "private"
     return "public"
+
+
+# ---------------------------------------------------------------------------
+# Python module __all__ visibility refinement
+# ---------------------------------------------------------------------------
+
+_PY_CLASSLIKE_ANCESTORS = frozenset(
+    {
+        "class_definition",
+        "function_definition",
+        "async_function_definition",
+    }
+)
+
+
+def py_module_all_names(src: str) -> frozenset[str] | None:
+    """Extract literal `__all__` export names from Python source text.
+
+    Returns a frozenset of string names if a static, literal `__all__` list or
+    tuple is defined at top level. Returns `None` if `__all__` is not defined, or
+    is constructed dynamically (via concatenation, list comprehension, `+=`, etc.)
+    which is treated as absent rather than partially parsed.
+    """
+    try:
+        tree = ast.parse(src)
+    except (SyntaxError, UnicodeDecodeError, ValueError):
+        return None
+
+    all_names: list[str] = []
+    found = False
+
+    for stmt in tree.body:
+        targets: list[ast.expr] = []
+        value: ast.expr | None = None
+        if isinstance(stmt, ast.Assign):
+            targets = stmt.targets
+            value = stmt.value
+        elif isinstance(stmt, ast.AnnAssign):
+            targets = [stmt.target]
+            value = stmt.value
+        elif isinstance(stmt, ast.AugAssign):
+            # `__all__ += [...]` -> dynamic mutation, treat as absent
+            if isinstance(stmt.target, ast.Name) and stmt.target.id == "__all__":
+                return None
+
+        for target in targets:
+            if isinstance(target, ast.Name) and target.id == "__all__":
+                if found:
+                    # Multiple assignments to __all__ -> treat as dynamic/absent
+                    return None
+                found = True
+                if not isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+                    return None
+                for elt in value.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        all_names.append(elt.value)
+                    else:
+                        # Non-literal element in __all__ -> dynamic/absent
+                        return None
+
+    return frozenset(all_names) if found else None
+
+
+def refine_py_visibility(
+    def_node: Node,
+    current_visibility: str,
+    name: str,
+    py_all_names: frozenset[str] | None,
+) -> str:
+    """Refine Python top-level symbol visibility using module `__all__`.
+
+    If `__all__` is defined in the module:
+    - Top-level symbols listed in `__all__` become `public` (including leading-underscore names).
+    - Top-level symbols not listed in `__all__` are demoted to `private`.
+    - Class and function members are left untouched (governed by their own naming / class scope).
+
+    If `__all__` is absent or dynamic (`py_all_names is None`), `current_visibility`
+    is preserved.
+    """
+    if py_all_names is None:
+        return current_visibility
+
+    # Only top-level declarations are governed by module __all__
+    node = def_node.parent
+    while node is not None:
+        if node.type in _PY_CLASSLIKE_ANCESTORS:
+            return current_visibility
+        node = node.parent
+
+    if name in py_all_names:
+        return "public"
+    return "private"
 
 
 def ts_visibility(_name: str, mods: list[str]) -> str:
