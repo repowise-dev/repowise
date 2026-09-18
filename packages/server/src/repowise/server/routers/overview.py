@@ -12,7 +12,6 @@ from __future__ import annotations
 import configparser
 import contextlib
 import json
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -134,44 +133,36 @@ def _decision_slim(d: Any) -> dict:
 
 
 async def _savings_headline(repo_local_path: str | None) -> dict:
-    """Distill + MCP savings totals from the omission-store sidecar.
+    """Savings headline for the overview, from the one core report service.
 
-    Headline numbers only — no per-day rollups, no transcript scan (the
-    missed-savings scan reads agent transcripts and is too slow for an
-    overview payload). Mirrors /distill-savings semantics otherwise.
+    Headline figures only -- no breakdowns and no transcript scan, which reads
+    agent transcripts and is far too slow for an overview payload. Every field
+    here comes from the same report the savings endpoint and ``repowise saved``
+    read, so the three cannot drift. They previously did, in four separate
+    ways, because each aggregated and priced the ledger for itself.
+
+    The measured/inferred and priced/unpriced splits travel beside the total on
+    purpose. A lone headline reads as one confident number, and the evidence
+    behind it is not uniform.
     """
     if not repo_local_path:
         return {"available": False}
-    db_path = Path(repo_local_path) / ".repowise" / "omissions" / "omissions.db"
-    if not db_path.is_file():
-        return {"available": False}
 
-    from repowise.core.distill import tracking
-    from repowise.core.distill.session_model import resolve_session_model
-    from repowise.core.generation.cost_tracker import get_model_pricing
+    from repowise.core.savings.service import load_report
 
-    try:
-        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=1)
-    except sqlite3.Error:
+    report = load_report(repo_local_path)
+    if report is None:
         return {"available": False}
-    try:
-        summary = tracking.distill_summary(conn, since=None)
-        mcp = tracking.mcp_savings_summary(conn, since=None)
-    except sqlite3.Error:
-        return {"available": False}
-    finally:
-        conn.close()
-
-    resolved = resolve_session_model(Path(repo_local_path))
-    rate = get_model_pricing(resolved.model)["input"]
-    total_saved = summary["saved_tokens"] + mcp["tokens"]
     return {
         "available": True,
-        "saved_tokens": summary["saved_tokens"],
-        "mcp_tokens": mcp["tokens"],
-        "total_saved_tokens": total_saved,
-        "estimated_usd_saved": total_saved * rate / 1_000_000,
-        "pricing_model": resolved.model,
+        "saved_input_tokens": report.saved_input_tokens,
+        "measured_saved_input_tokens": report.measured_saved_input_tokens,
+        "inferred_saved_input_tokens": report.inferred_saved_input_tokens,
+        "priced_saved_input_tokens": report.priced_saved_input_tokens,
+        "unpriced_saved_input_tokens": report.unpriced_saved_input_tokens,
+        "estimated_usd_saved": report.priced_input_savings_usd,
+        "mcp_queries_answered": report.mcp_queries_answered,
+        "last_event_at": report.last_event_at,
     }
 
 

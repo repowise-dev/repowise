@@ -85,67 +85,96 @@ class CostSummaryResponse(BaseModel):
     since: str | None
 
 
-class DistillSavingsGroup(BaseModel):
-    group: str
-    events: int
-    raw_tokens: int
-    distilled_tokens: int
-    saved_tokens: int
+class SavingsBreakdownRow(BaseModel):
+    """One bucket of a savings breakdown.
 
-
-class McpDropGroup(BaseModel):
-    """Per-tool MCP savings (``tool`` with the ``mcp:`` prefix stripped).
-
-    ``kind`` distinguishes a ``"counterfactual"`` saving (the answer replaced raw
-    file exploration — recorded in the savings ledger) from a ``"truncation"``
-    drop (content trimmed past the response budget — the only signal for tools
-    without a counterfactual estimator yet).
+    ``group`` is nullable because one bucket genuinely has no name: an event
+    written before its rate could be resolved has no model, and that is a real
+    quantity -- how much saving carries no pricing evidence -- rather than a
+    gap to drop from the list.
     """
 
-    tool: str
-    events: int
-    tokens: int
-    kind: str = "truncation"
+    group: str | None = None
+    events: int = 0
+    saved_input_tokens: int = 0
 
 
-class DistillSavingsResponse(BaseModel):
-    """Savings rollup for the Costs page hero card.
+class SavingsAgentRow(BaseModel):
+    """One agent's savings, labelled from the identity registry."""
 
-    The ``distill`` block (``saved_tokens`` etc.) covers the ``repowise
-    distill`` command/hook path. The ``mcp`` block surfaces tokens already
-    dropped past MCP response budgets (the ``omissions`` store), which the
-    distill ledger never recorded. Savings are priced at the *coding agent's*
-    detected model (``pricing_model`` / ``pricing_agent`` / ``pricing_source``)
-    — they are input tokens that agent never had to read. ``available`` is
-    False when the repo has no omission store on disk (feature unused).
+    agent: str
+    agent_display_name: str | None = None
+    events: int = 0
+    saved_input_tokens: int = 0
+
+
+class SavingsOpportunityRow(BaseModel):
+    """One kind of observed opportunity. Never part of achieved savings."""
+
+    kind: str
+    observations: int = 0
+    estimated_potential_input_tokens: int = 0
+
+
+class SavingsResponse(BaseModel):
+    """What agents avoided in one repository over one window.
+
+    Every figure comes from the canonical savings ledger through the one core
+    report service, so this response, the repository overview headline and
+    ``repowise saved`` cannot disagree -- which the three of them did, in four
+    separate ways, when each aggregated and priced the ledger for itself.
+
+    Three things it deliberately keeps apart. *Measured* reductions are known
+    before/after sizes from an operation that really ran; *inferred* avoidance
+    is a documented counterfactual. *Priced* and *unpriced* tokens are split
+    because an event records the rate it was worth at the time and some events
+    carry none, and reporting a total as though it were all priced would be a
+    guess. *Observed opportunities* are things that could have been saved and
+    were not: they never enter the headline.
+
+    ``available`` is False when the repository has no savings sidecar at all,
+    which means "nothing has been measured here" and is different from a
+    measured zero.
     """
 
     available: bool
-    events: int = 0
-    raw_tokens: int = 0
-    distilled_tokens: int = 0
-    saved_tokens: int = 0
-    estimated_usd_saved: float = 0.0
-    pricing_model: str = ""
-    # How the pricing model was resolved (Phase 1 model-aware pricing).
-    pricing_agent: str = "unknown"
-    pricing_source: str = "default"
-    per_filter: list[DistillSavingsGroup] = []
-    per_day: list[DistillSavingsGroup] = []
-    # Unified MCP savings: counterfactual ledger rows (each answer replaced raw
-    # file exploration) merged with truncation drops for tools that have no
-    # counterfactual estimator. ``mcp_queries`` counts counterfactual tool calls
-    # ("N MCP queries answered"); ``mcp_tokens`` is total saved.
-    mcp_events: int = 0
-    mcp_tokens: int = 0
-    mcp_queries: int = 0
-    mcp_per_tool: list[McpDropGroup] = []
-    # Missed savings — raw (non-distilled) agent commands a filter would have
-    # caught, scanned best-effort from local Claude Code transcripts.
+    #: Window the figures cover; null means all time.
+    window_days: int | None = None
+    as_of: str = ""
+    first_event_at: str | None = None
+    last_event_at: str | None = None
+
+    unique_events: int = 0
+    successful_or_usable_partial_events: int = 0
+    saving_interactions: int = 0
+    mcp_queries_answered: int = 0
+    dead_ends: int = 0
+
+    saved_input_tokens: int = 0
+    measured_saved_input_tokens: int = 0
+    inferred_saved_input_tokens: int = 0
+    priced_saved_input_tokens: int = 0
+    unpriced_saved_input_tokens: int = 0
+    priced_input_savings_usd: float = 0.0
+    saved_output_tokens: int | None = None
+    priced_saved_output_tokens: int = 0
+    unpriced_saved_output_tokens: int = 0
+    priced_output_savings_usd: float = 0.0
+
+    per_operation: list[SavingsBreakdownRow] = []
+    per_surface: list[SavingsBreakdownRow] = []
+    per_agent: list[SavingsAgentRow] = []
+    per_model: list[SavingsBreakdownRow] = []
+    per_day: list[SavingsBreakdownRow] = []
+
+    #: Recorded opportunities (a hook replacement that was declined, say).
+    opportunity_count: int = 0
+    opportunity_tokens_excluded: int = 0
+    per_opportunity_kind: list[SavingsOpportunityRow] = []
+    #: Transcript-mined opportunities: raw commands a filter would have caught,
+    #: and full re-reads of unchanged files. Estimates of what was *not* saved.
     missed_events: int = 0
     missed_tokens_est: int = 0
     missed_window_days: float = 0.0
-    # Missed MCP savings — full re-reads of unchanged files a targeted
-    # get_symbol / range read would have replaced, same transcript scan.
     reread_events: int = 0
     reread_tokens_est: int = 0
