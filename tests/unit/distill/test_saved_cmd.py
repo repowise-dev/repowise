@@ -14,6 +14,22 @@ from repowise.core.distill import tracking
 from repowise.core.distill.store import OmissionStore
 
 
+@pytest.fixture(autouse=True)
+def _no_transcript_scan(monkeypatch) -> None:
+    """Keep the pricing scan out of this suite.
+
+    ``repowise saved`` warms the pricing cache when a report shows unpriced
+    savings, and resolving it reads the user's real ``~/.codex`` transcripts --
+    seconds per call, and machine-dependent besides. What that warm does is
+    covered hermetically in ``tests/unit/savings/test_pricing_snapshot.py``;
+    this suite is about what the command renders.
+    """
+    from repowise.core.savings import pricing
+
+    monkeypatch.setattr(pricing, "_scan", lambda repo_root: None)
+    pricing.clear_pricing_cache()
+
+
 @pytest.fixture()
 def repo_cwd(tmp_path: Path, monkeypatch) -> Path:
     """A scratch repo with .repowise/ so the store lands locally."""

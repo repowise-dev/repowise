@@ -21,9 +21,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 from rich.table import Table
+
+if TYPE_CHECKING:
+    from repowise.core.savings.contracts import SavingsReport
 
 from repowise.cli.helpers import console
 from repowise.cli.output import emit_json, format_option, notice_console
@@ -123,14 +127,6 @@ def saved_command(
         return
 
     db_path = default_store_path(start)
-    # Warm the pricing snapshot for the surfaces that may not resolve one.
-    # The MCP path and the hooks run inside an agent's tool call and read this
-    # cache without ever filling it, so something has to, and this command is
-    # the right place: a human typed it, it is asking for the dollar figure,
-    # and the cost lands once a day rather than on an agent's latency.
-    from repowise.core.savings.pricing import resolve_pricing_snapshot
-
-    resolve_pricing_snapshot(start)
     report = load_report(start, days=window_days)
     if report is None:
         notices.print(
@@ -177,6 +173,7 @@ def saved_command(
                 "forgone": _forgone_rows(start, db_path, since_ts),
             }
         )
+        _warm_pricing_cache(start, report)
         return
 
     if report.unique_events == 0:
@@ -224,6 +221,26 @@ def saved_command(
     _print_reread_summary_line(start, missed_days)
     _print_forgone_read_skeleton_line(start, db_path, since_ts)
     console.print()
+    _warm_pricing_cache(start, report)
+
+
+def _warm_pricing_cache(start: Path, report: SavingsReport) -> None:
+    """Resolve the pricing snapshot so future events can be priced.
+
+    The surfaces that write events all run inside an agent's tool call and read
+    this cache without ever filling it, so something has to. This command is
+    the right place: a human typed it and is reading a dollar figure.
+
+    Run only when the report actually shows unpriced savings, and only after
+    the output is on screen. Resolving costs seconds on a cold cache, and it is
+    self-limiting: once the cache is warm the events it prices stop being
+    unpriced, so this stops firing.
+    """
+    if not report.unpriced_saved_input_tokens:
+        return
+    from repowise.core.savings.pricing import resolve_pricing_snapshot
+
+    resolve_pricing_snapshot(start)
 
 
 #: Which report breakdown each ``--by`` value reads, and the key its rows use
@@ -238,7 +255,7 @@ _BREAKDOWNS = {
 }
 
 
-def _breakdown_rows(report: object, group_by: str) -> list[dict]:
+def _breakdown_rows(report: SavingsReport, group_by: str) -> list[dict]:
     """One breakdown as uniform ``group``/``events``/``saved`` rows.
 
     Agents are labelled from the identity registry, which the report already
@@ -256,7 +273,7 @@ def _breakdown_rows(report: object, group_by: str) -> list[dict]:
     ]
 
 
-def _print_evidence_and_pricing(report: object) -> None:
+def _print_evidence_and_pricing(report: SavingsReport) -> None:
     """The two splits that stop the total reading as one confident number.
 
     Measured against inferred says how the saving was established; priced
