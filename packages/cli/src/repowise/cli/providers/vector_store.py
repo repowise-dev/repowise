@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from repowise.core.store_location import resolve_store_dir
+
 _TABLE_NAME = "wiki_pages"
 
 
@@ -65,7 +67,7 @@ def build_vector_store(repo_path: Path, embedder: Any) -> Any | None:
     """
     from repowise.core.persistence.vector_store import InMemoryVectorStore
 
-    lance_dir = repo_path / ".repowise" / "lancedb"
+    lance_dir = resolve_store_dir(repo_path) / "lancedb"
     if _mock_would_clobber(lance_dir, embedder):
         # Say it once, here, rather than in each caller: skipping silently is
         # how someone ends up wondering why search went quiet. Worded as

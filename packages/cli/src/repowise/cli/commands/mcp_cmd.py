@@ -9,6 +9,7 @@ import click
 
 from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_path
 from repowise.cli.ui import load_dotenv
+from repowise.core.store_location import resolve_store_dir
 
 
 def _workspace_summary(path: Path, *, no_workspace: bool = False) -> dict[str, object] | None:
@@ -175,7 +176,7 @@ def mcp_command(
     load_dotenv(repo_path)
 
     workspace = _workspace_summary(repo_path, no_workspace=no_workspace)
-    repowise_dir = repo_path / ".repowise"
+    repowise_dir = resolve_store_dir(repo_path)
     if workspace is None and not repowise_dir.exists():
         console.print(
             f"[yellow]Warning: No .repowise directory found at {repo_path}.[/yellow]\n"

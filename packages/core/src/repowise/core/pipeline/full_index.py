@@ -12,6 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from repowise.core.store_location import resolve_store_dir
+
 
 async def index_repo_full(
     repo_path: Path,
@@ -106,7 +108,7 @@ async def index_repo_full(
 
         vector_cleanup_ids = set(stale_page_ids) | debt["vectors"]
         if vector_cleanup_ids:
-            lance_dir = repo_path / ".repowise" / "lancedb"
+            lance_dir = resolve_store_dir(repo_path) / "lancedb"
             if lance_dir.exists():
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
                 from repowise.core.providers.embedding.base import MockEmbedder

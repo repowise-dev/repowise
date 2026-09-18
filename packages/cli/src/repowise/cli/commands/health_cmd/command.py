@@ -8,7 +8,6 @@ back to a live in-process analysis when run outside an indexed repo.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import click
 from rich.table import Table
@@ -34,6 +33,7 @@ from repowise.core.analysis.health.counts import (
 from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
 from repowise.core.analysis.health.scoring import compute_kpis
+from repowise.core.store_location import resolve_store_dir
 
 from .codegen import _generate_refactoring_code
 from .persist import _load_persisted_coverage_map, _load_recommendations, _persist_health
@@ -277,7 +277,7 @@ def health_command(
         git_meta_map=git_meta_map,
         parsed_files=parsed_files,
         coverage_map=coverage_map,
-        duplication_cache_dir=Path(repo_path) / ".repowise",
+        duplication_cache_dir=resolve_store_dir(repo_path),
         repo_root=repo_path,
     )
     # Load any .repowise/health-rules.json the user keeps in the repo.

@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from repowise.core.generation.entry_points import orientation_entry_points
+from repowise.core.store_location import resolve_store_dir
 from repowise.core.support_paths import CONFIG_EXTENSIONS, DOC_EXTENSIONS
 
 _log = logging.getLogger(__name__)
@@ -554,6 +555,6 @@ def save_knowledge_graph_json(repo_path: Path, kg: Any, *, portable: bool = Fals
     else:
         data = kg.to_dict()
 
-    kg_json_path = Path(repo_path) / ".repowise" / "knowledge-graph.json"
+    kg_json_path = resolve_store_dir(repo_path) / "knowledge-graph.json"
     kg_json_path.parent.mkdir(parents=True, exist_ok=True)
     kg_json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")

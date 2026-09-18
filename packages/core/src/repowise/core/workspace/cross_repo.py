@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from repowise.core.store_location import resolve_store_dir
+
 from ..co_change import CO_CHANGE_DECAY_TAU
 from ..fsutils import atomic_write_text
 from .config import WorkspaceConfig, ensure_workspace_data_dir
@@ -1237,7 +1239,7 @@ async def run_cross_repo_analysis(
     repo_paths: dict[str, Path] = {}
     for entry in ws_config.repos:
         abs_path = (workspace_root / entry.path).resolve()
-        if abs_path.is_dir() and (abs_path / ".repowise").is_dir():
+        if abs_path.is_dir() and resolve_store_dir(abs_path).is_dir():
             repo_paths[entry.alias] = abs_path
         elif abs_path.is_dir():
             _log.debug(

@@ -15,6 +15,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from repowise.core.store_location import resolve_store_dir
+
 INDEX_SCOPE_VERSION = 1
 
 # repo dir -> (identity of the files it was built from, scope). Every MCP
@@ -34,7 +36,7 @@ def _file_identity(path: Path) -> tuple[Any, ...]:
 
 def load_index_scope(repo_path: str | Path) -> dict[str, Any] | None:
     """Load a repository's scope; return ``None`` when no readable state exists."""
-    repowise_dir = Path(repo_path) / ".repowise"
+    repowise_dir = resolve_store_dir(repo_path)
     state_file = repowise_dir / "state.json"
     config_file = repowise_dir / "config.yaml"
 

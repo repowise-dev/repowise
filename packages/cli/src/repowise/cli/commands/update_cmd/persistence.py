@@ -20,6 +20,7 @@ import structlog
 from repowise.cli.helpers import console, head_commit_ts, load_config, run_async, save_state
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.pipeline import PhaseTimings, timed
+from repowise.core.store_location import resolve_store_dir
 
 from .incremental import _build_repo_graph
 
@@ -211,7 +212,7 @@ def heal_commit_offsets(repo_path: Any) -> None:
     failure here must never turn a clean no-op into an error.
     """
     root = Path(repo_path)
-    if not (root / ".repowise" / "wiki.db").is_file():
+    if not (resolve_store_dir(root) / "wiki.db").is_file():
         return
 
     async def _run() -> None:
@@ -1446,7 +1447,7 @@ async def _rescore_health_from_db(
                 git_meta_map=git_meta_map,
                 parsed_files=parsed_files,
                 coverage_map=coverage_map,
-                duplication_cache_dir=Path(repo_path) / ".repowise",
+                duplication_cache_dir=resolve_store_dir(repo_path),
                 repo_root=repo_path,
             )
             hcfg = HealthConfig.load(repo_path)

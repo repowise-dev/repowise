@@ -10,6 +10,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from repowise.core.store_location import resolve_store_dir
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
@@ -239,6 +241,6 @@ def _make_repo(
         path=abs_path,
         name=abs_path.name,
         alias=alias,
-        has_repowise=(abs_path / ".repowise").is_dir(),
+        has_repowise=resolve_store_dir(abs_path).is_dir(),
         is_submodule=is_submodule,
     )
