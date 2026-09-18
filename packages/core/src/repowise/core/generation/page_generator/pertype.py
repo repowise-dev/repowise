@@ -8,6 +8,7 @@ each module under the project's 400-line ceiling.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from collections.abc import Sequence
@@ -50,6 +51,16 @@ from ..page_sources import lint_sources
 from ..structural_labels import structural_page_title
 
 log = structlog.get_logger(__name__)
+
+
+def _onboarding_bytes_hash(raw: bytes | None) -> str:
+    """Stable digest of one onboarding evidence file's bytes.
+
+    A missing file hashes to the empty string (stable, not an error): the
+    slot's page is then keyed on the files that do exist, which is the
+    subject the prompt actually carried.
+    """
+    return hashlib.sha256(raw or b"").hexdigest()
 
 
 def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> GeneratedPage:
@@ -153,8 +164,9 @@ def _with_capability_table(
 
 class PerTypeGenerationMixin:
     """Per-type ``generate_*`` methods. Requires the host to provide
-    ``_assembler``, ``_render``, ``_call_provider`` and
-    ``_build_generated_page`` (all supplied by :class:`PageGenerator`).
+    ``_assembler``, ``_render``, ``_call_provider``, ``_build_generated_page``,
+    ``_reuse_content_hash`` and ``_model_page_fingerprint`` (all supplied by
+    :class:`PageGenerator`).
     """
 
     async def generate_file_page(
@@ -377,12 +389,26 @@ class PerTypeGenerationMixin:
             return page
 
         if self._config.deterministic:
+
             page = self._stub_module_page(ctx, page_target, title)
             return _stamp_concept(_with_digest(page))
         user_prompt = self._render("module_page.j2", ctx=ctx)
+        # The page's subject is its group's membership. ``structural_key``
+        # hashes exactly that (the grouper minted it), so a group that
+        # survives the next run byte-identically reuses its prose instead of
+        # re-billing it (issue #1089). Folded with the renderer fingerprint,
+        # so a prompt/template/style upgrade still forces a one-time regen.
+        reuse_key = self._reuse_content_hash(
+            structural_key,
+            self._model_page_fingerprint("module_page", "module_page.j2"),
+        )
         try:
             response = await self._call_provider(
-                "module_page", user_prompt, str(uuid.uuid4()), target_path=page_target
+                "module_page",
+                user_prompt,
+                str(uuid.uuid4()),
+                target_path=page_target,
+                reuse_content_hash=reuse_key,
             )
         except Exception as exc:
             stub = self._stub_module_page(ctx, page_target, title)
@@ -394,6 +420,7 @@ class PerTypeGenerationMixin:
             response,
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["module_page"],
+            content_hash=reuse_key,
         )
         # Citations of a missing file, or one its section never names, go.
         # Diagrams are checked for every page of the run in ``sanitize_pages``.
@@ -503,9 +530,20 @@ class PerTypeGenerationMixin:
         user_prompt, evidence = self._append_source_evidence(
             user_prompt, "repo_overview", source_map or {}
         )
+        # The overview's subject is the repository itself. Its name is stable
+        # across runs, so an unchanged repo reuses its overview prose instead
+        # of re-billing it on every full run (issue #1089).
+        reuse_key = self._reuse_content_hash(
+            repo_name or "",
+            self._model_page_fingerprint("repo_overview", "repo_overview.j2"),
+        )
         try:
             response = await self._call_provider(
-                "repo_overview", user_prompt, str(uuid.uuid4()), target_path=repo_name
+                "repo_overview",
+                user_prompt,
+                str(uuid.uuid4()),
+                target_path=repo_name,
+                reuse_content_hash=reuse_key,
             )
         except Exception as exc:
             stub = self._stub_repo_overview(
@@ -574,9 +612,11 @@ class PerTypeGenerationMixin:
             response,
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["repo_overview"],
+            content_hash=reuse_key,
         )
         page = _with_system_map(page, system_map, repo_name, names)
         return self._attach_source_evidence(page, "repo_overview", evidence)
+
 
     async def generate_api_contract(
         self,
@@ -652,9 +692,27 @@ class PerTypeGenerationMixin:
         # Fold the onboarding generation version into the reuse hash so a
         # builder/template upgrade forces a one-time regen of cached pages.
         salt = _onboarding.ONBOARDING_GENERATION_VERSION
+        # Subject: the slot's evidence files. Their raw bytes are the
+        # volatile input (they are what the page narrates), and they are
+        # stable across runs when unchanged — the one part of the prompt that
+        # must not silently age out (issue #1089). The slot's own name rides
+        # along so two slots sharing a file still get distinct keys.
+        _subject_parts = [
+            f"{item.path}:{_onboarding_bytes_hash(signals.source_map.get(item.path))}"
+            for item in evidence.included
+        ]
+        reuse_key = self._reuse_content_hash(
+            spec.slot + "|" + "\x1f".join(sorted(_subject_parts)),
+            self._model_page_fingerprint("onboarding", template_name),
+        )
         try:
             response = await self._call_provider(
-                "onboarding", user_prompt, str(uuid.uuid4()), target_path=target, source_salt=salt
+                "onboarding",
+                user_prompt,
+                str(uuid.uuid4()),
+                target_path=target,
+                source_salt=salt,
+                reuse_content_hash=reuse_key,
             )
         except Exception as exc:
             # ``_stub_onboarding_page`` stamps the subkind metadata itself, so
@@ -687,6 +745,7 @@ class PerTypeGenerationMixin:
             response,
             compute_source_hash(user_prompt + salt),
             GENERATION_LEVELS["onboarding"],
+            content_hash=reuse_key,
         )
         # Subkind discriminator lives in metadata; page_type alone is shared
         # across all six generated onboarding slots.
