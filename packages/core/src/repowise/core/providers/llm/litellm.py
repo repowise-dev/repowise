@@ -131,32 +131,87 @@ def _litellm_metadata_decides_reasoning(metadata: object) -> bool:
     return any(metadata.get(field) is not None for field in fields)
 
 
-def _litellm_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
+def _litellm_catalog_reasoning_modes(
+    model: str,
+    catalog: Mapping[str, object],
+    catalog_keys: Mapping[str, str],
+) -> tuple[ReasoningMode, ...] | None:
+    """Resolve direct or provider-prefixed metadata from the loaded catalog."""
+    if model not in catalog:
+        return None
+
+    metadata = catalog[model]
+    modes = _litellm_reasoning_modes_from_metadata(metadata)
+    if modes or _litellm_metadata_decides_reasoning(metadata):
+        return modes
+
+    if isinstance(metadata, dict):
+        provider = metadata.get("litellm_provider")
+        prefix = f"{provider}/" if isinstance(provider, str) else ""
+        if prefix and model.startswith(prefix):
+            bare_key = catalog_keys.get(model.removeprefix(prefix).casefold())
+            bare_metadata = catalog.get(bare_key) if bare_key is not None else None
+            bare_modes = _litellm_reasoning_modes_from_metadata(bare_metadata)
+            if bare_modes or _litellm_metadata_decides_reasoning(bare_metadata):
+                return bare_modes
+
+    return ()
+
+
+def _litellm_supported_reasoning_modes_from_sources(
+    litellm: Any,
+    model: str,
+    catalog: Mapping[str, object],
+    catalog_keys: Mapping[str, str],
+) -> tuple[ReasoningMode, ...]:
+    catalog_modes = _litellm_catalog_reasoning_modes(model, catalog, catalog_keys)
+    if catalog_modes is not None:
+        return catalog_modes
+
+    provider, separator, provider_model = model.partition("/")
+    if not separator:
+        return ()
     try:
-        import litellm  # type: ignore[import-untyped]
-
-        catalog = getattr(litellm, "model_cost", {}) or {}
-        if isinstance(catalog, Mapping) and model in catalog:
-            catalog_metadata = catalog[model]
-            modes = _litellm_reasoning_modes_from_metadata(catalog_metadata)
-            if modes or _litellm_metadata_decides_reasoning(catalog_metadata):
-                return modes
-
-        try:
-            metadata: object = litellm.get_model_info(model)
-        except Exception:
-            metadata = {}
-        modes = _litellm_reasoning_modes_from_metadata(metadata)
-        if modes:
-            return modes
-        if _litellm_metadata_decides_reasoning(metadata):
-            return ()
-        if not bool(litellm.supports_reasoning(model=model)):
+        metadata: object = litellm.get_model_info(
+            provider_model,
+            custom_llm_provider=provider or None,
+        )
+    except Exception:
+        metadata = {}
+    modes = _litellm_reasoning_modes_from_metadata(metadata)
+    if modes:
+        return modes
+    if _litellm_metadata_decides_reasoning(metadata):
+        return ()
+    try:
+        if not bool(
+            litellm.supports_reasoning(
+                model=provider_model,
+                custom_llm_provider=provider or None,
+            )
+        ):
             return ()
     except Exception:
         return ()
 
     return _litellm_reasoning_modes_from_metadata({"supports_reasoning": True})
+
+
+def _litellm_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
+    try:
+        import litellm  # type: ignore[import-untyped]
+
+        raw_catalog = getattr(litellm, "model_cost", {}) or {}
+        catalog = raw_catalog if isinstance(raw_catalog, Mapping) else {}
+        catalog_keys = {key.casefold(): key for key in catalog if isinstance(key, str)}
+        return _litellm_supported_reasoning_modes_from_sources(
+            litellm,
+            model,
+            catalog,
+            catalog_keys,
+        )
+    except Exception:
+        return ()
 
 
 def _litellm_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, object]:
@@ -172,6 +227,7 @@ def _litellm_model_options(fallback_model: str) -> tuple[ProviderModelOption, ..
 
         raw_catalog = getattr(litellm, "model_cost", {}) or {}
         catalog = raw_catalog if isinstance(raw_catalog, Mapping) else {}
+        catalog_keys = {key.casefold(): key for key in catalog if isinstance(key, str)}
         model_ids = sorted(
             {
                 model
@@ -191,7 +247,12 @@ def _litellm_model_options(fallback_model: str) -> tuple[ProviderModelOption, ..
         fallback_model,
         reasoning_modes=(
             "auto",
-            *_litellm_reasoning_modes_from_metadata(catalog.get(fallback_model)),
+            *_litellm_supported_reasoning_modes_from_sources(
+                litellm,
+                fallback_model,
+                catalog,
+                catalog_keys,
+            ),
         ),
     )
 
@@ -200,7 +261,12 @@ def _litellm_model_options(fallback_model: str) -> tuple[ProviderModelOption, ..
 
     options: list[ProviderModelOption] = []
     for model_id in model_ids:
-        model_modes = _litellm_reasoning_modes_from_metadata(catalog.get(model_id))
+        model_modes = _litellm_supported_reasoning_modes_from_sources(
+            litellm,
+            model_id,
+            catalog,
+            catalog_keys,
+        )
         reasoning_modes = ("auto", *model_modes)
         notes = ""
         if model_modes:

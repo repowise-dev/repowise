@@ -22,7 +22,7 @@ def test_available_model_options_uses_litellm_model_list(monkeypatch):
         litellm,
         "model_cost",
         {
-            "vendor/plain": {},
+            "vendor/plain": {"supports_reasoning": False},
             "vendor/reasoner": {"supports_reasoning": True},
         },
         raising=False,
@@ -42,6 +42,56 @@ def test_available_model_options_uses_litellm_model_list(monkeypatch):
     assert reasoner.source == "local"
     assert reasoner.reasoning_modes == ("auto", "low", "medium", "high")
     assert "reasoning support" in reasoner.notes
+
+
+def test_discovery_falls_back_when_model_is_missing_from_catalog(monkeypatch):
+    litellm = pytest.importorskip("litellm", reason="litellm SDK not installed")
+    monkeypatch.setattr(litellm, "model_list", ["vendor/reasoner"], raising=False)
+    monkeypatch.setattr(litellm, "model_cost", {}, raising=False)
+    monkeypatch.setattr(
+        litellm,
+        "get_model_info",
+        lambda _model, **_kwargs: {"supports_reasoning": True},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        litellm,
+        "supports_reasoning",
+        lambda **_kwargs: pytest.fail("model metadata must decide the capability"),
+        raising=False,
+    )
+    provider = LiteLLMProvider(model="vendor/reasoner")
+
+    option = provider.available_model_options()[0]
+
+    assert option.reasoning_modes == provider.supported_reasoning_modes()
+    assert option.reasoning_modes == ("auto", "low", "medium", "high")
+
+
+def test_discovery_uses_bare_model_metadata_for_indecisive_provider_row(monkeypatch):
+    litellm = pytest.importorskip("litellm", reason="litellm SDK not installed")
+    monkeypatch.setattr(litellm, "model_list", ["vendor/reasoner"], raising=False)
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {
+            "vendor/reasoner": {"litellm_provider": "vendor", "mode": "chat"},
+            "Reasoner": {"supports_reasoning": True},
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        litellm,
+        "get_model_info",
+        lambda _model, **_kwargs: pytest.fail("the loaded catalog contains the fallback metadata"),
+        raising=False,
+    )
+    provider = LiteLLMProvider(model="vendor/reasoner")
+
+    option = provider.available_model_options()[0]
+
+    assert option.reasoning_modes == provider.supported_reasoning_modes()
+    assert option.reasoning_modes == ("auto", "low", "medium", "high")
 
 
 def test_available_model_options_uses_exact_litellm_effort_metadata(monkeypatch):
@@ -81,7 +131,7 @@ def test_explicit_empty_effort_metadata_is_authoritative(monkeypatch):
     monkeypatch.setattr(
         litellm,
         "get_model_info",
-        lambda _model: {"reasoning_effort_levels": []},
+        lambda _model, **_kwargs: {"reasoning_effort_levels": []},
         raising=False,
     )
     monkeypatch.setattr(
@@ -130,7 +180,7 @@ async def test_generate_forwards_reasoning_effort(monkeypatch):
     monkeypatch.setattr(
         litellm,
         "supports_reasoning",
-        lambda *, model: model == "vendor/reasoner",
+        lambda *, model, **_kwargs: model == "reasoner",
         raising=False,
     )
 
