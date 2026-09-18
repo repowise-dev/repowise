@@ -38,7 +38,6 @@ def _ctx(meta: dict, *, active_contributors: int | None = None) -> FileContext:
         nloc=120,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta=meta,
         dependents_count=4,
         pagerank_score=0.0,

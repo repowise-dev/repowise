@@ -61,7 +61,7 @@ class FunctionHotspotDetector:
             return []
 
         findings: list[BiomarkerResult] = []
-        for fn_name, fc in ctx.function_metrics.items():
+        for fc in ctx.all_functions:
             mod_count = len(distinct_commits_in_range(idx, fc.start_line, fc.end_line))
             if mod_count < p80:
                 continue
@@ -72,7 +72,7 @@ class FunctionHotspotDetector:
                 BiomarkerResult(
                     biomarker_type=self.name,
                     severity=severity,
-                    function_name=fn_name,
+                    function_name=fc.name,
                     line_start=fc.start_line,
                     line_end=fc.end_line,
                     details={
@@ -82,7 +82,7 @@ class FunctionHotspotDetector:
                         "max_nesting": fc.max_nesting,
                     },
                     reason=(
-                        f"{fn_name} has been modified across {mod_count} "
+                        f"{fc.name} has been modified across {mod_count} "
                         f"commits (repo p80={p80}) and carries CCN={fc.ccn} / "
                         f"nesting={fc.max_nesting}"
                     ),

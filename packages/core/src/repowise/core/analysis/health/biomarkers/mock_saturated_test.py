@@ -47,8 +47,6 @@ class MockSaturatedTestDetector:
             return []
         prefixes = _name_prefixes(ctx.language)
         out: list[BiomarkerResult] = []
-        # ``all_functions``, not ``function_metrics``: name-keying collapses a
-        # file's anonymous ``it`` callbacks into one row. See ``FileContext``.
         for fn in ctx.all_functions:
             mocks = fn.mock_setup_count
             asserts = fn.assertion_count

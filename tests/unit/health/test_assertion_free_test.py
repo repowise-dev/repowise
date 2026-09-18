@@ -36,7 +36,6 @@ def _detect(source: str, path: str = "tests/test_sample.py", language: str = "py
         nloc=fc.file_nloc,
         has_test_file=True,
         module=None,
-        function_metrics={f.name: f for f in fc.functions},
         all_functions=tuple(fc.functions),
     )
     return BIOMARKER.detect(ctx)

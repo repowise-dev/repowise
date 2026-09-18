@@ -566,9 +566,11 @@ Every one of those 15 findings was the grammar rather than the test, which is
 why the marker declined `.tsx` files until now. The second corpus's one new
 finding is a test that genuinely asserts nothing, hidden by that same rule.
 
-Two calibrated markers read the same walk, and both read it through the
-name-keyed `function_metrics`, which keeps one row per distinct function name
-and so drops all but one of a file's anonymous `it` callbacks. That key is the
+Two calibrated markers read the same walk, and at the time both read it
+through the name-keyed `function_metrics`, which kept one row per distinct
+function name and so dropped all but one of a file's anonymous `it` callbacks.
+The section below removes that key; what follows here is the state as this
+grammar fix left it. That key is the
 thing to understand here. Recovery had been swallowing whole source spans into
 each callback's *name*, and those accidentally unique names were defeating it,
 so a `.tsx` file kept rows that a `.ts` file has always lost. Counting names
@@ -578,19 +580,19 @@ corpus, 0 after. Measured as the share of walked functions that survive the key,
 
 `large_assertion_block` does not move on either corpus (0 and 0, then 1 and 1).
 Its floor is fifteen assertions in one run and React cases are short, but the
-same name key drops most of the newly visible runs before that floor is ever
-consulted, so the floor is not the whole reason.
+same name key dropped most of the newly visible runs before that floor was
+ever consulted, so the floor was not the whole reason. Removing the key turns
+that marker's 0 into a 6 on the second corpus below.
 
 `duplicated_assertion_block` falls from 304 to 262 on the first corpus, and this
 is a loss rather than a correction. Six of the lost findings were read by hand
 and every one is a genuine run of consecutive assertions, correctly bounded; the
 rows were real and the clone partner was real. What was not real is the
 mechanism that kept them visible, which was a mangled name defeating a lossy
-key. So `.tsx` files now under-report duplicated assertion blocks exactly as
-`.ts` files always have. The corpus carries more real assertion runs after this
+key. So at this point `.tsx` files under-reported duplicated assertion blocks
+exactly as `.ts` files always had, which the next section then fixes for both. The corpus carries more real assertion runs after this
 change, 264 to 391, and the marker reports fewer of them. Re-keying
-`function_metrics` is the fix for that, it moves every calibrated marker at
-once, and it is a change of its own.
+`function_metrics` is the fix for that, and the next section is that change.
 
 Svelte and Vue stay `later` rather than following TypeScript: an SFC is walked as
 a TypeScript buffer, but a single-file component is essentially never a test
@@ -598,6 +600,96 @@ file, so the row would be untestable rather than useful.
 
 The marker is advisory and never deducts. See
 [CODE_HEALTH.md](CODE_HEALTH.md).
+
+### A marker reads the whole walked file, not one row per name
+
+Eleven markers used to read a `function_metrics` map keyed by function name. A
+map keyed that way keeps one row per distinct name, and a function name is not
+unique inside a file. Every `it(...)` callback in a spec file walks under the name
+`it callback`; `__init__` walks under one name on each class in a module. Every
+row after the first was dropped before a marker ever saw it. They read
+`all_functions` now, the whole walked list, which is what the two advisory
+test-quality markers already read for this reason.
+
+How much a file loses to that key is a property of how a language names its
+functions rather than of any marker. Measured across the walked functions of
+four corpora:
+
+| Corpus | Language | Walked functions | Survive the name key |
+|---|---|---|---|
+| 1,336 files | TypeScript / TSX | 12,257 | 37.8% |
+| 2,194 files | TypeScript / TSX | 17,261 | 72.3% |
+| 1,949 files | Python | 12,926 | 91.4% |
+| 1,714 files | Python | 30,747 | 87.9% |
+
+These count every walked file, so they do not line up with the test-file-only
+`.tsx` figures above and are not meant to.
+
+A JS/TS spec suite is the worst case by a wide margin, because its test bodies
+are anonymous callbacks that all walk under one name. Python loses about a tenth
+of its rows, mostly same-named methods on neighbouring classes.
+
+What each scoring marker sees, before the change and after. Note that the two
+assertion-block markers score but were never fitted on a defect corpus, and they
+are the two that move furthest:
+
+| Marker | TS/TSX (1,336 files) | TS/TSX (2,194 files) | Python (1,949 files) | Python (1,714 files) |
+|---|---|---|---|---|
+| `complex_method` | 496 to 506 | 1,005 to 1,015 | 443 to 468 | 483 to 537 |
+| `large_method` | 347 to 382 | 608 to 649 | 192 to 203 | 157 to 168 |
+| `nested_complexity` | 232 to 233 | 338 to 341 | 236 to 253 | 286 to 317 |
+| `bumpy_road` | 80 to 80 | 161 to 162 | 65 to 71 | 99 to 108 |
+| `complex_conditional` | 92 to 96 | 163 to 168 | 67 to 69 | 91 to 101 |
+| `primitive_obsession` | 54 to 54 | 106 to 107 | 685 to 859 | 449 to 599 |
+| `large_assertion_block` | 0 to 0 | 0 to 6 | 0 to 0 | 11 to 11 |
+| `duplicated_assertion_block` | 262 to 2,831 | 175 to 1,711 | 1,098 to 1,108 | 2,360 to 2,477 |
+
+Three markers are missing from that table because they need inputs this
+measurement does not build: `brain_method` needs graph centrality, and
+`code_age_volatility` and `function_hotspot` need git blame. They read the same
+list as the other eight, which is visible in the diff, but how far they move was
+not observed.
+
+Most of those cells are single-digit percentages. `complex_method`,
+`large_method`, `nested_complexity` and `complex_conditional` each clear ten
+percent on one corpus and stay below it on the other three. Two markers move
+much further, and they are the two worth reading carefully.
+
+`primitive_obsession` gains a quarter to a third of its findings on both Python
+corpora, 685 to 859 and 449 to 599, and almost nothing on either JS/TS one.
+Python modules define the same method name on several classes each, and the
+row that survived the key was the first of them in the file, so a wide signature
+on any of the others was invisible.
+
+`duplicated_assertion_block` is the large one: it rises about tenfold on both
+JS/TS corpora and barely moves on either Python one. That is the same fact as
+the survival table, seen from the other end.
+
+Six of the gained rows were read in the source, and each of those six is a
+correctly bounded run of consecutive assertions. Six labels cannot speak for
+2,569 rows, so that is evidence the marker is bounding blocks correctly, not a
+precision figure. What does speak for the population is its shape. On the first
+corpus the two arms' assertion-run-length histograms have closely matching
+profiles while the new arm is about eleven times larger, which is what uniform
+thinning looks like and not what a filter that selected for anything would look
+like. On that same corpus the marker goes from a median of one finding per test
+file to five, with one file at sixty. Neither measurement says whether a gained
+row is worth showing a reader; only counts and block lengths were measured.
+
+No floor was added to hold that number down. The name key was an accidental
+limiter and replacing it with a deliberate one is a calibration change, which
+needs its own defect-corpus evidence rather than a number that looks
+comfortable. What bounds the damage today is the `test_quality` category cap of
+0.5, which a single medium finding already exceeds: a test file with sixty of
+these loses the same half point as a test file with one, so the scores move far
+less than the counts do. Whether the finding list itself wants a cap is a
+question for the marker, not for the container it reads.
+
+The six findings `large_assertion_block` gains on the second JS/TS corpus were
+also read by hand. All six are runs of fifteen or more consecutive assertions in
+a single test, which is exactly what that marker declares it looks for, and all
+six are anonymous callbacks, so each sat in a file where another function of the
+same name had been holding the only row.
 
 Per-marker mechanics, every per-language precision ceiling and the reasoning
 behind each `n/a`: [CODE_HEALTH.md](CODE_HEALTH.md) and

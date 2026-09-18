@@ -14,7 +14,6 @@ def _ctx(file_path: str, pairs: list[ClonePair], dup_pct: float | None) -> FileC
         nloc=200,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta={},
         dependents_count=0,
         pagerank_score=0.0,

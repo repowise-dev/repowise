@@ -26,14 +26,12 @@ class FileContext:
     nloc: int
     has_test_file: bool
     module: str | None
-    # Map symbol-name → complexity metrics for functions/methods in this
-    # file. Symbols without a complexity row default to CCN=1, nesting=0.
-    function_metrics: dict[str, FunctionComplexity] = field(default_factory=dict)
-    # Every walked function, in document order and NOT keyed by name, because
-    # name-keying drops all but one of a file's anonymous ``it`` callbacks.
-    # Read by the advisory test-quality markers only: re-keying
-    # ``function_metrics`` is the real fix and would change what every
-    # calibrated marker sees, so it needs its own defect-corpus evidence.
+    # Every walked function in this file, in document order. Not keyed by
+    # name: a name key drops all but one of a file's anonymous ``it``
+    # callbacks, and every same-named method on a second class beside it.
+    # This replaced the name-keyed ``function_metrics`` map every marker used
+    # to read. Empty for SQL, whose routine metrics are text-counted and
+    # defect-uncalibrated.
     all_functions: tuple[FunctionComplexity, ...] = ()
     # Per-class aggregate metrics (LCOM4, method count, size). Empty for
     # languages whose walker map doesn't opt into class-level analysis

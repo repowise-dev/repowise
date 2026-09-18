@@ -55,7 +55,7 @@ class BrainMethodDetector:
             return []
 
         out: list[BiomarkerResult] = []
-        for fn in ctx.function_metrics.values():
+        for fn in ctx.all_functions:
             if fn.nloc < self._NLOC_THRESHOLD:
                 continue
             if fn.ccn < self._CCN_THRESHOLD:

@@ -100,7 +100,16 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: the walker records one new ``FunctionComplexity`` field,
+# Current stamp: every marker now reads ``FileContext.all_functions``, the full
+# walked list, where eleven of them used to read a ``function_metrics`` map keyed
+# by function name. That key kept one row per distinct name, so a file's anonymous
+# ``it`` callbacks collapsed into one and a method shadowed its same-named
+# neighbour on another class. What moves is how much of that walk each marker
+# sees, on every scoring marker at once, which makes persisted rows wrong. The
+# walk itself is unchanged, but this stamp keys the walk and duplication-token
+# caches, so bumping it re-walks and re-tokenizes anyway.
+#
+# v17: the walker records one new ``FunctionComplexity`` field,
 # ``called_names``, which a cached v16 walk does not carry at all. It feeds the
 # advisory ``assertion_free_test``, which no longer calls a test assertion-free
 # when it handed its checks to a function in the same file that asserts. It
@@ -162,7 +171,28 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 17
+HEALTH_ANALYZER_VERSION = 18
+
+
+def walked_functions(
+    fc_list: list[FunctionComplexity], language: str
+) -> tuple[FunctionComplexity, ...]:
+    """The functions a file's biomarkers see, in document order.
+
+    Sorted because the walker collects sibling nodes off a LIFO stack and so
+    returns them last-first, and a marker should report a file top-down. Two
+    rows can share a span (a one-line callback and its enclosing call), and a
+    stable sort leaves those in walk order.
+
+    SQL routine metrics are text-counted and defect-uncalibrated; they exist
+    for symbol stamping and the ``sql_high_complexity`` marker
+    (maintainability). Holding them back here keeps the calibrated method
+    biomarkers (defect dimension) from firing on SQL.
+    """
+    if language == "sql":
+        return ()
+    return tuple(sorted(fc_list, key=lambda fc: (fc.start_line, fc.end_line)))
+
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -1082,14 +1112,7 @@ class HealthAnalyzer:
         file_path = pf.file_info.path
 
         fc_list = fcx.functions
-        # SQL routine metrics are text-counted and defect-uncalibrated; they
-        # exist for symbol stamping and the sql_high_complexity marker
-        # (maintainability). Keeping them out of function_metrics keeps the
-        # calibrated method biomarkers (defect dimension) from firing on SQL.
-        fns: tuple[FunctionComplexity, ...] = (
-            () if pf.file_info.language == "sql" else tuple(fc_list)
-        )
-        fn_metrics: dict[str, FunctionComplexity] = {fc.name: fc for fc in fns}
+        fns = walked_functions(fc_list, pf.file_info.language)
         max_ccn = max((fc.ccn for fc in fc_list), default=1)
         max_nesting = max((fc.max_nesting for fc in fc_list), default=0)
         nloc = fcx.file_nloc
@@ -1140,7 +1163,6 @@ class HealthAnalyzer:
             # answered, or that one of them over-claims.
             reached_by_tests=file_path in self._files_reached_by_tests(),
             module=module,
-            function_metrics=fn_metrics,
             all_functions=fns,
             class_metrics=fcx.classes,
             git_meta=file_git_meta,

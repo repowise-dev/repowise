@@ -52,8 +52,6 @@ class AssertionFreeTestDetector:
         if not is_test_file(ctx.file_path):
             return []
         out: list[BiomarkerResult] = []
-        # ``all_functions``, not ``function_metrics``: name-keying collapses a
-        # file's anonymous ``it`` callbacks into one row. See ``FileContext``.
         oracles = _asserting_names(ctx)
         for fn in ctx.all_functions:
             # ``is_test_case`` is the whole gate. Every other test-quality
