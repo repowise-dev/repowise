@@ -97,6 +97,22 @@ def record(event: TelemetryEvent) -> None:
         return
 
 
+def _flusher_executable() -> str:
+    """Return the executable for the detached flusher.
+
+    On Windows (``os.name == "nt"``) prefer a ``pythonw.exe`` sibling next
+    to ``sys.executable`` (windowless GUI subsystem, never allocates a
+    console) when it exists as a file; otherwise fall back to
+    ``sys.executable``.
+    """
+    if os.name == "nt" and sys.executable:
+        candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        with contextlib.suppress(Exception):
+            if os.path.isfile(candidate):
+                return candidate
+    return sys.executable or ""
+
+
 def _spawn_flusher() -> bool:
     """Start the detached delivery process. Returns whether it started.
 
@@ -105,6 +121,9 @@ def _spawn_flusher() -> bool:
     terminal.
     """
     if not sys.executable:
+        return False
+    executable = _flusher_executable()
+    if not executable:
         return False
     kwargs: dict[str, object] = {
         "stdin": subprocess.DEVNULL,
@@ -117,9 +136,20 @@ def _spawn_flusher() -> bool:
         # DETACHED_PROCESS | CREATE_NO_WINDOW: no console window flashes up
         # in front of the user between commands.
         kwargs["creationflags"] = 0x00000008 | 0x08000000
+        try:
+            if hasattr(subprocess, "STARTUPINFO"):
+                startupinfo = subprocess.STARTUPINFO()  # type: ignore[attr-defined]
+                startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+                startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)  # type: ignore[attr-defined]
+                kwargs["startupinfo"] = startupinfo
+        except Exception:
+            pass
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen([sys.executable, "-m", _FLUSHER_MODULE], **kwargs)  # type: ignore[arg-type]
+    try:
+        subprocess.Popen([executable, "-m", _FLUSHER_MODULE], **kwargs)  # type: ignore[arg-type]
+    except Exception:
+        return False
     return True
 
 
