@@ -428,6 +428,11 @@ async def _anchor_symbol_hits(
     )
     by_name: dict[str, list] = {}
     for row in res.scalars().all():
+        # A pathless row names nothing the reply can point at. Dropping it here
+        # keeps it out of every route below: the anchor, and both union branches
+        # that would otherwise read the live file at an empty path.
+        if not row.file_path:
+            continue
         by_name.setdefault(row.name, []).append(row)
 
     # Verify bounds against the live file before any body is sliced from a
