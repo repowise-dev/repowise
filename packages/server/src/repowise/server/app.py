@@ -11,7 +11,6 @@ from __future__ import annotations
 # long-lived, so a BLAS workspace sized to the host's core count is held for
 # the process's whole life rather than one index (issue #1394).
 from repowise.core.blas_threads import limit_blas_threads
-from repowise.core.store_location import resolve_store_dir
 
 limit_blas_threads()
 
@@ -39,6 +38,7 @@ from repowise.core.persistence.search import FullTextSearch
 from repowise.core.providers.embedding import is_semantic_embedder
 from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.store_location import resolve_store_dir
 from repowise.server import __version__
 from repowise.server.routers import (
     blast_radius,
