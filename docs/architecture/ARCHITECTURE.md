@@ -510,14 +510,14 @@ meaning is easy to get wrong:
 
 **Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
 which runs after the static import graph is built. Every edge it emits is stamped
-with a `ResolutionOrigin`, a closed vocabulary of 29 values in
+with a `ResolutionOrigin`, a closed vocabulary of 37 values in
 `ingestion/models.py`, each carrying exactly one confidence, so the origin
 distribution and the confidence histogram are two views of the same data. The
 span runs from `same_file` and `self_scope` at 0.95, through import- and
 package-scoped origins at 0.88–0.90, down to `global_unique` at 0.50, a
 repo-wide name match, which the source comments label as a guess.
 
-Twelve of the 29 are **receiver-typing** origins: they resolve a call on a
+Twelve of the 37 are **receiver-typing** origins: they resolve a call on a
 variable by reading the variable's declaration (a local, a parameter, an
 enclosing class's field, or a type a framework decorator imposed), then resolving
 the method on that type. Registered for Java, C#, Python, Go, Kotlin and Swift.

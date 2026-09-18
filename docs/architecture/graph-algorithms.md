@@ -26,7 +26,7 @@ Symbol-level edges (all carry a `confidence` score from 0.0 to 1.0):
 |-----------|--------|---------|
 | `defines` | GraphBuilder `add_file()` | `login.py` defines `validate_token` |
 | `has_method` | GraphBuilder `add_file()` | `AuthService` has_method `login` |
-| `calls` | `CallResolver` (29 named resolution origins, each with a fixed confidence) | `validate_token` calls `hash_password` |
+| `calls` | `CallResolver` (37 named resolution origins, each with a fixed confidence) | `validate_token` calls `hash_password` |
 | `dispatches_to` | Heritage pass | base `Handler.run` dispatches_to `JsonHandler.run` |
 | `references` | `@reference.name` captures | a dispatch table names `on_signal` without calling it |
 | `framework_binds` | Framework handlers | a pytest fixture binds to the test that requests it |
