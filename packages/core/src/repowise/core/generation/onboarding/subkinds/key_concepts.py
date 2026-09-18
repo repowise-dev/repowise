@@ -67,14 +67,8 @@ _TRIVIAL_NAMES = frozenset(
 # match here at all: 0 symbol -> symbol `imports` edges exist across 42 local
 # indexes.
 #
-# `reads` is in the shared view and is *nearly* as inert here, for a weaker
-# reason worth writing down. Its one symbol-layer producer,
-# `framework_edges/express.py`, joins a file's `path::__module__` node to a
-# handler in the same file, so the cross-file test below drops it and
-# `_SKIP_KINDS` keeps `__module__` from ever being a chosen concept. That is a
-# property of today's extractor, not of the graph's shape, so it is taken from
-# the shared view rather than trimmed out: a future cross-file `reads` should
-# start counting here without anyone remembering to add it.
+# `reads` is file -> file (produced by `csharp_member_reads`), so it is not in
+# `SYMBOL_USE_EDGE_TYPES` and omitted from `_CONCEPT_EDGE_TYPES`.
 _CONCEPT_EDGE_TYPES = SYMBOL_USE_EDGE_TYPES
 
 
@@ -100,10 +94,10 @@ class ConceptSymbol:
 #
 # Ceiling: c4_builder/labels.py `_EDGE_VERB` answers a similar question over
 # all 14 types, but it lives in packages/server and core cannot import it, and
-# it disagrees here on 2 of the 5 shared keys - `extends` reads "inherits from"
-# and `reads` reads "uses", both tuned for a C4 arrow rather than for prose. If
-# a third copy appears, reconcile the wording first, then lift one map into
-# core; a straight merge would silently reword these prompts.
+# it disagrees here on `extends` ("inherits from"), tuned for a C4 arrow
+# rather than for prose. If a third copy appears, reconcile the wording first,
+# then lift one map into core; a straight merge would silently reword these
+# prompts.
 _RELATION_VERB: dict[str, str] = {
     "calls": "calls",
     "extends": "extends",
@@ -111,7 +105,6 @@ _RELATION_VERB: dict[str, str] = {
     "method_implements": "implements",
     "dispatches_to": "dispatches to",
     "framework_binds": "is wired to",
-    "reads": "reads from",
     # Named rather than called: a dispatch-table entry, a callback field, an
     # argument to a registration macro. "references" is the honest verb, since
     # "calls" would claim an invocation this edge never observed.
