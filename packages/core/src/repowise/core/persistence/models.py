@@ -190,6 +190,11 @@ class Page(Base):
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # Developer-authored notes that survive LLM re-generation.
     human_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A user hand-requested this page (UI "Generate doc"): it is regenerated
+    # on every reindex regardless of the selection heuristic, so the doc a
+    # user asked for keeps following the code instead of silently
+    # disappearing again (issue #812).
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # --- Where the page sits in the wiki -----------------------------------
     # Hierarchy lives here rather than being reassembled by each reader from

@@ -2141,6 +2141,12 @@ export interface Paginated_SymbolResponse_ {
   next_offset?: number | null;
 }
 
+/** Result of pinning a file's doc (issue #812). */
+export interface PinDocResponse {
+  file_path: string;
+  pinned: boolean;
+}
+
 /**
  * What the map is counting.
  *
