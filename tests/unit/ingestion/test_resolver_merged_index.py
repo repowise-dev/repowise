@@ -266,3 +266,28 @@ class TestHeritageChildAnchor:
         child_ids = [r.child_id for r in results]
         assert "lib.rs::Speaker" in child_ids, child_ids
         assert "lib.rs::tests::Speaker" not in child_ids, child_ids
+
+    def test_a_function_of_the_same_name_does_not_capture_the_anchor(
+        self, tmp_path: Path
+    ) -> None:
+        # The composed id names a top-level FUNCTION here, not a type. The
+        # nested struct is the real child, so the function must not hold the
+        # anchor just by existing.
+        files = {
+            "lib.rs": (
+                "rust",
+                "pub trait Greet {}\n"
+                "pub fn Speaker() {}\n"
+                "pub mod inner {\n"
+                "    pub struct Speaker;\n"
+                "    impl super::Greet for Speaker {}\n"
+                "}\n",
+            ),
+        }
+        parsed = _parse_all(tmp_path, files)
+        resolver = HeritageResolver(parsed, {"lib.rs": set()})
+        results = []
+        for path, pf in parsed.items():
+            results.extend(resolver.resolve_file(path, pf.heritage))
+        child_ids = [r.child_id for r in results]
+        assert "lib.rs::inner::Speaker" in child_ids, child_ids

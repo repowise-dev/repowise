@@ -120,9 +120,9 @@ class HeritageResolver:
         # Per-file class/interface/trait index: {file: {name: symbol_id}}
         self._file_types: dict[str, dict[str, str]] = {}
 
-        # Every symbol id each file declares, of any kind. Used only to tell
-        # whether a composed child id already names something real.
-        self._file_symbol_ids: dict[str, set[str]] = {}
+        # Type ids each file declares, for files carrying heritage relations.
+        # Used only to tell whether a composed child id already names a type.
+        self._file_type_ids: dict[str, set[str]] = {}
 
         # Type names a file declares more than once, in whatever scopes.
         self._file_ambiguous_types: dict[str, set[str]] = {}
@@ -169,8 +169,12 @@ class HeritageResolver:
                     self._global_types[sym.name].append(sym.id)
 
             self._file_types[path] = file_types
-            self._file_symbol_ids[path] = {sym.id for sym in parsed.symbols}
-            self._file_ambiguous_types[path] = ambiguous
+            # Only the file that owns a relation asks these two, so a file
+            # declaring no heritage never needs them. _file_types stays global:
+            # tiers 2a, 2b and 3 read it for OTHER files.
+            if parsed.heritage:
+                self._file_type_ids[path] = set(file_types.values())
+                self._file_ambiguous_types[path] = ambiguous
 
     def _merged_types_for(self, file_path: str) -> dict[str, str]:
         """Merged ``{type_name → symbol_id}`` across every imported file."""
@@ -218,14 +222,18 @@ class HeritageResolver:
         # does not carry at all, such as a `where` bound whose child is a
         # function, also keeps the composed form.
         #
-        # Ceiling: the first test proves the composed id is not dangling, not
-        # that it is the right symbol. A file declaring `Speaker` at top level
-        # and another inside a `mod` anchors the mod's impl to the top-level
-        # one, as it did before this change. Telling those apart needs the
-        # relation to carry the scope it was declared in, which it does not.
+        # The first test asks for a TYPE of that id, not any symbol: a file
+        # whose top-level function shares a nested type's bare name would
+        # otherwise capture the anchor and wire the edge to the function.
+        #
+        # Ceiling: it proves the composed id is not dangling, not that it is
+        # the right symbol. A file declaring `Speaker` at top level and another
+        # inside a `mod` anchors the mod's impl to the top-level one, as it did
+        # before this change. Telling those apart needs the relation to carry
+        # the scope it was declared in, which it does not.
         composed = f"{file_path}::{rel.child_name}"
         if (
-            composed in self._file_symbol_ids.get(file_path, ())
+            composed in self._file_type_ids.get(file_path, ())
             or rel.child_name in self._file_ambiguous_types.get(file_path, ())
         ):
             child_id = composed
