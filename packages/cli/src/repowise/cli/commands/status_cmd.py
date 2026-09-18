@@ -41,6 +41,7 @@ from repowise.core.index_scope import (
     resolve_index_scope,
     upgrade_command,
 )
+from repowise.core.store_location import resolve_store_dir
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -667,7 +668,7 @@ def _workspace_rows(target: CommandTarget) -> list[dict]:
     rows: list[dict] = []
     for entry in ws_config.repos:
         abs_path = (ws_root / entry.path).resolve()
-        repowise_dir = abs_path / ".repowise"
+        repowise_dir = resolve_store_dir(abs_path)
         row: dict = {
             "alias": entry.alias,
             "path": str(abs_path),

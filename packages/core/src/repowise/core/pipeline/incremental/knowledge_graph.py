@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from repowise.core.store_location import resolve_store_dir
+
 from ._common import LogFn, _noop_log
 
 
@@ -43,7 +45,7 @@ async def refresh_knowledge_graph(
             should_skip_kg_rebuild,
         )
 
-        kg_json_path = Path(repo_path) / ".repowise" / "knowledge-graph.json"
+        kg_json_path = resolve_store_dir(repo_path) / "knowledge-graph.json"
         new_fingerprint = compute_kg_fingerprint(graph_builder)
         if should_skip_kg_rebuild(prior_fingerprint, new_fingerprint, kg_json_path):
             return None

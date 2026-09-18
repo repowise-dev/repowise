@@ -28,6 +28,7 @@ from repowise.core.analysis.decisions.lifecycle import (
     DECISION_KINDS,
 )
 from repowise.core.fsutils import atomic_write_text
+from repowise.core.store_location import resolve_store_dir
 
 __all__ = [
     "MANIFEST_FILENAME",
@@ -175,7 +176,7 @@ def _check_version(path: Path, version: object) -> None:
 
 
 def manifest_path(repo_path: Path | str) -> Path:
-    return Path(repo_path) / ".repowise" / MANIFEST_FILENAME
+    return resolve_store_dir(repo_path) / MANIFEST_FILENAME
 
 
 def render_manifest(decisions: list[ManifestDecision]) -> str:

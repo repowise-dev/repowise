@@ -13,6 +13,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from repowise.core.store_location import resolve_store_dir
+
 logger = logging.getLogger("repowise.server.search_helpers")
 
 # Asyncio lock per repo_id, used to prevent two concurrent semantic
@@ -28,7 +30,7 @@ def _build_repo_vector_store(repo_path: Path, embedder: Any, *, create: bool) ->
     exists. Job callers pass ``create=True`` so server-generated embeddings use
     the same durable ``.repowise/lancedb`` location as the CLI.
     """
-    lance_dir = repo_path / ".repowise" / "lancedb"
+    lance_dir = resolve_store_dir(repo_path) / "lancedb"
     if not create and not lance_dir.is_dir():
         return None
 

@@ -54,6 +54,7 @@ from repowise.core.ingestion.git_indexer import (
 )
 from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.reasoning import REASONING_MODES
+from repowise.core.store_location import resolve_store_dir
 
 from .config_changes import classify_config_changes
 from .decision_passes import _run_decision_evolution as _run_decision_evolution
@@ -762,7 +763,7 @@ def _full_upgrade(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 def _prepare_repo(repo_path: Path) -> None:
     """Seed an unindexed worktree, create ``.repowise/``, inherit workspace verdicts."""
     # A fresh linked worktree seeds from its base checkout (best-effort).
-    if not (repo_path / ".repowise" / "state.json").exists():
+    if not (resolve_store_dir(repo_path) / "state.json").exists():
         from repowise.cli.worktree import (
             base_is_seedable,
             detect_worktree_base,

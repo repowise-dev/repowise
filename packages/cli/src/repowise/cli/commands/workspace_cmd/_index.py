@@ -15,6 +15,7 @@ from repowise.cli.helpers import (
 )
 from repowise.core.docs_mode import DocsMode, resolve_docs_mode
 from repowise.core.index_scope import fast_to_full_command
+from repowise.core.store_location import resolve_store_dir
 
 if TYPE_CHECKING:
     from repowise.core.workspace.config import WorkspaceConfig
@@ -74,7 +75,7 @@ def inherit_workspace_distill_verdict(repo_path: Path) -> None:
     import contextlib
 
     with contextlib.suppress(Exception):
-        if not (repo_path / ".repowise").is_dir():
+        if not resolve_store_dir(repo_path).is_dir():
             return
         from repowise.cli.helpers import load_config
         from repowise.core.workspace.config import WorkspaceConfig

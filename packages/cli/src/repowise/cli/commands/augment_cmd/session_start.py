@@ -29,6 +29,7 @@ from pathlib import Path
 # The leaf module, not the ``helpers`` facade: the facade imports rich and
 # asyncio, which every hook call would pay at import.
 from repowise.cli._helpers.git import as_commit_id
+from repowise.core.store_location import resolve_store_dir
 
 from ._shared import _find_repo_root, emitting_build
 from .bash_staleness import _read_in_flight_marker
@@ -66,7 +67,9 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     if repo_path is None:
         return None
     try:
-        state = json.loads((repo_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        state = json.loads(
+            (resolve_store_dir(repo_path) / "state.json").read_text(encoding="utf-8")
+        )
     except (OSError, json.JSONDecodeError):
         return None
     last_sync = state.get("last_sync_commit")

@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repowise.core.store_location import resolve_store_dir
+
 from ._common import LogFn, _noop_log
 
 
@@ -252,7 +254,7 @@ def _analyze(
         parsed_files=parsed_files,
         community_label_map=file_community_labels(graph_builder),
         coverage_map=coverage.coverage_map,
-        duplication_cache_dir=Path(repo_path) / ".repowise",
+        duplication_cache_dir=resolve_store_dir(repo_path),
         repo_root=repo_path,
         stored_blame_findings=stored_blame_findings,
     )

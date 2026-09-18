@@ -39,6 +39,7 @@ from repowise.core.generation.scope import (
     build_dependencies,
     load_page_records,
 )
+from repowise.core.store_location import resolve_store_dir
 
 logger = structlog.get_logger(__name__)
 
@@ -78,7 +79,7 @@ def load_kg_context(repo_path: Path) -> Any:
     """Load the persisted KG artifact for layer membership (None-safe)."""
     from repowise.core.generation.kg_context import KnowledgeGraphContext
 
-    kg_path = repo_path / ".repowise" / "knowledge-graph.json"
+    kg_path = resolve_store_dir(repo_path) / "knowledge-graph.json"
     if kg_path.exists():
         return KnowledgeGraphContext(kg_path)
     return KnowledgeGraphContext(None)

@@ -28,6 +28,7 @@ from repowise.core.pipeline.parse_pool import (
     run_with_deadline,
 )
 from repowise.core.pipeline.progress import ProgressCallback, emit_item, emit_warning
+from repowise.core.store_location import resolve_store_dir
 
 from ._common import _phase_done
 
@@ -386,7 +387,7 @@ def _split_cached(
     cache = None
     hits: dict[int, Any] = {}
     try:
-        cache = ParseCache(repo_path / ".repowise")
+        cache = ParseCache(resolve_store_dir(repo_path))
         cache.load()
     except Exception as exc:
         logger.debug("parse_cache_init_failed", error=str(exc))
@@ -843,7 +844,7 @@ def _new_graph_builder(
     graph_builder = GraphBuilder(
         repo_path=repo_path,
         exclude_patterns=walk.exclude_patterns,
-        centrality_cache_dir=repo_path / ".repowise",
+        centrality_cache_dir=resolve_store_dir(repo_path),
         head_commit=get_head_commit(repo_path),
         include_submodules=walk.include_submodules,
         include_nested_repos=walk.include_nested_repos,
@@ -1041,7 +1042,7 @@ async def _run_ingestion(
     if incremental_graph_enabled():
         from repowise.core.pipeline.incremental.resolution_cache import save_resolutions
 
-        save_resolutions(repo_path / ".repowise", parsed_files)
+        save_resolutions(resolve_store_dir(repo_path), parsed_files)
     # Stack detection and framework edges fail separately: the stack also
     # feeds the persisted tech list and the editor files.
     tech_items = _detect_tech_items(

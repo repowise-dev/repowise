@@ -19,6 +19,7 @@ from repowise.core.pipeline.phases._common import (
 from repowise.core.pipeline.phases.analysis import INDEX_ONLY_RUN_REASON, STRUCTURAL_RUN_REASON
 from repowise.core.pipeline.progress import STAGE_ANALYSIS, emit_stage
 from repowise.core.pipeline.resume import ResumePhase
+from repowise.core.store_location import resolve_store_dir
 
 from .state import PipelineRun
 
@@ -170,7 +171,7 @@ def _build_knowledge_graph(run: PipelineRun) -> None:
         )
 
         new_fingerprint = compute_kg_fingerprint(run.graph_builder)
-        kg_json_path = run.repo_path / ".repowise" / "knowledge-graph.json"
+        kg_json_path = resolve_store_dir(run.repo_path) / "knowledge-graph.json"
         if should_skip_kg_rebuild(run.existing_kg_fingerprint, new_fingerprint, kg_json_path):
             _reuse_kg_artifact(run, KnowledgeGraphResult, kg_json_path, new_fingerprint)
 

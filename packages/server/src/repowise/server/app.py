@@ -11,6 +11,7 @@ from __future__ import annotations
 # long-lived, so a BLAS workspace sized to the host's core count is held for
 # the process's whole life rather than one index (issue #1394).
 from repowise.core.blas_threads import limit_blas_threads
+from repowise.core.store_location import resolve_store_dir
 
 limit_blas_threads()
 

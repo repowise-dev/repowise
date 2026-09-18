@@ -18,6 +18,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from repowise.core.store_location import resolve_store_dir
+
 UPDATE_LOCK_FILENAME = ".update.lock"
 
 #: Held for the length of an ``init``, so ``status`` can tell a run still
@@ -47,7 +49,7 @@ UPDATE_LOCK_SUSPECT_AFTER_SECONDS = 30 * 60
 
 
 def update_lock_path(repo_path: Path) -> Path:
-    return Path(repo_path) / ".repowise" / UPDATE_LOCK_FILENAME
+    return resolve_store_dir(repo_path) / UPDATE_LOCK_FILENAME
 
 
 def workspace_update_lock_path(workspace_root: Path) -> Path:
