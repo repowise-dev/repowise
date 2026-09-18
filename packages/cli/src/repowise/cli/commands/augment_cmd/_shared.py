@@ -280,6 +280,13 @@ def _record_event(
     Attribution is real here rather than ``unknown``. The hook was handed the
     serving agent's own adapter, so which agent saved these tokens is evidence,
     not a guess.
+
+    Pricing is read from cache only, never resolved. Detecting the agent's
+    model means scanning local transcripts -- around six seconds when the
+    repository has no Codex history -- and this is a fresh process per tool
+    call, so it could not amortize that even once. An unpriced event is the
+    correct outcome here; the report counts priced and unpriced tokens
+    separately, and the next distill or MCP call refills the cache for us.
     """
     try:
         from datetime import UTC, datetime
@@ -287,9 +294,11 @@ def _record_event(
         from repowise.core.agents.identity import slug_for_hook_adapter
         from repowise.core.savings import recorder
         from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
+        from repowise.core.savings.pricing import resolve_pricing_snapshot
 
         agent = slug_for_hook_adapter(hook_adapter)
         event_id = new_event_id()
+        pricing = resolve_pricing_snapshot(repo_path, allow_scan=False)
         recorder.record_event_on(
             connection,
             repo_path,
@@ -309,6 +318,7 @@ def _record_event(
                 "baseline_input_tokens": raw_tokens,
                 "pre_budget_input_tokens": raw_tokens,
                 "delivered_input_tokens": distilled_tokens,
+                **(pricing.as_payload() if pricing else {}),
             },
         )
     except Exception:

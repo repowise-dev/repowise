@@ -7,6 +7,7 @@ the ``llm_costs`` table for historical reporting via ``repowise costs``.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
@@ -182,6 +183,25 @@ def get_model_pricing(model: str) -> dict[str, float]:
     into dollar estimates with the same table the cost ledger uses.
     """
     return _get_pricing(model)
+
+
+def pricing_table_version() -> str:
+    """Stable identifier for the rate tables this module resolves against.
+
+    Savings events snapshot the rate they were priced at so history is never
+    repriced, and that snapshot is only auditable if it also records *which*
+    table produced it. Derived from the table contents rather than declared as
+    a constant: a hand-maintained version is one more thing to keep in sync,
+    and it would go stale silently on exactly the edit that matters.
+    """
+    payload = repr(
+        (
+            sorted(_PRICING.items()),
+            _CLAUDE_FAMILY_PRICING,
+            sorted(_FALLBACK_PRICING.items()),
+        )
+    )
+    return "pricing:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------
