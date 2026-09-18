@@ -115,28 +115,36 @@ def write_project_mcp_config(repo_path: Path) -> FileWrite:
     Repo-shared and frequently committed, so it keeps the bare ``repowise``
     command: one contributor's absolute path would break every other checkout.
     Other servers the user configured are preserved.
+
+    The merge is a *minimal edit* (``merge_json_object_member``): only the
+    ``mcpServers.repowise`` value is touched, so unrelated servers and the
+    file's own formatting stay byte-identical. Re-rendering the whole document
+    from a dict would reformat pre-existing entries (issue #1603).
     """
     from repowise.cli.mcp_config import generate_mcp_config
 
     from ..formats.json_merge import (
-        load_json_object,
-        merge_server_entries,
+        merge_json_object_member,
         write_json_config,
     )
 
     config_path = project_mcp_config_path(repo_path)
-    new_entry = generate_mcp_config(repo_path)["mcpServers"]
+    new_entry = generate_mcp_config(repo_path)["mcpServers"]["repowise"]
 
     if config_path.exists():
-        existing = load_json_object(config_path)
-        servers = dict(existing.get("mcpServers", {}))
-        merge_server_entries(servers, new_entry)
-        existing["mcpServers"] = servers
-        merged = existing
+        # Surgical, minimal-edit write. Returns KEPT when the file's shape is
+        # one we cannot edit safely (e.g. ``mcpServers`` is not an object), in
+        # which case we fall back to the full re-render rather than silently
+        # dropping the registration.
+        action = merge_json_object_member(config_path, "mcpServers", "repowise", new_entry)
+        if action is FileAction.KEPT:
+            action = write_json_config(
+                config_path, {"mcpServers": {"repowise": new_entry}}
+            )
     else:
-        merged = {"mcpServers": new_entry}
+        action = write_json_config(config_path, {"mcpServers": {"repowise": new_entry}})
 
-    return FileWrite(path=config_path, action=write_json_config(config_path, merged))
+    return FileWrite(path=config_path, action=action)
 
 
 def _remove_project_mcp_entry(config_path: Path) -> tuple[Path, FileAction, str | None]:
