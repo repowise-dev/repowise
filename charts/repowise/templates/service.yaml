@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "repowise.fullname" . }}
+  labels:
+    {{- include "repowise.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: api
+      protocol: TCP
+      name: api
+    - port: {{ .Values.service.webPort }}
+      targetPort: web
+      protocol: TCP
+      name: web
+  selector:
+    {{- include "repowise.selectorLabels" . | nindent 4 }}
