@@ -87,8 +87,11 @@ def jvm_codegen_synthetic_symbols(
                 start_line=line, end_line=line,
                 file_info=file_info, parent_name=None,
             ))
-        if (_has_marker_annotation(node, "Immutable", src)
-                or _has_marker_annotation(node, "Value.Immutable", src)):
+        # Qualified marker only: a bare ``@Immutable`` is the unrelated
+        # thread-safety annotation, which generates nothing. Ceiling: a file
+        # that statically imports ``Value.Immutable`` and then writes a bare
+        # ``@Immutable`` is missed, which needs the import table to tell apart.
+        if _has_marker_annotation(node, "Value.Immutable", src):
             out.append(build_synthetic_symbol(
                 name=f"Immutable{type_name}", kind="class",
                 signature=f"public class Immutable{type_name} extends {type_name}",
