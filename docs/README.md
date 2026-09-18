@@ -78,6 +78,7 @@ your agent in under five minutes, with no API key.
 | Doc | What it covers |
 |-----|----------------|
 | [reference/CLI_REFERENCE.md](reference/CLI_REFERENCE.md) | Every command and flag |
+| [reference/API_REFERENCE.md](reference/API_REFERENCE.md) | The `repowise serve` HTTP API: what OpenAPI does not carry (spend, auth, errors, streaming) |
 | [reference/CONFIG.md](reference/CONFIG.md) | `.repowise/config.yaml`, `health-rules.json`, and environment variables |
 | [reference/COMPUTED_GLOSSARY.md](reference/COMPUTED_GLOSSARY.md) | Definitions for every computed metric and term repowise reports |
 | [reference/TELEMETRY.md](reference/TELEMETRY.md) | What anonymous telemetry collects, and how to turn it off |
