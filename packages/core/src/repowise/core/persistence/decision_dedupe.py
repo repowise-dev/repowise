@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.lifecycle import ARCHITECTURAL_KIND
 from repowise.core.analysis.decisions.provenance import rank_for_source
 from repowise.core.analysis.decisions.semantic_match import (
     DECISION_VECTOR_PREFIX,
@@ -330,6 +331,11 @@ async def apply_dedupe(
                 continue
             for column, name in _UNION_FIELDS:
                 union[name] |= set(_json_list(getattr(folded, column)))
+            # The checkable noun wins a fold. An agreement that absorbs a
+            # record about the code is about the code too, and being checked
+            # against files it does name is the recoverable error of the two.
+            if folded.kind == ARCHITECTURAL_KIND:
+                canonical.kind = ARCHITECTURAL_KIND
             await _absorb_evidence(session, canonical.id, folded.id)
             await _repoint_references(session, canonical.id, folded.id)
             await _add_alias(session, folded.id, canonical.id, reason="merged")

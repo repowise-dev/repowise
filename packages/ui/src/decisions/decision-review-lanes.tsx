@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   DECISION_CURRENCY_DESCRIPTIONS,
   DECISION_CURRENCY_LABELS,
+  DECISION_KIND_LABELS,
   DECISION_LANES,
   DECISION_SOURCES,
   decisionAcceptanceBlockers,
@@ -273,6 +274,10 @@ function DecisionLaneRow({
   const currency = d.currency ?? null;
   const evidence = d.evidence_preview;
   const scope = [...d.affected_files, ...d.affected_modules];
+  // An agreement governs the repository rather than part of it, so naming no
+  // file is what it is. Saying "names nothing" about one reports the defining
+  // property of the noun as a gap in the record.
+  const isAgreement = d.kind === "agreement";
   // The same four checks the engine refuses on, asked before the button is
   // drawn. A candidate that names nothing already renders "names nothing"
   // beside an Accept that could only fail; predicting the refusal is what
@@ -331,11 +336,13 @@ function DecisionLaneRow({
               list on the title, because the alternative is a row whose
               primary label is crowded off by its own metadata. */}
           <span className={MICRO_LABEL} title={scope.join(", ")}>
-            {scope.length === 0
-              ? "names nothing"
-              : scope.length === 1
-                ? scope[0]
-                : `${scope.length} paths`}
+            {isAgreement && scope.length === 0
+              ? DECISION_KIND_LABELS.agreement.toLowerCase()
+              : scope.length === 0
+                ? "names nothing"
+                : scope.length === 1
+                  ? scope[0]
+                  : `${scope.length} paths`}
           </span>
           {staleness.kind === "moved" && (
             <span className={MICRO_LABEL} title={staleness.sentence}>

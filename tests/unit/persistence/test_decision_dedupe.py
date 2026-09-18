@@ -77,6 +77,7 @@ async def _seed(session, store, repo_id, specs: list[dict]) -> list[DecisionReco
             rationale=spec.get("rationale", ""),
             context="",
             source=spec.get("source", "pr"),
+            kind=spec.get("kind", "architectural"),
             confidence=spec.get("confidence", 0.5),
             affected_files_json=json.dumps(spec.get("files", [])),
             affected_modules_json=json.dumps([]),
@@ -215,6 +216,42 @@ async def test_fold_moves_evidence_without_downgrading_the_canonical(async_sessi
     assert ("comment", "b.py") in by_key
     assert by_key[("pr", "a.py")].verification == "exact"
     assert by_key[("pr", "a.py")].confidence == pytest.approx(0.8)
+
+
+async def test_a_fold_moves_the_canonical_to_the_checkable_noun(
+    async_session, repo_id
+):
+    """An agreement that absorbs a record about the code is about the code too.
+
+    The union gives the canonical the folded record's files, and a record that
+    names files is one being checked against them, so the noun has to follow or
+    the canonical claims to govern the repository while naming part of it.
+    """
+    store = _store()
+    canonical, _duplicate = await _seed(
+        async_session,
+        store,
+        repo_id,
+        [
+            # session outranks comment, so the agreement is the canonical and
+            # the record about the code is what folds into it.
+            {
+                "title": "Never commit to main @a",
+                "kind": "agreement",
+                "source": "session",
+            },
+            {
+                "title": "Never commit to trunk @a",
+                "source": "comment",
+                "files": ["src/app.py"],
+            },
+        ],
+    )
+    await apply_dedupe(async_session, repo_id, vector_store=store, tau=TAU)
+
+    survivor = await async_session.get(DecisionRecord, canonical.id)
+    assert survivor.kind == "architectural"
+    assert json.loads(survivor.affected_files_json) == ["src/app.py"]
 
 
 async def test_folded_id_still_resolves_and_its_files_survive(async_session, repo_id):

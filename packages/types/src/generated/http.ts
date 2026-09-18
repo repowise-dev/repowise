@@ -888,6 +888,7 @@ export interface DecisionRecordResponse {
   confidence: number;
   staleness_score: number;
   verification?: string;
+  kind?: string;
   scope?: string | null;
   superseded_by: string | null;
   last_code_change: string | null;

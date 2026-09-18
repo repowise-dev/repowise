@@ -58,6 +58,7 @@ import structlog
 
 from repowise.core.analysis.decisions.discovery.spans import SpanCollector
 from repowise.core.analysis.decisions.extractor import ExtractedDecision
+from repowise.core.analysis.decisions.kinds import classify_kind
 from repowise.core.analysis.decisions.policy import DEFAULT_HARNESSES, resolve_policy
 from repowise.core.analysis.decisions.provenance import (
     completeness,
@@ -792,6 +793,15 @@ def promotion_decisions(
         ),
     )
     sessions = row["sessions"][-_MAX_EVIDENCE_SESSIONS:] or [None]
+    # Classified here rather than at staging, for the same reason binding is:
+    # a candidate staged before the split existed is classified on its way out
+    # instead of staying one noun forever.
+    kind = classify_kind(
+        row["title"],
+        structured.get("decision", ""),
+        structured.get("rationale", "") or "",
+        source="session",
+    )
     return [
         ExtractedDecision(
             title=row["title"],
@@ -803,6 +813,7 @@ def promotion_decisions(
             evidence_commits=[sid] if sid else [],
             confidence=confidence,
             status="proposed",
+            kind=kind,
             source_quote=structured.get("source_quote", ""),
             verification=structured.get("verification", "unverified"),
             lane=lane,

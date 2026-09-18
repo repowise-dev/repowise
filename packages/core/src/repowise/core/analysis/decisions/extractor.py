@@ -47,6 +47,7 @@ from typing import Any
 import structlog
 
 from repowise.core.analysis.decisions.gate import apply_substring_gate
+from repowise.core.analysis.decisions.lifecycle import ARCHITECTURAL_KIND
 from repowise.core.analysis.decisions.policy import (
     INDEX_SOURCE_KEYS,
     DecisionPolicy,
@@ -150,6 +151,11 @@ class ExtractedDecision:
     evidence_line: int | None = None
     confidence: float = 0.5
     status: str = "proposed"
+    # Which of the two nouns this is. Defaulted rather than classified per
+    # extractor: every other source reads an artifact already written about the
+    # code, and only the session lane mines the prose where an agreement about
+    # conducting the work gets stated.
+    kind: str = ARCHITECTURAL_KIND
     # The verbatim claimed quote (LLM/parser output) and the verdict from the
     # anti-hallucination substring gate (Phase 1D).
     source_quote: str = ""

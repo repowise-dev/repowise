@@ -16,6 +16,7 @@ import {
   DECISION_SOURCES,
   DECISION_CURRENCY_DESCRIPTIONS,
   DECISION_CURRENCY_LABELS,
+  DECISION_KINDS,
   DECISION_LANES,
   DECISION_PRESETS,
   DECISION_SOURCE_LABELS,
@@ -57,6 +58,10 @@ describe("decision vocabulary matches the engine", () => {
     const labelled = Object.keys(DECISION_SOURCE_LABELS).sort();
     const expected = [...fixture.sources, ...fixture.retired_sources].sort();
     expect(labelled).toEqual(expected);
+  });
+
+  it("names the same kinds", () => {
+    expect([...DECISION_KINDS]).toEqual(fixture.kinds);
   });
 
   it("names the same review lanes, in the same order", () => {

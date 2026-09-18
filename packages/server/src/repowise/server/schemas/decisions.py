@@ -41,6 +41,9 @@ class DecisionRecordResponse(BaseModel):
     confidence: float
     staleness_score: float
     verification: str = "unverified"
+    # Which noun this is. Defaulted so a payload from a store written before
+    # the split reads as the checkable kind rather than as an unknown one.
+    kind: str = "architectural"
     # Derived granularity: file | module | cross-module, or None when the
     # record has no code linkage at all. Computed at serialization time from
     # the linkage fields, so old records get it too.
@@ -70,6 +73,7 @@ class DecisionRecordResponse(BaseModel):
             repository_id=obj.repository_id,  # type: ignore[attr-defined]
             title=obj.title,  # type: ignore[attr-defined]
             status=obj.status,  # type: ignore[attr-defined]
+            kind=getattr(obj, "kind", None) or "architectural",
             context=obj.context,  # type: ignore[attr-defined]
             # Body fallback: the substring gate can clear a paraphrased
             # ``decision`` while an evidence quote keeps the record alive,

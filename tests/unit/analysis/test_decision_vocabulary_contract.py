@@ -77,6 +77,10 @@ def test_review_states_and_actions_match_lifecycle() -> None:
     assert _FIXTURE["acceptance_actions"] == list(lifecycle.ACCEPTANCE_ACTIONS)
 
 
+def test_kinds_match_lifecycle() -> None:
+    assert _FIXTURE["kinds"] == list(lifecycle.DECISION_KINDS)
+
+
 def test_review_lanes_match_lifecycle() -> None:
     assert _FIXTURE["review_lanes"] == list(lifecycle.REVIEW_LANES)
 
@@ -131,6 +135,7 @@ def test_typescript_declares_the_same_words() -> None:
         ("DECISION_STATUSES", "statuses"),
         ("DECISION_CURRENCIES", "currencies"),
         ("CANDIDATE_REVIEW_STATES", "candidate_review_states"),
+        ("DECISION_KINDS", "kinds"),
         ("DECISION_LANES", "review_lanes"),
         ("DECISION_PRESETS", "presets"),
     ):

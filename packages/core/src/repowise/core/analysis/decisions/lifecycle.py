@@ -16,8 +16,12 @@ from dataclasses import dataclass
 
 __all__ = [
     "ACCEPTANCE_ACTIONS",
+    "AGREEMENT_KIND",
+    "AGREEMENT_SCOPE",
+    "ARCHITECTURAL_KIND",
     "CANDIDATE_REVIEW_STATES",
     "DECISION_CURRENCIES",
+    "DECISION_KINDS",
     "DECISION_STATUS_ORDER",
     "NEEDS_REVIEW_STALENESS",
     "REVIEW_LANES",
@@ -30,6 +34,24 @@ __all__ = [
     "legacy_status_for_currency",
     "status_rank",
 ]
+
+#: The two nouns the store holds. An *architectural* decision is a claim about
+#: the code, and a diff can violate it. An *agreement* is a claim about how the
+#: work is conducted — the branch to commit on, what a pull request body may
+#: say, which command never runs — and no diff can violate it, because it is
+#: not about the code at all. They were one noun until now, which cost both:
+#: an agreement could not be accepted, and it diluted the records that a diff
+#: can be checked against.
+ARCHITECTURAL_KIND = "architectural"
+AGREEMENT_KIND = "agreement"
+DECISION_KINDS: tuple[str, ...] = (ARCHITECTURAL_KIND, AGREEMENT_KIND)
+
+#: The scope an agreement governs. An agreement names no file, but "no scope"
+#: and "the whole repository" are different claims, and only the second is
+#: true of it. Stating it keeps the acceptance contract's rule intact — nothing
+#: is accepted without a scope — instead of carving an exemption out of it,
+#: and it is what the ``scope_json`` CHECK on an acceptance row stores.
+AGREEMENT_SCOPE = "<repository>"
 
 #: What a decision's authority currently amounts to. Replaces the numeric
 #: staleness threshold as the *product* answer; the score stays an internal
@@ -128,6 +150,7 @@ def effective_currency(
     *,
     has_scope: bool,
     staleness: float,
+    repo_wide: bool = False,
 ) -> str:
     """The currency to show for a decision stored at *stored*.
 
@@ -135,9 +158,16 @@ def effective_currency(
     states a person set, and the code cannot argue with them. An ``active``
     decision is re-read against the repository: one that names nothing cannot be
     checked at all, and one whose files have moved is worth looking at again.
+
+    Neither question can be put to an agreement. *repo_wide* says so: it names
+    no file, which makes ``uncheckable`` a complaint about it being what it is,
+    and it has no files that can move, which makes ``needs_review`` a reading of
+    a staleness score measured over nothing.
     """
     if stored != "active":
         return stored if stored in DECISION_CURRENCIES else "active"
+    if repo_wide:
+        return "active"
     if not has_scope:
         return "uncheckable"
     if staleness >= NEEDS_REVIEW_STALENESS:

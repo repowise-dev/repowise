@@ -23,7 +23,11 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import currency_for_legacy_status
+from repowise.core.analysis.decisions.kinds import classify_kind
+from repowise.core.analysis.decisions.lifecycle import (
+    AGREEMENT_KIND,
+    currency_for_legacy_status,
+)
 
 from .crud.authority import (
     AcceptanceRefusedError,
@@ -67,6 +71,12 @@ class RowPlan:
     reason: str
     review_state: str = "open"
     duplicate_of: str | None = None
+    #: Which noun this row is, or blank where the migration does not reclassify
+    #: it. Blank for a row already carrying an acceptance or a review state,
+    #: because changing the noun of a record somebody already ruled on would
+    #: change what it governs behind them, and blank for a tombstone, whose
+    #: noun nothing reads.
+    kind: str = ""
 
 
 @dataclass(slots=True)
@@ -97,6 +107,7 @@ class MigrationPlan:
                     "reason": r.reason,
                     "review_state": r.review_state,
                     "duplicate_of": r.duplicate_of,
+                    "kind": r.kind,
                 }
                 for r in self.rows
             ],
@@ -225,6 +236,14 @@ async def plan_migration(
             )
             continue
 
+        # Only the rows still in play reach this: the branches above return a
+        # row already accepted, already reviewed or retired, and changing the
+        # noun of one of those would change what it governs behind the person
+        # who ruled on it.
+        kind = classify_kind(
+            rec.title, rec.decision, rec.rationale, source=rec.source
+        )
+
         currency = currency_for_legacy_status(rec.status)
         if currency is None:
             plan.rows.append(
@@ -236,6 +255,7 @@ async def plan_migration(
                     "candidate",
                     "never accepted: it was awaiting review",
                     duplicate_of=dup_of,
+                    kind=kind,
                 )
             )
             continue
@@ -251,10 +271,18 @@ async def plan_migration(
                     f"{rec.status} by recurrence, not by a person: "
                     f"a {rec.source} row carries no acceptance event",
                     duplicate_of=dup_of,
+                    kind=kind,
                 )
             )
             continue
 
+        # Only a self-accepting source reaches here, and no self-accepting
+        # source can be classified as an agreement: ``_SELF_ACCEPTING_SOURCES``
+        # and the classifier's prose sources are disjoint. That disjointness is
+        # load-bearing rather than incidental. Were it broken, a row classified
+        # an agreement on the first run would report a scope on the second (the
+        # contract answers with the repo-wide marker) and be auto-accepted under
+        # ``migration:<source>``, and this runs on every index.
         gaps: list[str] = []
         if not (rec.rationale.strip() or rec.decision.strip()):
             gaps.append("no rationale")
@@ -270,6 +298,7 @@ async def plan_migration(
                     "candidate",
                     f"authored via {rec.source} but {' and '.join(gaps)}",
                     duplicate_of=dup_of,
+                    kind=kind,
                 )
             )
             continue
@@ -283,6 +312,7 @@ async def plan_migration(
                 "decision",
                 f"authored via {rec.source}, with a reason and a scope",
                 duplicate_of=dup_of,
+                kind=kind,
             )
         )
     return plan
@@ -318,6 +348,8 @@ async def apply_migration(
         rec = records.get(row.decision_id)
         if rec is None or row.outcome == "already_migrated":
             continue
+        if row.kind:
+            rec.kind = row.kind
         if rec.status in _RETIRED_STATUSES and row.outcome != "decision":
             # Record the tombstone without touching the status that carries the
             # retirement.
@@ -384,6 +416,15 @@ def render_plan(plan: MigrationPlan, *, limit: int = 10) -> str:
         f"  Dismissed tombstones         {counts.get('tombstone', 0):>5}",
         f"  Already migrated             {counts.get('already_migrated', 0):>5}",
     ]
+    agreements = sum(1 for r in plan.rows if r.kind == AGREEMENT_KIND)
+    if agreements:
+        lines += [
+            "",
+            f"  Classified as working agreements {agreements:>5}",
+            "    Repo-wide rules about how the work is done, not about the",
+            "    code. They stop being counted as naming no scope, and can",
+            "    be accepted, which a record naming no files could not be.",
+        ]
     if plan.duplicate_clusters:
         clustered = sum(len(v) for v in plan.duplicate_clusters.values())
         lines += [

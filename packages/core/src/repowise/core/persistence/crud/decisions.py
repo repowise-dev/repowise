@@ -16,7 +16,12 @@ from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core import __version__
-from repowise.core.analysis.decisions.lifecycle import DECISION_STATUS_ORDER, status_rank
+from repowise.core.analysis.decisions.lifecycle import (
+    ARCHITECTURAL_KIND,
+    DECISION_KINDS,
+    DECISION_STATUS_ORDER,
+    status_rank,
+)
 from repowise.core.analysis.decisions.provenance import (
     SOURCE_RANK,
     completeness,
@@ -94,6 +99,17 @@ def _merge_status(existing: str, incoming: str) -> str:
     if incoming == "proposed" and existing in _PROTECTED_STATUSES:
         return existing
     return incoming
+
+
+def _extraction_kind(incoming: str | None) -> str:
+    """The kind extraction is allowed to write.
+
+    Unrecognised falls to ``architectural`` rather than being stored: the
+    vocabulary has no CHECK behind it, every reader tests ``== AGREEMENT_KIND``,
+    and a junk value that merely happens to read as architectural everywhere is
+    safe by luck. Normalising here makes it safe by construction.
+    """
+    return incoming if incoming in DECISION_KINDS else ARCHITECTURAL_KIND
 
 
 def _dedup_query(
@@ -1204,6 +1220,7 @@ async def bulk_upsert_decisions(
                 repository_id=repository_id,
                 title=headline_title,
                 status=_extraction_status(headline.get("status", "proposed")),
+                kind=_extraction_kind(headline.get("kind")),
                 context=headline.get("context") or "",
                 decision=headline.get("decision") or "",
                 rationale=headline.get("rationale") or "",
@@ -1230,6 +1247,14 @@ async def bulk_upsert_decisions(
             # headline → promote its fields (provenance still accretes below).
             rec.title = headline.get("title", rec.title)
             rec.status = _merge_status(rec.status, headline.get("status", rec.status))
+            # ``kind`` is deliberately absent: the noun is decided when the
+            # record is created and re-extraction does not revisit it. Most
+            # sources default the field rather than deciding it, so an incoming
+            # value is usually the absence of a judgement; and this branch runs
+            # on accepted records too, where flipping the noun would change what
+            # a record governs behind the person who accepted it. The migration
+            # refuses that for the same reason, and the manifest is where a
+            # person changes it deliberately.
             rec.context = headline.get("context") or rec.context
             rec.decision = headline.get("decision") or rec.decision
             rec.rationale = headline.get("rationale") or rec.rationale

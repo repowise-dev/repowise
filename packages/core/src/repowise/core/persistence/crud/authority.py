@@ -22,6 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import (
     ACCEPTANCE_ACTIONS,
+    AGREEMENT_KIND,
+    AGREEMENT_SCOPE,
     NO_SCOPE_BLOCKER,
     STORED_CURRENCIES,
     AcceptanceRequirement,
@@ -220,6 +222,7 @@ async def decision_currencies(
             currency,
             has_scope=bool(_record_scope(record)),
             staleness=record.staleness_score,
+            repo_wide=_is_repo_wide(record),
         )
     return out
 
@@ -249,6 +252,7 @@ async def count_decisions_by_lane(
                 DecisionRecord.affected_files_json,
                 DecisionRecord.affected_modules_json,
                 DecisionRecord.staleness_score,
+                DecisionRecord.kind,
             ).where(
                 DecisionRecord.repository_id == repository_id,
                 # Tombstoned candidates are excluded; a decision that was
@@ -296,16 +300,22 @@ async def count_decisions_by_lane(
         "governing": 0,
         "total": len(rows),
     }
-    for did, files_json, modules_json, staleness in rows:
+    for did, files_json, modules_json, staleness, kind in rows:
         acceptance = stored.get(did)
         if acceptance is None:
             counts["candidates"] += 1
             continue
-        has_scope = bool(json.loads(files_json or "[]")) or bool(
-            json.loads(modules_json or "[]")
+        # The same blank handling as _named_scope: a whitespace-only path is
+        # not a scope, and these two computations of one partition must not
+        # disagree about that.
+        named = _non_blank(_json_list(files_json)) or _non_blank(
+            _json_list(modules_json)
         )
         currency = effective_currency(
-            acceptance, has_scope=has_scope, staleness=staleness or 0.0
+            acceptance,
+            has_scope=bool(named) or kind == AGREEMENT_KIND,
+            staleness=staleness or 0.0,
+            repo_wide=kind == AGREEMENT_KIND and not named,
         )
         counts["history" if currency in ("superseded", "dismissed") else currency] += 1
         if is_governing(currency):
@@ -323,6 +333,7 @@ async def current_currency(session: AsyncSession, record: DecisionRecord) -> str
         acceptance.currency,
         has_scope=has_scope,
         staleness=record.staleness_score,
+        repo_wide=_is_repo_wide(record),
     )
 
 
@@ -365,11 +376,39 @@ def _non_blank(values: list[str]) -> list[str]:
     return [v for v in values if v and v.strip()]
 
 
-def _record_scope(record: DecisionRecord) -> list[str]:
+def _named_scope(record: DecisionRecord) -> list[str]:
+    """The files or modules *record* actually names, blanks dropped."""
     # Blank entries fall through to the modules rather than short-circuiting on
     # them, so this agrees with the TypeScript mirror about a whitespace path.
     return _non_blank(_json_list(record.affected_files_json)) or _non_blank(
         _json_list(record.affected_modules_json)
+    )
+
+
+def _is_repo_wide(record: DecisionRecord) -> bool:
+    """Whether *record* governs the repository as a whole rather than part of it.
+
+    Both halves are needed. An agreement that names files has been given a real
+    scope by something, and the ordinary rules apply to it: the noun says the
+    record is *allowed* to name nothing, not that anything it does name should
+    be ignored. Keying this off the kind alone would take a record with real
+    files out of staleness checking for good, and the classifier is a regex
+    with a measured false-positive rate.
+    """
+    return record.kind == AGREEMENT_KIND and not _named_scope(record)
+
+
+def _record_scope(record: DecisionRecord) -> list[str]:
+    """What *record* claims to govern, for every reader of the contract.
+
+    An agreement naming no file governs the repository rather than part of it,
+    so it reports that scope instead of an empty one. Written here rather than
+    at the three call sites because they are the acceptance contract, the review
+    flag and the currency, and those three disagreeing about what an agreement
+    governs is the failure :func:`accepted_predicate` exists to describe.
+    """
+    return _named_scope(record) or (
+        [AGREEMENT_SCOPE] if record.kind == AGREEMENT_KIND else []
     )
 
 

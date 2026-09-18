@@ -69,6 +69,10 @@
     "balanced",
     "full"
   ],
+  "kinds": [
+    "architectural",
+    "agreement"
+  ],
   "review_lanes": [
     "active",
     "candidates",

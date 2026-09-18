@@ -51,6 +51,22 @@ export const DECISION_STATUS_LABELS: Record<DecisionStatus, string> = {
   dismissed: "Dismissed",
 };
 
+/**
+ * The two nouns the store holds. An `architectural` decision is a claim about
+ * the code that a diff can violate. An `agreement` is a claim about how the
+ * work is conducted, which no diff can violate, so it names no file and is
+ * never checked against one.
+ */
+export const DECISION_KINDS = ["architectural", "agreement"] as const;
+
+export type DecisionKind = (typeof DECISION_KINDS)[number];
+
+/** The word for a kind. Presentation, so the fixture pins coverage only. */
+export const DECISION_KIND_LABELS: Record<DecisionKind, string> = {
+  architectural: "Decision",
+  agreement: "Working agreement",
+};
+
 /** Sort key for a status. An unknown status sorts after every known one. */
 export function decisionStatusRank(status: string): number {
   const i = (DECISION_STATUSES as readonly string[]).indexOf(status);
@@ -228,6 +244,12 @@ export interface DecisionRecord {
   last_code_change: string | null;
   /** Trust tier of the decision's primary supporting evidence. Optional for back-compat. */
   verification?: DecisionVerification;
+  /**
+   * Which noun this record is. An `agreement` names no file on purpose, so it
+   * is never shown as missing a scope. Optional for back-compat with a backend
+   * written before the split; absent reads as `architectural`.
+   */
+  kind?: DecisionKind;
   /**
    * Derived granularity level. Optional for back-compat with older backends;
    * null when the record has no code linkage at all.
@@ -456,6 +478,7 @@ export function decisionAcceptanceBlockers(record: {
   evidence_commits?: string[];
   evidence_file?: string | null;
   source?: string;
+  kind?: string;
 }): string[] {
   const blockers: string[] = [];
   const nonBlank = (values: (string | null | undefined)[]) =>
@@ -464,7 +487,11 @@ export function decisionAcceptanceBlockers(record: {
   if (!nonBlank([record.rationale, record.context])) {
     blockers.push("no rationale or explicit constraint reason");
   }
+  // An agreement governs the repository rather than part of it, so naming no
+  // file is what it is rather than a gap in it. The server states that scope
+  // explicitly on the acceptance row; here it just means no blocker.
   if (
+    record.kind !== "agreement" &&
     !nonBlank(record.affected_files ?? []) &&
     !nonBlank(record.affected_modules ?? [])
   ) {

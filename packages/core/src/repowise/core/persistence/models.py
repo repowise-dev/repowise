@@ -897,6 +897,13 @@ class DecisionRecord(Base):
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="proposed"
     )  # proposed | active | deprecated | superseded | dismissed
+    # Which of the two nouns this is. ``architectural`` is the default because
+    # it is the checkable one: a record wrongly left here keeps the contract it
+    # already had, while one wrongly called an agreement stops being checked
+    # against the code at all.
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="architectural"
+    )  # architectural | agreement
     context: Mapped[str] = mapped_column(Text, nullable=False, default="")
     decision: Mapped[str] = mapped_column(Text, nullable=False, default="")
     rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
