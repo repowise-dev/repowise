@@ -100,7 +100,15 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: ``assertion_free_test`` landed, and the walker records two new
+# Current stamp: Go ``select`` arms and the TypeScript/JavaScript ``default:``
+# arm are branches now. The grammars spell them ``communication_case`` and
+# ``switch_default``, neither of which was mapped, so a three-arm ``select``
+# scored as a straight line and a ``default`` carrying control flow added
+# nothing. Stored complexity and the findings keyed off it change for files
+# that use them. It has to move for the cache too: ``HealthWalkCache`` keys on
+# this stamp and the file's bytes, neither of which a node-map change alters.
+#
+# v15: ``assertion_free_test`` landed, and the walker records two new
 # ``FunctionComplexity`` fields for it (``verification_count``, ``is_test_case``)
 # that a cached v14 walk does not carry. It also widens ``assertion_count`` in
 # every language that counts assertions at all -- a ``with`` header, a
@@ -144,7 +152,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 15
+HEALTH_ANALYZER_VERSION = 16
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
