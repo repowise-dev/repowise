@@ -73,9 +73,9 @@ name for a host at this tier, which is the point of the tier.
 
 ## The MCP surface
 
-repowise registers **eighteen MCP tools**. A single-repo server advertises **ten**
+repowise registers **nineteen MCP tools**. A single-repo server advertises **ten**
 of them by default, and workspace mode adds one more automatically for **eleven**. A
-further **seven** are off by default, enabled through the `mcp.tools` config block
+further **eight** are off by default, enabled through the `mcp.tools` config block
 or `--tools +name`. The `lean` profile trims the default surface to **six** tools
 (seven in workspace mode) for agents on a tight context budget.
 

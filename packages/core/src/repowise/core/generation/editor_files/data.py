@@ -110,6 +110,24 @@ class KGTourStepSummary:
 
 
 @dataclass(frozen=True)
+class CanonicalTerm:
+    """One row of the repository's declared vocabulary, for an agent prompt.
+
+    Read from the team's own glossary file rather than mined. It is rendered
+    into ``CLAUDE.md`` / ``AGENTS.md`` because that is the cheapest way to make
+    every agent speak the house language: the terms are already in the prompt
+    prefix of every session, so an agent that never calls an MCP tool still
+    knows which word to use and which ones the team ruled out.
+    """
+
+    term: str
+    definition: str | None = None
+    avoid: tuple[str, ...] = ()
+    context: str | None = None
+    source_path: str = ""
+
+
+@dataclass(frozen=True)
 class EditorFileData:
     repo_name: str
     indexed_at: str  # date only: "2026-03-28"
@@ -125,6 +143,10 @@ class EditorFileData:
     code_health: CodeHealthBlock | None = None
     kg_layers: list[KGLayerSummary] = field(default_factory=list)
     kg_tour: list[KGTourStepSummary] = field(default_factory=list)
+    # The terms the team declared canonical, in the order they wrote them.
+    # Empty on the common repository that has not declared a glossary, and the
+    # section does not render at all in that case.
+    canonical_terms: list[CanonicalTerm] = field(default_factory=list)
     # Rendered MCP tool table (single source: tool_table.py). A data field
     # rather than a Jinja global so any environment can render the template.
     tool_table_md: str = field(default_factory=lambda: _render_tool_table())

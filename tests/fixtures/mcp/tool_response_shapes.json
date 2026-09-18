@@ -162,8 +162,8 @@
     "change_shape": {
       "classification": null,
       "diagnostics_via": null,
-      "independent_changes": null,
       "fallback_band": null,
+      "independent_changes": null,
       "is_fix": null,
       "measures": null,
       "review_priority": null,
@@ -579,6 +579,33 @@
       }
     ],
     "total_entry_points": null
+  },
+  "get_glossary": {
+    "_meta": {
+      "contract_version": null,
+      "hint": null
+    },
+    "declared_count": null,
+    "demoted_count": null,
+    "emitted": null,
+    "mined_count": null,
+    "terms": [
+      {
+        "avoid": [
+          null
+        ],
+        "context": null,
+        "definition": null,
+        "note": null,
+        "source_line": null,
+        "source_path": null,
+        "status": null,
+        "term": null,
+        "used_in": [],
+        "used_in_count": null
+      }
+    ],
+    "total": null
   },
   "get_health": {
     "_meta": {

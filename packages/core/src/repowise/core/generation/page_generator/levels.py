@@ -23,6 +23,7 @@ from .helpers import _is_infra_file, decisions_for_files, rank_decisions
 
 if TYPE_CHECKING:
     from ..concept_tree.vocabulary import HouseTerm
+    from ..declared_glossary import DeclaredTerm
     from .orchestrate import _GenerationRun
 
 log = structlog.get_logger(__name__)
@@ -422,10 +423,19 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         # only when the structural side names it too, so the front page never
         # carries a word the documents used and the graph never confirmed.
         #
-        # Module *groups*, not written module pages: a group is cut and named
+        # Unless the team declared one. A ``CONTEXT.md`` is the authority on
+        # naming, so its terms lead the table and a word it marks ``_Avoid_``
+        # is demoted rather than dropped — the glossary's own ranking rule,
+        # reached through the same call the glossary page makes.
+        #
+        # Module *groups*, not written module *pages*: a group is cut and named
         # on every run, so a scoped run that regenerates the overview alone
         # selects the same rows as a full one.
-        capabilities = select_capabilities(_mine_house_terms(run), await _module_corroboration(run))
+        capabilities = select_capabilities(
+            _mine_house_terms(run),
+            await _module_corroboration(run),
+            declared=_read_declared_glossary(run),
+        )
         if not capabilities:
             # No table beats an empty one, but a front-page section that
             # quietly stops appearing is the failure shape this repository has
@@ -542,6 +552,44 @@ def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
     return terms
 
 
+def _read_declared_glossary(run: _GenerationRun) -> tuple[DeclaredTerm, ...]:
+    """The vocabulary the team authored, read once per run.
+
+    Same shape and same reason as :func:`_mine_house_terms`: it reads a file,
+    two levels want it, and the answer cannot change within a run. A repository
+    with no ``CONTEXT.md`` is the common case and costs one ``is_file`` per
+    candidate path rather than a walk.
+
+    There is no "skipped" branch for a run with no ``repo_path``. A mined
+    vocabulary that was never read is a real distinction worth logging — the
+    documents might name everything and the run never looked. A declared
+    glossary that was never read is not: there is no file to read, and the
+    empty tuple is the same fact either way.
+    """
+    from ..declared_glossary import load_declared_glossary
+
+    cached = getattr(run, "_declared_terms", None)
+    if cached is not None:
+        return cached
+
+    if not run.repo_path:
+        run._declared_terms = ()
+        return ()
+
+    declared = tuple(load_declared_glossary(Path(run.repo_path)))
+    if declared:
+        log.info(
+            "onboarding.declared_glossary_loaded",
+            repo_name=run.repo_name,
+            terms=len(declared),
+            contexts=len({t.context for t in declared if t.context}),
+            with_avoid=sum(1 for t in declared if t.avoid),
+            sources=sorted({t.source_path for t in declared}),
+        )
+    run._declared_terms = declared
+    return declared
+
+
 async def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 8 (curated onboarding collection)."""
     gen = run.gen
@@ -606,6 +654,7 @@ async def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         tour_stops=tuple(run.tour_stops),
         layer_order=tuple(run.layer_order),
         house_terms=_mine_house_terms(run),
+        declared_terms=_read_declared_glossary(run),
         module_corroboration=module_corroboration,
     )
     for page_id, spec in emitted:
