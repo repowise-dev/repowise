@@ -119,6 +119,80 @@ class TestGoFunctionValues:
         assert _inbound(graph, "handlers/handlers.go::Index", "references")
         assert not _inbound(graph, "handlers/handlers.go::Index", "calls")
 
+    def test_func_value_in_keyed_map_composite_literal(self, tmp_path: Path) -> None:
+        (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.21\n")
+        (tmp_path / "handlers").mkdir()
+        (tmp_path / "handlers" / "handlers.go").write_text(
+            "package handlers\n\nfunc Index() {}\n"
+        )
+        (tmp_path / "server.go").write_text(
+            "package app\n"
+            "\n"
+            'import "example.com/app/handlers"\n'
+            "\n"
+            "func Greet() {}\n"
+            "\n"
+            "func Setup() {\n"
+            '\t_ = map[string]any{"greet": Greet, "handler": handlers.Index}\n'
+            "}\n"
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "server.go::Greet", "references")
+        assert not _inbound(graph, "server.go::Greet", "calls")
+        assert _inbound(graph, "handlers/handlers.go::Index", "references")
+        assert not _inbound(graph, "handlers/handlers.go::Index", "calls")
+
+    def test_func_value_in_struct_composite_literal(self, tmp_path: Path) -> None:
+        (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.21\n")
+        (tmp_path / "handlers").mkdir()
+        (tmp_path / "handlers" / "handlers.go").write_text(
+            "package handlers\n\nfunc Index() {}\n"
+        )
+        (tmp_path / "server.go").write_text(
+            "package app\n"
+            "\n"
+            'import "example.com/app/handlers"\n'
+            "\n"
+            "type Config struct {\n"
+            "    OnEvent func()\n"
+            "    Handler func()\n"
+            "}\n"
+            "\n"
+            "func Greet() {}\n"
+            "\n"
+            "func Setup() {\n"
+            "\t_ = Config{OnEvent: Greet, Handler: handlers.Index}\n"
+            "}\n"
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "server.go::Greet", "references")
+        assert not _inbound(graph, "server.go::Greet", "calls")
+        assert _inbound(graph, "handlers/handlers.go::Index", "references")
+        assert not _inbound(graph, "handlers/handlers.go::Index", "calls")
+
+    def test_func_value_in_slice_composite_literal(self, tmp_path: Path) -> None:
+        (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.21\n")
+        (tmp_path / "handlers").mkdir()
+        (tmp_path / "handlers" / "handlers.go").write_text(
+            "package handlers\n\nfunc Index() {}\n"
+        )
+        (tmp_path / "server.go").write_text(
+            "package app\n"
+            "\n"
+            'import "example.com/app/handlers"\n'
+            "\n"
+            "func Greet() {}\n"
+            "\n"
+            "func Setup() {\n"
+            "\t_ = []func(){Greet, handlers.Index}\n"
+            "}\n"
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "server.go::Greet", "references")
+        assert not _inbound(graph, "server.go::Greet", "calls")
+        assert _inbound(graph, "handlers/handlers.go::Index", "references")
+        assert not _inbound(graph, "handlers/handlers.go::Index", "calls")
+
     def test_an_ordinary_qualified_call_is_still_a_call(self, tmp_path: Path) -> None:
         self._layout(tmp_path, "\thandlers.Index()\n")
         graph = _build(tmp_path)
