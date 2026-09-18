@@ -144,9 +144,48 @@ def test_a_malformed_opportunity_is_dropped_rather_than_raised(repo: Path) -> No
     assert recorder.record_opportunity(repo, {"kind": "missing everything else"}) is False
 
 
-def test_the_store_is_not_held_open(repo: Path) -> None:
-    """Open, write, close. Two callers are hot paths; one is a per-tool-use hook."""
-    recorder.record_event(repo, _event())
-    # A second exclusive opener would fail against a retained write lock.
+def test_the_id_the_surface_minted_is_the_id_stored(repo: Path) -> None:
+    """Otherwise nothing joins a log line, or a response, to its ledger row.
+
+    The contract substitutes a fresh id unless told to accept one, and the
+    substitution is silent: the row exists, it just is not the event the surface
+    thinks it wrote. It also scopes the idempotency key on an id that was thrown
+    away, which makes retry deduplication unreachable while appearing to work.
+    """
+    minted = "11111111-2222-3333-4444-555555555555"
+    assert recorder.record_event(repo, _event(event_id=minted)) is True
+    with OmissionStore(recorder.sidecar_path(repo)) as store:
+        stored = store._conn.execute("SELECT event_id FROM savings_events").fetchone()[0]
+    assert stored == minted
+
+
+def test_the_sidecar_path_matches_the_store_that_owns_it(tmp_path: Path) -> None:
+    """The path is spelled out here to avoid a structlog import; keep it honest."""
+    from repowise.core.distill.store import OMISSIONS_DB_FILENAME, OMISSIONS_DIRNAME
+
+    assert recorder.sidecar_path(tmp_path) == (
+        tmp_path / ".repowise" / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
+    )
+
+
+def test_a_raw_connection_reaches_the_same_ledger(repo: Path) -> None:
+    """The hook writes on the connection it already has, importing nothing heavy.
+
+    Reaching the ledger through ``OmissionStore`` would pull structlog, roughly
+    250ms, on the surface whose whole justification is latency.
+    """
+    import sqlite3
+
+    connection = sqlite3.connect(str(recorder.sidecar_path(repo)), timeout=2)
+    try:
+        assert recorder.record_event_on(connection, repo, _event()) is True
+    finally:
+        connection.close()
     with OmissionStore(recorder.sidecar_path(repo)) as store:
         assert store._conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 1
+
+
+def test_a_bad_repository_argument_does_not_raise(repo: Path) -> None:
+    """ "Never raises" has to hold for the argument too, not just the write."""
+    assert recorder.record_event(object(), _event()) is False  # type: ignore[arg-type]
+    assert recorder.record_opportunity(object(), {}) is False  # type: ignore[arg-type]

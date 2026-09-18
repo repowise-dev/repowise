@@ -248,12 +248,11 @@ async def test_the_tool_still_answers_when_recording_fails(
 async def test_the_raw_size_is_observed_before_anything_is_shed(repo: Path) -> None:
     """Which layer wins the measurement, stated as a number.
 
-    ``observe_pre_budget`` is called by both budget layers and by
-    ``instrument``, and takes the first value only. The innermost budget runs
-    first, so the value that lands is the untrimmed tool output. If that order
-    ever inverted, the recorded raw size would be a post-shed size and the
-    measured truncation would collapse to almost nothing -- on this response,
-    from thousands of tokens to under two hundred.
+    ``observe_pre_budget`` takes the first positive value only. The innermost
+    budget runs first, so the value that lands is the untrimmed tool output. If
+    that order ever inverted, the recorded raw size would be a post-shed size
+    and the measured truncation would collapse to almost nothing -- on this
+    response, from thousands of tokens to under two hundred.
     """
     from repowise.server.mcp_server._savings import interaction as interaction_module
 
@@ -279,8 +278,10 @@ async def test_the_raw_size_is_observed_before_anything_is_shed(repo: Path) -> N
     finally:
         interaction_module.Interaction.observe_pre_budget = original  # type: ignore[method-assign]
 
-    # Three observations; only the first is kept, and it is by far the largest.
-    assert [accepted for _, accepted in observed] == [True, False, False]
+    # Two observations, not three: the outermost budget is guarded and does not
+    # serialize the payload again for a value that would be discarded. The
+    # first is kept and is by far the largest.
+    assert [accepted for _, accepted in observed] == [True, False]
     kept = observed[0][0]
     assert kept is not None
     assert all(kept > later for later, _ in observed[1:])
@@ -328,3 +329,58 @@ def store_ref_is_bare_hex(ref: str) -> bool:
     from repowise.core.distill.markers import is_valid_ref
 
     return is_valid_ref(ref)
+
+
+@pytest.mark.asyncio
+async def test_a_budget_truncated_response_is_partial_not_a_plain_success(
+    repo: Path,
+) -> None:
+    """The agent received less than the tool produced, and the row says so.
+
+    Recording it as a plain success would credit the bytes repowise discarded to
+    a call that arrived incomplete, with nothing in the row admitting it. The
+    saving is the same either way -- a usable partial gets the same formula --
+    so this is about what the event states, not about the number.
+    """
+
+    async def get_context(targets: list[str]) -> dict:
+        return {
+            "targets": {targets[0]: {"skeleton": {"tokens": 200, "full_tokens": 4000}}},
+            "filler": ["y" * 400 for _ in range(60)],
+            "_meta": {},
+        }
+
+    out = await tool_middleware(get_context)(["a.py"])
+    assert out["_meta"]["state"]["truncated"], "expected the budgeter to have shed content"
+
+    event = _events(repo)[0]
+    assert event["result_state"] == "partial"
+    assert event["is_usable"] == 1
+    # Still counted and still credited: a usable partial is an achieved saving.
+    assert event["saved_input_tokens"] > 0
+    assert _report(repo).successful_or_usable_partial_events == 1
+
+
+@pytest.mark.asyncio
+async def test_the_minted_event_id_reaches_the_row(repo: Path) -> None:
+    """The interaction's identity has to be the row's identity, or it is not one."""
+    seen: list[str] = []
+    from repowise.server.mcp_server._savings import event as savings_event
+
+    original = savings_event._record
+
+    def capture(interaction, result):  # type: ignore[no-untyped-def]
+        seen.append(interaction.event_id)
+        return original(interaction, result)
+
+    savings_event._record = capture  # type: ignore[assignment]
+    try:
+
+        async def get_health(path: str) -> dict:
+            return {"score": 7.0, "_meta": {}}
+
+        await tool_middleware(get_health)("a.py")
+    finally:
+        savings_event._record = original  # type: ignore[assignment]
+
+    assert _events(repo)[0]["event_id"] == seen[0]

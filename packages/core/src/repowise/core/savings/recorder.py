@@ -27,6 +27,7 @@ that runs on every tool use.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -35,11 +36,16 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+#: Spelled out rather than imported from ``distill.store``, which owns these
+#: constants but costs a structlog import to read them -- the same reason the
+#: hook path spells the path out. Kept honest by
+#: ``test_the_sidecar_path_matches_the_store_that_owns_it``.
+_SIDECAR_PARTS = (".repowise", "omissions", "omissions.db")
+
+
 def sidecar_path(repo_root: str | Path) -> Path:
     """Where a repository's savings sidecar lives."""
-    from repowise.core.distill.store import OMISSIONS_DB_FILENAME, OMISSIONS_DIRNAME
-
-    return Path(repo_root) / ".repowise" / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
+    return Path(repo_root).joinpath(*_SIDECAR_PARTS)
 
 
 def record_event(repo_root: str | Path | None, payload: Mapping[str, Any]) -> bool:
@@ -53,42 +59,29 @@ def record_event(repo_root: str | Path | None, payload: Mapping[str, Any]) -> bo
     already recorded returns False, as does a dropped one, because in both cases
     this call added nothing.
     """
-    if not repo_root:
-        return False
-    db_path = sidecar_path(repo_root)
-    if not db_path.is_file():
-        return False
-
-    # Imported here rather than at module scope: ``distill.store`` pulls
-    # structlog, which costs ~250ms, and the hook path measures its budget in
-    # milliseconds. By the time anything calls this, the response is already out.
     try:
+        if not repo_root:
+            return False
+        db_path = sidecar_path(repo_root)
+        if not db_path.is_file():
+            return False
+        event = _build(payload, repo_root)
+        if event is None:
+            return False
+        # ``distill.store`` pulls structlog, which is why this is not imported
+        # at module scope. A surface that measures its latency in milliseconds
+        # reaches the ledger through :func:`record_event_on` instead.
         from repowise.core.distill.store import OmissionStore
-        from repowise.core.savings.contracts import SavingsEvent
-    except Exception:  # pragma: no cover - import failure is environmental
-        logger.debug("savings recorder unavailable", exc_info=True)
-        return False
 
-    try:
-        # The repository is taken from the path being written to, overriding
-        # whatever the payload said, so a surface holding a stale id cannot file
-        # one repository's savings under another.
-        event = SavingsEvent.from_mapping({**payload, "repository_id": str(repo_root)})
-    except Exception:
-        # A malformed event is a bug in the calling surface, not in the user's
-        # command. Loud in the log, invisible to them.
-        logger.debug("savings event rejected before write", exc_info=True)
-        return False
-
-    try:
         store = OmissionStore(db_path)
     except Exception:
-        logger.debug("savings sidecar open failed", exc_info=True)
+        logger.debug("savings recorder could not open the sidecar", exc_info=True)
         return False
     try:
-        return _write(store, event)
+        return _write(store.savings(), event)
     finally:
-        store.close()
+        with contextlib.suppress(Exception):
+            store.close()
 
 
 def record_event_in(store: Any, repo_root: str | Path | None, payload: Mapping[str, Any]) -> bool:
@@ -101,19 +94,76 @@ def record_event_in(store: Any, repo_root: str | Path | None, payload: Mapping[s
     """
     if store is None or not repo_root:
         return False
+    event = _build(payload, repo_root)
+    if event is None:
+        return False
+    try:
+        return _write(store.savings(), event)
+    except Exception:
+        logger.debug("savings write failed; dropping silently", exc_info=True)
+        return False
+
+
+def record_event_on(
+    connection: Any, repo_root: str | Path | None, payload: Mapping[str, Any]
+) -> bool:
+    """Record an event on a raw sqlite connection. Never raises.
+
+    For the surface that cannot afford :class:`OmissionStore`. The hook budgets
+    itself in milliseconds and opens the sidecar with plain ``sqlite3``
+    precisely so it never imports ``distill.store``, which pulls structlog at
+    roughly 250ms. It reaches the ledger through the same validation and against
+    the same repository as every other surface, on the connection it already
+    holds.
+
+    The ceiling: a raw connection does not run the schema upgrade, so an event
+    written against a sidecar older than the event tables is dropped rather than
+    migrating the store from inside a hook. Any other opener repairs it, and
+    paying a migration on a latency-critical path is the worse trade.
+    """
+    if connection is None or not repo_root:
+        return False
+    event = _build(payload, repo_root)
+    if event is None:
+        return False
+    try:
+        from repowise.core.savings.repository import SavingsRepository
+
+        return _write(SavingsRepository(connection), event)
+    except Exception:
+        logger.debug("savings write failed; dropping silently", exc_info=True)
+        return False
+
+
+def _build(payload: Mapping[str, Any], repo_root: str | Path) -> Any:
+    """Validate *payload* into an event, or ``None`` when it is malformed.
+
+    The repository is taken from the path being written to, overriding whatever
+    the payload said, so a surface holding a stale id cannot file one
+    repository's savings under another. A malformed event is a bug in the
+    calling surface, not in the user's command: loud in the log, invisible to
+    them.
+
+    ``accept_event_id`` is set, so the id the surface minted is the id stored.
+    Without it the contract quietly substitutes a fresh one, and then nothing
+    can join a log line to its row, and the idempotency key is scoped on an id
+    that was discarded -- which makes retry deduplication unreachable while
+    appearing to work.
+    """
     try:
         from repowise.core.savings.contracts import SavingsEvent
 
-        event = SavingsEvent.from_mapping({**payload, "repository_id": str(repo_root)})
+        return SavingsEvent.from_mapping(
+            {**payload, "repository_id": str(repo_root)}, accept_event_id=True
+        )
     except Exception:
         logger.debug("savings event rejected before write", exc_info=True)
-        return False
-    return _write(store, event)
+        return None
 
 
-def _write(store: Any, event: Any) -> bool:
+def _write(repository: Any, event: Any) -> bool:
     try:
-        return bool(store.savings().record_event(event))
+        return bool(repository.record_event(event))
     except Exception:
         logger.debug("savings write failed; dropping silently", exc_info=True)
         return False
@@ -127,34 +177,26 @@ def record_opportunity(repo_root: str | Path | None, payload: Mapping[str, Any])
     reach a total of what was saved; giving it its own function means no caller
     can pass one to the other by filling in a different field.
     """
-    if not repo_root:
-        return False
-    db_path = sidecar_path(repo_root)
-    if not db_path.is_file():
-        return False
-
     try:
+        if not repo_root:
+            return False
+        db_path = sidecar_path(repo_root)
+        if not db_path.is_file():
+            return False
+
         from repowise.core.distill.store import OmissionStore
         from repowise.core.savings.contracts import OpportunityObservation
-    except Exception:  # pragma: no cover - import failure is environmental
-        logger.debug("savings recorder unavailable", exc_info=True)
-        return False
 
-    try:
         observation = OpportunityObservation.from_mapping(payload, repository_id=str(repo_root))
+        store = OmissionStore(db_path)
     except Exception:
         logger.debug("opportunity rejected before write", exc_info=True)
         return False
-
     try:
-        store = OmissionStore(db_path)
-    except Exception:
-        logger.debug("savings sidecar open failed", exc_info=True)
-        return False
-    try:
-        return store.savings().record_opportunity(observation)
+        return bool(store.savings().record_opportunity(observation))
     except Exception:
         logger.debug("opportunity write failed; dropping silently", exc_info=True)
         return False
     finally:
-        store.close()
+        with contextlib.suppress(Exception):
+            store.close()

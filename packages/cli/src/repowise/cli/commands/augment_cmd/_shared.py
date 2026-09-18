@@ -244,24 +244,24 @@ def record_saving(
                 raw_tokens=raw_tokens,
                 distilled_tokens=distilled_tokens,
             )
+            _record_event(
+                con,
+                repo_path,
+                filter_name=filter_name,
+                raw_tokens=raw_tokens,
+                distilled_tokens=distilled_tokens,
+                hook_adapter=hook_adapter,
+            )
         finally:
             con.close()
     except Exception:
         return
-    _record_event(
-        repo_path,
-        source=source,
-        filter_name=filter_name,
-        raw_tokens=raw_tokens,
-        distilled_tokens=distilled_tokens,
-        hook_adapter=hook_adapter,
-    )
 
 
 def _record_event(
+    connection: object,
     repo_path: Path,
     *,
-    source: str,
     filter_name: str,
     raw_tokens: int,
     distilled_tokens: int,
@@ -269,11 +269,13 @@ def _record_event(
 ) -> None:
     """Record the canonical event for one hook replacement. Never raises.
 
-    Reached only through ``HookResult.on_emitted``, which runs after the
-    response is already on the wire, so the heavy imports here cost the ledger
-    write rather than the agent. That is also why this does not violate the
-    module-scope import contract this path lives under: nothing new is imported
-    until a replacement has actually been served.
+    Written on the connection this function's caller already opened, which is
+    the point. Reaching the ledger through ``OmissionStore`` would import
+    ``distill.store`` and therefore structlog -- roughly 250ms, on the surface
+    whose entire justification is latency, and the exact import
+    :func:`_omission_db` spells its path out to avoid. This still runs before
+    the hook process exits, so the agent does wait on it; "after the response
+    is computed" is not the same as free.
 
     Attribution is real here rather than ``unknown``. The hook was handed the
     serving agent's own adapter, so which agent saved these tokens is evidence,
@@ -288,7 +290,8 @@ def _record_event(
 
         agent = slug_for_hook_adapter(hook_adapter)
         event_id = new_event_id()
-        recorder.record_event(
+        recorder.record_event_on(
+            connection,
             repo_path,
             {
                 "event_id": event_id,

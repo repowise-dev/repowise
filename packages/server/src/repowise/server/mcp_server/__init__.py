@@ -97,8 +97,7 @@ def tool_middleware(fn: Any) -> Any:
        the whole session), so it must see the raw tool.
     2. ``trust`` — adds the final transport trust envelope.
     3. ``quantize`` — rounds every float in the response. Outside the shield so
-       shaped error responses are covered too, and inside the savings layer so
-       the ledger measures the payload as actually delivered.
+       shaped error responses are covered too.
     4. ``budget`` — caps the delivered shape. Also reports the raw tool output
        size to the interaction: this is the only layer that sees it before
        anything has been shed.
@@ -173,9 +172,12 @@ def tool_middleware(fn: Any) -> Any:
             raw = await inner(*args, **kwargs)
             live = savings_interaction.current()
             if live is not None:
-                # Both instantiations run this; the inner one runs first, so its
-                # value is the only one that has seen untrimmed output.
-                live.observe_pre_budget(savings_event.raw_response_tokens(raw))
+                # Both instantiations run this closure, and the inner one runs
+                # first, so only its value has seen untrimmed output. Guarded
+                # rather than merely ignored: the measurement serializes the
+                # whole payload, and the outer layer's result is discarded.
+                if live.pre_budget_input_tokens is None:
+                    live.observe_pre_budget(savings_event.raw_response_tokens(raw))
                 live.repo_root = live.repo_root or (str(repo_root) if repo_root else None)
             result = enforce_response_budget(
                 fn.__name__,

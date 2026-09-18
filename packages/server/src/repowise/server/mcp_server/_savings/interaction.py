@@ -56,12 +56,18 @@ class Interaction:
     pre_budget_input_tokens: int | None = None
 
     def observe_pre_budget(self, tokens: int | None) -> None:
-        """Record the raw size, first writer only.
+        """Record the raw size, first positive writer only.
 
         Both budget layers run this closure, and the innermost one runs first,
         so the first value is the only one that has seen the untrimmed output.
+
+        Non-positive values are refused rather than accepted, because the
+        failure modes of the two later reporters are ``0`` and ``None``, not an
+        exception. Letting a ``0`` win would pin the raw size at zero and report
+        a call that shed megabytes as having saved nothing -- silently, and only
+        on the responses big enough to fail serialization.
         """
-        if self.pre_budget_input_tokens is None and tokens is not None:
+        if self.pre_budget_input_tokens is None and tokens is not None and tokens > 0:
             self.pre_budget_input_tokens = tokens
 
 

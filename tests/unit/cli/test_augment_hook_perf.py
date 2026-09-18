@@ -198,10 +198,29 @@ def _read_payload_probe(repo: Path, rel: str) -> str:
     )
 
 
-def _indexed_repo(tmp_path: Path, *, opted_in: bool) -> tuple[Path, str]:
-    """A repo the Read hook will take all the way to the skeleton path."""
+def _indexed_repo(
+    tmp_path: Path, *, opted_in: bool, with_sidecar: bool = False
+) -> tuple[Path, str]:
+    """A repo the Read hook will take all the way to the skeleton path.
+
+    *with_sidecar* decides whether the savings ledger exists. It matters more
+    than it looks: ``record_saving`` returns early when the sidecar is absent,
+    so without one this guard never reaches the ledger write at all and passes
+    without covering it. That is how a structlog import on the write path could
+    hide behind a green guard.
+    """
     repo = tmp_path / "repo"
     (repo / ".repowise").mkdir(parents=True)
+    if with_sidecar:
+        sidecar = repo / ".repowise" / "omissions"
+        sidecar.mkdir(parents=True, exist_ok=True)
+        ledger = sqlite3.connect(sidecar / "omissions.db")
+        try:
+            from repowise.core.savings.schema import initialize_savings_schema
+
+            initialize_savings_schema(ledger)
+        finally:
+            ledger.close()
     rel = "big.py"
     lines = []
     for i in range(60):
@@ -307,12 +326,9 @@ def _indexed_search_repo(tmp_path: Path) -> Path:
         "CREATE TABLE wiki_symbols (repository_id TEXT, file_path TEXT, name TEXT, "
         "kind TEXT, start_line INTEGER)"
     )
+    con.execute("INSERT INTO wiki_symbols VALUES ('r1', 'src/b.py', 'parse_yaml', 'function', 42)")
     con.execute(
-        "INSERT INTO wiki_symbols VALUES ('r1', 'src/b.py', 'parse_yaml', 'function', 42)"
-    )
-    con.execute(
-        "CREATE TABLE graph_nodes (repository_id TEXT, node_id TEXT, node_type TEXT, "
-        "pagerank REAL)"
+        "CREATE TABLE graph_nodes (repository_id TEXT, node_id TEXT, node_type TEXT, pagerank REAL)"
     )
     for node_id, pagerank in (("src/a.py", 0.9), ("src/b.py", 0.1)):
         con.execute("INSERT INTO graph_nodes VALUES ('r1', ?, 'file', ?)", (node_id, pagerank))
@@ -330,9 +346,7 @@ def test_a_triage_that_queries_the_index_imports_nothing_heavy(tmp_path: Path) -
     silent-invocation test above it can only pass by actually emitting.
     """
     repo = _indexed_search_repo(tmp_path)
-    content = "\n".join(
-        f"src/{'a' if i % 2 else 'b'}.py:{i}:parse_yaml(x)" for i in range(1, 21)
-    )
+    content = "\n".join(f"src/{'a' if i % 2 else 'b'}.py:{i}:parse_yaml(x)" for i in range(1, 21))
     payload = {
         "hook_event_name": "PostToolUse",
         "tool_name": "Grep",
@@ -492,9 +506,7 @@ def _modules_added_by(statement: str) -> set[str]:
         f"{statement} "
         "print('\\n'.join(sorted(set(sys.modules) - before)))"
     )
-    out = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=True
-    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     return set(out.stdout.split())
 
 
@@ -543,3 +555,51 @@ def test_a_silent_invocation_imports_nothing_heavy(tmp_path: Path) -> None:
         env=_fake_home(tmp_path),
     )
     assert out.stdout.strip() == "", f"a silent hook invocation pulled in:\n{out.stdout}"
+
+
+def test_the_ledger_write_does_not_import_the_store(tmp_path: Path) -> None:
+    """The savings write must not drag in ``distill.store``, i.e. structlog.
+
+    The canonical recorder normally reaches the ledger through
+    ``OmissionStore``, which imports structlog at roughly 216ms. The hook
+    cannot afford that, so it writes on the raw connection it already opened
+    and reads the sidecar path from a spelled-out constant. Both halves are
+    easy to undo by "simplifying" the recorder, and every other guard in this
+    file stops before the write -- a repo with no sidecar returns early -- so
+    this is the only thing covering it.
+
+    Asserted in a clean interpreter against a real sidecar, so it exercises the
+    write rather than the early return.
+    """
+    sidecar = tmp_path / ".repowise" / "omissions"
+    sidecar.mkdir(parents=True)
+    db = sidecar / "omissions.db"
+    con = sqlite3.connect(db)
+    try:
+        from repowise.core.savings.schema import initialize_savings_schema
+
+        initialize_savings_schema(con)
+    finally:
+        con.close()
+
+    code = (
+        "import sys, json; from pathlib import Path;"
+        "from repowise.cli.commands.augment_cmd import _shared;"
+        f"_shared.record_saving(Path({str(tmp_path)!r}),"
+        " source='hook-read', filter_name='read_skeleton', command='big.py',"
+        " raw_tokens=4000, distilled_tokens=400, hook_adapter='claude-code');"
+        f"heavy = sorted(m for m in sys.modules if m.startswith({_HEAVY_PREFIXES!r}));"
+        "print(json.dumps(heavy))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=_fake_home(tmp_path)
+    )
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == [], f"the ledger write pulled in: {out.stdout}"
+
+    # Guard the guard: a write that silently did nothing would also import nothing.
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 1
+    finally:
+        con.close()

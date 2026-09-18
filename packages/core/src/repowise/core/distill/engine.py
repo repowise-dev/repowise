@@ -84,9 +84,17 @@ def _record_event(
     distillation.
 
     The repository is derived from the store's own path, which is the only
-    honest source: ``distill_output`` is reached from callers that do not all
-    know a repository root, and an event attributed to the wrong one is worse
-    than one attributed to none.
+    source available here: ``distill_output`` is reached from callers that do
+    not all know a repository root.
+
+    That derivation is only valid for a repo-local sidecar.
+    ``OmissionStore.open_default`` falls back to ``~/.repowise`` when there is
+    no repository, and the same arithmetic would then call the user's home
+    directory a repository -- merging every uninitialized directory on the
+    machine into one ledger keyed on ``/home/<user>``, which is precisely what
+    the recorder exists to prevent. So a store that is not
+    ``<root>/.repowise/omissions/omissions.db`` records nothing. An event
+    attributed to the wrong repository is worse than one not recorded.
 
     Attribution stays ``unknown``. The source distinguishes the CLI from the
     rewrite hook's shell, which is not the same thing as knowing which agent ran
@@ -98,6 +106,8 @@ def _record_event(
 
     try:
         repo_root = store.db_path.parents[2]
+        if store.db_path != recorder.sidecar_path(repo_root) or repo_root == Path.home():
+            return
         event_id = new_event_id()
         recorder.record_event_in(
             store,

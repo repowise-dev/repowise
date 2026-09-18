@@ -116,3 +116,32 @@ def test_two_distillations_of_identical_output_stay_independent(store: OmissionS
     report = store.savings().report(str(store.db_path.parents[2]), as_of=datetime.now(UTC))
     assert report.unique_events == 2
     assert report.saving_interactions == 2
+
+
+def test_the_event_is_attributed_to_the_repository_not_to_a_derivation(
+    tmp_path: Path, store: OmissionStore
+) -> None:
+    """Spelled out rather than recomputed from the expression under test."""
+    distill_output(PYTEST_OUTPUT, command="pytest", source="cli", store=store)
+    assert _events(store)[0]["repository_id"] == str(tmp_path)
+
+
+def test_a_home_directory_store_is_refused(tmp_path: Path, monkeypatch) -> None:
+    """``open_default`` falls back to ``~/.repowise`` when there is no repo.
+
+    The same path arithmetic would then call the home directory a repository and
+    merge every uninitialized directory on the machine into one ledger. The
+    legacy row still lands there, as it always has; the canonical event does not.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    opened = OmissionStore(home / ".repowise" / "omissions" / "omissions.db")
+    try:
+        result = distill_output(PYTEST_OUTPUT, command="pytest", source="cli", store=opened)
+        assert result.distilled, "the distillation itself must still work"
+        assert _events(opened) == []
+        assert opened.savings_summary()["saved_tokens"] > 0
+    finally:
+        opened.close()

@@ -207,12 +207,18 @@ def _observe_baseline(tool: str, result: Any) -> None:
     interaction, and the canonical event is written outside every layer, once
     the delivered size is final.
 
-    The legacy ``savings`` row is still written, unchanged, including its
-    pre-final delivered size. That is deliberate for the transition: the costs
-    endpoint, the overview headline and ``repowise saved`` all still read that
-    table, and they move to the canonical report as their own change. Writing
-    both means this one neither regresses a published figure nor pretends the
-    old row got better.
+    The legacy ``savings`` row is still written, and still measured here rather
+    than at the end, because the costs endpoint, the overview headline and
+    ``repowise saved`` all still read that table and move to the canonical
+    report as their own change.
+
+    One thing about it did change: delivered size now comes from
+    :func:`response_tokens`, which reads the budgeter's compact serialization,
+    where this used to serialize with default separators. Compact JSON is
+    smaller, so the legacy row's ``distilled_tokens`` drops and its saving
+    rises. That is a one-time step up in the published MCP figure. It is the
+    right number -- the old one disagreed with the telemetry's size for the
+    same call -- but it is a change, not a no-op.
     """
     declared = _declared_tokens(result)
     replaced = (

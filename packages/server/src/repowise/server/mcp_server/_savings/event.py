@@ -40,11 +40,20 @@ def _outcome(result: Any) -> tuple[str, bool]:
     is how a session that net-spent could still report a credit.
 
     ``partial`` means content was omitted but is recoverable, so what arrived is
-    usable. ``dead_end`` is not produced here: a call that succeeds while
-    answering nothing needs a per-tool notion of "answered", and inventing one
-    from the response shape would be guessing. A tool that knows it dead-ended
-    can say so; until one does, such a call is a success that saved zero, which
-    is what the contract says a zero-delta success is.
+    usable. Both ways of being partial count: a tool that declared itself
+    partial at the trust layer, and a response the budgeter shed content from,
+    which sets ``state.truncated`` later and is the far more common case.
+    Reporting a truncated response as a plain success would credit the bytes
+    repowise discarded to a call the agent received incomplete, with nothing in
+    the row saying so. The saving is unchanged either way -- the contract gives
+    a usable partial the same formula -- so this is about what the row admits,
+    not about the number.
+
+    ``dead_end`` is not produced here: a call that succeeds while answering
+    nothing needs a per-tool notion of "answered", and inventing one from the
+    response shape would be guessing. A tool that knows it dead-ended can say
+    so; until one does, such a call is a success that saved zero, which is what
+    the contract says a zero-delta success is.
     """
     if not isinstance(result, dict):
         return "success", True
@@ -52,7 +61,7 @@ def _outcome(result: Any) -> tuple[str, bool]:
         return "error", False
     meta = result.get("_meta")
     state = meta.get("state") if isinstance(meta, dict) else None
-    if isinstance(state, dict) and state.get("partial"):
+    if isinstance(state, dict) and (state.get("partial") or state.get("truncated")):
         return "partial", True
     return "success", True
 
