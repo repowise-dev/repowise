@@ -135,6 +135,7 @@ are named: CLAUDE.md says Claude Code calls them `mcp__repowise__<tool>`
 | `code_health` | off | Every health signal (replaces `health`) | 1 line |
 | `fix_first` | off | The Fix-first queue | Top 3 |
 | `decisions` | on | Accepted active `decision_records`, titles only, by `staleness_score` asc | Top 3 |
+| `vocabulary` | on | The terms a root `CONTEXT.md`, `GLOSSARY.md` or `docs/GLOSSARY.md` declares canonical, with the synonyms it rules out; renders nothing when no glossary is declared | Top 20 |
 | `how_to_work` | on | Static: task routing (exact names to Grep/Read; flow, callers, risk, why and finishing checks to one Repowise call each), distill, decision capture; a keyless bullet when the index has no model | 10-11 lines |
 | `how_to_work_full` | off | The long protocol (replaces `how_to_work`) | — |
 | `tools` | off | `tool_table.py`, the MCP tool table | All tools |
