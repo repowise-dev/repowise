@@ -15,14 +15,14 @@ import { CHART_HEIGHT, operationBreakdownHeight } from "@repowise-dev/ui/costs/c
 import {
   CostHeatmap,
   DailySpendChart,
-  DistillSavingsCard,
+  SavingsCard,
   ProviderComparison,
   OperationBreakdown,
   RoiCard,
   SavingsTrendChart,
 } from "@repowise-dev/ui/costs";
-import { listCosts, getCostSummary, getDistillSavings } from "@/lib/api/costs";
-import type { CostGroup, CostSummary, DistillSavings } from "@/lib/api/costs";
+import { listCosts, getCostSummary, getSavings } from "@/lib/api/costs";
+import type { CostGroup, CostSummary, Savings } from "@/lib/api/costs";
 import { formatCost, formatNumber, formatTokens } from "@repowise-dev/ui/lib/format";
 
 export default function CostsPage() {
@@ -76,11 +76,9 @@ export default function CostsPage() {
     data: distillSavings,
     error: distillError,
     mutate: retryDistill,
-  } = useSWR<DistillSavings>(
-    `distill-savings:${id}`,
-    () => getDistillSavings(id),
-    { revalidateOnFocus: false },
-  );
+  } = useSWR<Savings>(`savings:${id}`, () => getSavings(id), {
+    revalidateOnFocus: false,
+  });
 
   // A discriminated union rather than a bare string, so the populated branch
   // carries the data it is populated with and TypeScript can see that.
@@ -112,7 +110,7 @@ export default function CostsPage() {
           </CardContent>
         </Card>
       ) : (
-        <DistillSavingsCard data={distillSavings} />
+        <SavingsCard data={distillSavings} />
       )}
 
       {/* ROI and the savings trend are gated on `available`, which is a
@@ -140,9 +138,9 @@ export default function CostsPage() {
         <>
           {summary ? (
             <RoiCard
-              savedUsd={savings.data.estimated_usd_saved}
+              savedUsd={savings.data.priced_input_savings_usd}
               spentUsd={summary.total_cost_usd}
-              savedTokens={savings.data.saved_tokens + savings.data.mcp_tokens}
+              savedTokens={savings.data.saved_input_tokens}
             />
           ) : null}
           {(savings.data.per_day?.length ?? 0) > 0 ? (

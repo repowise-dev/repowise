@@ -20,46 +20,77 @@ export interface CostSummary {
   since: string | null;
 }
 
-export interface DistillSavingsGroup {
-  group: string;
+/** One bucket of a savings breakdown. `group` is null for the bucket with no
+ *  name — savings whose events carry no pricing model, which is a real
+ *  quantity rather than a row to drop. */
+export interface SavingsBreakdownRow {
+  group: string | null;
   events: number;
-  raw_tokens: number;
-  distilled_tokens: number;
-  saved_tokens: number;
+  saved_input_tokens: number;
 }
 
-export interface McpDropGroup {
-  tool: string;
+/** One agent's savings. The display name comes from the server's identity
+ *  registry, so no client keeps a label map of its own. */
+export interface SavingsAgentRow {
+  agent: string;
+  agent_display_name: string | null;
   events: number;
-  tokens: number;
-  /** "counterfactual" (answer replaced raw exploration) or "truncation" (budget drop). */
-  kind?: string;
+  saved_input_tokens: number;
 }
 
-export interface DistillSavings {
+/** One kind of observed opportunity. Never part of achieved savings. */
+export interface SavingsOpportunityRow {
+  kind: string;
+  observations: number;
+  estimated_potential_input_tokens: number;
+}
+
+/**
+ * What agents avoided in one repository, from the canonical savings ledger.
+ *
+ * Three distinctions the UI preserves rather than flattens: measured vs
+ * inferred evidence, priced vs unpriced tokens, and achieved savings vs
+ * observed opportunities. `available: false` means nothing has been measured
+ * in this repository, which is not the same as a measured zero.
+ */
+export interface Savings {
   available: boolean;
-  events: number;
-  raw_tokens: number;
-  distilled_tokens: number;
-  saved_tokens: number;
-  estimated_usd_saved: number;
-  pricing_model: string;
-  /** How the pricing model was resolved (Phase 1 model-aware pricing). */
-  pricing_agent: string;
-  pricing_source: string;
-  per_filter: DistillSavingsGroup[];
-  per_day: DistillSavingsGroup[];
-  /** Unified MCP savings — counterfactual ledger + truncation drops. */
-  mcp_events: number;
-  mcp_tokens: number;
-  /** Count of counterfactual MCP queries answered ("N MCP queries answered"). */
-  mcp_queries: number;
-  mcp_per_tool: McpDropGroup[];
-  /** Raw (non-distilled) agent commands a filter would have caught. */
+  /** Window the figures cover; null means all time. */
+  window_days: number | null;
+  as_of: string;
+  first_event_at: string | null;
+  last_event_at: string | null;
+
+  unique_events: number;
+  successful_or_usable_partial_events: number;
+  saving_interactions: number;
+  mcp_queries_answered: number;
+  dead_ends: number;
+
+  saved_input_tokens: number;
+  measured_saved_input_tokens: number;
+  inferred_saved_input_tokens: number;
+  priced_saved_input_tokens: number;
+  unpriced_saved_input_tokens: number;
+  priced_input_savings_usd: number;
+  saved_output_tokens: number | null;
+  priced_saved_output_tokens: number;
+  unpriced_saved_output_tokens: number;
+  priced_output_savings_usd: number;
+
+  per_operation: SavingsBreakdownRow[];
+  per_surface: SavingsBreakdownRow[];
+  per_agent: SavingsAgentRow[];
+  per_model: SavingsBreakdownRow[];
+  per_day: SavingsBreakdownRow[];
+
+  opportunity_count: number;
+  opportunity_tokens_excluded: number;
+  per_opportunity_kind: SavingsOpportunityRow[];
+  /** Transcript-mined opportunities: what was *not* saved. */
   missed_events: number;
   missed_tokens_est: number;
   missed_window_days: number;
-  /** Full re-reads of unchanged files a targeted get_symbol would have replaced. */
   reread_events: number;
   reread_tokens_est: number;
 }
@@ -87,11 +118,11 @@ export async function getCostSummary(
   });
 }
 
-export async function getDistillSavings(
+export async function getSavings(
   repoId: string,
-  since?: string,
-): Promise<DistillSavings> {
-  return apiGet<DistillSavings>(`/api/repos/${repoId}/distill-savings`, {
-    since,
+  opts: { days?: number } = {},
+): Promise<Savings> {
+  return apiGet<Savings>(`/api/repos/${repoId}/savings`, {
+    days: opts.days,
   });
 }

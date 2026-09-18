@@ -132,13 +132,27 @@ export interface OverviewDecisionSlim {
   staleness_score: number;
 }
 
+/**
+ * The savings headline on the overview payload.
+ *
+ * A strict subset of the full savings report, from the same core report
+ * service, so the overview and the Costs page cannot disagree. The
+ * measured/inferred and priced/unpriced splits travel with the total because a
+ * lone headline reads as one confident number and the evidence is not uniform.
+ *
+ * `available: false` means nothing has been measured in this repository, which
+ * is not the same as a measured zero.
+ */
 export interface OverviewSavings {
   available: boolean;
-  saved_tokens?: number;
-  mcp_tokens?: number;
-  total_saved_tokens?: number;
+  saved_input_tokens?: number;
+  measured_saved_input_tokens?: number;
+  inferred_saved_input_tokens?: number;
+  priced_saved_input_tokens?: number;
+  unpriced_saved_input_tokens?: number;
   estimated_usd_saved?: number;
-  pricing_model?: string;
+  mcp_queries_answered?: number;
+  last_event_at?: string | null;
 }
 
 export interface OverviewSyncStatus {

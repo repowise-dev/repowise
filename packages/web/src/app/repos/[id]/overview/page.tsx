@@ -216,17 +216,24 @@ export default async function OverviewPage({ params }: Props) {
   // same component without it — no flag, no empty state pitching a CLI the
   // viewer is not running.
   const savings = summary.savings;
-  const savedTokens = (savings.saved_tokens ?? 0) + (savings.mcp_tokens ?? 0);
+  const savedTokens = savings.saved_input_tokens ?? 0;
   if (savings.available && savedTokens > 0) {
+    // "Estimated" while any of the total rests on a counterfactual rather than
+    // a measured before and after. The two are different claims, and the row
+    // is too small to show the split, so it qualifies the label instead.
+    const inferred = savings.inferred_saved_input_tokens ?? 0;
     reads.push({
       key: "savings",
-      label: "Agent savings",
+      label: inferred > 0 ? "Estimated agent savings" : "Agent savings",
       value: formatTokens(savedTokens),
       ...(savings.estimated_usd_saved
         ? { unit: formatCost(savings.estimated_usd_saved) }
         : {}),
       href: `${base}/costs`,
-      why: `Tokens your agent did not spend${savings.pricing_model ? `, priced at ${savings.pricing_model}` : ""}`,
+      why:
+        inferred > 0
+          ? "Input tokens your agent did not have to read, part of it estimated"
+          : "Input tokens your agent did not have to read",
     });
   }
 

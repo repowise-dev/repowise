@@ -984,48 +984,6 @@ export interface DirectRiskEntry {
   centrality: number;
 }
 
-export interface DistillSavingsGroup {
-  group: string;
-  events: number;
-  raw_tokens: number;
-  distilled_tokens: number;
-  saved_tokens: number;
-}
-
-/**
- * Savings rollup for the Costs page hero card.
- *
- * The ``distill`` block (``saved_tokens`` etc.) covers the ``repowise
- * distill`` command/hook path. The ``mcp`` block surfaces tokens already
- * dropped past MCP response budgets (the ``omissions`` store), which the
- * distill ledger never recorded. Savings are priced at the *coding agent's*
- * detected model (``pricing_model`` / ``pricing_agent`` / ``pricing_source``)
- * — they are input tokens that agent never had to read. ``available`` is
- * False when the repo has no omission store on disk (feature unused).
- */
-export interface DistillSavingsResponse {
-  available: boolean;
-  events?: number;
-  raw_tokens?: number;
-  distilled_tokens?: number;
-  saved_tokens?: number;
-  estimated_usd_saved?: number;
-  pricing_model?: string;
-  pricing_agent?: string;
-  pricing_source?: string;
-  per_filter?: DistillSavingsGroup[];
-  per_day?: DistillSavingsGroup[];
-  mcp_events?: number;
-  mcp_tokens?: number;
-  mcp_queries?: number;
-  mcp_per_tool?: McpDropGroup[];
-  missed_events?: number;
-  missed_tokens_est?: number;
-  missed_window_days?: number;
-  reread_events?: number;
-  reread_tokens_est?: number;
-}
-
 /**
  * A naming document that carries drift somewhere in it.
  *
@@ -1824,21 +1782,6 @@ export interface KnowledgeMapTarget {
   doc_words: number;
 }
 
-/**
- * Per-tool MCP savings (``tool`` with the ``mcp:`` prefix stripped).
- *
- * ``kind`` distinguishes a ``"counterfactual"`` saving (the answer replaced raw
- * file exploration — recorded in the savings ledger) from a ``"truncation"``
- * drop (content trimmed past the response budget — the only signal for tools
- * without a counterfactual estimator yet).
- */
-export interface McpDropGroup {
-  tool: string;
-  events: number;
-  tokens: number;
-  kind?: string;
-}
-
 /** One tool in the configurable surface, with the flags a UI needs. */
 export interface McpToolInfo {
   name: string;
@@ -2514,6 +2457,91 @@ export interface RiskScalarSemantics {
 export interface RiskScaleRange {
   minimum: number | null;
   maximum: number | null;
+}
+
+/** One agent's savings, labelled from the identity registry. */
+export interface SavingsAgentRow {
+  agent: string;
+  agent_display_name?: string | null;
+  events?: number;
+  saved_input_tokens?: number;
+}
+
+/**
+ * One bucket of a savings breakdown.
+ *
+ * ``group`` is nullable because one bucket genuinely has no name: an event
+ * written before its rate could be resolved has no model, and that is a real
+ * quantity -- how much saving carries no pricing evidence -- rather than a
+ * gap to drop from the list.
+ */
+export interface SavingsBreakdownRow {
+  group?: string | null;
+  events?: number;
+  saved_input_tokens?: number;
+}
+
+/** One kind of observed opportunity. Never part of achieved savings. */
+export interface SavingsOpportunityRow {
+  kind: string;
+  observations?: number;
+  estimated_potential_input_tokens?: number;
+}
+
+/**
+ * What agents avoided in one repository over one window.
+ *
+ * Every figure comes from the canonical savings ledger through the one core
+ * report service, so this response, the repository overview headline and
+ * ``repowise saved`` cannot disagree -- which the three of them did, in four
+ * separate ways, when each aggregated and priced the ledger for itself.
+ *
+ * Three things it deliberately keeps apart. *Measured* reductions are known
+ * before/after sizes from an operation that really ran; *inferred* avoidance
+ * is a documented counterfactual. *Priced* and *unpriced* tokens are split
+ * because an event records the rate it was worth at the time and some events
+ * carry none, and reporting a total as though it were all priced would be a
+ * guess. *Observed opportunities* are things that could have been saved and
+ * were not: they never enter the headline.
+ *
+ * ``available`` is False when the repository has no savings sidecar at all,
+ * which means "nothing has been measured here" and is different from a
+ * measured zero.
+ */
+export interface SavingsResponse {
+  available: boolean;
+  window_days?: number | null;
+  as_of?: string;
+  first_event_at?: string | null;
+  last_event_at?: string | null;
+  unique_events?: number;
+  successful_or_usable_partial_events?: number;
+  saving_interactions?: number;
+  mcp_queries_answered?: number;
+  dead_ends?: number;
+  saved_input_tokens?: number;
+  measured_saved_input_tokens?: number;
+  inferred_saved_input_tokens?: number;
+  priced_saved_input_tokens?: number;
+  unpriced_saved_input_tokens?: number;
+  priced_input_savings_usd?: number;
+  saved_output_tokens?: number | null;
+  priced_saved_output_tokens?: number;
+  unpriced_saved_output_tokens?: number;
+  priced_output_savings_usd?: number;
+  per_operation?: SavingsBreakdownRow[];
+  per_surface?: SavingsBreakdownRow[];
+  per_agent?: SavingsAgentRow[];
+  per_model?: SavingsBreakdownRow[];
+  per_day?: SavingsBreakdownRow[];
+  opportunity_count?: number;
+  opportunity_tokens_excluded?: number;
+  per_opportunity_kind?: SavingsOpportunityRow[];
+  missed_events?: number;
+  missed_tokens_est?: number;
+  missed_window_days?: number;
+  reread_events?: number;
+  reread_tokens_est?: number;
 }
 
 export interface SearchResultResponse {
