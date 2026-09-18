@@ -55,6 +55,8 @@ import os
 import sys
 from pathlib import Path
 
+from repowise.core.agents import identity
+
 from ..formats.server_entry import RemoteServerEntryError
 from ..types import (
     Capability,
@@ -68,8 +70,9 @@ from ..types import (
     WriteResult,
 )
 
-ID = "hermes"
-DISPLAY_NAME = "Hermes"
+IDENTITY = identity.HERMES
+ID = IDENTITY.cli_target_id
+DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp"
 
 #: Config key gating this agent's managed instruction file. Deliberately the
@@ -801,8 +804,8 @@ class HermesTarget:
     id = ID
     display_name = DISPLAY_NAME
     docs_url = DOCS_URL
-    hook_adapter = None
-    session_adapter = None
+    hook_adapter = IDENTITY.hook_adapter
+    session_adapter = IDENTITY.session_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 

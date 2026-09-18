@@ -29,6 +29,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from repowise.core.agents import identity
+
 from ..types import (
     Capability,
     DoctorReport,
@@ -41,8 +43,9 @@ from ..types import (
     WriteResult,
 )
 
-ID = "claude-code"
-DISPLAY_NAME = "Claude Code"
+IDENTITY = identity.CLAUDE_CODE
+ID = IDENTITY.cli_target_id
+DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://docs.claude.com/en/docs/claude-code"
 
 #: Name the plugin registers itself under in the host's plugin manifest.
@@ -341,8 +344,8 @@ class ClaudeCodeTarget:
     id = ID
     display_name = DISPLAY_NAME
     docs_url = DOCS_URL
-    hook_adapter = "claude-code"
-    session_adapter = "claude_code"
+    hook_adapter = IDENTITY.hook_adapter
+    session_adapter = IDENTITY.session_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 

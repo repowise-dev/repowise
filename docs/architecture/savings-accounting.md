@@ -99,10 +99,20 @@ counterfactual estimation, dead-end handling, and the final writer.
 FastMCP exposes a request ID across stdio, SSE, and streamable HTTP. On normal
 stateful sessions it also exposes initialize-time `clientInfo`, which is
 client-declared rather than authenticated. Mapping version `mcp_client_info_v1`
-lowercases the name and removes non-alphanumerics, then accepts only:
-`claude`/`claudecode` -> `claude_code`, `codex` -> `codex`, `opencode` ->
-`opencode`, `hermes` -> `hermes`, `cursor` -> `cursor`, and `vscode` ->
-`vscode`. Every other value, including a generic MCP client, maps to `unknown`.
+lowercases the name and removes non-alphanumerics, then looks the result up in
+the agent registry (`repowise.core.agents.identity`), where every agent answers
+to its own slug and its own display name, plus any extra name its host is known
+to announce. Every other value, including a generic MCP client, maps to
+`unknown`.
+
+Resolution is the only step that produces `unknown`. Savings does not enumerate
+agents anywhere else: a stored agent id is validated syntactically against
+`^[a-z0-9_]{1,32}$` by the writer, by the reader, and by the sidecar's own
+`CHECK` constraints alike. So an agent is a valid attribution the day its
+descriptor lands, with no edit under `core/savings/`, and an event written by an
+agent since retired still reads back as that agent instead of being coerced to
+`unknown`.
+
 Never infer agent or
 model from headers, capabilities, environment variables, executable parents, or
 transport. Session/request/tool-call IDs and model remain null until an adapter

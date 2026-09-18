@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 
-SAVINGS_SCHEMA_VERSION = 1
+#: Version of the *store*, recorded in ``PRAGMA user_version``. Distinct from
+#: the per-event ``schema_version`` column, which versions an event payload and
+#: is still 1: v2 changed only how the store validates an agent id.
+SAVINGS_SCHEMA_VERSION = 2
 
 _PRESERVED_TABLES = (
     """
@@ -41,7 +44,7 @@ CREATE TABLE savings (
 )
 """
 
-_V1_TABLES = (
+_SCHEMA_TABLES = (
     """
     CREATE TABLE savings_events (
         event_id TEXT PRIMARY KEY,
@@ -81,6 +84,12 @@ _V1_TABLES = (
         UNIQUE(repository_id, idempotency_key),
         CHECK(schema_version = 1),
         CHECK(surface IN ('distill','hook','mcp','vscode_lm')),
+        -- Agent ids are checked syntactically, never against a list. A list
+        -- here would be a copy of the agent registry that only the database
+        -- can see, and it would reject a newly added agent's events outright.
+        CHECK(length(integration) BETWEEN 1 AND 32
+            AND integration NOT GLOB '*[^a-z0-9_]*'),
+        CHECK(length(agent) BETWEEN 1 AND 32 AND agent NOT GLOB '*[^a-z0-9_]*'),
         CHECK(evidence_kind IN ('measured','inferred')),
         CHECK(result_state IN ('success','dead_end','error','partial','unknown')),
         CHECK(is_usable IN (0,1)),
@@ -123,14 +132,14 @@ _V1_TABLES = (
         integration TEXT NOT NULL,
         kind TEXT NOT NULL,
         estimated_potential_input_tokens INTEGER NOT NULL,
-        CHECK(integration IN
-            ('claude_code','codex','opencode','hermes','cursor','vscode','unknown')),
+        CHECK(length(integration) BETWEEN 1 AND 32
+            AND integration NOT GLOB '*[^a-z0-9_]*'),
         CHECK(estimated_potential_input_tokens >= 0)
     )
     """,
 )
 
-_V1_INDEXES = (
+_SCHEMA_INDEXES = (
     "CREATE INDEX idx_savings_events_repo_time ON savings_events(repository_id, occurred_at)",
     "CREATE INDEX idx_savings_events_surface_time ON savings_events(surface, occurred_at)",
     "CREATE INDEX idx_savings_events_operation_time ON savings_events(operation, occurred_at)",
@@ -141,7 +150,7 @@ _V1_INDEXES = (
     "CREATE INDEX idx_savings_created ON savings(created_at)",
 )
 
-_V1_REQUIRED_TABLES = frozenset(
+_REQUIRED_TABLES = frozenset(
     {
         "omissions",
         "evidence_references",
@@ -154,12 +163,12 @@ _V1_REQUIRED_TABLES = frozenset(
 )
 
 
-def _has_v1_schema(conn: sqlite3.Connection) -> bool:
+def _has_current_schema(conn: sqlite3.Connection) -> bool:
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    return tables >= _V1_REQUIRED_TABLES
+    return tables >= _REQUIRED_TABLES
 
 
-def _apply_v1(conn: sqlite3.Connection) -> None:
+def _apply_schema(conn: sqlite3.Connection) -> None:
     """Reset obsolete telemetry and install v1; caller owns the transaction."""
     for statement in _PRESERVED_TABLES:
         conn.execute(statement)
@@ -172,9 +181,9 @@ def _apply_v1(conn: sqlite3.Connection) -> None:
     ):
         conn.execute(f"DROP TABLE IF EXISTS {table}")
     conn.execute(_LEGACY_SAVINGS_TABLE)
-    for statement in _V1_TABLES:
+    for statement in _SCHEMA_TABLES:
         conn.execute(statement)
-    for statement in _V1_INDEXES:
+    for statement in _SCHEMA_INDEXES:
         conn.execute(statement)
 
 
@@ -187,7 +196,7 @@ def initialize_savings_schema(conn: sqlite3.Connection) -> None:
             f"savings sidecar schema {version} is newer than supported "
             f"version {SAVINGS_SCHEMA_VERSION}"
         )
-    if version == SAVINGS_SCHEMA_VERSION and _has_v1_schema(conn):
+    if version == SAVINGS_SCHEMA_VERSION and _has_current_schema(conn):
         return
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -197,8 +206,8 @@ def initialize_savings_schema(conn: sqlite3.Connection) -> None:
                 f"savings sidecar schema {version} is newer than supported "
                 f"version {SAVINGS_SCHEMA_VERSION}"
             )
-        if version < SAVINGS_SCHEMA_VERSION or not _has_v1_schema(conn):
-            _apply_v1(conn)
+        if version < SAVINGS_SCHEMA_VERSION or not _has_current_schema(conn):
+            _apply_schema(conn)
             conn.execute(f"PRAGMA user_version={SAVINGS_SCHEMA_VERSION}")
         conn.commit()
     except BaseException:

@@ -82,7 +82,10 @@ def _seed_legacy(db_path: Path) -> None:
 def test_clean_install_has_versioned_event_link_and_query_indexes(tmp_path: Path) -> None:
     store = OmissionStore(tmp_path / "omissions.db")
     try:
-        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert (
+            store._conn.execute("PRAGMA user_version").fetchone()[0]
+            == schema.SAVINGS_SCHEMA_VERSION
+        )
         tables = {
             row[0]
             for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -131,7 +134,7 @@ def test_claimed_current_but_incomplete_sidecar_is_repaired(tmp_path: Path) -> N
     db_path = tmp_path / "omissions.db"
     _seed_legacy(db_path)
     with sqlite3.connect(db_path) as conn:
-        conn.execute("PRAGMA user_version=1")
+        conn.execute(f"PRAGMA user_version={schema.SAVINGS_SCHEMA_VERSION}")
     with OmissionStore(db_path) as store:
         assert store._conn.execute("SELECT COUNT(*) FROM savings").fetchone()[0] == 0
         assert store._conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 0
@@ -143,13 +146,13 @@ def test_failed_upgrade_rolls_back_tables_rows_and_version(tmp_path: Path, monke
     _seed_legacy(db_path)
     conn = sqlite3.connect(db_path, isolation_level=None)
     apply_sqlite_pragmas(conn, 5000)
-    original = schema._apply_v1
+    original = schema._apply_schema
 
     def fail_after_changes(connection: sqlite3.Connection) -> None:
         original(connection)
         raise RuntimeError("simulated upgrade failure")
 
-    monkeypatch.setattr(schema, "_apply_v1", fail_after_changes)
+    monkeypatch.setattr(schema, "_apply_schema", fail_after_changes)
     with pytest.raises(RuntimeError, match="simulated upgrade failure"):
         schema.initialize_savings_schema(conn)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
@@ -174,7 +177,8 @@ def test_two_concurrent_openers_upgrade_once(tmp_path: Path) -> None:
             return store._conn.execute("PRAGMA user_version").fetchone()[0]
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        assert list(executor.map(open_and_read_version, range(2))) == [1, 1]
+        expected = schema.SAVINGS_SCHEMA_VERSION
+        assert list(executor.map(open_and_read_version, range(2))) == [expected, expected]
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 0
 

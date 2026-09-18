@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from repowise.core.agents.identity import UNKNOWN_AGENT, is_agent_slug
 from repowise.core.savings.correlation import hash_correlation_evidence, new_event_id
 from repowise.core.savings.formulas import TokenAccounting, calculate_token_accounting
 from repowise.core.savings.normalization import normalize_metadata
@@ -19,10 +20,28 @@ SCHEMA_VERSION = 1
 SURFACES = frozenset({"distill", "hook", "mcp", "vscode_lm"})
 EVIDENCE_KINDS = frozenset({"measured", "inferred"})
 RESULT_STATES = frozenset({"success", "dead_end", "error", "partial", "unknown"})
-IDENTITIES = frozenset(
-    {"claude_code", "codex", "opencode", "hermes", "cursor", "vscode", "unknown"}
-)
 _HASH_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+def _agent_slug(value: object | None, name: str) -> str:
+    """Validate a stored agent id syntactically, never by membership.
+
+    Deliberately not a closed set. A closed set here would be a second copy of
+    the agent registry: it would go stale the day a seventh agent landed and
+    bucket that agent's traffic as unattributed forever, and an event written by
+    an agent since retired would stop reading back at all. Whether an announced
+    name is *recognised* is a question for
+    :mod:`repowise.core.agents.identity`, asked once when a client announces
+    itself — not again on every read of a value we ourselves wrote.
+
+    Applied identically on the way in and on the way out, which is the point:
+    the two used to disagree, raising on an unrecognised id while the report
+    silently coerced one to ``unknown``.
+    """
+    slug = str(value if value is not None else UNKNOWN_AGENT)
+    if not is_agent_slug(slug):
+        raise ValueError(f"{name} must be a bounded lowercase agent slug: {slug!r}")
+    return slug
 
 
 def utc_text(value: str | datetime) -> str:
@@ -87,16 +106,14 @@ def _semantics(value: Mapping[str, Any]) -> _Semantics:
     surface = str(value["surface"])
     evidence_kind = str(value["evidence_kind"])
     result_state = str(value["result_state"])
-    integration = str(value.get("integration", "unknown"))
-    agent = str(value.get("agent", "unknown"))
+    integration = _agent_slug(value.get("integration"), "integration")
+    agent = _agent_slug(value.get("agent"), "agent")
     if surface not in SURFACES:
         raise ValueError(f"unsupported surface: {surface}")
     if evidence_kind not in EVIDENCE_KINDS:
         raise ValueError(f"unsupported evidence kind: {evidence_kind}")
     if result_state not in RESULT_STATES:
         raise ValueError(f"unsupported result state: {result_state}")
-    if integration not in IDENTITIES or agent not in IDENTITIES:
-        raise ValueError("integration and agent must use the v1 identity vocabulary")
     is_usable = value.get("is_usable")
     if not isinstance(is_usable, bool):
         raise ValueError("is_usable must be explicit")
@@ -277,9 +294,7 @@ class OpportunityObservation:
     def from_mapping(
         cls, value: Mapping[str, Any], *, repository_id: str | None = None
     ) -> OpportunityObservation:
-        integration = str(value.get("integration", "unknown"))
-        if integration not in IDENTITIES:
-            integration = "unknown"
+        integration = _agent_slug(value.get("integration"), "integration")
         tokens = value.get("estimated_potential_input_tokens", 0)
         if isinstance(tokens, bool) or not isinstance(tokens, int):
             raise TypeError("estimated opportunity tokens must be an integer")
