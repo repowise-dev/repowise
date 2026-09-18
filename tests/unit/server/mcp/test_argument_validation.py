@@ -219,3 +219,24 @@ class TestSearchKind:
         result = await search_codebase("AuthService", kind="tests")
 
         assert _entry(result, "kind")["values"] == ["tests"]
+
+
+class TestSearchMode:
+    @pytest.mark.asyncio
+    async def test_unknown_mode_is_named_and_falls_back_to_auto(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication service", mode="symbl")
+
+        entry = _entry(result, "mode")
+        assert entry["values"] == ["symbl"]
+        assert entry["valid"] == ["auto", "concept", "hybrid", "path", "symbol"]
+
+    @pytest.mark.asyncio
+    async def test_known_mode_adds_nothing(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication service", mode="concept")
+
+        assert "ignored_arguments" not in result
+
