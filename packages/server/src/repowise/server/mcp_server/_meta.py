@@ -599,20 +599,6 @@ def _release_meta() -> dict[str, Any]:
     }
 
 
-def context_hint(targets: list[str], compact: bool, include: set[str] | None = None) -> str | None:
-    """Hint for `get_context` callers.
-
-    Conservative: only fires when the call shape suggests the agent could
-    have used a cheaper tool, AND the suggestion is unambiguously safe.
-    """
-    if not targets:
-        return None
-    # If caller requested source and got a large symbol, nudge toward Read with offset
-    if include and "source" in include and len(targets) == 1:
-        return None  # source mode provides its own truncation info
-    return None
-
-
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
     """Hint for source retrieval (kept for backward compat with tool_symbol.py)."""
     return None
