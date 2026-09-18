@@ -1362,3 +1362,221 @@ class TestWorktreeAutoSeed:
             assert (worktree_dir / ".repowise" / "state.json").exists()
         finally:
             _remove_worktree(git_work_repo, worktree_dir)
+
+
+_TEST_PROVIDER_ENV_VARS = (
+    "REPOWISE_PROVIDER",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "KIMI_API_KEY",
+    "EDENAI_API_KEY",
+    "LITELLM_API_KEY",
+    "OLLAMA_BASE_URL",
+)
+
+
+def _no_model_configured(monkeypatch) -> None:
+    """Strip every provider key so a run resolves to no provider at all."""
+    for var in _TEST_PROVIDER_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+class TestWorktreeInitForce:
+    """``init --force`` inside a seedable worktree (#1482).
+
+    ``--force`` is documented as "Regenerate all pages, ignoring existing" and
+    is the free re-index escape hatch. The worktree seed path forwarded it to
+    the delegated ``run_update`` as ``full=``, and ``full`` is ``update --full``:
+    the fast -> full upgrade that resolves a provider and regenerates the whole
+    wiki with a model. So ``init --force`` in a worktree died with "No provider
+    configured" when no key was set, and silently billed a whole-repo model
+    regeneration when one was. The fix drops the seed for a ``--force`` run, so
+    the ordinary init path re-indexes in the mode the user invoked.
+    """
+
+    @staticmethod
+    def _spy_on_upgrade(monkeypatch) -> list:
+        """Record any ``upgrade_to_full`` call; the paid path must never run."""
+        import repowise.cli.commands.upgrade_flow as upgrade_flow
+
+        calls: list = []
+        monkeypatch.setattr(
+            upgrade_flow, "upgrade_to_full", lambda *a, **k: calls.append((a, k))
+        )
+        return calls
+
+    def test_init_force_without_provider_reindexes_instead_of_dying(
+        self, git_work_repo, monkeypatch
+    ):
+        """No key configured: ``init --force`` must still produce a wiki.
+
+        Pre-fix this exited non-zero with "No provider configured", because the
+        seed path routed the run into ``upgrade_to_full`` -> ``resolve_provider``.
+        """
+        import json
+
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        _no_model_configured(monkeypatch)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        upgrade_calls = self._spy_on_upgrade(monkeypatch)
+
+        worktree_dir = git_work_repo.parent / "force-no-provider"
+        _git(["worktree", "add", "-b", "force-no-provider", str(worktree_dir)], git_work_repo)
+        try:
+            r1 = CliRunner().invoke(
+                cli, ["init", str(worktree_dir), "--force"], catch_exceptions=False
+            )
+            assert r1.exit_code == 0, r1.output
+            flat = " ".join(r1.output.split())
+            assert "No provider configured" not in flat
+            assert upgrade_calls == [], "init --force must not enter the paid upgrade path"
+            # The seed is deliberately skipped: --force asks for the re-index
+            # seeding exists to avoid, so no delegation line and no seeded index.
+            assert "Delegating to update" not in flat
+            assert "--force re-indexes this checkout from scratch" in flat
+
+            state = json.loads(
+                (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
+            )
+            assert state["last_sync_commit"] == _rev_parse(worktree_dir, "HEAD")
+            # The worktree gets its own store, and the fresh init wrote a wiki.
+            assert (worktree_dir / ".repowise" / "wiki.db").exists()
+            assert _db_scalar(worktree_dir / ".repowise" / "wiki.db", "SELECT COUNT(*) FROM wiki_pages") > 0
+            repos = _db_column(
+                worktree_dir / ".repowise" / "wiki.db",
+                "SELECT local_path FROM repositories",
+            )
+            assert repos == [str(worktree_dir)], repos
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
+
+    def test_index_only_force_in_worktree_stays_free(self, git_work_repo, monkeypatch):
+        """``--index-only --force`` is a template re-index, not a model run.
+
+        The issue calls this out separately: the flag was swallowed the same way,
+        so a run sold as free could reach ``resolve_provider``.
+        """
+        import json
+
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        _no_model_configured(monkeypatch)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        upgrade_calls = self._spy_on_upgrade(monkeypatch)
+
+        worktree_dir = git_work_repo.parent / "force-index-only"
+        _git(["worktree", "add", "-b", "force-index-only", str(worktree_dir)], git_work_repo)
+        try:
+            r1 = CliRunner().invoke(
+                cli,
+                ["init", str(worktree_dir), "--index-only", "--force"],
+                catch_exceptions=False,
+            )
+            assert r1.exit_code == 0, r1.output
+            flat = " ".join(r1.output.split())
+            assert upgrade_calls == []
+            assert "No provider configured" not in flat
+            assert "Building the wiki from structure" in flat
+            assert "no model, no spend" in flat
+
+            state = json.loads(
+                (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
+            )
+            assert state["docs_mode"] == "deterministic"
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
+
+    def test_force_with_provider_does_not_run_the_paid_upgrade(self, git_work_repo, monkeypatch):
+        """With a provider configured, ``init --force`` must not bill a full regen.
+
+        This is the other half of the bug: pre-fix the run printed the
+        ``repowise update --full`` upgrade banner and regenerated the whole wiki
+        through ``upgrade_to_full``.
+        """
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        upgrade_calls = self._spy_on_upgrade(monkeypatch)
+
+        worktree_dir = git_work_repo.parent / "force-with-provider"
+        _git(["worktree", "add", "-b", "force-with-provider", str(worktree_dir)], git_work_repo)
+        try:
+            r1 = CliRunner().invoke(
+                cli,
+                ["init", str(worktree_dir), "--force", "--provider", "mock"],
+                catch_exceptions=False,
+            )
+            assert r1.exit_code == 0, r1.output
+            flat = " ".join(r1.output.split())
+            assert upgrade_calls == [], "init --force delegated to the paid full upgrade"
+            # The paid upgrade prints its own banner and upgrades the git tier
+            # to FULL. Pre-fix both of these appeared on this exact command.
+            assert "repowise update --full" not in flat
+            assert "Git tier upgraded to FULL" not in flat
+            assert "--force re-indexes this checkout from scratch" in flat
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
+
+    def test_plain_init_still_seeds_and_never_asks_for_full(self, git_work_repo, monkeypatch):
+        """Control: without --force the seed delegate still runs, and as free catch-up.
+
+        The seed path must never hand ``run_update`` a ``full=True``, whatever
+        the flag combination: that mapping was the whole bug.
+        """
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        seen: list[dict] = []
+        import repowise.cli.commands.update_cmd.command as update_command
+
+        real_run_update = update_command.run_update
+
+        def _recording_run_update(**kwargs):
+            seen.append(kwargs)
+            return real_run_update(**kwargs)
+
+        monkeypatch.setattr(update_command, "run_update", _recording_run_update)
+
+        worktree_dir = git_work_repo.parent / "plain-init-seed"
+        _git(["worktree", "add", "-b", "plain-init-seed", str(worktree_dir)], git_work_repo)
+        try:
+            r1 = CliRunner().invoke(
+                cli, ["init", str(worktree_dir), "--index-only"], catch_exceptions=False
+            )
+            assert r1.exit_code == 0, r1.output
+            flat = " ".join(r1.output.split())
+            assert "Worktree index seeded successfully" in flat
+            assert "Delegating to update" in flat
+            assert seen, "the seed path should still delegate to update"
+            assert all(call["full"] is False for call in seen), seen
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
