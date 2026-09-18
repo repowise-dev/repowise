@@ -17,6 +17,15 @@ Machine-readable scope: `{{ data.index_scope | tojson }}`
 ### Tools
 
 {{ data.tool_table_md }}
+{% if data.canonical_terms %}
+
+### House vocabulary (use these words)
+
+The team declared these terms canonical in its own glossary. Use the canonical term; do not write the avoided ones.
+{% for t in data.canonical_terms %}
+- **{{ t.term }}**{% if t.definition %} — {{ t.definition }}{% endif %}{% if t.avoid %} (avoid: {{ t.avoid | join(", ") }}){% endif %}
+{% endfor %}
+{% endif %}
 {% if data.architecture_summary %}
 
 ### Architecture
