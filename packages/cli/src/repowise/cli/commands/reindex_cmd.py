@@ -13,6 +13,7 @@ from repowise.cli.helpers import (
     run_async,
 )
 from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
+from repowise.core.store_location import resolve_store_dir
 
 _PROVIDER_FAILURE_CIRCUIT_SLICES = 2
 _INPUT_TOO_LONG_RETRIES = 4
@@ -92,7 +93,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         console.print(f"[green]Using {embedder_name} embedder[/green]")
 
     # --- Create LanceDB vector store ---
-    lance_dir = Path(repo_path) / ".repowise" / "lancedb"
+    lance_dir = resolve_store_dir(repo_path) / "lancedb"
     try:
         from repowise.core.persistence.vector_store import LanceDBVectorStore
     except ImportError:

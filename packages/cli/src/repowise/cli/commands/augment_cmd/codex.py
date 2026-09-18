@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repowise.core.store_location import resolve_store_dir
+
 from ._shared import _find_repo_root
 from .decision_inject import (
     _edit_decision_notice,
@@ -67,7 +69,7 @@ def _handle_post_edit_use(
     if repo_path is None:
         return None
 
-    state_path = repo_path / ".repowise" / "state.json"
+    state_path = resolve_store_dir(repo_path) / "state.json"
     if not state_path.exists():
         return None
 

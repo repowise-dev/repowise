@@ -12,6 +12,7 @@ from repowise.cli.helpers import (
     resolve_command_target,
     silence_logs_for_machine_output,
 )
+from repowise.core.store_location import resolve_store_dir
 
 from ._types import DoctorCheck
 from .advisories import _print_cli_version_status
@@ -103,7 +104,7 @@ def doctor_command(
         abs_path = (ws_root / entry.path).resolve()
         if not abs_path.is_dir():
             continue
-        if not (abs_path / ".repowise").is_dir():
+        if not resolve_store_dir(abs_path).is_dir():
             not_indexed.append(entry.alias)
             continue
         if fmt == "table":

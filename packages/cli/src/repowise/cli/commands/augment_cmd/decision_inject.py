@@ -33,6 +33,7 @@ import sqlite3
 from pathlib import Path
 
 from repowise.core.co_change import parse_partners
+from repowise.core.store_location import resolve_store_dir
 
 # --- SessionStart tunables -------------------------------------------------
 
@@ -104,7 +105,7 @@ _CLIP_RATIONALE = 160
 
 
 def _open_wiki_ro(repo_path: Path) -> sqlite3.Connection | None:
-    db_path = repo_path / ".repowise" / "wiki.db"
+    db_path = resolve_store_dir(repo_path) / "wiki.db"
     if not db_path.exists():
         return None
     try:

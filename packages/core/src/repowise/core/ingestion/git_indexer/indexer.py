@@ -20,6 +20,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.store_location import resolve_store_dir
+
 from ._constants import (
     _DEEP_WALK_COMMIT_LIMIT,
     _DEEP_WALK_MIN_FALLBACK,
@@ -485,7 +487,7 @@ class GitIndexer:
         A repository that has no ``.repowise`` yet is being probed, not
         indexed, and gets no cache file written beside it.
         """
-        cache_dir = self.repo_path / ".repowise"
+        cache_dir = resolve_store_dir(self.repo_path)
         return cache_dir if cache_dir.is_dir() else None
 
     async def index_changed_files(

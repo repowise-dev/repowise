@@ -38,6 +38,7 @@ from repowise.core.persistence.search import FullTextSearch
 from repowise.core.providers.embedding import is_semantic_embedder
 from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.store_location import resolve_store_dir
 from repowise.server import __version__
 from repowise.server.routers import (
     blast_radius,
@@ -343,7 +344,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
                 for repo_entry in ws_config.repos:
                     repo_path = (_Path(ws_root) / repo_entry.path).resolve()
-                    repo_db = repo_path / ".repowise" / "wiki.db"
+                    repo_db = resolve_store_dir(repo_path) / "wiki.db"
                     if not repo_db.exists():
                         continue
                     # Read repo_id from this DB

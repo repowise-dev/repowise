@@ -8,6 +8,7 @@ respectively, and are shared by both flows.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -81,6 +82,7 @@ from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
 from repowise.core.repo_config import config_dependency_fingerprints
+from repowise.core.store_location import resolve_store_dir
 
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import (
@@ -677,6 +679,21 @@ def _interactive_gate(
     ),
 )
 @click.option(
+    "--global-store/--local-store",
+    "global_store",
+    default=None,
+    help=(
+        "Keep this checkout's index under $HOME/.repowise instead of writing "
+        "a .repowise/ directory into the repository. For repositories you do "
+        "not own: nothing is added to the working tree, so there is no "
+        ".repowise/ to gitignore and nothing new in `git status`. The entry is "
+        "keyed on the checkout's absolute path, so two checkouts of one "
+        "repository get separate indexes. Later commands (update, status, "
+        "doctor, mcp) find the index without the flag. "
+        "REPOWISE_GLOBAL_STORE=1 is the same switch for CI and sandboxes."
+    ),
+)
+@click.option(
     "--include-submodules",
     is_flag=True,
     default=False,
@@ -827,6 +844,7 @@ def init_command(
     hook: bool | None,
     editor_setup: bool,
     save_key: bool,
+    global_store: bool | None,
     include_submodules: bool,
     no_workspace: bool,
     init_all: bool,
@@ -887,6 +905,49 @@ def init_command(
     if not repo_path.is_dir():
         raise reasoned_error(f"Not a directory: {repo_path}", reason="invalid_path")
 
+    # ---- Global store mode (issue #1551) ----
+    # Decided before anything resolves a store path, because the decision changes
+    # the answer and the rest of this command (config load, state load, the
+    # worktree-seeding probe below, every writer) has to see the same one.
+    #
+    # Three states, because ``--global-store`` and ``--local-store`` are not
+    # each other's inverse here. Unspecified leaves auto-detection alone: a
+    # checkout that already has a global entry keeps resolving to it, which is
+    # how a plain ``repowise update`` after a global ``init`` finds the index.
+    # An explicit ``--local-store`` turns that detection off.
+    #
+    # The mode is carried in the environment (``use_global_store``) rather than
+    # threaded as an argument: everything that resolves a store takes only a
+    # repo path, and passing a mode down would touch every call site. It is
+    # restored when the command returns, by way of the Click context, so a
+    # second command in the same process does not inherit it.
+    from repowise.core.store_location import GLOBAL_STORE_SWITCH_ENV, global_store_mode
+    from repowise.core.store_location import use_global_store as _use_global_store
+
+    if global_store is None:
+        global_store_on = global_store_mode() == "on"
+    else:
+        global_store_on = bool(global_store)
+        _enter_store_mode = contextlib.ExitStack()
+        _enter_store_mode.enter_context(_use_global_store(global_store_on))
+        click.get_current_context().call_on_close(_enter_store_mode.close)
+
+    if global_store_on:
+        # The mode's promise is that the repository is not modified, and editor
+        # setup writes into the checkout: .mcp.json, .claude/CLAUDE.md,
+        # .vscode/mcp.json, .vscode/extensions.json, and the post-commit git
+        # hook. Turning setup off here rather than asking the user to remember
+        # --no-editor-setup keeps a global-store run from leaving four files and
+        # a dirty `git status` behind the .repowise/-free tree it just promised.
+        if editor_setup:
+            console.print(
+                "[dim]Global store mode: the repository is left untouched, so "
+                "editor and instruction files are not written. Index this repo "
+                "again without --global-store to wire it into your editors.[/dim]"
+            )
+        editor_setup = False
+        os.environ[GLOBAL_STORE_SWITCH_ENV] = "1"
+
     # ---- Workspace detection ----
     # If the path contains multiple git repos (and is not itself a single repo),
     # branch into the multi-repo workspace flow.  --no-workspace bypasses this
@@ -914,7 +975,7 @@ def init_command(
                 "--seed-from cannot be the same as the target directory.",
                 reason="seed_from_is_target",
             )
-    elif not no_seed and not (repo_path / ".repowise" / "state.json").exists():
+    elif not no_seed and not (resolve_store_dir(repo_path) / "state.json").exists():
         detected = detect_worktree_base(repo_path)
         if detected is not None and base_is_seedable(detected):
             seed_base = detected

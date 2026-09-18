@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from repowise.cli.helpers import find_repowise_repo_root
+from repowise.core.store_location import resolve_store_dir
 
 
 @click.command(
@@ -68,7 +69,7 @@ def _candidate_stores() -> list[Path]:
 def default_store_path_for(root: Path) -> Path:
     from repowise.core.distill.store import OMISSIONS_DB_FILENAME, OMISSIONS_DIRNAME
 
-    return root / ".repowise" / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
+    return resolve_store_dir(root) / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
 
 
 def _echo_safely(text: str) -> None:

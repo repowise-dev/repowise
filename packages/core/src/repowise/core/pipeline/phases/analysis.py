@@ -20,6 +20,7 @@ from repowise.core.analysis.decisions.discovery import (
     run_update_discovery,
 )
 from repowise.core.pipeline.progress import ProgressCallback
+from repowise.core.store_location import resolve_store_dir
 
 from ._common import _phase_done
 
@@ -306,7 +307,9 @@ async def _run_health_analysis(
             parsed_files=parsed_files,
             community_label_map=community_label_map,
             coverage_map=coverage_map,
-            duplication_cache_dir=(repo_path / ".repowise") if repo_path is not None else None,
+            duplication_cache_dir=(
+                resolve_store_dir(repo_path) if repo_path is not None else None
+            ),
             repo_root=repo_path,
         )
 

@@ -52,8 +52,18 @@ class RepoConfigError(ValueError):
 
 
 def get_repowise_dir(repo_path: Path | str) -> Path:
-    """Return the repo-local ``.repowise`` directory."""
-    return Path(repo_path) / ".repowise"
+    """Return the directory this repo's index lives in.
+
+    The repo-local ``.repowise`` by default. Under global store mode (issue
+    #1551) it is the checkout's entry under ``~/.repowise/repos`` instead, so
+    the working tree is never edited. Resolution, including how an existing
+    global entry is found with the mode off, lives in
+    :mod:`repowise.core.store_location`; this function is the one call site
+    every layer of the codebase already goes through.
+    """
+    from repowise.core.store_location import resolve_store_dir
+
+    return resolve_store_dir(repo_path)
 
 
 def load_repo_config(repo_path: Path | str) -> dict[str, Any]:

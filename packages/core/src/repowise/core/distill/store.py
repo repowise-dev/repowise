@@ -22,6 +22,7 @@ import structlog
 from repowise.core.distill import tracking
 from repowise.core.distill.markers import REF_LENGTH, is_valid_ref
 from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
+from repowise.core.store_location import resolve_store_dir
 
 logger = structlog.get_logger(__name__)
 
@@ -79,8 +80,8 @@ def default_store_path(start: Path | None = None) -> Path:
     for candidate in (current, *current.parents):
         if candidate == home:
             break
-        if (candidate / ".repowise").is_dir():
-            return candidate / ".repowise" / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
+        if resolve_store_dir(candidate).is_dir():
+            return resolve_store_dir(candidate) / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
     return home / ".repowise" / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
 
 
