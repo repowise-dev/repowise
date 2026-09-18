@@ -67,11 +67,8 @@ class MockDialect:
     test_name_prefixes: tuple[str, ...] = field(default=())
 
     #: Extra lowercase substrings that mean "this file may mock", beyond
-    #: :data:`MOCK_IDENTIFIER_TOKENS`. The whole-file precheck is the union of
-    #: these, so a dialect whose vocabulary carries no test-double token in its
-    #: names MUST declare them here or its files are skipped before the walk.
-    #: Over-inclusive is safe and only costs time; under-inclusive silently
-    #: counts nothing. Keep them selective: the union is scanned per file.
+    #: :data:`MOCK_IDENTIFIER_TOKENS`, unioned into the whole-file precheck.
+    #: Over-inclusive costs time; under-inclusive counts nothing at all.
     file_markers: frozenset[str] = frozenset()
 
 
@@ -155,11 +152,9 @@ _JS_TS = MockDialect(
 
 
 # Keyed by ``LanguageTag`` (``ingestion/models.py``); one dialect may serve
-# several tags. Go and Java are deliberately absent: neither can be given a
-# trustworthy assertion count, which is the denominator of every ratio here. Go
-# has no assertion vocabulary beyond testify; Java states its real checks as
-# Mockito ``verify(...)``, correctly not an assertion. Both measurements and the
-# reasoning: LANGUAGE_SUPPORT.md#code-health-coverage.
+# several tags. Go and Java are absent deliberately: neither has a trustworthy
+# assertion count, and that is this marker's denominator. Measurements and
+# reasoning in LANGUAGE_SUPPORT.md#code-health-coverage.
 MOCK_DIALECTS: dict[str, MockDialect] = {
     "python": _PYTHON,
     "javascript": _JS_TS,
