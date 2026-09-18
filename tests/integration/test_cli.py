@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from repowise.cli.main import cli
@@ -81,6 +82,18 @@ def _db_column(db_path, sql):
 
     with closing(sqlite3.connect(db_path)) as conn:
         return [row[0] for row in conn.execute(sql).fetchall()]
+
+
+def _table_row(output, label):
+    """The rendered table line for *label*, so row assertions stay on that row.
+
+    ``workspace list`` and ``status --workspace`` print one line per repo; a
+    whole-output ``in`` check would pass on a neighbour's cell.
+    """
+    for line in output.splitlines():
+        if label in line:
+            return line
+    raise AssertionError(f"no table row for {label!r} in:\n{output}")
 
 
 @pytest.fixture
@@ -688,6 +701,255 @@ class TestDeleteWithConfiguredDb:
         assert result.exit_code == 0, result.output
         assert "Deleted" in result.output
         assert _db_scalar(db_path, "SELECT COUNT(*) FROM repositories") == 0
+
+
+class TestWorkspaceListWithConfiguredDb:
+    """Regression guard for #2368: ``repowise workspace list`` must read a
+    configured shared database instead of the presence of a local ``.repowise/``
+    directory.
+
+    The command decided "indexed" from ``.repowise/`` and then counted rows in
+    a repo-local ``wiki.db``, so under ``REPOWISE_DB_URL`` every member printed
+    ``-`` and "not indexed" with a ``0/N repos indexed`` summary, however well
+    indexed the shared store was.
+    """
+
+    @pytest.fixture
+    def shared_ws(self, tmp_path, monkeypatch):
+        """A workspace whose members are indexed into an external database.
+
+        ``REPOWISE_DB_URL`` points outside every repo, the way a PostgreSQL
+        container does, and neither member gets a ``.repowise/`` directory:
+        the whole scenario is "the rows live in the shared database, the
+        checkouts have no local store".
+        """
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+
+        ws_root = tmp_path / "workspace"
+        ws_root.mkdir()
+        repo_a = ws_root / "service-a"
+        repo_b = ws_root / "service-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        (ws_root / ".repowise-workspace.yaml").write_text(
+            yaml.dump(
+                {
+                    "version": 1,
+                    "default_repo": "service-a",
+                    "repos": [
+                        {"path": "service-a", "alias": "service-a"},
+                        {"path": "service-b", "alias": "service-b"},
+                    ],
+                },
+                default_flow_style=False,
+            ),
+            encoding="utf-8",
+        )
+        db_path = tmp_path / "shared" / "wiki.db"
+        db_path.parent.mkdir()
+        url = f"sqlite+aiosqlite:///{db_path}"
+        monkeypatch.setenv("REPOWISE_DB_URL", url)
+
+        async def seed(repo_path, *, files: int = 3, symbols: int = 5) -> str:
+            from repowise.core.persistence.models import GraphNode, _new_uuid
+
+            engine = create_engine(url)
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=repo_path.name, local_path=str(repo_path.resolve())
+                )
+                for i in range(files):
+                    session.add(
+                        GraphNode(
+                            id=_new_uuid(),
+                            repository_id=repo.id,
+                            node_id=f"src/module_{i}.py",
+                            node_type="file",
+                        )
+                    )
+                for i in range(symbols):
+                    session.add(
+                        GraphNode(
+                            id=_new_uuid(),
+                            repository_id=repo.id,
+                            node_id=f"symbol_{i}",
+                            node_type="symbol",
+                        )
+                    )
+            await engine.dispose()
+            return repo.id
+
+        return {
+            "ws_root": ws_root,
+            "repo_a": repo_a,
+            "repo_b": repo_b,
+            "db_path": db_path,
+            "seed": seed,
+        }
+
+    def test_shared_db_repos_read_as_indexed(self, runner, shared_ws):
+        """The reported bug: a fully indexed shared store, no local files."""
+        import asyncio
+
+        asyncio.run(shared_ws["seed"](shared_ws["repo_a"]))
+        assert not (shared_ws["repo_a"] / ".repowise").exists()
+
+        result = runner.invoke(cli, ["workspace", "list", str(shared_ws["ws_root"])])
+
+        assert result.exit_code == 0, result.output
+        row_a = _table_row(result.output, "service-a")
+        row_b = _table_row(result.output, "service-b")
+        # The indexed member reports its real counts, not dashes, and the
+        # status is computed from them rather than short-circuited away.
+        assert "3" in row_a and "5" in row_a
+        assert "up to date" in row_a
+        assert "not indexed" not in row_a
+        # The summary line follows the per-row decision.
+        assert "1/2 repos indexed" in result.output
+        # The member with no row in the shared database is still unindexed.
+        assert "not indexed" in row_b
+
+    def test_shared_db_repos_counts_are_scoped_per_repository(self, runner, shared_ws):
+        """Counts come from the rows of that repository alone, so a second
+        member's nodes are not attributed to the first through the store."""
+        import asyncio
+
+        asyncio.run(shared_ws["seed"](shared_ws["repo_a"], files=2, symbols=4))
+        asyncio.run(shared_ws["seed"](shared_ws["repo_b"], files=9, symbols=11))
+
+        result = runner.invoke(cli, ["workspace", "list", str(shared_ws["ws_root"])])
+
+        assert result.exit_code == 0, result.output
+        row_a = _table_row(result.output, "service-a")
+        row_b = _table_row(result.output, "service-b")
+        assert "2" in row_a and "4" in row_a
+        assert "9" in row_b and "11" in row_b
+        assert "2/2 repos indexed" in result.output
+
+    def test_repo_absent_from_the_shared_db_reads_not_indexed(self, runner, shared_ws):
+        """No repository row for the path means not indexed, even though the
+        workspace config knows the repo. The store is the only witness."""
+        result = runner.invoke(cli, ["workspace", "list", str(shared_ws["ws_root"])])
+
+        assert result.exit_code == 0, result.output
+        assert "0/2 repos indexed" in result.output
+        assert result.output.count("not indexed") == 2
+
+    def test_a_local_directory_is_not_the_verdict_when_a_db_is_configured(self, runner, shared_ws):
+        """A leftover ``.repowise/`` is not an index: with a shared database
+        configured, the store answers and a repo with no row stays unindexed."""
+        import asyncio
+
+        asyncio.run(shared_ws["seed"](shared_ws["repo_a"]))
+        # service-b has a local store but no row in the configured database.
+        (shared_ws["repo_b"] / ".repowise").mkdir()
+
+        result = runner.invoke(cli, ["workspace", "list", str(shared_ws["ws_root"])])
+
+        assert result.exit_code == 0, result.output
+        row_a = _table_row(result.output, "service-a")
+        row_b = _table_row(result.output, "service-b")
+        # The verdicts follow the store, not the directories: the repo with
+        # rows is indexed, the one with a directory is not.
+        assert "not indexed" not in row_a
+        assert "not indexed" in row_b
+        assert "1/2 repos indexed" in result.output
+
+    def test_local_repos_without_a_configured_db_are_unchanged(self, runner, tmp_path, monkeypatch):
+        """With no configured URL every verdict is exactly what it was:
+        a missing ``.repowise/`` is not indexed, an existing one is."""
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+
+        ws_root = tmp_path / "workspace"
+        ws_root.mkdir()
+        repo_a = ws_root / "service-a"
+        repo_b = ws_root / "service-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        (ws_root / ".repowise-workspace.yaml").write_text(
+            yaml.dump(
+                {
+                    "version": 1,
+                    "default_repo": "service-a",
+                    "repos": [
+                        {"path": "service-a", "alias": "service-a"},
+                        {"path": "service-b", "alias": "service-b"},
+                    ],
+                },
+                default_flow_style=False,
+            ),
+            encoding="utf-8",
+        )
+        # service-a keeps its repo-local store, service-b has none.
+        db_path = repo_a / ".repowise" / "wiki.db"
+        db_path.parent.mkdir()
+        url = f"sqlite+aiosqlite:///{db_path}"
+
+        async def seed() -> None:
+            engine = create_engine(url)
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(session, name="service-a", local_path=str(repo_a))
+            await engine.dispose()
+
+        import asyncio
+
+        asyncio.run(seed())
+
+        result = runner.invoke(cli, ["workspace", "list", str(ws_root)])
+
+        assert result.exit_code == 0, result.output
+        assert "1/2 repos indexed" in result.output
+        # service-b has no local store and no configured URL: unindexed.
+        assert "not indexed" in result.output
+
+    def test_local_store_keeps_its_empty_verdict(self, runner, tmp_path, monkeypatch):
+        """A local ``.repowise/`` with no readable store is still "indexed,
+        empty" on the local path, which is what the pre-fix code reported."""
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+
+        ws_root = tmp_path / "workspace"
+        ws_root.mkdir()
+        repo_a = ws_root / "service-a"
+        repo_a.mkdir()
+        (ws_root / ".repowise-workspace.yaml").write_text(
+            yaml.dump(
+                {
+                    "version": 1,
+                    "default_repo": "service-a",
+                    "repos": [{"path": "service-a", "alias": "service-a"}],
+                },
+                default_flow_style=False,
+            ),
+            encoding="utf-8",
+        )
+        (repo_a / ".repowise").mkdir()
+
+        result = runner.invoke(cli, ["workspace", "list", str(ws_root)])
+
+        assert result.exit_code == 0, result.output
+        assert "1/1 repos indexed" in result.output
+        assert "empty" in result.output
+        assert "not indexed" not in result.output
 
 
 class TestSearchFulltext:
