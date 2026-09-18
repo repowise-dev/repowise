@@ -378,36 +378,27 @@ or it stays silent, and an `n/a` records a metric the language cannot carry
 rather than one nobody got to. Kotlin's Extract Method is **blocked on the
 grammar**, not unscheduled.
 
-**The assertion count** is the denominator of every test-quality ratio, and it
-is counted in two tiers (`analysis/health/asserts/lexicon.py`). The narrow tier
-is the `assert` / `expect` prefix match the calibrated `large_assertion_block`
-and `duplicated_assertion_block` are tuned on, and it never changes. The broad
+**The assertion count** is the denominator of every test-quality ratio, counted
+in two tiers (`analysis/health/asserts/lexicon.py`). The narrow tier is the
+`assert` / `expect` prefix match that `large_assertion_block` and
+`duplicated_assertion_block` are calibrated on, and it never changes. The broad
 tier adds a per-language row plus anything a repository declares in the
 `assertions:` block, and feeds the advisory count alone, so a vocabulary edit
-cannot move a score.
+cannot move a score. Broad-tier names are matched exactly, never as prefixes:
+over three corpora the `check` / `validate` / `approve` / `fail` prefix families
+matched ~600 production functions under test and not one assertion.
 
-Measured across five corpora when the tiers were introduced:
+Counted assertions, narrow tier then both, when the tiers were introduced:
 
-| Corpus | Test files | Narrow only | Both tiers |
+| Corpus | Test files | Narrow | Both |
 |---|---|---|---|
 | Go, stdlib `t.Errorf` idiom | 502 | 87 | **3,454** |
 | Go, testify idiom | 476 | 1,586 | **3,656** |
 | TypeScript, should.js present | 521 | 9,956 | **11,165** |
 | TypeScript, no should.js | 574 | 15,595 | 15,595 |
-| Java | 299 | — | no row, see below |
 
-Go was effectively invisible: one corpus counted 87 assertions across 502 test
-files because `t.Error` / `t.Fatal` match neither prefix. Assertion *runs* were
-byte-identical in every corpus, which is what makes the broad tier safe.
-
-Names in the broad tier are matched exactly rather than as prefixes, which is
-where we diverge from SonarQube's S2699 vocabulary. Matched as prefixes over the
-three corpora above, its `check`, `validate`, `approve` and `fail` entries
-produced roughly 600 matches and not one assertion among them — all production
-functions under test (`validateToken(...)`, `shouldRetry(...)`, a `fail()`
-method on a test double). Every custom assertion helper found in those corpora
-was already named `assert*` or `expect*`, so the narrow tier catches house
-helpers for free more often than not.
+Go was effectively invisible. Assertion *runs* were byte-identical in every
+corpus, which is what makes the broad tier safe.
 
 **Mock saturation** measures a test's mock setup against its assertions, so it
 needs both a mock vocabulary and a trustworthy assertion count. The vocabulary
@@ -424,11 +415,9 @@ fail differently, and for the same underlying reason — the assertion count is 
 denominator of every ratio, so a language whose assertions cannot be counted
 honestly cannot carry the marker at all:
 
-- **Go** — the assertion half is fixed: Go has its own vocabulary now, covering
-  `t.Error` / `t.Fatal` and testify's `require` (figures in the table above).
-  What still blocks the marker is the other half: Go has no row in
-  `mocks/lexicon.py` and no hand-labelled precision figure. That is the same
-  work TypeScript needed, not a missing foundation.
+- **Go** — the assertion half is fixed (table above). What still blocks the
+  marker is the other half: no row in `mocks/lexicon.py` and no hand-labelled
+  precision figure.
 - **Java** — Mockito states a test's real checks as `verify(...)`, which is
   deliberately not an assertion here (counting it would hide the very tests this
   marker looks for). An over-mocked Java test therefore arrives with one vacuous
@@ -437,12 +426,9 @@ honestly cannot carry the marker at all:
   irreducible fixture. Java needs a verification vocabulary of its own first.
   Measured at 20% precision over 30 hand-labelled findings, flat across every
   threshold tried — but the mechanism above, not that number, is why it is
-  blocked. The two-tier vocabulary confirmed this rather than fixing it, which
-  is why Java has no row: Mockito verification is 1,080 lines over those 299
-  test files, 16 of which hold no `assert*` at all, and admitting those names
-  to this marker's denominator would blind it precisely where it is meant to
-  fire. A verification tier belongs to a marker that asks whether a test checks
-  anything at all, not to this one.
+  blocked, and why Java has no assertion row either: Mockito verification is
+  1,080 lines over 299 test files, 16 of which hold no `assert*` at all, and
+  counting them here would blind the marker where it is meant to fire.
 
 Svelte and Vue stay `later` rather than following TypeScript: an SFC is walked as
 a TypeScript buffer, but a single-file component is essentially never a test
