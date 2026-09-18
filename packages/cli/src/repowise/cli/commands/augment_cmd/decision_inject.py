@@ -3,12 +3,14 @@
 Two delivery moments, both pure indexed-SQLite lookups (no LLM, no network,
 target well under 100ms):
 
-  * SessionStart — score the repo's active decisions against the session's
-    likely working set (dirty/staged files, branch-vs-main changed files, the
-    previous session's edited files, branch-name tokens) expanded one hop via
-    import edges and co-change partners, and inject the top few under a hard
-    token cap. Relevance or silence: nothing clears the floor, nothing is
-    injected. Never top-confidence-globally.
+  * SessionStart — score the repo's decisions against the session's likely
+    working set (dirty/staged files, branch-vs-main changed files, the previous
+    session's edited files, branch-name tokens) expanded one hop via import
+    edges and co-change partners, and inject the top few under a hard token
+    cap. Relevance or silence: nothing clears the floor, nothing is injected.
+    Never top-confidence-globally. Two labelled sections under two separate
+    caps: accepted decisions, then the candidates nobody has agreed to. The
+    second cannot shrink the first. A dismissed record is in neither.
   * Edit-time (PostToolUse Edit/Write) — when the edited file has a governing
     decision (via decision_node_links), say so once per session per decision,
     under a strict per-session cap.
@@ -65,6 +67,21 @@ _W_GLOBAL_RULE = 0.5
 #: mis-promoted one-off (dogfood: "merge the backend PRs" made it to active)
 #: costs at most one slot until it is dismissed.
 _MAX_GLOBAL_RULES = 2
+
+#: Budget for the candidate section, held separately from ``_TOKEN_CAP`` rather
+#: than carved out of it. A shared cap would mean every candidate admitted
+#: displaces an accepted decision that is injected today, which is the one
+#: thing restoring candidates must not do; a separate cap makes the trade
+#: explicit and bounded instead. Tighter than the accepted block by design:
+#: nobody has agreed to any of these.
+_CANDIDATE_TOKEN_CAP = 120
+#: Never more than this many candidates, whatever the token budget allows.
+_MAX_CANDIDATE_ITEMS = 2
+#: And at most one of those slots may go to an unlinked repo-wide rule. A
+#: repo-wide candidate clears the relevance floor on every session by
+#: construction, so without this the lane would never carry a candidate that
+#: is actually about the files in hand.
+_MAX_CANDIDATE_GLOBALS = 1
 
 #: Branch-name tokens that identify workflow, not topic.
 _GENERIC_BRANCH_TOKENS = frozenset(
@@ -340,12 +357,45 @@ def _kind_column(conn: sqlite3.Connection) -> str:
 
 def _load_active_decisions(conn: sqlite3.Connection) -> list[dict]:
     """Accepted, current decisions with their node links, as plain dicts."""
+    return _load_decisions(
+        conn,
+        "status = 'active' AND " + _accepted_clause(conn, "decision_records"),
+    )
+
+
+def _load_candidate_decisions(conn: sqlite3.Connection) -> list[dict]:
+    """Records nobody has accepted, and that nobody has tombstoned either.
+
+    The mirror image of :func:`_load_active_decisions`, and the same statuses
+    ``_answer_context.fetch_relevant_decisions`` reads: ``active`` and
+    ``proposed`` are live claims, while ``deprecated``, ``superseded`` and
+    ``dismissed`` are history and must not be put to an agent as something to
+    consider. Dismissed is the load-bearing one — a candidate tombstoned
+    without ever having been accepted carries no acceptance row, so the
+    acceptance test alone reads it as an ordinary candidate.
+
+    On a store that predates the entity split :func:`_accepted_clause` is
+    ``1 = 1``, so this returns nothing at all. That is the right answer rather
+    than a degradation: such a store cannot tell a candidate from a decision,
+    and the fallback it does have already delivers its records through the
+    accepted path. Guessing here would inject its whole review queue.
+    """
+    return _load_decisions(
+        conn,
+        "status IN ('active', 'proposed') AND NOT ("
+        + _accepted_clause(conn, "decision_records")
+        + ")",
+    )
+
+
+def _load_decisions(conn: sqlite3.Connection, where: str) -> list[dict]:
+    """Decision rows matching *where*, with their node links, as plain dicts."""
     try:
         rows = conn.execute(
             "SELECT id, title, decision, rationale, confidence, staleness_score, source, "
             + _kind_column(conn)
-            + " FROM decision_records WHERE status = 'active' AND "
-            + _accepted_clause(conn, "decision_records")
+            + " FROM decision_records WHERE "
+            + where
         ).fetchall()
     except sqlite3.Error:
         return []
@@ -453,40 +503,48 @@ def _format_decision_line(decision: dict) -> str:
     return line
 
 
-def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
-    """The relevance-ranked SessionStart decision block, or None (silence)."""
-    conn = _open_wiki_ro(repo_path)
-    if conn is None:
-        return None
-    try:
-        decisions = _load_active_decisions(conn)
-        if not decisions:
-            return None
-        seeds, branch = _collect_seeds(repo_path)
-        hop = _expand_one_hop(conn, seeds)
-        tokens = _branch_tokens(branch)
+_ACCEPTED_HEADER = (
+    "[repowise] Standing decisions relevant to this session's working set "
+    "(accumulated from prior sessions; follow them unless the user says otherwise):"
+)
 
-        scored = [(d, _score_decision(d, set(seeds), hop, tokens)) for d in decisions]
-        scored = [(d, s) for d, s in scored if s >= _RELEVANCE_FLOOR]
-        if not scored:
-            return None
-        scored.sort(key=lambda pair: pair[1], reverse=True)
-    finally:
-        conn.close()
+#: Candidates are mined, not agreed. The header carries the whole of that
+#: distinction in the transcript, so it says it in words rather than leaving an
+#: agent to infer a lane from a blank line.
+_CANDIDATE_HEADER = (
+    "[repowise] Proposed but NOT accepted - mined from prior sessions and "
+    "awaiting review. Weigh these; do not treat them as rules:"
+)
 
-    header = (
-        "[repowise] Standing decisions relevant to this session's working set "
-        "(accumulated from prior sessions; follow them unless the user says otherwise):"
-    )
+
+def _rank(
+    decisions: list[dict], seeds: set[str], hop: set[str], tokens: list[str]
+) -> list[dict]:
+    """Decisions above the relevance floor, most relevant first."""
+    scored = [(d, _score_decision(d, seeds, hop, tokens)) for d in decisions]
+    scored = [(d, score) for d, score in scored if score >= _RELEVANCE_FLOOR]
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return [d for d, _ in scored]
+
+
+def _select_lines(
+    ranked: list[dict], header: str, token_cap: int, max_items: int, max_globals: int
+) -> tuple[list[str], list[dict]]:
+    """Render *ranked* under its own caps.
+
+    Returns the header plus the rendered lines, and the decisions behind them.
+    The caps are arguments rather than module reads because the two sections
+    are budgeted separately, which is the point of having two.
+    """
     lines = [header]
-    budget = _TOKEN_CAP - _estimate_tokens(header)
+    budget = token_cap - _estimate_tokens(header)
     shown: list[dict] = []
     globals_shown = 0
-    for decision, _score in scored:
-        if len(shown) >= _MAX_ITEMS:
+    for decision in ranked:
+        if len(shown) >= max_items:
             break
         is_global = _is_repo_wide(decision)
-        if is_global and globals_shown >= _MAX_GLOBAL_RULES:
+        if is_global and globals_shown >= max_globals:
             continue
         line = _format_decision_line(decision)
         cost = _estimate_tokens(line)
@@ -497,13 +555,62 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
         shown.append(decision)
         if is_global:
             globals_shown += 1
-    if not shown:
+    return lines, shown
+
+
+def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
+    """The relevance-ranked SessionStart decision block, or None (silence).
+
+    Two sections under two budgets: accepted decisions under ``_TOKEN_CAP``,
+    exactly as before, then candidates under ``_CANDIDATE_TOKEN_CAP``. The
+    accepted section is selected first and nothing in the second can reduce
+    what it holds, so restoring candidates cannot cost an agent a rule it is
+    given today. Either section may come back empty; the block is emitted when
+    either one is not.
+    """
+    conn = _open_wiki_ro(repo_path)
+    if conn is None:
+        return None
+    try:
+        decisions = _load_active_decisions(conn)
+        candidates = _load_candidate_decisions(conn)
+        if not decisions and not candidates:
+            return None
+        seeds, branch = _collect_seeds(repo_path)
+        seed_set = set(seeds)
+        hop = _expand_one_hop(conn, seeds)
+        tokens = _branch_tokens(branch)
+        ranked = _rank(decisions, seed_set, hop, tokens)
+        ranked_candidates = _rank(candidates, seed_set, hop, tokens)
+    finally:
+        conn.close()
+
+    accepted_lines, shown = _select_lines(
+        ranked, _ACCEPTED_HEADER, _TOKEN_CAP, _MAX_ITEMS, _MAX_GLOBAL_RULES
+    )
+    candidate_lines, candidates_shown = _select_lines(
+        ranked_candidates,
+        _CANDIDATE_HEADER,
+        _CANDIDATE_TOKEN_CAP,
+        _MAX_CANDIDATE_ITEMS,
+        _MAX_CANDIDATE_GLOBALS,
+    )
+    lines: list[str] = []
+    if shown:
+        lines += accepted_lines
+    if candidates_shown:
+        lines += candidate_lines
+    if not lines:
         return None
     from repowise.cli.hook_ledger import _record_injections
 
     block = "\n".join(lines)
     _record_injections(
-        repo_path, session_id, [d["id"] for d in shown], node_id="", chars=len(block)
+        repo_path,
+        session_id,
+        [d["id"] for d in shown + candidates_shown],
+        node_id="",
+        chars=len(block),
     )
     return block
 

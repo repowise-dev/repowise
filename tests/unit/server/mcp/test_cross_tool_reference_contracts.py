@@ -132,8 +132,15 @@ _SYMBOL_FIELDS = {
     "symbol_id",
     "target_node_id",
 }
+# Every lane that carries decision ids, not just the accepted one. A candidate
+# and a withdrawn decision are followable to ``get_why`` exactly as a governing
+# one is, so a consumer that can follow one can follow all three; listing only
+# ``decisions`` would have made the inventory blind to two thirds of what
+# ``get_context`` and ``get_why`` both emit.
 _DECISION_COLLECTIONS = {
     "decisions",
+    "candidates",
+    "history",
     "lineage",
     "recent_reversals",
     "top_active",

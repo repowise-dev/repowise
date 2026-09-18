@@ -17,7 +17,12 @@ Optional ``include`` parameter widens the response:
   - include=["last_change"]→ last commit date and author
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
-  - include=["decisions"] → full decision records (default returns titles only)
+  - include=["decisions"] → decisions governing the target, in three labelled
+                            lanes: ``decisions`` (accepted and binding),
+                            ``candidates`` (proposed, nobody has agreed),
+                            ``history`` (accepted then withdrawn). The last
+                            two appear only when non-empty, and are capped.
+                            A dismissed record is in none of them.
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
   - include=["health"]    → code-health scores and biomarkers for the target
   - include=["doc_drift"] → documents that name this file, and their drift

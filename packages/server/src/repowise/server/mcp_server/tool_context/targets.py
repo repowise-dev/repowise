@@ -17,12 +17,19 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.lifecycle import is_governing
 from repowise.core.generation.page_selection import STALE_STATUSES
 from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
-from repowise.core.persistence.crud import get_kg_layers, get_kg_tour_steps
+from repowise.core.persistence.crud import (
+    accepted_predicate,
+    decision_currencies,
+    decision_priority_order,
+    get_kg_layers,
+    get_kg_tour_steps,
+)
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -66,6 +73,11 @@ from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 #: all, and nothing in the code or its history says whether that is a decision
 #: or an omission. This constant only names the cut that already existed.
 _MAX_USED_BY = 20
+#: Caps for the two decision lanes that are not the accepted one. A candidate
+#: is a review request rather than a rule, and a withdrawn decision is context,
+#: so neither is worth spending the shared response budget the card needs.
+_MAX_CANDIDATES = 3
+_MAX_DECISION_HISTORY = 2
 
 #: Bound parameters per rank lookup. SQLite's ceiling is 999 before 3.32 and
 #: 32,766 after, and which applies depends on the libsqlite3 linked at runtime.
@@ -1066,32 +1078,97 @@ async def _resolve_one_target(
 
     # --- Decisions ---
     if include is None or "decisions" in include:
+        # Acceptance is authority, and the status column is not it. This query
+        # used to select every record for the repository with no status, no
+        # acceptance and no dismissed filter and assign the whole list to
+        # ``decisions``, so a machine-mined candidate and a dismissed tombstone
+        # both reached an agent as a rule the repository had settled on.
+        #
+        # The lanes are ``get_why`` path mode's, spelled the same way on
+        # purpose: ``decisions`` is accepted and still binding, ``candidates``
+        # is never accepted, ``history`` is accepted and withdrawn. Two agent
+        # tools answering the same question in two vocabularies is the divergence
+        # the split exists to remove.
+        #
+        # The order is ``decision_priority_order``, which is what the Decisions
+        # page renders through ``crud.list_decisions(sort="priority")``. Ordering
+        # is shared rather than restated so the two surfaces cannot drift.
+        #
+        # The dismissed filter is ``count_decisions_by_lane``'s, and for its
+        # reason: ``dismiss_candidate`` writes ``status = "dismissed"`` both for
+        # a candidate tombstoned so re-extraction never re-proposes it and for a
+        # decision somebody accepted and later withdrew. Only the acceptance row
+        # tells the two apart. A bare ``status != "dismissed"`` drops both, which
+        # loses the withdrawn decision from every lane instead of putting it in
+        # the one that exists for it — and the Decisions page's History lane
+        # shows exactly those records, so dropping them here is a divergence.
         res = await session.execute(
-            select(DecisionRecord).where(
+            select(DecisionRecord)
+            .where(
                 DecisionRecord.repository_id == repo_id,
+                or_(DecisionRecord.status != "dismissed", accepted_predicate()),
             )
+            .order_by(*decision_priority_order())
         )
-        all_decisions = res.scalars().all()
-        governing = []
+        all_decisions = list(res.scalars().all())
+        currencies = await decision_currencies(session, repo_id, all_decisions)
+        governing: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
+        history: list[dict[str, Any]] = []
         for d in all_decisions:
             affected_files = json.loads(d.affected_files_json)
             affected_modules = json.loads(d.affected_modules_json)
-            if (
+            if not (
                 target in affected_files
                 or target in affected_modules
                 or (file_path_for_git and file_path_for_git in affected_files)
             ):
-                governing.append(
-                    {
-                        "id": d.id,
-                        "title": d.title,
-                        "status": d.status,
-                        "decision": _decision_body(d),
-                        "rationale": d.rationale,
-                        "confidence": d.confidence,
-                    }
-                )
+                continue
+            entry: dict[str, Any] = {
+                "id": d.id,
+                "title": d.title,
+                "status": d.status,
+                "decision": _decision_body(d),
+                "rationale": d.rationale,
+                "confidence": d.confidence,
+            }
+            currency = currencies.get(d.id)
+            if currency is None:
+                entry["authority"] = "candidate"
+                candidates.append(entry)
+            elif is_governing(currency):
+                entry["authority"] = "accepted"
+                entry["currency"] = currency
+                governing.append(entry)
+            else:
+                entry["authority"] = "withdrawn"
+                entry["currency"] = currency
+                history.append(entry)
         result_data["decisions"] = governing
+        # The response budget is one ceiling over the whole payload, not one
+        # per block, so an uncapped new lane does not appear beside the card —
+        # it displaces the docs and symbols the caller asked for. Accepted
+        # decisions keep the behaviour they have (a set acceptance keeps small
+        # by construction); the two lanes this adds are capped where they are
+        # built, and what a cap drops is recoverable through the collector.
+        if candidates:
+            cap_collection(
+                result_data,
+                "candidates",
+                candidates,
+                _MAX_CANDIDATES,
+                collector,
+                label=f"{target} :: candidates beyond cap={_MAX_CANDIDATES}",
+            )
+        if history:
+            cap_collection(
+                result_data,
+                "history",
+                history,
+                _MAX_DECISION_HISTORY,
+                collector,
+                label=f"{target} :: decision history beyond cap={_MAX_DECISION_HISTORY}",
+            )
 
     # --- Freshness ---
     #

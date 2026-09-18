@@ -148,7 +148,14 @@ async def test_silence_without_wiki_db(tmp_path):
     assert decision_inject._session_decision_block(tmp_path, "sess-1") is None
 
 
-async def test_proposed_and_dismissed_never_injected(tmp_path, monkeypatch):
+async def test_an_accepted_record_off_status_reaches_neither_lane(tmp_path, monkeypatch):
+    """Accepted, but not ``active``: not a standing decision and not a candidate.
+
+    Both specs carry an acceptance row, so neither is candidate material; and
+    neither is ``active``, so neither is a standing decision. A store in this
+    shape is inconsistent, and the right response to it is silence rather than
+    a guess about which half to believe.
+    """
     await _build_wiki_db(
         tmp_path,
         [
@@ -627,6 +634,228 @@ def test_detached_head_yields_no_branch(tmp_path, monkeypatch):
     files, branch = decision_inject._dirty_files_and_branch(tmp_path)
     assert files == ["a.py"]
     assert branch == ""
+
+
+# ---------------------------------------------------------------------------
+# The candidate lane at SessionStart
+# ---------------------------------------------------------------------------
+
+
+_CANDIDATE = {
+    "id": "d-cand",
+    "title": "Rotate the auth keys nightly",
+    "decision": "keys are rotated on a nightly cron",
+    "accepted": False,
+    "status": "proposed",
+    "links": [("src/core/auth.py", "file")],
+}
+
+
+async def test_a_candidate_reaches_the_session_labelled_as_one(tmp_path, monkeypatch):
+    """The other half of the contract from the tombstone, and the harder half.
+
+    Before this the hook filtered on acceptance and nothing else, so a store
+    with zero acceptance rows injected nothing at all. Restoring candidates as
+    an unlabelled second stream would have been worse than the silence.
+    """
+    await _build_wiki_db(tmp_path, [_CANDIDATE])
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+
+    assert block is not None
+    assert "Rotate the auth keys nightly" in block
+    assert "NOT accepted" in block
+    assert "Standing decisions" not in block
+
+
+async def test_an_accepted_decision_is_told_apart_from_a_candidate(tmp_path, monkeypatch):
+    """Both reach the agent, in that order, under their own headers."""
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION, _CANDIDATE])
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+
+    assert block is not None
+    lines = block.splitlines()
+    accepted_at = next(i for i, ln in enumerate(lines) if "Standing decisions" in ln)
+    candidate_at = next(i for i, ln in enumerate(lines) if "NOT accepted" in ln)
+    jwt_at = next(i for i, ln in enumerate(lines) if "Use JWT auth" in ln)
+    rotate_at = next(i for i, ln in enumerate(lines) if "Rotate the auth keys" in ln)
+    assert accepted_at < jwt_at < candidate_at < rotate_at
+
+
+async def test_a_dismissed_candidate_reaches_nobody(tmp_path, monkeypatch):
+    """A tombstone carries no acceptance row when it was never accepted, so the
+    acceptance test alone reads it as an ordinary candidate."""
+    await _build_wiki_db(
+        tmp_path,
+        [{**_CANDIDATE, "id": "d-tomb", "title": "Tombstoned rule", "status": "dismissed"}],
+    )
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+
+    assert decision_inject._session_decision_block(tmp_path, "sess-1") is None
+
+
+async def test_candidates_cannot_displace_an_accepted_decision(tmp_path, monkeypatch):
+    """The budgets are separate, and that is what makes restoring the lane safe.
+
+    The accepted section is selected first under the cap it has always had. A
+    shared budget would mean every candidate admitted costs a rule somebody
+    actually agreed to.
+    """
+    long_text = "this decision line pads the token budget " * 8
+    accepted = [
+        {
+            "id": f"d-a{i}",
+            "title": f"Accepted number {i}",
+            "decision": long_text,
+            "links": [("src/core/auth.py", "file")],
+        }
+        for i in range(8)
+    ]
+    candidates = [
+        {
+            "id": f"d-c{i}",
+            "title": f"Candidate number {i}",
+            "decision": long_text,
+            "accepted": False,
+            "status": "proposed",
+            "links": [("src/core/auth.py", "file")],
+        }
+        for i in range(8)
+    ]
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+
+    alone = tmp_path / "alone"
+    await _build_wiki_db(alone, accepted)
+    both = tmp_path / "both"
+    await _build_wiki_db(both, [*accepted, *candidates])
+
+    block_alone = decision_inject._session_decision_block(alone, "s1")
+    block_both = decision_inject._session_decision_block(both, "s2")
+    assert block_alone is not None and block_both is not None
+
+    def accepted_lines(block: str) -> list[str]:
+        out, seen = [], False
+        for ln in block.splitlines():
+            if "Standing decisions" in ln:
+                seen = True
+                continue
+            if "NOT accepted" in ln:
+                break
+            if seen:
+                out.append(ln)
+        return out
+
+    assert accepted_lines(block_both) == accepted_lines(block_alone)
+    assert any("Candidate number" in ln for ln in block_both.splitlines())
+    # And the accepted section is still the size it was before candidates
+    # existed: eight padded decisions fill it to ``_MAX_ITEMS`` under the
+    # unchanged ``_TOKEN_CAP``. Comparing the two runs alone cannot see a
+    # budget that shrank for both of them.
+    assert len(accepted_lines(block_alone)) == decision_inject._MAX_ITEMS
+
+
+async def test_the_candidate_lane_has_its_own_caps(tmp_path, monkeypatch):
+    long_text = "this candidate line pads the token budget " * 8
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": f"d-c{i}",
+                "title": f"Candidate number {i}",
+                "decision": long_text,
+                "accepted": False,
+                "status": "proposed",
+                "links": [("src/core/auth.py", "file")],
+            }
+            for i in range(8)
+        ],
+    )
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+    assert block is not None
+    lines = block.splitlines()
+    assert sum("Candidate number" in ln for ln in lines) <= decision_inject._MAX_CANDIDATE_ITEMS
+    # Asserted against the accepted cap, not against the candidate one: a test
+    # that reads the constant it is pinning passes whatever that constant is
+    # set to, which is how a budget merged back into ``_TOKEN_CAP`` would go
+    # unnoticed. Half is the loosest reading of "tighter" that still bites.
+    assert decision_inject._CANDIDATE_TOKEN_CAP < decision_inject._TOKEN_CAP
+    assert decision_inject._estimate_tokens(block) <= decision_inject._TOKEN_CAP // 2
+
+
+async def test_a_repo_wide_candidate_never_takes_the_whole_lane(tmp_path, monkeypatch):
+    """A repo-wide candidate clears the floor on every session by construction,
+    so without its own cap the lane would never carry one about the files in
+    hand — and on this store there are thirty of them."""
+    rules = [
+        {
+            "id": f"d-g{i}",
+            "title": f"Global candidate {i}",
+            "decision": f"always follow global candidate number {i}",
+            "source": "session",
+            "kind": AGREEMENT_KIND,
+            "accepted": False,
+            "status": "proposed",
+            # High enough that a repo-wide rule outscores the linked candidate
+            # below (0.5 base vs 0.6 x 0.5 for a seed-file hit). Without that
+            # the linked one leads on relevance whatever the cap is, and the
+            # cap is not what the test would be measuring.
+            "confidence": 1.0,
+            "links": [],
+        }
+        for i in range(5)
+    ]
+    await _build_wiki_db(tmp_path, [*rules, {**_CANDIDATE, "confidence": 0.5}])
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+    assert block is not None
+    lines = block.splitlines()
+    assert (
+        sum("Global candidate" in ln for ln in lines)
+        <= decision_inject._MAX_CANDIDATE_GLOBALS
+    )
+    # The load-bearing half: the lower-scoring linked candidate still gets a
+    # slot, which is only true while the globals are held below the item cap.
+    assert "Rotate the auth keys nightly" in block
+
+
+async def test_a_pre_split_store_yields_no_candidates(tmp_path, monkeypatch):
+    """Such a store cannot tell a candidate from a decision, so it must not try.
+
+    ``_accepted_clause`` degrades to ``1 = 1`` there, which the candidate query
+    negates to nothing. Guessing instead would put the whole review queue of
+    every store written before the split in front of an agent.
+    """
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION, _CANDIDATE])
+    conn = sqlite3.connect(tmp_path / ".repowise" / "wiki.db")
+    conn.execute("DROP TABLE decision_acceptances")
+    conn.commit()
+    conn.close()
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+    assert block is not None
+    assert "NOT accepted" not in block
+    assert "Rotate the auth keys nightly" not in block
+
+
+async def test_candidate_injections_are_recorded(tmp_path, monkeypatch):
+    """The usage-feedback miner has to be able to ask whether a candidate the
+    agent was shown was then followed or contradicted."""
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION, _CANDIDATE])
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+
+    assert decision_inject._session_decision_block(tmp_path, "sess-9") is not None
+
+    conn = sqlite3.connect(tmp_path / ".repowise" / "sessions" / "sessions.db")
+    ids = {r[0] for r in conn.execute("SELECT decision_id FROM injections").fetchall()}
+    conn.close()
+    assert ids == {"d-auth", "d-cand"}
 
 
 async def test_a_candidate_is_never_injected(tmp_path):

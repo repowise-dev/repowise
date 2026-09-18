@@ -393,7 +393,7 @@ async def list_decisions(
     if accepted is not None:
         predicate = accepted_predicate()
         q = q.where(predicate if accepted else ~predicate)
-    order = _decision_order(sort)
+    order = decision_priority_order(sort)
     if accepted is False and sort != "recent":
         # A candidates page is a review queue, so it leads with the rows the
         # acceptance contract would take rather than the highest-confidence
@@ -422,8 +422,14 @@ _STATUS_RANK = {
 }
 
 
-def _decision_order(sort: str) -> tuple[Any, ...]:
-    """ORDER BY terms for :func:`list_decisions`."""
+def decision_priority_order(sort: str = "priority") -> tuple[Any, ...]:
+    """ORDER BY terms for :func:`list_decisions`.
+
+    Public because it is the order the Decisions page renders, and an agent
+    surface that serves the same records in a different order is a divergence
+    a reader has to reconcile by hand. ``get_context`` imports it rather than
+    re-spelling the three terms, so the two cannot drift apart silently.
+    """
     if sort == "recent":
         return (DecisionRecord.created_at.desc(),)
     rank = case(_STATUS_RANK, value=DecisionRecord.status, else_=len(DECISION_STATUS_ORDER))
