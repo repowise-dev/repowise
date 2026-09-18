@@ -344,6 +344,13 @@ including the prediction that it would come last.
 **This is retrieval, not task success.** It says we find the right files, not that
 an agent using us writes better code.
 
+**The grader never reads `confidence`.** File coverage compares the paths a tool
+returns against ContextBench's gold spans, and nothing else in the response is
+scored. A `get_answer` call can cover every gold file and still report
+`confidence: low`, or the reverse, without either affecting this number. So the
+0.876 is not a claim about how well-calibrated that field is; those are separate
+axes, measured separately, and neither is evidence about the other.
+
 Measured on repowise `081a59fa` (between v0.37.0 and v0.38.0). Raw cells:
 **[rung8](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung8)**.
 
