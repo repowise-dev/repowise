@@ -61,13 +61,19 @@ def load_report(
         return SavingsRepository(connection).report(
             # The recorder files events under the path it wrote to, so the
             # reader has to ask with the same string or it reads an empty
-            # repository and reports a confident zero.
-            str(repo_root),
+            # repository and reports a confident zero. Both sides normalize
+            # through Path for exactly that reason: a caller-supplied path can
+            # carry a trailing separator or forward slashes on Windows, and the
+            # server stores whatever a client registered, verbatim.
+            str(Path(repo_root)),
             as_of=moment,
             days=days,
             max_breakdowns=max_breakdowns,
         )
-    except (sqlite3.Error, ValueError):
+    # OverflowError is not a ValueError: a large enough ``days`` overflows the
+    # timedelta rather than failing validation, and this function promises not
+    # to raise into a dashboard endpoint.
+    except (sqlite3.Error, ValueError, OverflowError):
         return None
     finally:
         connection.close()

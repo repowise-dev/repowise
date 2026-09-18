@@ -123,6 +123,14 @@ def saved_command(
         return
 
     db_path = default_store_path(start)
+    # Warm the pricing snapshot for the surfaces that may not resolve one.
+    # The MCP path and the hooks run inside an agent's tool call and read this
+    # cache without ever filling it, so something has to, and this command is
+    # the right place: a human typed it, it is asking for the dollar figure,
+    # and the cost lands once a day rather than on an agent's latency.
+    from repowise.core.savings.pricing import resolve_pricing_snapshot
+
+    resolve_pricing_snapshot(start)
     report = load_report(start, days=window_days)
     if report is None:
         notices.print(
@@ -783,7 +791,10 @@ def _parse_since(value: str | None) -> float | None:
         return None
     try:
         return datetime.fromisoformat(value).timestamp()
-    except ValueError as exc:
+    # OSError, not just ValueError: on Windows a pre-epoch date parses fine and
+    # then raises errno 22 from timestamp(), which would be a traceback rather
+    # than a usage error.
+    except (ValueError, OSError, OverflowError) as exc:
         raise click.BadParameter(f"Cannot parse date '{value}': {exc}") from exc
 
 

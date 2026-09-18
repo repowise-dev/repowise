@@ -32,7 +32,9 @@ export interface SavingsData {
   priced_input_savings_usd: number;
   per_operation: SavingsBreakdownRow[];
   per_surface: SavingsBreakdownRow[];
-  per_agent: SavingsAgentRow[];
+  /** Carried for callers and for the Phase 4 surface; this card does not
+   *  render it, so it is optional rather than a required field nothing reads. */
+  per_agent?: SavingsAgentRow[];
   per_day?: SavingsBreakdownRow[];
   missed_events?: number;
   missed_tokens_est?: number;

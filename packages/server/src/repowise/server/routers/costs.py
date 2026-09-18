@@ -124,7 +124,12 @@ async def list_costs(
 @router.get("/{repo_id}/savings", response_model=SavingsResponse)
 async def get_savings(
     repo_id: str,
-    days: int | None = Query(None, ge=0, description="Window in days; omit for all time"),
+    # Bounded, not just non-negative: a large enough value overflows the
+    # timedelta the report subtracts, and a decade already means "all time"
+    # for a ledger this young.
+    days: int | None = Query(
+        None, ge=0, le=3_650, description="Window in days; omit for all time"
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> SavingsResponse:
     """What agents avoided in this repository, from the canonical ledger.

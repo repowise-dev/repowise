@@ -1256,7 +1256,7 @@ valued — reported as unpriced rather than valued at today's model.
 | Flag | Description |
 |------|-------------|
 | `--by` | Grouping: `operation` (default), `surface`, `agent`, `model`, `day` |
-| `--since` | Only count savings since this ISO date |
+| `--since` | Only count savings on or after this ISO date. Converted to a whole-day window, rounded up, so the named day is always fully included |
 | `--model` | Pricing model for the `--missed` opportunity estimates. Recorded savings are priced per event, so this does not affect them. Defaults to the model detected from this repo's most recent agent session, falling back to `claude-sonnet-4-6` |
 | `--missed` | Report commands that looked distillable but weren't rewritten |
 | `--missed-days` | Window in days for `--missed` (default 7.0) |

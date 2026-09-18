@@ -9,11 +9,17 @@ Why the snapshot is cached on disk rather than resolved per event:
 :func:`repowise.core.distill.session_model.resolve_session_model` scans the
 local agent transcripts, and its Codex branch reads every session file end to
 end whenever the repository has no Codex history -- the common case, and
-measured at around six seconds on a developer machine with 700 sessions. That
-is impossible on the MCP path and worse on the hook, which is a fresh
-short-lived process per tool call and could not amortize it at all. So the
-resolution runs at most once per TTL per repository, is memoized in-process on
-top of that, and the hook never triggers one.
+measured at around six seconds on a developer machine with 700 sessions.
+
+So *no agent-facing surface resolves it*. The MCP path and both hooks pass
+``allow_scan=False``: each runs inside the agent's own tool call, where a
+six-second stall is unacceptable even once a day, and the hooks are fresh
+processes that could not amortize one anyway. They write an unpriced event when
+the cache is cold, and the report counts priced and unpriced tokens separately
+for exactly that reason.
+
+The cache is filled by ``repowise distill`` run directly and by
+``repowise saved`` -- commands a human typed, where once a day is affordable.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ import contextlib
 import json
 import math
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +44,10 @@ _TTL_SECONDS = 24 * 60 * 60
 _CACHE_VERSION = 1
 
 _CACHE_NAME = "pricing-snapshot.json"
+
+#: Mirrors the ``model`` bound in the event contract. A snapshot that would be
+#: rejected there has to be discarded here, while discarding it is still free.
+_MAX_MODEL_LENGTH = 128
 
 
 def price_tokens(tokens: int, usd_per_million: float | None) -> float | None:
@@ -110,15 +121,26 @@ def _resolve(repo_root: Path, *, allow_scan: bool) -> PricingSnapshot | None:
         return memoized[0]
     cached = _read_cache(_cache_path(repo_root))
     if cached is not None:
-        _memo[key] = (cached, now + _TTL_SECONDS)
-        return cached
+        snapshot, age = cached
+        # The memo expires when the *file* does, not a full TTL from now.
+        # Refreshing the deadline on every read would let a long-lived process
+        # serve a snapshot for nearly twice the TTL it is supposed to have.
+        _memo[key] = (snapshot, now + max(0.0, _TTL_SECONDS - age))
+        return snapshot
     if not allow_scan:
         # Deliberately no memo entry: the next scanning surface should refill
         # the cache promptly rather than wait out a TTL this process set.
         return None
-    snapshot = _scan(repo_root)
-    _write_cache(_cache_path(repo_root), snapshot)
+    scanned = _scan(repo_root)
+    if scanned is None:
+        return None
+    snapshot = scanned
+    # Memoized before the write, and the write cannot unmake it: a snapshot
+    # that cost six seconds to compute must not be discarded because the disk
+    # refused it. The process keeps it either way; only other processes lose.
     _memo[key] = (snapshot, now + _TTL_SECONDS)
+    with contextlib.suppress(Exception):
+        _write_cache(_cache_path(repo_root), snapshot)
     return snapshot
 
 
@@ -126,12 +148,21 @@ def _cache_path(repo_root: Path) -> Path:
     return repo_root / ".repowise" / "omissions" / _CACHE_NAME
 
 
-def _scan(repo_root: Path) -> PricingSnapshot:
-    """Detect the coding agent's model and freeze its rates."""
+def _scan(repo_root: Path) -> PricingSnapshot | None:
+    """Detect the coding agent's model and freeze its rates.
+
+    Returns ``None`` rather than an over-long model id. The id is read out of a
+    transcript the user's agent wrote, and the event contract bounds ``model``
+    at 128 characters -- by *raising*, which would drop the whole event before
+    it was written. A pricing snapshot we cannot use must cost the event its
+    price, never its existence.
+    """
     from repowise.core.distill.session_model import resolve_session_model
     from repowise.core.generation.cost_tracker import get_model_pricing, pricing_table_version
 
     resolved = resolve_session_model(repo_root)
+    if not resolved.model or len(resolved.model) > _MAX_MODEL_LENGTH:
+        return None
     rates = get_model_pricing(resolved.model)
     return PricingSnapshot(
         model=resolved.model,
@@ -146,7 +177,8 @@ def _scan(repo_root: Path) -> PricingSnapshot:
     )
 
 
-def _read_cache(path: Path) -> PricingSnapshot | None:
+def _read_cache(path: Path) -> tuple[PricingSnapshot, float] | None:
+    """The cached snapshot and its age in seconds, or ``None`` if unusable."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -154,12 +186,14 @@ def _read_cache(path: Path) -> PricingSnapshot | None:
     if not isinstance(raw, dict) or raw.get("version") != _CACHE_VERSION:
         return None
     resolved_at = raw.get("resolved_at")
+    # ``bool`` is an ``int``, and True would read as one second past the epoch.
     if not isinstance(resolved_at, int | float) or isinstance(resolved_at, bool):
         return None
-    if time.time() - float(resolved_at) > _TTL_SECONDS:
+    age = time.time() - float(resolved_at)
+    if age > _TTL_SECONDS:
         return None
     try:
-        return PricingSnapshot(
+        snapshot = PricingSnapshot(
             model=str(raw["model"]),
             pricing_source=str(raw["pricing_source"]),
             pricing_version=str(raw["pricing_version"]),
@@ -169,6 +203,11 @@ def _read_cache(path: Path) -> PricingSnapshot | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
+    # Re-checked on read, not just on write: the file is editable, and an
+    # over-long model would make the event contract reject the whole event.
+    if not snapshot.model or len(snapshot.model) > _MAX_MODEL_LENGTH:
+        return None
+    return snapshot, max(0.0, age)
 
 
 def _write_cache(path: Path, snapshot: PricingSnapshot) -> None:
@@ -178,7 +217,10 @@ def _write_cache(path: Path, snapshot: PricingSnapshot) -> None:
     the temporary-then-replace is about latency here as much as correctness.
     """
     payload = {"version": _CACHE_VERSION, "resolved_at": time.time(), **snapshot.as_payload()}
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    # Unique per thread as well as per process: two threads in the MCP server
+    # resolving at once would otherwise interleave writes into one temp file,
+    # and os.replace would atomically publish the mixture.
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_text(json.dumps(payload), encoding="utf-8")

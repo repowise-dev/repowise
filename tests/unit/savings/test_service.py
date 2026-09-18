@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 from repowise.core.distill.store import OmissionStore
 from repowise.core.savings import recorder
@@ -16,28 +19,45 @@ def _sidecar(repo: Path) -> None:
     OmissionStore(repo / ".repowise" / "omissions" / "omissions.db").close()
 
 
-def _record(repo: Path, *, baseline: int, surface: str = "mcp", agent: str = "codex") -> None:
+def _record(
+    repo: Path,
+    *,
+    baseline: int,
+    surface: str = "mcp",
+    agent: str = "codex",
+    operation: str = "get_answer",
+    evidence_kind: str = "measured",
+    occurred_at: datetime | str | None = None,
+    priced: bool = False,
+) -> None:
     event_id = new_event_id()
-    assert recorder.record_event(
-        repo,
-        {
-            "event_id": event_id,
-            "idempotency_key": scoped_idempotency_key(str(repo), surface, event_id),
-            "occurred_at": datetime.now(UTC),
-            "surface": surface,
-            "integration": agent,
-            "agent": agent,
-            "operation": "get_answer",
-            "evidence_kind": "measured",
-            "estimator": "chars_per_token_floor_v1",
-            "token_unit": "estimated_tokens",
-            "result_state": "success",
-            "is_usable": True,
-            "baseline_input_tokens": baseline,
-            "pre_budget_input_tokens": baseline,
-            "delivered_input_tokens": 0,
-        },
-    )
+    payload: dict = {
+        "event_id": event_id,
+        "idempotency_key": scoped_idempotency_key(str(repo), surface, event_id),
+        "occurred_at": occurred_at or datetime.now(UTC),
+        "surface": surface,
+        "integration": agent,
+        "agent": agent,
+        "operation": operation,
+        "evidence_kind": evidence_kind,
+        "estimator": "chars_per_token_floor_v1",
+        "token_unit": "estimated_tokens",
+        "result_state": "success",
+        "is_usable": True,
+        "baseline_input_tokens": baseline,
+        "pre_budget_input_tokens": baseline,
+        "delivered_input_tokens": 0,
+    }
+    if priced:
+        payload.update(
+            model="claude-opus-5",
+            currency="USD",
+            pricing_source="session_model:claude_code",
+            pricing_version="pricing:test",
+            input_rate_usd_per_million=5.0,
+            output_rate_usd_per_million=25.0,
+        )
+    assert recorder.record_event(repo, payload)
 
 
 def test_a_repository_with_no_sidecar_reports_nothing_rather_than_zero(
@@ -68,6 +88,36 @@ def test_the_reader_asks_with_the_same_repository_id_the_recorder_wrote(
     report = load_report(tmp_path)
     assert report is not None
     assert report.saved_input_tokens == 1_000
+
+
+def test_an_unnormalized_path_still_finds_its_own_events(tmp_path: Path) -> None:
+    """The reader and the writer must agree on the id, whatever spelling they get.
+
+    The server stores ``local_path`` verbatim from the request that registered
+    the repository, so it can carry a trailing separator or forward slashes on
+    Windows. ``sidecar_path`` normalizes through Path and finds the database
+    either way, so a mismatch here does not error -- it reports ``available``
+    with a confident zero, which is indistinguishable from a quiet repository.
+    """
+    _sidecar(tmp_path)
+    _record(tmp_path, baseline=1_000)
+
+    for spelling in (f"{tmp_path}{os.sep}", str(tmp_path).replace(os.sep, "/")):
+        report = load_report(spelling)
+        assert report is not None, spelling
+        assert report.saved_input_tokens == 1_000, spelling
+
+
+def test_an_enormous_window_reports_nothing_rather_than_raising(tmp_path: Path) -> None:
+    """``days`` large enough to overflow a timedelta is still a read path.
+
+    OverflowError is not a ValueError, so it escaped the guard and surfaced as
+    a 500 from the savings endpoint.
+    """
+    _sidecar(tmp_path)
+    _record(tmp_path, baseline=1_000)
+    assert load_report(tmp_path, days=999_999_999) is None
+    assert load_report(tmp_path, days=10**12) is None
 
 
 def test_a_corrupt_sidecar_degrades_instead_of_raising(tmp_path: Path) -> None:
@@ -101,9 +151,30 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
     from dataclasses import asdict
 
     _sidecar(tmp_path)
-    _record(tmp_path, baseline=1_000, surface="mcp", agent="claude_code")
-    _record(tmp_path, baseline=250, surface="distill", agent="codex")
-    _record(tmp_path, baseline=90, surface="hook", agent="claude_code")
+    # Deliberately the cases a three-identical-event fixture would not reach:
+    # priced beside unpriced (so the null-model group exists and the USD sums
+    # are non-zero), a tie on saved tokens across a null and a non-null group
+    # (the exact ordering the two builders have to agree on), both evidence
+    # kinds, and a multi-day series.
+    _record(tmp_path, baseline=1_000, surface="mcp", agent="claude_code", priced=True)
+    _record(tmp_path, baseline=1_000, surface="distill", agent="codex", priced=False)
+    _record(
+        tmp_path,
+        baseline=250,
+        surface="hook",
+        agent="claude_code",
+        operation="read_skeleton",
+        evidence_kind="inferred",
+        occurred_at="2026-09-10T08:00:00.000000Z",
+    )
+    _record(
+        tmp_path,
+        baseline=90,
+        surface="mcp",
+        agent="unknown",
+        occurred_at="2026-09-11T08:00:00.000000Z",
+        priced=True,
+    )
 
     as_of = datetime.now(UTC)
     from_sql = load_report(tmp_path, as_of=as_of)
@@ -125,4 +196,18 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
     ]
     from_pure = build_report(events, (), as_of=as_of)
 
-    assert asdict(from_sql) == asdict(from_pure)
+    sql, pure = asdict(from_sql), asdict(from_pure)
+    # Floats compared with a tolerance: SQLite sums the priced tokens in table
+    # order and the pure builder in list order, and float addition is not
+    # associative, so exact equality here would be a flake waiting to happen.
+    for key in ("priced_input_savings_usd", "priced_output_savings_usd"):
+        assert sql.pop(key) == pytest.approx(pure.pop(key))
+    assert sql == pure
+
+    # Guard rails on the fixture itself: if it ever stops covering the mixed
+    # cases, the equality above stops being worth much.
+    assert from_sql.priced_input_savings_usd > 0
+    assert from_sql.unpriced_saved_input_tokens > 0
+    assert len(from_sql.per_day) == 3
+    assert any(row["model"] is None for row in from_sql.per_model)
+    assert from_sql.inferred_saved_input_tokens > 0

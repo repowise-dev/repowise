@@ -183,12 +183,22 @@ def test_saved_reports_totals_and_per_operation(repo_cwd: Path) -> None:
 
 
 def test_saved_splits_savings_by_surface(repo_cwd: Path) -> None:
-    """The grouping that replaced ``--by source``."""
+    """The grouping that replaced ``--by source``.
+
+    Asserted on the row values rather than on the surface names: both words
+    also appear in the table caption, which prints whether or not the grouping
+    produced any rows at all.
+    """
     _seed_canonical(repo_cwd)
     result = CliRunner().invoke(saved_command, ["--by", "surface"])
     assert result.exit_code == 0
-    assert "distill" in result.output
-    assert "hook" in result.output
+    # Cell borders removed before collapsing whitespace, so a row reads as one
+    # run of text rather than as three fragments separated by box drawing.
+    flat = " ".join(result.output.replace("│", " ").split())
+    # distill: one event, 10,000 - 1,000.
+    assert "distill 1 9,000" in flat
+    # hook: two events, (5,000 - 500) + (400 - 100).
+    assert "hook 2 4,800" in flat
 
 
 def test_saved_labels_agents_from_the_registry(repo_cwd: Path) -> None:

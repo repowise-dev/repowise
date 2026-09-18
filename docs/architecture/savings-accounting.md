@@ -155,11 +155,21 @@ merged into or subtracted from achieved agent savings.
 
 The rate is captured when the event is written, from a per-repository snapshot
 cached in the sidecar (`pricing-snapshot.json`, 24-hour TTL). Detecting the
-coding agent's model scans local transcripts, which takes seconds when a
-repository has no Codex history, so it cannot run per event. The hook reads
-that cache but never refills it: it is a fresh process per tool call and could
-not amortize a scan, so it writes an unpriced event and whichever surface runs
-next refills the cache. Unpriced is a reported state, not a gap.
+coding agent's model scans the local transcripts, which measures around six
+seconds on a repository with no Codex history, so it cannot run per event.
+
+**No agent-facing surface ever resolves it.** The MCP path, the rewrite hook
+and the augment hook all read the cache and write an unpriced event when it is
+cold. Each of them runs inside the agent's own tool call, where a six-second
+stall is unacceptable even once a day, and the hooks are fresh processes that
+could not amortize one anyway. The cache is filled by `repowise distill` run
+directly and by `repowise saved` — a human typed both, and the second is asking
+for the dollar figure.
+
+So a repository that has only ever served MCP calls reports its savings as
+unpriced until someone runs either command. That is a reported state, not a
+gap: the report counts priced and unpriced tokens separately, and the surfaces
+say which is which.
 
 ## One report, three consumers
 

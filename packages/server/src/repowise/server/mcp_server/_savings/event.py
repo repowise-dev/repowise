@@ -132,9 +132,15 @@ def _record(interaction: Interaction, result: Any) -> bool:
     baseline = interaction.baseline_input_tokens
     inferred = baseline is not None
     # The rate this saving is worth, frozen now so a later price change cannot
-    # rewrite it. The server is long-lived, so the underlying detection runs at
-    # most once a day per repository and every call after that reads a memo.
-    pricing = resolve_pricing_snapshot(interaction.repo_root)
+    # rewrite it -- but read from cache only, never resolved here. Detecting the
+    # agent's model scans the local transcripts, which measures around six
+    # seconds on a repository with no Codex history, and this runs inside the
+    # agent's own tool call. Once a day is still far too often to stall one.
+    #
+    # So the tool call takes an unpriced event and `repowise distill` or
+    # `repowise saved` fills the cache; the report counts priced and unpriced
+    # tokens separately for exactly this reason.
+    pricing = resolve_pricing_snapshot(interaction.repo_root, allow_scan=False)
 
     payload: dict[str, Any] = {
         "event_id": interaction.event_id,

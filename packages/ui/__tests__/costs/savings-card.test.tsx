@@ -112,10 +112,12 @@ describe("SavingsCard", () => {
     expect(link).toHaveAttribute("href", expect.stringContaining("DISTILL.md"));
   });
 
-  it("does not claim a re-read would certainly have been replaced", () => {
+  it("reports a re-read as observed rather than as certainly replaceable", () => {
     render(<SavingsCard data={makeData({ reread_events: 5, reread_tokens_est: 635 })} />);
+    // Hedged both ways: "potentially avoid", and "were observed" rather than a
+    // claim that get_symbol would have replaced them.
     expect(screen.getByText(/Potentially avoid ~635/)).toBeInTheDocument();
-    expect(screen.queryByText(/would have replaced/)).not.toBeInTheDocument();
+    expect(screen.getByText(/were observed/)).toBeInTheDocument();
   });
 
   it("shows the empty state when nothing is saved", () => {
