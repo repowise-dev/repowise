@@ -18,6 +18,76 @@ def test_mcp_help_lists_streamable_http_transport() -> None:
     assert "HTTP/SSE" in result.output
 
 
+def test_mcp_help_marks_sse_deprecated() -> None:
+    """The help text is where the value gets picked, so the status lives there.
+
+    SSE is the transport the MCP spec moved past; a config that names it keeps
+    working for one release, and this line is what tells its author which
+    value to move to before the next one.
+    """
+    result = CliRunner().invoke(cli, ["mcp", "--help"])
+
+    assert result.exit_code == 0
+    assert "sse (deprecated" in result.output
+    assert "streamable-http" in result.output
+
+
+def test_mcp_cli_sse_transport_warns_that_it_is_deprecated(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """SSE still starts, and says what replaces it on the way up.
+
+    Removing the value outright would turn a working editor config into a
+    startup failure with no migration window, so the run is allowed and the
+    notice carries the move.
+    """
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: None)
+
+    result = CliRunner().invoke(
+        cli, ["mcp", str(tmp_path), "--transport", "sse", "--port", "7338"]
+    )
+
+    assert result.exit_code == 0
+    assert "deprecated" in result.output
+    assert "streamable-http" in result.output
+    # The deprecation notice is additive: the SSE startup line still renders.
+    assert "URL: http://127.0.0.1:7338/sse" in result.output
+
+
+def test_mcp_cli_streamable_http_carries_no_deprecation_notice(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The replacement is pointed to, never warned about."""
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: None)
+
+    result = CliRunner().invoke(
+        cli, ["mcp", str(tmp_path), "--transport", "streamable-http"]
+    )
+
+    assert result.exit_code == 0
+    assert "deprecated" not in result.output
+
+
+def test_mcp_cli_stdio_never_prints_the_deprecation_notice(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """stdio owns stdout, where anything printed corrupts the JSON-RPC frames.
+
+    The notice hangs off the network-startup printer, so the default transport
+    cannot emit it: this pins that, because a warning wired one layer higher
+    would land in the protocol channel.
+    """
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kw: None)
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
 def test_mcp_cli_passes_tools_override(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     captured: dict[str, object] = {}
