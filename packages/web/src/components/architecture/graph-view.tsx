@@ -10,6 +10,7 @@ import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-b
 import {
   GraphScopeSwitcher,
   GraphNarrowingSelect,
+  type GraphScope,
 } from "@repowise-dev/ui/graph/graph-scope-controls";
 import type { ModuleGroup } from "@repowise-dev/ui/graph/use-module-filter";
 import { getGraph } from "@/lib/api/graph";
@@ -53,7 +54,9 @@ export function GraphView({
   repoId: string;
   /** Controlled by the page, which owns `?view=`. */
   scope: Scope;
-  onScopeChange: (scope: Scope) => void;
+  /** The page owns `?view=`, so a scope the canvas does not draw (the tree)
+   *  is handed straight up rather than swallowed here. */
+  onScopeChange: (scope: GraphScope) => void;
 }) {
   const searchParams = useSearchParams();
   const initialNode = searchParams.get("node");
@@ -178,13 +181,17 @@ export function GraphView({
   }, [onScopeChange]);
 
   const handleScopeChange = useCallback(
-    (next: Scope) => {
+    (next: GraphScope) => {
       // Narrowing is a file-scope concept, so it does not survive a trip to the
       // constellation. It does not survive a trip *back* either: a
       // `?view=communities&community=3` link (hand-edited, or an old share)
       // renders the constellation with the param still set, and without this
       // clicking "Files" would drop the reader inside community 3 rather than
       // in the file graph they asked for.
+      //
+      // The tree is included: it is not narrowed by `?module=` or `?community=`
+      // either, and a pin left set would be there when the reader came back to
+      // the canvas.
       void setActiveModule(null);
       void setCommunityParam(null);
       // `?node=` forces the file scope for as long as it is set, so leaving it

@@ -1451,6 +1451,35 @@ the `useDebounce` presentational hook for autocomplete.
 
 ---
 
+## `graph/code-graph-tree` — `CodeGraphTree`
+
+The dependency graph as a collapsible outline. Presentational: it takes
+one file-level `GraphExport` payload and owns nothing but which rows
+are open. Directories are derived from the node paths, `external:` and
+`framework:` nodes are skipped as rows (no page behind them) but kept as
+import targets, and each file row opens in place to list the types it
+imports and the file each one comes from, read straight off the payload's
+`imported_names`.
+
+Only file-to-file edges count: the module's
+`CODE_GRAPH_DEPENDENCY_EDGE_TYPES` mirrors the engine's
+`FILE_DEPENDENCY_EDGE_TYPES`, so a `co_changes` row (history, not code)
+never appears as an import.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `graph` | `GraphExport \| null \| undefined` | yes | `undefined` while the first fetch is in flight. |
+| `isLoading` | `boolean` | no | Renders the skeleton instead of the empty state. |
+| `fileHref` | `(path: string) => string` | no | File entity page href. Rows and targets render no link without it. |
+| `LinkComponent` | `ElementType` | no | Router link; defaults to `<a>`. |
+| `className` | `string` | no | |
+
+Also exported: `buildCodeGraphTree(nodes, links)` (the pure builder),
+`collectDirectoryIds`, `summarizeFileImports`, and the
+`CodeGraphTreeItem` / `CodeGraphFile` / `CodeGraphImport` types.
+
+---
+
 ## `graph/graph-flow` — `GraphFlow`
 
 The full graph canvas. Presentational shell over Sigma that handles

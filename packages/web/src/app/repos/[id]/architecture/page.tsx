@@ -4,16 +4,19 @@
  * Architecture — `/repos/[id]/architecture`.
  *
  * Tabs are DATASETS, not zoom levels:
- *   - Map       — the dependency graph, at community or file scope
+ *   - Map       — the dependency graph, at community or file scope, or as the
+ *                 outline (`?view=tree`)
  *   - Coupling  — files that tend to change together
  *   - Packages  — the declared third-party dependency registry
  *   - Symbols   — the searchable symbol index
  *
  * How zoomed out the graph is — communities vs files — is a different axis and
  * has exactly one control, `GraphScopeSwitcher`, in the section header beside
- * the graph. It used to be steered from here *and* from a pill cluster floating
- * on the canvas, which put "Communities" on screen twice and left "Explore" as
- * a tab meaning "the graph, but not communities".
+ * the graph. That control carries the tree scope too, since it is a third way
+ * of presenting the same file graph rather than a dataset of its own. It used
+ * to be steered from here *and* from a pill cluster floating on the canvas,
+ * which put "Communities" on screen twice and left "Explore" as a tab meaning
+ * "the graph, but not communities".
  *
  * The tab named "Packages" was "Dependencies", which collided with the graph
  * itself: the Map tab *is* the dependency graph, so a sibling tab called
@@ -23,13 +26,19 @@
  * ## URL state
  *
  * One param per axis, no two params saying the same thing:
- *   - `?view=`   communities | files | coupling | packages | symbols
+ *   - `?view=`   communities | files | tree | coupling | packages | symbols
  *   - `?signal=` dead | hot — which overlay is lit on the graph
  *   - `?module=` a path prefix the file scope is filtered to
  *   - `?community=` the community the file scope is drilled into. One axis with
  *     `?module=`: both narrow the file graph, so at most one is ever set.
  *   - `?show=` which non-production files the community views count
  *     (`tests,examples,docs`); absent means production only.
+ *
+ * `view=tree` is the third reading of the file graph, under the Map tab with
+ * the other two: the same payload as an outline. It is a scope rather than a
+ * tab for the reason above — tabs are datasets and this is the file dataset
+ * again — and it is steered from the same `GraphScopeSwitcher` the canvas uses,
+ * which both views render.
  *
  * `?view=` and `?viewMode=` used to encode the same axis twice — `view=explore`
  * and `viewMode=full` both meant "the file graph", and they could disagree.
@@ -48,6 +57,7 @@ import { Code2 } from "lucide-react";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { ErrorBoundary } from "@repowise-dev/ui/shared";
 import { GraphView } from "@/components/architecture/graph-view";
+import { CodeGraphTreeView } from "@/components/architecture/code-graph-tree-view";
 import { DependenciesView } from "@/components/architecture/dependencies-view";
 import { SymbolTableWrapper as SymbolTable } from "@/components/symbols/symbol-table-wrapper";
 import { SymbolIndexHeader } from "@repowise-dev/ui/symbols";
@@ -57,8 +67,8 @@ import { CouplingTab } from "@/components/coupling/coupling-tab";
 // The curated layered view now lives under the dedicated Knowledge Graph route.
 const KNOWLEDGE_GRAPH_VIEWS = new Set(["layers"]);
 
-/** Canonical `?view=` values. The first two are both the Map tab. */
-const CANONICAL = ["communities", "files", "coupling", "packages", "symbols"] as const;
+/** Canonical `?view=` values. The first three are all the Map tab. */
+const CANONICAL = ["communities", "files", "tree", "coupling", "packages", "symbols"] as const;
 type CanonicalView = (typeof CANONICAL)[number];
 
 /** Everything `?view=` accepts, canonical values plus legacy spellings. */
@@ -88,10 +98,11 @@ const LEGACY_VIEW_MODES: Record<string, { view: CanonicalView; signal?: "dead" |
   unified: { view: "files", signal: "dead" },
 };
 
-// Which tab a canonical view renders under. Both graph scopes are the Map tab.
+// Which tab a canonical view renders under. All three graph scopes are the Map tab.
 const TAB_FOR_VIEW: Record<CanonicalView, string> = {
   communities: "map",
   files: "map",
+  tree: "map",
   coupling: "coupling",
   packages: "packages",
   symbols: "symbols",
@@ -180,7 +191,7 @@ export default function ArchitecturePage({
   );
 
   const handleScopeChange = useCallback(
-    (next: "communities" | "files") => {
+    (next: "communities" | "files" | "tree") => {
       void setView(next);
     },
     [setView],
@@ -210,7 +221,14 @@ export default function ArchitecturePage({
         tabIndex={0}
         className="min-h-0 flex-1 overflow-auto"
       >
-        {activeTab === "map" && (
+        {activeTab === "map" && view === "tree" && (
+          <CodeGraphTreeView
+            repoId={repoId}
+            scope="tree"
+            onScopeChange={handleScopeChange}
+          />
+        )}
+        {activeTab === "map" && view !== "tree" && (
           <GraphView
             repoId={repoId}
             scope={view === "files" ? "files" : "communities"}
