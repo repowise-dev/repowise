@@ -126,7 +126,11 @@ export interface FileDetailGit extends Hotspot {
 }
 
 export interface FileDetailCoverage {
-  line_coverage_pct: number;
+  /**
+   * Null when the file has no coverable lines at all, which is not the same
+   * fact as 0% of them being covered. The tab renders "—" for it.
+   */
+  line_coverage_pct: number | null;
   branch_coverage_pct: number | null;
   total_coverable_lines: number;
   /**

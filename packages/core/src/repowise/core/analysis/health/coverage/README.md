@@ -107,6 +107,12 @@ coverage:
 - Each `FileCoverage` carries `file_path` (POSIX-normalized), line/branch
   coverage percentages, the explicit covered-line set, and the total
   coverable line count.
+- `line_coverage_pct` is `None` when the file has **nothing coverable** (an
+  lcov `LF:0` record, a type-only module with no executable statement). That
+  is "not applicable", not "0% covered", and it mirrors
+  `branch_coverage_pct`, which has always been `None` with no branches. The
+  downstream readers distinguish the two by the null, so a file with no code
+  cannot attract an uncovered-code deduction.
 
 ## Extension points
 

@@ -43,7 +43,10 @@ def parse_lcov(text: str) -> CoverageReport:
             return
         total = explicit_lf if explicit_lf is not None else len(total_lines)
         hit = explicit_lh if explicit_lh is not None else len(covered_lines)
-        line_pct = (hit / total * 100.0) if total else 0.0
+        # 0 coverable lines answers "not applicable", not "0% covered". A type-only
+        # module reported as LF:0 is a different fact from LH:0 LF:2, and every
+        # downstream reader distinguishes them by None. Mirrors branch_pct below.
+        line_pct: float | None = (hit / total * 100.0) if total else None
         branch_pct: float | None
         if has_branches and branches_found:
             branch_pct = branches_hit / branches_found * 100.0
@@ -52,7 +55,7 @@ def parse_lcov(text: str) -> CoverageReport:
         files.append(
             FileCoverage(
                 file_path=current_path,
-                line_coverage_pct=round(line_pct, 2),
+                line_coverage_pct=round(line_pct, 2) if line_pct is not None else None,
                 branch_coverage_pct=round(branch_pct, 2) if branch_pct is not None else None,
                 covered_lines=sorted(covered_lines),
                 total_coverable_lines=total,

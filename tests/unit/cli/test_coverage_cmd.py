@@ -196,6 +196,13 @@ def test_coverage_add_stamps_live_head_not_stored_column(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _fake_repo_file_keys)
     monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+    # The command now reconciles the store before opening it (the ingest writes
+    # NULL for a file with no coverable lines, which a pre-fix store's NOT NULL
+    # column would reject). Stubbed so the test stays about the stamp.
+    async def _fake_reconcile(url):
+        return None
+
+    monkeypatch.setattr(coverage_cmd, "reconcile_schema_best_effort", _fake_reconcile)
     monkeypatch.setattr("repowise.core.persistence.create_engine", lambda url: object())
     monkeypatch.setattr("repowise.core.persistence.create_session_factory", lambda engine: object())
     monkeypatch.setattr("repowise.core.persistence.get_session", lambda sf: _FakeSession())

@@ -17,7 +17,18 @@ class FileCoverage:
     """Per-file coverage extracted from a single report."""
 
     file_path: str
-    line_coverage_pct: float
+    #: ``None`` when the file has nothing coverable to measure.
+    #:
+    #: A report that instruments a type-only module and finds no executable
+    #: statement emits ``LF:0``, which answers a different question from
+    #: ``LH:0 LF:2``. Collapsing both to ``0.0`` let every consumer that reads
+    #: a percentage treat "nothing to cover" as "nothing covered", and the
+    #: ``cov is None`` guards in ``coverage_gradient`` / ``coverage_gap`` /
+    #: ``untested_hotspot`` (which are the documented promise that absent
+    #: coverage is never imputed as uncovered) could not tell them apart.
+    #: Mirrors ``branch_coverage_pct``, which already reports ``None`` when
+    #: there are no branches.
+    line_coverage_pct: float | None
     branch_coverage_pct: float | None
     covered_lines: list[int] = field(default_factory=list)
     total_coverable_lines: int = 0

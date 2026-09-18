@@ -42,7 +42,12 @@ async def save_coverage_files(
             if hasattr(f, "file_path"):
                 data = {
                     "file_path": f.file_path,
-                    "line_coverage_pct": float(f.line_coverage_pct),
+                    # ``None`` when the file has zero coverable lines: the
+                    # column is nullable so "not applicable" survives the write
+                    # (issue #2193). ``float(None)`` would raise here.
+                    "line_coverage_pct": (
+                        float(f.line_coverage_pct) if f.line_coverage_pct is not None else None
+                    ),
                     "branch_coverage_pct": (
                         float(f.branch_coverage_pct) if f.branch_coverage_pct is not None else None
                     ),
@@ -177,7 +182,12 @@ async def get_coverage_summary(
     branch_pcts: list[float] = []
     branch_weights: list[int] = []
     for r in rows:
-        covered += round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)
+        # A file with no coverable lines stores ``None`` (not applicable), and
+        # contributes nothing to either side of the ratio (issue #2193). It is
+        # still counted in ``file_count``. Its ``total_coverable_lines`` is 0,
+        # so skipping it cannot change ``line_pct``.
+        if r.line_coverage_pct is not None:
+            covered += round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)
         total += r.total_coverable_lines
         if r.branch_coverage_pct is not None:
             branch_pcts.append(r.branch_coverage_pct)

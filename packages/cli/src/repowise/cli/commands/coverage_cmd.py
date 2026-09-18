@@ -19,6 +19,7 @@ from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_db_url_for_repo,
+    reconcile_schema_best_effort,
     resolve_command_target,
     run_async,
 )
@@ -160,7 +161,14 @@ def coverage_add(
             save_test_coverage,
         )
 
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        url = get_db_url_for_repo(repo_path)
+        # A file with no coverable lines now writes ``None``, and a store
+        # created before that value existed declares the column NOT NULL:
+        # the write would be rejected with a raw constraint violation on a
+        # column this command never names. Repair the same way every other
+        # store-opening command does before opening it.
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))

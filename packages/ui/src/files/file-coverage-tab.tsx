@@ -61,7 +61,12 @@ export function FileCoverageTab({
   // returns a Tailwind *class* string, and this file used to put it straight
   // into `style={{ color }}` / `background:` — which is not a colour, so the
   // figure and the bar had been painting default ink the whole time.
-  const band = coverageBand(pct);
+  //
+  // No coverable lines is "not applicable", not 0% covered: `coverageBand()`
+  // wants a number and `pct.toFixed(1)` would throw on null, so the figure
+  // and the bar both fall back to the em dash the other coverage surfaces
+  // already use for this case.
+  const band = pct == null ? null : coverageBand(pct);
   const coveredCount = coverage.covered_line_count ?? coverage.covered_lines.length;
   const uncovered = Math.max(0, coverage.total_coverable_lines - coveredCount);
 
@@ -75,38 +80,49 @@ export function FileCoverageTab({
           `CoverageSummary` plus per-file rows to split. */}
       <PageLede
         label="Line coverage"
-        value={`${pct.toFixed(1)}%`}
-        valueColor={band.color}
+        value={pct == null ? "—" : `${pct.toFixed(1)}%`}
+        {...(band ? { valueColor: band.color, band } : {})}
         unit="of coverable lines"
-        band={band}
         layout="beside"
         figureFooter={
-          <div
-            className="h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]"
-            role="img"
-            aria-label={`${pct.toFixed(1)}% of coverable lines covered`}
-          >
+          pct == null ? null : (
             <div
-              className="h-full rounded-full"
-              style={{ width: `${Math.min(100, Math.max(0, pct))}%`, background: band.color }}
-            />
-          </div>
+              className="h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]"
+              role="img"
+              aria-label={`${pct.toFixed(1)}% of coverable lines covered`}
+            >
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${Math.min(100, Math.max(0, pct))}%`, background: band!.color }}
+              />
+            </div>
+          )
         }
       >
         <p>
-          Tests reach{" "}
-          <Fig>
-            {formatNumber(coveredCount)} of {formatNumber(coverage.total_coverable_lines)}{" "}
-            coverable lines
-          </Fig>
-          , leaving <Fig>{formatNumber(uncovered)}</Fig> with nothing executing them
-          {coverage.branch_coverage_pct != null && (
+          {pct == null ? (
             <>
-              . Branch coverage is <Fig>{coverage.branch_coverage_pct.toFixed(1)}%</Fig>
+              This report instrumented the file but found no executable line in it, so there is
+              no percentage to report. A type-only module or a re-export shim is empty here,
+              not uncovered.
+            </>
+          ) : (
+            <>
+              Tests reach{" "}
+              <Fig>
+                {formatNumber(coveredCount)} of {formatNumber(coverage.total_coverable_lines)}{" "}
+                coverable lines
+              </Fig>
+              , leaving <Fig>{formatNumber(uncovered)}</Fig> with nothing executing them
+              {coverage.branch_coverage_pct != null && (
+                <>
+                  . Branch coverage is <Fig>{coverage.branch_coverage_pct.toFixed(1)}%</Fig>
+                </>
+              )}
+              . These are the lines your own test run executed, so this figure is
+              line-level and exact.
             </>
           )}
-          . These are the lines your own test run executed, so this figure is
-          line-level and exact.
         </p>
         <p className="mt-2.5">
           Read from a{" "}

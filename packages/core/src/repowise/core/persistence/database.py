@@ -363,6 +363,28 @@ def _add_column_ddl(column: object, dialect: object) -> str:
     return " ".join(parts)
 
 
+def _relax_not_null(connection: object, table_name: str, column_name: str) -> None:
+    """Drop NOT NULL on one column of an existing table.
+
+    SQLite has no ``ALTER COLUMN``, so the table is rebuilt through Alembic's
+    batch mode, which carries the rows, constraints and indexes across. Every
+    other backend gets the plain DDL. ``alembic`` is a declared runtime
+    dependency of the project, so no new install requirement is introduced.
+    """
+    dialect = connection.dialect  # type: ignore[attr-defined]
+    if dialect.name == "sqlite":
+        from alembic.migration import MigrationContext  # type: ignore[import-not-found]
+        from alembic.operations import Operations  # type: ignore[import-not-found]
+
+        op = Operations(MigrationContext.configure(connection))
+        with op.batch_alter_table(table_name) as batch_op:
+            batch_op.alter_column(column_name, nullable=True)
+        return
+    connection.execute(  # type: ignore[attr-defined]
+        text(f'ALTER TABLE "{table_name}" ALTER COLUMN "{column_name}" DROP NOT NULL')
+    )
+
+
 def _reconcile_schema(connection: object) -> None:
     """Bring an existing database up to ``Base.metadata`` (additive only).
 
@@ -387,6 +409,14 @@ def _reconcile_schema(connection: object) -> None:
         are NOT reconciled;
       * Postgres extensions / functions (e.g. pgvector) are NOT created
         here — those still belong in Alembic migrations.
+
+    A column whose **nullability** the model has widened is the one
+    non-additive change reconciled here, because the alternative is a write
+    that fails on a column nobody touched: the model permits ``None``, the
+    table refuses it, and the ORM raises a constraint violation for a value
+    the caller was told was legal (issue #2193). That is a different failure
+    from a removed or retyped column, which needs a real migration because
+    the *data* has to move.
 
     Uses a sync connection (via ``run_sync``) so the SQLAlchemy DDL compilers
     work directly.
@@ -424,8 +454,17 @@ def _reconcile_schema(connection: object) -> None:
         # compiling a column's type can fail on its own and that failure has
         # to strand no more than compiling it successfully and failing to
         # execute it would.
+        _attempt(what, lambda: connection.execute(build()))  # type: ignore[attr-defined]
+
+    def _attempt(what: str, action: Callable[[], object]) -> None:
+        """Run one reconcile step, recording a failure instead of aborting.
+
+        Split out from ``_run`` because not every step is a single statement:
+        dropping NOT NULL on SQLite is a table rebuild, which has to drive the
+        connection itself rather than hand back a compiled statement.
+        """
         try:
-            connection.execute(build())  # type: ignore[attr-defined]
+            action()
         except Exception as exc:  # re-raised below, once the walk is done
             if not continue_past_failure:
                 raise
@@ -449,14 +488,33 @@ def _reconcile_schema(connection: object) -> None:
         # nullability. We deliberately do NOT enforce FK constraints on
         # back-filled columns: SQLite can't add an enforced FK after the
         # fact, and write-time enforcement is sufficient for our purposes.
-        db_cols = {c["name"] for c in inspector.get_columns(table.name)}
+        live_columns = {c["name"]: c for c in inspector.get_columns(table.name)}
         for column in table.columns:
-            if column.name in db_cols:
+            if column.name in live_columns:
                 continue
             _run(
                 f"{table.name}.{column.name}",
                 lambda table=table, column=column: text(
                     f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
+                ),
+            )
+
+        # --- Widened nullability ---------------------------------------
+        # A model column that became nullable while the live table still says
+        # NOT NULL refuses a ``None`` the ORM is entitled to send, and it
+        # fails at write time with a raw constraint violation on a column the
+        # caller never named (issue #2193). Detected the same way a missing
+        # column is: by comparing the model against the live schema. Only
+        # widening is reconciled; narrowing would have to decide what to do
+        # with the NULLs already stored, which is a migration's job.
+        for column in table.columns:
+            live = live_columns.get(column.name)
+            if live is None or not column.nullable or live["nullable"]:
+                continue
+            _attempt(
+                f"{table.name}.{column.name} (drop NOT NULL)",
+                lambda table=table, column=column: _relax_not_null(
+                    connection, table.name, column.name
                 ),
             )
 

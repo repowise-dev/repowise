@@ -45,6 +45,143 @@ def test_lcov_parses_files_and_branches() -> None:
     assert empty.line_coverage_pct == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Zero coverable lines (issue #2193).
+#
+# ``LF:0`` answers "there is nothing here to measure", which is a different
+# fact from ``LH:0 LF:2`` ("two lines, neither executed"). Reporting both as
+# 0.0 handed every downstream consumer a hard zero it could not distinguish
+# from a genuinely uncovered file, so coverage_gradient and untested_hotspot
+# both fired on a type-only module and fix_first ranked it as a real defect.
+# ``None`` is the "not applicable" answer, matching branch_coverage_pct in the
+# same dataclass.
+# ---------------------------------------------------------------------------
+
+_LCOV_ZERO_LF = """TN:
+SF:src/types.ts
+FNF:0
+FNH:0
+LF:0
+LH:0
+BRF:0
+BRH:0
+end_of_record
+TN:
+SF:src/real.ts
+FNF:2
+FNH:0
+DA:1,0
+DA:2,0
+LF:2
+LH:0
+BRF:0
+BRH:0
+end_of_record
+"""
+
+
+def test_lcov_zero_coverable_lines_is_not_applicable() -> None:
+    """The issue's own reproduction, both records side by side.
+
+    The two must not collapse to the same value: one has nothing to cover.
+    """
+    paths = {f.file_path: f for f in parse_lcov(_LCOV_ZERO_LF).files}
+
+    types = paths["src/types.ts"]
+    real = paths["src/real.ts"]
+
+    assert types.total_coverable_lines == 0
+    assert types.line_coverage_pct is None
+    assert real.total_coverable_lines == 2
+    assert real.line_coverage_pct == 0.0
+
+
+def test_lcov_zero_lf_without_da_lines_is_not_applicable() -> None:
+    """``LF`` is optional; a record with no ``DA`` lines is the same fact.
+
+    Derived totals come from the ``DA`` set, so this is the path a report
+    without an explicit ``LF`` takes to the same answer.
+    """
+    report = parse_lcov("SF:src/only_types.ts\nFNF:0\nFNH:0\nend_of_record\n")
+
+    assert report.files[0].total_coverable_lines == 0
+    assert report.files[0].line_coverage_pct is None
+
+
+def test_cobertura_zero_coverable_lines_is_not_applicable() -> None:
+    xml = """<coverage>
+      <packages><package name="p"><classes>
+        <class filename="src/types.ts" line-rate="0" branch-rate="0">
+          <lines/>
+        </class>
+        <class filename="src/real.ts" line-rate="0" branch-rate="0">
+          <lines>
+            <line number="1" hits="0"/>
+            <line number="2" hits="0"/>
+          </lines>
+        </class>
+      </classes></package></packages>
+    </coverage>"""
+    paths = {f.file_path: f for f in parse_cobertura(xml).files}
+
+    assert paths["src/types.ts"].total_coverable_lines == 0
+    assert paths["src/types.ts"].line_coverage_pct is None
+    assert paths["src/real.ts"].line_coverage_pct == 0.0
+
+
+def test_clover_zero_coverable_lines_is_not_applicable() -> None:
+    xml = """<coverage>
+      <project><package name="p">
+        <file path="src/types.ts"><metrics statements="0" coveredstatements="0"/></file>
+        <file path="src/real.ts">
+          <line num="1" count="0" type="stmt"/>
+          <line num="2" count="0" type="stmt"/>
+        </file>
+      </package></project>
+    </coverage>"""
+    paths = {f.file_path: f for f in parse_clover(xml).files}
+
+    assert paths["src/types.ts"].total_coverable_lines == 0
+    assert paths["src/types.ts"].line_coverage_pct is None
+    assert paths["src/real.ts"].line_coverage_pct == 0.0
+
+
+def test_repowise_json_zero_coverable_lines_is_not_applicable() -> None:
+    """An entry that pins down ``total_coverable_lines: 0`` is not 0% covered."""
+    text = json.dumps(
+        {
+            "files": {
+                "src/types.ts": {"line_coverage_pct": 0.0, "total_coverable_lines": 0},
+                "src/real.ts": {"line_coverage_pct": 0.0, "total_coverable_lines": 2},
+            }
+        }
+    )
+    paths = {f.file_path: f for f in parse_repowise_json(text).files}
+
+    assert paths["src/types.ts"].line_coverage_pct is None
+    assert paths["src/real.ts"].line_coverage_pct == 0.0
+
+
+def test_repowise_json_keeps_a_genuine_zero_for_a_covered_set() -> None:
+    """A file with hits and a real total keeps its percentage, however low."""
+    text = json.dumps({"files": {"src/a.py": {"covered_lines": [1], "total_coverable_lines": 20}}})
+    fc = parse_repowise_json(text).files[0]
+
+    assert fc.line_coverage_pct == 5.0
+
+
+def test_lcov_zero_lines_is_not_100_percent_covered() -> None:
+    """The rejected alternative: vacuous 100% inflates anything that averages.
+
+    A file with no code counted as fully covered is a quietly wrong number
+    nobody files a bug about, which is why the maintainer scoped this to None.
+    An explicit LF:0/LH:0 record must not read as either 100% or 0%.
+    """
+    pct = parse_lcov("SF:src/types.ts\nLF:0\nLH:0\nend_of_record\n").files[0].line_coverage_pct
+
+    assert pct is None
+
+
 def test_lcov_tolerates_missing_end_of_record() -> None:
     text = "SF:src/a.py\nDA:1,1\nDA:2,0\n"
     report = parse_lcov(text)

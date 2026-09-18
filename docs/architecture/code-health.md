@@ -381,7 +381,11 @@ the `deduction` override on `BiomarkerResult` (a continuous magnitude that
 replaces the discrete severity-to-deduction table for that finding) so it stays
 **linear and per-finding attributable** (the `health_impact` contract holds). It
 is **silent when no coverage report was ingested** (`line_coverage_pct is None`):
-absent coverage is never imputed as uncovered. It lives in its own capped
+absent coverage is never imputed as uncovered. The same guard covers a file
+that *was* instrumented but has nothing coverable in it (an lcov `LF:0`
+record, as `@vitest/coverage-v8` emits for a type-only module): the parsers
+report that as `None` rather than `0.0`, so "nothing to measure" and "measured,
+none hit" stay distinct all the way to the deduction. It lives in its own capped
 category (`test_coverage_gradient`, −2.0) so the additive continuous signal
 neither squeezes nor is squeezed by the binary gates, and it skips test files.
 Calibrated offline against the defect corpus, it recovers **+0.043 corpus AUC

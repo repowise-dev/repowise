@@ -305,7 +305,9 @@ def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
     total = max(dst.total_coverable_lines, src.total_coverable_lines, len(covered))
     dst.covered_lines = sorted(covered)
     dst.total_coverable_lines = total
-    dst.line_coverage_pct = round(len(covered) / total * 100.0, 2) if total else 0.0
+    # Recomputed rather than max()'d because the merge changes both terms. Zero
+    # coverable lines stays None (not applicable), same as the parsers.
+    dst.line_coverage_pct = round(len(covered) / total * 100.0, 2) if total else None
     if src.branch_coverage_pct is not None:
         dst.branch_coverage_pct = (
             src.branch_coverage_pct

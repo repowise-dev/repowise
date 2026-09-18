@@ -103,12 +103,18 @@ def _parse_entry(key: str | None, entry: dict[str, Any]) -> FileCoverage | None:
         else:
             total = len(covered_lines)
 
+    # An entry that pins down zero coverable lines says "nothing to measure",
+    # which is None, not 0% (issue #2193). Checked after the reconciliation
+    # above, because "no total and no hits" also lands here as total=0.
+    if total <= 0:
+        pct = None
+
     branch = entry.get("branch_coverage_pct")
     branch_pct = float(branch) if isinstance(branch, (int, float)) else None
 
     return FileCoverage(
         file_path=path,
-        line_coverage_pct=round(max(0.0, min(100.0, pct)), 2),
+        line_coverage_pct=(round(max(0.0, min(100.0, pct)), 2) if pct is not None else None),
         branch_coverage_pct=round(branch_pct, 2) if branch_pct is not None else None,
         covered_lines=covered_lines,
         total_coverable_lines=int(total or 0),

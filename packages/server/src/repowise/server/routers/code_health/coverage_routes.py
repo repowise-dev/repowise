@@ -116,7 +116,7 @@ async def health_coverage(
         )
         files = [_coverage_row_to_dict(r, include_covered_lines=True) for r in detail]
     else:
-        rows_sorted = sorted(all_rows, key=lambda r: r.line_coverage_pct)
+        rows_sorted = sorted(all_rows, key=lambda r: (r.line_coverage_pct is None, r.line_coverage_pct))
         files = [_coverage_row_to_dict(r) for r in rows_sorted[:limit]]
         # Attach per-file health score so the UI can render a coverage
         # x score matrix without a second request. Scoped to the rows we are
@@ -142,7 +142,10 @@ async def health_coverage(
         bucket = modules.setdefault(mod, {"covered": 0, "total": 0, "files": 0})
         bucket["files"] += 1
         bucket["total"] += r.total_coverable_lines
-        bucket["covered"] += round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)
+        # No coverable lines stores ``None``, not 0%, and contributes nothing
+        # to either side of the ratio (issue #2193).
+        if r.line_coverage_pct is not None:
+            bucket["covered"] += round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)
     module_rows = [
         {
             "module": name,

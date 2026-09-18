@@ -1930,7 +1930,11 @@ class CoverageFile(Base):
     )
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     source_format: Mapped[str] = mapped_column(String(32), nullable=False)
-    line_coverage_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # NULL means the file has nothing coverable to measure (LF:0), which is a
+    # different fact from a file with coverable lines of which none were hit
+    # (issue #2193). Local SQLite stores are relaxed from NOT NULL by the
+    # model-driven reconciler; managed Postgres by migration 0066.
+    line_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     covered_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     total_coverable_lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

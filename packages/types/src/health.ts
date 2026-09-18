@@ -923,7 +923,13 @@ export interface HealthTrendResponse {
 export interface CoverageFileRow {
   file_path: string;
   source_format: string;
-  line_coverage_pct: number;
+  /**
+   * Null when the file has nothing coverable to measure (`LF:0`, a type-only
+   * module). Distinct from `0` on a file whose lines were all missed, and
+   * rendered as "—" rather than 0% so it cannot read as a critical untested
+   * file. `total_coverable_lines` disambiguates for older payloads.
+   */
+  line_coverage_pct: number | null;
   branch_coverage_pct: number | null;
   total_coverable_lines: number;
   ingested_at: string | null;
