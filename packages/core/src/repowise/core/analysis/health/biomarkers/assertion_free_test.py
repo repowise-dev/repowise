@@ -48,7 +48,7 @@ class AssertionFreeTestDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         if ctx.language not in SHIPPING_LANGUAGES:
             return []
-        if not is_test_file(ctx.file_path) or _jsx_parsed_without_jsx(ctx):
+        if not is_test_file(ctx.file_path):
             return []
         out: list[BiomarkerResult] = []
         # ``all_functions``, not ``function_metrics``: name-keying collapses a
@@ -73,22 +73,6 @@ class AssertionFreeTestDetector:
                 )
             )
         return out
-
-
-def _jsx_parsed_without_jsx(ctx: FileContext) -> bool:
-    """Is this a ``.tsx`` file the walk parsed with the non-JSX grammar?
-
-    ``walker.py`` passes the language tag straight to ``_get_language``, so a
-    ``.tsx`` file — which arrives tagged ``typescript`` — is parsed by the
-    grammar that cannot read JSX, and every assertion after the first element is
-    lost. The root cause is that one call, which ``ingestion/parser.py`` already
-    gets right; fixing it there also moves the calibrated block markers, which
-    read low on these files today, so it is a change of its own. Until then this
-    marker declines to call a test assertion-free on evidence it knows is
-    missing. ``.jsx`` needs no guard: there is no jsx grammar, so those files are
-    walked by tree-sitter-javascript, which reads JSX natively.
-    """
-    return ctx.file_path.endswith(".tsx") and ctx.language == "typescript"
 
 
 BIOMARKER = AssertionFreeTestDetector()

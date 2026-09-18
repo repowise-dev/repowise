@@ -456,8 +456,7 @@ accounted for every false positive.
 
 `assertion_free_test` measures **52%** on TypeScript and **53%** on Python, and
 does not report on Go or Java at all; the per-language reasoning is in
-[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage). It also declines
-`.tsx` files, whose assertions the walk cannot currently see.
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage).
 
 It asks a question with a yes-or-no answer rather than a
 threshold, which is why it can be stated plainly: a test case whose assertion

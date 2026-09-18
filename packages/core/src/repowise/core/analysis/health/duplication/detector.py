@@ -218,9 +218,12 @@ def detect_clones(
 
     cache = None
     if cache_dir is not None:
+        from ..engine import HEALTH_ANALYZER_VERSION
         from .token_cache import DuplicationTokenCache
 
-        cache = DuplicationTokenCache(cache_dir, window_tokens)
+        # Imported at call time: engine imports this module. By the time a
+        # caller reaches here the constant is loaded.
+        cache = DuplicationTokenCache(cache_dir, window_tokens, HEALTH_ANALYZER_VERSION)
         cache.load()
 
     parsed_list = list(parsed_files)
@@ -352,7 +355,16 @@ def _collect_windows(
         cached = None
         content_hash = ""
         if cache is not None:
+            from repowise.core.ingestion.parser import grammar_tag_for
+
             content_hash = hashlib.sha256(source).hexdigest()
+            # The grammar joins the key where it is not the language tag: a
+            # .tsx file and a byte-identical .ts file tokenize differently now,
+            # and this cache and the pair index below both key on this value.
+            # Every other file keys exactly as before and no entry ages out.
+            grammar = grammar_tag_for(language, path)
+            if grammar != language:
+                content_hash = f"{grammar}:{content_hash}"
             cached = cache.get(content_hash)
 
         if cached is not None:

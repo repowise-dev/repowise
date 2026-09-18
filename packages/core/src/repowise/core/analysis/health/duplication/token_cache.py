@@ -4,8 +4,10 @@ Tokenizing every file (a full tree-sitter re-parse plus a pure-Python
 leaf walk) and re-rolling 1M+ window hashes dominates the duplication
 pass — and an incremental ``repowise update`` re-pays it for the whole
 repo when a single file changed. Both outputs are pure functions of the
-file *bytes* (given fixed window size and pinned hash constants), so they
-cache safely by content hash.
+file *bytes* and the grammar it is read with (given fixed window size and
+pinned hash constants), so they cache safely by the key the detector builds
+from the two. The grammar is a second term only for a file whose extension
+picks a grammar its language tag does not, which today means ``.tsx``.
 
 Cached per file: the normalized token-kind sequence (all the verifier
 ever compares), the non-blank line count, and the rolling-hash windows
@@ -37,9 +39,13 @@ _CACHE_FILENAME = "duplication_cache.pkl"
 class DuplicationTokenCache:
     """Pickle-backed ``content_hash -> (kinds, nloc, windows)`` store."""
 
-    def __init__(self, cache_dir: Path, window_tokens: int) -> None:
+    def __init__(self, cache_dir: Path, window_tokens: int, analyzer_version: int) -> None:
         self._path = Path(cache_dir) / _CACHE_FILENAME
         self._window_tokens = window_tokens
+        # A tokenizer change alters these streams for the same bytes, and
+        # nothing else in the payload would notice. The walk cache next door
+        # has carried this stamp for the same reason since it existed.
+        self._analyzer_version = analyzer_version
         self._entries: dict[str, tuple[list[str], int, list[tuple[int, int, int, int]]]] = {}
         self._fresh: dict[str, tuple[list[str], int, list[tuple[int, int, int, int]]]] = {}
         self.hits = 0
@@ -53,6 +59,7 @@ class DuplicationTokenCache:
             if (
                 payload.get("version") != _CACHE_VERSION
                 or payload.get("window_tokens") != self._window_tokens
+                or payload.get("analyzer_version") != self._analyzer_version
             ):
                 return
             self._entries = payload.get("files", {})
@@ -67,6 +74,7 @@ class DuplicationTokenCache:
             payload = {
                 "version": _CACHE_VERSION,
                 "window_tokens": self._window_tokens,
+                "analyzer_version": self._analyzer_version,
                 "files": self._fresh,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)

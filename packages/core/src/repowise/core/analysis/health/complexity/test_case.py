@@ -31,8 +31,9 @@ the marker could never defend:
   classifies nothing, so it produces no finding rather than a guess.
 
 The verdict depends on the function node and the language, never on the file
-path — ``HealthWalkCache`` keys on language and bytes, so a path-derived field
-would be served from a byte-identical file elsewhere in the tree. The test-file
+path. ``HealthWalkCache`` keys on bytes and the grammar alone, so a field
+derived from anything else in the path would be served from a byte-identical
+file elsewhere in the tree. The test-file
 gate stays in the biomarker, which sees ``ctx.file_path``.
 """
 

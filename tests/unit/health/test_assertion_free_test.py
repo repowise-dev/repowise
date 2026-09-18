@@ -143,7 +143,7 @@ def test_a_language_with_no_row_classifies_nothing() -> None:
 
 def test_is_test_case_does_not_read_the_path() -> None:
     _require("python")
-    # ``HealthWalkCache`` keys on language and bytes with no path component, so
+    # ``HealthWalkCache`` keys on the grammar and bytes with no path component, so
     # a path-derived field would be served from a byte-identical file elsewhere.
     body = b"def test_bare():\n    do()\n"
     in_tests = walk_file("tests/test_a.py", "python", body)
@@ -392,11 +392,11 @@ def test_js_verification_counts_through_the_narrow_tier() -> None:
     assert _flagged(source, "src/x.test.ts", "typescript") == ["it callback"]
 
 
-def test_silent_on_a_jsx_file_walked_without_the_jsx_grammar() -> None:
+def test_a_tsx_file_tagged_typescript_reads_its_assertions() -> None:
     _require("typescript")
-    # A ``.tsx`` file arrives tagged ``typescript`` and loses its assertions to
-    # the non-JSX grammar, so every finding on one would be this bug rather
-    # than a real result. The guard lapses once the tag is right.
+    # A ``.tsx`` file arrives tagged ``typescript``, and the grammar follows the
+    # path rather than the tag. Read with the non-JSX grammar, the assertion
+    # after the element is lost and this test is called assertion-free.
     source = (
         'describe("C", () => {\n'
         '  it("renders", () => {\n'
@@ -406,11 +406,19 @@ def test_silent_on_a_jsx_file_walked_without_the_jsx_grammar() -> None:
         "});\n"
     )
     assert _flagged(source, "src/C.spec.tsx", "typescript") == []
-    # Walked as tsx the assertion is visible, so the guard must not apply.
     assert _flagged(source, "src/C.spec.tsx", "tsx") == []
+    # A genuinely bare one still fires, under either tag.
     bare = 'describe("C", () => { it("bare", () => { render(<A />); }); });\n'
     assert _flagged(bare, "src/C.spec.tsx", "tsx") == ["it callback"]
-    assert _flagged(bare, "src/C.spec.tsx", "typescript") == []
+    assert _flagged(bare, "src/C.spec.tsx", "typescript") == ["it callback"]
+
+
+def test_a_ts_path_keeps_the_typescript_grammar() -> None:
+    _require("typescript")
+    # The mirror of the above: ``<T,>`` is a type parameter and not an element,
+    # so the tsx grammar is the one that would misread it.
+    source = 'const id = <T,>(x: T): T => x;\nit("bare", () => { id(1); });\n'
+    assert _flagged(source, "src/x.test.ts", "typescript") == ["it callback"]
 
 
 def test_a_private_assertion_helper_counts() -> None:

@@ -122,12 +122,15 @@ def walk_file(
         # Reuse the ingestion parser's language registry. Importing
         # lazily avoids pulling tree-sitter at module load time when
         # health is run from a context where it isn't installed.
-        from repowise.core.ingestion.parser import _get_language
+        from repowise.core.ingestion.parser import _get_language, grammar_tag_for
     except Exception as exc:
         log.debug("complexity_walker_import_failed", error=str(exc))
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
-    grammar = _get_language(language)
+    # The grammar follows the path, the language tag does not: everything
+    # below still selects its dialects by ``language``. ``engine.py`` keys the
+    # walk cache on this same tag, so the two must not drift.
+    grammar = _get_language(grammar_tag_for(language, abs_path))
     if grammar is None:
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
@@ -147,8 +150,8 @@ def walk_file(
     functions: list[FunctionComplexity] = []
     fc_by_node_id: dict[int, FunctionComplexity] = {}
     # Dialect first: it is a dict hit that rules out most languages before the
-    # byte scan. Keyed on language and bytes only, never the path, which is what
-    # the walk cache keys on.
+    # byte scan. Keyed on the language and the bytes, never the path: above,
+    # the path settles the grammar and nothing else.
     dialect = _mock_dialect(language)
     mock_dialect = dialect if dialect is not None and file_may_contain_mocks(source) else None
     # Broad-tier assertion vocabulary. ``None`` for a language with no row,
