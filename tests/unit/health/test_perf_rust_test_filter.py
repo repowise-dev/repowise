@@ -20,6 +20,8 @@ findings retained.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from repowise.core.analysis.health.complexity import walk_file
@@ -41,10 +43,23 @@ def _walked(path: str, language: str, src: str):
     return [(_PF(path), walk_file(path, language, src.encode()))]
 
 
+class _AllCentralIndex:
+    """A call graph in which every function clears the centrality bar.
+
+    ``PerfRanker`` sets its bar to ``max(2, top-quintile in-degree)``, so one
+    symbol with two callers puts the bar at 2 and meets it.
+    """
+
+    in_degree: ClassVar[dict[str, int]] = {"sid": 2}
+
+    def resolve_function(self, _path: str, _func_start: int) -> str:
+        return "sid"
+
+
 def _always_hot() -> PerfRanker:
-    # No graph, but every file is a git hotspot -> churny -> hot everywhere,
-    # so the ONLY thing that can suppress a hit is the test-range filter.
-    return PerfRanker(None, {"t.rs": {"is_hotspot": True}})
+    # Every function is central, so hotness can never be what suppresses a
+    # hit and the ONLY thing left that can is the test-range filter.
+    return PerfRanker(_AllCentralIndex())
 
 
 # A bare sync filesystem sink (loop_depth 0 -> hot_path_sync_io candidate)
