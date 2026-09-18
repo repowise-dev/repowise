@@ -151,6 +151,10 @@ class HealthReport:
     # Per-function blame rollup rows (``git_function_blame``), derived from the
     # FULL-tier blame index. Empty on ESSENTIAL tier / when blame is absent.
     function_blame_rows: list[dict] = field(default_factory=list)
+    # The repo-wide function-mod p80 this run computed over every walked
+    # function. Set only when the run actually saw the whole repo, so an
+    # incremental run never offers its changed-files subset for storage.
+    repo_function_mod_p80: int | None = None
     # Deterministic refactoring suggestions (``RefactoringSuggestion``), one
     # per detected opportunity. Produced by the refactoring layer in the same
     # per-file pass that produces findings; empty when the layer is disabled

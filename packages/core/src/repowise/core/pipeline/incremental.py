@@ -550,12 +550,20 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
                     return None
+                # What the last full index measured over every walked function.
+                stored = getattr(repo, "function_mod_p80", None)
+                if stored:
+                    return int(stored)
                 counts = await get_git_function_mod_counts(session, repo.id)
         finally:
             await engine.dispose()
         if not counts:
             return None
-        # Same inclusive-lower p80 as the in-memory path — do not reimplement.
+        # Fallback for a store whose last full index predates the column above.
+        # The rollup is keyed by ``{path}::{name}``, so a file's same-named
+        # functions collapse to one row and this percentile is taken over a
+        # population missing those samples. Closer than the changed-files
+        # subset, still not the number a full index computes.
         from repowise.core.analysis.health.engine import _percentile_p80
 
         return _percentile_p80(counts)

@@ -31,6 +31,7 @@ __all__ = [
     "SEVERITY_ORDER",
     "biomarker_breakdown",
     "finding_base_deduction",
+    "finding_raw_deduction",
     "module_label",
     "module_rollups",
     "score_breakdown",
@@ -189,6 +190,21 @@ def finding_base_deduction(finding: Any) -> float:
     return severity_deduction(_severity_key(field(finding, "severity", None)))
 
 
+def finding_raw_deduction(finding: Any) -> float:
+    """One finding's deduction before any category cap redistributed it.
+
+    ``base x weight``, the quantity ``_score_dimension`` computes and then
+    scales away. ``health_impact`` is what survives that scaling, so it moves
+    when a *neighbour* in the same capped category appears or goes away; this
+    one depends on the finding alone. A breakdown needs it to say how much a
+    category shed, and a change comparison needs it to ask whether one finding
+    got worse without hearing about its neighbours.
+    """
+    return finding_base_deduction(finding) * biomarker_weight(
+        field(finding, "biomarker_type", None)
+    )
+
+
 def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
     """Reconstruct one file's per-category deductions from its open findings.
 
@@ -216,10 +232,7 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
         entries = per_category.get(category, [])
         if not entries:
             continue
-        raw_each = [
-            finding_base_deduction(f) * biomarker_weight(field(f, "biomarker_type", None))
-            for f in entries
-        ]
+        raw_each = [finding_raw_deduction(f) for f in entries]
         applied_each = [float(field(f, "health_impact", 0.0) or 0.0) for f in entries]
         raw_sum = sum(raw_each)
         applied_sum = sum(applied_each)

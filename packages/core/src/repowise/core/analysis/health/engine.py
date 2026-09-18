@@ -252,6 +252,20 @@ def _percentile_p80(counts: list[int]) -> int | None:
     return counts[idx_p80]
 
 
+def _full_repo_p80(
+    value: int | None, changed_files: object, override: int | None
+) -> int | None:
+    """*value*, but only when this run is entitled to publish it repo-wide.
+
+    An incremental run walks the changed files alone, so the percentile it
+    derives describes a churn-heavy subset and must never be stored as the
+    repo's. A run that was handed an override did not measure anything either.
+    """
+    if changed_files is not None or override is not None:
+        return None
+    return value
+
+
 def _compute_repo_function_mod_p80(
     walked: list[tuple[Any, FileComplexity]],
     git_meta_map: dict[str, dict],
@@ -608,6 +622,9 @@ class HealthAnalyzer:
                 if repo_function_mod_p80 is not None
                 else _compute_repo_function_mod_p80(walked, self.git_meta_map)
             )
+            full_repo_fn_mod_p80 = _full_repo_p80(
+                repo_fn_mod_p80, changed_files, repo_function_mod_p80
+            )
             repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
             repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
@@ -700,6 +717,7 @@ class HealthAnalyzer:
             metrics=metrics,
             kpis=kpis,
             function_blame_rows=self._function_blame_rows(walked),
+            repo_function_mod_p80=full_repo_fn_mod_p80,
             refactoring_suggestions=suggestions,
             performance_plan_policy=PerformancePlanPolicy(
                 enabled=refactoring_enabled and "performance_fix" not in disabled_refactorings,
@@ -819,6 +837,9 @@ class HealthAnalyzer:
             if repo_function_mod_p80 is not None
             else _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
         )
+        full_repo_fn_mod_p80 = _full_repo_p80(
+            repo_fn_mod_p80, changed_files, repo_function_mod_p80
+        )
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
@@ -901,6 +922,7 @@ class HealthAnalyzer:
             metrics=metrics,
             kpis=kpis,
             function_blame_rows=self._function_blame_rows(walked),
+            repo_function_mod_p80=full_repo_fn_mod_p80,
             refactoring_suggestions=suggestions,
             performance_plan_policy=PerformancePlanPolicy(
                 enabled=refactoring_enabled and "performance_fix" not in disabled_refactorings,

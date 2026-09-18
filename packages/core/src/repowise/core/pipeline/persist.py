@@ -1926,6 +1926,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         replace_doc_drift_guarded,
         save_coverage_files,
         save_dead_code_findings,
+        set_repo_function_mod_p80,
         upsert_git_function_blame_bulk,
     )
 
@@ -1970,6 +1971,13 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         fn_blame_rows = getattr(hr, "function_blame_rows", None)
         if fn_blame_rows:
             await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
+        # The hotspot gate an incremental update will score against. Written
+        # only by a run that walked the whole repo (the analyzer leaves it None
+        # otherwise), so an incremental run cannot publish its changed-files
+        # subset as the repo-wide percentile.
+        fn_mod_p80 = getattr(hr, "repo_function_mod_p80", None)
+        if fn_mod_p80:
+            await set_repo_function_mod_p80(session, repo_id, fn_mod_p80)
         # Snapshot the run for trend tracking (rolling delete inside). From
         # the rows just written, by the same writer the update path uses.
         await snapshot_health_from_store(session, repo_id)

@@ -111,6 +111,17 @@ class Repository(Base):
     # reconcile. NULL on indexes written before this, which just means the next
     # capture walks once and anchors itself.
     churn_anchor_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # The repo-wide 80th percentile of per-function modification counts, the
+    # gate ``function_hotspot`` scores against. Stored for the same reason as
+    # the totals above: the only other repo-wide source is the
+    # ``git_function_blame`` rollup, and that table is keyed by
+    # ``{path}::{name}``, so every same-named function in a file collapses to
+    # one row and the percentile is taken over a population missing those
+    # samples. A full index computes this over every walked function and writes
+    # it here; an incremental update reads it back, so a hotspot verdict does
+    # not flip between ``init`` and ``update`` (issue #1484). NULL until the
+    # first full index after this field landed, where the reader falls back.
+    function_mod_p80: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # ``parser_fingerprint()`` of the build that last wrote this repo's
     # ``graph_edges``. An incremental update only rewrites the git-changed
     # files' edges, so a query/extractor change would otherwise reach a file
