@@ -104,6 +104,10 @@ def _has_gdscript(parsed_files: dict[str, Any]) -> bool:
     return any(p.file_info.language == "gdscript" for p in parsed_files.values())
 
 
+def _has_gdscript_or_csharp(parsed_files: dict[str, Any]) -> bool:
+    return any(p.file_info.language in ("gdscript", "csharp") for p in parsed_files.values())
+
+
 def _source_text(path: str, parsed: Any, source_map: dict[str, bytes]) -> str:
     """Source text for *path*, preferring bytes ingestion already read.
 
@@ -304,10 +308,12 @@ def _add_connection_edges(
     source_map = getattr(ctx, "source_map", None) or {}
     # `{script path: {function name: symbol id}}`. Methods included: GDScript
     # writes a handler as a plain `func`, but an inner class puts one under a
-    # parent, and either is a legitimate target for a connection.
+    # parent, and either is a legitimate target for a connection. C# is a
+    # first-class Godot scripting option too, and a scene's `[connection]`
+    # block is language-agnostic, so its methods belong in the same lookup.
     functions: dict[str, dict[str, str]] = {}
     for path, parsed in parsed_files.items():
-        if parsed.file_info.language != "gdscript":
+        if parsed.file_info.language not in ("gdscript", "csharp"):
             continue
         table = {
             sym.name: sym.id
@@ -372,7 +378,7 @@ class _GodotClassNameHandler:
 
 class _GodotSceneConnectionHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        return _has_gdscript(dctx.parsed_files) and any(
+        return _has_gdscript_or_csharp(dctx.parsed_files) and any(
             p.file_info.language == "godot_resource" for p in dctx.parsed_files.values()
         )
 
