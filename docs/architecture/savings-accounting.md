@@ -153,6 +153,34 @@ stay nullable so explicit evidence can be recorded without inventing any.
 Repowise's own `llm_costs` spend is a separate metered-spend section, never
 merged into or subtracted from achieved agent savings.
 
+The rate is captured when the event is written, from a per-repository snapshot
+cached in the sidecar (`pricing-snapshot.json`, 24-hour TTL). Detecting the
+coding agent's model scans local transcripts, which takes seconds when a
+repository has no Codex history, so it cannot run per event. The hook reads
+that cache but never refills it: it is a fresh process per tool call and could
+not amortize a scan, so it writes an unpriced event and whichever surface runs
+next refills the cache. Unpriced is a reported state, not a gap.
+
+## One report, three consumers
+
+`core/savings/service.load_report` is the only reader of the canonical ledger.
+The savings endpoint, the repository overview headline and `repowise saved` all
+map its `SavingsReport` into their own output and do no accounting arithmetic
+of their own.
+
+This is a correctness rule rather than tidiness. While the three aggregated the
+ledger independently they disagreed four ways about the same repository:
+`repowise saved` folded MCP counterfactual rows into its distill totals while
+both endpoints excluded them; the endpoint's per-day series was drawn from a
+different row set than its own summary, so the series did not sum to the total;
+the dollar figure was computed three different ways, only one of which used an
+output rate; and the overview ignored every time window. A parity test asserts
+the endpoint and the core report agree.
+
+A report of `None` means the repository has no sidecar, so nothing has been
+measured. That is a different claim from a report of zero, which means it was
+measured and was zero, and the surfaces render the two differently.
+
 ## Hosted and shared-presentation boundary
 
 Hosted `total_cents` is the lifetime absolute value of negative

@@ -1241,17 +1241,23 @@ repowise expand a1b2c3d4e5f6 -q "FAILED"
 
 ### `repowise saved [PATH]`
 
-Report tokens (and estimated dollars) saved for your coding agent. Combines
-`repowise distill` savings (direct invocations and hook rewrites) with MCP
-tool-response savings — each curated answer counted against the raw file
-exploration it replaced. Group `--by source` to split the `mcp:*` rows from the
-distill filters.
+Report the input tokens your coding agent never had to read, and what they were
+worth. Reads the canonical savings ledger through the same report service the
+savings endpoint and the dashboard overview use, so the three cannot disagree.
+Covers the `repowise distill` path, the hooks that replace a tool result, and
+MCP calls; group `--by surface` to split them.
+
+Two figures travel with the total rather than being folded into it. *Measured*
+savings compare a known before and after; *inferred* savings estimate the
+exploration an answer replaced. And because each event is priced at the rate
+recorded when it happened, savings recorded without a rate are counted but not
+valued — reported as unpriced rather than valued at today's model.
 
 | Flag | Description |
 |------|-------------|
-| `--by` | Grouping: `filter` (default), `day`, `source` |
+| `--by` | Grouping: `operation` (default), `surface`, `agent`, `model`, `day` |
 | `--since` | Only count savings since this ISO date |
-| `--model` | Pricing model for the dollar estimate (input-token rate). Defaults to the model detected from this repo's most recent agent session, falling back to `claude-sonnet-4-6` |
+| `--model` | Pricing model for the `--missed` opportunity estimates. Recorded savings are priced per event, so this does not affect them. Defaults to the model detected from this repo's most recent agent session, falling back to `claude-sonnet-4-6` |
 | `--missed` | Report commands that looked distillable but weren't rewritten |
 | `--missed-days` | Window in days for `--missed` (default 7.0) |
 | `--format` | `table` (default) or `json` |
@@ -1259,8 +1265,9 @@ distill filters.
 JSON folds the table, the net, and every trailing advisory line into one document.
 
 ```bash
-repowise saved                       # per-filter rollup + totals
-repowise saved --by day              # daily rollup
+repowise saved                       # per-operation rollup + totals
+repowise saved --by surface          # distill vs hooks vs MCP
+repowise saved --by agent            # which agent the savings went to
 repowise saved --since 2026-06-01
 repowise saved --missed              # what's slipping past the hook
 ```
