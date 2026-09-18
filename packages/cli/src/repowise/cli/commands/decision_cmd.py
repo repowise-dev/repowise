@@ -1,4 +1,4 @@
-"""``repowise decision`` — manage architectural decision records."""
+"""``repowise decision`` — manage decision records."""
 
 from __future__ import annotations
 
@@ -20,6 +20,11 @@ from repowise.cli.helpers import (
     run_async,
 )
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
+from repowise.core.analysis.decisions.lifecycle import (
+    AGREEMENT_KIND,
+    ARCHITECTURAL_KIND,
+    DECISION_KINDS,
+)
 from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
 from repowise.core.precedent.currency import describe_decision_currency
 
@@ -160,6 +165,13 @@ async def _resolve_decision_id(session, decision_id: str) -> str | None:
     "--affects", "affected", multiple=True, help="A file or module this governs. Repeatable."
 )
 @click.option("--tag", "tags", multiple=True, help="A tag. Repeatable.")
+@click.option(
+    "--kind",
+    type=click.Choice(DECISION_KINDS),
+    default=ARCHITECTURAL_KIND,
+    show_default=True,
+    help="'architectural' governs the code; 'agreement' governs how the work is done.",
+)
 @format_option()
 def decision_add(
     path: str | None,
@@ -171,12 +183,16 @@ def decision_add(
     consequences: tuple[str, ...],
     affected: tuple[str, ...],
     tags: tuple[str, ...],
+    kind: str,
     fmt: str,
 ) -> None:
-    """Add an architectural decision, interactively or from flags.
+    """Add a decision, interactively or from flags.
 
     With both --title and --decision, records without prompting and prints the
     new id, so a script or an agent can call it. Everything else is optional.
+
+    `--kind agreement` records a working agreement: a rule about how the work
+    is conducted, which names no file and is not checked against the code.
 
     A flag-driven record lands as `proposed`, where the prompts record `active`.
     A person answering eight questions has reviewed the decision; a caller
@@ -212,8 +228,15 @@ def decision_add(
     tags_list = list(tags)
 
     if not non_interactive:
-        console.print("[bold]Add Architectural Decision[/bold]\n")
+        console.print("[bold]Add Decision[/bold]\n")
 
+        kind = click.prompt(
+            "Kind (architectural = about the code, agreement = about how we work)",
+            type=click.Choice(DECISION_KINDS),
+            # The flag, so `--kind agreement` alone is not silently discarded
+            # by falling through to the prompts.
+            default=kind,
+        )
         title = click.prompt("Decision title (short)")
         context = click.prompt("Context (what forced this decision?)", default="")
         decision_text = click.prompt("Decision (what was chosen?)")
@@ -229,11 +252,14 @@ def decision_add(
         )
         consequences_list = [c.strip() for c in consequences_raw.split(",") if c.strip()]
 
-        affected_raw = click.prompt(
-            "Affected files/modules (comma-separated; required to make it govern)",
-            default="",
-        )
-        affected_files = [f.strip() for f in affected_raw.split(",") if f.strip()]
+        if kind == ARCHITECTURAL_KIND:
+            # An agreement names no file by definition, so asking is asking a
+            # question whose only right answer is blank.
+            affected_raw = click.prompt(
+                "Affected files/modules (comma-separated; required to make it govern)",
+                default="",
+            )
+            affected_files = [f.strip() for f in affected_raw.split(",") if f.strip()]
 
         tags_raw = click.prompt(
             "Tags (comma-separated: auth, database, api, performance, security, infra, testing)",
@@ -271,15 +297,22 @@ def decision_add(
                 affected_files=affected_files,
                 affected_modules=[],
                 tags=tags_list,
+                kind=kind,
                 source="cli",
                 # No confidence: upsert_decision scores a manual entry.
             )
             decision_id = rec.id
-            # A decision that names nothing cannot be checked against the code
-            # and cannot reach the agent editing a governed file, so it cannot
-            # be accepted. Keeping it as a candidate is better than discarding
-            # eight answered questions; ``confirm --scope`` finishes the job.
-            if status == "active" and affected_files:
+            # An architectural decision that names nothing cannot be checked
+            # against the code and cannot reach the agent editing a governed
+            # file, so it cannot be accepted. Keeping it as a candidate is
+            # better than discarding eight answered questions; ``confirm
+            # --scope`` finishes the job. An agreement is the other noun: it
+            # names no file *because* it is not about one, its acceptance row
+            # records the repository as its scope, and SessionStart is how it
+            # reaches an agent. Refusing it for the files it is defined not to
+            # have would leave it unacceptable, which is the defect the split
+            # exists to fix.
+            if status == "active" and (affected_files or kind == AGREEMENT_KIND):
                 # Answering the prompts is the acceptance; recording it as one
                 # is what makes this record indistinguishable from any other
                 # accepted decision to every reader.
@@ -324,7 +357,12 @@ def decision_add(
         emit_json(
             {
                 "repo": str(repo_path),
-                "decision": {"id": decision_id, "title": title, "status": status},
+                "decision": {
+                    "id": decision_id,
+                    "title": title,
+                    "status": status,
+                    "kind": kind,
+                },
             }
         )
         return

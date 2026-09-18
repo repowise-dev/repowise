@@ -13,10 +13,11 @@ target well under 100ms):
     decision (via decision_node_links), say so once per session per decision,
     under a strict per-session cap.
 
-Repo-wide session rules (user corrections with no named files, so no node
-links) can only reach the agent here: they carry a flat base relevance at
-SessionStart so a rule like "never use em dashes" is deliverable at all, but
-they still compete under the same floor and cap as everything else.
+Working agreements (records whose ``kind`` says they govern how the work is
+conducted, so they name no file and have no node links) can only reach the
+agent here: they carry a flat base relevance at SessionStart so a rule like
+"never use em dashes" is deliverable at all, but they still compete under the
+same floor and cap as everything else.
 
 Every injected decision id is recorded in the sessions.db sidecar so the
 update-time miner can check whether the guidance was followed or contradicted
@@ -56,7 +57,7 @@ _W_HOP_FILE = 0.3
 _MODULE_FACTOR = 0.5
 #: Score contribution when a branch-name token appears in the decision text.
 _W_BRANCH_TOKEN = 0.4
-#: Base relevance for repo-wide session rules (active, session-sourced, no
+#: Base relevance for working agreements (accepted, ``kind = 'agreement'``, no
 #: node links). They apply everywhere, so SessionStart is their only path.
 _W_GLOBAL_RULE = 0.5
 #: At most this many unlinked global rules per block. Working-set-relevant
@@ -305,6 +306,9 @@ _ACCEPTED = "EXISTS (SELECT 1 FROM decision_acceptances a WHERE a.decision_id = 
 #: is what such a store has, and it is what the split's own migration reads.
 _UNMIGRATED = "1 = 1"
 
+#: ``lifecycle.AGREEMENT_KIND``, spelled out for the same reason as _ACCEPTED.
+_AGREEMENT_KIND = "agreement"
+
 
 def _accepted_clause(conn: sqlite3.Connection, ref: str) -> str:
     """The acceptance filter for *ref*, or a no-op on a pre-split store."""
@@ -318,12 +322,29 @@ def _accepted_clause(conn: sqlite3.Connection, ref: str) -> str:
     return _ACCEPTED.format(ref=ref) if found else _UNMIGRATED
 
 
+def _kind_column(conn: sqlite3.Connection) -> str:
+    """``kind`` where the store has the column, ``NULL`` where it does not.
+
+    Probed the way :func:`_accepted_clause` probes for the acceptance table,
+    and for the same reason: this path opens the store read-only, never runs
+    the schema reconciler, and so has to read whatever it is given. Selecting
+    a literal NULL keeps one shape of row for both stores, and NULL is what
+    :func:`_is_repo_wide` reads as "this store cannot answer".
+    """
+    try:
+        cols = conn.execute("PRAGMA table_info(decision_records)").fetchall()
+    except sqlite3.Error:
+        return "NULL"
+    return "kind" if any(c[1] == "kind" for c in cols) else "NULL"
+
+
 def _load_active_decisions(conn: sqlite3.Connection) -> list[dict]:
     """Accepted, current decisions with their node links, as plain dicts."""
     try:
         rows = conn.execute(
-            "SELECT id, title, decision, rationale, confidence, staleness_score, source "
-            "FROM decision_records WHERE status = 'active' AND "
+            "SELECT id, title, decision, rationale, confidence, staleness_score, source, "
+            + _kind_column(conn)
+            + " FROM decision_records WHERE status = 'active' AND "
             + _accepted_clause(conn, "decision_records")
         ).fetchall()
     except sqlite3.Error:
@@ -337,6 +358,7 @@ def _load_active_decisions(conn: sqlite3.Connection) -> list[dict]:
             "confidence": r[4] if isinstance(r[4], (int, float)) else 0.5,
             "staleness": r[5] if isinstance(r[5], (int, float)) else 0.0,
             "source": r[6] or "",
+            "kind": r[7],
             "links": [],
         }
         for r in rows
@@ -353,6 +375,23 @@ def _load_active_decisions(conn: sqlite3.Connection) -> list[dict]:
         ):
             by_id[decision_id]["links"].append((_norm_path(node_id), link_type))
     return decisions
+
+
+def _is_repo_wide(decision: dict) -> bool:
+    """Whether *decision* governs the repository rather than particular files.
+
+    Mirrors ``crud.authority._is_repo_wide``, which this path cannot import:
+    an agreement that names files has been given a real scope by something and
+    the ordinary overlap rules apply to it, so the noun is necessary and not
+    sufficient.
+
+    A store written before the entity split has no noun to read, and refusing
+    to call anything repo-wide there would stop delivering the rules it does
+    hold. That store gets the guess this function replaces.
+    """
+    if decision["kind"] is None:
+        return not decision["links"] and decision["source"] == "session"
+    return decision["kind"] == _AGREEMENT_KIND and not decision["links"]
 
 
 def _freshness(staleness: float) -> float:
@@ -386,9 +425,9 @@ def _score_decision(
         text = f"{decision['title']} {decision['decision']}".lower()
         if any(t in text for t in branch_tokens):
             relevance = min(1.0, relevance + _W_BRANCH_TOKEN)
-    if not decision["links"] and decision["source"] == "session":
-        # A repo-wide rule mined from user corrections: applies everywhere,
-        # so it gets a base relevance instead of file overlap.
+    if _is_repo_wide(decision):
+        # A working agreement: it applies everywhere, so it gets a base
+        # relevance instead of file overlap.
         relevance = max(relevance, _W_GLOBAL_RULE)
     return relevance * decision["confidence"] * _freshness(decision["staleness"])
 
@@ -446,7 +485,7 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
     for decision, _score in scored:
         if len(shown) >= _MAX_ITEMS:
             break
-        is_global = not decision["links"] and decision["source"] == "session"
+        is_global = _is_repo_wide(decision)
         if is_global and globals_shown >= _MAX_GLOBAL_RULES:
             continue
         line = _format_decision_line(decision)

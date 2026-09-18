@@ -16,6 +16,10 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from repowise.cli.commands.augment_cmd import decision_inject
+from repowise.core.analysis.decisions.lifecycle import (
+    AGREEMENT_KIND,
+    ARCHITECTURAL_KIND,
+)
 from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import (
     DecisionAcceptance,
@@ -48,6 +52,7 @@ async def _build_wiki_db(repo_root: Path, decisions: list[dict], extras=None) ->
                     decision=spec.get("decision", ""),
                     rationale=spec.get("rationale", ""),
                     status=spec.get("status", "active"),
+                    kind=spec.get("kind", ARCHITECTURAL_KIND),
                     source=spec.get("source", "cli"),
                     confidence=spec.get("confidence", 0.9),
                     staleness_score=spec.get("staleness", 0.0),
@@ -164,6 +169,7 @@ async def test_global_session_rule_injected_without_file_overlap(tmp_path, monke
                 "title": "Never use em dashes",
                 "decision": "never use em dashes in any output",
                 "source": "session",
+                "kind": AGREEMENT_KIND,
                 "confidence": 0.8,
                 "links": [],
             },
@@ -187,6 +193,7 @@ async def test_global_rules_are_capped_and_never_crowd_out_linked(tmp_path, monk
             "title": f"Global rule {i}",
             "decision": f"always follow global rule number {i}",
             "source": "session",
+            "kind": AGREEMENT_KIND,
             "confidence": 0.8,
             "links": [],
         }
@@ -201,14 +208,110 @@ async def test_global_rules_are_capped_and_never_crowd_out_linked(tmp_path, monk
     assert sum("Global rule" in ln for ln in block.splitlines()) == 2
 
 
-async def test_unlinked_non_session_decision_is_not_global(tmp_path, monkeypatch):
-    """Only session-mined rules get the repo-wide base relevance."""
+async def test_unlinked_architectural_decision_is_not_global(tmp_path, monkeypatch):
+    """The noun decides, and a record that names no file is not thereby a rule.
+
+    This is the case the ``source == 'session'`` guess got wrong: a session
+    decision accepted through ``confirm --scope`` names files on its acceptance
+    row and none on the record, and the guess read that as a repo-wide rule and
+    injected it into every session.
+    """
     await _build_wiki_db(
         tmp_path,
-        [{"id": "d-cli", "title": "A CLI note", "decision": "some note", "links": []}],
+        [
+            {
+                "id": "d-arch",
+                "title": "Keep why free of LLM calls",
+                "decision": "the why layer stays deterministic",
+                "source": "session",
+                "kind": ARCHITECTURAL_KIND,
+                "confidence": 0.9,
+                "links": [],
+            }
+        ],
     )
     _quiet_git(monkeypatch)
     assert decision_inject._session_decision_block(tmp_path, "sess-1") is None
+
+
+async def test_agreement_is_global_whatever_mined_it(tmp_path, monkeypatch):
+    """An agreement reaches the agent on its noun, not on its source."""
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-cli-rule",
+                "title": "Never use em dashes",
+                "decision": "never use em dashes in any output",
+                "source": "cli",
+                "kind": AGREEMENT_KIND,
+                "confidence": 0.8,
+                "links": [],
+            }
+        ],
+    )
+    _quiet_git(monkeypatch)
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+    assert block is not None
+    assert "Never use em dashes" in block
+
+
+async def test_agreement_that_names_files_is_scored_on_them(tmp_path, monkeypatch):
+    """The noun says a record may name nothing, not that its files are noise.
+
+    Mirrors ``crud.authority._is_repo_wide``: both halves are required, so a
+    misclassified record that does carry links keeps competing on overlap
+    instead of being injected everywhere.
+    """
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-linked-agreement",
+                "title": "Never use em dashes",
+                "decision": "never use em dashes in any output",
+                "source": "session",
+                "kind": AGREEMENT_KIND,
+                "confidence": 0.8,
+                "links": [("src/core/auth.py", "file")],
+            }
+        ],
+    )
+    _quiet_git(monkeypatch)  # no seeds, so no overlap to score on
+    assert decision_inject._session_decision_block(tmp_path, "sess-1") is None
+
+
+async def test_pre_split_store_keeps_delivering_its_rules(tmp_path, monkeypatch):
+    """A store written before the ``kind`` column still gets its repo-wide rules.
+
+    The hook opens the store read-only and never runs the schema reconciler, so
+    it cannot add the column and cannot wait for one. Reading a missing column
+    as "no agreements here" would silently stop delivering every rule such a
+    store holds, which is the one thing this phase may not do.
+    """
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-legacy",
+                "title": "Never use em dashes",
+                "decision": "never use em dashes in any output",
+                "source": "session",
+                "kind": AGREEMENT_KIND,
+                "confidence": 0.8,
+                "links": [],
+            }
+        ],
+    )
+    conn = sqlite3.connect(tmp_path / ".repowise" / "wiki.db")
+    conn.execute("ALTER TABLE decision_records DROP COLUMN kind")
+    conn.commit()
+    conn.close()
+    _quiet_git(monkeypatch)
+
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+    assert block is not None
+    assert "Never use em dashes" in block
 
 
 async def test_one_hop_expansion_via_graph_edge(tmp_path, monkeypatch):
@@ -446,6 +549,30 @@ async def test_edit_notice_respects_session_cap(tmp_path):
     await _build_wiki_db(tmp_path, [_AUTH_DECISION])
     state = {"decisions_shown": ["x", "y", "z"]}
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", state) is None
+
+
+async def test_edit_notice_silent_for_an_agreement(tmp_path):
+    """The edit-time notice stays keyed on links, and an agreement has none.
+
+    Deliberate, not incidental: an agreement is a claim about how the work is
+    conducted, so it has nothing to say about the file being edited, and the
+    ``decision_node_links`` join is what keeps it out. Pinned so the delivery
+    split does not later grow a second path here.
+    """
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-agreement",
+                "title": "Never use em dashes",
+                "decision": "never use em dashes in any output",
+                "source": "session",
+                "kind": AGREEMENT_KIND,
+                "links": [],
+            }
+        ],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
 
 
 async def test_edit_notice_silent_for_ungoverned_file(tmp_path):

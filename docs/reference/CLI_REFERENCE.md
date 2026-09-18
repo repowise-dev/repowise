@@ -1008,6 +1008,7 @@ Manage architectural decision records.
 repowise decision list [PATH]           # list records
 repowise decision show ID [PATH]        # full details
 repowise decision add [PATH]            # interactive add
+repowise decision add --kind agreement  # a rule about how the work is done
 repowise decision candidates [PATH]     # what is awaiting review; these govern nothing
 repowise decision confirm ID... [PATH]  # accept candidates: this is what makes them govern
 repowise decision dismiss ID... [PATH]  # tombstone them (sticky; never re-proposed)

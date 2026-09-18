@@ -207,6 +207,7 @@ async def upsert_decision(
     repository_id: str,
     title: str,
     status: str = "proposed",
+    kind: str | None = None,
     context: str = "",
     decision: str = "",
     rationale: str = "",
@@ -236,6 +237,11 @@ async def upsert_decision(
     record and brings evidence with it. ``confidence=None`` therefore scores
     it here. Both call sites used to pass a literal ``1.0``, which is above
     the formula's own ``0.99`` ceiling and so was never a score at all.
+
+    ``kind`` is written only when it is given. ``None`` leaves an existing
+    record's noun alone rather than defaulting it back to ``architectural``:
+    a caller that does not know about the split must not silently un-agree an
+    accepted agreement by re-stating the record without it.
     """
     # Normalise text fields — LLM extractors may return explicit None
     rationale = rationale or ""
@@ -264,6 +270,8 @@ async def upsert_decision(
 
     if existing is not None:
         existing.status = status
+        if kind is not None:
+            existing.kind = _extraction_kind(kind)
         existing.context = context
         existing.decision = decision
         existing.rationale = rationale
@@ -294,6 +302,7 @@ async def upsert_decision(
         repository_id=repository_id,
         title=title,
         status=status,
+        kind=_extraction_kind(kind),
         context=context,
         decision=decision,
         rationale=rationale,

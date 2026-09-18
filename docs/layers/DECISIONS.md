@@ -641,7 +641,7 @@ press the button. Re-recording the title of a decision that is already accepted
 without naming its scope is refused rather than applied, because it would clear
 the scope that decision governs.
 
-| `repowise decision add` | Guided interactive capture: title, context, decision, rationale, rejected alternatives, tradeoffs, affected files, tags. Answering the prompts is an acceptance, recorded as one. Name no files and it is kept as a candidate instead, because a decision that names nothing cannot be checked against the code. |
+| `repowise decision add` | Guided interactive capture: kind, title, context, decision, rationale, rejected alternatives, tradeoffs, affected files, tags. Answering the prompts is an acceptance, recorded as one. An architectural record that names no files is kept as a candidate instead, because a decision that names nothing cannot be checked against the code. `--kind agreement` records the other noun — a rule about how the work is conducted — which is accepted without naming files, because it governs the repository rather than part of it, and reaches an agent at session start rather than when a file is edited. |
 | `repowise decision list` | Table of id, title, status, source, confidence, staleness, created date. |
 | `repowise decision show ID` | Full record including alternatives, consequences, affected files, and the evidence file and line. |
 | `repowise decision confirm ID...` | Accept candidates. Refuses, naming the gap, when one has no reason, scope or evidence; `--reason`, `--scope` and `--evidence` supply them. A refused id does not stop the others. `--preview` writes nothing. |

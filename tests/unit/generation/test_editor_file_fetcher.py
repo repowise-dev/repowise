@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from repowise.core.analysis.decisions.lifecycle import AGREEMENT_KIND
 from repowise.core.generation.editor_files.fetcher import EditorFileDataFetcher
 from repowise.core.persistence.crud import upsert_repository
 from repowise.core.persistence.database import init_db
@@ -387,6 +388,40 @@ async def test_a_candidate_never_reaches_the_generated_block(session, repo, tmp_
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert [d.title for d in data.decisions] == []
+
+
+async def test_an_accepted_agreement_reaches_the_generated_block(session, repo, tmp_path):
+    """A working agreement rides the instructions file unchanged.
+
+    The query filters on ``status = 'active'`` and acceptance and nothing else,
+    and since the entity split an agreement can be both: its acceptance row
+    records the repository as its scope. The exclusion sweep keeps a record
+    with no affected files rather than dropping it, so nothing here has to know
+    about the noun. Pinned because that is a claim about the delivery half, not
+    an accident of this query's current shape.
+    """
+    agreement = DecisionRecord(
+        repository_id=repo.id,
+        title="Never use em dashes",
+        status="active",
+        kind=AGREEMENT_KIND,
+        rationale="they read as machine-written",
+        decision="never use em dashes in any output",
+        source="session",
+        affected_files_json="[]",
+        evidence_file="agreement",
+        staleness_score=0.0,
+    )
+    session.add(agreement)
+    await session.flush()
+    from repowise.core.persistence.crud.authority import accept_decision
+
+    await accept_decision(session, agreement, accepter="tester")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert "Never use em dashes" in [d.title for d in data.decisions]
 
 
 async def test_fetch_avg_confidence(session, repo, tmp_path):
