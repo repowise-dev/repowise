@@ -918,10 +918,30 @@ def init_command(
         detected = detect_worktree_base(repo_path)
         if detected is not None and base_is_seedable(detected):
             seed_base = detected
-            console.print(
-                f"[dim]\\[worktree][/dim] Linked worktree of {detected} detected; "
-                f"seeding its index."
-            )
+            if not force:
+                console.print(
+                    f"[dim]\\[worktree][/dim] Linked worktree of {detected} detected; "
+                    f"seeding its index."
+                )
+
+    # ``--force`` asks for the re-index seeding exists to avoid, so the two do
+    # not combine. The block below delegates to ``run_update`` and used to hand
+    # it ``full=force``, but ``full`` is not "re-index": it is ``update --full``,
+    # the fast -> full upgrade that resolves a provider and regenerates the
+    # whole wiki with a model. So ``init --force`` in a seedable worktree either
+    # died with "No provider configured" or spent money the user never asked for
+    # (#1482), and ``--index-only --force`` was swallowed the same way. Dropping
+    # the seed lets the ordinary init path below run, which is exactly what
+    # ``init --force`` does outside a worktree: re-index and regenerate every
+    # page in the mode the user invoked, free when that mode is structural.
+    # ``update --full`` stays the only paid path.
+    if seed_base is not None and force:
+        requested = "the index at" if not seed_from else "the requested seed"
+        console.print(
+            f"[dim]\\[worktree][/dim] --force re-indexes this checkout from "
+            f"scratch, so {requested} {seed_base} is not used."
+        )
+        seed_base = None
 
     if seed_base is not None:
         seed_root = scan.root if getattr(scan, "root", None) else repo_path
@@ -967,7 +987,12 @@ def init_command(
                     repo_alias=None,
                     index_only=index_only,
                     docs_flag=None,
-                    full=force,
+                    # Never ``force``. This delegate is the worktree *seed*
+                    # catch-up, and ``full`` means ``update --full``: provider
+                    # resolution plus whole-repo model regeneration. A
+                    # ``--force`` run never reaches this block (the seed is
+                    # dropped above), so this is a constant, not a pass-through.
+                    full=False,
                     agents_md=agents_md,
                     concurrency=concurrency,
                     no_cost_tracking=no_cost_tracking,
