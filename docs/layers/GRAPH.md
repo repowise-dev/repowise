@@ -162,7 +162,7 @@ permanent rather than a stopgap.
 
 Nine languages, 30 call edges per language per tool, every row opened in its own
 file with its imports and enclosing scope, then the target declaration opened
-too. **229 of 270 correct for us, 154 of 270 for CodeGraph 1.5.0**, intervals
+too. **240 of 280 correct for us, 164 of 280 for CodeGraph 1.5.0**, intervals
 disjoint. Four of the nine cells separate and five are ties, reported as ties.
 
 Read our own number the other way round: **roughly fifteen percent of our call
