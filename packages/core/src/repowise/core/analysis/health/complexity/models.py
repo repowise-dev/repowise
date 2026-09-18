@@ -61,6 +61,11 @@ class FunctionComplexity:
     # True when this function is a test case its framework would run, as
     # opposed to a helper or fixture beside it. ``complexity/test_case.py``.
     is_test_case: bool = False
+    # Every name called directly in this function's own body, lowercased,
+    # excluding nested function bodies. Empty for a language with no assertion
+    # vocabulary row, because it rides on that traversal. It answers one
+    # question: did this function hand its work to something else in the file?
+    called_names: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:

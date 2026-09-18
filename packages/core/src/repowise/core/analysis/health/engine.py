@@ -100,7 +100,13 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: the health pass reads a ``.tsx`` file with the JSX grammar.
+# Current stamp: the walker records one new ``FunctionComplexity`` field,
+# ``called_names``, which a cached v16 walk does not carry at all. It feeds the
+# advisory ``assertion_free_test``, which no longer calls a test assertion-free
+# when it handed its checks to a function in the same file that asserts. It
+# counts nothing, so no calibrated marker reads it and no score moves.
+#
+# v16: the health pass reads a ``.tsx`` file with the JSX grammar.
 # It arrives tagged ``typescript``, and the grammar that tag selects errors on
 # the first ``<Component />``, so a cached v15 walk stored an ERROR-recovered
 # tree. Three things stored under it change for ``.tsx`` files and nothing
@@ -156,7 +162,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 16
+HEALTH_ANALYZER_VERSION = 17
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.

@@ -454,9 +454,15 @@ whether an assertion observes a double or production output, which is a dataflow
 question the pass does not ask — and on the TypeScript sample that one question
 accounted for every false positive.
 
-`assertion_free_test` measures **52%** on TypeScript and **53%** on Python, and
-does not report on Go or Java at all; the per-language reasoning is in
-[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage).
+`assertion_free_test` measures **51%** on TypeScript (51 findings, the complete
+population of two corpora) and **86%** on Python (29 hand-labelled, a systematic
+sample of 172), and does not report on Go or Java at all; the per-language
+reasoning is in
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage). The gap between
+the two is one fact: a test that delegates its oracle to a helper in the same
+file is resolved, and a JS/TS suite keeps its helpers in another file. The
+marker stays advisory on both, and twenty-nine items are too few to settle
+whether Python clears the bar.
 
 It asks a question with a yes-or-no answer rather than a
 threshold, which is why it can be stated plainly: a test case whose assertion

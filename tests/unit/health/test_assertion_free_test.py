@@ -448,3 +448,104 @@ def test_go_and_java_are_classified_but_never_reported() -> None:
     assert _counts(java, "src/test/java/FooTest.java", "java")["bare"][2] is True
     assert _flagged(go, "pkg/thing_test.go", "go") == []
     assert _flagged(java, "src/test/java/FooTest.java", "java") == []
+
+
+def test_a_delegated_oracle_in_the_same_file_counts() -> None:
+    _require("python")
+    # The largest false-positive family: the test hands its checks to a helper
+    # beside it, and the assertion count is per function.
+    source = (
+        "def _check_user(u):\n"
+        "    assert u.name\n"
+        "    assert u.age > 0\n"
+        "\n"
+        "def test_delegates():\n"
+        "    _check_user(build_user())\n"
+        "\n"
+        "def test_bare():\n"
+        "    build_user()\n"
+    )
+    assert _flagged(source) == ["test_bare"]
+
+
+def test_a_delegated_oracle_through_a_receiver_counts() -> None:
+    _require("python")
+    # Same shape stated as a method call. The callee name is what resolves,
+    # never the receiver.
+    source = (
+        "class TestUser:\n"
+        "    def _check(self, u):\n"
+        "        assert u.name\n"
+        "\n"
+        "    def test_delegates(self):\n"
+        "        self._check(build_user())\n"
+        "\n"
+        "    def test_bare(self):\n"
+        "        build_user()\n"
+    )
+    assert _flagged(source) == ["test_bare"]
+
+
+def test_a_helper_that_asserts_nothing_suppresses_nothing() -> None:
+    _require("python")
+    # The call is not the point; the callee having an oracle is.
+    source = (
+        "def _build(u):\n"
+        "    return User(u)\n"
+        "\n"
+        "def test_calls_a_plain_helper():\n"
+        "    _build(1)\n"
+    )
+    assert _flagged(source) == ["test_calls_a_plain_helper"]
+
+
+def test_a_helper_in_another_file_is_not_resolved() -> None:
+    _require("python")
+    # Resolution is intra-file by construction: this pass has no call graph, so
+    # an imported helper stays a false positive rather than a guess.
+    source = "from .helpers import check_user\n\ndef test_imported():\n    check_user(1)\n"
+    assert _flagged(source) == ["test_imported"]
+
+
+def test_a_delegated_oracle_counts_for_a_jest_callback() -> None:
+    _require("typescript")
+    # The helper must not look like an assertion itself, or the counter would
+    # have reached it without any of this.
+    source = (
+        "function renderedOk(r) {\n"
+        "  expect(r.ok).toBe(true);\n"
+        "}\n"
+        'describe("s", () => {\n'
+        '  it("delegates", () => { renderedOk(run()); });\n'
+        '  it("bare", () => { run(); });\n'
+        "});\n"
+    )
+    assert _flagged(source, "src/x.test.ts", "typescript") == ["it callback"]
+    counts = _counts(source, "src/x.test.ts", "typescript")
+    assert counts["renderedOk"][0] == 1
+
+
+
+def test_resolution_is_by_name_and_a_second_class_shares_it() -> None:
+    _require("python")
+    # The limit, pinned so it is a known shape rather than a surprise: the
+    # receiver is dropped, so the whole file is one namespace. TestB._check
+    # checks nothing, and TestA._check suppresses it. This hides a finding
+    # rather than inventing one, which is the tolerable direction, and the fix
+    # is a class-aware resolution this pass does not do.
+    source = (
+        "class TestA:\n"
+        "    def _check(self, r):\n"
+        "        assert r == 1\n"
+        "\n"
+        "    def test_a(self):\n"
+        "        self._check(f())\n"
+        "\n"
+        "class TestB:\n"
+        "    def _check(self, r):\n"
+        "        pass\n"
+        "\n"
+        "    def test_b(self):\n"
+        "        self._check(g())\n"
+    )
+    assert _flagged(source) == []

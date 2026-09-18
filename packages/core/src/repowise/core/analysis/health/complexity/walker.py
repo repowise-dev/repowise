@@ -161,7 +161,7 @@ def walk_file(
     for fn_node in _collect_function_nodes(tree.root_node, lmap):
         body = fn_node.child_by_field_name("body") or fn_node
         ccn, max_nest, cognitive, bumps, conditions = _walk_function_body(body, lmap)
-        assertion_blocks, assertion_count, verifications = _collect_assertion_facts(
+        assertion_blocks, assertion_count, verifications, called = _collect_assertion_facts(
             body, lmap, asserts
         )
         name = _find_function_entry_name(fn_node, lmap)
@@ -181,6 +181,7 @@ def walk_file(
             verification_count=verifications,
             mock_setup_count=_count_mock_setup(fn_node, body, lmap, mock_dialect, asserts),
             is_test_case=is_test_case(fn_node, name, language),
+            called_names=called,
         )
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc

@@ -33,10 +33,11 @@ from .base import BiomarkerResult, FileContext
 
 #: Languages the marker reports on. Go and Java are classified by
 #: ``complexity/test_case.py`` and counted like any other, and are deliberately
-#: absent here: both conventionally hand the oracle to a helper the test calls,
-#: and the assertion count is per function, so the helper's assertions are
-#: invisible from its caller. On Go that is not a false-positive family the
-#: marker could declare and live with, it is nearly the whole population.
+#: absent here: both conventionally hand the oracle to a helper the test calls.
+#: ``_asserting_names`` now resolves that within a file, but the idiom reaches
+#: across one in both languages, as a package-level Go helper handed ``*testing
+#: .T`` and a Java base-class method. Re-admitting either is a measurement of
+#: its own, not a consequence of this one.
 #: Figures and the reasoning: LANGUAGE_SUPPORT.md#code-health-coverage.
 SHIPPING_LANGUAGES = frozenset({"javascript", "python", "tsx", "typescript"})
 
@@ -53,6 +54,7 @@ class AssertionFreeTestDetector:
         out: list[BiomarkerResult] = []
         # ``all_functions``, not ``function_metrics``: name-keying collapses a
         # file's anonymous ``it`` callbacks into one row. See ``FileContext``.
+        oracles = _asserting_names(ctx)
         for fn in ctx.all_functions:
             # ``is_test_case`` is the whole gate. Every other test-quality
             # marker can lean on "it has assertions, so it is a test"; this one
@@ -60,6 +62,8 @@ class AssertionFreeTestDetector:
             if not fn.is_test_case:
                 continue
             if fn.assertion_count or fn.verification_count:
+                continue
+            if fn.called_names & oracles:
                 continue
             out.append(
                 BiomarkerResult(
@@ -73,6 +77,34 @@ class AssertionFreeTestDetector:
                 )
             )
         return out
+
+
+def _asserting_names(ctx: FileContext) -> frozenset[str]:
+    """Names of functions in this file that do check something, lowercased.
+
+    A test whose own assertion count is zero has still checked something if it
+    handed the job to a helper that asserts, and the count is per function, so
+    the helper's assertions are otherwise invisible from the test that calls
+    it. That is the largest false-positive family this marker has in every
+    language it reports on.
+
+    Names only, and the whole file is one namespace: the receiver is dropped,
+    so a helper on one class suppresses a same-named helper on another, and a
+    method on a test-local double suppresses against a module-level function of
+    that name. Both directions hide a real finding rather than invent one,
+    which is the tolerable way round for an advisory marker, but neither is
+    free. A helper nested inside the test body is not collected as a function
+    at all, so it suppresses nothing.
+
+    Same file only. ``super().test_x(...)``, a package-level Go helper and a
+    shared JS fixture all live elsewhere and would need the call graph, which
+    this pass does not consult, so those stay false positives.
+    """
+    return frozenset(
+        fn.name.lower()
+        for fn in ctx.all_functions
+        if fn.assertion_count or fn.verification_count
+    )
 
 
 BIOMARKER = AssertionFreeTestDetector()

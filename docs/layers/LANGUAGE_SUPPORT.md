@@ -441,11 +441,29 @@ for Java. A language with no row classifies nothing. Go and Java are classified
 and counted, which is how their precision below was measured, but the marker
 does not report on them — the shipping set is a constant in the detector.
 
-Measured precision, hand-labelled: **52%** on TypeScript (52 findings, the
-complete population of two corpora) and **53%** on Python (30, a systematic
-sample of 194). Both are below the 70% house bar and above the 40% at which
-`mock_saturated_test` shipped TypeScript, and they ship on the same line: the
-false positives are one family the marker declares, described below.
+Measured precision, hand-labelled: **51%** on TypeScript (51 findings, the
+complete population of two corpora) and **86%** on Python (29 findings, a
+systematic sample of 172). The marker ships advisory on both, because the bar
+below is a property of the marker rather than of one language, and TypeScript
+is at 51%.
+
+Twenty-nine items cannot settle a 70% bar: 86% on that sample carries a 95%
+interval of roughly 68% to 96%, whose lower bound sits below the bar it appears
+to clear. The reading is consistent with clearing it and does not demonstrate
+it. What moved Python is that a test's oracle now reaches it from a function it
+calls in the same file, described below. The same change barely moved
+TypeScript, for a reason worth recording: a JS/TS suite keeps its helpers in a
+separate module, so 19 of its 25 remaining false positives delegate across a
+file boundary rather than within one.
+
+An earlier pass published 53% for Python. Re-labelling the pre-change findings
+of the same corpus, drawn the same way and read against this pass's rubric,
+gives 68.8% (22 of 32), so the gain below is that 68.8 to 86.2 and the 53% is
+superseded rather than contradicted. The two passes are not reconciled: 15
+points of the difference is labelling, on samples of about thirty, and the
+rubric behind the earlier number was not recorded. TypeScript read 52% then and
+51% here, which is the evidence that the two rubrics are close and Python's gap
+is sample noise rather than a changed standard.
 
 A **mock verification counts as an assertion for this marker and not for the one
 above**, which is the deliberate inversion described in CODE_HEALTH.md. It
@@ -491,8 +509,41 @@ from the test that calls it:
   asserts on the test's behalf. Hand-labelled at **33%** over 18 findings, and 10
   of its 12 false positives were this family.
 
-Separating them needs the assertions of a called function to reach its caller,
-which is a cross-function question this pass does not ask.
+Separating them needs the assertions of a called function to reach its caller.
+Within a single file that now happens. Neither language is unblocked by it: Go
+hands `*testing.T` to a package-level helper and Java inherits a base-class
+method, and both live in another file, so re-admitting either is a measurement
+of its own.
+
+**A called function's assertions reach its caller, inside one file.** The
+assertion count is per function, so a test that hands its checks to a helper
+beside it read as checking nothing. That was the largest false-positive family
+in every language the marker reports on. The walk now records the names each
+function calls, and the marker resolves them against same-file functions that
+assert. It counts nothing and no calibrated marker reads it.
+
+What it suppresses, by corpus:
+
+| Corpus | Findings | Test cases | Rate |
+|---|---|---|---|
+| 2,012-file Python | 763 to 501 | 17,966 | 4.2% to 2.8% |
+| 794-file Python | 194 to 172 | 5,212 | 3.7% to 3.3% |
+| 374-file TypeScript | 35 to 33 | 7,354 | 0.5% to 0.4% |
+| 562-file TypeScript | 18 to 18 | 4,761 | 0.4% to 0.4% |
+
+Six suppressions were read by hand across the two Python corpora and each is
+the declared family: a test whose whole body delegates to a helper that asserts,
+or one that parametrises a sibling test by calling it. The resolution matches
+names against same-file names and drops the receiver, so a call to an imported
+function sharing a local helper's name, or a method on a test-local double
+sharing a module-level function's name, suppresses wrongly. Both hide a finding
+rather than invent one. No instance turned up in the corpora above, and the
+shape is pinned by a test.
+
+What it deliberately does not reach is anything needing the call graph, which
+this pass does not consult: `super().test_x(...)`, a package-level Go helper
+handed the test handle, and the shared JS/TS fixture module that is most of
+TypeScript's remaining error.
 
 **A `.tsx` file is read with the JSX grammar.** It arrives tagged `typescript`,
 and the grammar that tag selects fails on the first `<Component />`; everything
