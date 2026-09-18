@@ -191,3 +191,78 @@ class TestHeritageTier2b:
             results.extend(resolver.resolve_file(path, pf.heritage))
         hits = [(r.child_id, r.parent_id, r.confidence) for r in results if r.confidence == 0.85]
         assert hits == [("child.py::Child", "a_base.py::Base", 0.85)], hits
+
+
+class TestHeritageChildAnchor:
+    """The edge's source must name a symbol the file actually declares."""
+
+    def test_child_inside_a_mod_keeps_its_module_segment(self, tmp_path: Path) -> None:
+        files = {
+            "lib.rs": (
+                "rust",
+                "pub trait Greet {}\n"
+                "pub mod inner {\n"
+                "    pub struct Speaker;\n"
+                "    impl super::Greet for Speaker {}\n"
+                "}\n",
+            ),
+        }
+        parsed = _parse_all(tmp_path, files)
+        resolver = HeritageResolver(parsed, {"lib.rs": set()})
+        results = []
+        for path, pf in parsed.items():
+            results.extend(resolver.resolve_file(path, pf.heritage))
+        child_ids = [r.child_id for r in results]
+        declared = {s.id for pf in parsed.values() for s in pf.symbols}
+        assert "lib.rs::inner::Speaker" in child_ids, child_ids
+        # And the anchor is a node that exists, which is the point.
+        assert all(c in declared for c in child_ids), (child_ids, sorted(declared))
+
+    def test_ambiguous_name_keeps_the_composed_id(self, tmp_path: Path) -> None:
+        # Two `Speaker` types in different mods. The name-keyed table answers
+        # with whichever came last, so neither is trustworthy: an anchor that
+        # dangles beats one that points confidently at the wrong type.
+        files = {
+            "lib.rs": (
+                "rust",
+                "pub trait Greet {}\n"
+                "pub mod a {\n"
+                "    pub struct Speaker;\n"
+                "    impl super::Greet for Speaker {}\n"
+                "}\n"
+                "pub mod b {\n"
+                "    pub struct Speaker;\n"
+                "}\n",
+            ),
+        }
+        parsed = _parse_all(tmp_path, files)
+        resolver = HeritageResolver(parsed, {"lib.rs": set()})
+        results = []
+        for path, pf in parsed.items():
+            results.extend(resolver.resolve_file(path, pf.heritage))
+        child_ids = [r.child_id for r in results]
+        assert "lib.rs::b::Speaker" not in child_ids, child_ids
+        assert "lib.rs::Speaker" in child_ids, child_ids
+
+    def test_composed_id_that_already_exists_is_kept(self, tmp_path: Path) -> None:
+        # `Speaker` is declared at file scope, so the composed id is already
+        # right. A same-named type inside a `mod` must not steal the anchor.
+        files = {
+            "lib.rs": (
+                "rust",
+                "pub trait Greet {}\n"
+                "pub struct Speaker;\n"
+                "impl Greet for Speaker {}\n"
+                "pub mod tests {\n"
+                "    pub struct Speaker;\n"
+                "}\n",
+            ),
+        }
+        parsed = _parse_all(tmp_path, files)
+        resolver = HeritageResolver(parsed, {"lib.rs": set()})
+        results = []
+        for path, pf in parsed.items():
+            results.extend(resolver.resolve_file(path, pf.heritage))
+        child_ids = [r.child_id for r in results]
+        assert "lib.rs::Speaker" in child_ids, child_ids
+        assert "lib.rs::tests::Speaker" not in child_ids, child_ids
