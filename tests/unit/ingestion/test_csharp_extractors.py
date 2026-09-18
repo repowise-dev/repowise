@@ -66,6 +66,18 @@ public class FooService : BaseService, IFooService, ILogger
         assert ("IFooService", "implements") in rels
         assert ("ILogger", "implements") in rels
 
+    def test_bcl_builtin_parents_are_filtered(self, parser: ASTParser) -> None:
+        """BCL base classes and interfaces in builtin_parents are stripped."""
+        src = b"""\
+namespace App;
+public class MyEventArgs : EventArgs {}
+public class MyAttribute : Attribute {}
+public class MainForm : Form, INotifyPropertyChanged {}
+public class CustomList : IList, ICollection, IDictionary {}
+"""
+        result = parser.parse_file(_file(), src)
+        assert result.heritage == []
+
     def test_implements_only_when_no_class_base(self, parser: ASTParser) -> None:
         src = b"""\
 namespace App;
