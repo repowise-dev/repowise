@@ -1,7 +1,9 @@
 """Content-keyed cache of the complexity walk, kept beside the index.
 
 The walk over a file is a pure function of its bytes, its language and the
-walker's version, and on an update most of the files the health pass walks
+walker's version (and, where a repository configures one, its assertion
+vocabulary -- see :meth:`HealthWalkCache.key`), and on an update most of the
+files the health pass walks
 did not change: the performance closure re-walks every file whose call path
 reaches a changed sink, so the walk was two fifths of a one-file update.
 This keeps each file's :class:`FileComplexity` under its content hash the way
@@ -47,8 +49,18 @@ class HealthWalkCache:
         self.misses = 0
 
     @staticmethod
-    def key(language: str, content_hash: str) -> str:
-        return f"{language}:{content_hash}"
+    def key(language: str, content_hash: str, vocabulary: str = "") -> str:
+        """The cache key, optionally qualified by a configured vocabulary.
+
+        A repository that configures an assertion vocabulary breaks the "bytes
+        plus language plus version" purity this cache rests on, so the
+        vocabulary joins the key and an edit to it simply misses and ages out.
+        Empty is the overwhelmingly common case and keys exactly as before, so
+        no existing cache is invalidated by this parameter existing.
+        """
+        if not vocabulary:
+            return f"{language}:{content_hash}"
+        return f"{language}:{content_hash}:{vocabulary}"
 
     def load(self) -> None:
         try:

@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from ..asserts.lexicon import assert_dialect as _assert_dialect
 from ..mocks.lexicon import mock_dialect as _mock_dialect
 from .assertions import _collect_assertion_facts
 from .ast_utils import (
@@ -92,6 +93,7 @@ def walk_file(
     abs_path: str,
     language: str,
     source: bytes,
+    extra_assert_names: frozenset[str] = frozenset(),
 ) -> FileComplexity:
     """Walk one file's AST once → per-function and per-class metrics.
 
@@ -102,6 +104,11 @@ def walk_file(
 
     Class-level metrics are populated only when the language's
     ``LanguageNodeMap`` opts in via ``class_kinds`` (see ``languages.py``).
+
+    *extra_assert_names* is the repository's configured assertion vocabulary.
+    It reaches the broad tier only, so the result stays a pure function of the
+    bytes, the language and the walker's version for every repository that
+    configures none — which is what the walk cache keys on.
     """
     lmap = get_language_map(language)
     if lmap is None:
@@ -142,10 +149,14 @@ def walk_file(
     # the walk cache keys on.
     dialect = _mock_dialect(language)
     mock_dialect = dialect if dialect is not None and file_may_contain_mocks(source) else None
+    # Broad-tier assertion vocabulary. ``None`` for a language with no row,
+    # which leaves the narrow tier alone and is what every language counted
+    # before this existed.
+    asserts = _assert_dialect(language, extra_assert_names)
     for fn_node in _collect_function_nodes(tree.root_node, lmap):
         body = fn_node.child_by_field_name("body") or fn_node
         ccn, max_nest, cognitive, bumps, conditions = _walk_function_body(body, lmap)
-        assertion_blocks, assertion_count = _collect_assertion_facts(body, lmap)
+        assertion_blocks, assertion_count = _collect_assertion_facts(body, lmap, asserts)
         fc = FunctionComplexity(
             name=_find_function_entry_name(fn_node, lmap),
             start_line=fn_node.start_point[0] + 1,
@@ -159,7 +170,7 @@ def walk_file(
             complex_conditions=conditions,
             assertion_blocks=assertion_blocks,
             assertion_count=assertion_count,
-            mock_setup_count=_count_mock_setup(fn_node, body, lmap, mock_dialect),
+            mock_setup_count=_count_mock_setup(fn_node, body, lmap, mock_dialect, asserts),
         )
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc

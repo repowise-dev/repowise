@@ -26,9 +26,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..asserts.lexicon import AssertDialect
 from ..mocks.lexicon import MOCK_DIALECTS, MOCK_IDENTIFIER_TOKENS, MockDialect
 from .assertions import _is_assertion_statement
-from .ast_utils import _IDENTIFIER_SUFFIX
+from .ast_utils import _callee_names, _identifier_chain, _receiver_method_verdict
 from .languages import LanguageNodeMap
 
 if TYPE_CHECKING:
@@ -58,68 +59,15 @@ def file_may_contain_mocks(source: bytes) -> bool:
     return any(marker in lowered for marker in _FILE_MARKERS)
 
 
-def _identifier_chain(node: Node) -> list[str]:
-    """Every identifier under *node*, lowercased, in document order.
-
-    Order is load-bearing: the last entry is the name being called, the rest
-    the receiver path. Argument lists are never descended into.
-    """
-    names: list[str] = []
-    stack: list[Node] = [node]
-    while stack:
-        cur = stack.pop()
-        if cur.type in ("argument_list", "arguments"):
-            continue
-        if cur.type.endswith(_IDENTIFIER_SUFFIX) and cur.text is not None:
-            names.append(cur.text.decode("utf-8", "replace").lower())
-        stack.extend(reversed(cur.children))
-    return names
-
-
-def _callee_names(call_node: Node) -> tuple[str, set[str]] | None:
-    """``(called_name, receiver_roots)`` for a call, or ``None``.
-
-    Two grammar shapes: a single callee subtree under ``function`` / ``macro``,
-    read rightmost-last so ``mock.patch(...)`` gives ``("patch", {"mock"})``; or
-    a ``name`` field beside an ``object`` field (Java, C#), where the callee is
-    not one node. Arguments are excluded in both.
-    """
-    name_node = call_node.child_by_field_name("name")
-    if name_node is not None:
-        # Split shape: the name IS the called name, the receiver is ``object``.
-        called = (name_node.text or b"").decode("utf-8", "replace").lower()
-        if not called:
-            return None
-        receiver = call_node.child_by_field_name("object")
-        return called, set(_identifier_chain(receiver)) if receiver is not None else set()
-
-    callee = call_node.child_by_field_name("function") or call_node.child_by_field_name("macro")
-    if callee is None:
-        named = [
-            c
-            for c in call_node.children
-            if c.is_named and c.type not in ("argument_list", "arguments")
-        ]
-        callee = named[0] if named else None
-    if callee is None:
-        return None
-    chain = _identifier_chain(callee)
-    if not chain:
-        return None
-    return chain[-1], set(chain[:-1])
-
-
 def _is_mock_call(call_node: Node, dialect: MockDialect) -> bool:
     """True when *call_node* constructs, patches or configures a test double."""
     names = _callee_names(call_node)
     if names is None:
         return False
     called, roots = names
-    for root in roots:
-        methods = dialect.receiver_methods.get(root)
-        if methods is not None:
-            # A listed receiver is exhaustive about its own methods.
-            return called in methods
+    verdict = _receiver_method_verdict(called, roots, dialect.receiver_methods)
+    if verdict is not None:
+        return verdict
     if any(token in name for name in (called, *roots) for token in MOCK_IDENTIFIER_TOKENS):
         return True
     if called in dialect.setup_callees or roots & dialect.setup_callees:
@@ -198,7 +146,12 @@ def _count_decorators(fn_node: Node, lmap: LanguageNodeMap, dialect: MockDialect
     return count
 
 
-def _count_body_setup(body: Node, lmap: LanguageNodeMap, dialect: MockDialect) -> int:
+def _count_body_setup(
+    body: Node,
+    lmap: LanguageNodeMap,
+    dialect: MockDialect,
+    asserts: AssertDialect | None,
+) -> int:
     """Mock-setup statements within *body*.
 
     Statements are the named children of a block, so a nested block's
@@ -212,8 +165,10 @@ def _count_body_setup(body: Node, lmap: LanguageNodeMap, dialect: MockDialect) -
             if not stmt.is_named:
                 continue
             # Assertions are classified first and are never setup, even when
-            # they read a double (``mock.assert_called_once()``).
-            if _is_assertion_statement(stmt, lmap):
+            # they read a double (``mock.assert_called_once()``). Broad tier,
+            # the same one the ratio divides by, so no statement can land in
+            # both halves of it.
+            if _is_assertion_statement(stmt, lmap, asserts):
                 continue
             if _is_config_assignment(stmt, lmap, dialect) or _contains_mock_call(
                 stmt, lmap, dialect
@@ -239,8 +194,11 @@ def _count_mock_setup(
     body: Node,
     lmap: LanguageNodeMap,
     dialect: MockDialect | None,
+    asserts: AssertDialect | None = None,
 ) -> int:
     """Mock-setup statements for one function, decorators included."""
     if dialect is None or not lmap.block_kinds or not lmap.call_kinds:
         return 0
-    return _count_decorators(fn_node, lmap, dialect) + _count_body_setup(body, lmap, dialect)
+    return _count_decorators(fn_node, lmap, dialect) + _count_body_setup(
+        body, lmap, dialect, asserts
+    )

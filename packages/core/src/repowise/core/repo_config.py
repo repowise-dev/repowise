@@ -21,7 +21,7 @@ MANIFEST_BASENAME = "decisions.yaml"
 CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     "traversal": frozenset({"exclude_patterns"}),
     "git_history": frozenset({"commit_limit", "follow_renames"}),
-    "health": frozenset({"coverage", "refactoring"}),
+    "health": frozenset({"assertions", "coverage", "refactoring"}),
     "generation": frozenset(
         {
             "provider",

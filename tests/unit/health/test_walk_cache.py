@@ -109,9 +109,9 @@ def test_the_analyzer_walks_once_and_serves_the_second_pass_from_the_cache(tmp_p
     calls: list[str] = []
     real_walk = engine_mod.walk_file
 
-    def counting_walk(path, language, source):
+    def counting_walk(path, language, source, extra_assert_names=frozenset()):
         calls.append(path)
-        return real_walk(path, language, source)
+        return real_walk(path, language, source, extra_assert_names)
 
     monkeypatch.setattr(engine_mod, "walk_file", counting_walk)
 

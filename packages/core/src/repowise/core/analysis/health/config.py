@@ -86,6 +86,20 @@ _PROFILES: dict[str, dict[str, Severity]] = {
 }
 
 
+def _assertion_names(raw: object) -> list[str]:
+    """Coerce ``assertions.extra_names`` to sorted, matchable lowercase names.
+
+    Accepts one string or a list of them, as the ``coverage:`` block does, and
+    drops anything else rather than raising: a typo in optional config must not
+    fail an analysis.
+    """
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return sorted({n.strip().lower() for n in raw if isinstance(n, str) and n.strip()})
+
+
 def _string_list(raw: object, *, field: str) -> list[str]:
     """Parse a list-of-names field, dropping anything that is not one.
 
@@ -236,6 +250,12 @@ class HealthConfig:
     refactoring_enabled: bool = True
     disabled_refactorings: list[str] = field(default_factory=list)
     refactoring_min_confidence: str | None = None
+    # Extra assertion names, from the ``assertions:`` block of
+    # ``.repowise/config.yaml``, for a house assertion helper the built-in
+    # vocabulary misses. Exact lowercase names, never prefixes. They reach the
+    # broad tier only (``asserts/lexicon.py``), so unlike every other key here
+    # this one provably cannot move a score.
+    assert_extra_names: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, repo_path: Path | str) -> HealthConfig:
@@ -243,11 +263,12 @@ class HealthConfig:
 
         The per-file biomarker overrides come from ``health-rules.json``; the
         refactoring-layer knobs come from the ``refactoring:`` block of
-        ``.repowise/config.yaml`` (loaded here and merged onto the same config
+        ``.repowise/config.yaml``, and the assertion vocabulary from its
+        ``assertions:`` block (both loaded here and merged onto the same config
         object). Missing file → empty config. Malformed file → empty config +
         a single warning log. Never raises.
         """
-        cfg = cls._load_refactoring(repo_path)
+        cfg = cls._load_config_yaml_blocks(repo_path)
         rules_path = get_repowise_dir(repo_path) / HEALTH_RULES_FILENAME
         if not rules_path.exists():
             return cfg
@@ -260,24 +281,29 @@ class HealthConfig:
         rules_cfg.refactoring_enabled = cfg.refactoring_enabled
         rules_cfg.disabled_refactorings = cfg.disabled_refactorings
         rules_cfg.refactoring_min_confidence = cfg.refactoring_min_confidence
+        rules_cfg.assert_extra_names = cfg.assert_extra_names
         return rules_cfg
 
     @classmethod
-    def _load_refactoring(cls, repo_path: Path | str) -> HealthConfig:
-        """Read the ``refactoring:`` block from ``.repowise/config.yaml``.
+    def _load_config_yaml_blocks(cls, repo_path: Path | str) -> HealthConfig:
+        """Read the ``refactoring:`` and ``assertions:`` blocks of config.yaml.
 
-        Returns a config carrying only the refactoring knobs (biomarker fields
-        left at their defaults). Never raises: a missing/malformed file or an
-        unexpected shape degrades to the defaults (everything on, no floor).
+        Returns a config carrying only those knobs (biomarker fields left at
+        their defaults). Never raises: a missing/malformed file or an
+        unexpected shape degrades to the defaults (everything on, no floor,
+        no extra assertion names).
         """
         try:
             raw = load_repo_config(repo_path)
         except Exception as exc:  # defensive: config.yaml read must never break load
-            log.debug("refactoring_config_load_failed", error=str(exc))
+            log.debug("health_config_yaml_load_failed", error=str(exc))
             return cls()
-        return cls._from_refactoring_block(
-            raw.get("refactoring") if isinstance(raw, dict) else None
-        )
+        block = raw if isinstance(raw, dict) else {}
+        cfg = cls._from_refactoring_block(block.get("refactoring"))
+        assertions = block.get("assertions")
+        if isinstance(assertions, dict):
+            cfg.assert_extra_names = _assertion_names(assertions.get("extra_names"))
+        return cfg
 
     @classmethod
     def _from_refactoring_block(cls, block: object) -> HealthConfig:
@@ -426,4 +452,5 @@ class HealthConfig:
             "refactoring_enabled": self.refactoring_enabled,
             "disabled_refactorings": list(self.disabled_refactorings),
             "refactoring_min_confidence": self.refactoring_min_confidence,
+            "assert_extra_names": list(self.assert_extra_names),
         }

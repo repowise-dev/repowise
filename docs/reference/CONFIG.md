@@ -14,7 +14,8 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `hooks:` block](#the-hooks-block) ·
 [The `mcp:` block](#the-mcp-block) ·
 [The `decisions:` block](#the-decisions-block) ·
-[The `refactoring:` block](#the-refactoring-block)
+[The `refactoring:` block](#the-refactoring-block) ·
+[The `assertions:` block](#the-assertions-block)
 
 **Code health rules**
 [The `health-rules.json` file](#the-health-rulesjson-file)
@@ -126,6 +127,9 @@ mcp:                                 # see "The mcp: block" below
 
 refactoring:                         # see "The refactoring: block" below
   enabled: true
+
+assertions:                          # see "The assertions: block" below
+  extra_names: []
 ```
 
 You can edit this file directly. Changes take effect on the next `init`,
@@ -558,6 +562,35 @@ refactoring:
 - Per-path disables reuse the `.repowise/health-rules.json` glob mechanism (the
   same one markers use).
 - Full reference: [REFACTORING.md](../layers/REFACTORING.md).
+
+### The `assertions:` block
+
+Names your own assertion helpers, for the test-quality markers that divide by a
+test's assertion count.
+
+```yaml
+assertions:
+  extra_names: [ensureInvariant, mustMatch]   # exact callee names, not prefixes
+```
+
+Repowise recognises the xUnit and BDD families out of the box (`assert*`,
+`expect*`) plus a per-language vocabulary for the idioms those miss, such as
+Go's `t.Fatalf` and testify's `require`. A house helper that follows neither
+convention is invisible to it, and a test built entirely of those helpers reads
+as having no assertions at all. This block is the escape hatch, the same one
+SonarQube, Qodana and ESLint's `expect-expect` rule each provide.
+
+- **Names are exact and case-insensitive, never prefixes.** `ensureInvariant`
+  matches `ensureInvariant(...)` and not `ensureConnectionPool(...)`. Prefix
+  matching was measured against three real test corpora and matched production
+  functions under test far more often than assertions.
+- A name matches whether it is the call itself or the receiver of one, so both
+  `ensureInvariant(x)` and `ensureInvariant(x).isTrue()` count.
+- **Nothing here can change a health score.** These names reach only the
+  advisory assertion total; the calibrated `large_assertion_block` and
+  `duplicated_assertion_block` markers read a separate count that takes no
+  configuration. Adding a wrong name costs you signal, never a wrong score.
+- Changing the list re-walks the affected files on the next `init` / `update`.
 
 ---
 

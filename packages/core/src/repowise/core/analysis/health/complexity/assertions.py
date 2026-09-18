@@ -7,26 +7,36 @@ count. Opt-in per language via the ``LanguageNodeMap`` ``assert_kinds`` /
 (never a false positive). Consumed by the ``large_assertion_block`` /
 ``duplicated_assertion_block`` biomarkers, and by ``mock_saturated_test``,
 which divides mock setup by the total.
+
+Two tiers are counted in one walk, and which marker reads which is the whole
+design (``asserts/lexicon.py`` carries the vocabulary and the evidence):
+
+* ``blocks`` counts the **narrow** tier only — an ``assert``/``expect`` callee
+  or the language's own ``assert`` statement. The two block markers are
+  calibrated on it, so it takes no per-language and no user vocabulary, and a
+  broad-only statement breaks a run exactly as a non-assertion always has.
+* ``total`` counts the **broad** tier, which is narrow plus the language's
+  dialect. Its only reader is the advisory ``mock_saturated_test``.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .ast_utils import _IDENTIFIER_SUFFIX
+from ..asserts.lexicon import NARROW_PREFIXES, AssertDialect
+from .ast_utils import _IDENTIFIER_SUFFIX, _callee_names, _receiver_method_verdict
 from .languages import LanguageNodeMap
 
 if TYPE_CHECKING:
     from tree_sitter import Node
 
-# Callee-name prefixes that mark a call as a test assertion. Matched
-# case-insensitively against every identifier in the call's callee chain,
-# so ``assertEqual`` / ``assert_eq`` / ``Assert.assertTrue`` / ``expect``
-# all qualify. Deliberately small — these two prefixes cover xUnit-family
-# (``assert*``) and the BDD/expect family (``expect(...)``).
-_ASSERT_CALL_PREFIXES = ("assert", "expect")
 _EXPRESSION_STATEMENT = "expression_statement"
 _AWAIT_WRAPPER_KINDS = ("await_expression", "await", "parenthesized_expression")
+
+# Assertion tiers. Narrow implies broad, so a statement carries one of three.
+_NOT_ASSERTION = 0
+_BROAD = 1
+_NARROW = 2
 
 
 def _callee_matches_assert(call_node: Node) -> bool:
@@ -45,11 +55,28 @@ def _callee_matches_assert(call_node: Node) -> bool:
         node = stack.pop()
         if node.type.endswith(_IDENTIFIER_SUFFIX) and node.text is not None:
             name = node.text.decode("utf-8", errors="replace").lower()
-            if any(name.startswith(p) for p in _ASSERT_CALL_PREFIXES):
+            if any(name.startswith(p) for p in NARROW_PREFIXES):
                 return True
         for child in node.children:
             stack.append(child)
     return False
+
+
+def _callee_matches_dialect(call_node: Node, dialect: AssertDialect) -> bool:
+    """True if *call_node* asserts in this language's broad vocabulary.
+
+    Names are exact and read from both ends of the call, because a verification
+    reads either way round: ``verify(mock)`` is the callee, and in
+    ``verify(mock).save()`` it is the receiver of ``save``.
+    """
+    names = _callee_names(call_node)
+    if names is None:
+        return False
+    called, roots = names
+    verdict = _receiver_method_verdict(called, roots, dialect.receiver_methods)
+    if verdict is not None:
+        return verdict
+    return called in dialect.assert_names or bool(roots & dialect.assert_names)
 
 
 def _find_assert_call(stmt: Node, kinds: frozenset[str]) -> Node | None:
@@ -72,43 +99,63 @@ def _find_assert_call(stmt: Node, kinds: frozenset[str]) -> Node | None:
     return None
 
 
-def _is_assertion_statement(stmt: Node, lmap: LanguageNodeMap) -> bool:
-    """True if *stmt* is a test assertion (bare ``assert`` or assert call)."""
+def _assertion_tier(stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None) -> int:
+    """The tier *stmt* asserts at: ``_NARROW``, ``_BROAD`` or ``_NOT_ASSERTION``.
+
+    The broad tier is consulted only once the narrow one has declined, which is
+    what keeps a language with no dialect classifying exactly as narrow alone.
+    """
     if stmt.type in lmap.assert_kinds:
-        return True
+        return _NARROW
     if not lmap.assert_call_kinds:
-        return False
-    # Some grammars (Kotlin) have no ``expression_statement`` wrapper — the
-    # call node sits directly in the statement list. Match it as the
-    # statement itself. (Wrapper languages never hit this: their call nodes
-    # only ever appear as the single child of an ``expression_statement``,
-    # so they can't form a run of ≥2 at this level.)
+        return _NOT_ASSERTION
     if stmt.type in lmap.assert_call_kinds:
-        return _callee_matches_assert(stmt)
-    if stmt.type != _EXPRESSION_STATEMENT:
-        return False
-    call = _find_assert_call(stmt, lmap.assert_call_kinds)
-    return call is not None and _callee_matches_assert(call)
+        # Some grammars (Kotlin) have no ``expression_statement`` wrapper — the
+        # call node sits directly in the statement list. Match it as the
+        # statement itself. (Wrapper languages never hit this: their call nodes
+        # only ever appear as the single child of an ``expression_statement``,
+        # so they can't form a run of ≥2 at this level.)
+        call: Node | None = stmt
+    elif stmt.type == _EXPRESSION_STATEMENT:
+        call = _find_assert_call(stmt, lmap.assert_call_kinds)
+    else:
+        return _NOT_ASSERTION
+    if call is None:
+        return _NOT_ASSERTION
+    if _callee_matches_assert(call):
+        return _NARROW
+    if dialect is not None and _callee_matches_dialect(call, dialect):
+        return _BROAD
+    return _NOT_ASSERTION
+
+
+def _is_assertion_statement(
+    stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None = None
+) -> bool:
+    """True if *stmt* is a test assertion at the broad tier."""
+    return _assertion_tier(stmt, lmap, dialect) != _NOT_ASSERTION
 
 
 def _collect_assertion_facts(
-    body_node: Node, lmap: LanguageNodeMap
+    body_node: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None = None
 ) -> tuple[list[tuple[int, int, int]], int]:
     """``(blocks, total)`` assertion facts for one function body.
 
-    *blocks* are runs of ≥2 consecutive assertion statements, each recorded as
-    ``(start_line, end_line, count)``. Runs are found per statement-list (a
-    block's direct children), so an assertion sequence broken by a
-    non-assertion statement starts a new run. Nested function bodies are
-    skipped: their assertions belong to them.
+    *blocks* are runs of ≥2 consecutive **narrow-tier** assertion statements,
+    each recorded as ``(start_line, end_line, count)``. Runs are found per
+    statement-list (a block's direct children), so an assertion sequence broken
+    by a non-assertion statement starts a new run — and a broad-only statement
+    breaks one, because these runs are what the calibrated markers read.
+    Nested function bodies are skipped: their assertions belong to them.
 
-    *total* counts assertion **statements** only, at block level. The run scan
-    keeps scanning everywhere, which is a deliberate asymmetry: it feeds the
-    calibrated ``duplicated_assertion_block``, and narrowing it would change
-    scored findings. A run needs two siblings so it rarely fires off a statement
-    list, but a total counts each match on its own and would double-count every
-    assertion in a language whose ``assert_call_kinds`` is its plain call node.
-    Block level also makes it commensurable with ``mock_walk._count_body_setup``.
+    *total* counts **broad-tier** assertion **statements** only, at block level.
+    The run scan keeps scanning everywhere, which is a deliberate asymmetry: it
+    feeds the calibrated ``duplicated_assertion_block``, and narrowing it would
+    change scored findings. A run needs two siblings so it rarely fires off a
+    statement list, but a total counts each match on its own and would
+    double-count every assertion in a language whose ``assert_call_kinds`` is
+    its plain call node. Block level also makes it commensurable with
+    ``mock_walk._count_body_setup``.
     """
     if not lmap.assert_kinds and not lmap.assert_call_kinds:
         return [], 0
@@ -123,9 +170,10 @@ def _collect_assertion_facts(
         for child in parent.children:
             if not child.is_named:
                 continue
-            if _is_assertion_statement(child, lmap):
-                if count_total:
-                    total += 1
+            tier = _assertion_tier(child, lmap, dialect)
+            if count_total and tier != _NOT_ASSERTION:
+                total += 1
+            if tier == _NARROW:
                 if run_count == 0:
                     run_start = child.start_point[0] + 1
                 run_end = child.end_point[0] + 1

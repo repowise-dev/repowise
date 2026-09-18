@@ -39,6 +39,7 @@ from ...ingestion.package_roots import package_roots_from_paths as _package_root
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ..graph_view import HasEdge, ImportEdgeView
 from ..test_reachability import files_reached_by_tests
+from .asserts.lexicon import AssertVocabulary
 from .biomarkers import FileContext, detect_all
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
@@ -99,7 +100,14 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: ``mock_saturated_test`` gained a TypeScript / JavaScript
+# Current stamp: the assertion count gained a per-language broad tier, so a Go
+# or JS/TS file's ``assertion_count`` changes from what a cached v13 walk stored
+# for it. The narrow tier the calibrated block markers read is unchanged, so no
+# score moves; this stamp is what re-walks the files whose advisory denominator
+# does. Go's row changes no finding until Go also has a mock dialect — it is
+# there for the markers that read this count next.
+#
+# v13: ``mock_saturated_test`` gained a TypeScript / JavaScript
 # vocabulary, so a TS or JS file's ``mock_setup_count`` changes from the zero a
 # cached v12 walk stored for it.
 #
@@ -126,7 +134,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 13
+HEALTH_ANALYZER_VERSION = 14
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -455,6 +463,7 @@ class HealthAnalyzer:
         from repowise.core.pipeline.phase_timing import timed
 
         cfg = config or {}
+        vocab = AssertVocabulary.from_analyzer_config(cfg)
         disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
         per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
         repo_severity_overrides: dict[str, Severity] = cfg.get("severity_overrides", {}) or {}
@@ -523,7 +532,7 @@ class HealthAnalyzer:
             if not scores_language(pf.file_info.language):
                 continue
             try:
-                fcx = self._walk(pf)
+                fcx = self._walk(pf, vocab)
             except Exception as exc:
                 log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
                 fcx = FileComplexity(functions=[], classes=[])
@@ -667,6 +676,7 @@ class HealthAnalyzer:
         repo so the gate is not biased by the changed-files subset.
         """
         cfg = config or {}
+        vocab = AssertVocabulary.from_analyzer_config(cfg)
         disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
         per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
         repo_severity_overrides: dict[str, Severity] = cfg.get("severity_overrides", {}) or {}
@@ -725,7 +735,7 @@ class HealthAnalyzer:
         async def _one(pf: Any) -> tuple[Any, FileComplexity]:
             async with semaphore:
                 try:
-                    fcx = await asyncio.to_thread(self._walk, pf)
+                    fcx = await asyncio.to_thread(self._walk, pf, vocab)
                 except Exception as exc:
                     log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
                     fcx = FileComplexity(functions=[], classes=[])
@@ -944,7 +954,7 @@ class HealthAnalyzer:
             log.debug("function_blame_rollup_failed", error=str(exc))
             return []
 
-    def _walk(self, pf: Any) -> FileComplexity:
+    def _walk(self, pf: Any, vocab: AssertVocabulary) -> FileComplexity:
         path = pf.file_info.abs_path
         language = pf.file_info.language
         source = self.read_source(path)
@@ -954,7 +964,7 @@ class HealthAnalyzer:
         if self._walk_cache is not None:
             from repowise.core.ingestion import compute_content_hash
 
-            key = HealthWalkCache.key(language, compute_content_hash(source))
+            key = HealthWalkCache.key(language, compute_content_hash(source), vocab.key)
             cached = self._walk_cache.get(key)
             if cached is not None:
                 return cached
@@ -965,7 +975,7 @@ class HealthAnalyzer:
 
             fcx = walk_sql_file(pf.file_info, source)
         else:
-            fcx = walk_file(path, language, source)
+            fcx = walk_file(path, language, source, vocab.names)
         if key is not None and self._walk_cache is not None:
             self._walk_cache.put(key, fcx)
         return fcx
