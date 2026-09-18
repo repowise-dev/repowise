@@ -178,7 +178,12 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         export_node_types=[],
         visibility_fn=rust_visibility,
         parent_extraction="impl",
-        parent_class_types=frozenset({"impl_item", "mod_item"}),
+        # ``trait_item`` parents a trait's own defaulted methods. Without it the
+        # ancestor walk runs past the trait to the enclosing ``mod``, or off the
+        # top of the file, and the method is emitted parentless -- which also
+        # keeps its kind at ``function``, since that upgrade is gated on having
+        # a parent.
+        parent_class_types=frozenset({"impl_item", "mod_item", "trait_item"}),
         reference_call_node_types=frozenset({"macro_invocation"}),
     ),
     "java": LanguageConfig(
