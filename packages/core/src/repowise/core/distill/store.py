@@ -22,6 +22,7 @@ import structlog
 from repowise.core.distill import tracking
 from repowise.core.distill.markers import REF_LENGTH, is_valid_ref
 from repowise.core.savings import schema as savings_schema
+from repowise.core.savings.repository import SavingsRepository
 from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
 
 logger = structlog.get_logger(__name__)
@@ -241,6 +242,15 @@ class OmissionStore:
     def savings_rollup(self, *, by: str = "filter", since: float | None = None) -> list[dict]:
         """Grouped ledger totals (see :func:`tracking.savings_rollup`)."""
         return tracking.savings_rollup(self._conn, by=by, since=since)
+
+    def savings(self) -> SavingsRepository:
+        """The canonical event ledger, sharing this store's connection.
+
+        The event tables live in this same file, installed by the same schema
+        upgrade the constructor runs, so they are reached through the store that
+        already owns the connection rather than by opening a second one.
+        """
+        return SavingsRepository(self._conn)
 
     # -- lifecycle ---------------------------------------------------------
 
