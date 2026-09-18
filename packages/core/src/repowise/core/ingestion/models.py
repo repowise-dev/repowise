@@ -301,7 +301,7 @@ class CallSite:
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
 
 
-HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]
+HeritageKind = Literal["extends", "implements", "trait_impl", "mixin", "derive"]
 
 
 @dataclass

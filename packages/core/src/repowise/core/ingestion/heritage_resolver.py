@@ -244,10 +244,17 @@ class HeritageResolver:
 
 
 def _heritage_kind_to_edge_type(kind: str) -> str:
-    """Map HeritageKind to graph edge_type string."""
+    """Map HeritageKind to graph edge_type string.
+
+    ``derive`` is named rather than left to the default: ``#[derive(Clone)]``
+    really does implement the trait, and falling through would call it
+    inheritance.
+    """
     if kind == "implements":
         return "implements"
     if kind == "trait_impl":
+        return "implements"
+    if kind == "derive":
         return "implements"
     # extends, mixin → extends
     return "extends"
