@@ -34,9 +34,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from repowise.core.distill.budget import estimate_tokens
-
-from . import counterfactual
+from . import counterfactual, interaction
 from .recorder import record_mcp_dead_end, record_mcp_saving
 
 logger = logging.getLogger(__name__)
@@ -185,42 +183,66 @@ def _declared_tokens(result: Any) -> int | None:
     return value if isinstance(value, int) and value > 0 else None
 
 
-def _delivered_tokens(result: Any) -> int:
-    """Estimate tokens the agent actually received for *result*."""
-    try:
-        text = json.dumps(result, default=str)
-    except Exception:
-        return 0
-    return estimate_tokens(text)
+def response_tokens(result: Any) -> int:
+    """Tokens the agent actually received for *result*.
+
+    Reads the budgeter's own compact serialization, which is the measurement
+    the budget decisions were made against. The old helper here serialized with
+    default separators instead, so the ledger's delivered size and the
+    telemetry's response size disagreed for the same call, and the ledger's was
+    systematically the larger of the two.
+    """
+    size = _response_size(result)
+    return size[1] if size is not None else 0
 
 
-def _record(tool: str, result: Any) -> None:
-    """Measure, derive the counterfactual, and record — all best-effort."""
+def _observe_baseline(tool: str, result: Any) -> None:
+    """Derive the counterfactual here, and write the legacy row as before.
+
+    The counterfactual must be derived at this depth: the estimators read fields
+    a later budget pass is free to drop — a search reply's
+    ``results[].target_path``, a context reply's ``targets[].skeleton.full_tokens``
+    — so computing it further out would silently fall to zero on exactly the
+    large responses where it matters most. The number is carried on the
+    interaction, and the canonical event is written outside every layer, once
+    the delivered size is final.
+
+    The legacy ``savings`` row is still written, unchanged, including its
+    pre-final delivered size. That is deliberate for the transition: the costs
+    endpoint, the overview headline and ``repowise saved`` all still read that
+    table, and they move to the canonical report as their own change. Writing
+    both means this one neither regresses a published figure nor pretends the
+    old row got better.
+    """
     declared = _declared_tokens(result)
     replaced = (
         declared if declared is not None else counterfactual.replaced_tokens_for(tool, result)
     )
+    live = interaction.current()
+    if live is not None:
+        live.observe_pre_budget(response_tokens(result))
+        if replaced > 0:
+            live.baseline_input_tokens = replaced
+
     if replaced <= 0:
-        # Dead-end debit: an error response delivered tokens and replaced
-        # nothing — net negative for the session, and the ledger must say so.
         if isinstance(result, dict) and result.get("error"):
             from repowise.server.mcp_server import _state
 
             record_mcp_dead_end(
-                getattr(_state, "_repo_path", None), tool, _delivered_tokens(result)
+                getattr(_state, "_repo_path", None), tool, response_tokens(result)
             )
         return
 
-    delivered = _delivered_tokens(result)
-
-    # Resolve the repo the MCP server is scoped to. Lazy import keeps this
-    # module free of package import-ordering coupling.
+    delivered = response_tokens(result)
     from repowise.server.mcp_server import _state
 
     repo_root = getattr(_state, "_repo_path", None)
     if record_mcp_saving(repo_root, tool, replaced, delivered) and isinstance(result, dict):
         meta = result.setdefault("_meta", {})
         if isinstance(meta, dict):
+            # Stamped before the outer budget runs, so these bytes are budgeted
+            # and counted. An agent-facing hint, not the ledger: the canonical
+            # event's delivered size is measured after this.
             meta["replaced_tokens"] = replaced
             meta["tokens_saved"] = max(0, replaced - delivered)
 
@@ -244,7 +266,7 @@ def instrument(fn: Callable[..., Any]) -> Callable[..., Any]:
         result = await fn(*args, **kwargs)
         duration_ms = int((time.perf_counter() - _t0) * 1000)
         try:
-            _record(tool, result)
+            _observe_baseline(tool, result)
         except Exception:  # pragma: no cover - defensive; savings never break a tool
             logger.debug("mcp savings instrumentation failed for %s", tool, exc_info=True)
         try:
