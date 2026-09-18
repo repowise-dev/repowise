@@ -276,12 +276,8 @@ async def get_risk(
             analyzer = PRBlastRadiusAnalyzer(session, repo_id, repository_alias=ctx.alias)
             pr_blast_radius = await analyzer.analyze_files(changed_files, exclude_spec=exclude_spec)
 
-    # Enrich only the cards that resolved. An unresolved target carries no
-    # measurements by construction, and an enricher keyed on a path prefix will
-    # happily bind signal to one anyway: a bare directory came back with
-    # ``episodes: 108`` sitting beside a card that resolved nothing, which reads
-    # as two subsystems disagreeing rather than as one miss. The dicts are
-    # mutated in place, so ``results`` keeps its order and its unresolved rows.
+    # Enrichers key on a path prefix, so they will bind signal to a card that
+    # resolved nothing. Mutation is in place, so ``results`` keeps its order.
     scored = [r for r in results if r.get("resolved") is not False]
 
     # Cross-repo blast radius enrichment (Phase 3 + 4)

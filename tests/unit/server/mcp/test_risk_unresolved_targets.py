@@ -1,24 +1,17 @@
 """``get_risk`` must not answer a target it never resolved with zeros.
 
-``module:ingestion`` and the bare directory it names both came back with
-``dependents_count: 0`` while a single file inside that directory came back
-with 59 — and the directory also carried ``episodes: 108`` from an enricher
-that binds by path prefix, so one response held a confident "nothing depends on
-this" beside evidence that something knew the target well. Nothing downstream
-could tell that zero from a measured one.
+A ``module:`` id or a directory used to come back with every numeric field
+zeroed, indistinguishable from a measured zero, while an enricher keyed on the
+path prefix bound real signal to the same card.
 """
 
 from __future__ import annotations
 
 import pytest
 
-#: Every numeric field a reader could mistake for a measurement. None of these
-#: may appear on a card the tool did not resolve.
-#:
-#: Four of them — the ``*_total`` counts and ``direct``/``transitive`` — are
-#: also ``include=["graph"]`` keys that ``_drop_opt_in_blocks`` pops off every
-#: card when ``include`` is empty, so asserting their absence without asking
-#: for the block proves nothing. Tests covering them pass ``include=["graph"]``.
+#: Fields no unresolved card may carry. The four ``*_total``/direction counts
+#: are ``include=["graph"]`` keys popped from every card otherwise, so tests
+#: asserting their absence must ask for the block or prove nothing.
 _MEASUREMENT_KEYS = (
     "dependents_count",
     "dependents_total",
@@ -43,9 +36,8 @@ async def test_module_target_is_rejected_not_zeroed(setup_mcp):
     card = result["targets"]["module:auth"]
 
     assert card["resolved"] is False
-    # Not ``no_such_module``: that is get_health's token for "no module of that
-    # name", and ``auth`` is a real module there. get_risk has no module
-    # vocabulary at all, which is a different answer.
+    # Not ``no_such_module``: that is get_health's "no module of that name",
+    # and ``auth`` is a real module there.
     assert card["unresolved_reason"] == "unsupported_target_kind"
     for key in _MEASUREMENT_KEYS:
         assert key not in card, f"{key} must be absent, not zero, on an unresolved target"
@@ -94,8 +86,8 @@ async def test_a_real_file_keeps_its_real_counts(setup_mcp):
     assert "unresolved_reason" not in card
     assert card["dependents_count"] >= 1
     assert card["hotspot_score"] == 0.92
-    # Also pins the ``include=["graph"]`` gate open, which is what makes the
-    # ``*_total`` absences asserted for unresolved targets mean anything.
+    # Pins the ``include=["graph"]`` gate open, so the ``*_total`` absences
+    # asserted above mean something.
     assert card["dependents_total"] >= 1
 
 
@@ -116,14 +108,7 @@ async def test_unresolved_and_resolved_targets_coexist_in_one_call(setup_mcp, tm
 
 @pytest.mark.asyncio
 async def test_enrichment_does_not_bind_signal_to_an_unresolved_card(setup_mcp, tmp_path):
-    """The half that made the zero convincing.
-
-    The live reproduction returned ``episodes: 108`` for a bare directory,
-    sitting directly beside ``dependents_count: 0``. That is not one subsystem
-    with no data, it is two subsystems disagreeing about whether the target
-    means anything, and the response showed only the reassuring half. An
-    enricher must not attach a measurement to a card that resolved nothing.
-    """
+    """An enricher must not attach a measurement to a card that resolved nothing."""
     import time
 
     from repowise.core.precedent.store import (
@@ -162,12 +147,8 @@ async def test_enrichment_does_not_bind_signal_to_an_unresolved_card(setup_mcp, 
 
 @pytest.mark.asyncio
 async def test_symbol_targets_are_not_rejected(setup_mcp):
-    """``path::Symbol`` is an accepted input shape, not an unresolved target.
-
-    It reaches no ``git_metadata`` row and no file node either, so the guard
-    would swallow it without this carve-out — and the episode enricher already
-    resolves a symbol id to its file, which only makes sense if the tool is
-    expected to be handed one.
+    """``path::Symbol`` is an accepted input shape: it reaches no git row and no
+    file node, so the guard would swallow it without the carve-out.
     """
     from repowise.server.mcp_server import get_risk
 
@@ -181,12 +162,8 @@ async def test_symbol_targets_are_not_rejected(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_pr_mode_does_not_stamp_counts_back_onto_an_unresolved_card(setup_mcp, tmp_path):
-    """PR mode re-walks every target card after assessment.
-
-    It trims co-change lists and restates their emitted/truncated counts, and
-    it reads the cards straight off the response rather than the assessed set —
-    so without a skip it puts two of the structural zeros back on a card that
-    resolved nothing.
+    """PR mode re-walks the response's cards, not the assessed set, and restates
+    co-change counts — putting two structural zeros back without a skip.
     """
     from repowise.server.mcp_server import get_risk
 

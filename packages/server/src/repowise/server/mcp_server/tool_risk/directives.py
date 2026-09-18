@@ -469,8 +469,8 @@ def _build_pr_directive(
     # Everything trimmed below is persisted via the collector so the
     # response carries an expandable [repowise#<ref>] marker for it.
     for r in response["targets"].values():
-        # An unresolved target measured nothing, so the two counts stamped
-        # below would be the structural zeros get_risk stopped emitting.
+        # The counts below would be the structural zeros get_risk stopped
+        # emitting for a card that resolved nothing.
         if r.get("resolved") is False:
             continue
         partners = r.get("co_change_partners") or []

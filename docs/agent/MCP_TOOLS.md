@@ -505,18 +505,11 @@ Modification risk assessment for files or a set of changed files.
 
 **Returns:** Per-file `hotspot_score` (0-1 churn percentile), `health_score` (0-10), hotspot status, direct directed `dependents_count`, historical `co_change_partners` (each with a recency-decayed `weight`, not an integer count, and a `direction` of `a_to_b`, `b_to_a` or `undirected`, where `a` is the assessed file and `b` the partner; `conf_ab` and `conf_ba` are the share of each file's own commits that touched the other, and both are omitted on an index written before those commit totals were recorded, which also reads as `undirected`), blast radius, recommended reviewers, test gap analysis, and security signals. With `include=["graph"]`, `dependents` preserves direct versus transitive structural reach, `consumers` contains typed contract consumers only, and `cross_repo_links` retains both repository identities, direction, relationship type, evidence kind, and file- or repository-level granularity. Package-manifest links are repository-level and never invent a target file. Every typed relationship collection carries matching total/emitted/truncated fields. `relationship_analysis` distinguishes available-empty analysis from unavailable, degraded, partial, and source-truncated artifacts and retains artifact generation/provenance fields. Structural reach is not proof of runtime breakage.
 
-> **Unresolved targets.** A target that names no indexed file - a `module:` id
-> (`get_risk` has no module vocabulary, unlike `get_health`), a directory, an
-> unindexed path, or a typo - comes back as `{"resolved": false,
-> "unresolved_reason": ...}` with no counts at all. The reasons are
-> `unsupported_target_kind` (a `module:` id, which this tool has no vocabulary
-> for), `directory`, `not_indexed` (run `repowise update`) and `no_such_path`.
-> The last two are spelled as `get_health` spells them; the first two have no
-> counterpart there, since `get_health` expands `module:` into files and
-> resolves a directory to `not_indexed`. Counts are
-> omitted rather than zeroed because a structural zero is indistinguishable from
-> a measured one: a directory used to report `dependents_count: 0` while a file
-> inside it reported 59.
+> **Unresolved targets.** A target naming no indexed file comes back as
+> `{"resolved": false, "unresolved_reason": ...}` with no counts — omitted
+> rather than zeroed, since a structural zero reads as a measured one. Reasons:
+> `unsupported_target_kind` (a `module:` id; risk is scored per file),
+> `directory`, `not_indexed` (run `repowise update`), `no_such_path`.
 
 > **Opt-in blocks.** `impact_surface` and `direct_risks` are pagerank floats an agent cannot rank; `change_magnitude`, `risk_type` and `change_pattern` restate numbers printed beside them. All five are computed regardless and feed `risk_summary`; `include` only decides whether they ship. `global_hotspots` accompanies a multi-target call only, being ambient orientation that a single named file does not need; it ranks by fix history the same way `defect_profile` does.
 

@@ -513,19 +513,11 @@ def _load_commit_categories(meta: Any) -> dict:
 def _unresolved_reason(target: str, lookup_path: str, repo_root: str | None) -> str:
     """Why *target* names nothing this tool can score, in the caller's terms.
 
-    ``not_indexed`` (the file is on disk but absent from this index, so
-    ``repowise update`` is the fix) and ``no_such_path`` (a typo) are spelled
-    the same as in ``get_health._unresolved_targets``, because they mean the
-    same thing and an agent branching on the reason should branch the same way.
-
-    The other two are this tool's own, and deliberately not borrowed:
-    ``unsupported_target_kind`` is a ``module:`` id, which ``get_health``
-    expands into files and ``get_risk`` has no vocabulary for at all — so
-    ``get_health``'s ``no_such_module``, which means "that module name matched
-    nothing", would say the module does not exist when the module may well.
-    ``directory`` has no counterpart there either: ``get_health`` resolves a
-    directory through ``exists()`` and reports ``not_indexed``, which would send
-    a caller to run an update that cannot help, because risk is scored per file.
+    ``not_indexed`` and ``no_such_path`` are spelled as
+    ``get_health._unresolved_targets`` spells them. The other two are not
+    borrowed: ``get_health``'s ``no_such_module`` means "no module of that
+    name", and it resolves a directory to ``not_indexed`` — both would
+    prescribe a fix that cannot help here.
     """
     if target.startswith("module:"):
         return "unsupported_target_kind"
@@ -674,20 +666,13 @@ async def _assess_one_target(
 
     symbol_target = "::" in target
     if meta is None and lookup_path not in node_meta and not symbol_target:
-        # Neither the graph nor git history knows this path, so nothing below
-        # measured it. Every numeric field the full card carries would be a
-        # structural zero, and a zero is indistinguishable from a measured one:
-        # ``module:ingestion`` and the bare directory
-        # ``packages/core/src/repowise/core/ingestion`` both returned
-        # ``dependents_count: 0`` while a single file inside that directory
-        # returned 59. Name the miss and emit no counts at all, so a caller
-        # cannot read "safe to change" off a target this tool never resolved.
-        # Both conditions are required: a file that is a graph node but has no
-        # git row is a real, scoreable target (a new file, an untracked one)
-        # and keeps the existing card. A ``path::Symbol`` target is excluded
-        # too: symbol ids are an accepted input shape here (``get_context``
-        # takes them, and the episode enricher resolves one to its file), so
-        # rejecting them would be a different change than this one.
+        # Nothing below measured this target, so every numeric field would be
+        # a structural zero no reader could tell from a measured one. Name the
+        # miss and emit no counts.
+        #
+        # All three conditions are required. A graph node without a git row is
+        # a real target (a new file); a ``path::Symbol`` id is an accepted
+        # input shape here, so rejecting one is a different change.
         return {
             "target": target,
             "resolved": False,
