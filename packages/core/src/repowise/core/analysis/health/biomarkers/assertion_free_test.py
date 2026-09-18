@@ -34,10 +34,12 @@ from .base import BiomarkerResult, FileContext
 #: Languages the marker reports on. Go and Java are classified by
 #: ``complexity/test_case.py`` and counted like any other, and are deliberately
 #: absent here: both conventionally hand the oracle to a helper the test calls.
-#: ``_asserting_names`` now resolves that within a file, but the idiom reaches
-#: across one in both languages, as a package-level Go helper handed ``*testing
-#: .T`` and a Java base-class method. Re-admitting either is a measurement of
-#: its own, not a consequence of this one.
+#: ``asserts/oracle_reach.py`` now resolves that across files too, and a
+#: base-class method reached through ``self`` is the shape it resolves best --
+#: but a Go package-level helper is still not reached, its resolution origins
+#: sitting outside that pass's admitted set. Re-admitting either language is a
+#: measurement of its own, on its own hand-labelled sample, not a consequence of
+#: this one.
 #: Figures and the reasoning: LANGUAGE_SUPPORT.md#code-health-coverage.
 SHIPPING_LANGUAGES = frozenset({"javascript", "python", "tsx", "typescript"})
 
@@ -62,6 +64,10 @@ class AssertionFreeTestDetector:
             if fn.assertion_count or fn.verification_count:
                 continue
             if fn.called_names & oracles:
+                continue
+            # Resolved on a call edge by ``asserts.oracle_reach``, which the
+            # engine runs before this marker. Empty without a graph.
+            if fn.start_line in ctx.cross_file_oracle_lines:
                 continue
             out.append(
                 BiomarkerResult(
@@ -94,9 +100,12 @@ def _asserting_names(ctx: FileContext) -> frozenset[str]:
     free. A helper nested inside the test body is not collected as a function
     at all, so it suppresses nothing.
 
-    Same file only. ``super().test_x(...)``, a package-level Go helper and a
-    shared JS fixture all live elsewhere and would need the call graph, which
-    this pass does not consult, so those stay false positives.
+    Same file only, and by name. The cross-file half of the same question --
+    a shared JS fixture, an inherited base-class helper -- is answered from the
+    call graph by ``asserts.oracle_reach``, which resolves an edge rather than
+    a bare name and so carries none of the collisions above. What that pass
+    still cannot see it lists itself; ``super().test_x(...)`` is one of them,
+    the resolver having no ``super()`` receiver handling.
     """
     return frozenset(
         fn.name.lower()

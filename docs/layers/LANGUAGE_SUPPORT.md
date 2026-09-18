@@ -441,29 +441,121 @@ for Java. A language with no row classifies nothing. Go and Java are classified
 and counted, which is how their precision below was measured, but the marker
 does not report on them — the shipping set is a constant in the detector.
 
-Measured precision, hand-labelled: **51%** on TypeScript (51 findings, the
+Measured precision, hand-labelled: **71%** on TypeScript (31 findings, the
 complete population of two corpora) and **86%** on Python (29 findings, a
-systematic sample of 172). The marker ships advisory on both, because the bar
-below is a property of the marker rather than of one language, and TypeScript
-is at 51%.
+systematic sample of 172). The marker ships advisory on both: the bar below is a
+property of the marker rather than of one language, and neither reading settles
+it on a population this size.
 
 Twenty-nine items cannot settle a 70% bar: 86% on that sample carries a 95%
 interval of roughly 68% to 96%, whose lower bound sits below the bar it appears
 to clear. The reading is consistent with clearing it and does not demonstrate
 it. What moved Python is that a test's oracle now reaches it from a function it
-calls in the same file, described below. The same change barely moved
-TypeScript, for a reason worth recording: a JS/TS suite keeps its helpers in a
-separate module, so 19 of its 25 remaining false positives delegate across a
-file boundary rather than within one.
+calls in the same file, described below. That barely moved TypeScript, because a
+JS/TS suite keeps its helpers in a separate module; resolving the same
+delegation *across* a file is what took TypeScript from 43% to 71%, and how it
+is done is in the section after next.
 
 An earlier pass published 53% for Python. Re-labelling the pre-change findings
 of the same corpus, drawn the same way and read against this pass's rubric,
 gives 68.8% (22 of 32), so the gain below is that 68.8 to 86.2 and the 53% is
 superseded rather than contradicted. The two passes are not reconciled: 15
 points of the difference is labelling, on samples of about thirty, and the
-rubric behind the earlier number was not recorded. TypeScript read 52% then and
-51% here, which is the evidence that the two rubrics are close and Python's gap
-is sample noise rather than a changed standard.
+rubric behind the earlier number was not recorded. TypeScript read 52% then and 51% on
+the pass after it; re-labelled here it reads 43.1%, so the drift is on both
+languages and in the same direction rather than on Python alone. That withdraws
+the earlier reading of it as sample noise: what the three passes differ on is
+the rubric, and the only defence against that is to state the rubric and
+re-label both arms of a comparison together, which is what the section below
+does.
+
+### Resolving a test's oracle across a file boundary
+
+A test that hands its checks to a helper is not assertion-free, and the
+assertion count is per function, so the helper's checks are invisible from the
+test. Resolving that within one file took Python from 68.8% to 86.2%. A JS/TS
+suite keeps its helpers in another module, so the same question had to be asked
+of the call graph.
+
+It is asked in two lanes, because **a JS/TS test case is not a graph node**:
+every one of them is an anonymous callback handed to `it(...)`, and on one
+corpus 0 of 7,354 resolved to a symbol, against 5,212 of 5,212 for Python's
+named `def test_x`. Resolving from the enclosing module node instead would let
+one delegating test speak for every other test in its file, so it is not done.
+
+- **call-edge** — the test is a symbol; walk its own outgoing call edges, depth
+  bounded. Its job on Python is as much to answer *no* authoritatively as to
+  answer yes: while it answers, the looser lane below is never consulted.
+- **file-edge** — the test is a callback; require both that the *file* has a
+  resolved call edge to the asserting symbol and that the *function body* calls
+  it by name. The edge alone is file-scoped and the name alone is repo-scoped;
+  together they are neither.
+
+Only edges that bind **one** definition are read, which is a harder filter than
+the execution index applies. `import_merged` carries 0.85 confidence and means
+only "a function of this name exists in one of the files this file imports"; it
+was measured resolving `Silent().check()` to `Asserting.check` because the
+receiver could not be typed. An extra edge costs a performance pass a cheap
+false positive and costs this marker a hidden true finding, so the two filter
+differently on purpose.
+
+A suppression is available only where an edge is. An unresolved call is
+indistinguishable from a call to something that checks nothing, so it suppresses
+nothing and the marker fires — a missing edge leaves a false positive, where a
+wrong one would hide a real finding.
+
+Three consequences of that, all leaving findings in place rather than removing
+them, and all properties of a repository's layout as much as of the mechanism. A
+helper outside a test-named directory is not an oracle, so a suite keeping its
+helpers in `src/test-utils/` gets nothing from this while one using
+`src/testUtils.ts` does. A re-export is followed one hop, so a single barrel
+file works and a barrel of barrels does not. And an oracle living in a
+`beforeEach` is an anonymous callback with no symbol, so it is never in the sink
+set at all.
+
+Measured on the complete population of two corpora, both arms labelled in one
+pass against one rubric: **51 findings at 43.1% to 31 at 71.0%, with none of the
+22 true findings lost.** All 20 suppressions trace to three helpers, each read in
+full, and each does check something. The sharpest evidence that the oracle is
+per function rather than per file: `inspectTreeStructure` and
+`testParseSourceCodeDefinitions` live in the same helper module, and only the
+second asserts — the first's eleven callers all survive.
+
+An earlier pass published 51% for TypeScript. Re-labelling that same pre-change
+population against this pass's rubric gives 43.1%, so the gain is 43.1 to 71.0
+and the 51% is superseded rather than contradicted; the difference is that this
+pass counts a deliberate, commented "should not throw" as a false positive.
+
+Read that gain with its provenance. Both arms were labelled by one person in one
+unblinded pass, by the author of the change, and the re-label moved the baseline
+**down** -- the one direction that widens the reported gain. The post figure is
+the more defensible of the two, being a complete population rather than a
+sample; the 28-point delta is the part carrying the labeller. A second reader on
+the same population is the cheapest thing that would settle it. Note also that
+22 of 31 is a 95% interval of roughly 53% to 84%, whose lower bound sits below
+the 70% bar exactly as Python's 29-item reading does, so neither language
+demonstrates the bar on these populations. The
+four families that remain are a documented no-throw, a wait helper that throws
+rather than asserts, an `expect(...)` the walk does not count because it is
+bound to a name or nested inside another function, and a guard test whose body
+is a bare `throw`. None is reachable by resolving a call, and none was
+introduced by resolving one.
+
+Python moves on one corpus and not the other, and the split is the point. One
+corpus suppresses nothing: its tests keep their oracles inline or in the same
+file, where the existing rule already reaches them. The other goes from **501
+findings to 346**, and all 155 suppressions trace to just five helper methods --
+one of which, a `check_html` on a shared `SimpleTestCase` subclass, accounts for
+144 by itself. Every one of the five was read in full and every one asserts, so
+the verification is complete by oracle rather than sampled by finding.
+
+That is the base-class idiom listed below as Java's blocker, showing up in
+Python: the helper is inherited, so it is neither in the test's file nor named
+anything the assertion lexicon recognises. It is also why the depth is **2**
+rather than 1: depth 1 resolves only the single largest helper, missing eleven
+of the other four's callers, and depth 3 adds four more that reach
+`SimpleTestCase._assert_raises_or_warns_cm`, the framework's own `assertRaises`
+machinery, which is further than a test's oracle should have to be chased.
 
 A **mock verification counts as an assertion for this marker and not for the one
 above**, which is the deliberate inversion described in CODE_HEALTH.md. It

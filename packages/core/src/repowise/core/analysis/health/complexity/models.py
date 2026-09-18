@@ -7,6 +7,10 @@ the health engine; see the per-class docstrings for the downstream reader.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..asserts.oracle_reach import OracleReach
 
 
 @dataclass
@@ -66,6 +70,13 @@ class FunctionComplexity:
     # vocabulary row, because it rides on that traversal. It answers one
     # question: did this function hand its work to something else in the file?
     called_names: frozenset[str] = frozenset()
+    # The subset of ``called_names`` whose call site carried no receiver.
+    # ``checkOk()`` is in it, ``harness.checkOk()`` is not. Read only by the
+    # cross-file oracle pass, which pairs a name with a file-scoped call edge:
+    # a qualified call names a method on something else that happens to share
+    # the name, and pairing it with the file's edge would let one delegating
+    # test license every same-named call beside it.
+    bare_called_names: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:
@@ -312,6 +323,11 @@ class FileComplexity:
     # function holds a bare (non-loop) I/O sink. Empty when the language opts
     # out of the perf pass. Consumed by ``perf.crossfn``, not by a biomarker.
     perf_fn_facts: list[PerfFnFacts] = field(default_factory=list)
+    # Test cases here whose call edges reach a function that asserts, keyed
+    # by the test's 1-indexed start line. Filled by a graph pre-pass after the
+    # walk (``asserts.oracle_reach``), never by the walker, so a cached walk
+    # neither carries nor stores one. Read by ``assertion_free_test``.
+    cross_file_oracles: dict[int, OracleReach] = field(default_factory=dict)
     # True when the file carries co-located tests that the filename/dir
     # heuristic cannot see — e.g. Rust ``#[cfg(test)] mod tests`` blocks,
     # which live inside the source file itself. OR'd into ``has_test_file``

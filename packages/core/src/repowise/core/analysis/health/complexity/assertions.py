@@ -263,7 +263,7 @@ def _is_assertion_statement(
 
 def _collect_assertion_facts(
     body_node: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None = None
-) -> tuple[list[tuple[int, int, int]], int, int, frozenset[str]]:
+) -> tuple[list[tuple[int, int, int]], int, int, frozenset[str], frozenset[str]]:
     """``(blocks, total, verifications, called)`` facts for one function body.
 
     *blocks* are runs of ≥2 consecutive **narrow-tier** assertion statements,
@@ -285,6 +285,13 @@ def _collect_assertion_facts(
     *verifications* counts mock verifications, on the same block-level gate as
     *total* and in neither of the other two counts. See the module docstring.
 
+    *bare* is the subset of *called* whose call site carried no receiver, so
+    ``checkOk()`` is in it and ``harness.checkOk()`` is not. The oracle
+    resolution in ``asserts/oracle_reach.py`` pairs a name with a file-scoped
+    call edge, and only an unqualified call is the one the file's imports
+    actually bind; a qualified one names a method on something else that
+    happens to share the name.
+
     *called* is every name called directly in this body, lowercased, excluding
     nested function bodies on the same rule the assertion scan uses. It rides
     along on this traversal because the traversal already reaches every call
@@ -294,11 +301,12 @@ def _collect_assertion_facts(
     ships no language that takes it.
     """
     if not lmap.assert_kinds and not lmap.assert_call_kinds:
-        return [], 0, 0, frozenset()
+        return [], 0, 0, frozenset(), frozenset()
     blocks: list[tuple[int, int, int]] = []
     total = 0
     verifications = 0
     called: set[str] = set()
+    bare: set[str] = set()
     call_kinds = lmap.call_kinds or lmap.assert_call_kinds
 
     def _scan_siblings(parent: Node, *, count_total: bool) -> None:
@@ -342,6 +350,8 @@ def _collect_assertion_facts(
             names = _callee_names(node)
             if names is not None:
                 called.add(names[0])
+                if not names[1]:
+                    bare.add(names[0])
         for child in node.children:
             if child.type in lmap.function_kinds:
                 continue  # nested fn, not collected as its own entry either
@@ -361,4 +371,4 @@ def _collect_assertion_facts(
                 verifications += 1
             elif tier != _NOT_ASSERTION:
                 total += 1
-    return blocks, total, verifications, frozenset(called)
+    return blocks, total, verifications, frozenset(called), frozenset(bare)

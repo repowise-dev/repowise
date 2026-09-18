@@ -40,6 +40,7 @@ from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ..graph_view import HasEdge, ImportEdgeView
 from ..test_reachability import files_reached_by_tests
 from .asserts.lexicon import AssertVocabulary
+from .asserts.oracle_reach import collect_cross_file_oracles
 from .biomarkers import FileContext, detect_all
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
@@ -109,6 +110,16 @@ log = structlog.get_logger(__name__)
 # walk itself is unchanged, but this stamp keys the walk and duplication-token
 # caches, so bumping it re-walks and re-tokenizes anyway.
 #
+# v19: ``assertion_free_test`` resolves a test's oracle across file
+# boundaries, on a call edge rather than by name, so a test that delegates its
+# checks to a helper in another module is no longer called assertion-free. The
+# resolution itself is a graph pre-pass, but the walker also records one new
+# ``FunctionComplexity`` field for it, ``bare_called_names``, which a cached
+# v18 walk does not carry at all: it is the subset of ``called_names`` whose
+# call site had no receiver, and the pass pairs it with a file-scoped call edge.
+# The marker also reports fewer findings than a v18 store holds, and nothing
+# re-mints those rows except this stamp. It counts nothing, so no score moves.
+#
 # v17: the walker records one new ``FunctionComplexity`` field,
 # ``called_names``, which a cached v16 walk does not carry at all. It feeds the
 # advisory ``assertion_free_test``, which no longer calls a test assertion-free
@@ -171,7 +182,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 18
+HEALTH_ANALYZER_VERSION = 19
 
 
 def walked_functions(
@@ -631,6 +642,9 @@ class HealthAnalyzer:
         # Cross-function N+1: augment perf_hits before the biomarker stage.
         with timed(timings, "analysis.health.crossfn"):
             self._apply_crossfn_perf(walked)
+        # Cross-file test oracles, same rule: resolve before the marker runs.
+        with timed(timings, "analysis.health.oracle_reach"):
+            self._apply_cross_file_oracles(walked)
         # One shared dataflow service for the whole pass: the promotion pass
         # and the Extract Method detector below read the same lazily parsed
         # per-file object, so no file is parsed twice for dataflow.
@@ -846,6 +860,8 @@ class HealthAnalyzer:
         # Cross-function N+1: augment perf_hits before the biomarker stage.
         walked = list(walked)
         self._apply_crossfn_perf(walked)
+        # Cross-file test oracles, same rule: resolve before the marker runs.
+        self._apply_cross_file_oracles(walked)
         # One shared dataflow service per pass (see the sync path above).
         dataflow_cache = FileDataflowCache(self.read_source)
         # Dataflow promotion: mark advisory perf hits whose loop is provably
@@ -951,6 +967,28 @@ class HealthAnalyzer:
             except Exception:
                 out[path] = 0.0
         return out
+
+    def _apply_cross_file_oracles(self, walked: list[tuple[Any, FileComplexity]]) -> None:
+        """Resolve each test's oracle across file boundaries, in place.
+
+        A test that hands its checks to an asserting helper in another file is
+        not assertion-free, and the per-function count cannot see that. This
+        attaches the resolved lines so ``assertion_free_test`` stays a pure
+        function over its context. Failure-isolated and a no-op without a
+        graph, in which case the marker behaves exactly as it did before.
+        """
+        try:
+            index = self._execution_graph()
+            if self.graph is None or index is None:
+                return
+            by_file = collect_cross_file_oracles(walked, self.graph, index=index)
+            for _pf, fcx in walked:
+                resolved = by_file.get(_pf.file_info.path)
+                if resolved:
+                    fcx.cross_file_oracles = resolved
+        except Exception as exc:
+            log.debug("health_cross_file_oracles_failed", error=str(exc))
+            return
 
     def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
         """Run the graph-dependent perf passes over the walked files, in place.
@@ -1204,6 +1242,7 @@ class HealthAnalyzer:
             error_handling_hits=fcx.error_handling_hits,
             perf_hits=fcx.perf_hits,
             io_boundary_names=set(fcx.io_boundary_names),
+            cross_file_oracle_lines=frozenset(getattr(fcx, "cross_file_oracles", ())),
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)

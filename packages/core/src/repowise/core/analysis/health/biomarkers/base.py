@@ -113,6 +113,12 @@ class FileContext:
     # cross-function reachability; the same-function perf biomarkers read the
     # already-resolved ``perf_hits`` instead.
     io_boundary_names: set[str] = field(default_factory=set)
+    # Start lines of the test cases in this file that hand their oracle to an
+    # asserting function in ANOTHER file, resolved on a call edge by
+    # ``asserts.oracle_reach``. Lines rather than names: a name would collapse
+    # a file's same-named functions, which is the collision #2408 removed.
+    # Empty without a call graph, which leaves the marker as it was.
+    cross_file_oracle_lines: frozenset[int] = frozenset()
 
 
 # A repo whose trailing-90-day window has at most this many active human
