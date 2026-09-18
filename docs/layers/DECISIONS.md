@@ -485,6 +485,21 @@ stated reason, and failed approaches replaced by working ones. Claude Code
 transcripts come from `~/.claude/projects/`, read incrementally from a cursor so
 each line is processed once.
 
+Claude Code is the only harness read unless you name another:
+
+```yaml
+decisions:
+  harnesses: [claude_code, codex]
+```
+
+Adding one is a real widening rather than a preference. Codex files its
+sessions by date rather than by project, so its store holds every session on
+the machine and the repository a line belongs to is decided by the working
+directory recorded in it, not by where the file sits. Sessions bulk-imported
+into that store from another harness are skipped, because the harness that
+recorded them already reads them and counting them here would count one
+conversation twice.
+
 Three stages, in order:
 
 1. **Deterministic gates.** A user correction needs a pushback lead ("no,",

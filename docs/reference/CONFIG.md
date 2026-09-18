@@ -405,6 +405,8 @@ decisions:
   discovery:                # budget for that one pass, per update
     max_sessions: 12        # 1-24
     max_input_tokens: 30000 # 2000-60000
+  harnesses:                # whose transcripts the session lane reads
+    - claude_code           # the default; add codex to read that store too
 ```
 
 Every key is optional. **A config with no `decisions:` block behaves exactly as

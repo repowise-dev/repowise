@@ -407,9 +407,14 @@ async def update_decision_settings(
 
     if body.preset is not None:
         try:
-            # A preset names source membership, not a budget; the budget the
-            # caller did not send is theirs and survives.
-            policy = replace(preset_policy(body.preset), discovery=policy.discovery)
+            # A preset names source membership, not a budget and not which
+            # harnesses are read; what the caller did not send is theirs and
+            # survives.
+            policy = replace(
+                preset_policy(body.preset),
+                discovery=policy.discovery,
+                harnesses=policy.harnesses,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     if body.enabled is not None:

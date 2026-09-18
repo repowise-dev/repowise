@@ -4,7 +4,9 @@ An adapter knows two things about its agent: where transcripts for a given
 repo live (:meth:`HarnessAdapter.discover`) and how one raw transcript line
 becomes a normalized :class:`~repowise.core.sessions.events.Event`
 (:meth:`HarnessAdapter.normalize`). Iteration, cursoring, and mining are
-shared code built on those two primitives.
+shared code built on those two primitives. Three optional hooks scope the
+rest: :meth:`HarnessAdapter.prefilter` and the per-file
+:meth:`HarnessAdapter.begin_file` / :meth:`HarnessAdapter.end_file`.
 
 Best-effort contract, matching the distill miners this layer was extracted
 from: ``normalize`` returns None for anything it cannot parse rather than
@@ -70,6 +72,12 @@ class HarnessAdapter(ABC):
         None means "no cheap gate for this intent", so every line is parsed.
         Correct but slow, which is the right default for an intent an
         adapter has not thought about.
+
+        Not purely a speed knob for a harness that states its ``cwd`` once
+        per file rather than once per line: dropping that line leaves every
+        event unscoped, and the miners read a blank ``cwd`` as "no opinion"
+        rather than as a miss. A gate for such a harness admits the line
+        carrying it, however narrow the rest of the gate is.
         """
         return None
 

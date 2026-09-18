@@ -219,6 +219,12 @@ class DiscoveryBudget:
 
 _DEFAULT_DISCOVERY = DiscoveryBudget()
 
+#: Harnesses whose transcripts the session lane reads. One name per registered
+#: transcript adapter. Only Claude Code by default: a harness added to the
+#: registry is a reader this repository has not asked for, and switching one on
+#: makes a machine's whole history for that agent eligible on the next update.
+DEFAULT_HARNESSES: tuple[str, ...] = ("claude_code",)
+
 
 @dataclass(frozen=True, slots=True)
 class SourceSetting:
@@ -337,6 +343,7 @@ class DecisionPolicy:
     llm: bool
     sources: dict[str, SourceSetting]
     discovery: DiscoveryBudget = _DEFAULT_DISCOVERY
+    harnesses: tuple[str, ...] = DEFAULT_HARNESSES
 
     # -- queries ---------------------------------------------------------
 
@@ -394,6 +401,7 @@ class DecisionPolicy:
                 and self.llm == spec["llm"]
                 and self.sources == spec["sources"]
                 and self.discovery == _DEFAULT_DISCOVERY
+                and self.harnesses == DEFAULT_HARNESSES
             ):
                 return name
         return "custom"
@@ -475,6 +483,8 @@ class DecisionPolicy:
         }
         if self.discovery != _DEFAULT_DISCOVERY:
             block["discovery"] = self.discovery.to_dict()
+        if self.harnesses != DEFAULT_HARNESSES:
+            block["harnesses"] = list(self.harnesses)
         return block
 
     def to_dict(self, *, provider_available: bool = True) -> dict[str, Any]:
@@ -484,6 +494,7 @@ class DecisionPolicy:
             "llm": self.llm,
             "preset": self.preset_name(),
             "discovery": self.discovery.to_dict(),
+            "harnesses": list(self.harnesses),
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -553,6 +564,35 @@ def _resolve_discovery(raw: Any, warnings: list[str]) -> DiscoveryBudget:
     for field in set(raw) - set(DISCOVERY_BOUNDS):
         warnings.append(f"Unknown key `decisions.discovery.{field}`; ignoring it.")
     return DiscoveryBudget(**fields)
+
+
+def _resolve_harnesses(raw: Any, warnings: list[str]) -> tuple[str, ...]:
+    """Transcript adapters named by ``decisions.harnesses``, validated.
+
+    Validated against the registry rather than a list here, so adding an
+    adapter stays one registration. An unknown name is dropped with a warning
+    instead of failing the run: a config written against a newer repowise must
+    not stop this one from indexing.
+    """
+    if raw is None:
+        return DEFAULT_HARNESSES
+    if not isinstance(raw, list):
+        warnings.append("`decisions.harnesses:` is not a list; ignoring it.")
+        return DEFAULT_HARNESSES
+    from repowise.core.sessions.adapters.registry import registered_adapters
+
+    known = set(registered_adapters())
+    names: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or value not in known:
+            warnings.append(f"Unknown harness `{value}` in `decisions.harnesses`; ignoring it.")
+            continue
+        if value not in names:
+            names.append(value)
+    if not names:
+        warnings.append("`decisions.harnesses` named no known harness; using the default.")
+        return DEFAULT_HARNESSES
+    return tuple(names)
 
 
 def preset_policy(name: str) -> DecisionPolicy:
@@ -698,14 +738,15 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             warnings.append("`decisions.session_mining` is not a boolean; ignoring it.")
 
     discovery = _resolve_discovery(raw.get("discovery"), warnings)
+    harnesses = _resolve_harnesses(raw.get("harnesses"), warnings)
 
-    known = {"preset", "enabled", "llm", "sources", "session_mining", "discovery"}
+    known = {"preset", "enabled", "llm", "sources", "session_mining", "discovery", "harnesses"}
     for field in set(raw) - known:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
 
     return PolicyResolution(
         policy=DecisionPolicy(
-            enabled=enabled, llm=llm, sources=sources, discovery=discovery
+            enabled=enabled, llm=llm, sources=sources, discovery=discovery, harnesses=harnesses
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),

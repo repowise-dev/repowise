@@ -107,6 +107,9 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
         f"  [dim]Discovery budget: up to {budget.max_sessions} session(s), "
         f"{budget.max_input_tokens:,} input tokens per update.[/dim]"
     )
+    # Named even at the default: this is the one setting that widens whose
+    # transcripts are read, and a reader cannot check a line that is absent.
+    console.print(f"  [dim]Harnesses read: {', '.join(policy.harnesses)}.[/dim]")
     console.print("")
 
     for warning in resolution.warnings:
@@ -175,6 +178,14 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
             changes.append(
                 {"key": f"discovery.{key}", "from": str(old_value), "to": str(new_value)}
             )
+    if before.harnesses != after.harnesses:
+        changes.append(
+            {
+                "key": "harnesses",
+                "from": ", ".join(before.harnesses),
+                "to": ", ".join(after.harnesses),
+            }
+        )
     return changes
 
 
@@ -206,11 +217,16 @@ def config_show(path: str | None, fmt: str) -> None:
 @format_option()
 def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
     """Apply a named preset: default, off, local_only, balanced, full."""
+    from dataclasses import replace
+
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
     from repowise.core.analysis.decisions.policy import preset_policy
 
     repo_path = _resolve_decision_repo(path, fmt)
-    _apply(repo_path, preset_policy(name), fmt, dry_run)
+    # A preset names source membership, not which harnesses are read, so the
+    # harness list the caller did not touch survives applying one.
+    current = _load(repo_path).policy
+    _apply(repo_path, replace(preset_policy(name), harnesses=current.harnesses), fmt, dry_run)
 
 
 # ---------------------------------------------------------------------------

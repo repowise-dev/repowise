@@ -1861,6 +1861,7 @@ def run_update(
                 mine_session_decisions(
                     repo_path,
                     provider=session_provider,
+                    harnesses=decision_policy.harnesses,
                     collect_discovery_spans=decision_policy.llm_allowed("session_discovery"),
                 )
             )

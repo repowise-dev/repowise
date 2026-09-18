@@ -451,6 +451,7 @@ async def _run_decision_extraction(
                     mine_session_decisions(
                         repo_path,
                         provider=session_provider,
+                        harnesses=policy.harnesses,
                         collect_discovery_spans=policy.llm_allowed("session_discovery"),
                     ),
                     timeout=DECISION_EXTRACTION_TIMEOUT_SECS,

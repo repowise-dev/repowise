@@ -49,7 +49,7 @@ import json
 import re
 import time
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -58,7 +58,7 @@ import structlog
 
 from repowise.core.analysis.decisions.discovery.spans import SpanCollector
 from repowise.core.analysis.decisions.extractor import ExtractedDecision
-from repowise.core.analysis.decisions.policy import resolve_policy
+from repowise.core.analysis.decisions.policy import DEFAULT_HARNESSES, resolve_policy
 from repowise.core.analysis.decisions.provenance import (
     completeness,
     compute_confidence,
@@ -73,6 +73,7 @@ from repowise.core.precedent.transcript_episodes import (
     record_transcript_episodes,
 )
 from repowise.core.sessions import INTENT_TURNS, Event, get_adapter
+from repowise.core.sessions.adapters.registry import DEFAULT_ADAPTER, registered_adapters
 from repowise.core.sessions.cursor import iter_new_events
 from repowise.core.sessions.events import (
     FILE_INPUT_KEYS,
@@ -510,6 +511,110 @@ def session_mining_enabled(repo_config: dict[str, Any] | None) -> bool:
     return resolve_policy(repo_config).policy.source_enabled("session")
 
 
+def harnesses_for(repo_path: Path) -> tuple[str, ...]:
+    """Harnesses this repo reads transcripts from, from its own config.
+
+    The fallback for a caller that holds no resolved policy. Both pipelines
+    do hold one and pass it, so this is not the usual path: two readings of
+    the same setting that can disagree is the drift worth avoiding.
+    """
+    from repowise.core.repo_config import load_repo_config
+
+    try:
+        policy = resolve_policy(load_repo_config(repo_path)).policy
+    except Exception:
+        return DEFAULT_HARNESSES
+    return registered_harnesses(policy.harnesses)
+
+
+def registered_harnesses(names: Sequence[str]) -> tuple[str, ...]:
+    """*names* that name a registered adapter, never empty.
+
+    An unregistered name is dropped rather than raised on: a config written
+    against a newer repowise must not stop this one from indexing. Falling
+    back is deliberate too, because an empty reader list and a repository
+    with no sessions produce the same silence.
+    """
+    known = set(registered_adapters())
+    return tuple(name for name in names if name in known) or DEFAULT_HARNESSES
+
+
+def _sweep_harness(
+    harness: str,
+    *,
+    repo_root: Path,
+    repo_prefix: str,
+    projects_root: Path | None,
+    store: SessionStagingStore,
+    recorder: TranscriptEpisodeRecorder,
+    collector: SpanCollector | None,
+    budget: float,
+    now: float | None,
+) -> dict[str, int]:
+    """Read one harness's new transcript lines, and report what it did.
+
+    The counts are the harness's own, and they are separate on purpose:
+    *read* is transcripts opened, so a reader that has stopped reading shows
+    a zero there next to a non-zero *discovered*, which one total cannot say.
+    """
+    adapter = get_adapter(harness)
+    # This miner needs user prose, assistant prose, tool uses and results:
+    # everything the conversation carries, minus the fat non-dialog lines.
+    prefilter = adapter.prefilter(INTENT_TURNS)
+    deadline = time.monotonic() + budget
+    discovered = adapter.discover(repo_root, projects_root=_root_for(harness, projects_root))
+    counts = {"discovered": len(discovered), "read": 0, "found": 0, "staged": 0, "deferred": 0}
+    # Every discovered transcript is present whether or not this run gets to
+    # read it; the episode writer notes absence on the row it can no longer
+    # point at, and keeps the episode.
+    recorder.note_present(discovered)
+    for index, path in enumerate(discovered):
+        if time.monotonic() > deadline:
+            # A first index on a machine with a long agent history reads the
+            # whole corpus from byte 0, and that corpus is bounded by how much
+            # the user has worked, not by the size of the repo. Stopping is
+            # safe and self-healing rather than lossy, because the cursor is
+            # per file and saved by the caller, so the next run resumes
+            # exactly where this one stopped. Steady state never reaches it.
+            counts["deferred"] = len(discovered) - index
+            break
+        try:
+            events = iter_new_events(adapter, path, store.cursors, prefilter=prefilter)
+            stream = recorder.observe(path, events)
+            if collector is not None:
+                stream = collector.observe(stream)
+            for candidate in mine_events(stream, repo_prefix):
+                counts["found"] += 1
+                if store.add_raw(
+                    hash_=candidate.hash,
+                    kind=candidate.kind,
+                    quotes=candidate.quotes,
+                    files=candidate.files,
+                    session_id=candidate.session_id,
+                    harness=harness,
+                    now=now,
+                ):
+                    counts["staged"] += 1
+            counts["read"] += 1
+        except OSError:
+            continue
+    return counts
+
+
+def _root_for(harness: str, projects_root: Path | None) -> Path | None:
+    """The transcript-root override, per harness.
+
+    The override is a sandbox, so nothing may read outside it: a caller that
+    passes one and gets a harness reading the real home directory has been
+    given the machine's whole history for that agent without asking. The
+    default harness keeps the root itself, so existing callers are unchanged,
+    and every other harness gets a subdirectory that is simply absent unless
+    the caller made one.
+    """
+    if projects_root is None:
+        return None
+    return projects_root if harness == DEFAULT_ADAPTER else projects_root / harness
+
 
 def _candidates_block(raws: list[dict[str, Any]]) -> str:
     parts: list[str] = []
@@ -803,6 +908,7 @@ async def mine_session_decisions(
     *,
     provider: Any | None,
     projects_root: Path | None = None,
+    harnesses: Sequence[str] | None = None,
     max_structured: int = MAX_STRUCTURED_PER_UPDATE,
     collect_discovery_spans: bool = False,
     now: float | None = None,
@@ -833,10 +939,13 @@ async def mine_session_decisions(
     """
     repo_root = Path(repo_path).resolve()
     repo_prefix = str(repo_root).lower().rstrip("\\/")
-    adapter = get_adapter()
-    # This miner needs user prose, assistant prose, tool uses and results:
-    # everything the conversation carries, minus the fat non-dialog lines.
-    prefilter = adapter.prefilter(INTENT_TURNS)
+    # The caller's resolved policy wins; reading config again here would be a
+    # second answer to a question it has already asked.
+    names = registered_harnesses(harnesses) if harnesses is not None else harnesses_for(repo_path)
+    # One recorder across every harness, and one write at the end. The episode
+    # writer resolves absence by negation over the tier, so a second write
+    # carrying only the second harness's subjects would mark the first's as
+    # sources that had gone away.
     recorder = TranscriptEpisodeRecorder(repo_root)
 
     store = SessionStagingStore.open_default(repo_root)
@@ -844,41 +953,34 @@ async def mine_session_decisions(
     try:
         # Stage new gate hits from transcript lines appended since last run.
         staged = 0
-        deadline = time.monotonic() + SWEEP_BUDGET_S
         deferred = 0
-        discovered = adapter.discover(repo_root, projects_root=projects_root)
-        # Every discovered transcript is present whether or not this run gets
-        # to read it; the episode writer notes absence on the row it can no
-        # longer point at, and keeps the episode.
-        recorder.note_present(discovered)
-        for index, path in enumerate(discovered):
-            if time.monotonic() > deadline:
-                # A first index on a machine with a long agent history reads
-                # the whole corpus from byte 0, and that corpus is bounded by
-                # how much the user has worked, not by the size of the repo:
-                # 857 MB across 426 sessions here. Stopping is safe and
-                # self-healing rather than lossy, because the cursor is per
-                # file and saved below, so the next run resumes exactly where
-                # this one stopped. Steady state never reaches the budget.
-                deferred = len(discovered) - index
-                break
+        yields: dict[str, dict[str, int]] = {}
+        # Split the sweep rather than sharing it. Under one deadline the
+        # harness iterated first spends the whole budget on a cold corpus and
+        # the next is deferred on its first file every run, which is
+        # indistinguishable from a harness with nothing to read.
+        budget = SWEEP_BUDGET_S / len(names)
+        for name in names:
             try:
-                events = iter_new_events(adapter, path, store.cursors, prefilter=prefilter)
-                stream = recorder.observe(path, events)
-                if collector is not None:
-                    stream = collector.observe(stream)
-                for candidate in mine_events(stream, repo_prefix):
-                    if store.add_raw(
-                        hash_=candidate.hash,
-                        kind=candidate.kind,
-                        quotes=candidate.quotes,
-                        files=candidate.files,
-                        session_id=candidate.session_id,
-                        now=now,
-                    ):
-                        staged += 1
-            except OSError:
+                yields[name] = _sweep_harness(
+                    name,
+                    repo_root=repo_root,
+                    repo_prefix=repo_prefix,
+                    projects_root=projects_root,
+                    store=store,
+                    recorder=recorder,
+                    collector=collector,
+                    budget=budget,
+                    now=now,
+                )
+            except Exception as exc:
+                # One harness must not cost another's committed progress: the
+                # cursor save below is shared, so an escape here would discard
+                # every harness's advances and re-read them next run.
+                logger.warning("session_mining.harness_failed", harness=name, error=str(exc))
                 continue
+            staged += yields[name]["staged"]
+            deferred += yields[name]["deferred"]
         store.prune(now=now)
         store.cursors.save()  # commits the staged raws atomically with the cursors
 
@@ -946,6 +1048,11 @@ async def mine_session_decisions(
             structured=structured_count,
             pending_backlog=max(0, len(pending) - processed),
             discovery_spans=collector.queued if collector else 0,
+            # Per harness, so a reader that stops reading is visible. A
+            # harness that did not run, or failed, has no key at all; one that
+            # ran reports what it discovered, read and found separately, so an
+            # empty corpus and an unread one do not share a number.
+            yields=yields,
             promoted=len(decisions),
             episodes=episodes,
             transcripts_deferred=deferred,

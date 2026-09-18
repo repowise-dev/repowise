@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS raw_candidates (
     files TEXT NOT NULL,
     session_id TEXT,
     created_at REAL NOT NULL,
-    structured_key TEXT
+    structured_key TEXT,
+    harness TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS decisions (
     key TEXT PRIMARY KEY,
@@ -159,12 +160,28 @@ INJECTIONS_LEDGER_COLUMNS = (
 )
 
 
-def _migrate_injections_columns(conn: sqlite3.Connection) -> None:
-    """Best-effort ALTER for sidecars created before the ledger columns."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(injections)")}
-    for name, decl in INJECTIONS_LEDGER_COLUMNS:
+#: Columns added to ``raw_candidates`` once the session lane could read more
+#: than one harness. Same shape as the injections migration beside it.
+RAW_CANDIDATE_COLUMNS = (
+    # Which harness's transcript this observation came off. Empty on rows
+    # written before the column existed, and on any adapter that cannot name
+    # itself: an unattributable count is better left unclaimed than guessed.
+    ("harness", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def _add_missing_columns(
+    conn: sqlite3.Connection, table: str, columns: tuple[tuple[str, str], ...]
+) -> None:
+    """ALTER *table* up to *columns*, skipping the ones it already has.
+
+    A sidecar can be created by either opener, so both apply the identical
+    migration and each must tolerate the other having gone first.
+    """
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, decl in columns:
         if name not in existing:
-            conn.execute(f"ALTER TABLE injections ADD COLUMN {name} {decl}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9\s]")
@@ -238,7 +255,8 @@ class SessionStagingStore:
         self._conn = sqlite3.connect(db_path)
         apply_sqlite_pragmas(self._conn, _BUSY_TIMEOUT_MS)
         self._conn.executescript(_SCHEMA)
-        _migrate_injections_columns(self._conn)
+        _add_missing_columns(self._conn, "injections", INJECTIONS_LEDGER_COLUMNS)
+        _add_missing_columns(self._conn, "raw_candidates", RAW_CANDIDATE_COLUMNS)
         self._conn.commit()
         self.cursors = _DbCursors(self._conn)
 
@@ -256,12 +274,19 @@ class SessionStagingStore:
         quotes: list[str],
         files: list[str],
         session_id: str | None,
+        harness: str = "",
         now: float | None = None,
     ) -> bool:
-        """Stage one gate hit; idempotent per content hash. True when new."""
+        """Stage one gate hit; idempotent per content hash. True when new.
+
+        The hash is content-only, so the same sentence said under two
+        harnesses stages once and keeps the first one's attribution. That is
+        the existing ceiling on ``session_id``, and *harness* inherits it.
+        """
         cur = self._conn.execute(
             "INSERT OR IGNORE INTO raw_candidates "
-            "(hash, kind, quotes, files, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "(hash, kind, quotes, files, session_id, created_at, harness) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 hash_,
                 kind,
@@ -269,6 +294,7 @@ class SessionStagingStore:
                 json.dumps(files),
                 session_id,
                 now if now is not None else time.time(),
+                harness,
             ),
         )
         return cur.rowcount > 0
