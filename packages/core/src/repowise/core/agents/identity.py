@@ -246,7 +246,13 @@ def display_name_for(slug: str) -> str:
     An unregistered slug — a retired agent whose events are still in the ledger
     — is returned verbatim. Guessing a prettier label for an agent we no longer
     describe would be inventing evidence.
+
+    :data:`UNKNOWN_AGENT` is the exception, because it is not an agent at all
+    but this registry's own word for "nothing was announced". Labelling it here
+    keeps that string out of every surface that has to display it.
     """
+    if slug == UNKNOWN_AGENT:
+        return "Unknown"
     identity = _REGISTERED.get(slug)
     return identity.display_name if identity else slug
 

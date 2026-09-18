@@ -12,6 +12,11 @@ from repowise.core.savings.contracts import (
     SavingsReport,
     utc_text,
 )
+from repowise.core.savings.reporting import (
+    DAY_LIMIT,
+    agent_breakdown_rows,
+    breakdown_rows,
+)
 
 _EVENT_COLUMNS = (
     "event_id",
@@ -56,6 +61,29 @@ class SavingsRepository:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._conn = connection
+
+    def _grouped(
+        self,
+        expression: str,
+        where: str,
+        params: list[Any],
+        limit: int,
+        *,
+        order: str = "3 DESC, 1 ASC",
+    ) -> list[tuple[Any, ...]]:
+        """One bounded ``GROUP BY`` over the scoped events.
+
+        *expression* and *order* are SQL fragments and are only ever called
+        with literals written in this module -- never with a caller's value.
+        The window filter rides ``idx_savings_events_repo_time``; the grouping
+        sorts the matched slice, which is why every one of these is capped.
+        """
+        return self._conn.execute(
+            f"SELECT {expression}, COUNT(*), COALESCE(SUM(saved_input_tokens), 0) "
+            f"FROM savings_events WHERE {where} "
+            f"GROUP BY 1 ORDER BY {order} LIMIT ?",
+            [*params, limit],
+        ).fetchall()
 
     def record_event(self, event: SavingsEvent) -> bool:
         """Atomically insert an event and its links; return false for a retry."""
@@ -132,7 +160,12 @@ class SavingsRepository:
         days: int | None = None,
         max_breakdowns: int = 100,
     ) -> SavingsReport:
-        """Read totals with three bounded aggregate queries and no writes."""
+        """Read totals and breakdowns with bounded aggregate queries, no writes.
+
+        Every query is filtered on ``(repository_id, occurred_at)``, which is
+        indexed, and every breakdown is capped, so the payload is bounded by
+        the caps rather than by how much the repository has accumulated.
+        """
         if as_of.tzinfo is None:
             raise ValueError("as_of must include a timezone")
         if days is not None and days < 0:
@@ -169,25 +202,38 @@ class SavingsRepository:
                     THEN COALESCE(saved_output_tokens, 0) ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN output_rate_usd_per_million IS NOT NULL
                     THEN COALESCE(saved_output_tokens, 0) * output_rate_usd_per_million
-                         / 1000000.0 ELSE 0 END), 0.0)
+                         / 1000000.0 ELSE 0 END), 0.0),
+                MIN(occurred_at),
+                MAX(occurred_at)
             FROM savings_events WHERE {where}
             """,
             params,
         ).fetchone()
         limit = max(0, min(int(max_breakdowns), 100))
-        operations = self._conn.execute(
-            f"""
-            SELECT operation, COUNT(*), COALESCE(SUM(saved_input_tokens), 0)
-            FROM savings_events WHERE {where}
-            GROUP BY operation ORDER BY 3 DESC, 1 ASC LIMIT ?
-            """,
-            [*params, limit],
-        ).fetchall()
+        operations = self._grouped("operation", where, params, limit)
+        surfaces = self._grouped("surface", where, params, limit)
+        agents = self._grouped("agent", where, params, limit)
+        models = self._grouped("model", where, params, limit)
+        # Newest-first then reversed, so a window longer than the cap keeps the
+        # recent days a reader is actually looking at rather than the oldest.
+        days_rows = list(
+            reversed(
+                self._grouped(
+                    "substr(occurred_at, 1, 10)", where, params, DAY_LIMIT, order="1 DESC"
+                )
+            )
+        )
         opportunity_count, opportunity_tokens = self._conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(estimated_potential_input_tokens), 0) "
             f"FROM savings_opportunities WHERE {where}",
             params,
         ).fetchone()
+        opportunity_kinds = self._conn.execute(
+            "SELECT kind, COUNT(*), COALESCE(SUM(estimated_potential_input_tokens), 0) "
+            f"FROM savings_opportunities WHERE {where} "
+            "GROUP BY 1 ORDER BY 3 DESC, 1 ASC LIMIT ?",
+            [*params, limit],
+        ).fetchall()
         saved_input = int(row[5])
         priced_input = int(row[8])
         saved_output = int(row[11])
@@ -210,8 +256,19 @@ class SavingsRepository:
             priced_output_savings_usd=float(row[13]),
             opportunity_count=int(opportunity_count),
             opportunity_tokens_excluded=int(opportunity_tokens),
-            per_operation=tuple(
-                {"operation": item[0], "events": item[1], "saved_input_tokens": item[2]}
-                for item in operations
+            per_operation=breakdown_rows("operation", operations),
+            per_surface=breakdown_rows("surface", surfaces),
+            per_agent=agent_breakdown_rows(agents),
+            per_model=breakdown_rows("model", models),
+            per_day=breakdown_rows("day", days_rows),
+            per_opportunity_kind=tuple(
+                {
+                    "kind": item[0],
+                    "observations": int(item[1]),
+                    "estimated_potential_input_tokens": int(item[2]),
+                }
+                for item in opportunity_kinds
             ),
+            first_event_at=row[14],
+            last_event_at=row[15],
         )

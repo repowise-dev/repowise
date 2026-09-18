@@ -311,6 +311,18 @@ class OpportunityObservation:
 
 @dataclass(frozen=True, slots=True)
 class SavingsReport:
+    """One repository's savings over one window, from one set of queries.
+
+    Every first-party surface -- the costs endpoint, the repository overview
+    headline and ``repowise saved`` -- reports from this object and does no
+    accounting arithmetic of its own. They used to each aggregate and price the
+    ledger independently, and produced three different dollar figures for the
+    same repository; that is what this type exists to prevent.
+
+    The breakdowns are bounded tuples, not generators, so a caller cannot turn
+    a report into an unbounded payload by iterating harder.
+    """
+
     unique_events: int
     successful_or_usable_partial_events: int
     saving_interactions: int
@@ -329,3 +341,17 @@ class SavingsReport:
     opportunity_count: int
     opportunity_tokens_excluded: int
     per_operation: tuple[Mapping[str, Any], ...] = ()
+    per_surface: tuple[Mapping[str, Any], ...] = ()
+    #: Rows carry ``agent_display_name`` beside the slug, resolved from the
+    #: identity registry here so no consumer needs a label map of its own --
+    #: there were three of those before this, one of them in TypeScript.
+    per_agent: tuple[Mapping[str, Any], ...] = ()
+    #: ``model`` is null on an unpriced event, which is a real bucket rather
+    #: than a gap to hide: it is how much saving carries no rate evidence.
+    per_model: tuple[Mapping[str, Any], ...] = ()
+    per_day: tuple[Mapping[str, Any], ...] = ()
+    per_opportunity_kind: tuple[Mapping[str, Any], ...] = ()
+    #: Freshness, for saying how current the figures are rather than implying
+    #: they are live. Null when the window holds no events at all.
+    first_event_at: str | None = None
+    last_event_at: str | None = None
