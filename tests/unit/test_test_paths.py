@@ -93,6 +93,11 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # still needs a test tree around it
     ("fixtures/data.yml", None, ""),
     ("app/fixtures/premier_league.py", None, ""),
+    ("src/fixtures.ts", None, ""),
+    ("src/fixtures.ts", "typescript", ""),
+    ("src/fixtures.py", None, ""),
+    ("src/fixtures.py", "python", ""),
+    ("lib/fixtures.go", None, ""),
     ("src/testdata_loader.py", None, ""),
     ("tests/testdata/golden.json", None, "support"),
 )
