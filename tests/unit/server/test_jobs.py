@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -110,7 +112,13 @@ async def test_list_jobs_filter_by_workspace_repo(client: AsyncClient, app) -> N
 
 @pytest.mark.asyncio
 async def test_reset_workspace_stale_jobs_marks_secondary_db_jobs_failed() -> None:
-    """Interrupted workspace jobs must not survive as running after restart."""
+    """A job abandoned by a crashed/killed process must not survive as running.
+
+    Its heartbeat (``updated_at``) is backdated past ``job_heartbeat_cutoff``
+    to simulate the row having gone untouched since the crash -- see
+    ``test_reset_workspace_stale_jobs_preserves_live_job`` for the
+    complementary case this heartbeat check exists for.
+    """
     ws_engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -139,6 +147,14 @@ async def test_reset_workspace_stale_jobs_marks_secondary_db_jobs_failed() -> No
                 total_pages=1,
             )
 
+        stale_at = crud.job_heartbeat_cutoff() - timedelta(seconds=1)
+        async with get_session(ws_factory) as session:
+            await session.execute(
+                sa_update(GenerationJob)
+                .where(GenerationJob.id == running_job.id)
+                .values(updated_at=stale_at)
+            )
+
         reset_count = await reset_workspace_stale_jobs(
             SimpleNamespace(workspace_sessions={repo.id: ws_factory})
         )
@@ -156,6 +172,58 @@ async def test_reset_workspace_stale_jobs_marks_secondary_db_jobs_failed() -> No
         assert jobs[running_job.id].finished_at is not None
         assert jobs[running_job.id].error_message == "Server restarted; job interrupted"
         assert jobs[completed_job.id].status == "completed"
+    finally:
+        await ws_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reset_workspace_stale_jobs_preserves_live_job() -> None:
+    """A job with a fresh heartbeat must survive another process's restart sweep.
+
+    Regression test: in a multi-worker deployment sharing one database, a
+    second server process's startup sweep must not be able to flip a job a
+    *different, still-live* process is actually running to "failed" -- doing
+    so defeats ``_ensure_no_active_job``'s concurrency guard and lets a
+    second pipeline run start on the same repo while the first is still
+    executing.
+    """
+    ws_engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    await init_db(ws_engine)
+    ws_factory = async_sessionmaker(ws_engine, expire_on_commit=False, class_=AsyncSession)
+
+    try:
+        async with get_session(ws_factory) as session:
+            repo = await crud.upsert_repository(
+                session,
+                name="workspace-repo",
+                local_path="/tmp/workspace-repo",
+            )
+            running_job = await crud.upsert_generation_job(
+                session,
+                repository_id=repo.id,
+                status="running",
+                total_pages=12,
+            )
+
+        # Simulates JobProgressCallback's periodic write from the process
+        # that is actually still executing this job.
+        async with get_session(ws_factory) as session:
+            await crud.update_job_status(session, running_job.id, "running", completed_pages=3)
+
+        reset_count = await reset_workspace_stale_jobs(
+            SimpleNamespace(workspace_sessions={repo.id: ws_factory})
+        )
+        assert reset_count == 0
+
+        async with get_session(ws_factory) as session:
+            job = await crud.get_generation_job(session, running_job.id)
+            assert job.status == "running"
+            still_active = await crud.has_active_job(session, repo.id)
+            assert still_active is True
     finally:
         await ws_engine.dispose()
 

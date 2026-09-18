@@ -506,7 +506,11 @@ async def _run_ingestion(
 
     # Read source bytes up front in a thread pool (I/O-bound; keeps worker
     # args small: FileInfo + bytes, both picklable plain dataclasses/bytes).
-    fi_and_bytes: list[tuple] = _read_sources(file_infos, progress)
+    # _read_sources() blocks on pool.map() from the calling thread, so it is
+    # itself awaited via to_thread — otherwise a large repo's read would
+    # block the event loop for its whole duration (see the same note on
+    # knowledge_graph.skeleton above).
+    fi_and_bytes: list[tuple] = await asyncio.to_thread(_read_sources, file_infos, progress)
 
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
@@ -618,7 +622,11 @@ async def _run_ingestion(
             progress.on_phase_start("tsconfig", None)
         from repowise.core.ingestion import wire_tsconfig_resolver
 
-        wire_tsconfig_resolver(
+        # Off the event loop: the comment above already flags this as
+        # potentially long on a large monorepo, and an un-awaited call of
+        # that length blocks the loop outright, heartbeat included.
+        await asyncio.to_thread(
+            wire_tsconfig_resolver,
             graph_builder,
             repo_path,
             include_submodules=include_submodules,
@@ -820,7 +828,9 @@ async def reparse_for_resume(
     if progress:
         progress.on_phase_start("parse", len(file_infos))
 
-    fi_and_bytes: list[tuple] = _read_sources(file_infos, progress)
+    # See _run_ingestion's matching call: _read_sources() blocks on
+    # pool.map() from the calling thread, so it must run off the event loop.
+    fi_and_bytes: list[tuple] = await asyncio.to_thread(_read_sources, file_infos, progress)
 
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
