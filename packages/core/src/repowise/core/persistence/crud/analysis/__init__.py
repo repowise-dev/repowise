@@ -38,6 +38,7 @@ from .dead_code import (
     update_dead_code_status,
 )
 from .doc_drift import (
+    doc_drift_findings_stored,
     doc_drift_references_stored,
     get_doc_drift_findings,
     get_doc_drift_references,
@@ -116,6 +117,7 @@ __all__ = [
     "backfill_module_attribution",
     "count_refactoring_suggestions",
     "covered_source_files",
+    "doc_drift_findings_stored",
     "doc_drift_references_stored",
     "files_covered_by",
     "finalize_performance_opportunities",

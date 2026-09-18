@@ -98,6 +98,14 @@ from .decisions import (
     DecisionSourceState,
     DecisionStatusUpdate,
 )
+from .doc_drift import (
+    DocDriftDocumentDriftResponse,
+    DocDriftFindingResponse,
+    DocDriftReferenceResponse,
+    DocDriftReferencesResponse,
+    DocDriftResponse,
+    DocDriftSummaryResponse,
+)
 from .episodes import (
     EpisodeCountsResponse,
     EpisodeDetail,
@@ -377,6 +385,12 @@ __all__ = [
     "DirectRiskEntry",
     "DistillSavingsGroup",
     "DistillSavingsResponse",
+    "DocDriftDocumentDriftResponse",
+    "DocDriftFindingResponse",
+    "DocDriftReferenceResponse",
+    "DocDriftReferencesResponse",
+    "DocDriftResponse",
+    "DocDriftSummaryResponse",
     "EgoGraphResponse",
     "EpisodeCountsResponse",
     "EpisodeDetail",

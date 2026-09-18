@@ -15,6 +15,7 @@
     "./decisions": "./src/decisions.ts",
     "./episodes": "./src/episodes.ts",
     "./dead-code": "./src/dead-code.ts",
+    "./doc-drift": "./src/doc-drift.ts",
     "./symbols": "./src/symbols.ts",
     "./chat": "./src/chat.ts",
     "./workspace": "./src/workspace.ts",

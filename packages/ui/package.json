@@ -33,6 +33,8 @@
     "./commits/*": "./src/commits/*.tsx",
     "./dead-code": "./src/dead-code/index.ts",
     "./dead-code/*": "./src/dead-code/*.tsx",
+    "./doc-drift": "./src/doc-drift/index.ts",
+    "./doc-drift/*": "./src/doc-drift/*.tsx",
     "./health": "./src/health/index.ts",
     "./health/ai-prompt-builder": "./src/health/ai-prompt-builder.ts",
     "./health/tokens": "./src/health/tokens.ts",

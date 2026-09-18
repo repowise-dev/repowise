@@ -171,7 +171,7 @@ repowise/
 │   │
 │   ├── server/                 # Python: FastAPI REST API + MCP server
 │   │   └── src/repowise/server/
-│   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search, claude-md)
+│   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, doc-drift, decisions, search, claude-md)
 │   │       ├── mcp_server/      # MCP server package (11 default tools, split into focused modules)
 │   │       ├── webhooks/        # GitHub + GitLab handlers
 │   │       ├── job_executor.py  # Background pipeline executor: bridges REST to core pipeline
@@ -1136,6 +1136,8 @@ Key routers:
 - `/api/repos/{id}/dead-code`: dead code findings (GET list, POST trigger analysis)
 - `/api/repos/{id}/dead-code/summary`: aggregate dead code stats
 - `/api/dead-code/{finding_id}`: PATCH to resolve/acknowledge findings
+- `/api/repos/{id}/doc-drift`: documents whose assertions the repo no longer satisfies, with a server-computed summary
+- `/api/repos/{id}/doc-drift/references`: which documents name one file (the reverse view)
 - `/api/repos/{id}/claude-md`: GET preview of generated CLAUDE.md section (JSON, no disk write)
 - `/api/repos/{id}/claude-md/generate`: POST to regenerate and write CLAUDE.md to disk
 - `/health`: liveness + readiness (checks DB + provider)

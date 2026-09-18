@@ -49,6 +49,7 @@ from repowise.server.routers import (
     coupling,
     dead_code,
     decisions,
+    doc_drift,
     episodes,
     external_systems,
     feedback,
@@ -575,6 +576,7 @@ def create_app() -> FastAPI:
     app.include_router(webhooks.router)
     app.include_router(git.router)
     app.include_router(dead_code.router)
+    app.include_router(doc_drift.router)
     app.include_router(code_health.router)
     app.include_router(coupling.router)
     app.include_router(claude_md.router)

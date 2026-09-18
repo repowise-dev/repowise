@@ -1026,6 +1026,88 @@ export interface DistillSavingsResponse {
   reread_tokens_est?: number;
 }
 
+/**
+ * A naming document that carries drift somewhere in it.
+ *
+ * ``findings`` counts the whole document, not assertions about the file that
+ * was asked about. A drifted reference resolves to nothing, so no row here
+ * can say a document's description of that file is wrong.
+ */
+export interface DocDriftDocumentDriftResponse {
+  document: string;
+  findings: number;
+}
+
+/**
+ * One assertion a document makes that the repository no longer satisfies.
+ *
+ * ``file_path`` is the *document* to edit, never the target it names. A
+ * reader who reads it as the broken file has been told the opposite of the
+ * truth, which is why the field keeps the name every other drift surface
+ * gives it.
+ */
+export interface DocDriftFindingResponse {
+  id: string;
+  file_path: string;
+  line_number: number;
+  kind: string;
+  target: string;
+  confidence: number;
+  origin: string;
+  reason: string;
+  raw: string;
+  context: string;
+  evidence: string[];
+}
+
+/**
+ * A document that names a file the repository still has.
+ *
+ * Deliberately weaker than a finding: it does not claim the document
+ * describes the file, or that its prose is current.
+ */
+export interface DocDriftReferenceResponse {
+  document: string;
+  line: number;
+  kind: string;
+  section?: string;
+}
+
+/** Which documents name one file: the reverse view, over HTTP. */
+export interface DocDriftReferencesResponse {
+  target_path: string;
+  references: DocDriftReferenceResponse[];
+  references_emitted: number;
+  references_total: number;
+  documents: number;
+  documents_with_drift: DocDriftDocumentDriftResponse[];
+  references_basis: string;
+  unavailable?: "not_computed" | "index_predates_doc_drift" | "drift_read_failed" | null;
+}
+
+/** Findings for a repository, with the rollup that makes them legible. */
+export interface DocDriftResponse {
+  findings: DocDriftFindingResponse[];
+  findings_emitted: number;
+  summary: DocDriftSummaryResponse | null;
+  unavailable?: "not_computed" | "index_predates_doc_drift" | "drift_read_failed" | null;
+}
+
+/**
+ * The rollup above the list, computed server-side over the same rows.
+ *
+ * ``findings_total`` counts every finding matching the query, including any
+ * the display cap left out, so a client cannot recompute a page as if it were
+ * the repository.
+ */
+export interface DocDriftSummaryResponse {
+  findings_total: number;
+  documents: number;
+  confidence: Record<string, number>;
+  by_kind: Record<string, number>;
+  findings_basis: string;
+}
+
 export interface EgoGraphResponse {
   nodes: GraphNodeResponse[];
   links: GraphEdgeResponse[];

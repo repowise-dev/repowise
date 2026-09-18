@@ -11,6 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.doc_drift.constants import bucket_confidences
+from repowise.core.analysis.doc_drift.serialize import finding_dict, reference_dict
 
 from ...models import DocDriftFinding, DocDriftReference
 from .._shared import _BATCH_SIZE
@@ -321,24 +322,38 @@ async def doc_drift_references_stored(session: AsyncSession, repository_id: str)
     return (await session.execute(stmt.limit(1))).scalar_one_or_none() is not None
 
 
+async def doc_drift_findings_stored(session: AsyncSession, repository_id: str) -> bool:
+    """Whether this repository has any stored finding at all.
+
+    The findings half of :func:`doc_drift_references_stored`, and it exists for
+    the case that one cannot cover: a repository whose documents resolve to
+    nothing has no reference rows, so the reference probe alone would report a
+    tree that *does* carry findings as never analysed. Either row anywhere is
+    proof the pass ran.
+
+    Asked only when a narrowed query came back empty, so the common case pays
+    nothing.
+    """
+    stmt = select(DocDriftFinding.id).where(
+        DocDriftFinding.repository_id == repository_id
+    )
+    return (await session.execute(stmt.limit(1))).scalar_one_or_none() is not None
+
+
 def serialize_doc_drift_reference_row(row: DocDriftReference) -> dict:
     """One stored reference as a dict, for any surface that serves it.
 
-    One function rather than one per surface, for the reason
-    :func:`serialize_doc_drift_row` gives. ``target_path`` is absent because
-    every row in a reverse answer shares it. The keys are ``document``/``line``
-    rather than the findings serializer's ``file_path``/``line_number``: here a
-    bare ``file_path`` would read as the file that was asked about, which is
-    the one thing it is not.
+    The row half of :func:`~repowise.core.analysis.doc_drift.serialize.reference_dict`,
+    which holds the key names and the reasons for them. Delegating rather than
+    restating is what makes a store-backed answer and a report-backed one the
+    same bytes.
     """
-    out = {
-        "document": row.document_path,
-        "line": row.line_number,
-        "kind": row.kind,
-    }
-    if row.section:
-        out["section"] = row.section
-    return out
+    return reference_dict(
+        document_path=row.document_path,
+        kind=row.kind,
+        line_number=row.line_number,
+        section=row.section,
+    )
 
 
 def _decode_evidence(raw: str) -> list[str]:
@@ -358,35 +373,26 @@ def _decode_evidence(raw: str) -> list[str]:
 def serialize_doc_drift_row(row: DocDriftFinding, *, evidence: bool = True) -> dict:
     """One stored finding as a dict, for any surface that serves it.
 
-    One function rather than one per surface. The CLI and ``get_health`` serve
-    the same rows, and two hand-maintained dicts are how they would come to
-    disagree about them --- the failure
-    ``tests/unit/dead_code/test_confidence_parity.py`` exists to remember.
-    Placed beside :func:`summarize_confidence_rows` because both are read-side
-    derivations over a row; the no-serializer rule in
-    ``analysis/doc_drift/models.py`` is about the analyzer's dataclass, which
-    neither of these touches.
+    The row half of :func:`~repowise.core.analysis.doc_drift.serialize.finding_dict`,
+    which holds the keys and the rounding. All this adds is the JSON decode the
+    column needs and the report's list does not.
 
     ``evidence=False`` drops the evidence lines for a caller under a response
     budget: their first line restates ``file_path``, ``line_number`` and
     ``raw``, and the rest is the resolver's own trace.
     """
-    out = {
-        "file_path": row.file_path,
-        "line_number": row.line_number,
-        "kind": row.kind,
-        "target": row.target,
-        # Rounded in one place, so a future three-decimal tier cannot make one
-        # surface report 0.925 where the other reports 0.93.
-        "confidence": round(row.confidence, 2),
-        "origin": row.origin,
-        "reason": row.reason,
-        "raw": row.raw,
-        "context": row.context,
-    }
-    if evidence:
-        out["evidence"] = _decode_evidence(row.evidence_json)
-    return out
+    return finding_dict(
+        file_path=row.file_path,
+        kind=row.kind,
+        line_number=row.line_number,
+        target=row.target,
+        confidence=row.confidence,
+        origin=row.origin,
+        reason=row.reason,
+        raw=row.raw,
+        context=row.context,
+        evidence=_decode_evidence(row.evidence_json) if evidence else None,
+    )
 
 
 def summarize_confidence_rows(rows: list[DocDriftFinding]) -> dict:
@@ -394,5 +400,11 @@ def summarize_confidence_rows(rows: list[DocDriftFinding]) -> dict:
 
     Calls the same function the analyzer does, so the summary a reader sees
     cannot disagree with the one the pass computed.
+
+    Bucketed on the *rounded* confidence, which is the number every surface
+    displays and the one :func:`~repowise.core.analysis.doc_drift.serialize.finding_dict`
+    emits. Bucketing the raw value instead would put a stored 0.695 in
+    ``medium`` here and in ``high`` on any surface reading the serialized
+    dicts, beside a figure both render as 0.70.
     """
-    return bucket_confidences(r.confidence for r in rows)
+    return bucket_confidences(round(r.confidence, 2) for r in rows)

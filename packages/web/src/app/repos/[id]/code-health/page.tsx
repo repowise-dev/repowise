@@ -34,6 +34,7 @@ import {
   LayoutDashboard,
   RotateCw,
   Scissors,
+  BookText,
   Shield,
   Waypoints,
   type LucideIcon,
@@ -58,6 +59,7 @@ import {
   type HealthCounts,
   type HealthScope,
 } from "@repowise-dev/types/health";
+import type { DocDriftResponse } from "@repowise-dev/types/doc-drift";
 import { TriageTab } from "@/components/code-health/triage-tab";
 import { HotspotsSection } from "@/components/code-health/hotspots-section";
 import { FindingsTab } from "@/components/code-health/findings-tab";
@@ -65,9 +67,11 @@ import { PerformanceTab } from "@/components/code-health/performance-tab";
 import { CoverageTab } from "@/components/code-health/coverage-tab";
 import { TrendSection } from "@/components/code-health/trend-tab";
 import { DeadCodeTab } from "@/components/risk/dead-code-tab";
+import { DocDriftTab } from "@/components/risk/doc-drift-tab";
 import { ImpactTab } from "@/components/risk/impact-tab";
 import { SecurityTab } from "@/components/risk/security-tab";
 import { getDeadCodeSummary } from "@/lib/api/dead-code";
+import { getDocDrift } from "@/lib/api/doc-drift";
 import {
   getChurnComplexity,
   getHealthCoverage,
@@ -88,6 +92,7 @@ const TABS = [
   "findings",
   "coverage",
   "dead-code",
+  "doc-drift",
   "security",
   "impact",
 ] as const;
@@ -99,6 +104,7 @@ const TAB_LABELS: Record<TabId, string> = {
   findings: "Findings",
   coverage: "Tests",
   "dead-code": "Dead code",
+  "doc-drift": "Doc drift",
   security: "Security",
   impact: "Blast radius",
 };
@@ -115,6 +121,7 @@ const TAB_ICONS: Record<TabId, LucideIcon> = {
   findings: Bug,
   coverage: FlaskConical,
   "dead-code": Scissors,
+  "doc-drift": BookText,
   security: Shield,
   impact: Waypoints,
 };
@@ -404,6 +411,15 @@ export default function CodeHealthPage() {
     { revalidateOnFocus: false },
   );
   const coveragePct = coverage?.summary.line_coverage_pct;
+  // `limit: 1` rather than the tab's own key: the summary is computed over the
+  // whole query and `findings_total` counts before any cap, so one row of
+  // payload carries the badge. Sharing the tab's key would dedupe but pull
+  // every finding on page load for a number.
+  const { data: docDrift } = useSWR<DocDriftResponse>(
+    `doc-drift-badge:${repoId}`,
+    () => getDocDrift(repoId, { limit: 1 }),
+    { revalidateOnFocus: false },
+  );
 
   const badges: Partial<Record<TabId, number | string>> = {};
   // Performance has its own tab and is out of the findings list, so counting
@@ -413,6 +429,9 @@ export default function CodeHealthPage() {
       overview.summary.open_findings - (overview.summary.performance_findings ?? 0);
   }
   if (deadCode) badges["dead-code"] = deadCode.total_findings;
+  // No badge when the drift pass has not run: the response carries a cause
+  // rather than a summary, and a 0 there would read as clean documentation.
+  if (docDrift?.summary) badges["doc-drift"] = docDrift.summary.findings_total;
   if (coveragePct != null) badges.coverage = `${Math.round(coveragePct)}%`;
 
   const setTab = useCallback(
@@ -569,6 +588,7 @@ export default function CodeHealthPage() {
         {activeTab === "performance" && <PerformanceTab repoId={repoId} />}
         {activeTab === "coverage" && <CoverageTab repoId={repoId} />}
         {activeTab === "dead-code" && <DeadCodeTab repoId={repoId} />}
+        {activeTab === "doc-drift" && <DocDriftTab repoId={repoId} />}
         {activeTab === "security" && <SecurityTab repoId={repoId} />}
         {activeTab === "impact" && <ImpactTab repoId={repoId} />}
       </ViewTabs>

@@ -23,6 +23,10 @@ from repowise.core.analysis.doc_drift.constants import (
     UNAVAILABLE_NOT_COMPUTED,
     UNAVAILABLE_READ_FAILED,
 )
+from repowise.core.analysis.doc_drift.serialize import (
+    collapse_reference_sites,
+    documents_with_drift,
+)
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
@@ -863,17 +867,9 @@ def _doc_reference_block(
 ) -> dict[str, Any]:
     """One target's reverse-view block, built from its own rows."""
     block: dict[str, Any] = {}
-    seen: set[tuple[str, int]] = set()
-    emitted = []
-    for row in rows:
-        # One markdown link with a fragment yields both a link row and an
-        # anchor row at the same site. The store keeps them apart because they
-        # drift apart; a reader counting mentions should see one.
-        site = (row.document_path, row.line_number)
-        if site in seen:
-            continue
-        seen.add(site)
-        emitted.append(serialize_doc_drift_reference_row(row))
+    emitted = collapse_reference_sites(
+        [serialize_doc_drift_reference_row(row) for row in rows]
+    )
     cap_collection(
         block,
         "references",
@@ -889,12 +885,11 @@ def _doc_reference_block(
         block["references_excluded"] = excluded
 
     # Only the documents this answer matched; the repo-wide total is what
-    # ``get_health(include=["doc_drift"])`` is for.
-    matched = sorted({r.document_path for r in rows} & set(drift_by_document))
-    if matched:
-        block["documents_with_drift"] = [
-            {"document": path, "findings": drift_by_document[path]} for path in matched
-        ]
+    # ``get_health(include=["doc_drift"])`` is for. Read off the uncapped list,
+    # or a document past the display cap reports as clean.
+    drifted = documents_with_drift(emitted, drift_by_document)
+    if drifted:
+        block["documents_with_drift"] = drifted
 
     # Emitted on an empty answer too: that is the one most likely to be
     # read as proof that nothing documents this file.
