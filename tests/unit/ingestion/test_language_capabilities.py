@@ -340,3 +340,10 @@ class TestDriftManifests:
         assert REGISTRY.entry_flag_stems() == frozenset(
             {"main", "index", "app", "run", "server", "start", "wsgi", "asgi"}
         )
+
+    def test_csharp_and_vbnet_builtin_parents_parity(self) -> None:
+        """C# and VB.NET share the .NET BCL runtime, so their builtin_parents must match."""
+        csharp = REGISTRY.get("csharp")
+        vbnet = REGISTRY.get("vbnet")
+        assert csharp is not None and vbnet is not None
+        assert csharp.builtin_parents == vbnet.builtin_parents
