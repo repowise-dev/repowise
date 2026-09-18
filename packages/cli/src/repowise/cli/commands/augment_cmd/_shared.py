@@ -349,6 +349,51 @@ def record_forgone(
             con.close()
     except Exception:
         return
+    _record_opportunity(
+        repo_path,
+        filter_name=filter_name or source,
+        raw_tokens=raw_tokens,
+        distilled_tokens=distilled_tokens,
+    )
+
+
+def _record_opportunity(
+    repo_path: Path,
+    *,
+    filter_name: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+) -> None:
+    """Record a forgone saving as an observed opportunity. Never raises.
+
+    An opportunity, not an event, and that distinction is the whole reason this
+    is a separate function: this repository did not save these tokens, it only
+    could have. The canonical ledger keeps the two in different tables so no
+    later aggregation can accidentally sum a hypothetical into what was actually
+    achieved.
+
+    The path is deliberately not carried over. The legacy table stores it to
+    tell a user which file to turn the surface on for; an opportunity row only
+    needs the size of what was missed, and a repo-relative path is still a path.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from repowise.core.savings import recorder
+        from repowise.core.savings.correlation import new_event_id
+
+        recorder.record_opportunity(
+            repo_path,
+            {
+                "observation_id": new_event_id(),
+                "occurred_at": datetime.now(UTC),
+                "integration": "unknown",
+                "kind": f"hook_surface_disabled:{filter_name}",
+                "estimated_potential_input_tokens": max(raw_tokens - distilled_tokens, 0),
+            },
+        )
+    except Exception:
+        return
 
 
 def _relativize(file_path: str, repo_path: Path) -> str | None:

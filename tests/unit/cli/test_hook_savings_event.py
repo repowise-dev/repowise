@@ -8,6 +8,7 @@ know at all.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Row
 
@@ -105,3 +106,42 @@ def test_two_replacements_stay_two_interactions(repo: Path) -> None:
     events = _events(repo)
     assert len(events) == 2
     assert len({event["event_id"] for event in events}) == 2
+
+
+def test_a_forgone_saving_is_an_opportunity_not_an_achievement(repo: Path) -> None:
+    """The repo did not save these tokens; it only could have.
+
+    They must never reach a total of what was saved, which is why they land in
+    a different table rather than behind a flag on the same one.
+    """
+    _shared.record_forgone(
+        repo,
+        source="hook-read",
+        path="src/app.py",
+        raw_tokens=4000,
+        distilled_tokens=400,
+        filter_name="read_skeleton",
+    )
+    assert _events(repo) == []
+    with OmissionStore(recorder.sidecar_path(repo)) as store:
+        report = store.savings().report(str(repo), as_of=datetime.now(UTC))
+        row = store._conn.execute("SELECT kind FROM savings_opportunities").fetchone()
+    assert report.saved_input_tokens == 0
+    assert report.opportunity_count == 1
+    assert report.opportunity_tokens_excluded == 3600
+    assert row[0] == "hook_surface_disabled:read_skeleton"
+
+
+def test_a_forgone_saving_does_not_record_the_path(repo: Path) -> None:
+    _shared.record_forgone(
+        repo,
+        source="hook-read",
+        path="/home/someone/secret-project/app.py",
+        raw_tokens=4000,
+        distilled_tokens=400,
+        filter_name="read_skeleton",
+    )
+    with OmissionStore(recorder.sidecar_path(repo)) as store:
+        store._conn.row_factory = Row
+        stored = str([dict(r) for r in store._conn.execute("SELECT * FROM savings_opportunities")])
+    assert "secret-project" not in stored
