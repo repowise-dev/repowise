@@ -18,7 +18,13 @@
     "vscode": "^1.101.0",
     "node": ">=20.0.0"
   },
-  "categories": ["AI", "Chat", "Visualization", "Linters", "Other"],
+  "categories": [
+    "AI",
+    "Chat",
+    "Visualization",
+    "Linters",
+    "Other"
+  ],
   "keywords": [
     "mcp",
     "ai agent",
@@ -41,7 +47,9 @@
     "theme": "dark"
   },
   "main": "./dist/extension.js",
-  "extensionKind": ["workspace"],
+  "extensionKind": [
+    "workspace"
+  ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
@@ -58,13 +66,20 @@
       "title": "Repowise",
       "properties": {
         "repowise.server.port": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "default": null,
           "markdownDescription": "Port the local Repowise server listens on. Leave empty to discover it from the running server's lockfile."
         },
         "repowise.server.autoStart": {
           "type": "string",
-          "enum": ["ask", "always", "never"],
+          "enum": [
+            "ask",
+            "always",
+            "never"
+          ],
           "enumDescriptions": [
             "Ask before starting the local server.",
             "Start the local server automatically when a Repowise index is present.",
@@ -85,7 +100,12 @@
         },
         "repowise.diagnostics.minSeverity": {
           "type": "string",
-          "enum": ["critical", "high", "medium", "low"],
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ],
           "default": "high",
           "description": "Lowest finding severity surfaced in the Problems panel. Lower-severity findings stay visible in the gutter and tree views."
         },
@@ -93,9 +113,17 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["defect", "maintainability", "performance"]
+            "enum": [
+              "defect",
+              "maintainability",
+              "performance"
+            ]
           },
-          "default": ["defect", "maintainability", "performance"],
+          "default": [
+            "defect",
+            "maintainability",
+            "performance"
+          ],
           "description": "Health dimensions included in the Problems panel."
         },
         "repowise.gutterHeat.enabled": {
@@ -334,7 +362,9 @@
         "toolReferenceName": "repowiseSearch",
         "canBeReferencedInPrompt": true,
         "icon": "$(search)",
-        "tags": ["repowise"],
+        "tags": [
+          "repowise"
+        ],
         "when": "repowise.agentToolsEnabled",
         "modelDescription": "Search the Repowise index of this repository: semantic search over documentation pages, files, and symbols. Returns ranked matches with titles, target paths, scores, and snippets. Use it to locate where a concept, feature, or identifier lives before reading files.",
         "userDescription": "Search the Repowise index of this repository.",
@@ -350,7 +380,9 @@
               "description": "Maximum number of results (1 to 20, default 5)."
             }
           },
-          "required": ["query"]
+          "required": [
+            "query"
+          ]
         }
       },
       {
@@ -359,7 +391,9 @@
         "toolReferenceName": "repowiseFileHealth",
         "canBeReferencedInPrompt": true,
         "icon": "$(heart)",
-        "tags": ["repowise"],
+        "tags": [
+          "repowise"
+        ],
         "when": "repowise.agentToolsEnabled",
         "modelDescription": "Get code health for one file in this repository: defect, maintainability, and performance scores (0 to 10, higher is healthier) plus line-anchored findings with severity and biomarker type. Use it before editing a file to know what is already flagged, or to check whether a change should also fix nearby findings.",
         "userDescription": "Health scores and findings for one file.",
@@ -371,7 +405,9 @@
               "description": "Repository-relative path of the file, forward slashes."
             }
           },
-          "required": ["filePath"]
+          "required": [
+            "filePath"
+          ]
         }
       },
       {
@@ -380,7 +416,9 @@
         "toolReferenceName": "repowisePlans",
         "canBeReferencedInPrompt": true,
         "icon": "$(tools)",
-        "tags": ["repowise"],
+        "tags": [
+          "repowise"
+        ],
         "when": "repowise.agentToolsEnabled",
         "modelDescription": "Get the deterministic refactoring plans Repowise computed for one file: refactoring type, target symbol with line range, step-by-step plan, evidence, impact estimate, and blast radius (affected callers and co-change partners). These plans are precomputed from static analysis and git history, not generated on the fly. Follow the plan's steps and constraints when refactoring.",
         "userDescription": "Precomputed refactoring plans for one file.",
@@ -392,7 +430,9 @@
               "description": "Repository-relative path of the file, forward slashes."
             }
           },
-          "required": ["filePath"]
+          "required": [
+            "filePath"
+          ]
         }
       },
       {
@@ -401,7 +441,9 @@
         "toolReferenceName": "repowiseBranchRisk",
         "canBeReferencedInPrompt": true,
         "icon": "$(pulse)",
-        "tags": ["repowise"],
+        "tags": [
+          "repowise"
+        ],
         "when": "repowise.agentToolsEnabled",
         "modelDescription": "Report on the current branch's changes against a base branch. Lead with the benchmarked repo-relative percentile and classification. Fix history is separate historical evidence; the supporting 0-10 score measures diff size and spread and is not a probability. Use it after making changes to judge whether the change set needs extra review or tests before pushing.",
         "userDescription": "Repo-relative review priority for the current branch.",
@@ -421,7 +463,9 @@
         "toolReferenceName": "repowiseSymbol",
         "canBeReferencedInPrompt": true,
         "icon": "$(symbol-method)",
-        "tags": ["repowise"],
+        "tags": [
+          "repowise"
+        ],
         "when": "repowise.agentToolsEnabled",
         "modelDescription": "Look up a symbol (function, class, method) in one file of this repository: kind, line bounds, callers and callees, ownership, and governing architectural decisions. Use it to judge the blast radius of editing a symbol or to find who depends on it. Omit symbolName to list the file's symbols.",
         "userDescription": "Callers, callees, and ownership for a symbol.",
@@ -437,7 +481,9 @@
               "description": "Name of the symbol to look up. Omit to list all symbols in the file."
             }
           },
-          "required": ["filePath"]
+          "required": [
+            "filePath"
+          ]
         }
       },
       {
@@ -446,7 +492,9 @@
         "toolReferenceName": "repowiseDocs",
         "canBeReferencedInPrompt": true,
         "icon": "$(book)",
-        "tags": ["repowise"],
+        "tags": [
+          "repowise"
+        ],
         "when": "repowise.agentToolsEnabled",
         "modelDescription": "Get the generated documentation page for one file in this repository: what the file does, its role in the architecture, key symbols, and relationships. Use it to orient in an unfamiliar file before reading the source.",
         "userDescription": "Generated documentation for one file.",
@@ -458,7 +506,9 @@
               "description": "Repository-relative path of the file, forward slashes."
             }
           },
-          "required": ["filePath"]
+          "required": [
+            "filePath"
+          ]
         }
       }
     ],
@@ -483,7 +533,9 @@
             "media": {
               "markdown": "media/walkthrough/index-repo.md"
             },
-            "completionEvents": ["onCommand:repowise.runInit"]
+            "completionEvents": [
+              "onCommand:repowise.runInit"
+            ]
           },
           {
             "id": "connectServer",
@@ -492,7 +544,9 @@
             "media": {
               "markdown": "media/walkthrough/connect-server.md"
             },
-            "completionEvents": ["onCommand:repowise.startServer"]
+            "completionEvents": [
+              "onCommand:repowise.startServer"
+            ]
           },
           {
             "id": "firstInsight",
@@ -501,7 +555,9 @@
             "media": {
               "markdown": "media/walkthrough/first-insight.md"
             },
-            "completionEvents": ["onCommand:repowise.showHealthDashboard"]
+            "completionEvents": [
+              "onCommand:repowise.showHealthDashboard"
+            ]
           },
           {
             "id": "connectMcp",
@@ -510,7 +566,9 @@
             "media": {
               "markdown": "media/walkthrough/connect-mcp.md"
             },
-            "completionEvents": ["onCommand:repowise.configureMcp"]
+            "completionEvents": [
+              "onCommand:repowise.configureMcp"
+            ]
           }
         ]
       }
@@ -550,6 +608,6 @@
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.2",
     "vite": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.11"
   }
 }
