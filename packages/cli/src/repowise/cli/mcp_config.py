@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 
 from repowise.core.agents.identity import CODEX
+from repowise.core.store_location import resolve_store_dir
 
 
 def _looks_transient(path: Path) -> bool:
@@ -149,7 +150,7 @@ def save_mcp_config(repo_path: Path) -> Path:
     """
     from repowise.cli.agent_targets.formats.json_merge import write_json_config
 
-    repowise_dir = repo_path / ".repowise"
+    repowise_dir = resolve_store_dir(repo_path)
     repowise_dir.mkdir(parents=True, exist_ok=True)
     config_path = repowise_dir / "mcp.json"
     write_json_config(config_path, generate_mcp_config(repo_path))

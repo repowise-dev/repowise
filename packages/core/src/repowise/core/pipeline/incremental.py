@@ -29,6 +29,7 @@ from typing import Any
 import structlog
 
 from repowise.core.pipeline.phase_timing import PhaseTimings, timed
+from repowise.core.store_location import resolve_store_dir
 
 logger = structlog.get_logger(__name__)
 
@@ -71,6 +72,7 @@ def _parse_misses(
     from repowise.core.pipeline.phases.ingestion import _cache_parsed
 
     parser: Any = None  # constructed lazily — every-file-cached updates skip query compilation
+
     merged: dict[int, Any] = dict(cached_hits)
     with timed(timings, "rebuild.parse"):
         for idx, (fi, source), content_hash in to_parse:
@@ -794,7 +796,7 @@ def run_partial_analysis(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
             community_label_map=file_community_labels(graph_builder),
-            duplication_cache_dir=Path(repo_path) / ".repowise",
+            duplication_cache_dir=resolve_store_dir(repo_path),
             repo_root=repo_path,
             coverage_map=coverage_map,
         )
@@ -1057,7 +1059,7 @@ async def refresh_knowledge_graph(
             should_skip_kg_rebuild,
         )
 
-        kg_json_path = Path(repo_path) / ".repowise" / "knowledge-graph.json"
+        kg_json_path = resolve_store_dir(repo_path) / "knowledge-graph.json"
         new_fingerprint = compute_kg_fingerprint(graph_builder)
         if should_skip_kg_rebuild(prior_fingerprint, new_fingerprint, kg_json_path):
             return None
@@ -2398,7 +2400,7 @@ async def persist_incremental_index(
 
         vector_cleanup_ids = set(tombstoned_page_ids) | cleanup_debt["vectors"]
         if vector_cleanup_ids and vector_store is None:
-            lance_dir = Path(repo_path) / ".repowise" / "lancedb"
+            lance_dir = resolve_store_dir(repo_path) / "lancedb"
             if lance_dir.exists():
                 try:
                     from repowise.core.persistence.vector_store import LanceDBVectorStore

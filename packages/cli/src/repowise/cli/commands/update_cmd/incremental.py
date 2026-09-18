@@ -7,11 +7,11 @@ routing core log output through the CLI ``console``.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, run_async
 from repowise.core.pipeline import PhaseTimings, timed
+from repowise.core.store_location import resolve_store_dir
 
 
 def _build_update_vector_store(
@@ -39,7 +39,7 @@ def _build_update_vector_store(
 
         embedder = build_embedder(resolve_embedder(cfg.get("embedder")), repo_path)
         store = build_vector_store(repo_path, embedder)
-        if required and store is None and (Path(repo_path) / ".repowise" / "lancedb").exists():
+        if required and store is None and (resolve_store_dir(repo_path) / "lancedb").exists():
             raise RuntimeError(
                 "the configured embedder cannot safely refresh the existing vector index"
             )

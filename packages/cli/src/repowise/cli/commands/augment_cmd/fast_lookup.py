@@ -25,6 +25,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+from repowise.core.store_location import resolve_store_dir
+
 #: The env vars ``resolve_db_url`` honours, copied from
 #: ``repowise.core.persistence.database.DB_ENV_VARS`` rather than imported:
 #: importing that module runs the persistence package ``__init__``, which is
@@ -61,7 +63,7 @@ def connect(repo_path: Path) -> sqlite3.Connection | None:
     """
     if any(os.environ.get(name) for name in _DB_ENV_VARS):
         return None
-    db_path = repo_path / ".repowise" / "wiki.db"
+    db_path = resolve_store_dir(repo_path) / "wiki.db"
     if not db_path.exists():
         return None
     try:

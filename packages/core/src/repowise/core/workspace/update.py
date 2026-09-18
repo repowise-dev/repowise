@@ -19,6 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.store_location import resolve_store_dir
+
 if TYPE_CHECKING:
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
     from repowise.core.workspace.repo_index import WorkspaceIndex
@@ -82,7 +84,7 @@ async def _merged_repo_excludes(
     settings_json: str | None = None
 
     if configured_url is None:
-        db_path = repo_path / ".repowise" / "wiki.db"
+        db_path = resolve_store_dir(repo_path) / "wiki.db"
         if db_path.is_file():
             try:
                 with sqlite3.connect(str(db_path)) as conn:
@@ -99,7 +101,6 @@ async def _merged_repo_excludes(
             init_db,
         )
         from ..persistence.crud import get_repository_by_path
-
         try:
             engine = create_engine(configured_url)
             try:
@@ -237,7 +238,7 @@ def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> Non
     behind forever — the symmetric half of the CLI ``consume_update_pending``
     fix.
     """
-    pending_path = repo_path / ".repowise" / ".update.pending"
+    pending_path = resolve_store_dir(repo_path) / ".update.pending"
     try:
         pending_head = pending_path.read_text(encoding="utf-8").strip()
     except OSError:
@@ -262,7 +263,7 @@ def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> Non
 
 def read_repo_state(repo_path: Path) -> dict[str, Any]:
     """Return the parsed ``<repo>/.repowise/state.json``, or ``{}``."""
-    state_path = repo_path / ".repowise" / "state.json"
+    state_path = resolve_store_dir(repo_path) / "state.json"
     if not state_path.is_file():
         return {}
     try:
@@ -879,7 +880,7 @@ async def update_workspace(
         # Check staleness against stored commit in state.json
         import json
 
-        state_path = abs_path / ".repowise" / "state.json"
+        state_path = resolve_store_dir(abs_path) / "state.json"
         stored_commit = None
         state: dict[str, Any] = {}
         if state_path.is_file():
@@ -941,7 +942,7 @@ async def update_workspace(
         # repos in a half-broken state. Now we run the full pipeline; the
         # `.repowise/` dir is created on demand by ``update_single_repo_index``
         # (resolve_db_url) and ``state.json`` is written below.
-        first_time = not (abs_path / ".repowise").is_dir()
+        first_time = not resolve_store_dir(abs_path).is_dir()
         stale_repos.append((entry.alias, abs_path, current_head or "", first_time))
 
     if dry_run or not stale_repos:
@@ -971,8 +972,10 @@ async def update_workspace(
         for _alias, path, new_head, _first_time in stale_repos:
             if new_head:
                 with suppress(OSError):
-                    (path / ".repowise").mkdir(parents=True, exist_ok=True)
-                    (path / ".repowise" / ".update.pending").write_text(new_head, encoding="utf-8")
+                    resolve_store_dir(path).mkdir(parents=True, exist_ok=True)
+                    (resolve_store_dir(path) / ".update.pending").write_text(
+                        new_head, encoding="utf-8"
+                    )
         return [
             RepoUpdateResult(
                 alias=alias,
@@ -999,7 +1002,7 @@ async def update_workspace(
 
                 # Ensure the .repowise/ dir exists before the pipeline runs so
                 # first-time indexing has a place to put wiki.db and state.json.
-                (path / ".repowise").mkdir(parents=True, exist_ok=True)
+                resolve_store_dir(path).mkdir(parents=True, exist_ok=True)
 
                 # Per-repo single-flight lock. The post-commit hook fires a
                 # new ``repowise update`` for every commit; without this guard,
@@ -1020,7 +1023,7 @@ async def update_workspace(
                     )
                     # Record pending so the running update can roll forward.
                     with suppress(OSError):
-                        (path / ".repowise" / ".update.pending").write_text(
+                        (resolve_store_dir(path) / ".update.pending").write_text(
                             new_head, encoding="utf-8"
                         )
                     return RepoUpdateResult(
@@ -1049,7 +1052,7 @@ async def update_workspace(
                 if result.updated and new_head:
                     import json as _json
 
-                    state_path = path / ".repowise" / "state.json"
+                    state_path = resolve_store_dir(path) / "state.json"
                     state: dict[str, Any] = {}
                     if state_path.is_file():
                         with suppress(Exception):

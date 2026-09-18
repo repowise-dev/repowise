@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from repowise.cli import hook_ledger as _hook_ledger
+from repowise.core.store_location import resolve_store_dir
 
 
 class HookResult(NamedTuple):
@@ -162,7 +163,7 @@ def hook_flag_enabled(repo_path: Path, flag: str, *, default: bool = False) -> b
     override = os.environ.get(f"REPOWISE_HOOK_{flag.upper()}")
     if override is not None:
         return override.strip().lower() in ("1", "true", "yes", "on")
-    path = repo_path / ".repowise" / "config.yaml"
+    path = resolve_store_dir(repo_path) / "config.yaml"
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -214,7 +215,7 @@ def _omission_db(repo_path: Path) -> Path | None:
     without an omission store has no omission store. Kept in sync by
     ``test_the_omission_store_path_matches_distills``.
     """
-    db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
+    db_path = resolve_store_dir(repo_path) / "omissions" / "omissions.db"
     return db_path if db_path.exists() else None
 
 

@@ -13,6 +13,7 @@ from repowise.cli.helpers import (
     resolve_command_target,
     silence_logs_for_machine_output,
 )
+from repowise.core.store_location import resolve_store_dir
 
 from ._types import DoctorCheck
 from .advisories import _print_cli_version_status

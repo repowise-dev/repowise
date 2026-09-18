@@ -38,6 +38,7 @@ from repowise.core.analysis.health.rows import detail_map, split_unscored
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
 from repowise.core.analysis.health.scoring import compute_kpis
 from repowise.core.persistence.crud.analysis.health import open_finding_count
+from repowise.core.store_location import resolve_store_dir
 
 from .codegen import _generate_refactoring_code
 from .persist import (

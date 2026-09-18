@@ -17,6 +17,8 @@ from pathlib import Path
 
 import structlog
 
+from repowise.core.store_location import resolve_store_dir
+
 log = structlog.get_logger(__name__)
 
 
@@ -26,7 +28,7 @@ def load_telemetry_averages(repo_path: Path | str) -> dict[str, tuple[float, flo
     Returns an empty dict when no telemetry is available — the caller
     falls back to static heuristics.
     """
-    db_path = Path(repo_path) / ".repowise" / "db.sqlite"
+    db_path = resolve_store_dir(repo_path) / "db.sqlite"
     if not db_path.exists():
         return {}
 
