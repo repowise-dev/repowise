@@ -161,6 +161,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "rust": LanguageConfig(
         symbol_node_types={
             "function_item": "function",
+            "function_signature_item": "function",
             "struct_item": "struct",
             "enum_item": "enum",
             "trait_item": "trait",
@@ -184,6 +185,11 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # keeps its kind at ``function``, since that upgrade is gated on having
         # a parent.
         parent_class_types=frozenset({"impl_item", "mod_item", "trait_item"}),
+        # A bodiless ``fn foo();`` is a declaration in the same sense a C
+        # prototype is: it promises a body it does not carry. Unmarked it reads
+        # as a definition, which puts a trait's method names into the global
+        # bare-name index that call resolution consults for unqualified calls.
+        declaration_node_types=frozenset({"function_signature_item"}),
         reference_call_node_types=frozenset({"macro_invocation"}),
     ),
     "java": LanguageConfig(

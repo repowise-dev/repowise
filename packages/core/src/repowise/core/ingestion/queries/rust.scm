@@ -20,6 +20,21 @@
   parameters: (parameters) @symbol.params
 ) @symbol.def
 
+; function_signature_item WITH visibility -- a bodiless ``fn foo();``. Shared by
+; a trait's undefaulted methods, which may not write a modifier, and an
+; ``extern "C"`` block's declarations, which may and often do.
+(function_signature_item
+  (visibility_modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
+; function_signature_item WITHOUT visibility
+(function_signature_item
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
 ; struct_item WITH visibility
 (struct_item
   (visibility_modifier) @symbol.modifiers
