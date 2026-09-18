@@ -817,6 +817,8 @@ _PASCAL = LanguageNodeMap(
     break_kinds=frozenset(),
     continue_kinds=frozenset(),
     with_kinds=frozenset({"with"}),
+    assert_call_kinds=frozenset({"exprCall", "statement"}),
+    call_kinds=frozenset({"exprCall", "statement", "assignment"}),
 )
 
 
