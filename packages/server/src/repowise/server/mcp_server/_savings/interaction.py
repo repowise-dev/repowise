@@ -121,8 +121,13 @@ def _attribution() -> tuple[str, dict[str, str], str | None]:
     """
     from repowise.core.savings.normalization import normalize_mcp_identity
 
-    context = _context()
-    session = getattr(context, "session", None) if context is not None else None
+    # ``session`` is a property that raises outside a request rather than
+    # returning None, and ``getattr`` with a default does not suppress an
+    # exception raised *by* a property. So the access itself is the guard.
+    try:
+        session = _context().session  # type: ignore[union-attr]
+    except Exception:
+        session = None
     if session is None:
         return UNKNOWN_AGENT, {}, None
 

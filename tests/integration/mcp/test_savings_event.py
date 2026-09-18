@@ -242,3 +242,89 @@ async def test_the_tool_still_answers_when_recording_fails(
     out = await tool_middleware(get_dead_code)()
     assert out["files"] == []
     assert _events(repo) == []
+
+
+@pytest.mark.asyncio
+async def test_the_raw_size_is_observed_before_anything_is_shed(repo: Path) -> None:
+    """Which layer wins the measurement, stated as a number.
+
+    ``observe_pre_budget`` is called by both budget layers and by
+    ``instrument``, and takes the first value only. The innermost budget runs
+    first, so the value that lands is the untrimmed tool output. If that order
+    ever inverted, the recorded raw size would be a post-shed size and the
+    measured truncation would collapse to almost nothing -- on this response,
+    from thousands of tokens to under two hundred.
+    """
+    from repowise.server.mcp_server._savings import interaction as interaction_module
+
+    observed: list[tuple[int | None, bool]] = []
+    original = interaction_module.Interaction.observe_pre_budget
+
+    def traced(self: interaction_module.Interaction, tokens: int | None) -> None:
+        accepted = self.pre_budget_input_tokens is None and tokens is not None
+        observed.append((tokens, accepted))
+        original(self, tokens)
+
+    interaction_module.Interaction.observe_pre_budget = traced  # type: ignore[method-assign]
+    try:
+
+        async def get_context(targets: list[str]) -> dict:
+            return {
+                "targets": {targets[0]: {"skeleton": {"tokens": 200, "full_tokens": 4000}}},
+                "filler": ["y" * 400 for _ in range(60)],
+                "_meta": {},
+            }
+
+        await tool_middleware(get_context)(["a.py"])
+    finally:
+        interaction_module.Interaction.observe_pre_budget = original  # type: ignore[method-assign]
+
+    # Three observations; only the first is kept, and it is by far the largest.
+    assert [accepted for _, accepted in observed] == [True, False, False]
+    kept = observed[0][0]
+    assert kept is not None
+    assert all(kept > later for later, _ in observed[1:])
+
+    event = _events(repo)[0]
+    assert event["pre_budget_input_tokens"] == kept
+    assert event["dropped_input_tokens"] == kept - event["delivered_input_tokens"]
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_response_links_its_recovery_reference(repo: Path) -> None:
+    """The event points at what was dropped, and dropping it is not optional.
+
+    The response carries refs as ``repowise#<hex>`` while the store and the
+    ledger's foreign key use the bare hex. Passing the public shape through
+    failed validation and took the *whole event* with it -- silently, and on
+    exactly the truncated responses where the saving is largest. So this
+    asserts the link, not just that an event exists.
+    """
+
+    async def get_context(targets: list[str]) -> dict:
+        return {
+            "targets": {targets[0]: {"skeleton": {"tokens": 200, "full_tokens": 4000}}},
+            "filler": ["y" * 400 for _ in range(60)],
+            "_meta": {},
+        }
+
+    out = await tool_middleware(get_context)(["a.py"])
+    assert out["_meta"]["omitted"]["refs"], "expected this response to be truncated"
+
+    with OmissionStore(_repo_db(repo)) as store:
+        linked = [
+            row[0]
+            for row in store._conn.execute("SELECT omission_ref FROM savings_event_omissions")
+        ]
+        stored = [row[0] for row in store._conn.execute("SELECT ref FROM omissions")]
+    assert linked, "a truncated response recorded no recovery link"
+    assert set(linked) <= set(stored)
+    for ref in linked:
+        assert not ref.startswith("repowise#")
+        assert store_ref_is_bare_hex(ref)
+
+
+def store_ref_is_bare_hex(ref: str) -> bool:
+    from repowise.core.distill.markers import is_valid_ref
+
+    return is_valid_ref(ref)

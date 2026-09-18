@@ -75,12 +75,20 @@ def raw_response_tokens(result: Any) -> int | None:
 
 
 def _omission_refs(result: Any) -> tuple[str, ...]:
-    """Recovery references this invocation produced.
+    """Recovery references this invocation produced, as bare store keys.
 
     Read off the settled response rather than from the collectors, because a
     single call builds up to four of them across the two budget layers and
     ``attach`` has already merged their refs into one place.
+
+    The response carries them in their public shape, ``repowise#<hex>``, while
+    the store keys on the bare hex and the ledger's foreign key expects the
+    same. Normalized through the one helper that knows every public shape, so a
+    prefixed ref cannot reach validation and silently drop the whole event --
+    which it did, on exactly the truncated responses where a saving is largest.
     """
+    from repowise.core.distill.markers import normalize_ref
+
     if not isinstance(result, dict):
         return ()
     meta = result.get("_meta")
@@ -88,7 +96,8 @@ def _omission_refs(result: Any) -> tuple[str, ...]:
     refs = omitted.get("refs") if isinstance(omitted, dict) else None
     if not isinstance(refs, list):
         return ()
-    return tuple(ref for ref in refs if isinstance(ref, str))
+    normalized = (normalize_ref(ref) for ref in refs if isinstance(ref, str))
+    return tuple(ref for ref in normalized if ref is not None)
 
 
 def record(interaction: Interaction, result: Any) -> bool:
