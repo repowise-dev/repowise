@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from repowise.cli.helpers import console, warn
+from repowise.core.store_location import resolve_store_dir
 
 _SEED_TEMPDIR_STALENESS_SECS = 3600
 
@@ -56,8 +57,8 @@ def detect_worktree_base(repo_path: Path) -> Path | None:
 
 def base_is_seedable(base: Path) -> bool:
     """True when a checkout has the index artifacts seeding copies."""
-    return (base / ".repowise" / "state.json").exists() and (
-        base / ".repowise" / "wiki.db"
+    return (resolve_store_dir(base) / "state.json").exists() and (
+        resolve_store_dir(base) / "wiki.db"
     ).exists()
 
 
@@ -170,7 +171,9 @@ def seed_index_from_base(
             success = False
             break
 
-        state_data = json.loads((src_repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        state_data = json.loads(
+            (resolve_store_dir(src_repo) / "state.json").read_text(encoding="utf-8")
+        )
         last_sync_commit = state_data.get("last_sync_commit")
         if not last_sync_commit:
             console.print(
@@ -209,7 +212,7 @@ def seed_index_from_base(
             temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r_path))
             temp_dirs.append((r_path, temp_dir))
 
-            shutil.copytree(src_repo / ".repowise", temp_dir, dirs_exist_ok=True)
+            shutil.copytree(resolve_store_dir(src_repo), temp_dir, dirs_exist_ok=True)
 
             # Since config.yaml is copied atomically alongside state.json, the
             # config_fingerprint remains valid.
@@ -248,7 +251,7 @@ def seed_index_from_base(
     try:
         # Pass 1: backup existing
         for r_path, _ in temp_dirs:
-            target = r_path / ".repowise"
+            target = resolve_store_dir(r_path)
             if target.exists():
                 backup = r_path / f".repowise.bak.{uuid.uuid4().hex[:8]}"
                 target.rename(backup)
@@ -256,7 +259,7 @@ def seed_index_from_base(
 
         # Pass 2: rename temp to target
         for r_path, temp_dir in temp_dirs:
-            target = r_path / ".repowise"
+            target = resolve_store_dir(r_path)
             temp_dir.rename(target)
             renamed_targets.append(target)
 

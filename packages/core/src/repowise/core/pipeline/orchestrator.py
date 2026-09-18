@@ -32,6 +32,7 @@ from repowise.core.pipeline.progress import (
     emit_warning,
 )
 from repowise.core.registry import HookProgressCallback
+from repowise.core.store_location import resolve_store_dir
 
 from .phases._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pagerank
 from .phases.analysis import (
@@ -571,7 +572,7 @@ async def run_pipeline(
 
         new_fingerprint = compute_kg_fingerprint(graph_builder)
 
-        kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
+        kg_json_path = resolve_store_dir(repo_path) / "knowledge-graph.json"
         if should_skip_kg_rebuild(existing_kg_fingerprint, new_fingerprint, kg_json_path):
             knowledge_graph_result = KnowledgeGraphResult.from_file(kg_json_path)
             if knowledge_graph_result is not None:

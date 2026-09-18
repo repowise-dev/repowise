@@ -11,6 +11,7 @@ from __future__ import annotations
 # long-lived, so a BLAS workspace sized to the host's core count is held for
 # the process's whole life rather than one index (issue #1394).
 from repowise.core.blas_threads import limit_blas_threads
+from repowise.core.store_location import resolve_store_dir
 
 limit_blas_threads()
 
@@ -343,7 +344,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
                 for repo_entry in ws_config.repos:
                     repo_path = (_Path(ws_root) / repo_entry.path).resolve()
-                    repo_db = repo_path / ".repowise" / "wiki.db"
+                    repo_db = resolve_store_dir(repo_path) / "wiki.db"
                     if not repo_db.exists():
                         continue
                     # Read repo_id from this DB

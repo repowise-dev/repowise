@@ -15,6 +15,7 @@ import structlog
 from repowise.core.cost_estimator.estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.generation.models import count_stub_fallbacks
 from repowise.core.pipeline.progress import ProgressCallback
+from repowise.core.store_location import resolve_store_dir
 
 from ._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pagerank
 
@@ -113,7 +114,7 @@ async def run_generation(
         vector_store = InMemoryVectorStore(embedder_impl)
 
     # Job system — use a temp-like dir under repo_path for checkpoints
-    jobs_dir = repo_path / ".repowise" / "jobs"
+    jobs_dir = resolve_store_dir(repo_path) / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
     job_system = JobSystem(jobs_dir)
 

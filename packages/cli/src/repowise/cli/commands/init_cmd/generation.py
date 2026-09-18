@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import contextlib
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -50,6 +49,7 @@ from repowise.core.generation.models import (
     count_stub_fallbacks,
     is_stub_fallback,
 )
+from repowise.core.store_location import resolve_store_dir
 
 __all__ = [
     "COST_GATE_USD",
@@ -381,7 +381,7 @@ def run_repo_generation(
         if warnings is not None:
             warnings.extend(gen_callback.warnings)
 
-    jobs_dir = Path(repo_path) / ".repowise" / "jobs"
+    jobs_dir = resolve_store_dir(repo_path) / "jobs"
     failed_page_ids: list[str] = []
     if jobs_dir.exists():
         with contextlib.suppress(Exception):

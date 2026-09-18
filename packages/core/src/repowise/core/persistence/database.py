@@ -165,8 +165,20 @@ DB_ENV_VARS = ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")
 
 
 def get_repo_db_path(repo_path: str | Path) -> Path:
-    """Return the repo-local database path ``<repo>/.repowise/wiki.db``."""
-    return Path(repo_path).resolve() / REPOWISE_DIRNAME / DB_FILENAME
+    """Return this repo's index database path.
+
+    ``<repo>/.repowise/wiki.db`` by default, and under global store mode (issue
+    #1551) ``<store>/wiki.db`` inside the checkout's entry under
+    ``~/.repowise/repos``. Resolved through
+    :func:`repowise.core.store_location.resolve_store_dir` rather than by
+    appending ``.repowise`` here: this function is the second of the two places
+    that decide where a store sits, and a mode that moves the index has to be
+    answered identically by both or the database and the state file beside it
+    end up in different directories.
+    """
+    from repowise.core.store_location import resolve_store_dir
+
+    return resolve_store_dir(repo_path).resolve() / DB_FILENAME
 
 
 def _default_db_url(repo_path: str | Path | None = None) -> str:
@@ -243,7 +255,14 @@ def has_db_store(repo_path: str | Path | None = None) -> bool:
         return True
     if repo_path is None:
         return False
-    return (Path(repo_path) / ".repowise" / "wiki.db").is_file()
+    # Through the resolver, not by appending ``.repowise``: global store mode
+    # (issue #1551) moves the index under ``~/.repowise/repos``, and a guard
+    # that tests the repo-local path alone would report "no store" for a
+    # checkout that has one, which is the same failure this function exists to
+    # prevent for a configured database.
+    from repowise.core.store_location import resolve_store_dir
+
+    return (resolve_store_dir(repo_path) / DB_FILENAME).is_file()
 
 
 def create_engine(

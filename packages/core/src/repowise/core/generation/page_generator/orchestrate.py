@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from repowise.core.store_location import resolve_store_dir
+
 from ...persistence.vector_store import embed_item
 from ...pipeline.phase_timing import timed
 from ..context_assembler import FilePageContext
@@ -182,7 +184,7 @@ class _GenerationRun:
             kg_path = None
             if rp:
                 for candidate in [
-                    rp / ".repowise" / "knowledge-graph.json",
+                    resolve_store_dir(rp) / "knowledge-graph.json",
                     rp / ".understand-anything" / "knowledge-graph.json",
                 ]:
                     if candidate.exists():
@@ -927,7 +929,7 @@ class _GenerationRun:
                     rp = (
                         Path(self.repo_path) if not isinstance(self.repo_path, Path) else self.repo_path
                     )
-                    kg_path = rp / ".repowise" / "knowledge-graph.json"
+                    kg_path = resolve_store_dir(rp) / "knowledge-graph.json"
                     if kg_path.exists():
                         enrich_tour_with_wiki_links(kg_path, all_pages)
                 except Exception as exc:
