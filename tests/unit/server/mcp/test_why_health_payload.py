@@ -46,10 +46,9 @@ def oversized_health(monkeypatch):
     stale = [_record(f"s{i}", staleness=1.0 - i / 100) for i in range(20)]
     proposed = [_record(f"p{i}", confidence=1.0 - i / 100) for i in range(20)]
     ungoverned = [f"src/hot_{i}.py" for i in range(20)]
-    # Fewer ``superseded`` rows than the cap, on purpose: a lane-ranked list
-    # starts with them, so a fixture with five or more of them cannot tell a
-    # real lane from one hardcoded to "superseded". Two means the emitted head
-    # spans two lanes. Inserted out of rank order so an unranked list fails too.
+    # Two ``superseded`` rows, fewer than the cap: a lane-ranked list starts
+    # with them, so five or more would let a hardcoded lane pass. Inserted out
+    # of rank order so an unranked list fails too.
     retired_lanes = ["dismissed"] * 9 + ["superseded"] * 2 + ["deprecated"] * 9
     retired = [(lane, _record(f"r{i:02d}")) for i, lane in enumerate(retired_lanes)]
     retired.sort(key=lambda pair: (status_rank(pair[0]), pair[1].id))
@@ -136,21 +135,14 @@ async def test_health_still_states_the_sizes_it_is_not_showing(setup_mcp, oversi
 
 @pytest.mark.asyncio
 async def test_health_names_the_lanes_it_used_to_only_count(setup_mcp, oversized_health):
-    """``counts.superseded: 3`` with no way to learn which three was the defect.
-
-    These two lanes had no list at all, so unlike every capped lane here there
-    was nothing to recover: no filter argument reaches them, no id was emitted
-    to feed ``get_why(id=...)``, and the omission store can only return rows
-    that entered the response.
-    """
+    """A count with no way to learn which records it counted was the defect."""
     from repowise.server.mcp_server import get_why
 
     _stale, _proposed, _ungoverned, retired, unscoped = oversized_health
     result = await get_why()
 
-    # Compared pairwise, not on the head: the head of a lane-ranked list is
-    # ``superseded`` whatever the rows say, so asserting only the first one
-    # passes against a hardcoded lane.
+    # Pairwise, not on the head: a lane-ranked list heads with ``superseded``
+    # whatever the rows say.
     assert [(row["id"], row["lane"]) for row in result["retired_decisions"]] == [
         (record.id, lane) for lane, record in retired[:5]
     ]
@@ -174,11 +166,8 @@ async def test_health_states_the_sizes_of_the_new_lanes_too(setup_mcp, oversized
 
 @pytest.mark.asyncio
 async def test_health_leaves_the_conflicts_lane_alone(setup_mcp, oversized_health):
-    """``conflicts`` already names both sides with id, title and status.
-
-    It was named alongside these lanes and is not one of them: it is richer
-    than ``proposed_awaiting_review``, which carries no status field at all.
-    Pinned here so the lane cannot be quietly thinned to match its neighbours.
+    """``conflicts`` already names both sides; pinned so it is not thinned to
+    match its neighbours.
     """
     from repowise.server.mcp_server import get_why
 

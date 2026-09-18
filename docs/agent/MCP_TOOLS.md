@@ -790,7 +790,7 @@ Architectural decision intelligence. Falls back to git archaeology when no decis
 
 **Returns:** Matching decision records with title, rationale, alternatives considered, affected files, staleness score. Health mode returns stale decisions, conflicts, ungoverned hotspots, `retired_decisions` and `unscoped_decisions`.
 
-Health mode's `counts` had five lanes it reported as a number and nothing else. No mode enumerated two of them, and the dashboard emitted no id to look one up with: `retired_decisions` (superseded, deprecated and dismissed, each row carrying the `lane` its acceptance put it in) and `unscoped_decisions` (accepted records naming no file, so path mode can never reach them) now name their records. Five rows each, ranked, with the remainder recoverable through `_meta.omitted`; the full sizes are in `counts`, split across `superseded`/`deprecated`/`dismissed` for the retired lane. `active` stays count-only, being the lane every other mode exists to serve.
+Two health-mode lanes `counts` reported as a bare number now name their records: `retired_decisions` (superseded, deprecated, dismissed — each row carries its `lane`) and `unscoped_decisions` (accepted records naming no file). Five rows each, ranked, remainder in `_meta.omitted`; full sizes stay in `counts`, split across the three status keys for the retired lane. `active` stays count-only.
 
 `answer_basis` names the strongest lane the response rests on: `decision`, `episode`, `rationale`, `archaeology`, or `documentation`. Only `decision` is a ruling; the rest are evidence to weigh. Absent when no lane was served, and on the health dashboard.
 

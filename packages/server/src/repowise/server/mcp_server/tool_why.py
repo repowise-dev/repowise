@@ -524,23 +524,11 @@ async def _why_health_dashboard(repo: str | None) -> dict:
             ],
             "ungoverned_hotspots": ungoverned,
             "conflicts": list(health.get("conflicts", [])),
-            # The lanes that used to be a number and nothing else. ``counts``
-            # said three records were superseded and the response named none of
-            # them, and unlike every capped lane here there was nothing to
-            # recover from the response itself: no id was emitted to feed
-            # ``get_why(id=...)``, and ``_meta.omitted`` can only return rows
-            # that entered the response.
-            #
-            # Not that a retired record is unreachable — query mode ranks over
-            # every record and treats status as a tie-break, never a gate, and
-            # per-path ``history`` names the retired records that name a path.
-            # But both require already knowing the question or the path, and no
-            # mode *enumerates* either lane. That is the opposite of what an
-            # orientation call is for, and ``unscoped`` is worse off again: it
-            # names no path, so path mode can never reach it.
-            #
-            # ``active`` stays count-only because it is the lane every other
-            # mode exists to serve, not because it is short.
+            # Lanes ``counts`` reported as a number with no list. Query and
+            # path mode do reach these records, but only if you already know
+            # the question or the path — no mode enumerates either lane, which
+            # is what an orientation call is for. ``active`` stays count-only:
+            # it is the lane every other mode exists to serve.
             "retired_decisions": [
                 {"id": d.id, "title": d.title, "lane": lane} for lane, d in retired
             ],
@@ -681,18 +669,14 @@ _KEYWORD_POOL = 24
 #: legible in ``counts`` and in the summary line, and every row cut here is
 #: recoverable through the omission collector, so nothing is silently dropped.
 #:
-#: That last clause used to be false for the lanes that had no list at all:
-#: ``counts`` naming three superseded records was not a cap, it was the whole
-#: report, and a cap is only honest when the rows it cut still exist somewhere.
-#: ``retired_decisions`` and ``unscoped_decisions`` give those lanes a list to
-#: be capped out of.
+#: That clause needs a list to be true of: for a count-only lane there was
+#: nothing to recover, which is why the two below exist.
 _MAX_HEALTH_STALE = 5
 _MAX_HEALTH_PROPOSED = 5
 _MAX_HEALTH_UNGOVERNED = 8
 
-#: Retired records (superseded, deprecated, dismissed) and accepted records
-#: naming no file. Same 5 as its peers: this is a pointer into history, not a
-#: place to read history from.
+#: Retired records and accepted records naming no file. Same 5 as its peers:
+#: a pointer into history, not a place to read it from.
 _MAX_HEALTH_RETIRED = 5
 
 

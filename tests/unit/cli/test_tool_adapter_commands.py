@@ -938,11 +938,8 @@ def test_why_renders_a_dominant_author_as_a_percentage_not_a_fraction():
 
 
 def test_why_dashboard_projection_keeps_the_newly_named_lanes():
-    """The CLI projection is a second place a lane can go back to being a count.
-
-    ``project_why`` names the dashboard keys it keeps in a hardcoded tuple, so
-    a lane the tool learned to emit is dropped here until it is added — which
-    is the same "counted, never named" state on the surface most people read.
+    """``project_why`` keeps dashboard keys by a hardcoded tuple, so a new lane
+    is dropped here until it is added.
     """
     payload = {
         "mode": "health",

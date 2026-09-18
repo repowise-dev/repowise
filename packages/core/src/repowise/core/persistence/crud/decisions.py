@@ -1565,9 +1565,8 @@ async def get_decision_health_summary(
     caller that shows only the first few shows the few that matter.
     Callers may truncate; they must not re-order.
 
-    ``retired_decisions`` is a list of ``(lane, record)`` pairs rather than
-    bare records, because the lane a record is in is derived from its
-    acceptance and its ``status`` column is allowed to disagree with that.
+    ``retired_decisions`` holds ``(lane, record)`` pairs: the lane is derived
+    from the acceptance, which the ``status`` column may disagree with.
 
     Counts the acceptance, not the status column. The key names are the ones
     every caller already renders, and they keep their product meaning:
@@ -1603,14 +1602,10 @@ async def get_decision_health_summary(
     }
     stale_decisions: list[DecisionRecord] = []
     proposed_decisions: list[DecisionRecord] = []
-    # The lanes that were counted and nothing else. ``counts`` says three
-    # records were superseded; a caller had no way to learn *which* three,
-    # because the record is in hand right here and was dropped at the
-    # ``continue``. Naming them costs no extra query. ``retired`` carries its
-    # lane with it because the lane is derived: for an accepted record it comes
-    # from the acceptance, which its ``status`` column is allowed to disagree
-    # with, and only where there is no acceptance to derive from is it the
-    # column. A bare record would leave a reader to guess which.
+    # Counted-only lanes. The record is in hand at the ``continue`` that drops
+    # it, so naming it costs no query. ``retired`` carries its lane because
+    # that lane is derived from the acceptance where there is one, and a
+    # record's ``status`` column may disagree with it.
     retired_decisions: list[tuple[str, DecisionRecord]] = []
     unscoped_decisions: list[DecisionRecord] = []
 
@@ -1689,12 +1684,9 @@ async def get_decision_health_summary(
     # back-filled; the id tiebreak makes the key total, so two runs agree.
     stale_decisions.sort(key=lambda d: (-(d.staleness_score or 0.0), d.id))
     proposed_decisions.sort(key=lambda d: (-(d.confidence or 0.0), d.id))
-    # Retired records rank by lane, history before tombstone, using the one
-    # ordering the rest of the codebase sorts decision lanes by. Not by
-    # ``updated_at``: that column moves on any write, so it says when the row
-    # was last touched and not when the record was retired. ``unscoped`` ranks
-    # by confidence, the same key ``proposed`` uses, because both are lists of
-    # records somebody has to look at rather than lists with a severity.
+    # Retired by lane, history before tombstone. Not by ``updated_at``: it
+    # moves on any write, so it does not say when a record was retired.
+    # ``unscoped`` by confidence, the key ``proposed`` already uses.
     retired_decisions.sort(key=lambda pair: (status_rank(pair[0]), pair[1].id))
     unscoped_decisions.sort(key=lambda d: (-(d.confidence or 0.0), d.id))
 

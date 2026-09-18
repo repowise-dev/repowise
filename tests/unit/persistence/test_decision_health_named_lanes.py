@@ -1,13 +1,8 @@
 """The lanes ``get_decision_health_summary`` counted and then discarded.
 
-``counts`` reported three superseded records and the summary named none of
-them, although the record is in hand at the ``continue`` that drops it. Unlike
-the lanes that are merely capped, nothing downstream could recover one: no
-filter argument reaches them and no id was ever emitted to look one up with.
-
-``active`` stays count-only deliberately, so there is a test for that too: its
-ids reach a reader through the query and path modes, which is the property that
-makes it the one count-only lane that was already recoverable.
+``counts`` reported them as a number and named none of the records, although
+each is in hand at the ``continue`` that drops it. ``active`` stays count-only
+on purpose, so that has a test too.
 """
 
 from __future__ import annotations
@@ -63,11 +58,7 @@ async def test_retired_records_are_named_not_only_counted(async_session):
 
 
 async def test_every_counted_retired_record_is_named(async_session):
-    """The count and the list must describe the same population.
-
-    A list that names some of what it counted is the same defect wearing a
-    list: a reader still cannot get from the number to the records.
-    """
+    """A list naming only some of what it counted is the same defect in a list."""
     repo = await insert_repo(async_session)
     for index in range(4):
         await _add(async_session, repo.id, rec_id=f"s{index}", status="superseded")
@@ -83,18 +74,15 @@ async def test_every_counted_retired_record_is_named(async_session):
 
 
 async def test_an_accepted_record_naming_no_file_is_named_as_unscoped(async_session):
-    """``unscoped`` is the other lane no other mode can reach.
-
-    The record is accepted, so it is not in the proposed queue, and it names no
-    file, so path mode cannot find it either.
+    """Accepted, so not in the proposed queue; names no file, so path mode
+    cannot reach it either.
     """
     from repowise.core.persistence.crud.authority import accept_decision
 
     repo = await insert_repo(async_session)
     record = await _add(async_session, repo.id, rec_id="u1", status="active", confidence=0.4)
-    # An acceptance has to name a scope, so the record is accepted with one and
-    # then stripped: ``uncheckable`` is derived from the record naming nothing,
-    # not from the acceptance.
+    # An acceptance must name a scope, so accept with one then strip it:
+    # ``uncheckable`` is derived from the record, not the acceptance.
     await accept_decision(
         async_session, record, accepter="test", evidence=["seed:u1"], scope=["src/u1.py"]
     )
