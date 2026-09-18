@@ -355,23 +355,23 @@ Health markers run off a per-language walker map that is **independent** of
 `.scm` parsing: a language can parse perfectly for the graph and still need this
 map before markers fire. This table is why a language is Full rather than Good.
 
-| Language | Complexity / nesting | Class metrics | Assertion smells | Mock saturation | Extract Method | Performance risk |
-|----------|:---:|:---:|:---:|:---:|:---:|:---:|
-| Python | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Svelte · Vue | ✅ | ✅ | ✅ | later | ✅ | ✅ |
-| Java | ✅ | ✅ | ✅ | blocked | ✅ | ✅ |
-| Go | ✅ | n/a | ✅ | blocked | ✅ | ✅ |
-| Rust | ✅ | ✅ | ✅ | later | ✅ | ✅ |
-| C++ | ✅ | ✅ | ✅ | later | ✅ | ✅ |
-| C# | ✅ | ✅ | ✅ | later | later | ✅ |
-| Kotlin | ✅ | ✅ | ✅ | later | blocked | ✅ |
-| Scala | ✅ | ✅ | ✅ | later | later | ✅ |
-| Ruby | ✅ | ✅ | ✅ | later | later | ✅ |
-| Dart | ✅ | n/a | ✅ | later | later | ✅ |
-| Object Pascal | ✅ | n/a | later | n/a | later | n/a |
-| Razor | ✅ | n/a | n/a | n/a | later | ✅ |
-| Shell | ✅ | n/a | n/a | n/a | n/a | n/a |
+| Language | Complexity / nesting | Class metrics | Assertion smells | Mock saturation | Assertion-free test | Extract Method | Performance risk |
+|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Python | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Svelte · Vue | ✅ | ✅ | ✅ | later | later | ✅ | ✅ |
+| Java | ✅ | ✅ | ✅ | blocked | blocked | ✅ | ✅ |
+| Go | ✅ | n/a | ✅ | blocked | blocked | ✅ | ✅ |
+| Rust | ✅ | ✅ | ✅ | later | later | ✅ | ✅ |
+| C++ | ✅ | ✅ | ✅ | later | later | ✅ | ✅ |
+| C# | ✅ | ✅ | ✅ | later | later | later | ✅ |
+| Kotlin | ✅ | ✅ | ✅ | later | later | blocked | ✅ |
+| Scala | ✅ | ✅ | ✅ | later | later | later | ✅ |
+| Ruby | ✅ | ✅ | ✅ | later | later | later | ✅ |
+| Dart | ✅ | n/a | ✅ | later | later | later | ✅ |
+| Object Pascal | ✅ | n/a | later | n/a | n/a | later | n/a |
+| Razor | ✅ | n/a | n/a | n/a | n/a | later | ✅ |
+| Shell | ✅ | n/a | n/a | n/a | n/a | n/a | n/a |
 
 Every cell is a deliberate call, not an oversight: a language reaches a dialect
 or it stays silent, and an `n/a` records a metric the language cannot carry
@@ -423,12 +423,76 @@ honestly cannot carry the marker at all:
   marker looks for). An over-mocked Java test therefore arrives with one vacuous
   `assertDoesNotThrow` as its whole denominator, so the marker misses the tests
   it is for and the ratio peaks instead on large controller tests whose setup is
-  irreducible fixture. Java needs a verification vocabulary of its own first.
-  Measured at 20% precision over 30 hand-labelled findings, flat across every
-  threshold tried — but the mechanism above, not that number, is why it is
-  blocked, and why Java has no assertion row either: Mockito verification is
-  1,080 lines over 299 test files, 16 of which hold no `assert*` at all, and
-  counting them here would blind the marker where it is meant to fire.
+  irreducible fixture. Measured at 20% precision over 30 hand-labelled findings,
+  flat across every threshold tried — but the mechanism above, not that number,
+  is why it is blocked. Java now **does** carry a verification vocabulary, added
+  for `assertion_free_test`, and it deliberately does not help here: Mockito
+  verification is 1,087 calls over those 299 test files, and it reaches
+  `verification_count` rather than `assertion_count` precisely so that this
+  marker keeps dividing by state assertions alone.
+
+**Assertion-free test** asks whether a test case checks anything at all, so it
+needs two things the other markers do not: a per-function "is this a test case"
+rule, and an assertion count that misses nothing. The rules live in
+`analysis/health/complexity/test_case.py`, one data row per language — a name
+prefix for Python, `go test`'s own case-sensitive `TestXxx` rule for Go, the
+`it(...)` / `test(...)` callback for JS/TS, and `@Test` and its JUnit siblings
+for Java. A language with no row classifies nothing. Go and Java are classified
+and counted, which is how their precision below was measured, but the marker
+does not report on them — the shipping set is a constant in the detector.
+
+Measured precision, hand-labelled: **52%** on TypeScript (52 findings, the
+complete population of two corpora) and **53%** on Python (30, a systematic
+sample of 194). Both are below the 70% house bar and above the 40% at which
+`mock_saturated_test` shipped TypeScript, and they ship on the same line: the
+false positives are one family the marker declares, described below.
+
+A **mock verification counts as an assertion for this marker and not for the one
+above**, which is the deliberate inversion described in CODE_HEALTH.md. It
+matters only for Java: Python's `assert_called_once`, jest's
+`expect(m).toHaveBeenCalled()` and Go's `t.Error` already reach the narrow tier,
+so Mockito is the one dialect where verification is invisible. On a 299-test-file
+Java corpus it is 1,087 verifications, and counting them takes the marker from
+146 findings to 28 — 118 tests that each had a real oracle — while introducing
+none.
+
+Counting a test's oracle turned out to be where the work was. Four forms reached
+no tier at all before this. Each was found by reading findings that named an
+oracle the counter had not seen, and each is answered at the broad tier so that
+no calibrated run moves:
+
+| Form | Example | Why it was missed |
+|---|---|---|
+| Context-manager oracle | `with pytest.raises(ValueError):` | The call is in the `with` header, not a statement |
+| Split call shape | `Helpers.assertRejected(...)` | Java states a call as `object` + `name` and exposes no callee node |
+| Property-terminated chain | `expect(x).to.be.null` | chai ends in a property, so the statement is not a call |
+| Expression-bodied lambda | `it("x", () => expect(a).toBe(b))` | The body is the expression, so there is no statement to classify |
+
+A private helper (`_assert_no_leak(msg)`) was a fifth: the narrow prefixes anchor
+at the start of a name and a leading underscore breaks the anchor.
+
+Firing rate fell as they landed — on a 794-test-file Python corpus from 13.0% of
+its test cases to 3.7%, and on a 521-test-file TypeScript corpus from 1.6% to
+0.4%. A rate is not a precision measurement; what these five changes are measured
+to have done is stop the counter missing an oracle that was written down.
+
+**Go and Java are blocked, and for the same structural reason rather than a
+threshold.** Both languages conventionally delegate the oracle to a helper, and
+the assertion count is per function, so the helper's assertions are invisible
+from the test that calls it:
+
+- **Go** — the idiom is to hand `*testing.T` to a helper that asserts, as in
+  `parsertest.RunFileCases(t, ...)`. Measured on the findings themselves: **81 of
+  87** on one corpus and **119 of 121** on another pass the test handle to a
+  call. That is not a false-positive family a marker can declare and live with,
+  it is nearly the whole population, and suppressing on it would leave the marker
+  firing a handful of times per repository.
+- **Java** — the same shape without the handle, a helper on the test class that
+  asserts on the test's behalf. Hand-labelled at **33%** over 18 findings, and 10
+  of its 12 false positives were this family.
+
+Separating them needs the assertions of a called function to reach its caller,
+which is a cross-function question this pass does not ask.
 
 Svelte and Vue stay `later` rather than following TypeScript: an SFC is walked as
 a TypeScript buffer, but a single-file component is essentially never a test

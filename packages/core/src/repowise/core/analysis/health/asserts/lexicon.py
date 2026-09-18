@@ -9,8 +9,13 @@ walk, and they are deliberately not the same count:
   ``large_assertion_block`` / ``duplicated_assertion_block`` read. It takes
   nothing from this file and nothing from user config.
 * the **broad** tier — narrow, plus the rows below and any name the repository
-  configures. It feeds ``assertion_count``, whose only reader is the advisory
-  ``mock_saturated_test``.
+  configures. It feeds ``assertion_count``, read by the advisory
+  ``mock_saturated_test`` and ``assertion_free_test``.
+* the **verification** tier — :attr:`AssertDialect.verify_names`, counted apart
+  into ``verification_count`` and never added to either count above. A mock
+  verification is an oracle, so it answers "does this test check anything"; it
+  is also the thing ``mock_saturated_test`` measures, so it must never enter
+  that marker's denominator. Same call, opposite treatment, two questions.
 
 That split is the reason a row here can never move a score, and it is the only
 reason this file is safe to edit freely.
@@ -80,6 +85,13 @@ class AssertDialect:
     #: and ``t.Log`` do not.
     receiver_methods: dict[str, frozenset[str]] = field(default_factory=dict)
 
+    #: Exact lowercase names that make a call a *verification* — an assertion
+    #: about a recorded call on a double rather than about state. Matched the
+    #: same two ways as :attr:`assert_names`. Counted into ``verification_count``
+    #: alone; see the tier list in the module docstring for why it is separate.
+    #: Repository config never reaches this field, so it cannot be widened.
+    verify_names: frozenset[str] = frozenset()
+
 
 # ``testing.TB``'s failure reporters, keyed by the conventional receiver names.
 # Matched by receiver name and not by type, which the walker cannot resolve; in
@@ -98,10 +110,31 @@ _GO = AssertDialect(
 )
 
 
-# Java has no row, and the omission is a result rather than a gap: its only real
-# gap is Mockito verification, and a verification must not enter the count
-# ``mock_saturated_test`` divides by, since a test built of mocks and verifies
-# is the thing that marker measures. See LANGUAGE_SUPPORT.md#code-health-coverage.
+# Java's whole gap is Mockito verification, which is why this row sets only
+# ``verify_names``: its narrow tier already takes ``assertEquals`` / ``assertThat``.
+# ``verifyZeroInteractions`` was removed in Mockito 4 and is still widespread.
+# BDDMockito's ``then(mock).should()`` is taken on ``should``, which reaches this
+# row as a receiver root.
+_JAVA = AssertDialect(
+    verify_names=frozenset(
+        {
+            "verify",
+            "verifynointeractions",
+            "verifynomoreinteractions",
+            "verifyzerointeractions",
+            "should",
+        }
+    ),
+)
+
+
+# pytest's oracles that are context managers rather than calls. Receiver-scoped
+# to ``pytest`` because ``raises`` / ``warns`` are ordinary English on anything
+# else. ``unittest``'s equivalents need no row: ``assertRaises`` is already
+# narrow, it was only ever the ``with`` header that hid it.
+_PY = AssertDialect(
+    receiver_methods={"pytest": frozenset({"raises", "warns", "deprecated_call", "fail"})},
+)
 
 
 _JS_TS = AssertDialect(
@@ -113,12 +146,13 @@ _JS_TS = AssertDialect(
 
 
 # Keyed by ``LanguageTag`` (``ingestion/models.py``), as ``LANGUAGE_MAPS`` and
-# ``MOCK_DIALECTS`` are. Python has no row on purpose: the same survey found no
-# gap in its narrow tier, and an unmeasured row is a guess.
+# ``MOCK_DIALECTS`` are.
 ASSERT_DIALECTS: dict[str, AssertDialect] = {
     "go": _GO,
+    "java": _JAVA,
     "javascript": _JS_TS,
     "jsx": _JS_TS,
+    "python": _PY,
     "typescript": _JS_TS,
     "tsx": _JS_TS,
 }
@@ -141,4 +175,5 @@ def assert_dialect(
     return AssertDialect(
         assert_names=dialect.assert_names | extra_names,
         receiver_methods=dialect.receiver_methods,
+        verify_names=dialect.verify_names,
     )

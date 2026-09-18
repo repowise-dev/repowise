@@ -31,7 +31,7 @@ class FileContext:
     function_metrics: dict[str, FunctionComplexity] = field(default_factory=dict)
     # Every walked function, in document order and NOT keyed by name, because
     # name-keying drops all but one of a file's anonymous ``it`` callbacks.
-    # Read only by ``mock_saturated_test``, which is advisory: re-keying
+    # Read by the advisory test-quality markers only: re-keying
     # ``function_metrics`` is the real fix and would change what every
     # calibrated marker sees, so it needs its own defect-corpus evidence.
     all_functions: tuple[FunctionComplexity, ...] = ()

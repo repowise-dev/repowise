@@ -433,20 +433,41 @@ make a review verdict blocking.
 
 | Marker | Languages | What it measures |
 |---|---|---|
+| `assertion_free_test` | Python · TypeScript / JavaScript | A test case that runs the code under test and checks nothing |
 | `mock_saturated_test` | Python · TypeScript / JavaScript | Mock-setup statements per assertion in a test function |
 
 A marker earns weight by clearing the house precision bar (roughly 70%
 hand-labelled) on a real corpus. `mock_saturated_test` has not, and precision is
 measured per language because it does not transfer: **67%** on Python (32
 findings) and **40%** on TypeScript (30 findings), each the complete population
-at the shipped gate. It stays advisory until two false-positive families are
-separated: value-object builders named `Fake*` passed as input to real logic, and
+at the shipped gate. Both figures predate the assertion count gaining the
+oracle shapes listed in
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage), which grew this
+marker's denominator on Python and TypeScript. A larger denominator lowers the
+ratio, so the change can only suppress findings, never add one — but the two
+numbers above were measured against the smaller denominator and are now a
+ceiling rather than a current reading.
+
+It stays advisory until two false-positive families are separated: value-object builders named `Fake*` passed as input to real logic, and
 boundary isolation where the assertion reads a real artifact. Both turn on
 whether an assertion observes a double or production output, which is a dataflow
 question the pass does not ask — and on the TypeScript sample that one question
 accounted for every false positive.
 
-Per-language coverage and why Go and Java are blocked:
+`assertion_free_test` measures **52%** on TypeScript and **53%** on Python, and
+does not report on Go or Java at all; the per-language reasoning is in
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage). It also declines
+`.tsx` files, whose assertions the walk cannot currently see.
+
+It asks a question with a yes-or-no answer rather than a
+threshold, which is why it can be stated plainly: a test case whose assertion
+count and verification count are both zero. A **mock verification counts as an
+assertion here**, the opposite of the marker above it, because a test whose only
+oracle is `verify(...)` does check something. The two markers read the same call
+for two different questions; the tiers that keep them apart are in
+`complexity/assertions.py`.
+
+Per-language coverage, and why Go and Java are blocked for each marker:
 [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage).
 
 ## Performance risk

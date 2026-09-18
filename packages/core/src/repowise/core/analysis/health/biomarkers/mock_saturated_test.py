@@ -52,8 +52,9 @@ class MockSaturatedTestDetector:
         for fn in ctx.all_functions:
             mocks = fn.mock_setup_count
             asserts = fn.assertion_count
-            # No assertion at all means a fixture or a helper, not a saturated
-            # test. A mock factory with no assertions is correct code.
+            # No assertion at all is a different finding, not this one: it is
+            # usually a fixture or a helper, and where it is a real test
+            # ``assertion_free_test`` is the marker that says so.
             if mocks < self._MIN_MOCK_SETUP or asserts < 1:
                 continue
             if prefixes and not fn.name.lower().startswith(prefixes):

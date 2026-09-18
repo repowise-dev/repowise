@@ -181,6 +181,7 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "duplicated_assertion_block": "test_quality",
     # Never reaches a deduction; mapped so category-grouped surfaces do not
     # file it under the ``size_and_complexity`` default.
+    "assertion_free_test": "test_quality",
     "mock_saturated_test": "test_quality",
     "error_handling": "error_handling",
     # Governance biomarkers - written by the additive governance pass
@@ -284,6 +285,7 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     "sql_cartesian_join": {"performance"},
     # Advisory. Must also appear in ``_ADVISORY_HOME``: the two tables are
     # independent, and a marker in only one of them still deducts from defect.
+    "assertion_free_test": {ADVISORY_DIMENSION},
     "mock_saturated_test": {ADVISORY_DIMENSION},
 }
 
@@ -491,7 +493,7 @@ _PERFORMANCE_HOME: frozenset[str] = frozenset(
 
 # The display half of the pairing above; ``test_advisory_dimension.py`` locks
 # the two together for every registered biomarker.
-_ADVISORY_HOME: frozenset[str] = frozenset({"mock_saturated_test"})
+_ADVISORY_HOME: frozenset[str] = frozenset({"assertion_free_test", "mock_saturated_test"})
 
 
 def severity_deduction(sev: Severity) -> float:

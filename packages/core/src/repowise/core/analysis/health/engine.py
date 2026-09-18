@@ -100,7 +100,17 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: the assertion count gained a per-language broad tier, so a Go
+# Current stamp: ``assertion_free_test`` landed, and the walker records two new
+# ``FunctionComplexity`` fields for it (``verification_count``, ``is_test_case``)
+# that a cached v14 walk does not carry. It also widens ``assertion_count`` in
+# every language that counts assertions at all -- a ``with`` header, a
+# property-terminated chain, a lambda body, a private ``_assert*`` helper and
+# Java's split call shape all reach the broad tier now -- so the advisory
+# ``mock_saturated_test`` divides by a different, larger denominator than a v14
+# walk stored. The narrow tier the calibrated block markers read is unchanged,
+# verified run-for-run against v14 on four corpora, so no score moves.
+#
+# v14: the assertion count gained a per-language broad tier, so a Go
 # or JS/TS file's ``assertion_count`` changes from what a cached v13 walk stored
 # for it. The narrow tier the calibrated block markers read is unchanged, so no
 # score moves; this stamp is what re-walks the files whose advisory denominator
@@ -134,7 +144,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 14
+HEALTH_ANALYZER_VERSION = 15
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.

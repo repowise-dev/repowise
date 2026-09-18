@@ -52,9 +52,15 @@ class FunctionComplexity:
     # Every assertion statement in the body, runs or not. Same per-language
     # opt-in as ``assertion_blocks``.
     assertion_count: int = 0
+    # Mock verifications in the body, counted apart from ``assertion_count``.
+    # Why they are separate: ``asserts/lexicon.py``.
+    verification_count: int = 0
     # Mock-setup statements in the body, decorators included. 0 for a language
     # with no entry in ``analysis/health/mocks/lexicon.py``.
     mock_setup_count: int = 0
+    # True when this function is a test case its framework would run, as
+    # opposed to a helper or fixture beside it. ``complexity/test_case.py``.
+    is_test_case: bool = False
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:

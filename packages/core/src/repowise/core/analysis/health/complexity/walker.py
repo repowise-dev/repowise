@@ -26,6 +26,7 @@ drives the individual passes, each of which lives in its own sibling module:
 - ``nloc``:           non-blank / non-comment line counting
 - ``cyclomatic``:     the CCN / cognitive / nesting engine
 - ``assertions``:     assertion blocks + per-function assertion totals
+- ``test_case``:      whether a walked function is a test case
 - ``mock_walk``:      per-function mock-setup counting (test-quality)
 - ``error_handling``: error-handling anti-patterns
 - ``perf_walk``:      the performance-risk pass
@@ -51,6 +52,7 @@ from .cyclomatic import _walk_function_body
 from .error_handling import _collect_error_handling, _eh_rust_attr_is_test
 from .languages import get_language_map
 from .mock_walk import _count_mock_setup, file_may_contain_mocks
+from .test_case import is_test_case
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -156,9 +158,12 @@ def walk_file(
     for fn_node in _collect_function_nodes(tree.root_node, lmap):
         body = fn_node.child_by_field_name("body") or fn_node
         ccn, max_nest, cognitive, bumps, conditions = _walk_function_body(body, lmap)
-        assertion_blocks, assertion_count = _collect_assertion_facts(body, lmap, asserts)
+        assertion_blocks, assertion_count, verifications = _collect_assertion_facts(
+            body, lmap, asserts
+        )
+        name = _find_function_entry_name(fn_node, lmap)
         fc = FunctionComplexity(
-            name=_find_function_entry_name(fn_node, lmap),
+            name=name,
             start_line=fn_node.start_point[0] + 1,
             end_line=fn_node.end_point[0] + 1,
             ccn=ccn,
@@ -170,7 +175,9 @@ def walk_file(
             complex_conditions=conditions,
             assertion_blocks=assertion_blocks,
             assertion_count=assertion_count,
+            verification_count=verifications,
             mock_setup_count=_count_mock_setup(fn_node, body, lmap, mock_dialect, asserts),
+            is_test_case=is_test_case(fn_node, name, language),
         )
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc

@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .array_spread_in_reduce import ArraySpreadInReduceDetector
+from .assertion_free_test import AssertionFreeTestDetector
 from .base import Biomarker, BiomarkerResult, FileContext
 from .blocking_io_under_lock import BlockingIoUnderLockDetector
 from .blocking_sync_in_async import BlockingSyncInAsyncDetector
@@ -91,6 +92,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     DuplicatedAssertionBlockDetector,  # type: ignore[list-item]
     ErrorHandlingDetector,  # type: ignore[list-item]
     # Advisory dimension - measured, never deducts (scoring.ADVISORY_DIMENSION).
+    AssertionFreeTestDetector,  # type: ignore[list-item]
     MockSaturatedTestDetector,  # type: ignore[list-item]
     # Performance dimension (advisory weight; bounded by the perf cap).
     IoInLoopDetector,  # type: ignore[list-item]

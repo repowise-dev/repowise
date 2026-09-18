@@ -202,6 +202,12 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A test function running a long unbroken run of assertions. When one fails, the rest never execute — split into focused cases.",
   },
+  assertion_free_test: {
+    label: "Assertion free test",
+    category: "test_quality",
+    description:
+      "A test case that runs the code under test and then checks nothing, so it passes whatever that code does. A mock verification counts as a check. Advisory: it costs this file no points.",
+  },
   mock_saturated_test: {
     label: "Mock saturated test",
     category: "test_quality",
@@ -368,7 +374,10 @@ export type BiomarkerDimension = "defect" | "maintainability" | "performance" | 
  * chip has to say so rather than borrowing the defect pillar's label. Mirror of
  * ``_ADVISORY_HOME`` in core's `scoring.py`.
  */
-export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set(["mock_saturated_test"]);
+export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
+  "assertion_free_test",
+  "mock_saturated_test",
+]);
 
 /**
  * The biomarkers whose "home" pillar is maintainability: the smells the defect
