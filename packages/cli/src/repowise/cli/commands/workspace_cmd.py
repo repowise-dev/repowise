@@ -121,7 +121,7 @@ def workspace_group() -> None:
 @click.argument("path", required=False, default=None)
 def workspace_list(path: str | None) -> None:
     """Show all repos in the workspace with their status."""
-    from repowise.cli.helpers import get_repowise_dir
+    from repowise.cli.helpers import db_configured, get_repowise_dir
     from repowise.core.workspace import check_repo_staleness
 
     start = resolve_repo_path(path)
@@ -136,6 +136,7 @@ def workspace_list(path: str | None) -> None:
     table.add_column("Status")
 
     indexed_count = 0
+    configured_db = db_configured()
 
     for entry in ws_config.repos:
         abs_path = (ws_root / entry.path).resolve()
@@ -147,14 +148,26 @@ def workspace_list(path: str | None) -> None:
 
         rel_path = entry.path
 
-        if not repowise_dir.exists():
+        # A missing local directory means "not indexed" only for the
+        # repo-local SQLite default it describes. With a shared database
+        # configured (REPOWISE_DB_URL or REPOWISE_DATABASE_URL) the index may
+        # live there with nothing on local disk, so the store answers instead:
+        # a repository row for this path is the index, and its absence is the
+        # not-indexed verdict. With no configured URL the directory check is
+        # unchanged.
+        counts = _query_repo_counts(abs_path)
+        indexed = counts is not None if configured_db else repowise_dir.exists()
+
+        if not indexed:
             table.add_row(label, rel_path, "-", "-", "-", "[yellow]not indexed[/yellow]")
             continue
 
         indexed_count += 1
 
-        # Query file/symbol counts from DB
-        file_count, symbol_count = _query_repo_counts(abs_path)
+        # An existing .repowise/ with no readable store is still an indexed
+        # repo with nothing counted yet, which is what the local path has
+        # always reported.
+        file_count, symbol_count = counts if counts is not None else (0, 0)
 
         # Indexed timestamp
         indexed_ago = _format_relative_time(entry.indexed_at)
@@ -189,15 +202,27 @@ def workspace_list(path: str | None) -> None:
     console.print(summary)
 
 
-def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
-    """Return ``(file_count, symbol_count)`` from a repo's DB, or ``(0, 0)``."""
-    from repowise.cli.helpers import get_db_url_for_repo, get_repowise_dir
+def _query_repo_counts(repo_path: Path) -> tuple[int, int] | None:
+    """Return ``(file_count, symbol_count)`` from a repo's DB.
+
+    ``None`` means no store could answer for this repository: there is no
+    repo-local ``wiki.db`` and no shared database is configured, which is the
+    repo-local default's way of saying the repository is not indexed. A
+    returned ``(0, 0)`` means a store answered and holds nothing for it,
+    which under a shared database still means the repository is indexed.
+
+    With ``REPOWISE_DB_URL`` set the local file is not consulted at all: a
+    repository indexed into a shared store has no file on disk, and a
+    repo-local ``wiki.db`` left behind from an earlier run is not the store
+    the rest of the app reads. A repository row for this path is the index.
+    """
+    from repowise.cli.helpers import db_configured, get_db_url_for_repo, get_repowise_dir
 
     db_path = get_repowise_dir(repo_path) / "wiki.db"
-    if not db_path.exists():
-        return 0, 0
+    if not db_path.exists() and not db_configured():
+        return None
 
-    async def _query() -> tuple[int, int]:
+    async def _query() -> tuple[int, int] | None:
         from sqlalchemy import func as sa_func
         from sqlalchemy import select as sa_select
 
@@ -218,7 +243,7 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
                 )
                 repo_id = repo_result.scalar_one_or_none()
                 if repo_id is None:
-                    return 0, 0
+                    return None
                 file_result = await session.execute(
                     sa_select(sa_func.count())
                     .select_from(GraphNode)
@@ -242,7 +267,7 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
     try:
         return run_async(_query())
     except Exception:
-        return 0, 0
+        return None
 
 
 def _format_relative_time(iso_timestamp: str | None) -> str:
@@ -1563,9 +1588,7 @@ def workspace_impacted_tests(
     parsed_changed: list[dict[str, str]] = []
     for cf in changed_files:
         if ":" not in cf:
-            raise click.ClickException(
-                f"Invalid format: {cf}. Use repo_alias:path/to/file.py"
-            )
+            raise click.ClickException(f"Invalid format: {cf}. Use repo_alias:path/to/file.py")
         repo, path = cf.split(":", 1)
         parsed_changed.append({"repo": repo, "path": path})
 
