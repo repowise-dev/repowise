@@ -88,8 +88,10 @@ _SCHEMA_TABLES = (
         -- here would be a copy of the agent registry that only the database
         -- can see, and it would reject a newly added agent's events outright.
         CHECK(length(integration) BETWEEN 1 AND 32
-            AND integration NOT GLOB '*[^a-z0-9_]*'),
-        CHECK(length(agent) BETWEEN 1 AND 32 AND agent NOT GLOB '*[^a-z0-9_]*'),
+            AND integration NOT GLOB '*[^a-z0-9_]*'
+            AND length(CAST(integration AS BLOB)) = length(integration)),
+        CHECK(length(agent) BETWEEN 1 AND 32 AND agent NOT GLOB '*[^a-z0-9_]*'
+            AND length(CAST(agent AS BLOB)) = length(agent)),
         CHECK(evidence_kind IN ('measured','inferred')),
         CHECK(result_state IN ('success','dead_end','error','partial','unknown')),
         CHECK(is_usable IN (0,1)),
@@ -133,7 +135,8 @@ _SCHEMA_TABLES = (
         kind TEXT NOT NULL,
         estimated_potential_input_tokens INTEGER NOT NULL,
         CHECK(length(integration) BETWEEN 1 AND 32
-            AND integration NOT GLOB '*[^a-z0-9_]*'),
+            AND integration NOT GLOB '*[^a-z0-9_]*'
+            AND length(CAST(integration AS BLOB)) = length(integration)),
         CHECK(estimated_potential_input_tokens >= 0)
     )
     """,
@@ -169,7 +172,13 @@ def _has_current_schema(conn: sqlite3.Connection) -> bool:
 
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
-    """Reset obsolete telemetry and install v1; caller owns the transaction."""
+    """Reset obsolete telemetry and install the current schema.
+
+    Caller owns the transaction. There is no row translation here by design:
+    the savings tables carry no data worth migrating, because no producer has
+    ever written one outside a test. The clean-reset policy is the plan's, not
+    an oversight -- see docs/architecture/savings-accounting.md.
+    """
     for statement in _PRESERVED_TABLES:
         conn.execute(statement)
     for table in (

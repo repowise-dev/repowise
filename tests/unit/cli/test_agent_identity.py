@@ -32,6 +32,7 @@ from repowise.core.agents.identity import (
 from repowise.core.distill.store import OmissionStore
 from repowise.core.savings.contracts import OpportunityObservation, SavingsEvent
 from repowise.core.savings.correlation import scoped_idempotency_key
+from repowise.core.savings.normalization import normalize_mcp_identity
 from repowise.core.savings.repository import SavingsRepository
 
 ALL_IDS = list(_TARGET_MODULES)
@@ -286,3 +287,73 @@ def test_writer_and_reader_reject_a_malformed_id_the_same_way(field: str) -> Non
                 "estimated_potential_input_tokens": 1,
             }
         )
+
+
+@pytest.mark.parametrize("target_id", ALL_IDS)
+def test_the_adapter_names_an_identity_declares_actually_exist(target_id: str) -> None:
+    """The last hand-agreement this change did not already remove.
+
+    ``hook_adapter`` and ``session_adapter`` are strings pointing into two
+    registries the identity record does not own, and ``derive_tier`` reads both
+    to decide the Full tier the README badges repeat. A typo in either would
+    otherwise claim a depth that does not exist, silently, until something tried
+    to load the adapter.
+    """
+    from repowise.cli.agent_adapters import _REGISTRY
+    from repowise.core.sessions.adapters import registered_adapters
+
+    agent = identity_for_target_id(target_id)
+    assert agent is not None
+    if agent.hook_adapter is not None:
+        assert agent.hook_adapter in _REGISTRY
+    if agent.session_adapter is not None:
+        assert agent.session_adapter in registered_adapters()
+
+
+def test_an_announced_name_reaches_the_stored_attribution(
+    tmp_path: Path, seventh_agent: AgentIdentity
+) -> None:
+    """The chain the commit claims, driven end to end rather than in halves.
+
+    A host announces a display name over MCP; that name is resolved once; the
+    resolved slug is what lands in the ``agent`` column and comes back out of
+    the report. Nothing between those two ends enumerates agents.
+    """
+    resolved, metadata = normalize_mcp_identity("Windsurf")
+    assert resolved == seventh_agent.slug
+    assert metadata["client_info_normalized"] == "windsurf"
+
+    with OmissionStore(tmp_path / "omissions.db") as store:
+        repository = SavingsRepository(store._conn)
+        repository.record_event(
+            SavingsEvent.from_mapping(
+                {
+                    "idempotency_key": scoped_idempotency_key("repo", "mcp", 9),
+                    "occurred_at": "2026-09-18T00:00:09Z",
+                    "repository_id": "repo",
+                    "surface": "mcp",
+                    "integration": resolved,
+                    "agent": resolved,
+                    "operation": "get_risk",
+                    "evidence_kind": "measured",
+                    "estimator": "seventh_agent_test",
+                    "token_unit": "estimated_tokens",
+                    "result_state": "success",
+                    "is_usable": True,
+                    "metadata": metadata,
+                    "baseline_input_tokens": 100,
+                    "pre_budget_input_tokens": 100,
+                    "delivered_input_tokens": 40,
+                }
+            )
+        )
+        stored = store._conn.execute("SELECT agent FROM savings_events").fetchone()[0]
+    assert stored == "windsurf"
+    assert display_name_for(stored) == "Windsurf"
+
+
+def test_an_unannounced_client_is_stored_as_unknown_not_as_the_fallback() -> None:
+    """Absent evidence stays absent all the way into the row."""
+    resolved, _ = normalize_mcp_identity(None)
+    assert resolved == UNKNOWN_AGENT
+    assert resolved != identity_for_target_id("claude-code").slug  # type: ignore[union-attr]

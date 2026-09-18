@@ -39,8 +39,8 @@ stored slug is coerced to.
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
-from functools import lru_cache
 
 #: The attribution used when evidence is absent or unrecognised. Reserved: no
 #: identity may claim it, because "we could not tell" and "this agent" have to
@@ -86,8 +86,10 @@ class AgentIdentity:
     #: Canonical, underscore form. The value stored in the savings ledger and
     #: carried on the wire.
     slug: str
-    #: What a human sees. The only source of an agent's label; there is no
-    #: second label map in Python or in TypeScript.
+    #: What a human sees. The source an agent's label should come from; the
+    #: report payload carries it so no consumer needs a label map of its own.
+    #: (A few pre-existing UI maps still spell labels by hand and are folded in
+    #: when their surfaces are rebuilt, not before.)
     display_name: str
     #: Names a host announces in MCP ``clientInfo`` that neither the slug nor
     #: the display name normalizes to. Usually empty.
@@ -107,9 +109,15 @@ class AgentIdentity:
             raise ValueError(f"{UNKNOWN_AGENT!r} is reserved for unrecognised attribution")
         if not self.display_name:
             raise ValueError(f"{self.slug} needs a display name")
+        if isinstance(self.announced_as, str):
+            # A bare string is iterable, so this would otherwise register one
+            # alias per character and answer to "e".
+            raise ValueError(f"{self.slug} announced_as must be a set of names, not a string")
         for announced in self.announced_as:
             if announced != normalize_client_name(announced) or not announced:
                 raise ValueError(f"{self.slug} alias {announced!r} is not in normalized form")
+        if UNKNOWN_AGENT in self.aliases:
+            raise ValueError(f"{self.slug} may not answer to {UNKNOWN_AGENT!r}")
 
     @property
     def cli_target_id(self) -> str:
@@ -149,6 +157,29 @@ HERMES = AgentIdentity(slug="hermes", display_name="Hermes")
 #: reader already looks for it.
 _REGISTERED: dict[str, AgentIdentity] = {}
 
+#: Announced name to slug, rebuilt on every registration and rebound as a whole.
+#:
+#: A prebuilt dict rather than a memoized lookup, because the registry is
+#: mutable and the readers are concurrent. A ``functools.lru_cache`` computes
+#: outside its own lock, so a thread that missed before a registration can store
+#: its stale ``unknown`` after the invalidation and answer wrongly forever; and
+#: a reader iterating the registry while another thread registers raises
+#: ``dictionary changed size during iteration`` inside a request. Rebinding one
+#: immutable snapshot has neither failure mode, and a dict lookup is cheaper
+#: than a cache hit anyway.
+_ALIAS_INDEX: dict[str, str] = {}
+
+#: Held only by the two mutators, which run at import and in tests.
+_REGISTRY_LOCK = threading.Lock()
+
+
+def _rebuild_alias_index() -> None:
+    """Rebuild and atomically rebind the index. Caller holds the lock."""
+    global _ALIAS_INDEX
+    _ALIAS_INDEX = {
+        alias: identity.slug for identity in _REGISTERED.values() for alias in identity.aliases
+    }
+
 
 def register_identity(identity: AgentIdentity) -> AgentIdentity:
     """Register *identity*, replacing any prior record for the same slug.
@@ -157,25 +188,25 @@ def register_identity(identity: AgentIdentity) -> AgentIdentity:
     use to prove a seventh agent needs no edit anywhere downstream. Returns the
     identity so it can decorate a declaration.
     """
-    conflicts = {
-        alias: existing.slug
-        for existing in _REGISTERED.values()
-        if existing.slug != identity.slug
-        for alias in identity.aliases & existing.aliases
-    }
-    if conflicts:
-        raise ValueError(f"{identity.slug} claims aliases already owned: {sorted(conflicts)}")
-    _REGISTERED[identity.slug] = identity
-    _alias_index.cache_clear()
-    resolve_client_identity.cache_clear()
+    with _REGISTRY_LOCK:
+        conflicts = {
+            alias: existing.slug
+            for existing in _REGISTERED.values()
+            if existing.slug != identity.slug
+            for alias in identity.aliases & existing.aliases
+        }
+        if conflicts:
+            raise ValueError(f"{identity.slug} claims aliases already owned: {sorted(conflicts)}")
+        _REGISTERED[identity.slug] = identity
+        _rebuild_alias_index()
     return identity
 
 
 def unregister_identity(slug: str) -> None:
     """Drop a registered identity. For tests that register a fake agent."""
-    _REGISTERED.pop(slug, None)
-    _alias_index.cache_clear()
-    resolve_client_identity.cache_clear()
+    with _REGISTRY_LOCK:
+        _REGISTERED.pop(slug, None)
+        _rebuild_alias_index()
 
 
 def all_identities() -> tuple[AgentIdentity, ...]:
@@ -204,12 +235,6 @@ def display_name_for(slug: str) -> str:
     return identity.display_name if identity else slug
 
 
-@lru_cache(maxsize=1)
-def _alias_index() -> dict[str, str]:
-    return {alias: identity.slug for identity in _REGISTERED.values() for alias in identity.aliases}
-
-
-@lru_cache(maxsize=128)
 def resolve_client_identity(client_name: str | None) -> str:
     """Resolve an announced MCP ``clientInfo`` name to a slug.
 
@@ -218,11 +243,12 @@ def resolve_client_identity(client_name: str | None) -> str:
     be the CLI's auto-detection fallback, which would attribute one host's
     traffic to another.
 
-    Bounded-cache: announced names come from the network, so the cache is
-    capped rather than unbounded. Callers on the MCP hot path should still
-    resolve once per session rather than per event.
+    Two operations, no allocation beyond the normalized name, so a caller on the
+    MCP hot path pays almost nothing. It should still resolve once per session
+    rather than once per event, because the announced name cannot change within
+    one session.
     """
-    return _alias_index().get(normalize_client_name(client_name), UNKNOWN_AGENT)
+    return _ALIAS_INDEX.get(normalize_client_name(client_name), UNKNOWN_AGENT)
 
 
 #: The agents shipped with repowise, registered through the same seam a

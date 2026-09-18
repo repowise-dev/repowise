@@ -262,3 +262,59 @@ def test_report_queries_are_read_only_and_breakdowns_are_bounded(tmp_path: Path)
     assert len(report.per_operation) == 3
     assert len(statements) == 3
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+
+
+@pytest.mark.parametrize("column", ["integration", "agent"])
+@pytest.mark.parametrize(
+    "value",
+    ["", "A", "Windsurf", "a-b", "a b", "a\nb", "a" * 33, "a\x00WINDSURF!!!!", "café"],
+)
+def test_the_sidecar_refuses_a_malformed_agent_id_in_sql(
+    tmp_path: Path, column: str, value: str
+) -> None:
+    """The backstop, tested where it actually lives.
+
+    Every write in the domain goes through ``SavingsEvent.from_mapping``, which
+    rejects these in Python long before SQLite sees them -- so a test that only
+    writes through the contract passes whether the CHECK is right, inverted or
+    absent. These go in by raw SQL, which is the only way to find out.
+
+    The NUL case is why the constraint is not just ``GLOB``: SQLite's
+    ``length()`` and pattern matching both stop at the first NUL, so
+    ``'a\x00WINDSURF!!!!'`` looks one character long and clean to both.
+    """
+    with OmissionStore(tmp_path / "omissions.db") as store:
+        columns = "event_id,schema_version,idempotency_key,occurred_at,repository_id,surface,"
+        columns += "integration,agent,operation,evidence_kind,estimator,token_unit,result_state,"
+        columns += "is_usable,saved_input_tokens,metadata_json"
+        row = {"integration": "codex", "agent": "codex"}
+        row[column] = value
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            store._conn.execute(
+                f"INSERT INTO savings_events ({columns}) "
+                "VALUES ('e1',1,'k','2026-09-18T00:00:00Z','repo','mcp',?,?,"
+                "'get_risk','measured','t','estimated_tokens','success',1,0,'{}')",
+                (row["integration"], row["agent"]),
+            )
+
+
+def test_the_sidecar_accepts_an_agent_it_has_never_heard_of(tmp_path: Path) -> None:
+    """The constraint's actual purpose: bound the shape, never the membership.
+
+    A SQL vocabulary list would reject this row outright, which is what made the
+    seventh agent expensive.
+    """
+    with OmissionStore(tmp_path / "omissions.db") as store:
+        writer = SavingsRepository(store._conn)
+        assert writer.record_event(
+            SavingsEvent.from_mapping(
+                {**asdict(_event(0)), "integration": "windsurf", "agent": "windsurf"}
+            )
+        ) is True
+        store._conn.execute(
+            "INSERT INTO savings_opportunities VALUES ('o1','2026-09-18T00:00:00Z','repo',"
+            "'never_heard_of_it','bypassed_distillation',5)"
+        )
+        assert store._conn.execute(
+            "SELECT agent FROM savings_events"
+        ).fetchone()[0] == "windsurf"

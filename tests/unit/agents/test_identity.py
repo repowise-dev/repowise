@@ -34,7 +34,7 @@ SHIPPED = all_identities()
 @pytest.fixture
 def seventh_agent() -> Iterator[AgentIdentity]:
     """A registered agent that ships with nothing, removed again afterwards."""
-    fake = AgentIdentity(slug="windsurf", display_name="Windsurf")
+    fake = AgentIdentity(slug="zed", display_name="Zed")
     register_identity(fake)
     try:
         yield fake
@@ -93,23 +93,66 @@ def test_a_record_needs_a_display_name() -> None:
         AgentIdentity(slug="nameless", display_name="")
 
 
+def test_announced_as_refuses_a_bare_string() -> None:
+    """A string is iterable, so this would register one alias per character.
+
+    ``announced_as="claude"`` would silently make the agent answer to "e".
+    """
+    with pytest.raises(ValueError, match="not a string"):
+        AgentIdentity(slug="acme", display_name="Acme", announced_as="claude")  # type: ignore[arg-type]
+
+
+def test_no_agent_may_answer_to_the_unknown_name() -> None:
+    """Reserving the slug is not enough; an alias reaches the same confusion.
+
+    A client announcing itself as "Unknown" must stay unattributed rather than
+    being filed under whichever agent happened to be called that.
+    """
+    with pytest.raises(ValueError, match="may not answer to"):
+        AgentIdentity(slug="mystery", display_name="Unknown")
+    with pytest.raises(ValueError, match="may not answer to"):
+        AgentIdentity(slug="mystery", display_name="Mystery", announced_as=frozenset({"unknown"}))
+
+
 def test_aliases_must_already_be_normalized() -> None:
     """A denormalized alias would sit in the index where nothing can match it."""
     with pytest.raises(ValueError, match="normalized form"):
         AgentIdentity(slug="x", display_name="X", announced_as=frozenset({"Claude Code"}))
 
 
+def test_the_published_target_ids_are_exactly_what_users_already_type() -> None:
+    """Spelled out rather than re-derived.
+
+    ``--target=`` ids are in the README, in INTEGRATIONS.md and in people's
+    shell history. Deriving them from the slug is an implementation choice; that
+    the derivation still produces these six strings is the constraint, and
+    restating the formula here would assert nothing.
+    """
+    assert [agent.cli_target_id for agent in SHIPPED] == [
+        "claude-code",
+        "codex",
+        "vscode",
+        "cursor",
+        "opencode",
+        "hermes",
+    ]
+
+
 @pytest.mark.parametrize("agent", SHIPPED, ids=lambda a: a.slug)
-def test_the_target_id_is_the_hyphenated_slug(agent: AgentIdentity) -> None:
-    assert agent.cli_target_id == agent.slug.replace("_", "-")
+def test_a_target_id_round_trips_to_its_identity(agent: AgentIdentity) -> None:
     assert identity_for_target_id(agent.cli_target_id) is agent
 
 
 @pytest.mark.parametrize("agent", SHIPPED, ids=lambda a: a.slug)
 def test_an_agent_answers_to_its_own_slug_and_display_name(agent: AgentIdentity) -> None:
-    """Derived, so a seventh agent resolves without anyone writing an alias down."""
-    assert normalize_client_name(agent.slug) in agent.aliases
-    assert normalize_client_name(agent.display_name) in agent.aliases
+    """Derived, so a seventh agent resolves without anyone writing an alias down.
+
+    Asserted through the resolver rather than against ``aliases``, so it fails
+    if the index, the normalizer or the derivation breaks -- not only if the
+    property body is edited.
+    """
+    assert resolve_client_identity(agent.slug) == agent.slug
+    assert resolve_client_identity(agent.display_name) == agent.slug
 
 
 def test_shipped_alias_sets_are_disjoint() -> None:
@@ -175,11 +218,11 @@ def test_normalization_bounds_a_hostile_announced_name() -> None:
     assert len(normalize_client_name("Untrusted Client!" * 200)) == 64
 
 
-def test_registration_invalidates_the_resolver_cache(seventh_agent: AgentIdentity) -> None:
-    """The cache is an optimization; it must never outlive the truth."""
-    assert resolve_client_identity("Windsurf") == "windsurf"
-    unregister_identity("windsurf")
-    assert resolve_client_identity("Windsurf") == UNKNOWN_AGENT
+def test_registration_rebuilds_the_alias_index(seventh_agent: AgentIdentity) -> None:
+    """The index is an optimization; it must never outlive the truth."""
+    assert resolve_client_identity("Zed") == "zed"
+    unregister_identity("zed")
+    assert resolve_client_identity("Zed") == UNKNOWN_AGENT
 
 
 # ---------------------------------------------------------------------------
