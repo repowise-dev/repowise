@@ -306,16 +306,20 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
     advances ``updated_at`` so the freshness time reflects the latest
     sync-check — a routine ``repowise update`` that finds nothing to do still
     counts as "verified current now". Creates the row when it is missing from
-    an existing ``wiki.db`` (self-heals a corrupt/blank store — the policy the
-    CLI's ``stamp_head_commit``, now a thin wrapper over this, always had);
-    still a no-op when ``wiki.db`` itself is absent, so a stamp can never
-    conjure an empty database.
+    an existing store (self-heals a corrupt/blank store — the policy the CLI's
+    ``stamp_head_commit``, now a thin wrapper over this, always had); still a
+    no-op when no store exists at all, so a stamp can never conjure an empty
+    database. A configured database counts as existing: it is shared, and the
+    repo-local file it replaces is absent by design, so gating on the file
+    alone skipped every stamp under one.
 
     This is the single head-commit stamper for both update paths — the CLI
     fast paths and the workspace updater used to run two implementations with
     different creation semantics.
     """
-    if not head or not (repo_path / ".repowise" / "wiki.db").is_file():
+    from ..persistence.database import has_db_store, resolve_db_url
+
+    if not head or not has_db_store(repo_path):
         return
     from ..persistence import (
         create_engine,
@@ -325,7 +329,6 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
         upsert_repository,
     )
     from ..persistence.crud import get_repository_by_path
-    from ..persistence.database import resolve_db_url
 
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
