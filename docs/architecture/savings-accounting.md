@@ -1,7 +1,7 @@
 # Savings accounting contract
 
-Status: Phase 0 decision record for the costs-and-savings overhaul. This document
-locks the v1 accounting truth before schema, capture, reporting, or UI work begins.
+How Repowise decides what it saved an agent, and what it refuses to claim.
+Binding on every capture surface, the report, and anything that renders a total.
 
 ## Reporting vocabulary
 
@@ -51,11 +51,9 @@ meaning is versioned with the estimator.
 - `omission_refs`: zero or more content-recovery references. An empty list means
   no recovery artifact was linked, not zero savings.
 
-`null` means unavailable or not observed. Applicability comes from surface,
-evidence kind, and result state; consumers must not infer zero from `null`.
-Enum attribution uses the literal `unknown` instead of null. Optional correlation,
-model, and pricing fields use null when unavailable. Canonical serialized fields
-are present even when null, so field omission never acquires a second meaning.
+`null` means unavailable or not observed, and a consumer must never read it as
+zero. Attribution uses the literal `unknown` rather than null. Canonical fields
+are serialized even when null, so an absent key never acquires a second meaning.
 
 ## Decision table
 
@@ -105,18 +103,15 @@ to its own slug and its own display name, plus any extra name its host is known
 to announce. Every other value, including a generic MCP client, maps to
 `unknown`.
 
-Resolution is the only step that produces `unknown`. Savings does not enumerate
-agents anywhere else: a stored agent id is validated syntactically against
-`^[a-z0-9_]{1,32}$` by the writer, by the reader, and by the sidecar's own
-`CHECK` constraints alike. So an agent is a valid attribution the day its
-descriptor lands, with no edit under `core/savings/`, and an event written by an
-agent since retired still reads back as that agent instead of being coerced to
-`unknown`.
+Resolving an announced name is the only step that produces `unknown`. Nowhere
+else does savings enumerate agents: a stored id is checked syntactically against
+`^[a-z0-9_]{1,32}$` by the writer, the reader, and the sidecar's own `CHECK`
+constraints alike. So a new agent is a valid attribution the day its descriptor
+lands, and an event from an agent since retired still reads back as that agent.
 
-Never infer agent or
-model from headers, capabilities, environment variables, executable parents, or
-transport. Session/request/tool-call IDs and model remain null until an adapter
-explicitly supplies trustworthy evidence.
+Never infer agent or model from headers, capabilities, environment variables,
+executable parents, or transport. Session, request and tool-call IDs and model
+stay null until an adapter supplies trustworthy evidence.
 
 The v1 metadata allow-list is `client_info_normalized` and
 `identity_mapping_version`. Values are bounded strings; no raw prompts,
@@ -131,9 +126,9 @@ measured after the VS Code host's final cap.
 
 ## Legacy omission fields
 
-The legacy `omissions` table is a recovery store, not an accounting event log.
-Its content hash `ref` identifies content, so byte-identical omissions from two
-calls collapse to one row. Its row count cannot represent logical interactions.
+The legacy `omissions` table is a recovery store, not an event log. Its `ref` is
+a content hash, so byte-identical omissions from two calls collapse into one row
+and the row count cannot stand for a number of interactions.
 
 - MCP budgeting persists the dropped recovery document or inline chunk.
   `original_tokens` is the estimated size of that persisted dropped artifact,
@@ -143,82 +138,55 @@ calls collapse to one row. Its row count cannot represent logical interactions.
   artifact's estimated size and `kept_tokens` is the retained filtered body
   before the recoverability marker. Actual delivered input includes the marker.
 
-Therefore the columns have producer-specific meanings. Preserve them and
-`evidence_references` for expand/recovery, but do not use either column or the
-omission row count in canonical savings arithmetic. New events link omission
-references without duplicating their content.
+So both columns mean different things depending on who wrote them. Preserve them
+and `evidence_references` for recovery, but keep them and the row count out of
+savings arithmetic. Events link omission references without copying content.
 
 ## Pricing
 
-Price each event only from the model, source/version, currency, and input/output
-rates captured with that event. Savings reports expose priced and unpriced tokens
-separately. They never reprice history from the newest session. Input and output
-rates apply only to their matching dimensions. The old fixed 60-output-token
-credit is removed; nullable output fields remain so explicit evidence can be
-supported without invention.
+Price each event only from the model, source, version, currency and rates
+captured with that event, and apply each rate only to its matching dimension.
+Reports expose priced and unpriced tokens separately and never reprice history
+from the newest session. There is no fixed output-token credit; output fields
+stay nullable so explicit evidence can be recorded without inventing any.
 
-Repowise's own `llm_costs` provider-token spend is a separate metered-spend
-section. It is not subtracted from or merged into achieved agent-token savings.
+Repowise's own `llm_costs` spend is a separate metered-spend section, never
+merged into or subtracted from achieved agent savings.
 
 ## Hosted and shared-presentation boundary
 
-The verified hosted backend defines `total_cents` as the lifetime absolute value
-of negative `credit_transactions.amount_cents`, scoped to authenticated user and
-repository. `by_type` partitions those debits into indexing, chat, reindex, and
-other, so its money buckets sum to `total_cents`; positive/zero rows do not add
-spend. The current `transaction_count` is the number of fetched ledger rows and
-can include non-debits. Anonymous public-snapshot callers receive zero billing
-spend. Hosted engine `llm_costs` telemetry is a separate field.
+Hosted `total_cents` is the lifetime absolute value of negative
+`credit_transactions.amount_cents` for one user and repository, partitioned by
+`by_type` into indexing, chat, reindex and other. `transaction_count` counts
+fetched ledger rows and can include non-debits, so it is not a count of charges.
+Anonymous snapshot callers see zero billing spend.
 
-Accordingly, hosted credit spend remains a named host-only billing section. It is
-not equivalent to OSS `wiki.db.llm_costs` and is not mapped into canonical
-repository model spend or savings.
+Hosted credit spend therefore stays a named host-only billing section. It is not
+equivalent to OSS `wiki.db.llm_costs` and is never folded into repository model
+spend or savings.
 
-`frontend/docs/DESIGN_LANGUAGE.md` remains binding for hosted and OSS. The shared
-`@repowise-dev/ui` savings surface receives a pure, already-derived presentation
-model plus link/action capabilities. It performs no fetching, authentication,
-routing, pricing, correlation, or accounting and contains no `isHosted` branch.
-Hosts adapt their real wire contracts and retain hosted-only billing as a sibling
-capability. Visual hierarchy, evidence labels, and interaction semantics stay
-shared.
+The shared savings surface receives an already-derived presentation model: it
+performs no pricing, correlation, or accounting of its own. Arithmetic lives
+here, not in a renderer.
 
 ## Savings reset disclosure
 
-The clean telemetry reset is a user-visible methodology change, not silent data
-loss. On the first costs-page visit after the reset, show a calm inline
-informational notice beside the savings lede:
+Restarting savings history is a user-visible methodology change, not silent data
+loss, so it is disclosed rather than absorbed. Incompatible estimates were
+restarted on a stated date; omission history and other repository data were not
+deleted, and saying so is part of the disclosure.
 
-> **Savings accounting has been upgraded**
-> Savings now use interaction-level evidence for more accurate, auditable totals.
-> Previous savings estimates were not compatible with the new methodology, so
-> savings history restarted on **[reset date]**. Omission history and other
-> repository data were not deleted.
+Disclosure is calm and inline beside the total: not a modal, warning, toast, or
+promotional banner, and it never steals focus. It is dismissible once per
+repository and accounting-method version, so a later methodology change can
+announce itself again. After dismissal the reset date and a link to this document
+stay quietly visible next to the number they qualify.
 
-The notice has a normal `See what changed` link and a dismiss control. It is not a
-modal, warning, error, toast, or global promotional banner: it must not steal
-focus or interrupt work. After dismissal, the reset date and methodology link
-remain quietly visible near the total.
+## Historical totals
 
-Presentation is a reusable controlled `DismissibleNotice` primitive in
-`@repowise-dev/ui`. It accepts content, neutral/info tone, optional action/link,
-and `onDismiss`; it owns no storage, fetching, routes, or host detection. Each host
-decides whether it is visible and persists a versioned dismissal key scoped to
-repository plus accounting-method version. This keeps localStorage, user
-preferences, and future server persistence interchangeable without turning a rare
-announcement into a general modal framework. Existing feature-specific banners
-may migrate only when doing so is independently useful, not as required scope for
-this overhaul.
-
-## Frozen diagnostic baseline
-
-On 2026-09-13 a SQLite online backup of the worktree-local omission database at
-commit `a3e49b7692be` was frozen, queried, and deleted. Its SHA-256 was
-`23E44B9E4C16A29087D5A9C2FB4F5EACF366C16E126281D44CA9B135941A5298`.
-It contained 953 MCP ledger rows and 36 MCP omission artifacts. The legacy
-tool-wide algorithm reported 7,495,645 MCP tokens; blindly adding both signal
-sets produced 7,959,262. The clamped non-MCP ledger reduction was 1,276,569.
-
-These values are diagnostic reproduction evidence only. No canonical historical
-MCP total can be reconstructed because there is no interaction ID and identical
-omitted content is hash-deduplicated. Product expectations come exclusively from
-the deterministic fixture in `tests/fixtures/savings/mixed_agents_v1.json`.
+No canonical pre-v1 savings total can be reconstructed. The legacy ledger has no
+interaction ID and hash-deduplicates identical omitted content, so its rows
+cannot be resolved back into logical interactions at any accuracy worth
+publishing. Figures from the legacy algorithm are not a baseline to preserve or
+to reproduce. Expected totals come from the deterministic fixture in
+`tests/fixtures/savings/mixed_agents_v1.json`.
