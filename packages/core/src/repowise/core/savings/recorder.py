@@ -86,12 +86,37 @@ def record_event(repo_root: str | Path | None, payload: Mapping[str, Any]) -> bo
         logger.debug("savings sidecar open failed", exc_info=True)
         return False
     try:
-        return store.savings().record_event(event)
+        return _write(store, event)
+    finally:
+        store.close()
+
+
+def record_event_in(store: Any, repo_root: str | Path | None, payload: Mapping[str, Any]) -> bool:
+    """Record an event through an already-open store. Never raises.
+
+    Same rules as :func:`record_event`, minus the open and close. A surface that
+    already holds the sidecar open uses this rather than the other: a second
+    connection to the same file, while the first one holds a write lock, is a
+    lock fight rather than a second writer.
+    """
+    if store is None or not repo_root:
+        return False
+    try:
+        from repowise.core.savings.contracts import SavingsEvent
+
+        event = SavingsEvent.from_mapping({**payload, "repository_id": str(repo_root)})
+    except Exception:
+        logger.debug("savings event rejected before write", exc_info=True)
+        return False
+    return _write(store, event)
+
+
+def _write(store: Any, event: Any) -> bool:
+    try:
+        return bool(store.savings().record_event(event))
     except Exception:
         logger.debug("savings write failed; dropping silently", exc_info=True)
         return False
-    finally:
-        store.close()
 
 
 def record_opportunity(repo_root: str | Path | None, payload: Mapping[str, Any]) -> bool:

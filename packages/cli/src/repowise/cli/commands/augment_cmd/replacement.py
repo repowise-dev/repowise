@@ -211,13 +211,19 @@ def offer(
         if payload is None:
             return None, None
         candidate.payload = payload
-        return candidate, _saving_writer(repo_path, candidate, source)
+        return candidate, _saving_writer(repo_path, candidate, source, adapter)
     except Exception:
         return None, None
 
 
-def _saving_writer(repo_path: Path, served: Offer, source: str) -> Callable[[], None]:
-    """The savings-ledger write for a replacement the agent received."""
+def _saving_writer(
+    repo_path: Path, served: Offer, source: str, adapter: AgentAdapter
+) -> Callable[[], None]:
+    """The savings-ledger write for a replacement the agent received.
+
+    The adapter comes along because it names the agent being served, which is
+    the one surface where attribution is known rather than inferred.
+    """
 
     def _write() -> None:
         try:
@@ -228,6 +234,7 @@ def _saving_writer(repo_path: Path, served: Offer, source: str) -> Callable[[], 
                 command=served.key,
                 raw_tokens=served.raw_tokens,
                 distilled_tokens=served.new_tokens,
+                hook_adapter=getattr(adapter, "name", None),
             )
         except Exception:
             return

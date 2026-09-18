@@ -25,6 +25,7 @@ from repowise.core.agents.identity import (
     normalize_client_name,
     register_identity,
     resolve_client_identity,
+    slug_for_hook_adapter,
     unregister_identity,
 )
 
@@ -40,5 +41,6 @@ __all__ = [
     "normalize_client_name",
     "register_identity",
     "resolve_client_identity",
+    "slug_for_hook_adapter",
     "unregister_identity",
 ]

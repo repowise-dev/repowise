@@ -219,6 +219,22 @@ def get_identity(slug: str) -> AgentIdentity | None:
     return _REGISTERED.get(slug)
 
 
+def slug_for_hook_adapter(name: str | None) -> str:
+    """The agent behind a hook adapter's name, or :data:`UNKNOWN_AGENT`.
+
+    The hook path knows exactly which agent it is serving — it was handed that
+    agent's adapter — so attribution there is evidence rather than inference.
+    This is the lookup that turns the adapter's own spelling back into the
+    canonical one, instead of a caller re-deriving it.
+    """
+    if not name:
+        return UNKNOWN_AGENT
+    for identity in _REGISTERED.values():
+        if identity.hook_adapter == name:
+            return identity.slug
+    return UNKNOWN_AGENT
+
+
 def identity_for_target_id(target_id: str) -> AgentIdentity | None:
     """The identity behind a ``--target=`` id."""
     return get_identity(target_id.replace("-", "_"))

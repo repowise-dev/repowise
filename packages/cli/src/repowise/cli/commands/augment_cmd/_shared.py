@@ -212,8 +212,14 @@ def record_saving(
     command: str,
     raw_tokens: int,
     distilled_tokens: int,
+    hook_adapter: str | None = None,
 ) -> None:
     """Bill one replacement to the savings ledger so ``repowise saved`` sees it.
+
+    Writes the legacy row and the canonical event. The legacy one stays until
+    the costs endpoint, the overview headline and ``repowise saved`` read the
+    canonical report instead; writing both means this change neither regresses
+    a published figure nor claims the old row improved.
 
     Never creates the omission store: its absence means this repo has not
     opted into distill bookkeeping, and a hook is not the place to decide
@@ -240,6 +246,68 @@ def record_saving(
             )
         finally:
             con.close()
+    except Exception:
+        return
+    _record_event(
+        repo_path,
+        source=source,
+        filter_name=filter_name,
+        raw_tokens=raw_tokens,
+        distilled_tokens=distilled_tokens,
+        hook_adapter=hook_adapter,
+    )
+
+
+def _record_event(
+    repo_path: Path,
+    *,
+    source: str,
+    filter_name: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+    hook_adapter: str | None,
+) -> None:
+    """Record the canonical event for one hook replacement. Never raises.
+
+    Reached only through ``HookResult.on_emitted``, which runs after the
+    response is already on the wire, so the heavy imports here cost the ledger
+    write rather than the agent. That is also why this does not violate the
+    module-scope import contract this path lives under: nothing new is imported
+    until a replacement has actually been served.
+
+    Attribution is real here rather than ``unknown``. The hook was handed the
+    serving agent's own adapter, so which agent saved these tokens is evidence,
+    not a guess.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from repowise.core.agents.identity import slug_for_hook_adapter
+        from repowise.core.savings import recorder
+        from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
+
+        agent = slug_for_hook_adapter(hook_adapter)
+        event_id = new_event_id()
+        recorder.record_event(
+            repo_path,
+            {
+                "event_id": event_id,
+                "idempotency_key": scoped_idempotency_key(str(repo_path), "hook", event_id),
+                "occurred_at": datetime.now(UTC),
+                "surface": "hook",
+                "integration": agent,
+                "agent": agent,
+                "operation": filter_name,
+                "evidence_kind": "measured",
+                "estimator": "chars_per_token_floor_v1",
+                "token_unit": "estimated_tokens",
+                "result_state": "success",
+                "is_usable": True,
+                "baseline_input_tokens": raw_tokens,
+                "pre_budget_input_tokens": raw_tokens,
+                "delivered_input_tokens": distilled_tokens,
+            },
+        )
     except Exception:
         return
 
