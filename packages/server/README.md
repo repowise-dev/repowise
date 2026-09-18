@@ -10,12 +10,12 @@ from its API (port 7337 by default).
 
 This is one of the Python packages in the repowise monorepo. Code lives under
 `src/repowise/server/`: `app.py` builds the FastAPI app, `routers/` holds the
-REST routes, and `mcp_server/` holds the tools: 18 registered MCP tools
+REST routes, and `mcp_server/` holds the tools: 19 registered MCP tools
 (10 advertised by default in single-repo mode). It reads indexes built by
 `packages/core`.
 
-Seen from an MCP client, repowise registers 18 MCP tools and advertises **10 by default**.
-Workspace mode adds `list_repos`, and the other seven are opt-in through
+Seen from an MCP client, repowise registers 19 MCP tools and advertises **10 by default**.
+Workspace mode adds `list_repos`, and the other eight are opt-in through
 `repowise mcp --tools` or the `mcp:` config block. See
 [docs/agent/MCP_TOOLS.md](../../docs/agent/MCP_TOOLS.md).
 
