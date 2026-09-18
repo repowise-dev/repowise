@@ -188,9 +188,9 @@ def _build_graph(
 class TestRustUnusedInternalsSkipped:
     """Private Rust symbols must not be flagged by unused_internals.
 
-    The graph builder does not emit intra-file call edges for Rust,
-    so every private function would appear 'uncalled'. Fix 1 skips
-    all Rust symbols in _detect_unused_internals.
+    rustc's own `dead_code` lint already reports unused private items,
+    with macro expansion and type information this analysis cannot
+    match, so _detect_unused_internals skips all Rust symbols.
     """
 
     def test_rust_private_function_not_flagged(self):

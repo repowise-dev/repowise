@@ -78,8 +78,9 @@ default `min_confidence`, so a capped finding still appears as a review
 candidate and only stops claiming to be deletion-ready.
 
 Two caveats on the numbers. `unused_internal` is disabled entirely for Rust,
-where the graph does not yet emit intra-file call edges, so a private Rust helper
-is never flagged. And the `lines` count on file and package findings is an
+because rustc's own `dead_code` lint already reports unused private items with
+macro expansion and type information this analysis cannot match, so a private
+Rust helper is never flagged here. And the `lines` count on file and package findings is an
 estimate (symbol count times ten), not a real line count, so treat the
 "reclaimable lines" roll-up as an order of magnitude rather than a figure.
 
