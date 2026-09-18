@@ -121,3 +121,12 @@ ehthumbs.db
 
 # Claude Code
 .claude/
+
+# Auto-added by github-engineer
+*.pyc
+*.pyd
+*.obj
+*.whl
+nem_stats.c
+*.exp
+*.lib

@@ -7,6 +7,7 @@ from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
+    db_configured,
     get_db_url_for_repo,
     get_repowise_dir,
     resolve_repo_path,
@@ -23,12 +24,12 @@ def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
     repo_path = resolve_repo_path(path)
     repowise_dir = get_repowise_dir(repo_path)
 
-    if not repowise_dir.exists():
+    if not repowise_dir.exists() and not db_configured():
         console.print("[yellow]No .repowise/ directory found. Run 'repowise init' first.[/yellow]")
         return
 
     db_path = repowise_dir / "wiki.db"
-    if not db_path.exists():
+    if not db_path.exists() and not db_configured():
         console.print("[yellow]Database not found.[/yellow]")
         return
 
@@ -70,8 +71,14 @@ def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
             await engine.dispose()
             return
 
-        # If no repo_id given, let the user pick
+        # If no repo_id given, check if --path matches a known repo, otherwise prompt
         target_id = repo_id
+        if target_id is None and path is not None:
+            normalized = str(repo_path)
+            match = next((r for r in repos if r[2] == normalized), None)
+            if match is not None:
+                target_id = match[0]
+
         if target_id is None:
             table = Table(title="Repositories")
             table.add_column("#", style="cyan", justify="right")
