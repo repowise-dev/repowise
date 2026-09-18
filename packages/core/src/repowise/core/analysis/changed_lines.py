@@ -49,6 +49,18 @@ class FileDiff:
     insert_anchors: list[int] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     added: list[str] = field(default_factory=list)
+    # File-level change shape. ``new_file`` / ``deleted`` come from the
+    # ``new file mode`` / ``deleted file mode`` markers; ``old_mode`` /
+    # ``mode`` from an ``old mode`` / ``new mode`` pair (a chmod with no
+    # content change). ``binary`` is set when git reports ``Binary files …``,
+    # which carries no hunks, so the coverage-intersection view still sees no
+    # new-side lines for it — but the fix-shape classifier can now tell an
+    # asset flip from a code edit instead of silently dropping it.
+    new_file: bool = False
+    deleted: bool = False
+    binary: bool = False
+    mode: str | None = None
+    old_mode: str | None = None
 
 
 def _header_path(raw: str) -> str | None:
@@ -62,6 +74,35 @@ def _header_path(raw: str) -> str | None:
     if path == "/dev/null":
         return None
     return path[2:] if path[:2] in ("a/", "b/") else path
+
+
+def _git_diff_path(raw: str) -> tuple[str | None, str | None]:
+    """Best-effort ``(old, new)`` paths from a ``diff --git a/X b/Y`` line.
+
+    Used to open the per-file record *before* the ``---``/``+++`` header, so
+    the ``new file mode`` / ``deleted file mode`` / ``old mode`` / ``new mode``
+    / ``Binary files`` markers (which git prints between the ``diff --git``
+    line and that header) have a record to attach to. Quoted tokens (paths
+    with spaces) are handled; an unparseable line yields ``(None, None)`` and
+    the header is left to open the record as before.
+    """
+    rest = raw[len("diff --git ") :]
+    if rest.startswith('"'):
+        old = new = None
+        for token in rest.split('" '):
+            token = token.strip().strip('"')
+            if token.startswith("a/"):
+                old = token[2:]
+            elif token.startswith("b/"):
+                new = token[2:]
+        return old, new
+    idx = rest.rfind(" b/")
+    if idx == -1:
+        return None, None
+    new = rest[idx + 3 :]
+    old = rest[:idx]
+    old = old[2:] if old.startswith("a/") else old
+    return (old or None), (new or None)
 
 
 def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
@@ -85,12 +126,47 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
     i = 0
     while i < len(lines):
         line = lines[i]
+        if line.startswith("diff --git "):
+            # Open the record up front so the file-level markers below (which
+            # git prints before the ``---``/``+++`` header) have something to
+            # attach to. The header re-records the same path, so this is
+            # idempotent and never loses data.
+            _old, _new = _git_diff_path(line)
+            path = _new or _old
+            current = _record(path) if path else None
+            i += 1
+            continue
         if line.startswith("--- ") and i + 1 < len(lines) and lines[i + 1].startswith("+++ "):
             # A deletion has no new-side path; key it by the old one so the
             # file still shows up for shape classification.
             path = _header_path(lines[i + 1][4:]) or _header_path(line[4:])
             current = _record(path) if path else None
             i += 2
+            continue
+        # File-level markers sit between the header and the hunks, in either
+        # order, and never start with ``@@`` / ``-`` / ``+``, so they cannot
+        # be mistaken for a hunk or a content line.
+        if current is not None and line.startswith("new file mode "):
+            current.new_file = True
+            current.mode = line[len("new file mode ") :].strip() or None
+            i += 1
+            continue
+        if current is not None and line.startswith("deleted file mode "):
+            current.deleted = True
+            current.old_mode = line[len("deleted file mode ") :].strip() or None
+            i += 1
+            continue
+        if current is not None and line.startswith("old mode "):
+            current.old_mode = line[len("old mode ") :].strip() or None
+            i += 1
+            continue
+        if current is not None and line.startswith("new mode "):
+            current.mode = line[len("new mode ") :].strip() or None
+            i += 1
+            continue
+        if current is not None and line.startswith("Binary files "):
+            current.binary = True
+            i += 1
             continue
         if line.startswith("@@") and current is not None:
             if (m := _HUNK_RE.match(line)) is not None:
