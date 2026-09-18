@@ -1,22 +1,16 @@
-"""``get_context``'s ``used_by`` answers for the symbol, and keeps the most central users.
+"""``get_context``'s ``used_by`` answers for the symbol, and ranks its users.
 
-Two contracts live here.
+Two contracts. **What the list is drawn from:** keyed on the symbol's own node
+id, so a ``calls`` edge — symbol-to-symbol, target ``path::Name`` — can appear
+in it. Keyed on the symbol's *file*, as it was until this was fixed, no call
+could ever match.
 
-**What the list is drawn from.** ``used_by`` on a symbol is keyed on the
-symbol's own node id, so a ``calls`` edge — emitted symbol-to-symbol, target
-``path::Name`` — can appear in it. Keyed on the symbol's *file*, which is what
-it asked for until this was fixed, no call could ever match: it answered "who
-imports this symbol's file" under a name that promises otherwise.
-
-**Which twenty survive.** The field is cut at ``_MAX_USED_BY`` and the agent is
-never told what fell off, so which twenty survive is the whole of what this
-list says. Unordered, they were whichever rows the table handed back. On the
-42-index corpus 4,743 symbol targets have more users than the cap and ranking
-moves the kept set on 4,447 of them, a median of 7 of the 20.
-
-The fixture is deliberately larger than the cap — the ranking defect does not
-exist below it, and the repo's other ``used_by`` coverage runs on two edges,
-which is why nothing caught it.
+**Which twenty survive:** the field is cut at ``_MAX_USED_BY`` and the agent is
+never told what fell off, so the kept set is the whole of what it says. On the
+42-index corpus ranking moves that set on 4,447 of the 4,743 targets over the
+cap. The fixture is deliberately larger than the cap, because the defect does
+not exist below it — the repo's other coverage ran on two edges, which is why
+nothing caught it.
 """
 
 from __future__ import annotations
@@ -115,11 +109,10 @@ async def many_users(session, populated_db) -> str:
 
 @pytest.fixture
 async def two_users(session, populated_db) -> str:
-    """The population every other test in this directory runs on, one layer down.
+    """The base fixture joins these two files to ``service.py`` with ``imports``.
 
-    The base fixture joins these two files to ``service.py`` with ``imports``
-    edges. Those say the file was imported; they do not say this symbol was
-    used, which is why they no longer answer here.
+    Those say the file was imported, not that this symbol was used, which is
+    why they no longer answer here.
     """
     rid = populated_db
     for i, source in enumerate(
@@ -148,9 +141,8 @@ async def _card(session, repository, target: str) -> dict:
 async def test_a_call_into_the_symbol_is_a_user(session, repository, two_users) -> None:
     """The defect this file exists for: keyed on the file, this list held no calls.
 
-    A ``calls`` edge targets ``path::Name``. Compared against a bare file path
-    it could not match, so the one relationship the field is named for was the
-    one it could never carry.
+    A ``calls`` edge targets ``path::Name``, so against a bare file path the one
+    relationship the field is named for was the one it could never carry.
     """
     used_by = (await _card(session, repository, "AuthService"))["docs"]["used_by"]
 
@@ -160,9 +152,8 @@ async def test_a_call_into_the_symbol_is_a_user(session, repository, two_users) 
 async def test_importing_the_file_is_not_using_the_symbol(session, repository) -> None:
     """The base fixture's two importers must NOT appear on their own.
 
-    They import ``service.py``. Nothing in the graph says they touched
-    ``AuthService``, and answering as though it did is what made this list a
-    restatement of ``imported_by``.
+    Nothing in the graph says they touched ``AuthService``, and answering as
+    though it did is what made this a restatement of ``imported_by``.
     """
     docs = (await _card(session, repository, "AuthService"))["docs"]
 
@@ -200,11 +191,10 @@ async def test_used_by_is_ordered_by_centrality(session, repository, many_users)
 async def test_two_symbols_in_one_file_are_one_user(
     session, repository, two_users, populated_db
 ) -> None:
-    """A guard, and now a live one: the query selects edges and the field names files.
+    """A guard, and now a live one: the query selects edges, the field names files.
 
-    Two calls from two functions in the same file are one file using this
-    symbol. Before the rows were folded to their file this could not arise,
-    because a file imported a file at most once.
+    Two calls from one file are one user. Before the rows were folded this could
+    not arise, because a file imported a file at most once.
     """
     session.add(
         GraphEdge(
@@ -249,10 +239,8 @@ async def test_ranking_survives_a_chunked_rank_lookup(
 ) -> None:
     """The rank lookup binds one parameter per using file, so it is chunked.
 
-    Chunking is invisible until a symbol has more users than the chunk holds,
-    which no fixture here is large enough to reach; shrinking the chunk reaches
-    it without 500 nodes. If a chunk boundary ever dropped or reordered a file,
-    the hub would stop leading.
+    Shrinking the chunk reaches a boundary without 500 nodes. If one ever
+    dropped or reordered a file, the hub would stop leading.
     """
     from repowise.server.mcp_server.tool_context import targets as targets_mod
 

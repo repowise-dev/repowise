@@ -66,9 +66,8 @@ from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 #: or an omission. This constant only names the cut that already existed.
 _MAX_USED_BY = 20
 
-#: Bound parameters per rank lookup. SQLite's ceiling is 999 before 3.32
-#: and 32,766 after, and which one applies depends on the libsqlite3 the
-#: interpreter happens to link, so the lower one is the one to respect.
+#: Bound parameters per rank lookup. SQLite's ceiling is 999 before 3.32 and
+#: 32,766 after, and which applies depends on the libsqlite3 linked at runtime.
 _RANK_LOOKUP_CHUNK = 500
 
 # Skeleton-by-default is GONE; ``include=["skeleton"]`` still serves it in full.
@@ -830,30 +829,21 @@ async def _resolve_one_target(
                 docs["file_summary"] = sym_page.summary or ""
                 if want_full_doc:
                     docs["documentation"] = sym_page.content
-            # Used by: the files that use THIS symbol. Keyed on the symbol's own
-            # node id, because a ``calls`` edge is emitted symbol-to-symbol and
-            # its target is a ``path::Name`` id. Keyed on the file path — which
-            # is what this asked for until now — it matched only edges into the
-            # whole file, so it answered "who imports this symbol's file",
-            # byte-for-byte the query ``imported_by`` runs on a file target, and
-            # no call could ever appear in it. The file-path key predates the
-            # symbol-level graph and was never a decision.
-            #
-            # The positive ``SYMBOL_USE_EDGE_TYPES`` vocabulary rather than the
-            # negative one, for the reason #1905 gave when it narrowed the
+            # Used by: the files that use THIS symbol. Keyed on the symbol's
+            # own node id, because a ``calls`` edge is symbol-to-symbol and
+            # targets a ``path::Name``; keyed on the file path, as it was until
+            # now, it could only match edges into the whole file and answered
+            # "who imports this symbol's file" instead. Positive vocabulary
+            # rather than a negative filter, for the reason #1905 gave the
             # sibling path in get_risk: an untyped edge must not become a use.
             #
-            # Rows stay file paths. Sources are symbol ids here, so each is
-            # folded to its file: that keeps the field distinct from ``callers``
-            # (symbol-grained, calls-only, opt-in) and keeps one row per using
-            # file rather than one per calling symbol, which is what the cap
-            # below is sized for. This list is cut at ``_MAX_USED_BY`` and the
-            # agent never learns what fell off. Left unordered, the survivors
-            # were whichever rows the table handed back: on the 42-index corpus
-            # 4,743 symbol targets carry more than ``_MAX_USED_BY`` users, and
-            # ranking moves the kept set on 4,447 of them, a median of 7 of the
-            # 20 and up to all 20. Rank by the source file's PageRank, path
-            # breaking ties.
+            # Sources fold to their file, which keeps one row per using file and
+            # keeps this distinct from ``callers`` (symbol-grained, calls-only,
+            # opt-in). The list is cut at ``_MAX_USED_BY`` and the agent never
+            # learns what fell off, so which twenty survive is the whole of what
+            # it says: on the 42-index corpus ranking moves the kept set on
+            # 4,447 of the 4,743 targets over the cap, a median of 7 of the 20.
+            # Rank by the source file's PageRank, path breaking ties.
             sym_node_id = getattr(sym, "symbol_id", None) or getattr(sym, "node_id", None)
             res = await session.execute(
                 select(GraphEdge.source_node_id, GraphNode.file_path)
@@ -868,24 +858,18 @@ async def _resolve_one_target(
                     GraphEdge.edge_type.in_(SYMBOL_USE_EDGE_TYPES),
                 )
             )
-            # A source node carries its own file; an id the graph no longer
-            # holds still names one, so fall back to the id's path half rather
-            # than dropping a real user.
+            # An id the graph no longer holds still names its file, so fall
+            # back to the path half rather than dropping a real user.
             user_files = {
                 file_path or source_node_id.split("::", 1)[0]
                 for source_node_id, file_path in res.all()
             }
-            # The symbol's own file is dropped: a same-file caller is a real
-            # use, but naming the file the agent is already looking at spends
-            # a capped row on nothing. ``callers`` carries those at symbol
-            # grain for anyone who asks.
+            # A same-file caller is a real use, but naming the file already
+            # being read spends a capped row; ``callers`` has it at symbol grain.
             user_files.discard(sym.file_path)
-            # Ranks are looked up by the folded path rather than joined in the
-            # query above, because a source whose symbol node the graph no
-            # longer holds has no file to join through and would rank 0.0 —
-            # which is the whole list on a repository the resolver has only
-            # partly bound. Chunked because this binds one parameter per using
-            # file and SQLite caps bound parameters at 999 before 3.32.
+            # Looked up by the folded path, not joined above: a source whose
+            # symbol node is missing has no file to join through and would rank
+            # 0.0. Chunked because this binds one parameter per using file.
             best_rank: dict[str, float] = {p: 0.0 for p in user_files}
             ordered = sorted(user_files)
             for start in range(0, len(ordered), _RANK_LOOKUP_CHUNK):
