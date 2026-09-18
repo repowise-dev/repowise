@@ -165,10 +165,13 @@ _DOC_EXTENSIONS = DOC_EXTENSIONS
 
 
 def _classify_file_type(path: str, language: str, is_config: bool) -> str:
-    ext = PurePosixPath(path).suffix.lower()
-    stem = PurePosixPath(path).stem.lower()
+    p = PurePosixPath(path)
+    ext = p.suffix.lower()
+    stem = p.stem.lower()
 
-    if is_config or ext in _CONFIG_EXTENSIONS:
+    # Dotfiles such as ``.env`` report an empty suffix via ``pathlib``, so
+    # match the basename too (mirrors ``support_paths.is_doc_or_config_path``).
+    if is_config or ext in _CONFIG_EXTENSIONS or p.name.lower() in _CONFIG_EXTENSIONS:
         return "config"
     # Infra names only count for extension-less files (Dockerfile, Makefile)
     # or when ingestion parsed the file as an infra language — a Python module

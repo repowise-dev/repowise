@@ -83,8 +83,13 @@ DOC_EXTENSIONS = frozenset({".md", ".mdx", ".rst", ".txt", ".adoc"})
 
 def is_doc_or_config_path(path: str) -> bool:
     """Whether *path* is documentation or configuration rather than code."""
-    ext = PurePosixPath(path).suffix.lower()
-    return ext in CONFIG_EXTENSIONS or ext in DOC_EXTENSIONS
+    p = PurePosixPath(path)
+    ext = p.suffix.lower()
+    if ext in CONFIG_EXTENSIONS or ext in DOC_EXTENSIONS:
+        return True
+    # Dotfiles such as ``.env`` report an empty suffix via ``pathlib``, so
+    # the extension check above never matches them. Match the basename too.
+    return p.name.lower() in CONFIG_EXTENSIONS
 
 
 FilePopulation = Literal["production", "test", "example", "doc"]
