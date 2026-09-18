@@ -258,3 +258,50 @@ class TestPromotionCarriesTheReviewLane:
         row["structured"]["needs_split"] = True
 
         assert all(d.needs_split for d in promotion_decisions(row, Path(".")))
+
+
+class TestScopeNamesOnlyIndexedCode:
+    """A record is delivered as a rule about the files it names."""
+
+    INDEXED = frozenset({"pkg/engine.py", "docs/DESIGN.md"})
+
+    def test_a_path_outside_the_index_never_reaches_a_record(self):
+        out = promotion_decisions(
+            _row(structured={**_row()["structured"], "affected_files": ["local-stash/PLAN.md"]}),
+            Path("."),
+            indexed=self.INDEXED,
+        )
+        assert all(d.affected_files == [] for d in out)
+
+    def test_an_indexed_path_survives(self):
+        out = promotion_decisions(
+            _row(structured={**_row()["structured"], "affected_files": ["pkg/engine.py"]}),
+            Path("."),
+            indexed=self.INDEXED,
+        )
+        assert all(d.affected_files == ["pkg/engine.py"] for d in out)
+
+    def test_without_an_index_set_nothing_is_filtered(self):
+        out = promotion_decisions(
+            _row(structured={**_row()["structured"], "affected_files": ["local-stash/PLAN.md"]}),
+            Path("."),
+        )
+        assert all(d.affected_files == ["local-stash/PLAN.md"] for d in out)
+
+    def test_a_structured_claim_of_no_files_is_a_refusal_not_a_missing_key(self):
+        """The correction gate empties the list on purpose; staging must not refill it."""
+        out = promotion_decisions(
+            _row(files=["pkg/engine.py"]),  # structured affected_files is []
+            Path("."),
+            indexed=self.INDEXED,
+        )
+        assert all(d.affected_files == [] for d in out)
+
+    def test_a_row_with_no_structured_claim_still_falls_back_to_the_gate_hits(self):
+        structured = {k: v for k, v in _row()["structured"].items() if k != "affected_files"}
+        out = promotion_decisions(
+            _row(structured=structured, files=["pkg/engine.py"]),
+            Path("."),
+            indexed=self.INDEXED,
+        )
+        assert all(d.affected_files == ["pkg/engine.py"] for d in out)

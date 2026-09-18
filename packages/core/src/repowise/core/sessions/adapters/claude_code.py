@@ -58,6 +58,9 @@ class ClaudeCodeAdapter(HarnessAdapter):
     """Normalizes Claude Code session JSONL into the shared Event stream."""
 
     name: ClassVar[str] = "claude_code"
+    edit_tool_names: ClassVar[frozenset[str]] = frozenset(
+        {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+    )
 
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
         directory = transcript_dir_for(repo_root, projects_root)

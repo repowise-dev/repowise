@@ -49,7 +49,7 @@ import json
 import re
 import time
 from collections import deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -66,7 +66,7 @@ from repowise.core.analysis.decisions.provenance import (
     verify_quote,
 )
 from repowise.core.analysis.decisions.rationale_comments import CAUSAL_MARKERS
-from repowise.core.analysis.decisions.scope import resolve_module_nodes
+from repowise.core.analysis.decisions.scope import bind_scope_files, resolve_module_nodes
 from repowise.core.distill.corrections import command_anchor
 from repowise.core.precedent.transcript_episodes import (
     TranscriptEpisodeRecorder,
@@ -77,7 +77,7 @@ from repowise.core.sessions.adapters.registry import DEFAULT_ADAPTER, registered
 from repowise.core.sessions.cursor import iter_new_events
 from repowise.core.sessions.events import (
     FILE_INPUT_KEYS,
-    event_files,
+    event_file_touches,
     is_prose_user_text,
     relative_files,
 )
@@ -190,6 +190,11 @@ class SessionCandidate:
     kind: str  # user_correction | explicit_choice | dead_end
     quotes: list[str]
     files: list[str] = field(default_factory=list)
+    #: Which of ``files`` this candidate saw changed rather than only read.
+    #: Ordering input only, never staged: staging keeps ``files`` and an
+    #: already-staged row is never rewritten, so the order must be right the
+    #: first time.
+    edited: set[str] = field(default_factory=set)
     session_id: str | None = None
     ts: float | None = None
 
@@ -321,15 +326,27 @@ def _result_anchor(name: str, use_input: dict[str, Any]) -> str:
     return name.lower()
 
 
-def mine_events(events: Iterable[Event], repo_prefix: str) -> list[SessionCandidate]:
+def mine_events(
+    events: Iterable[Event],
+    repo_prefix: str,
+    *,
+    edit_tools: Container[str] = frozenset(),
+) -> list[SessionCandidate]:
     """Run the deterministic candidate gates over one session's events.
 
     *repo_prefix* is the lowercased resolved repo root; only events whose
     ``cwd`` sits inside it count (same scoping as the distill miners). Pure
     and streaming: state is bounded regardless of transcript size.
+
+    *edit_tools* is the producing adapter's edit vocabulary. It orders each
+    candidate's files, putting the ones the session changed ahead of the ones
+    it only opened, because a decision is about the code that moved and the
+    surrounding reads are how it got there.
     """
     candidates: list[SessionCandidate] = []
-    trailing_files: deque[str] = deque(maxlen=_TRAILING_FILES)
+    #: (path, intent) for the recent file-touching calls, so a candidate opened
+    #: here knows which of the files in play were being changed at the time.
+    trailing_files: deque[tuple[str, str]] = deque(maxlen=_TRAILING_FILES)
     #: Candidates still collecting forward files, with their remaining budget.
     open_candidates: list[list[Any]] = []  # [candidate, remaining_tool_events]
     #: tool_use id -> (tool name, input) awaiting its result.
@@ -349,11 +366,13 @@ def mine_events(events: Iterable[Event], repo_prefix: str) -> list[SessionCandid
             continue
 
         if event.kind == "assistant" and event.tool_uses:
-            files = event_files(event)
-            for f in files:
-                trailing_files.append(f)
+            touches = event_file_touches(event, edit_tools=edit_tools)
+            files = [path for path, _ in touches]
+            trailing_files.extend(touches)
+            changed = {path for path, intent in touches if intent == "edit"}
             for entry in open_candidates:
                 entry[0].files.extend(f for f in files if f not in entry[0].files)
+                entry[0].edited |= changed
                 entry[1] -= 1
             open_candidates = [e for e in open_candidates if e[1] > 0]
             for use in event.tool_uses:
@@ -402,7 +421,8 @@ def mine_events(events: Iterable[Event], repo_prefix: str) -> list[SessionCandid
                             SessionCandidate(
                                 kind="dead_end",
                                 quotes=[q for q in (attempt, error, pivot) if q],
-                                files=list(dict.fromkeys(trailing_files)),
+                                files=list(dict.fromkeys(p for p, _ in trailing_files)),
+                                edited={p for p, i in trailing_files if i == "edit"},
                                 session_id=event.session_id,
                                 ts=event.ts,
                             )
@@ -427,7 +447,8 @@ def mine_events(events: Iterable[Event], repo_prefix: str) -> list[SessionCandid
                     SessionCandidate(
                         kind="user_correction",
                         quotes=quotes,
-                        files=list(dict.fromkeys(trailing_files)),
+                        files=list(dict.fromkeys(p for p, _ in trailing_files)),
+                        edited={p for p, i in trailing_files if i == "edit"},
                         session_id=event.session_id,
                         ts=event.ts,
                     )
@@ -453,11 +474,15 @@ def mine_events(events: Iterable[Event], repo_prefix: str) -> list[SessionCandid
                     SessionCandidate(
                         kind="explicit_choice",
                         quotes=[_clip(s) for s in sentences],
-                        files=list(dict.fromkeys(trailing_files)),
+                        files=list(dict.fromkeys(p for p, _ in trailing_files)),
+                        edited={p for p, i in trailing_files if i == "edit"},
                         session_id=event.session_id,
                         ts=event.ts,
                     )
                 )
+
+    for candidate in candidates:
+        candidate.files.sort(key=lambda f: f not in candidate.edited)
 
     # A choice with no code in play is a conversation, not a decision record.
     return [c for c in candidates if c.kind != "explicit_choice" or c.files]
@@ -583,7 +608,9 @@ def _sweep_harness(
             stream = recorder.observe(path, events)
             if collector is not None:
                 stream = collector.observe(stream)
-            for candidate in mine_events(stream, repo_prefix):
+            for candidate in mine_events(
+                stream, repo_prefix, edit_tools=adapter.edit_tool_names
+            ):
                 counts["found"] += 1
                 if store.add_raw(
                     hash_=candidate.hash,
@@ -684,7 +711,9 @@ def _gate_structured(item: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any
         if verify_quote(plain_rationale, plain_source, fuzzy_threshold=0.5) == "unverified":
             rationale = ""
     claimed = item.get("affected_files")
-    files = [f for f in claimed if f in raw["files"]] if isinstance(claimed, list) else []
+    # Iterate the mined list rather than the model's: same set either way,
+    # and the mined order is the one carrying what the session edited.
+    files = [f for f in raw["files"] if f in claimed] if isinstance(claimed, list) else []
     if not files and raw["kind"] != "user_correction":
         # A choice/dead end is about the code in play; a correction with no
         # named files is a repo-wide rule, and linking it to whatever files
@@ -708,7 +737,25 @@ def _gate_structured(item: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any
 _MAX_EVIDENCE_SESSIONS = 5
 
 
-def promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[ExtractedDecision]:
+def _staged_files(structured: dict[str, Any], row: dict[str, Any]) -> list[str]:
+    """The files a staged row claims, distinguishing empty from absent.
+
+    ``_gate_structured`` leaves the list empty on purpose for a correction the
+    model named no files for, because a repo-wide rule linked to whatever was
+    open governs the wrong code. Only a row with no structured claim at all
+    falls back to the gate hits, which staging accretes across observations:
+    the latest structuring pass wins over what earlier ones had in play.
+    """
+    claimed = structured.get("affected_files")
+    return list(claimed) if claimed is not None else list(row["files"])
+
+
+def promotion_decisions(
+    row: dict[str, Any],
+    repo_root: Path,
+    *,
+    indexed: Container[str] | None = None,
+) -> list[ExtractedDecision]:
     """decision_records-ready members for one promotable staging row.
 
     One member per observing session (capped) so each session becomes its own
@@ -719,12 +766,19 @@ def promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[ExtractedD
     acceptance event: authority comes from a person confirming the record.
     ``first_promotion`` still gates re-emission in the staging store, so a
     recurring candidate accretes evidence without re-proposing itself.
+
+    *indexed* is the indexed file set, and binding happens here rather than at
+    staging so a candidate staged before the set was threaded is repaired on
+    its way out rather than staying wrong.
     """
     structured = row["structured"]
     # Both session lanes store source="session"; the staging kind is what tells
     # a reviewer which one raised the candidate.
     lane = DISCOVERY_KIND if row.get("kind") == DISCOVERY_KIND else "session"
-    files = relative_files(structured.get("affected_files") or row["files"], repo_root)
+    files = bind_scope_files(
+        relative_files(_staged_files(structured, row), repo_root),
+        indexed,
+    )
     modules = resolve_module_nodes(files)
     # Staging carries a decision and a rationale and no more, so a promoted
     # record is thin by construction and is scored as such.
@@ -911,6 +965,7 @@ async def mine_session_decisions(
     harnesses: Sequence[str] | None = None,
     max_structured: int = MAX_STRUCTURED_PER_UPDATE,
     collect_discovery_spans: bool = False,
+    indexed: Container[str] | None = None,
     now: float | None = None,
 ) -> list[ExtractedDecision]:
     """Read this repo's new transcript lines once, and serve both consumers.
@@ -936,6 +991,10 @@ async def mine_session_decisions(
     assistant prose that the broad discovery lane consumes. It rides this pass
     for the same reason the episode recorder does: the cursor advances as the
     bytes are read, so a second reader would find an empty file.
+
+    *indexed* is the indexed file set, which bounds what a promoted record may
+    claim to govern. Omitting it keeps the previous behaviour, so a caller that
+    has no set does not start binding scope it cannot check.
     """
     repo_root = Path(repo_path).resolve()
     repo_prefix = str(repo_root).lower().rstrip("\\/")
@@ -1038,7 +1097,7 @@ async def mine_session_decisions(
         for row in store.promotable():
             if row["kind"] == DISCOVERY_KIND:
                 continue  # the broad lane runs its own promotion, under its own rules
-            decisions.extend(promotion_decisions(row, repo_root))
+            decisions.extend(promotion_decisions(row, repo_root, indexed=indexed))
             store.mark_emitted(row["key"], observations=row["observations"], now=now)
         store.commit()
 

@@ -9,7 +9,7 @@ Events never needs to know which agent produced the transcript.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Container, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -105,8 +105,16 @@ class Event:
 FILE_INPUT_KEYS = ("file_path", "path", "notebook_path")
 
 
-def event_files(event: Event) -> list[str]:
-    """File paths named by this event's tool inputs.
+def event_file_touches(
+    event: Event, *, edit_tools: Container[str] = frozenset()
+) -> list[tuple[str, str]]:
+    """``(path, intent)`` for every file this event's tool inputs name.
+
+    *intent* is ``"edit"`` when the call changed the file and ``"read"`` when
+    it only named one: the difference between the code a session decided about
+    and the code it looked at on the way. *edit_tools* comes from the adapter
+    that produced the event, because the harnesses do not share a tool
+    vocabulary; supplying none reports every touch as a read.
 
     Deliberately blind to prose and to shell commands: a path argued about in
     a paragraph, or passed to ``git`` inside a command string, is a mention
@@ -114,14 +122,19 @@ def event_files(event: Event) -> list[str]:
     meaning anything. Lives here rather than in a miner because more than one
     consumer folds the same stream and they must agree on what "touched" is.
     """
-    files: list[str] = []
+    touches: list[tuple[str, str]] = []
     for use in event.tool_uses:
         for key in FILE_INPUT_KEYS:
             value = use.input.get(key)
             if isinstance(value, str) and value.strip():
-                files.append(value)
+                touches.append((value, "edit" if use.name in edit_tools else "read"))
                 break
-    return files
+    return touches
+
+
+def event_files(event: Event) -> list[str]:
+    """File paths named by this event's tool inputs, intent discarded."""
+    return [path for path, _ in event_file_touches(event)]
 
 
 def is_prose_user_text(event: Event) -> bool:

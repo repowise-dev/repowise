@@ -66,6 +66,13 @@ class CodexAdapter(HarnessAdapter):
     """Normalizes Codex session JSONL into the shared Event stream."""
 
     name: ClassVar[str] = "codex"
+    #: Codex reaches a file through apply_patch or a shell command, and
+    #: _normalize_tool_name folds every one of those onto this single token,
+    #: so the set is one name rather than a family. Inert until Codex edits
+    #: carry a path: their input is the patch text under ``command``, and
+    #: nothing scrapes the ``*** Update File:`` markers out of it yet, so no
+    #: Codex edit currently reaches a consumer of this set.
+    edit_tool_names: ClassVar[frozenset[str]] = frozenset({"edit_file"})
 
     def __init__(self):
         self._tool_calls: dict[str, ToolUse] = {}

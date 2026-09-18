@@ -1851,6 +1851,10 @@ def run_update(
     # collect the observation-qualified promotions. They ride the same
     # decision upsert as the marker re-scan below. Everything stays local, and
     # the lane ships off: `decision source set session --on` enables it.
+    # The indexed file set bounds what a session-mined record may claim to
+    # govern: a transcript names scratch files, plan docs and sibling
+    # checkouts, and only this set knows which paths are this codebase.
+    indexed_files = frozenset(source_map) if source_map else None
     session_decisions: list = []
     try:
         from repowise.core.sessions.miners.decisions import mine_session_decisions
@@ -1863,6 +1867,7 @@ def run_update(
                     provider=session_provider,
                     harnesses=decision_policy.harnesses,
                     collect_discovery_spans=decision_policy.llm_allowed("session_discovery"),
+                    indexed=indexed_files,
                 )
             )
             if session_decisions and verbose:
@@ -1884,6 +1889,7 @@ def run_update(
                     repo_path,
                     provider=provider,
                     policy=decision_policy,
+                    indexed=indexed_files,
                 )
             )
         session_decisions = [*session_decisions, *outcome.decisions]

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from repowise.core.analysis.decisions.scope import commit_scope_files, derive_decision_scope
+from repowise.core.analysis.decisions.scope import (
+    bind_scope_files,
+    commit_scope_files,
+    derive_decision_scope,
+)
 
 
 def test_single_file_is_file() -> None:
@@ -81,3 +85,75 @@ def test_blank_and_duplicate_entries_do_not_consume_the_cap() -> None:
 
 def test_windows_separators_normalise_before_the_cap() -> None:
     assert commit_scope_files([r"pkg\m.py", "pkg/m.py"]) == ["pkg/m.py"]
+
+
+# ---------------------------------------------------------------------------
+# bind_scope_files: a scope may only name files the index holds
+# ---------------------------------------------------------------------------
+
+INDEXED = frozenset(
+    {
+        "packages/core/engine.py",
+        "packages/core/loader.py",
+        "tests/unit/test_engine.py",
+        "docs/DESIGN.md",
+        "examples/demo/main.py",
+    }
+)
+
+
+def test_a_path_the_index_does_not_hold_is_not_a_scope() -> None:
+    """The failure this exists for: a plan doc and a sibling checkout."""
+    assert bind_scope_files(
+        ["local-stash/PLAN.md", "backend/app/main.py", "packages/core/engine.py"], INDEXED
+    ) == ["packages/core/engine.py"]
+
+
+def test_a_candidate_that_names_nothing_real_binds_nothing() -> None:
+    assert bind_scope_files(["local-stash/PLAN.md", "C:/tmp/scratch.py"], INDEXED) == []
+
+
+def test_no_index_set_filters_nothing() -> None:
+    """A caller that cannot reach the set keeps the previous behaviour."""
+    assert bind_scope_files(["local-stash/PLAN.md"], None) == ["local-stash/PLAN.md"]
+
+
+def test_production_code_outranks_test_example_and_prose() -> None:
+    assert bind_scope_files(
+        [
+            "docs/DESIGN.md",
+            "examples/demo/main.py",
+            "tests/unit/test_engine.py",
+            "packages/core/engine.py",
+        ],
+        INDEXED,
+    ) == [
+        "packages/core/engine.py",
+        "tests/unit/test_engine.py",
+        "examples/demo/main.py",
+        "docs/DESIGN.md",
+    ]
+
+
+def test_the_callers_order_survives_inside_one_population() -> None:
+    """Which is how the edited-first order the miner applied reaches the record."""
+    assert bind_scope_files(["packages/core/loader.py", "packages/core/engine.py"], INDEXED) == [
+        "packages/core/loader.py",
+        "packages/core/engine.py",
+    ]
+
+
+def test_windows_separators_normalise_before_the_lookup() -> None:
+    assert bind_scope_files([r"packages\core\engine.py"], INDEXED) == ["packages/core/engine.py"]
+
+
+def test_blanks_and_duplicates_collapse() -> None:
+    assert bind_scope_files(
+        ["packages/core/engine.py", "packages/core/engine.py", "  ", ""], INDEXED
+    ) == ["packages/core/engine.py"]
+    assert bind_scope_files(None, INDEXED) == []
+
+
+def test_the_file_cap_still_applies() -> None:
+    wide = frozenset(f"pkg/m{i:03d}.py" for i in range(40))
+    assert len(bind_scope_files(sorted(wide), wide)) == 20

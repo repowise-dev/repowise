@@ -9,9 +9,17 @@ records to the widest level.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Container, Sequence
 
-__all__ = ["commit_scope_files", "derive_decision_scope", "resolve_module_nodes"]
+from repowise.core.support_paths import file_population
+from repowise.core.test_paths import is_test_related_path
+
+__all__ = [
+    "bind_scope_files",
+    "commit_scope_files",
+    "derive_decision_scope",
+    "resolve_module_nodes",
+]
 
 #: Upper bound on the directories one record may claim. A record naming files
 #: across more directories than this is not scoped by its module list anyway —
@@ -27,8 +35,26 @@ _MAX_MODULES = 12
 #: files (17 ``git_archaeology``, 86 ``pr``) carry 1,468 scope entries beyond
 #: it. 20 keeps the p75 record whole and matches the number ``inline_marker``
 #: already caps its graph neighbours at — a different quantity, but reusing the
-#: value avoids a third cap to reason about.
+#: value avoids a third cap to reason about. Also the ceiling on a
+#: session-mined record, through :func:`bind_scope_files`: a decision made in
+#: one conversation is not about every file that conversation happened to open.
 _MAX_FILES = 20
+
+
+#: Which population a scope entry is ranked under, narrowest claim first. A
+#: decision is about the system, so production code outranks the test that
+#: exercises it, which outranks an example, which outranks the docs and
+#: config files that describe it.
+_POPULATION_RANK = {"production": 0, "test": 1, "example": 2, "doc": 3}
+
+
+def _normalized(files: Sequence[str] | None) -> list[str]:
+    """POSIX-separated, stripped, deduped, in first-seen order."""
+    seen: dict[str, None] = {}
+    for f in files or []:
+        if f and f.strip():
+            seen.setdefault(f.replace("\\", "/").strip(), None)
+    return list(seen)
 
 
 def commit_scope_files(files: Sequence[str] | None) -> list[str]:
@@ -37,8 +63,44 @@ def commit_scope_files(files: Sequence[str] | None) -> list[str]:
     Sorted before truncating so which files survive the cap is reproducible,
     rather than depending on the order git happened to list them in.
     """
-    seen = {f.replace("\\", "/").strip() for f in files or [] if f and f.strip()}
-    return sorted(seen)[:_MAX_FILES]
+    return sorted(_normalized(files))[:_MAX_FILES]
+
+
+def bind_scope_files(
+    files: Sequence[str] | None,
+    indexed: Container[str] | None,
+) -> list[str]:
+    """The entries of *files* the index holds, best claim first.
+
+    *indexed* is the indexed file set — ingestion's ``source_map`` keys, the
+    only thing that has applied gitignore, size, binary and generated-file
+    rules. Validating against it rather than against the tree is what keeps a
+    plan doc, a scratchpad script, or a file belonging to a sibling checkout
+    out of a scope: those resolve on disk and are still not this codebase.
+    ``None`` means no set was supplied and nothing is filtered, so a caller
+    that cannot reach one keeps its previous behaviour. An empty set is the
+    same case and callers pass ``None`` for it, because filtering everything
+    away is never the right reading of a missing set.
+
+    Ceiling: ``source_map`` is keyed on the files that parsed, so a file that
+    was traversed and then failed to read or parse is dropped from a scope
+    naming it. That is the whole of the gap — a file with no parser never
+    reaches the traverser's own ``FileInfo`` either — and it is worth the
+    narrowing, because ``source_map`` is the one set both the full and the
+    incremental pipeline already carry to this point.
+
+    Order is the claim quality: population first, then the order the caller
+    supplied, which is where a producer that knows which paths were edited
+    puts them first. Stable, so both rankings survive together.
+    """
+    kept = _normalized(files)
+    if indexed is not None:
+        kept = [f for f in kept if f in indexed]
+    ranked = sorted(
+        kept,
+        key=lambda f: _POPULATION_RANK[file_population(f, is_test=is_test_related_path(f))],
+    )
+    return ranked[:_MAX_FILES]
 
 
 def resolve_module_nodes(files: Sequence[str] | None) -> list[str]:
