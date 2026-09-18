@@ -502,6 +502,13 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     repo_phase_timings: dict[str, float] = callback.timings
     if repo_phase_timings:
         state["phase_timings"] = repo_phase_timings
+    # The generation phase rebuilds the embedder, and that second build can
+    # degrade even when the header probe was clean (issue #1369). It records the
+    # degradation on ``result``; persist it here so an agent-driven workspace run
+    # sees it in state.json after the terminal is gone, like the single-repo flow.
+    gen_embedder_degraded = getattr(result, "embedder_degraded", None)
+    if gen_embedder_degraded:
+        state["degraded"] = [gen_embedder_degraded]
     apply_git_history_coverage_state(state, result)
     from repowise.core.generation.selection import count_documentable_files
     from repowise.core.index_scope import file_page_scope, stamp_index_scope
