@@ -26,6 +26,20 @@ from .incremental import _build_repo_graph
 log = structlog.get_logger(__name__)
 
 
+
+def backfill_docs_pointer(new_state: dict, state: dict) -> None:
+    """Carry ``last_sync_commit`` onto a docs pointer that never got one.
+
+    Falsy, not absent. A store that has never had a docs pass carries
+    ``last_docs_commit`` as an explicit null, so a membership test reads it as
+    "already set" and the repair never runs -- which is what left such a store
+    failing every update with "No previous sync found" (#1507 fixed the same
+    confusion on the write side, in ``generate``).
+    """
+    if not state.get("last_docs_commit") and state.get("last_sync_commit"):
+        new_state["last_docs_commit"] = state["last_sync_commit"]
+
+
 def _repair_module_attribution(repo_path: Path) -> int:
     """Re-derive every health row's ``module`` from the repo layout on disk.
 
@@ -500,8 +514,7 @@ def _persist_index_only_update(
             "[yellow]Some data for this commit range was not persisted; "
             "the next update will re-cover it.[/yellow]"
         )
-    if "last_docs_commit" not in state and "last_sync_commit" in state:
-        new_state["last_docs_commit"] = state["last_sync_commit"]
+    backfill_docs_pointer(new_state, state)
     if knowledge_graph_result is not None:
         try:
             from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
