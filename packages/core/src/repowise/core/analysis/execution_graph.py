@@ -267,8 +267,19 @@ class ExecutionGraphIndex:
                     callers_with_site_metadata.add(source)
                     _append_unique(by_caller_line, (source, line), target, caller_line_seen)
 
-    def resolve_function(self, path: str, func_start: int) -> str | None:
-        """Resolve a function definition, tolerating decorator line offsets."""
+    def resolve_function(
+        self, path: str, func_start: int, *, func_end: int | None = None
+    ) -> str | None:
+        """Resolve a function definition, tolerating decorator line offsets.
+
+        Without *func_end* the fallback returns the innermost symbol whose range
+        contains *func_start*, which is what a caller attributing a fact to
+        whatever encloses it wants. Pass *func_end* to ask for the function
+        itself: a symbol that outlives it is then rejected rather than returned
+        as a stand-in. A TS ``const suite = describe(...)`` is one symbol
+        spanning every ``it`` callback inside it, so containment alone would
+        answer the same node for all of them.
+        """
         if func_start == 0:
             module = module_node_id(path)
             return module if module in self.nodes else None
@@ -278,6 +289,8 @@ class ExecutionGraphIndex:
         best: str | None = None
         best_start = -1
         for start, end, node_id in self._ranges.get(path, ()):
+            if func_end is not None and end > func_end:
+                continue
             if start <= func_start <= end and (
                 start > best_start or (start == best_start and (best is None or node_id < best))
             ):

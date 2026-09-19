@@ -110,6 +110,17 @@ log = structlog.get_logger(__name__)
 # walk itself is unchanged, but this stamp keys the walk and duplication-token
 # caches, so bumping it re-walks and re-tokenizes anyway.
 #
+# v20: ``assertion_free_test`` stops reading a containing symbol as the test.
+# ``ExecutionGraphIndex.resolve_function`` falls back to the innermost symbol
+# whose range holds the start line, which tolerates a decorator offset but also
+# answers a wrapper declaration -- a TS ``const suite = describe(...)`` spans
+# every callback inside it -- for every test in it at once. One delegating test
+# then suppressed its silent siblings through that wrapper's edge. The oracle
+# pass now asks for the function rather than its enclosure, so those findings
+# come back, and nothing re-mints the rows a v19 store suppressed except this
+# stamp. The walk is unchanged by this entry and no score moves; the marker is
+# advisory.
+#
 # v19: ``assertion_free_test`` resolves a test's oracle across file
 # boundaries, on a call edge rather than by name, so a test that delegates its
 # checks to a helper in another module is no longer called assertion-free. The
@@ -182,7 +193,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 19
+HEALTH_ANALYZER_VERSION = 20
 
 
 def walked_functions(

@@ -191,7 +191,7 @@ def collect_cross_file_oracles(
         for fn in fcx.functions:
             if not (fn.assertion_count or fn.verification_count):
                 continue
-            sid = index.resolve_function(path, fn.start_line)
+            sid = index.resolve_function(path, fn.start_line, func_end=fn.end_line)
             if sid is not None:
                 oracle_name.setdefault(sid, fn.name)
     if not oracle_name:
@@ -223,7 +223,13 @@ def _resolve_one(
     oracle_name: dict[str, str],
     by_file_name: dict[str, dict[str, set[str]]],
 ) -> OracleReach | None:
-    sid = index.resolve_function(path, fn.start_line)
+    # ``func_end`` asks for this function rather than for whatever encloses it.
+    # The containment fallback answers the innermost symbol spanning the start
+    # line, and a symbol wrapped around several test callbacks spans all of
+    # them, so without the bound one delegating test would resolve to the same
+    # node as its silent siblings and suppress them. Unresolved here falls
+    # through to the file-edge lane, whose two conjuncts are per-function.
+    sid = index.resolve_function(path, fn.start_line, func_end=fn.end_line)
     if sid is not None:
         info = reach.get(sid)
         # ``distance == 0`` means this node IS an oracle, which happens when a
