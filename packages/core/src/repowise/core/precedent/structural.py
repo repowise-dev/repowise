@@ -387,7 +387,7 @@ def _formatter_drift(root: Path, _traverser: Any) -> list[Episode]:
     executable, a timeout, a crash, unparsable output — yields no episode. A
     budget that quietly produces a partial count is worse than no fact at all.
     """
-    if not _declares_ruff_format(root):
+    if not declares_ruff_format(root):
         return []
     executable = _ruff_executable(root)
     if executable is None:
@@ -434,16 +434,20 @@ def _formatter_drift(root: Path, _traverser: Any) -> list[Episode]:
     ]
 
 
-def _declares_ruff_format(root: Path) -> bool:
+def declares_ruff_format(root: Path) -> bool:
     """True when the repo names ruff, and only ruff, as its formatter.
 
-    Deliberately stricter than :func:`detect_build_commands`, whose format
-    inference fires on a ``pyproject.toml`` containing the words "ruff" and
-    "format" anywhere. That is fine for a suggested command and wrong as the
-    premise of a stored fact: ruff-as-linter beside black-as-formatter is a
+    Shared by :func:`detect_build_commands` (``generation/editor_files/
+    tech_stack.py``), which used to infer the format command from a
+    ``pyproject.toml`` containing the words "ruff" and "format" anywhere. A
+    comment like "Ruff -- linter + formatter" was enough to fire that
+    substring test, which is wrong as the premise of either a suggested
+    command or a stored fact: ruff-as-linter beside black-as-formatter is a
     common pairing, and the two disagree, so the inference would tell a
-    black-clean repo it is not formatter-clean by a formatter it never chose.
-    A repo that declares any competing formatter is silent regardless.
+    black-clean repo it is not formatter-clean by a formatter it never chose,
+    or hand an agent a `ruff format .` instruction that rewrites the tree of
+    a repo that never configured the formatter (issue #2384). A repo that
+    declares any competing formatter is silent regardless.
     """
     pyproject = _read_text(root / "pyproject.toml")
     if any(marker in pyproject for marker in _COMPETING_FORMATTERS):

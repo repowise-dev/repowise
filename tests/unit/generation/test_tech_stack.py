@@ -366,6 +366,35 @@ def test_detects_ruff_from_pyproject(tmp_path):
     assert "ruff" in cmds["lint"]
 
 
+def test_a_comment_mentioning_formatter_does_not_prescribe_ruff_format(tmp_path):
+    # issue #2384: ruff configured as a linter only, with "formatter"
+    # appearing solely inside comments, must not emit a format command.
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\n"
+        "line-length = 88  # Ruff - linter + formatter\n"
+        '"E501",  # line too long (handled by formatter)\n',
+        encoding="utf-8",
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert "format" not in cmds
+
+
+def test_a_declared_ruff_format_section_prescribes_ruff_format(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 88\n\n[tool.ruff.format]\n", encoding="utf-8"
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert cmds.get("format") == "ruff format ."
+
+
+def test_a_competing_formatter_suppresses_the_ruff_format_command(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 88\n\n[tool.black]\n", encoding="utf-8"
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert "format" not in cmds
+
+
 def test_detects_npm_scripts(tmp_path):
     pkg = {
         "name": "myapp",
