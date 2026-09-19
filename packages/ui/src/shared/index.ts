@@ -45,6 +45,7 @@ export {
   type ChartSkeletonProps,
 } from "./loading-skeletons";
 export { PageShell, type PageShellProps } from "./page-shell";
+export { ReleaseNotice, type ReleaseNoticeProps } from "./release-notice";
 export { ViewTabs, type ViewTab, type ViewTabsProps } from "./view-tabs";
 export { MetricCard, type MetricCardProps } from "./metric-card";
 export {
