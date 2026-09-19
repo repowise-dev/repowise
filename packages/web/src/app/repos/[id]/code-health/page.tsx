@@ -539,8 +539,8 @@ export default function CodeHealthPage() {
           Health scores changed in this release.
         </span>{" "}
         Co-change coupling is now measured relative to your repository and decays with
-        commit history rather than calendar time, so about 13% of files move a band.
-        Scores are not comparable to snapshots taken before this release.
+        commit history rather than calendar time, so roughly one file in ten moves a
+        band. Scores are not comparable to snapshots taken before this release.
       </ReleaseNotice>
 
       {meta ? (
