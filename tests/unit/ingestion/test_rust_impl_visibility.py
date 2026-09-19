@@ -144,5 +144,5 @@ impl Value {
     vis = _symbols_by_kind_and_name(src)
     assert vis[("enum", "State")] == "public"
     assert vis[("impl", "State")] == "public"
-    assert vis[("union", "Value")] == "public"
+    assert vis[("struct", "Value")] == "public"
     assert vis[("impl", "Value")] == "public"
