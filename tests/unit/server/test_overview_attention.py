@@ -30,7 +30,8 @@ async def _seed_health_findings(session_factory, repo_id: str, count: int = 3) -
                     "biomarker_type": "brain_method",
                     "severity": "critical" if i == 0 else "low",
                     "function_name": f"fn_{i}",
-                    "health_impact": 3.0 - i,
+                    # 9.0 leaves a score of 1.0 (critical); 0.5 leaves 9.5.
+                    "health_impact": 9.0 if i == 0 else 0.5,
                     "dimension": "defect",
                 }
                 for i in range(count)
@@ -126,7 +127,8 @@ async def test_security_outranks_an_equally_severe_health_finding(
                     "file_path": "src/a.py",
                     "biomarker_type": "brain_method",
                     "severity": "high",
-                    "health_impact": 9.0,
+                    # 5.0 deducted leaves a score of 5.0, which is `high`.
+                    "health_impact": 5.0,
                     "dimension": "defect",
                 }
             ],
@@ -236,7 +238,8 @@ async def test_one_source_cannot_own_a_band(client: AsyncClient, session_factory
                     "file_path": f"src/mod_{i}.py",
                     "biomarker_type": "brain_method",
                     "severity": "high",
-                    "health_impact": 9.0 - i,
+                    # Scores 5.00 to 5.35, all inside the `high` band.
+                    "health_impact": 5.0 - i * 0.05,
                     "dimension": "defect",
                 }
                 for i in range(PER_SOURCE_CAP)
@@ -446,3 +449,61 @@ async def test_a_dormant_silo_never_leads_over_an_active_one(
     # Lower concentration, far more activity, and it leads.
     assert ownership["lead"]["target_id"] == "src/core/engine.py"
     assert "40 commits in 90d" in ownership["lead"]["description"]
+
+
+@pytest.mark.anyio
+async def test_health_leads_with_the_worst_file_not_the_worst_finding(
+    client: AsyncClient, session_factory
+) -> None:
+    """`health_impact` saturates, so ranking findings barely orders the top.
+
+    A file carrying many findings outranks a single finding that happens to sit
+    on the per-finding cap, which is what the file's own score already says.
+    """
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with get_session(session_factory) as session:
+        await crud.save_health_findings(
+            session,
+            repo_id,
+            [
+                # One finding, on the cap, and the worst band.
+                {
+                    "file_path": "src/one_bad_function.py",
+                    "biomarker_type": "nested_complexity",
+                    "severity": "critical",
+                    "health_impact": 2.5,
+                    "dimension": "defect",
+                },
+                # Six findings totalling far more deduction.
+                *[
+                    {
+                        "file_path": "src/app.py",
+                        "biomarker_type": "complex_method" if i else "god_class",
+                        "severity": "high",
+                        "health_impact": 2.0 if i == 0 else 1.5,
+                        "dimension": "defect",
+                    }
+                    for i in range(6)
+                ],
+            ],
+        )
+
+    async with get_session(session_factory) as session:
+        result = await build_attention(
+            session, repo_id, decision_health={}, knowledge_silos=[]
+        )
+
+    health = [i for i in result["items"] if i["type"] == "health_finding"]
+    # One row per file, not per finding.
+    assert len(health) == 2
+    assert health[0]["target_id"] == "src/app.py"
+    assert "6 findings" in health[0]["description"]
+    # Named by its own heaviest biomarker.
+    assert health[0]["subtype"] == "god_class"
+    # Severity describes the file: 9.5 deducted leaves a score of 0.5.
+    assert health[0]["severity"] == "critical"
+    # And the single capped finding leaves a score of 7.5, which is not.
+    assert health[1]["severity"] == "low"
+    # The count is still findings, so the row can say how much the area holds.
+    assert result["by_source"]["health_finding"] == 7

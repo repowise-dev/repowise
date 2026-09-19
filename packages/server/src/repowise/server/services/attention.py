@@ -106,6 +106,26 @@ def _test_paths(repo_id: str):
     )
 
 
+#: Band edges from `core.analysis.health.grading`, mapped onto this list's
+#: severity vocabulary. A file scores ``10 - sum(impact)``.
+def _severity_of_file_score(score: float) -> str:
+    """A file's own band, expressed as a severity.
+
+    The health item is a file, so its severity has to describe the file. Taking
+    the worst *finding's* severity instead inverted the ranking: a file with one
+    finding on the per-finding cap (score 7.5, comfortably fair) called itself
+    critical and outranked a file carrying thirty-eight findings and twelve
+    points of deduction (score 1.0, genuinely at risk).
+    """
+    if score < 4.0:
+        return "critical"
+    if score < 5.5:
+        return "high"
+    if score < 7.0:
+        return "medium"
+    return "low"
+
+
 def _severity_of_drift(confidence: float | None) -> str:
     """Bucket a drift confidence onto the shared ladder.
 
@@ -118,56 +138,76 @@ def _severity_of_drift(confidence: float | None) -> str:
 
 
 async def _health_items(session: AsyncSession, repo_id: str) -> tuple[list[dict], int, str]:
-    """Open code-health findings, worst impact first.
+    """Open code-health findings, aggregated to the file, worst file first.
 
-    This one query is also what puts the test-quality work on the page: mock
-    saturation, assertion-free tests, untested hotspots and coverage gaps are
-    ``biomarker_type`` values inside ``health_findings`` rather than stores of
+    A file rather than a finding, because `health_impact` saturates. The cap is
+    2.50 and several criticals sit exactly on it, so ranking findings against
+    each other decides the top of the list on a tie-break rather than on the
+    metric — it surfaced one `nested_complexity` finding ahead of a file
+    carrying thirty-eight findings and twelve points of deduction. Summed
+    impact is the file's whole score (a file scores `10 - sum`), so this ranks
+    on the number the product already stands behind.
+
+    This is also what puts the test-quality work on the page: mock saturation,
+    assertion-free tests, untested hotspots and coverage gaps are
+    `biomarker_type` values inside `health_findings` rather than stores of
     their own, so they arrive here without a special case.
 
-    ``(repository_id, status, health_impact)`` is indexed, so the ordered limit
-    is an index range rather than a sort over the table.
+    `total` stays a count of findings, not of files. The row says how much the
+    area holds; the lead says where to start.
     """
+    scoped = (
+        HealthFinding.repository_id == repo_id,
+        HealthFinding.status == "open",
+        HealthFinding.file_path.not_in(_test_paths(repo_id)),
+    )
     rows = (
-        (
-            await session.execute(
-                select(HealthFinding)
-                .where(
-                    HealthFinding.repository_id == repo_id,
-                    HealthFinding.status == "open",
-                    HealthFinding.file_path.not_in(_test_paths(repo_id)),
-                )
-                .order_by(HealthFinding.health_impact.desc())
-                .limit(PER_SOURCE_CAP)
+        await session.execute(
+            select(
+                HealthFinding.file_path,
+                func.sum(HealthFinding.health_impact).label("impact"),
+                func.count(HealthFinding.id).label("findings"),
             )
+            .where(*scoped)
+            .group_by(HealthFinding.file_path)
+            .order_by(func.sum(HealthFinding.health_impact).desc())
+            .limit(PER_SOURCE_CAP)
         )
-        .scalars()
-        .all()
-    )
-    total = (
-        await session.scalar(
-            select(func.count(HealthFinding.id)).where(
-                HealthFinding.repository_id == repo_id,
-                HealthFinding.status == "open",
-                HealthFinding.file_path.not_in(_test_paths(repo_id)),
-            )
+    ).all()
+    total = await session.scalar(select(func.count(HealthFinding.id)).where(*scoped)) or 0
+    if not rows:
+        return [], int(total), ""
+
+    # The biomarker to name each file by: its own heaviest one. Bounded to the
+    # handful of files above, so this is a keyed read rather than a scan.
+    paths = [r.file_path for r in rows]
+    lead_biomarker: dict[str, str] = {}
+    for path, biomarker in (
+        await session.execute(
+            select(HealthFinding.file_path, HealthFinding.biomarker_type)
+            .where(*scoped, HealthFinding.file_path.in_(paths))
+            .order_by(HealthFinding.health_impact.desc())
         )
-        or 0
-    )
+    ).all():
+        lead_biomarker.setdefault(path, biomarker)
+
     items = [
         {
-            "id": f"health-{row.id}",
+            "id": f"health-{row.file_path}",
             "type": "health_finding",
-            # The path, not a sentence about the path. The UI turns
-            # `biomarker_type` into the human label (it owns that glossary), so
-            # the row reads "Brain method · src/foo.py" without this module
-            # holding a second copy of the vocabulary.
-            "title": row.function_name or row.file_path,
-            "description": row.file_path,
-            "severity": row.severity if row.severity in SEVERITY_RANK else "medium",
+            "title": row.file_path,
+            "description": (
+                f"{row.findings} finding{'' if row.findings == 1 else 's'}"
+                f" · {float(row.impact or 0.0):.1f} deducted"
+            ),
+            "severity": _severity_of_file_score(
+                max(1.0, 10.0 - float(row.impact or 0.0))
+            ),
             "target_id": row.file_path,
-            "subtype": row.biomarker_type,
-            "weight": float(row.health_impact or 0.0),
+            # The UI resolves this through the biomarker glossary it owns, so
+            # this module holds no second copy of that vocabulary.
+            "subtype": lead_biomarker.get(row.file_path),
+            "weight": float(row.impact or 0.0),
         }
         for row in rows
     ]
