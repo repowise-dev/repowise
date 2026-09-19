@@ -19,6 +19,8 @@ from sqlalchemy import select
 
 from repowise.core.analysis.decisions.scope import (
     SCOPE_BASIS_FOOTPRINT,
+    SCOPE_BASIS_PROXIMITY,
+    SCOPE_BASIS_REPOSITORY,
     SCOPE_BASIS_STATED,
 )
 from repowise.core.persistence.crud import bulk_upsert_decisions, update_decision_metadata
@@ -26,8 +28,16 @@ from repowise.core.persistence.decision_graph import (
     get_governed_nodes,
     get_governing_decisions,
 )
-from repowise.core.persistence.decision_migration import backfill_scope_basis
-from repowise.core.persistence.models import DecisionNodeLink, DecisionRecord
+from repowise.core.persistence.decision_migration import (
+    backfill_scope_basis,
+    backfill_session_scope_basis,
+    prune_unindexed_scope_files,
+)
+from repowise.core.persistence.models import (
+    DecisionNodeLink,
+    DecisionRecord,
+    GraphNode,
+)
 from tests.unit.persistence.helpers import insert_repo
 
 #: The mechanism file and the bystander, as in the real commit.
@@ -319,3 +329,158 @@ async def test_accepting_without_a_scope_leaves_the_basis_alone(async_session):
 
     refreshed = await async_session.get(DecisionRecord, ids[0])
     assert refreshed.scope_basis == SCOPE_BASIS_FOOTPRINT
+
+
+# ---------------------------------------------------------------------------
+# Session scope: proximity is not a claim
+# ---------------------------------------------------------------------------
+
+_A1 = "pkg/area_a/one.py"
+_A2 = "pkg/area_a/two.py"
+_B1 = "pkg/area_b/one.py"
+
+
+def _session(title: str, *, files: list[str], kind: str = "architectural") -> dict:
+    payload = _decision(title, files=files, source="session")
+    payload["kind"] = kind
+    return payload
+
+
+async def test_backfill_marks_a_session_record_spanning_directories(async_session):
+    repo = await insert_repo(async_session)
+    ids = await bulk_upsert_decisions(
+        async_session, repo.id, [_session("Restated while editing", files=[_A1, _B1])]
+    )
+    assert await get_governing_decisions(async_session, repo.id, _A1) != []
+
+    assert await backfill_session_scope_basis(async_session, repo.id) == 1
+
+    rec = await async_session.get(DecisionRecord, ids[0])
+    assert rec.scope_basis == SCOPE_BASIS_PROXIMITY
+    assert json.loads(rec.affected_files_json) == [_A1, _B1]
+    assert await get_governing_decisions(async_session, repo.id, _A1) == []
+
+
+async def test_backfill_leaves_a_session_record_inside_one_directory(async_session):
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session, repo.id, [_session("About this area", files=[_A1, _A2])]
+    )
+    assert await backfill_session_scope_basis(async_session, repo.id) == 0
+    assert await get_governing_decisions(async_session, repo.id, _A1) != []
+
+
+async def test_backfill_scopes_an_agreement_to_the_repository(async_session):
+    """It governs how the work is conducted, so no file is what it is about."""
+    repo = await insert_repo(async_session)
+    ids = await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_session("Never attribute the agent", files=[_A1], kind="agreement")],
+    )
+    assert await backfill_session_scope_basis(async_session, repo.id) == 1
+    rec = await async_session.get(DecisionRecord, ids[0])
+    assert rec.scope_basis == SCOPE_BASIS_REPOSITORY
+    assert await get_governing_decisions(async_session, repo.id, _A1) == []
+
+
+async def test_the_session_backfill_leaves_other_sources_alone(async_session):
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_decision("Marker", files=[_A1, _B1], source="inline_marker")],
+    )
+    assert await backfill_session_scope_basis(async_session, repo.id) == 0
+    assert await get_governing_decisions(async_session, repo.id, _A1) != []
+
+
+async def test_the_session_backfill_is_idempotent(async_session):
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session, repo.id, [_session("Wide", files=[_A1, _B1])]
+    )
+    assert await backfill_session_scope_basis(async_session, repo.id) == 1
+    assert await backfill_session_scope_basis(async_session, repo.id) == 0
+
+
+# ---------------------------------------------------------------------------
+# Pruning scope entries the index does not hold
+# ---------------------------------------------------------------------------
+
+
+async def _index_files(session, repo_id, paths: list[str]) -> None:
+    """Enough file nodes to clear the unbuilt-graph guard."""
+    filler = [f"pkg/filler/f{i:03d}.py" for i in range(60)]
+    for node_id in [*paths, *filler]:
+        session.add(
+            GraphNode(
+                repository_id=repo_id,
+                node_id=node_id,
+                node_type="file",
+                name=node_id.rsplit("/", 1)[-1],
+            )
+        )
+    await session.flush()
+
+
+async def test_prune_drops_a_path_the_index_does_not_hold(async_session):
+    """A transcript names plan docs and sibling checkouts; they resolve on
+    disk and are still not this codebase."""
+    repo = await insert_repo(async_session)
+    await _index_files(async_session, repo.id, [_A1])
+    ids = await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_session("Mixed", files=[_A1, "local-stash/plan/NOTES.md"])],
+    )
+
+    assert await prune_unindexed_scope_files(async_session, repo.id) == 1
+
+    rec = await async_session.get(DecisionRecord, ids[0])
+    assert json.loads(rec.affected_files_json) == [_A1]
+    assert await get_governing_decisions(async_session, repo.id, _A1) != []
+    rows = (
+        (
+            await async_session.execute(
+                select(DecisionNodeLink).where(DecisionNodeLink.decision_id == ids[0])
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert "local-stash/plan/NOTES.md" not in {r.node_id for r in rows}
+
+
+async def test_prune_does_nothing_when_the_graph_looks_unbuilt(async_session):
+    """Pruning against a failed graph build would empty every scope."""
+    repo = await insert_repo(async_session)
+    ids = await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_session("Mixed", files=[_A1, "local-stash/plan/NOTES.md"])],
+    )
+    assert await prune_unindexed_scope_files(async_session, repo.id) == 0
+    rec = await async_session.get(DecisionRecord, ids[0])
+    assert len(json.loads(rec.affected_files_json)) == 2
+
+
+async def test_prune_is_idempotent(async_session):
+    repo = await insert_repo(async_session)
+    await _index_files(async_session, repo.id, [_A1])
+    await bulk_upsert_decisions(
+        async_session, repo.id, [_session("Mixed", files=[_A1, "local-stash/x.md"])]
+    )
+    assert await prune_unindexed_scope_files(async_session, repo.id) == 1
+    assert await prune_unindexed_scope_files(async_session, repo.id) == 0
+
+
+async def test_prune_rewrites_the_module_list_with_the_files(async_session):
+    repo = await insert_repo(async_session)
+    await _index_files(async_session, repo.id, [_A1])
+    ids = await bulk_upsert_decisions(
+        async_session, repo.id, [_session("Mixed", files=[_A1, "outside/gone.py"])]
+    )
+    await prune_unindexed_scope_files(async_session, repo.id)
+    rec = await async_session.get(DecisionRecord, ids[0])
+    assert json.loads(rec.affected_modules_json) == ["pkg/area_a"]

@@ -59,7 +59,7 @@ import structlog
 from repowise.core.analysis.decisions.discovery.spans import SpanCollector
 from repowise.core.analysis.decisions.extractor import ExtractedDecision
 from repowise.core.analysis.decisions.kinds import classify_kind
-from repowise.core.analysis.decisions.lifecycle import bundles_decisions
+from repowise.core.analysis.decisions.lifecycle import AGREEMENT_KIND, bundles_decisions
 from repowise.core.analysis.decisions.policy import DEFAULT_HARNESSES, resolve_policy
 from repowise.core.analysis.decisions.provenance import (
     completeness,
@@ -68,7 +68,11 @@ from repowise.core.analysis.decisions.provenance import (
     verify_quote,
 )
 from repowise.core.analysis.decisions.rationale_comments import CAUSAL_MARKERS
-from repowise.core.analysis.decisions.scope import bind_scope_files, resolve_module_nodes
+from repowise.core.analysis.decisions.scope import (
+    bind_scope_files,
+    resolve_module_nodes,
+    session_scope_basis,
+)
 from repowise.core.distill.corrections import command_anchor
 from repowise.core.precedent.transcript_episodes import (
     TranscriptEpisodeRecorder,
@@ -839,6 +843,9 @@ def promotion_decisions(
         structured.get("rationale", "") or "",
         source="session",
     )
+    # The files stay on the record; whether they are a claim about those files
+    # is a separate question, and this is where both answers are known.
+    scope_basis = session_scope_basis(files, is_agreement=kind == AGREEMENT_KIND)
     return [
         ExtractedDecision(
             title=row["title"],
@@ -846,6 +853,7 @@ def promotion_decisions(
             rationale=structured.get("rationale", ""),
             affected_files=files,
             affected_modules=modules,
+            scope_basis=scope_basis,
             source="session",
             evidence_commits=[sid] if sid else [],
             confidence=confidence,

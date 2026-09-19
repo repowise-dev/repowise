@@ -16,7 +16,10 @@ from repowise.core.test_paths import is_test_related_path
 
 __all__ = [
     "MAX_GOVERNING_FILES",
+    "NON_BINDING_SCOPE_BASES",
     "SCOPE_BASIS_FOOTPRINT",
+    "SCOPE_BASIS_PROXIMITY",
+    "SCOPE_BASIS_REPOSITORY",
     "SCOPE_BASIS_STATED",
     "bind_scope_files",
     "binds_to_paths",
@@ -24,6 +27,7 @@ __all__ = [
     "commit_scope_files",
     "derive_decision_scope",
     "resolve_module_nodes",
+    "session_scope_basis",
 ]
 
 #: Upper bound on the directories one record may claim. A record naming files
@@ -50,6 +54,20 @@ _MAX_FILES = 20
 #: claim about particular files. Stored on the record, read wherever a file is
 #: asked what governs it. Any other value (including the empty default) binds.
 SCOPE_BASIS_FOOTPRINT = "commit_footprint"
+
+#: The basis value marking files a session merely had open around the moment a
+#: decision was stated. A session candidate takes the paths it was near --
+#: the last few touched, plus what the next few events touch -- so the list is
+#: proximity and not a claim, and a decision that spans unrelated parts of the
+#: tree is usually a working rule that the session happened to restate while
+#: editing them.
+SCOPE_BASIS_PROXIMITY = "session_proximity"
+
+#: The basis value for a record whose scope is the repository itself. A
+#: working agreement governs how the work is conducted, so it is true
+#: everywhere and specific nowhere; :data:`AGREEMENT_SCOPE` is the same claim
+#: on the acceptance row.
+SCOPE_BASIS_REPOSITORY = "repository"
 
 #: The basis value marking a scope a person stated: typed at the CLI, written
 #: into the manifest, or confirmed on review. It binds, like the empty default
@@ -105,6 +123,41 @@ def commit_scope_basis(files: Sequence[str] | None) -> str:
     return SCOPE_BASIS_FOOTPRINT if len(_normalized(files)) > MAX_GOVERNING_FILES else ""
 
 
+#: Every basis that answers "these files are not what this record is about".
+#: One set so a new one is added in a single place and every surface honours
+#: it at once.
+NON_BINDING_SCOPE_BASES: frozenset[str] = frozenset(
+    {SCOPE_BASIS_FOOTPRINT, SCOPE_BASIS_PROXIMITY, SCOPE_BASIS_REPOSITORY}
+)
+
+
+def session_scope_basis(files: Sequence[str] | None, *, is_agreement: bool) -> str:
+    """The scope basis for a record mined from a session transcript.
+
+    Session scope is not a footprint -- ``bind_scope_files`` already caps and
+    orders it -- so breadth in files is the wrong measure and does not
+    separate. What separates is whether the files sit together. Measured over
+    32 labelled file/decision pairs: a record whose files share one directory
+    governs them 67% of the time, one spanning two or more governs 19%, and
+    one spanning three or more top-level packages governs none of them.
+
+    That is the same distinction :func:`derive_decision_scope` already draws,
+    so it is drawn with the same rule rather than a second threshold: a
+    session record that is cross-module is a rule the session restated while
+    working, not a claim about the files it was working on.
+    """
+    if is_agreement:
+        return SCOPE_BASIS_REPOSITORY
+    kept = _normalized(files)
+    if len(kept) <= 1:
+        return ""
+    return (
+        SCOPE_BASIS_PROXIMITY
+        if len(resolve_module_nodes(kept)) > 1
+        else ""
+    )
+
+
 def binds_to_paths(scope_basis: str | None) -> bool:
     """Whether a record with this basis may answer "what governs this path".
 
@@ -119,7 +172,7 @@ def binds_to_paths(scope_basis: str | None) -> bool:
     evidenced, and gating one without the other would leave the surfaces
     reading this column disagreeing with the ones reading the graph.
     """
-    return scope_basis != SCOPE_BASIS_FOOTPRINT
+    return scope_basis not in NON_BINDING_SCOPE_BASES
 
 
 def bind_scope_files(

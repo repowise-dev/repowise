@@ -1017,14 +1017,20 @@ async def _persist_full_update_async(
                 from repowise.core.persistence.decision_migration import (
                     apply_migration,
                     backfill_scope_basis,
+                    backfill_session_scope_basis,
+                    prune_unindexed_scope_files,
                 )
 
                 await apply_migration(session, repo_id)
 
-                # Runs every index, beside the classification repair and for
-                # the same reason: a record written before the basis existed
+                # Run every index, beside the classification repair and for
+                # the same reason: a record written before these rules existed
                 # is only reachable from code that runs on an existing store.
+                # The prune runs first so the basis repairs judge the file
+                # list they will leave behind.
+                await prune_unindexed_scope_files(session, repo_id)
                 await backfill_scope_basis(session, repo_id)
+                await backfill_session_scope_basis(session, repo_id)
 
                 if require_decision_persist_success:
                     from repowise.core.persistence.crud import (
