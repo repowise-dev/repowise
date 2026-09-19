@@ -164,7 +164,7 @@ def test_forward_files_attach_to_correction():
         _tool_call("Edit", {"file_path": "C:\\Users\\x\\repo\\adapter.py"}),
     ]
     (candidate,) = mine_events(events, REPO_PREFIX)
-    assert candidate.files == ["C:\\Users\\x\\repo\\adapter.py"]
+    assert candidate.files == ["adapter.py"]
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +183,27 @@ def test_choice_near_file_activity_is_candidate():
     (candidate,) = mine_events(events, REPO_PREFIX)
     assert candidate.kind == "explicit_choice"
     assert candidate.quotes == [CHOICE_TEXT]
-    assert candidate.files == ["C:\\Users\\x\\repo\\staging.py"]
+    assert candidate.files == ["staging.py"]
+
+
+def test_a_choice_touching_only_another_checkout_is_dropped():
+    """An out-of-repo path is not a scope, so it cannot carry the gate."""
+    events = [
+        _tool_call("Write", {"file_path": "C:\\Users\\x\\other\\staging.py"}),
+        _tool_result("t1", {"ok": True}),
+        Event(kind="assistant", cwd=CWD, session_id="sess-1", text=CHOICE_TEXT),
+    ]
+    assert mine_events(events, REPO_PREFIX) == []
+
+
+def test_a_correction_keeps_only_the_files_inside_the_repository():
+    events = [
+        _user("No, keep the parser in the adapter module, don't inline it"),
+        _tool_call("Edit", {"file_path": "C:\\Users\\x\\repo\\a.py"}, "t1"),
+        _tool_call("Edit", {"file_path": "C:\\Users\\x\\elsewhere\\b.py"}, "t2"),
+    ]
+    (candidate,) = mine_events(events, REPO_PREFIX)
+    assert candidate.files == ["a.py"]
 
 
 def test_choice_with_no_files_anywhere_is_dropped():

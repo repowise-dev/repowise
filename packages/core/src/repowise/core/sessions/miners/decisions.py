@@ -327,23 +327,49 @@ def _result_anchor(name: str, use_input: dict[str, Any]) -> str:
     return name.lower()
 
 
+def _repo_relative_touches(
+    touches: list[tuple[str, str]], repo_root: Any
+) -> list[tuple[str, str]]:
+    """``(path, intent)`` with each path repo-relative POSIX, outsiders dropped.
+
+    A transcript records the path the tool call was given, which for every
+    agent this reads is an absolute one. Staging that verbatim writes a
+    machine's directory layout into a row the index later has to match
+    against repo-relative paths, so it is normalized here, at the single
+    point a touch enters the miner, rather than by each reader guessing.
+    """
+    out: list[tuple[str, str]] = []
+    for path, intent in touches:
+        relative = relative_files([path], repo_root)
+        if relative:
+            out.append((relative[0], intent))
+    return out
+
+
 def mine_events(
     events: Iterable[Event],
-    repo_prefix: str,
+    repo_root: Any,
     *,
     edit_tools: Container[str] = frozenset(),
 ) -> list[SessionCandidate]:
     """Run the deterministic candidate gates over one session's events.
 
-    *repo_prefix* is the lowercased resolved repo root; only events whose
-    ``cwd`` sits inside it count (same scoping as the distill miners). Pure
-    and streaming: state is bounded regardless of transcript size.
+    *repo_root* is the resolved repository root; only events whose ``cwd``
+    sits inside it count (same scoping as the distill miners), and every file
+    a candidate carries is stated relative to it. Pure and streaming: state
+    is bounded regardless of transcript size.
+
+    A file the session touched outside the root is dropped rather than kept
+    absolute. It names another checkout, a scratch directory, or the agent's
+    own state, none of which this index can resolve, and a scope built from
+    paths that resolve to nothing is worse than an empty one.
 
     *edit_tools* is the producing adapter's edit vocabulary. It orders each
     candidate's files, putting the ones the session changed ahead of the ones
     it only opened, because a decision is about the code that moved and the
     surrounding reads are how it got there.
     """
+    repo_prefix = str(repo_root).lower().rstrip("\\/")
     candidates: list[SessionCandidate] = []
     #: (path, intent) for the recent file-touching calls, so a candidate opened
     #: here knows which of the files in play were being changed at the time.
@@ -367,7 +393,9 @@ def mine_events(
             continue
 
         if event.kind == "assistant" and event.tool_uses:
-            touches = event_file_touches(event, edit_tools=edit_tools)
+            touches = _repo_relative_touches(
+                event_file_touches(event, edit_tools=edit_tools), repo_root
+            )
             files = [path for path, _ in touches]
             trailing_files.extend(touches)
             changed = {path for path, intent in touches if intent == "edit"}
@@ -569,7 +597,6 @@ def _sweep_harness(
     harness: str,
     *,
     repo_root: Path,
-    repo_prefix: str,
     projects_root: Path | None,
     store: SessionStagingStore,
     recorder: TranscriptEpisodeRecorder,
@@ -610,7 +637,7 @@ def _sweep_harness(
             if collector is not None:
                 stream = collector.observe(stream)
             for candidate in mine_events(
-                stream, repo_prefix, edit_tools=adapter.edit_tool_names
+                stream, repo_root, edit_tools=adapter.edit_tool_names
             ):
                 counts["found"] += 1
                 if store.add_raw(
@@ -1008,7 +1035,6 @@ async def mine_session_decisions(
     has no set does not start binding scope it cannot check.
     """
     repo_root = Path(repo_path).resolve()
-    repo_prefix = str(repo_root).lower().rstrip("\\/")
     # The caller's resolved policy wins; reading config again here would be a
     # second answer to a question it has already asked.
     names = registered_harnesses(harnesses) if harnesses is not None else harnesses_for(repo_path)
@@ -1035,7 +1061,6 @@ async def mine_session_decisions(
                 yields[name] = _sweep_harness(
                     name,
                     repo_root=repo_root,
-                    repo_prefix=repo_prefix,
                     projects_root=projects_root,
                     store=store,
                     recorder=recorder,
