@@ -14,6 +14,15 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from pathlib import Path
 
+#: The shell dialects a :class:`RewriteRequest` can name. Constants rather
+#: than literals because the value is load-bearing twice over, across two
+#: processes: the rewrite hook decides which bailouts apply from it, and the
+#: ``repowise distill`` it writes decides which interpreter actually executes
+#: the command from it. A misspelling would not fail loudly -- it
+#: would read as "not powershell" and run the command in the wrong shell.
+SHELL_POSIX = "posix"
+SHELL_POWERSHELL = "powershell"
+
 
 class RewriteRequest:
     """Agent-agnostic view of one shell command an agent is about to run."""

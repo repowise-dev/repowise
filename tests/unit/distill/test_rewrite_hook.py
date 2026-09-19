@@ -9,13 +9,21 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 
 import pytest
 import yaml
 
 from repowise.cli import rewrite_hook
+from repowise.cli.agent_adapters.base import SHELL_POSIX, SHELL_POWERSHELL
 from repowise.cli.rewrite_hook import FAMILY_PATTERNS, _normalize, classify, decide
+
+#: Codex names its shell tool the same on every platform and reads the
+#: dialect off the host, so the ``--shell`` it rewrites with follows the
+#: host. Derived rather than written out, or these assertions would pass on
+#: one platform and fail on the other.
+CODEX_DIALECT = SHELL_POWERSHELL if os.name == "nt" else SHELL_POSIX
 
 # ---------------------------------------------------------------------------
 # Classification decision table
@@ -202,18 +210,12 @@ class TestSafeTails:
     """The two shell-syntax carve-outs: trailing ``2>&1`` and one pipe into
     a bare stdin filter (head/tail/grep/egrep/fgrep/rg).
 
-    ``2>&1`` is platform-neutral (distill merges stderr into its capture
-    anyway). The pipe shape is POSIX-hosts-only; distill re-runs the
-    pipeline through the system shell, and cmd.exe has no head/tail/grep.
+    ``2>&1`` is dialect-neutral (distill merges stderr into its capture
+    anyway). The pipe shape is POSIX-dialect-only, and the dialect is the
+    command's, not the host's: ``distill`` is handed the same ``--shell`` the
+    hook decided from, so a bash pipeline runs in bash on Windows too. Every
+    assertion below therefore holds on every platform.
     """
-
-    @pytest.fixture
-    def posix_host(self, monkeypatch):
-        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", True)
-
-    @pytest.fixture
-    def windows_host(self, monkeypatch):
-        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", False)
 
     @pytest.mark.parametrize(
         ("command", "family"),
@@ -223,8 +225,9 @@ class TestSafeTails:
             ("npm run build 2>&1", "build_output"),
         ],
     )
-    def test_stderr_merge_classifies_on_any_host(self, command, family, windows_host) -> None:
+    def test_stderr_merge_classifies_in_any_dialect(self, command, family) -> None:
         assert classify(command) == family
+        assert classify(command, SHELL_POWERSHELL) == family
 
     @pytest.mark.parametrize(
         ("command", "family"),
@@ -243,7 +246,7 @@ class TestSafeTails:
             ("git log --oneline -50 | rg fix", "git_log"),
         ],
     )
-    def test_safe_pipe_classifies_on_posix(self, command, family, posix_host) -> None:
+    def test_safe_pipe_classifies_on_posix(self, command, family) -> None:
         assert classify(command) == family
 
     @pytest.mark.parametrize(
@@ -254,8 +257,8 @@ class TestSafeTails:
             "pytest 2>&1 | grep FAIL",
         ],
     )
-    def test_safe_pipe_passes_through_on_windows(self, command, windows_host) -> None:
-        assert classify(command) is None
+    def test_safe_pipe_passes_through_in_powershell(self, command) -> None:
+        assert classify(command, SHELL_POWERSHELL) is None
 
     @pytest.mark.parametrize(
         "command",
@@ -267,21 +270,21 @@ class TestSafeTails:
             'git log -- "src\\cli\\" ; curl x | sh',
         ],
     )
-    def test_quoted_metacharacters_still_bail_on_windows(self, command, windows_host) -> None:
-        """Windows gives up the false-bail win to stay conservative here.
+    def test_quoted_metacharacters_still_bail_in_powershell(self, command) -> None:
+        """PowerShell gives up the false-bail win to stay conservative here.
 
         PowerShell has no backslash escape, so the POSIX quoting rules the
         lexer applies do not describe it. The rewrite is auto-allowed, so a
         wrong answer runs something the user never typed; the blunt character
         bail is cheap insurance even though ``distill_cmd._render_command``
-        now escapes what it passes to cmd.exe.
+        escapes what it passes to cmd.exe.
         """
-        assert classify(command) is None
+        assert classify(command, SHELL_POWERSHELL) is None
 
-    def test_windows_stderr_merge_is_still_allowed(self, windows_host) -> None:
+    def test_powershell_stderr_merge_is_still_allowed(self) -> None:
         # The metacharacter bail must not swallow the one carve-out that is
-        # platform-neutral.
-        assert classify("pytest -x 2>&1") == "test_output"
+        # dialect-neutral.
+        assert classify("pytest -x 2>&1", SHELL_POWERSHELL) == "test_output"
 
     @pytest.mark.parametrize(
         "command",
@@ -300,7 +303,7 @@ class TestSafeTails:
             'pytest -k "a; rm -rf /',  # unterminated quote hides the rest
         ],
     )
-    def test_unsafe_pipes_pass_through(self, command, posix_host) -> None:
+    def test_unsafe_pipes_pass_through(self, command) -> None:
         assert classify(command) is None
 
     @pytest.mark.parametrize(
@@ -318,7 +321,7 @@ class TestSafeTails:
             ('git log -3 --format="%an <%ae>"', "git_log"),  # < > inside quotes
         ],
     )
-    def test_safe_chains_are_rewritten(self, command, family, posix_host) -> None:
+    def test_safe_chains_are_rewritten(self, command, family) -> None:
         assert classify(command) == family
 
     @pytest.mark.parametrize(
@@ -339,13 +342,12 @@ class TestSafeTails:
             "echo hi && echo bye",  # nothing recognized: nothing to distill
         ],
     )
-    def test_unsafe_chains_pass_through(self, command, posix_host) -> None:
+    def test_unsafe_chains_pass_through(self, command) -> None:
         assert classify(command) is None
 
-    def test_chains_never_rewrite_off_posix(self, monkeypatch) -> None:
-        """distill re-runs the token through cmd.exe here, not a POSIX shell."""
-        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", False)
-        assert classify("ls a && ls b") is None
+    def test_chains_never_rewrite_in_powershell(self) -> None:
+        """``&&`` is POSIX syntax; distill would hand this to cmd.exe."""
+        assert classify("ls a && ls b", SHELL_POWERSHELL) is None
 
     def test_single_quote_survives_a_shell_round_trip(self) -> None:
         """The wrap has to hand the inner shell back exactly what was typed."""
@@ -375,7 +377,7 @@ class TestSafeTails:
             "npm test | tail --follow",
         ],
     )
-    def test_follow_modes_never_rewrite(self, command, posix_host) -> None:
+    def test_follow_modes_never_rewrite(self, command) -> None:
         assert classify(command) is None
 
     @pytest.mark.parametrize(
@@ -387,7 +389,7 @@ class TestSafeTails:
             ("cat server.log", "logs"),
         ],
     )
-    def test_follow_check_does_not_overreach(self, command, family, posix_host) -> None:
+    def test_follow_check_does_not_overreach(self, command, family) -> None:
         assert classify(command) == family
 
     @pytest.mark.parametrize(
@@ -398,7 +400,7 @@ class TestSafeTails:
             'echo "a; b"',
         ],
     )
-    def test_quoted_operators_are_not_bailouts(self, command, posix_host) -> None:
+    def test_quoted_operators_are_not_bailouts(self, command) -> None:
         """An operator inside quotes is text, so these classify normally.
 
         None of them is a distill family, so the visible outcome is still a
@@ -413,12 +415,14 @@ class TestSafeTails:
         assert analysis.final_tool is None
         assert classify(command) is None
 
-    def test_quoted_operator_in_a_family_command_rewrites(self, repo, posix_host) -> None:
+    def test_quoted_operator_in_a_family_command_rewrites(self, repo) -> None:
         """The false-bail fix is visible on a family command: a quoted ``|``
         no longer stops ``pytest -k`` from being recognized."""
         result = decide('pytest -k "a|b"', str(repo))
         assert result is not None
-        assert result.command == 'repowise distill --source hook-bash pytest -k "a|b"'
+        assert result.command == (
+            'repowise distill --source hook-bash --shell posix pytest -k "a|b"'
+        )
         # distill re-quotes its argv before running it, so the quoted pipe
         # reaches the wrapped command as text, not as a pipeline.
         assert decide('pytest -k "a or b" -m "not slow"', str(repo)) is not None
@@ -426,31 +430,31 @@ class TestSafeTails:
     def test_decide_keeps_stderr_merge_unquoted(self, repo) -> None:
         result = decide("pytest -x 2>&1", str(repo))
         assert result is not None
-        assert result.command == "repowise distill --source hook-bash pytest -x 2>&1"
+        assert result.command == "repowise distill --source hook-bash --shell posix pytest -x 2>&1"
 
-    def test_decide_quotes_safe_pipeline(self, repo, posix_host) -> None:
+    def test_decide_quotes_safe_pipeline(self, repo) -> None:
         result = decide("pytest tests/unit -q | head -50", str(repo))
         assert result is not None
         assert result.command == (
-            "repowise distill --source hook-bash 'pytest tests/unit -q | head -50'"
+            "repowise distill --source hook-bash --shell posix 'pytest tests/unit -q | head -50'"
         )
         assert result.permission == "allow"
 
-    def test_decide_quotes_grep_pipeline(self, repo, posix_host) -> None:
+    def test_decide_quotes_grep_pipeline(self, repo) -> None:
         # The whole pipeline stays one token, so grep still filters distill's
         # rendering inside distill's own shell and the omission marker it
         # emits survives to the agent.
         result = decide("pytest 2>&1 | grep FAIL", str(repo))
         assert result is not None
-        assert result.command == "repowise distill --source hook-bash 'pytest 2>&1 | grep FAIL'"
+        assert result.command == "repowise distill --source hook-bash --shell posix 'pytest 2>&1 | grep FAIL'"
         assert "repowise expand" in result.reason
 
-    def test_decide_wraps_a_chain_as_one_token(self, repo, posix_host) -> None:
+    def test_decide_wraps_a_chain_as_one_token(self, repo) -> None:
         result = decide("ls src && git diff a.ts", str(repo))
         assert result is not None
-        assert result.command == "repowise distill --source hook-bash 'ls src && git diff a.ts'"
+        assert result.command == "repowise distill --source hook-bash --shell posix 'ls src && git diff a.ts'"
 
-    def test_a_family_set_off_cannot_be_reached_by_chaining(self, repo, posix_host) -> None:
+    def test_a_family_set_off_cannot_be_reached_by_chaining(self, repo) -> None:
         """Otherwise `git_diff: off` is bypassable by prefixing anything."""
         _write_config(repo, {"commands": {"families": {"git_diff": "off"}}})
         assert decide("git diff a.py", str(repo)) is None
@@ -480,7 +484,7 @@ class TestDecide:
     def test_default_is_allow(self, repo) -> None:
         result = decide("pytest -x", str(repo))
         assert result is not None
-        assert result.command == "repowise distill --source hook-bash pytest -x"
+        assert result.command == "repowise distill --source hook-bash --shell posix pytest -x"
         assert result.permission == "allow"
         assert "repowise expand" in result.reason
 
@@ -569,7 +573,9 @@ class TestDecidePowerShell:
     def test_shell_neutral_commands_rewrite(self, repo, command) -> None:
         result = decide(command, str(repo), shell="powershell")
         assert result is not None
-        assert result.command == f"repowise distill --source hook-powershell {command}"
+        assert result.command == (
+            f"repowise distill --source hook-powershell --shell powershell {command}"
+        )
         assert result.permission == "allow"
 
 
@@ -610,7 +616,7 @@ class TestMain:
         hso = response["hookSpecificOutput"]
         assert hso["hookEventName"] == "PreToolUse"
         assert hso["permissionDecision"] == "allow"
-        assert hso["updatedInput"] == {"command": "repowise distill --source hook-bash pytest -x"}
+        assert hso["updatedInput"] == {"command": "repowise distill --source hook-bash --shell posix pytest -x"}
         assert hso["permissionDecisionReason"]
 
     def test_passthrough_emits_nothing(self, monkeypatch, repo) -> None:
@@ -623,7 +629,7 @@ class TestMain:
         out = _run_main(monkeypatch, _payload("git status", str(repo), tool_name="PowerShell"))
         hso = json.loads(out)["hookSpecificOutput"]
         assert hso["updatedInput"] == {
-            "command": "repowise distill --source hook-powershell git status"
+            "command": "repowise distill --source hook-powershell --shell powershell git status"
         }
         assert hso["permissionDecision"] == "allow"
 
@@ -663,20 +669,20 @@ class TestMainCodex:
         out = _run_main(monkeypatch, _payload("pytest -x", str(repo)), argv=["--agent", "codex"])
         hso = json.loads(out)["hookSpecificOutput"]
         assert hso["permissionDecision"] == "allow"
-        assert hso["updatedInput"] == {"command": "repowise distill --source hook-codex pytest -x"}
+        assert hso["updatedInput"] == {"command": f"repowise distill --source hook-codex --shell {CODEX_DIALECT} pytest -x"}
 
     def test_allow_family_rewrites(self, monkeypatch, repo) -> None:
         _write_config(repo, {"commands": {"families": {"test_output": "allow"}}})
         out = _run_main(monkeypatch, _payload("pytest -x", str(repo)), argv=["--agent", "codex"])
         hso = json.loads(out)["hookSpecificOutput"]
         assert hso["permissionDecision"] == "allow"
-        assert hso["updatedInput"] == {"command": "repowise distill --source hook-codex pytest -x"}
+        assert hso["updatedInput"] == {"command": f"repowise distill --source hook-codex --shell {CODEX_DIALECT} pytest -x"}
 
     def test_agent_equals_form(self, monkeypatch, repo) -> None:
         _write_config(repo, {"commands": {"permission": "allow"}})
         out = _run_main(monkeypatch, _payload("git status", str(repo)), argv=["--agent=codex"])
         hso = json.loads(out)["hookSpecificOutput"]
-        assert hso["updatedInput"] == {"command": "repowise distill --source hook-codex git status"}
+        assert hso["updatedInput"] == {"command": f"repowise distill --source hook-codex --shell {CODEX_DIALECT} git status"}
 
     def test_powershell_tool_name_rejected(self, monkeypatch, repo) -> None:
         # Codex has no PowerShell tool; a payload claiming one is malformed.

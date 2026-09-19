@@ -117,7 +117,7 @@ def test_p95_under_150ms(tmp_path: Path) -> None:
     subprocess.run(cmd, input=_payload("pytest -x", tmp_path), capture_output=True, text=True)
 
     median, outputs, timings = _p95(cmd, _payload("pytest -x", tmp_path))
-    assert all("repowise distill --source hook-bash pytest -x" in out for out in outputs)
+    assert all("repowise distill --source hook-bash --shell posix pytest -x" in out for out in outputs)
     _fmt = ", ".join(f"{t:.0f}" for t in timings)
     assert median < 150, f"repowise-rewrite median {median:.1f} ms >= 150 ms (all: {_fmt})"
     # A genuine regression is not a single slow spawn — allow one loose ceiling
@@ -159,7 +159,7 @@ def test_a_ledgered_invocation_stays_under_budget(tmp_path: Path) -> None:
     subprocess.run(cmd, input=payload, capture_output=True, text=True)
 
     median, outputs, timings = _p95(cmd, payload)
-    assert all("repowise distill --source hook-bash pytest -x" in out for out in outputs)
+    assert all("repowise distill --source hook-bash --shell posix pytest -x" in out for out in outputs)
     # Guard the guard: a budget met by not writing the row would pass forever.
     db = tmp_path / ".repowise" / "sessions" / "sessions.db"
     assert db.exists(), "the probe never reached the ledger write it is timing"

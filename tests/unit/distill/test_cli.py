@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -101,7 +102,7 @@ def test_render_command_quotes_shell_metacharacters() -> None:
     unquoted; ``_render_command`` caret-escapes the rendered line to close
     that.
     """
-    rendered = _render_command(("git", "log", "--grep=a&&b"))
+    rendered = _render_command(("git", "log", "--grep=a&&b"), posix=os.name == "posix")
     if os.name == "posix":
         assert rendered == "git log '--grep=a&&b'"
     else:
@@ -110,7 +111,8 @@ def test_render_command_quotes_shell_metacharacters() -> None:
 
 def test_render_command_passes_a_single_token_through() -> None:
     """One token means the user quoted the command themselves; that is intent."""
-    assert _render_command(("pytest -x | head -5",)) == "pytest -x | head -5"
+    for posix in (True, False):
+        assert _render_command(("pytest -x | head -5",), posix=posix) == "pytest -x | head -5"
 
 
 @pytest.mark.parametrize(
@@ -147,7 +149,7 @@ def test_render_command_roundtrips_argv_through_the_shell(payload: str, tmp_path
     """
     tokens = (sys.executable, "-c", "import sys,json;print(json.dumps(sys.argv[1:]))", payload)
     proc = subprocess.run(
-        _render_command(tokens),
+        _render_command(tokens, posix=os.name == "posix"),
         shell=True,
         capture_output=True,
         text=True,
@@ -181,7 +183,7 @@ def test_render_command_keeps_an_executable_path_with_spaces_intact(tmp_path: Pa
     shim.write_text("@echo SHIM_OK\n", encoding="utf-8")
 
     proc = subprocess.run(
-        _render_command((str(shim), "arg one", "a&b")),
+        _render_command((str(shim), "arg one", "a&b"), posix=False),
         shell=True,
         capture_output=True,
         text=True,
@@ -201,7 +203,7 @@ def test_render_command_refuses_a_defined_env_var_expansion(monkeypatch) -> None
     value is command execution. There is no escape for it, so refuse."""
     monkeypatch.setenv("REPOWISE_TEST_EVIL", "x&echo pwned")
     with pytest.raises(Exception, match="REPOWISE_TEST_EVIL"):
-        _render_command(("git", "log", "--grep=%REPOWISE_TEST_EVIL%"))
+        _render_command(("git", "log", "--grep=%REPOWISE_TEST_EVIL%"), posix=False)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
@@ -209,7 +211,7 @@ def test_render_command_allows_an_undefined_percent_pair(monkeypatch) -> None:
     """`git log --format=%h%n%s` reads as %h% to cmd but expands to nothing."""
     monkeypatch.delenv("h", raising=False)
     monkeypatch.delenv("n", raising=False)
-    assert "%h%n%s" in _render_command(("git", "log", "--format=%h%n%s"))
+    assert "%h%n%s" in _render_command(("git", "log", "--format=%h%n%s"), posix=False)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
@@ -218,7 +220,76 @@ def test_render_command_refuses_newlines(payload: str) -> None:
     """cmd truncates the command line at a newline and drops a bare CR, both
     silently, so the child would get a quietly different argv."""
     with pytest.raises(Exception, match="newline"):
-        _render_command(("git", "log", f"--grep={payload}"))
+        _render_command(("git", "log", f"--grep={payload}"), posix=False)
+
+
+# ---------------------------------------------------------------------------
+# --shell: the command runs in the dialect it was written for
+#
+# The rewrite hook declined every compound command on a Windows host because
+# distill handed everything to cmd.exe, where a POSIX command line means
+# something else. These pin the replacement: the dialect travels with the
+# command, and when the shell it names cannot be found distill refuses rather
+# than running a different command than the one it was given.
+# ---------------------------------------------------------------------------
+
+
+def test_render_command_follows_the_dialect_not_the_host() -> None:
+    """A bash command line is rejoined for bash even when the host is Windows.
+
+    This is the whole of 1a in one assertion: rendering used to key on
+    ``sys.platform``, so a POSIX-dialect token was caret-escaped for cmd.exe
+    whatever shell was about to read it.
+    """
+    tokens = ("git", "log", "--grep=a&&b")
+    assert _render_command(tokens, posix=True) == "git log '--grep=a&&b'"
+    assert _render_command(tokens, posix=False) == "git log --grep=a^&^&b"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
+def test_posix_dialect_runs_in_a_posix_shell(repo_cwd: Path) -> None:
+    """``echo "a b" | tr " " "_"`` is the cheapest proof the shell changed.
+
+    cmd.exe keeps the quotes literal and answers ``"a_b"_``; bash answers
+    ``a_b``. Both exit 0, so a wrong shell here is silent corruption rather
+    than an error — which is why the hook used to decline the command
+    outright.
+    """
+    if shutil.which("bash") is None and not os.environ.get("SHELL"):
+        pytest.skip("no POSIX shell on this host")
+    command = ['echo "a b" | tr " " "_"']
+    posix = CliRunner().invoke(distill_command, ["--shell", "posix", *command])
+    assert posix.exit_code == 0, posix.output
+    assert posix.output.strip() == "a_b"
+
+    host = CliRunner().invoke(distill_command, command)
+    assert host.output.strip() != "a_b"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
+def test_posix_dialect_refuses_rather_than_falling_back_to_cmd(
+    repo_cwd: Path, monkeypatch
+) -> None:
+    """Breaking what the guard protects: with no POSIX shell it must not run.
+
+    Falling back to the host shell is the exact bug ``--shell`` exists to
+    close, and it fails silently, so the refusal is the safer half of the
+    trade. A command that did not run is recoverable; a command that ran and
+    meant something else is not.
+    """
+    monkeypatch.delenv("SHELL", raising=False)
+    result = CliRunner().invoke(distill_command, ["--shell", "posix", "echo ran-anyway"])
+    assert result.exit_code != 0
+    assert "ran-anyway" not in result.output
+    assert "POSIX shell" in result.output
+
+
+def test_no_shell_flag_keeps_the_host_default(repo_cwd: Path) -> None:
+    """Plain ``repowise distill ...`` from a terminal is untouched by any of
+    this: no dialect named means the shell this host would have used."""
+    result = CliRunner().invoke(distill_command, _py("print('host default')"))
+    assert result.exit_code == 0
+    assert "host default" in result.output
 
 
 def test_distill_and_expand_roundtrip(repo_cwd: Path, fixtures_dir: Path) -> None:

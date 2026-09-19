@@ -220,24 +220,23 @@ class TestPowerShellEdgeCases:
     def test_powershell_sourced_commands_are_never_rewritten(self, command, tmp_path) -> None:
         """The PowerShell guarantee belongs to ``decide``, not ``classify``.
 
-        ``classify`` takes no shell argument and never encoded a PowerShell
-        rule: it answers "which family is this", and a statement separator is
-        also a perfectly good POSIX ``;``. What must hold is that a command
-        *sourced from the PowerShell tool* is never rewritten, and that gate
-        lives in ``decide``. Asserting it on ``classify`` passed on Windows
-        only because ``_POSIX_HOST`` is False there, which made every compound
-        command bail for a reason that had nothing to do with PowerShell.
+        ``classify`` defaults to the POSIX dialect and answers "which family
+        is this"; a statement separator is also a perfectly good POSIX ``;``.
+        What must hold is that a command *sourced from the PowerShell tool* is
+        never rewritten, and that gate lives in ``decide``. This used to pass
+        on Windows for the wrong reason — a host test made every compound
+        command bail whatever dialect it came from.
         """
         (tmp_path / ".repowise").mkdir()
         assert rewrite_hook.decide(command, str(tmp_path), "powershell") is None
 
-    def test_a_posix_shell_may_still_rewrite_the_separator_shape(self, tmp_path, monkeypatch):
+    def test_a_posix_shell_may_still_rewrite_the_separator_shape(self, tmp_path):
         """…and the same text from bash is two recognized commands, so it does.
 
         This is the one shape above that is not PowerShell-specific, and it
-        pins the distinction the test above rests on.
+        pins the distinction the test above rests on — on every host, which is
+        the point: the dialect decides this, not ``os.name``.
         """
-        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", True)
         (tmp_path / ".repowise").mkdir()
         command = "git status; git log --oneline -5"
         assert rewrite_hook.decide(command, str(tmp_path), "powershell") is None

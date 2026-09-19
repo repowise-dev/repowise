@@ -5,6 +5,13 @@ errors-first rendering with an omission marker pointing at the stashed raw
 output (``repowise expand <ref>`` round-trips it). The wrapped command's
 exit code is always preserved, so this is a drop-in replacement in scripts
 and agent tool calls alike.
+
+The wrapped command runs in the shell it was *written* for, not the one this
+host happens to default to. ``--shell posix`` on Windows executes through the
+agent's own Git Bash rather than ``cmd.exe``, where ``head`` does not exist,
+``&&`` binds differently and a single-quoted chain is not a quoted token at
+all. That is the constraint the rewrite hook used to defend by declining to
+rewrite anything with a metacharacter on Windows.
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli.agent_adapters.base import SHELL_POSIX, SHELL_POWERSHELL
 from repowise.cli.helpers import find_repowise_repo_root
 
 
@@ -33,8 +41,20 @@ from repowise.cli.helpers import find_repowise_repo_root
     hidden=True,
     help="Ledger surface label (the rewrite hook tags hook-bash / hook-powershell).",
 )
+@click.option(
+    "--shell",
+    "dialect",
+    default=None,
+    hidden=True,
+    type=click.Choice([SHELL_POSIX, SHELL_POWERSHELL]),
+    help=(
+        "Shell dialect COMMAND was written for. Unlike --source this is not a "
+        "label: it decides which interpreter executes the command. Omitted "
+        "means this host's default shell."
+    ),
+)
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
-def distill_command(source: str, command: tuple[str, ...]) -> None:
+def distill_command(source: str, dialect: str | None, command: tuple[str, ...]) -> None:
     """Run COMMAND and print a distilled rendering of its output.
 
     Examples:
@@ -51,17 +71,36 @@ def distill_command(source: str, command: tuple[str, ...]) -> None:
     restore it with ``repowise expand <ref>``. On any filter problem the raw
     output is printed unchanged. The command's exit code is preserved.
     """
+    # A POSIX-dialect command needs POSIX rendering wherever it runs; on a
+    # POSIX host every command is one, which is what keeps today's behaviour
+    # for plain `repowise distill ...` from a terminal.
+    posix_dialect = dialect == SHELL_POSIX
     try:
-        command_str = _render_command(command)
+        command_str = _render_command(command, posix=posix_dialect or sys.platform != "win32")
     except UnrenderableCommandError as exc:
         # Refusing is the safe half of the trade: running a command the user
         # did not type is worse than not running one they did.
         raise click.ClickException(str(exc)) from exc
-    # shell=True on purpose: the user's own command may be a shell builtin
-    # or a .cmd shim (npm on Windows); we execute exactly what they typed.
+    if posix_dialect and sys.platform == "win32":
+        shell_exe = _posix_shell()
+        if shell_exe is None:
+            # cmd.exe would accept most of these and mean something else by
+            # them, which is the failure this whole path exists to avoid. Not
+            # running the command is recoverable; running a different one is
+            # not.
+            raise click.ClickException(
+                "this command is POSIX shell syntax and no POSIX shell could be "
+                "located, so it was not run; re-run it without `repowise distill`"
+            )
+        argv: str | list[str] = [shell_exe, "-c", command_str]
+        use_shell = False
+    else:
+        # shell=True on purpose: the user's own command may be a shell builtin
+        # or a .cmd shim (npm on Windows); we execute exactly what they typed.
+        argv, use_shell = command_str, True
     proc = subprocess.run(
-        command_str,
-        shell=True,
+        argv,
+        shell=use_shell,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -74,6 +113,27 @@ def distill_command(source: str, command: tuple[str, ...]) -> None:
     text = _distill_or_raw(output, command_str, proc.returncode, source)
     _echo_safely(text)
     sys.exit(proc.returncode)
+
+
+def _posix_shell() -> str | None:
+    """Absolute path to the POSIX shell that launched this process, or None.
+
+    Read out of the environment rather than looked up on ``PATH``, and that is
+    the whole of the design. ``PATH`` on Windows answers ``bash`` with
+    System32's ``bash.exe`` -- WSL, which is a different filesystem with a
+    different ``git`` and no idea what a ``C:`` path means -- often before it
+    answers with Git Bash. MSYS translates ``SHELL`` to a real Windows path
+    for its children, so a command that arrived from the agent's Bash tool is
+    handed back to the very interpreter that started us.
+
+    None when nothing in the environment names a POSIX shell that exists. The
+    caller must refuse rather than substitute one: the whole point is that the
+    command means something different in the wrong shell.
+    """
+    shell = os.environ.get("SHELL")
+    if shell and os.path.isfile(shell):
+        return shell
+    return None
 
 
 # cmd.exe consumes these before the child ever sees them. ``^`` escapes each
@@ -89,8 +149,12 @@ class UnrenderableCommandError(Exception):
     """A token cmd.exe cannot be handed over without changing the command."""
 
 
-def _render_command(tokens: tuple[str, ...]) -> str:
+def _render_command(tokens: tuple[str, ...], *, posix: bool) -> str:
     """Rejoin click's pre-split tokens into one shell command string.
+
+    *posix* selects the quoting dialect, and it is the dialect of the shell
+    that will run the result rather than the dialect of this host: a command
+    the agent wrote for bash is rejoined for bash even on Windows.
 
     A single token is passed through untouched: the user quoted the whole
     command themselves, so shell syntax in it is what they asked for.
@@ -123,7 +187,7 @@ def _render_command(tokens: tuple[str, ...]) -> str:
     """
     if len(tokens) == 1:
         return tokens[0]
-    if sys.platform != "win32":
+    if posix:
         import shlex
 
         return shlex.join(tokens)
