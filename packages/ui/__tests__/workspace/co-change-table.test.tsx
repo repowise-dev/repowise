@@ -9,6 +9,7 @@ function cc(
   targetRepo: string,
   targetFile: string,
   strength = 5,
+  evidence: WorkspaceCoChangeEntry["evidence"] = null,
 ): WorkspaceCoChangeEntry {
   return {
     source_repo: sourceRepo,
@@ -18,6 +19,7 @@ function cc(
     strength,
     frequency: 3,
     last_date: "2026-06-01",
+    evidence,
   };
 }
 
@@ -48,5 +50,33 @@ describe("CoChangeTable (virtualized)", () => {
   it("shows the empty state when there are no co-changes", () => {
     render(<CoChangeTable coChanges={[]} />);
     expect(screen.getByText(/no cross-repo co-changes/i)).toBeInTheDocument();
+  });
+
+  it("reveals evidence for a pair with commits and authors", () => {
+    render(
+      <CoChangeTable
+        coChanges={[
+          cc("api", "api/a.py", "core", "core/b.py", 8, {
+            authors: ["ada@example.com"],
+            commit_pairs: [
+              {
+                source_sha: "abc12345",
+                target_sha: "def67890",
+                date: "2026-06-01",
+                gap_hours: 3.5,
+              },
+            ],
+            max_gap_hours: 3.5,
+          }),
+        ]}
+      />,
+    );
+    // The disclosure label renders; the detail only appears once opened.
+    expect(screen.getByText(/1 commit pair/)).toBeInTheDocument();
+  });
+
+  it("renders a dash when evidence is absent", () => {
+    render(<CoChangeTable coChanges={[cc("api", "a.py", "core", "b.py")]} />);
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 });

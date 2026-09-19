@@ -4,7 +4,7 @@ import { Badge } from "../ui/badge";
 import { EmptyState } from "../shared/empty-state";
 import { VirtualizedTable } from "../shared/virtualized-table";
 import { formatDate, formatDateTime } from "../lib/format";
-import type { WorkspaceCoChangeEntry } from "@repowise-dev/types/workspace";
+import type { WorkspaceCoChangeEvidence, WorkspaceCoChangeEntry } from "@repowise-dev/types/workspace";
 
 interface CoChangeTableProps {
   coChanges: WorkspaceCoChangeEntry[];
@@ -16,6 +16,49 @@ interface CoChangeTableProps {
 // source/target identity columns (priority 1) are always visible.
 const HIDE_BELOW_MD = "max-md:hidden";
 const HIDE_BELOW_LG = "max-lg:hidden";
+
+function EvidenceCell({ evidence }: { evidence: WorkspaceCoChangeEvidence }) {
+  const authors = evidence.authors ?? [];
+  const pairs = evidence.commit_pairs ?? [];
+  const maxGap = evidence.max_gap_hours ?? 0;
+  if (authors.length === 0 && pairs.length === 0) {
+    return <span className="text-xs text-[var(--color-text-tertiary)]">—</span>;
+  }
+  const detailParts: string[] = [];
+  if (authors.length > 0) detailParts.push(`by ${authors.slice(0, 2).join(", ")}${authors.length > 2 ? " …" : ""}`);
+  if (maxGap >= 0 && pairs.length > 0) detailParts.push(`max gap ${Math.round(maxGap)}h`);
+  return (
+    <details className="group text-xs">
+      <summary
+        className="cursor-pointer list-none text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] flex items-center gap-1"
+        aria-label="Toggle evidence"
+      >
+        <span className="inline-block transition-transform group-open:rotate-90">▸</span>
+        <span className="tabular-nums">{pairs.length > 0 ? `${pairs.length} commit pair${pairs.length === 1 ? "" : "s"}` : "evidence"}</span>
+      </summary>
+      <div className="mt-1.5 flex flex-col gap-1.5 pl-3 text-[var(--color-text-tertiary)]">
+        {authors.length > 0 && (
+          <span className="flex items-center gap-1 whitespace-nowrap">
+            <span aria-hidden>👤</span>
+            <span>{authors.join(", ")}</span>
+          </span>
+        )}
+        {pairs.map((p, i) => (
+          <span key={i} className="flex items-center gap-1 font-mono whitespace-nowrap">
+            <span aria-hidden>⛏</span>
+            <span className="tabular-nums">{p.source_sha}</span>
+            <span aria-hidden>→</span>
+            <span className="tabular-nums">{p.target_sha}</span>
+            <span className="text-[var(--color-text-tertiary)]">{p.date} · {p.gap_hours}h</span>
+          </span>
+        ))}
+        {detailParts.length > 0 && (
+          <span className="text-[var(--color-text-tertiary)]">{detailParts.join(" · ")}</span>
+        )}
+      </div>
+    </details>
+  );
+}
 
 /**
  * Cross-repo co-change list: one row per file pair that changed together.
@@ -50,6 +93,16 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
         <>
           <th className={`px-3 py-2 text-right font-medium ${HIDE_BELOW_LG}`}>Freq</th>
           <th className={`px-3 py-2 text-left font-medium ${HIDE_BELOW_LG}`}>Last</th>
+          {compact ? null : (
+            <th className={`px-3 py-2 text-right font-medium ${HIDE_BELOW_LG}`}>
+              <span
+                title="Supporting evidence for the pair: authors, example matched commit pairs, and the time gap between them. Sampled and capped, so a pair backed by hundreds of commits shows three examples."
+                className="cursor-help underline decoration-dotted underline-offset-2"
+              >
+                Evidence
+              </span>
+            </th>
+          )}
         </>
       )}
     </tr>
@@ -98,6 +151,9 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
             <span title={cc.last_date ? formatDateTime(cc.last_date) : undefined}>
               {cc.last_date ? formatDate(cc.last_date) : "—"}
             </span>
+          </td>
+          <td className={`px-3 py-2 text-left ${HIDE_BELOW_LG}`}>
+            {cc.evidence ? <EvidenceCell evidence={cc.evidence} /> : <span className="text-xs text-[var(--color-text-tertiary)]">—</span>}
           </td>
         </>
       )}
