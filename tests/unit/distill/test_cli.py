@@ -227,7 +227,8 @@ def test_render_command_refuses_newlines(payload: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# --shell: the command runs in the dialect it was written for
+# --source also names a dialect: the command runs in the shell it was
+# written for
 #
 # The rewrite hook declined every compound command on a Windows host because
 # distill handed everything to cmd.exe, where a POSIX command line means
@@ -280,7 +281,7 @@ def test_a_plain_command_never_needs_a_posix_shell(repo_cwd: Path, monkeypatch) 
     """
     monkeypatch.delenv("SHELL", raising=False)
     result = CliRunner().invoke(
-        distill_command, ["--shell", "posix", *_py("print('still runs')")]
+        distill_command, ["--source", "hook-bash", *_py("print('still runs')")]
     )
     assert result.exit_code == 0, result.output
     assert "still runs" in result.output
@@ -298,7 +299,7 @@ def test_posix_dialect_runs_in_a_posix_shell(repo_cwd: Path) -> None:
     if _posix_shell() is None:
         pytest.skip("no POSIX shell on this host")
     command = ['echo "a b" | tr " " "_"']
-    posix = CliRunner().invoke(distill_command, ["--shell", "posix", *command])
+    posix = CliRunner().invoke(distill_command, ["--source", "hook-bash", *command])
     assert posix.exit_code == 0, posix.output
     assert posix.output.strip() == "a_b"
 
@@ -312,13 +313,13 @@ def test_posix_dialect_refuses_rather_than_falling_back_to_cmd(
 ) -> None:
     """Breaking what the guard protects: with no POSIX shell it must not run.
 
-    Falling back to the host shell is the exact bug ``--shell`` exists to
+    Falling back to the host shell is the exact bug this path exists to
     close, and it fails silently, so the refusal is the safer half of the
     trade. A command that did not run is recoverable; a command that ran and
     meant something else is not.
     """
     monkeypatch.delenv("SHELL", raising=False)
-    result = CliRunner().invoke(distill_command, ["--shell", "posix", "echo ran-anyway"])
+    result = CliRunner().invoke(distill_command, ["--source", "hook-bash", "echo ran-anyway"])
     assert result.exit_code != 0
     assert "ran-anyway" not in result.output
     assert "POSIX shell" in result.output

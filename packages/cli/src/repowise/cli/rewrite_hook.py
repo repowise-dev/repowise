@@ -59,7 +59,12 @@ import tempfile
 # Stdlib-only module by design (see hot-path discipline above) — safe to
 # import at module scope. (No pathlib: it costs double-digit milliseconds
 # of interpreter startup, which this hook pays on every Bash call.)
-from repowise.cli.agent_adapters.base import SHELL_POSIX, SHELL_POWERSHELL, RewriteResult
+from repowise.cli.agent_adapters.base import (
+    SHELL_POSIX,
+    SHELL_POWERSHELL,
+    RewriteResult,
+    hook_source_for,
+)
 
 # Free at module scope, and it has to be here rather than lazy: this module's
 # import is where the ledger's clock starts, so a firing's recorded cost covers
@@ -277,8 +282,9 @@ _CHAIN_OPS = frozenset({"&&", "||", ";"})
 # command on a Windows host — including the ones the agent's Bash tool wrote
 # for bash, 2,203 commands worth 738,123 tokens over 30 days, 97.5% of them
 # for this one reason. The premise was real: ``distill`` ran everything
-# through cmd.exe. ``--shell`` is what removes it, by running a POSIX-dialect
-# command in the POSIX shell it was written for.
+# through cmd.exe. What removes it is ``distill`` reading the dialect back
+# out of the ``--source`` label and running a POSIX-dialect command in the
+# POSIX shell it was written for.
 _PS_SHELL_METACHAR_RE = re.compile(r"[|&;<>`^\n]|\$\(")
 
 
@@ -351,9 +357,9 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
 
     A chain is POSIX shell syntax by construction, so callers check the
     dialect before asking and there is no host test here — the host never
-    decided it. ``distill`` is told the same dialect (``--shell``) and runs
-    the wrapped token through that shell, so the operators mean on the far
-    side what they mean here.
+    decided it. ``distill`` reads the same dialect back off the ``--source``
+    label and runs the wrapped token through that shell, so the operators
+    mean on the far side what they mean here.
 
     Returns None when the chain is not admissible; otherwise the recognized
     families in order, whose first element names the rewrite.
@@ -658,24 +664,24 @@ def _decide(
         permission = family_setting
 
     # The --source tag lands in the savings ledger so `repowise saved
-    # --by source` can tell hook surfaces apart from direct CLI use.
+    # --by source` can tell hook surfaces apart from direct CLI use — and,
+    # for the two labels derived from the dialect, it is also how `distill`
+    # knows which shell to run the command in. Derived through the shared
+    # helper rather than spelled here, so the writer and the reader cannot
+    # drift apart.
     if source is None:
-        source = "hook-powershell" if shell == SHELL_POWERSHELL else "hook-bash"
+        source = hook_source_for(shell)
     # A pipeline or chain is passed as ONE quoted token so its operators bind
     # inside distill's shell (distill re-runs a single token verbatim, through
-    # the shell `--shell` names) instead of binding to the wrapper. Single
-    # quotes, so the inner shell reads the token back byte for byte; `$`
-    # already bailed, so nothing in it re-expands.
+    # the shell the `--source` label names) instead of binding to the wrapper.
+    # Single quotes, so the inner shell reads the token back byte for byte;
+    # `$` already bailed, so nothing in it re-expands.
     wrapped = _single_quote(command.strip()) if needs_inner_shell else command.strip()
-    # --shell is not a label like --source: it is how distill knows to execute
-    # a POSIX command line in a POSIX shell instead of whatever this host
-    # defaults to. A chain wrapped as one token means nothing in cmd.exe.
-    dialect = SHELL_POWERSHELL if shell == SHELL_POWERSHELL else SHELL_POSIX
     # The reason on a rewrite is the family: one ledger column then carries
     # both distributions, what we rewrite and what we decline.
     return (
         RewriteResult(
-            command=f"repowise distill --source {source} --shell {dialect} {wrapped}",
+            command=f"repowise distill --source {source} {wrapped}",
             permission=permission,
             reason=(
                 f"repowise distill: compact {family} rendering; full output stays "

@@ -7,11 +7,17 @@ exit code is always preserved, so this is a drop-in replacement in scripts
 and agent tool calls alike.
 
 The wrapped command runs in the shell it was *written* for, not the one this
-host happens to default to. ``--shell posix`` on Windows executes through the
-agent's own Git Bash rather than ``cmd.exe``, where ``head`` does not exist,
-``&&`` binds differently and a single-quoted chain is not a quoted token at
-all. That is the constraint the rewrite hook used to defend by declining to
-rewrite anything with a metacharacter on Windows.
+host happens to default to. ``--source hook-bash`` names a POSIX command
+line, so on Windows a command carrying POSIX syntax of its own executes
+through the agent's Git Bash rather than ``cmd.exe``, where quoting means
+something else and ``&&`` binds differently. That is the constraint the
+rewrite hook used to defend by declining to rewrite anything with a
+metacharacter on Windows.
+
+The dialect rides on ``--source`` rather than a flag of its own so that an
+older ``repowise distill`` on PATH still understands every command a newer
+hook writes. A flag it did not know would land at the front of the wrapped
+command and be run as the program.
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from pathlib import Path
 
 import click
 
-from repowise.cli.agent_adapters.base import SHELL_POSIX, SHELL_POWERSHELL
+from repowise.cli.agent_adapters.base import SHELL_POSIX, dialect_for_hook_source
 from repowise.cli.helpers import find_repowise_repo_root
 
 
@@ -39,23 +45,15 @@ from repowise.cli.helpers import find_repowise_repo_root
     "--source",
     default="cli",
     hidden=True,
-    help="Ledger surface label (the rewrite hook tags hook-bash / hook-powershell).",
-)
-@click.option(
-    "--shell",
-    "dialect",
-    default=None,
-    hidden=True,
-    type=click.Choice([SHELL_POSIX, SHELL_POWERSHELL]),
     help=(
-        "Shell dialect COMMAND was written for. Unlike --source this is not "
-        "only a label: 'posix' makes a command carrying POSIX shell syntax run "
-        "in a POSIX shell rather than this host's default one. Omitted, and "
-        "'powershell', both mean the host default."
+        "Ledger surface label (the rewrite hook tags hook-bash / "
+        "hook-powershell). Load-bearing beyond the ledger: 'hook-bash' names a "
+        "POSIX command line, so on Windows a command carrying POSIX shell "
+        "syntax is run by a POSIX shell rather than cmd.exe."
     ),
 )
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
-def distill_command(source: str, dialect: str | None, command: tuple[str, ...]) -> None:
+def distill_command(source: str, command: tuple[str, ...]) -> None:
     """Run COMMAND and print a distilled rendering of its output.
 
     Examples:
@@ -78,7 +76,11 @@ def distill_command(source: str, dialect: str | None, command: tuple[str, ...]) 
     # in either dialect, and rendering it for this host is what has always
     # worked, so the POSIX shell — and the refusal when there is none — stays
     # confined to exactly the commands that need it.
-    needs_posix_shell = dialect == SHELL_POSIX and sys.platform == "win32" and len(command) == 1
+    needs_posix_shell = (
+        dialect_for_hook_source(source) == SHELL_POSIX
+        and sys.platform == "win32"
+        and len(command) == 1
+    )
     try:
         command_str = _render_command(command)
     except UnrenderableCommandError as exc:
