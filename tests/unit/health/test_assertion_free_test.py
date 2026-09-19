@@ -629,3 +629,64 @@ def test_an_abstract_stub_raising_notimplementederror_is_not_an_oracle() -> None
         "        self.create_backend().close()\n"
     )
     assert _flagged(src) == ["test_closes_cleanly", "test_get"]
+
+
+# --------------------------------------------------------------------------
+# Assertion calls the statement scan cannot classify
+# --------------------------------------------------------------------------
+
+
+def test_an_expect_bound_to_a_const_still_counts_as_checking_something() -> None:
+    """``_assertion_tier`` classifies statements, and a declaration is not one.
+
+    The awaited-rejection idiom has to bind the expectation before advancing
+    the clock, so the only assertion in the test sits where the statement scan
+    never looks. ``called_names`` records the call wherever it sits."""
+    _require("typescript")
+    src = (
+        "it('times out', async () => {\n"
+        "  const expectation = expect(client.command('x')).rejects.toThrow('timed out');\n"
+        "  await vi.advanceTimersByTimeAsync(30001);\n"
+        "  await expectation;\n"
+        "});\n"
+        "it('checks nothing', () => {\n"
+        "  run();\n"
+        "});\n"
+    )
+    assert _flagged(src, "src/thing.test.ts", "typescript") == ["it callback"]
+
+
+def test_an_assertion_inside_a_nested_function_helper_is_not_lost() -> None:
+    """A function nested in a test body is collected as nobody's entry.
+
+    ``_collect_function_nodes`` does not descend past a function, so an inline
+    ``function`` helper is never a walked function of its own, and the counts
+    stop at it. Its calls would otherwise be recorded nowhere at all."""
+    _require("typescript")
+    src = (
+        "it('checks in a helper', () => {\n"
+        "  function verifyRow(row) {\n"
+        "    expect(row.id).toBeDefined();\n"
+        "  }\n"
+        "  rows.forEach(verifyRow);\n"
+        "});\n"
+        "it('checks nothing', () => {\n"
+        "  run();\n"
+        "});\n"
+    )
+    assert _flagged(src, "src/thing.test.ts", "typescript") == ["it callback"]
+
+
+def test_descending_for_names_does_not_move_the_assertion_count() -> None:
+    """The counts must stay where they were. Only the name set widened."""
+    _require("typescript")
+    src = (
+        "it('outer', () => {\n"
+        "  function inner() {\n"
+        "    expect(1).toBe(1);\n"
+        "  }\n"
+        "  inner();\n"
+        "});\n"
+    )
+    counts = _counts(src, "src/thing.test.ts", "typescript")
+    assert counts["it callback"][0] == 0, counts

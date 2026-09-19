@@ -321,13 +321,19 @@ def _collect_assertion_facts(
     ...`` guard is a hand-rolled oracle too, and its only reader asks whether
     the count is zero. In no other count, so no calibrated marker moves.
 
-    *called* is every name called directly in this body, lowercased, excluding
-    nested function bodies on the same rule the assertion scan uses. It rides
-    along on this traversal because the traversal already reaches every call
-    node; collecting it separately would mean walking every function body
-    twice. It counts nothing and so cannot move a calibrated marker. Empty
-    under the early return above, which is fine only because the one reader
-    ships no language that takes it.
+    *called* is every name called directly in this body, lowercased,
+    **including nested function bodies**, which is where it parts company with
+    the counts beside it. Those stop at a nested function because its
+    assertions are its own. A name does not work that way here, because a
+    function nested inside an already-collected one is never collected as an
+    entry of its own -- ``ast_utils._collect_function_nodes`` does not descend
+    past a function -- so stopping would attribute its calls to nobody at all,
+    and an ``expect`` inside an inline ``function`` helper would be recorded
+    nowhere. It rides along on this traversal because the traversal already
+    reaches every call node; collecting it separately would mean walking every
+    function body twice. It counts nothing and so cannot move a calibrated
+    marker. Empty under the early return above, which is fine only because the
+    one reader ships no language that takes it.
     """
     if not lmap.assert_kinds and not lmap.assert_call_kinds:
         return [], 0, 0, 0, frozenset(), frozenset()
@@ -387,8 +393,23 @@ def _collect_assertion_facts(
                     bare.add(names[0])
         for child in node.children:
             if child.type in lmap.function_kinds:
-                continue  # nested fn, not collected as its own entry either
+                # Counts stop here: a nested function's assertions are its own,
+                # and so is a raise it makes -- a callable handed to the code
+                # under test to make it fail is not this body's oracle. Names
+                # do not stop, because nothing else collects them.
+                _visit_names_only(child)
+                continue
             _visit(child)
+
+    def _visit_names_only(node: Node) -> None:
+        if node.type in call_kinds:
+            names = _callee_names(node)
+            if names is not None:
+                called.add(names[0])
+                if not names[1]:
+                    bare.add(names[0])
+        for child in node.children:
+            _visit_names_only(child)
 
     _visit(body_node)
     # A lambda with an expression body holds no statement: ``it("x", () =>

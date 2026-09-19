@@ -44,6 +44,10 @@ behaviour.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..complexity.models import FunctionComplexity
 
 #: Callee-name prefixes of the narrow tier. Matched case-insensitively against
 #: every identifier in a call's callee chain. Frozen: the calibrated markers
@@ -51,21 +55,36 @@ from dataclasses import dataclass, field
 NARROW_PREFIXES: tuple[str, ...] = ("assert", "expect")
 
 
-def checks_something(fn) -> bool:
+def checks_something(fn: FunctionComplexity) -> bool:
     """Whether a walked function carries an oracle of any kind.
 
-    Three counts, because three different things fail a test: a state
-    assertion, a mock verification, and a ``raise`` / ``throw`` the author
-    wrote by hand. The third is not in any assertion vocabulary -- it is a
-    statement, not a call -- so a helper built on ``if (!ok) throw new
-    Error(...)`` reads as checking nothing unless this is asked instead of
-    ``assertion_count``.
+    Four things fail a test: a state assertion, a mock verification, a
+    ``raise`` / ``throw`` the author wrote by hand, and an assertion call in a
+    position ``_assertion_tier`` never classifies.
 
-    Read by ``assertion_free_test`` and by the oracle resolution behind it,
-    both of which want the boolean. No calibrated marker reads it; they count
-    ``assertion_count`` alone and are unaffected by the third term.
+    The third is in no assertion vocabulary, because a throw is a statement and
+    the vocabularies match callee names, so a helper built on ``if (!ok) throw
+    new Error(...)`` reads as checking nothing unless this is asked.
+
+    The fourth is a floor under ``assertion_count``, not a second opinion on
+    it. ``_assertion_tier`` classifies statements, so ``const e = expect(x)``
+    is a declaration it declines and ``return expect(x).toBe(1)`` is a return
+    it declines, while ``called_names`` records the call either way. Asking the
+    name is coarser and can only ever say "checked something", never how much;
+    counting those positions properly means admitting more statement kinds into
+    ``_assertion_tier``, which moves every calibrated marker reading that
+    count. Reading names also bounds the nested-body descent behind it: it
+    finds a call, so an ``expect(...)`` inside an inline helper is seen and a
+    Python ``assert`` there, having no callee, is not. Unobserved in anything
+    labelled, so it is a stated limit rather than a thing to build for.
+
+    Read only by ``assertion_free_test`` and the oracle resolution behind it,
+    both as a boolean. Calibrated markers count ``assertion_count`` alone and
+    are untouched by the last two terms.
     """
-    return bool(fn.assertion_count or fn.verification_count or fn.raise_count)
+    if fn.assertion_count or fn.verification_count or fn.raise_count:
+        return True
+    return any(name.startswith(NARROW_PREFIXES) for name in fn.called_names)
 
 
 @dataclass(frozen=True)

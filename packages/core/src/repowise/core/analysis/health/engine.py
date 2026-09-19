@@ -127,8 +127,19 @@ log = structlog.get_logger(__name__)
 # ``mock_saturated_test`` and ``large_assertion_block`` read ``assertion_count``
 # and ``assertion_blocks`` directly and are untouched. Only
 # ``assertion_free_test`` and the oracle pass behind it read the new field, both
-# through ``asserts/lexicon.checks_something``, and both as a boolean. No score
-# moves; the marker is advisory.
+# through ``asserts/lexicon.checks_something``, and both as a boolean.
+#
+# v20 finally reads an assertion call from a position ``_assertion_tier`` never
+# classifies, because that pass classifies statements: a ``const e =
+# expect(x)`` is a declaration and a ``return expect(x).toBe(1)`` is a return,
+# and neither reaches it. ``checks_something`` asks ``called_names`` for a
+# callee under ``NARROW_PREFIXES`` as a floor under the count, and the walker
+# now collects those names through nested function bodies rather than stopping
+# at them -- a function nested in an already-collected one is never collected
+# as an entry of its own, so its calls were recorded nowhere at all. The
+# *counts* still stop at a nested function, so ``assertion_count`` is
+# bit-identical to v19; only the name sets widen, and a cached v19 walk carries
+# the narrower ones. No score moves; the marker is advisory.
 #
 # v19: ``assertion_free_test`` resolves a test's oracle across file
 # boundaries, on a call edge rather than by name, so a test that delegates its
