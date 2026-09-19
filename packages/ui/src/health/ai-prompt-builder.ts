@@ -525,7 +525,7 @@ export interface WorkQueueItem {
   type: string;
   title: string;
   description: string;
-  severity: "high" | "medium" | "low";
+  severity: "critical" | "high" | "medium" | "low";
   target_id?: string | null;
 }
 
