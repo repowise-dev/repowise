@@ -140,25 +140,10 @@ def _coerce_dt(value: datetime | str) -> datetime:
 # ---------------------------------------------------------------------------
 
 
-#: The output budget for one batch of either commit prompt.
-#:
-#: Measured 2026-09-19 against ``gpt-5.6-luna`` on this repository, over the
-#: 25 commits each miner actually batches, five per call:
-#:
-#:     pr               @ 2500   0 decisions,  5 of 5 batches empty
-#:     pr               @ 8000  55 decisions,  0 of 5 batches empty
-#:     git_archaeology  @ 2000   7 decisions,  3 of 5 batches empty
-#:     git_archaeology  @ 8000  30 decisions,  0 of 5 batches empty
-#:
-#: The 2000/2500 figures predate a reasoning-capable model: reasoning tokens
-#: are charged to the same budget, so the model can spend all of it before
-#: emitting a single character and return a body of length zero. The largest
-#: completion observed at 8000 used 4,272 tokens, so this is not a ceiling
-#: found by bisection -- it is roughly twice the worst case measured.
-#:
-#: The three non-commit lanes still run on 2000/2500. They were not measured,
-#: and they now report an empty response instead of hiding it, which is the
-#: part that matters: a budget that is too small should look like a failure.
+#: The output budget for one batch of either commit prompt. Reasoning tokens
+#: are charged to it, so a budget that only fits the answer buys an empty
+#: body rather than a short one. Roughly twice the largest completion measured
+#: on this repository; see decision ``1c228ed8``.
 _BATCH_MAX_TOKENS = 8000
 
 #: How many of a commit's files either commit prompt will show. The model has
@@ -260,17 +245,11 @@ class DecisionSourceError(RuntimeError):
 
 
 class EmptyModelResponseError(DecisionSourceError):
-    """The model returned no content at all for one batch.
+    """The model returned no body at all for one batch.
 
-    Distinct from a model that answered ``[]``, which is a real answer and a
-    common one. An empty body means the response never arrived -- in practice
-    because the output budget was spent before any content was emitted -- and
-    reading it as "no decisions here" is how a whole batch of commits goes
-    missing with nothing on screen.
-
-    Raised so the batch lands in :func:`_collect_batches` as a failure, which
-    already degrades a source that loses some batches and fails one that loses
-    them all.
+    Distinct from ``[]``, which is a real answer and the common one. Raised so
+    the batch lands in :func:`_collect_batches` as a failure rather than as a
+    source with nothing in it.
     """
 
 
@@ -1736,17 +1715,14 @@ class DecisionExtractor:
     def _parse_decisions_json(self, content: str) -> list[ExtractedDecision]:
         """Parse LLM response as JSON array of decisions.
 
-        Raises :class:`EmptyModelResponseError` when the body is blank. Every
-        caller sits inside a gather or a fallback that treats an exception as
-        a lost batch, and returning ``[]`` here instead is what let a run that
-        lost all five batches print "Nothing found in: pull requests".
+        A blank body raises :class:`EmptyModelResponseError`; every caller
+        sits inside a gather or a fallback that counts that as a lost batch.
         """
         # Extract JSON from response (may be wrapped in markdown code blocks)
         content = content.strip()
         if not content:
             raise EmptyModelResponseError(
-                "the model returned no content for this batch, which usually "
-                "means the output budget was spent before any was emitted"
+                "the model returned no content for this batch"
             )
         if content.startswith("```"):
             # Remove markdown code fences

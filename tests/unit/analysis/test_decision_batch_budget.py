@@ -1,21 +1,10 @@
 """An empty model response is a lost batch, not an empty repository.
 
-The defect these pin, observed on a real index: the `pr` miner reported
-"Nothing found in: pull requests" while 478 eligible commits existed. Every
-one of its five batches had come back with a body of length zero, because the
-output budget was spent before any content was emitted, and
-``_parse_decisions_json`` read a blank body as "no decisions here".
-
-Measured 2026-09-19 against ``gpt-5.6-luna`` over the 25 commits each miner
-actually batches:
-
-    pr               @ 2500   0 decisions,  5 of 5 batches empty
-    pr               @ 8000  55 decisions,  0 of 5 batches empty
-    git_archaeology  @ 2000   7 decisions,  3 of 5 batches empty
-    git_archaeology  @ 8000  30 decisions,  0 of 5 batches empty
-
-The 7 at 2000 is exactly what the live index reported, which is what ties the
-reproduction to the run.
+The defect these pin: a miner whose output budget was too small got an empty
+body back, ``_parse_decisions_json`` read that as "no decisions here", and a
+lane that had lost every batch reported nothing found. The budget that caused
+it and the measurement behind its replacement are recorded in decision
+``decision-batch-token-budget``.
 """
 
 from __future__ import annotations
@@ -147,11 +136,7 @@ async def test_the_failure_reaches_the_report_as_a_failure(tmp_path):
 
 
 def test_a_partly_lost_source_keeps_what_survived():
-    """Three of five batches empty is degraded, not failed.
-
-    This is the `git_archaeology` case measured at its old budget, and losing
-    the seven decisions that did arrive would be the worse answer.
-    """
+    """Some batches empty is degraded, not failed: partial supply beats none."""
     kept = _collect_batches(
         "git_archaeology",
         [["a", "b"], EmptyModelResponseError("no content"), ["c"]],
@@ -163,12 +148,7 @@ def test_a_partly_lost_source_keeps_what_survived():
 
 
 async def test_both_commit_miners_ask_for_the_measured_budget(tmp_path):
-    """The budgets that produced zero were 2500 and 2000.
-
-    Pinned as one constant rather than two literals so a future change cannot
-    raise one lane and leave the other starving, which is the state this was
-    found in.
-    """
+    """One constant, so a change cannot raise one lane and starve the other."""
     assert _BATCH_MAX_TOKENS >= 8000
 
     ex = _extractor(tmp_path, "[]")
