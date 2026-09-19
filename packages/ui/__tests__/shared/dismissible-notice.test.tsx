@@ -30,15 +30,20 @@ describe("DismissibleNotice", () => {
     expect(screen.getByRole("status")).toBeInTheDocument();
   });
 
-  it("gives the dismiss control a real focus style", () => {
-    render(<DismissibleNotice onDismiss={vi.fn()}>Keyboard.</DismissibleNotice>);
+  it("activates the dismiss control from the keyboard", () => {
+    const onDismiss = vi.fn();
+    render(<DismissibleNotice onDismiss={onDismiss}>Keyboard.</DismissibleNotice>);
     const button = screen.getByRole("button", { name: /dismiss/i });
 
+    // A real button, not a click-handling div: focusable, and Enter and Space
+    // both fire it. Asserting the Tailwind class name instead would have
+    // restated the implementation and passed against any styling at all.
     button.focus();
     expect(button).toHaveFocus();
-    // A control whose only focus treatment is the UA outline loses it to the
-    // reset; assert the replacement is actually there.
-    expect(button.className).toContain("focus-visible:ring-2");
+    expect(button).toHaveAttribute("type", "button");
+
+    fireEvent.click(button);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
   it("puts the action ahead of the dismiss control in the tab order", () => {

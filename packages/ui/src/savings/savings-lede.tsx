@@ -70,7 +70,7 @@ export function SavingsLede({ data, methodologyHref, LinkComponent }: SavingsLed
     {
       label: "MCP answered",
       value: data.mcp_queries_answered.toLocaleString(),
-      hint: "Successful or usably partial MCP calls. Dead ends are counted separately and save nothing.",
+      hint: "MCP calls that returned an answer. Dead ends are counted separately and save nothing.",
       ...(data.dead_ends > 0 ? { sub: `${data.dead_ends.toLocaleString()} dead ends` } : {}),
     },
   ];
@@ -88,19 +88,29 @@ export function SavingsLede({ data, methodologyHref, LinkComponent }: SavingsLed
           These are input tokens your agent never had to read, recorded one event per
           interaction across the <code>repowise distill</code> path, the replacement hooks
           and MCP calls.{" "}
-          {inferred > 0
-            ? "Part of the total is inferred, so the figure is an estimate rather than a measurement."
-            : "Every part of the total is a measured before and after."}
+          {/* Nothing measured means nothing to characterise. Claiming "every
+              part of the total is measured" about an empty set is a statement
+              with no subject. */}
+          {total <= 0
+            ? "Nothing has been recorded in this window yet."
+            : inferred > 0
+              ? "Part of the total is inferred, so the figure is an estimate rather than a measurement."
+              : "Every part of the total is a measured before and after."}
         </p>
         <p>
-          {unpriced > 0 ? (
+          {total <= 0 ? null : unpriced > 0 ? (
             <>
               {formatTokens(unpriced)} of those tokens carry no rate, so the dollar figure
-              values the rest and not the whole total.
+              values the rest and not all of them.{" "}
             </>
           ) : (
-            <>Every event carried a rate, so the dollar figure values the whole total.</>
-          )}{" "}
+            <>
+              {/* "the whole total" was not true: the figure prices input
+                  tokens, and output savings are reported separately. */}
+              Every event carried a rate, so the dollar figure values all of these input
+              tokens.{" "}
+            </>
+          )}
           <Coverage
             data={data}
             methodologyHref={methodologyHref}

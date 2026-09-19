@@ -90,13 +90,22 @@ export default function CostsPage() {
       {savingsError ? (
         <ApiError
           title="Couldn't load agent savings"
-          message="The savings endpoint did not respond. Model spend below is unaffected."
+          // Only claim spend is fine when it actually is. Asserted
+          // unconditionally, this sat directly above a spend error.
+          message={
+            spendError
+              ? "The savings endpoint did not respond."
+              : "The savings endpoint did not respond. Model spend below is unaffected."
+          }
           onRetry={() => void retrySavings()}
         />
-      ) : loadingSavings || savings === undefined ? (
+      ) : savings === undefined ? (
         <SavingsSkeleton />
       ) : (
-        <SavingsSections data={savings as SavingsView} />
+        // No cast: `Savings` and `SavingsView` are separate declarations of
+        // the same wire shape, and an assignment is what makes the compiler
+        // notice if they ever drift apart.
+        <SavingsSections data={savings} />
       )}
 
       <OverviewSection
@@ -108,7 +117,7 @@ export default function CostsPage() {
         ) : spend === undefined ? (
           <p className="text-sm text-[var(--color-text-tertiary)]">Loading model spend…</p>
         ) : (
-          <SpendSummary spend={spend as SpendView} />
+          <SpendSummary spend={spend} />
         )}
       </OverviewSection>
 
@@ -237,8 +246,9 @@ function SavingsSections({ data }: { data: SavingsView }) {
 function ResetNotice({ repoId }: { repoId: string }) {
   const [visible, setVisible] = useState(false);
 
+  // No `typeof window` guard: an effect never runs during SSR, so the guard
+  // was dead code implying a hazard that is not there.
   useEffect(() => {
-    if (typeof window === "undefined") return;
     try {
       setVisible(!window.localStorage.getItem(resetNoticeKey(repoId)));
     } catch {
@@ -253,7 +263,9 @@ function ResetNotice({ repoId }: { repoId: string }) {
     try {
       window.localStorage.setItem(resetNoticeKey(repoId), "1");
     } catch {
-      /* Storage unavailable: hide for this session only. */
+      // Storage unavailable, so the dismissal cannot be remembered and the
+      // notice returns on the next mount. Hiding it here is still right: the
+      // reader asked for it to go away now.
     }
     setVisible(false);
   }, [repoId]);

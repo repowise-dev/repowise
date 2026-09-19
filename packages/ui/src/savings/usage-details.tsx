@@ -24,20 +24,25 @@ export interface UsageDetailsProps {
  * separate and stays separate, which is the rule that keeps a reader from
  * having two controls that both look like they narrow the result.
  *
- * A dimension with no rows still gets a tab, disabled, with the reason in its
- * title. Hiding it would make the vocabulary depend on the data and leave a
- * reader unsure whether "by model" exists at all.
+ * A dimension with no rows still gets a tab, and says what would populate it
+ * once opened. Hiding it would make the vocabulary depend on the data and
+ * leave a reader unsure whether "by model" exists at all.
  */
 export function UsageDetails({ data, value, onValueChange }: UsageDetailsProps) {
   const [internal, setInternal] = React.useState<UsageDetailTab>("day");
-  const active = value ?? internal;
+  // Controlled by the presence of `value`, not of `onValueChange`. Keying on
+  // the callback froze the tabs for a host that only wanted to observe the
+  // selection: every click notified and nothing moved.
+  const controlled = value !== undefined;
+  const active = controlled ? value : internal;
   const select = React.useCallback(
     (id: string) => {
       const tab = id as UsageDetailTab;
-      if (onValueChange) onValueChange(tab);
-      else setInternal(tab);
+      if (!controlled) setInternal(tab);
+      // Fires in both modes: an uncontrolled caller may still want to know.
+      onValueChange?.(tab);
     },
-    [onValueChange],
+    [controlled, onValueChange],
   );
 
   const total = data.saved_input_tokens;

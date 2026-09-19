@@ -129,11 +129,22 @@ function Th({
  * a reader is comparing.
  */
 function Share({ value, total, label }: { value: number; total: number; label: string }) {
-  if (total <= 0) return <span className="text-[var(--color-text-tertiary)]">&mdash;</span>;
-  const pct = (value / total) * 100;
+  // No denominator means no share. Say so in words rather than with a dash
+  // alone, which left a screen reader with an empty cell.
+  if (!(total > 0) || !Number.isFinite(value)) {
+    return <span className="text-xs text-[var(--color-text-tertiary)]">No share</span>;
+  }
+
+  const raw = (value / total) * 100;
+  // Clamped at both ends. A breakdown whose rows are counted differently from
+  // the total can exceed it, and an unclamped bar then overflows its track
+  // while the label claims "140%"; a negative would print as "<1%", reading
+  // as a small positive contribution.
+  const pct = Math.min(Math.max(raw, 0), 100);
   // A contributing row never renders as an empty track: below about half a
   // percent the bar rounds to nothing and the row reads as zero.
-  const width = value > 0 ? Math.max(pct, 1.5) : 0;
+  const width = pct > 0 ? Math.max(pct, 1.5) : 0;
+  const text = pct <= 0 ? "0%" : pct >= 1 ? `${Math.round(pct)}%` : "<1%";
 
   return (
     <span className="flex items-center gap-2">
@@ -146,8 +157,11 @@ function Share({ value, total, label }: { value: number; total: number; label: s
           style={{ width: `${width}%` }}
         />
       </span>
-      <span className="w-10 shrink-0 text-right text-xs tabular-nums text-[var(--color-text-tertiary)]">
-        {pct >= 1 ? `${Math.round(pct)}%` : "<1%"}
+      <span
+        aria-hidden
+        className="w-10 shrink-0 text-right text-xs tabular-nums text-[var(--color-text-tertiary)]"
+      >
+        {text}
       </span>
       <span className="sr-only">
         {label}: {pct.toFixed(1)}% of total savings

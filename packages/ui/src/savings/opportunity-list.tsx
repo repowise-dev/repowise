@@ -6,6 +6,12 @@ import { formatTokens } from "../lib/format";
 import type { SavingsView } from "./types";
 
 export interface OpportunityItem {
+  /**
+   * Stable list key. Separate from `title` because a ledger kind is an open
+   * vocabulary: two kinds can render the same phrase, and an empty kind
+   * renders an empty one, so keying on the rendered text collides.
+   */
+  id: string;
   /** What was observed, as a heading-weight phrase. */
   title: string;
   /** The evidence, in a sentence. */
@@ -47,7 +53,7 @@ export function OpportunityList({ items, LinkComponent }: OpportunityListProps) 
     <ul className="flex flex-col">
       {items.map((item) => (
         <li
-          key={item.title}
+          key={item.id}
           className="flex flex-col gap-1 border-b border-[var(--color-border-default)] py-3.5 last:border-b-0"
         >
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -108,16 +114,16 @@ export function buildOpportunities(
   const items: OpportunityItem[] = [];
 
   if (data.missed_events > 0) {
-    const days = Math.round(data.missed_window_days);
     items.push({
+      id: "missed_distill",
       title: `${data.missed_events.toLocaleString()} command${
         data.missed_events === 1 ? "" : "s"
       } bypassed distillation`,
       potential: `Observed opportunity: ~${formatTokens(data.missed_tokens_est)} tokens`,
       detail: (
         <>
-          Commands that ran raw over the last {days} day{days === 1 ? "" : "s"} would have
-          been candidates for distillation. Nothing was saved on them.
+          Commands that ran raw {windowPhrase(data.missed_window_days)} would have been
+          candidates for distillation. Nothing was saved on them.
         </>
       ),
       ...(distillDocsHref
@@ -131,10 +137,14 @@ export function buildOpportunities(
 
   if (data.reread_events > 0) {
     items.push({
+      id: "reread",
       title: `${data.reread_events.toLocaleString()} unchanged-file re-read${
         data.reread_events === 1 ? "" : "s"
       }`,
-      potential: `Potentially avoid ~${formatTokens(data.reread_tokens_est)} tokens`,
+      // "Potentially avoid" promised a future saving from an observation of
+      // past behaviour. Every row in this section is the same kind of claim
+      // and now says so the same way.
+      potential: `Observed opportunity: ~${formatTokens(data.reread_tokens_est)} tokens`,
       detail: (
         <>
           {data.reread_events === 1 ? "One full re-read" : "Full re-reads"} of files that had
@@ -152,7 +162,8 @@ export function buildOpportunities(
     // grammatical whatever a future surface records, without this file
     // keeping a label map of kinds it cannot know.
     items.push({
-      title: sentenceCase(row.kind.replace(/_/g, " ")),
+      id: `kind:${row.kind}`,
+      title: sentenceCase(row.kind.replace(/_/g, " ")) || "Unnamed opportunity",
       potential: `Observed opportunity: ~${formatTokens(
         row.estimated_potential_input_tokens,
       )} tokens`,
@@ -171,4 +182,18 @@ export function buildOpportunities(
 
 function sentenceCase(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * Name the miner's window without asserting a day count it does not have.
+ *
+ * `missed_window_days` is a float on the wire, so a freshly indexed
+ * repository can report a fraction of a day. Rounding it printed "over the
+ * last 0 days", which reads as a bug and understates the window besides.
+ */
+function windowPhrase(days: number): string {
+  if (!Number.isFinite(days) || days <= 0) return "recently";
+  if (days < 1) return "in the last day";
+  const whole = Math.round(days);
+  return `over the last ${whole} day${whole === 1 ? "" : "s"}`;
 }

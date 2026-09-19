@@ -135,8 +135,31 @@ describe("SavingsLede", () => {
         })}
       />,
     );
-    expect(screen.getByText(/values the whole total/)).toBeInTheDocument();
+    // "values the whole total" overclaimed: the figure prices input tokens,
+    // and output savings are reported separately.
+    expect(screen.getByText(/values all of these input tokens/)).toBeInTheDocument();
+    expect(screen.queryByText(/the whole total/)).not.toBeInTheDocument();
     expect(screen.getByText("on all savings")).toBeInTheDocument();
+  });
+
+  it("characterises nothing when nothing was recorded", () => {
+    render(
+      <SavingsLede
+        data={makeSavings({
+          saved_input_tokens: 0,
+          measured_saved_input_tokens: 0,
+          inferred_saved_input_tokens: 0,
+          priced_saved_input_tokens: 0,
+          unpriced_saved_input_tokens: 0,
+          priced_input_savings_usd: 0,
+        })}
+      />,
+    );
+    // Saying "every part of the total is measured" about an empty set is a
+    // claim with no subject.
+    expect(screen.getByText(/Nothing has been recorded in this window yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/measured before and after/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/carry no rate/)).not.toBeInTheDocument();
   });
 
   it("keeps the coverage date and methodology link beside the total", () => {
@@ -216,7 +239,7 @@ describe("SavingsSourceTable", () => {
   });
 
   it("does not round a contributing row down to nothing", () => {
-    render(
+    const { container } = render(
       <SavingsSourceTable
         rows={[{ label: "Hooks", events: 1, savedInputTokens: 100 }]}
         total={1_000_000}
@@ -227,6 +250,57 @@ describe("SavingsSourceTable", () => {
     // 0.01% is real but not "0%": a source that contributed must not read as
     // one that did not.
     expect(screen.getByText("<1%")).toBeInTheDocument();
+
+    // And the bar itself must be visible, which is separate logic from the
+    // text. Without the floor this renders at 0.01% wide, i.e. nothing.
+    const bar = container.querySelector<HTMLElement>(
+      "span[style*='width'] , span[class*='rounded-full'][style]",
+    );
+    expect(bar?.style.width).toBe("1.5%");
+  });
+
+  it("clamps a row that exceeds the total instead of overflowing its track", () => {
+    const { container } = render(
+      <SavingsSourceTable
+        rows={[{ label: "MCP", events: 1, savedInputTokens: 1_400_000 }]}
+        total={1_000_000}
+        nameHeader="Surface"
+        caption="Savings by surface"
+      />,
+    );
+    // Breakdowns can count differently from the total; an unclamped bar then
+    // runs past its track while the label claims 140%.
+    expect(screen.getByText("100%")).toBeInTheDocument();
+    expect(screen.queryByText("140%")).not.toBeInTheDocument();
+    const bar = container.querySelector<HTMLElement>("span[style*='width']");
+    expect(bar?.style.width).toBe("100%");
+  });
+
+  it("does not present a negative row as a small positive one", () => {
+    render(
+      <SavingsSourceTable
+        rows={[{ label: "MCP", events: 1, savedInputTokens: -500 }]}
+        total={1_000_000}
+        nameHeader="Surface"
+        caption="Savings by surface"
+      />,
+    );
+    // A negative fell through to the "<1%" branch and read as a contribution.
+    expect(screen.getByText("0%")).toBeInTheDocument();
+    expect(screen.queryByText("<1%")).not.toBeInTheDocument();
+  });
+
+  it("keeps the share readable when there is no denominator", () => {
+    render(
+      <SavingsSourceTable
+        rows={[{ label: "MCP", events: 1, savedInputTokens: 0 }]}
+        total={0}
+        nameHeader="Surface"
+        caption="Savings by surface"
+      />,
+    );
+    // A bare dash left a screen reader with an empty cell.
+    expect(screen.getByText("No share")).toBeInTheDocument();
   });
 
   it("renders a caption for a reader who cannot see the section heading", () => {
@@ -287,13 +361,41 @@ describe("OpportunityList", () => {
   });
 
   it("labels potential as an opportunity, never as a saving", () => {
+    render(<OpportunityList items={buildOpportunities(makeSavings())} />);
+    expect(screen.getByText("Observed opportunity: ~96K tokens")).toBeInTheDocument();
+    // Every row makes the same kind of claim and now says so the same way.
+    // "Potentially avoid" promised a future saving from a past observation.
+    expect(screen.getByText("Observed opportunity: ~635 tokens")).toBeInTheDocument();
+    expect(screen.queryByText(/Potentially avoid/)).not.toBeInTheDocument();
+  });
+
+  it("does not report a sub-day window as zero days", () => {
     render(
-      <OpportunityList items={buildOpportunities(makeSavings())} />,
+      <OpportunityList
+        items={buildOpportunities(makeSavings({ missed_window_days: 0.4 }))}
+      />,
     );
-    expect(
-      screen.getByText("Observed opportunity: ~96K tokens"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Potentially avoid ~635 tokens")).toBeInTheDocument();
+    // missed_window_days is a float; rounding printed "over the last 0 days".
+    expect(screen.getByText(/in the last day/)).toBeInTheDocument();
+    expect(screen.queryByText(/last 0 days/)).not.toBeInTheDocument();
+  });
+
+  it("gives two opportunity kinds that render alike distinct keys", () => {
+    // Keying a row on its rendered title collided here: an empty kind renders
+    // an empty title, and React drops the duplicate.
+    const items = buildOpportunities(
+      makeSavings({
+        missed_events: 0,
+        reread_events: 0,
+        per_opportunity_kind: [
+          { kind: "", observations: 2, estimated_potential_input_tokens: 10 },
+          { kind: "_", observations: 3, estimated_potential_input_tokens: 20 },
+        ],
+      }),
+    );
+    expect(new Set(items.map((i) => i.id)).size).toBe(2);
+    render(<OpportunityList items={items} />);
+    expect(screen.getAllByText(/Observed \d+ times/)).toHaveLength(2);
   });
 
   it("describes re-reads as observed, without claiming what would have replaced them", () => {
@@ -354,8 +456,14 @@ describe("OpportunityList", () => {
 });
 
 describe("SavingsTimeline", () => {
-  it("summarises the series in text beside the chart", () => {
+  it("draws the chart and summarises it in text", () => {
     render(<SavingsTimeline days={makeSavings().per_day} />);
+    // Assert the chart is actually there: without this the whole recharts
+    // block could be deleted and the summary assertions would still pass.
+    const chart = screen.getByRole("img");
+    expect(chart).toHaveAccessibleName(/Savings per day, 4 days/);
+    expect(chart).toHaveAccessibleName(/Largest 400K tokens on 2026-09-19/);
+
     expect(
       screen.getByText(/4 days recorded a saving between 2026-09-16 and 2026-09-19\./),
     ).toBeInTheDocument();
@@ -472,6 +580,19 @@ describe("UsageDetails", () => {
     fireEvent.click(screen.getByRole("tab", { name: /Models/ }));
     expect(screen.getByText("No savings in this window carry a model.")).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("still switches when the host only observes the selection", () => {
+    const onValueChange = vi.fn();
+    // A host passing onValueChange without value is an ordinary "tell me
+    // when it changes" usage. Treating the callback as the controlled signal
+    // froze the tabs: every click notified and nothing moved.
+    render(<UsageDetails data={makeSavings()} onValueChange={onValueChange} />);
+
+    fireEvent.click(screen.getByRole("tab", { name: /Models/ }));
+
+    expect(onValueChange).toHaveBeenCalledWith("model");
+    expect(screen.getByText("No rate recorded")).toBeInTheDocument();
   });
 
   it("can be driven by the host", () => {
