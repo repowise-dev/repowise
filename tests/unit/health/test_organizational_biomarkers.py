@@ -53,6 +53,7 @@ def test_developer_congestion_fires_on_crowded_hotspot():
     meta = {
         "contributor_count": 12,
         "commit_count_90d": 25,
+        "churn_percentile": 0.9,
         "primary_owner_commit_pct": 0.25,
         "primary_owner_name": "Alice",
     }
@@ -66,6 +67,7 @@ def test_developer_congestion_normalizes_percent_form():
     meta = {
         "contributor_count": 6,
         "commit_count_90d": 8,
+        "churn_percentile": 0.8,
         "primary_owner_commit_pct": 30.0,  # percent form
     }
     out = DeveloperCongestionDetector().detect(_ctx(meta))
@@ -77,15 +79,19 @@ def test_developer_congestion_skips_with_clear_owner():
     meta = {
         "contributor_count": 8,
         "commit_count_90d": 15,
+        "churn_percentile": 0.9,
         "primary_owner_commit_pct": 0.65,
     }
     assert DeveloperCongestionDetector().detect(_ctx(meta)) == []
 
 
-def test_developer_congestion_skips_low_activity():
+def test_developer_congestion_skips_quiet_files_for_this_repo():
+    """The activity gate is the repository's own churn ranking. A busy file by
+    absolute count is not busy if most of the repository is busier."""
     meta = {
         "contributor_count": 8,
-        "commit_count_90d": 2,
+        "commit_count_90d": 15,
+        "churn_percentile": 0.4,
         "primary_owner_commit_pct": 0.2,
     }
     assert DeveloperCongestionDetector().detect(_ctx(meta)) == []
@@ -493,8 +499,15 @@ def test_co_change_scatter_exempts_a_barrel_named_file_even_with_logic():
 # ---- prior_defect --------------------------------------------------------
 
 
+def _pd(count: int, **over) -> dict:
+    """Fix history for a file in the top fifth of this repository."""
+    meta = {"prior_defect_count": count, "prior_defect_pct": 0.9}
+    meta.update(over)
+    return meta
+
+
 def test_prior_defect_fires_low_on_single_fix():
-    out = PriorDefectDetector().detect(_ctx({"prior_defect_count": 1}))
+    out = PriorDefectDetector().detect(_ctx(_pd(1)))
     assert len(out) == 1
     assert out[0].severity == "low"
     assert out[0].details["prior_defect_count"] == 1
@@ -502,19 +515,33 @@ def test_prior_defect_fires_low_on_single_fix():
 
 
 def test_prior_defect_scales_severity_with_count():
-    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 2}))[0].severity == "medium"
-    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 3}))[0].severity == "high"
-    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 6}))[0].severity == "critical"
+    assert PriorDefectDetector().detect(_ctx(_pd(2)))[0].severity == "medium"
+    assert PriorDefectDetector().detect(_ctx(_pd(3)))[0].severity == "high"
+    assert PriorDefectDetector().detect(_ctx(_pd(6)))[0].severity == "critical"
 
 
 def test_prior_defect_escalates_to_critical_on_hotspot():
     # A mid-band count (3) on a churn hotspot compounds to CRITICAL.
-    meta = {"prior_defect_count": 3, "is_hotspot": True}
-    out = PriorDefectDetector().detect(_ctx(meta))
+    out = PriorDefectDetector().detect(_ctx(_pd(3, is_hotspot=True)))
     assert out[0].severity == "critical"
 
 
 def test_prior_defect_silent_without_prior_fixes():
     # No defect history (or ESSENTIAL tier where the field is absent) → silent.
-    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 0})) == []
+    assert PriorDefectDetector().detect(_ctx(_pd(0))) == []
     assert PriorDefectDetector().detect(_ctx({"commit_count_90d": 9})) == []
+
+
+def test_prior_defect_silent_below_the_repo_percentile():
+    """Six months is a fixed window, so on a repository landing many commits a
+    day most files carry a fix or two. The entry is a share of the repository,
+    which is what stops the signal firing on half the tree."""
+    assert PriorDefectDetector().detect(_ctx(_pd(2, prior_defect_pct=0.5))) == []
+
+
+def test_prior_defect_keeps_the_calibrated_ladder_above_the_gate():
+    """Only the entry moved. Above it the count still decides the band, so a
+    file reports the severity the benchmark calibrated for its fix count."""
+    out = PriorDefectDetector().detect(_ctx(_pd(6, prior_defect_pct=0.81)))
+    assert out[0].severity == "critical"
+    assert out[0].details["prior_defect_pct"] == 81.0
