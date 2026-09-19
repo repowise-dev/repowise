@@ -465,11 +465,11 @@ The tiers, highest evidence first:
 | Confidence | Origins | Evidence |
 |:---:|---|---|
 | 0.95 | `same_file`, `self_scope`, `enclosing_class` | The callee is in this file, or on the caller's own class |
-| 0.93 | `receiver_same_file`, `receiver_typed_same_file`, `receiver_field_same_file`, `receiver_framework_same_file` | The receiver names a type declared in this file |
-| 0.90 | `same_package`, `import_scoped`, `receiver_same_package`, the three `*_same_package` typed variants, `self_inherited`, `enclosing_inherited` | A sibling file needing no import, or an explicit import |
-| 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, the three `*_import` typed variants | The receiver resolved through an imported file |
+| 0.93 | `receiver_same_file`, `receiver_typed_same_file`, `receiver_field_same_file`, `receiver_framework_same_file`, `scoped_name`, `receiver_extension_same_file`, `return_type_same_file` | The receiver or returned type names a class in this file, or the call names its class directly |
+| 0.90 | `same_package`, `import_scoped`, `receiver_same_package`, `receiver_typed_same_package`, `receiver_field_same_package`, `receiver_framework_same_package`, `return_type_same_package`, `self_inherited`, `enclosing_inherited` | A sibling file needing no import, an explicit import, or one unambiguous ancestor |
+| 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, `receiver_typed_import`, `receiver_field_import`, `receiver_framework_import`, `receiver_extension_import`, `return_type_import` | The receiver, returned type, or target resolved through an imported file or scoped alias |
 | 0.85 | `import_merged`, `same_target` | In *some* imported file, or some sibling translation unit; which one is unattributed |
-| 0.75 | `receiver_global`, the three `*_global` typed variants | The `(class, method)` pair exists somewhere in the repo |
+| 0.75 | `receiver_global`, `receiver_typed_global`, `receiver_field_global`, `receiver_framework_global`, `receiver_extension_global`, `return_type_global` | The `(class, method)` pair exists somewhere in the repo |
 | 0.50 | `global_unique` | The name is unique repo-wide. **A guess** |
 
 The typed variants come in three parallel families of four, one per *scope*,

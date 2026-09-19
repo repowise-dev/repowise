@@ -47,7 +47,7 @@ and symbol nodes (functions, classes, methods). 26 languages parse to a full
 AST; see [`LANGUAGE_SUPPORT.md`](LANGUAGE_SUPPORT.md) for per-language tiers.
 
 A **confidence-scored call resolver** handles import aliases, barrel
-re-exports and namespace imports. Every `calls` edge is stamped with one of 29
+re-exports and namespace imports. Every `calls` edge is stamped with one of 37
 named resolution origins (`ResolutionOrigin` in `ingestion/models.py`), each
 carrying a fixed confidence from 0.95 (`same_file`) down to 0.50
 (`global_unique`, a repo-wide name match, labelled as the guess it is). That
