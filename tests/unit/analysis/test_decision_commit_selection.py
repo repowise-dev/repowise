@@ -20,7 +20,10 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from repowise.core.analysis.decisions.extractor import DecisionExtractor
+from repowise.core.analysis.decisions.extractor import (
+    DecisionExtractor,
+    _coerce_paths,
+)
 from repowise.core.analysis.decisions.scope import (
     SCOPE_BASIS_FOOTPRINT,
     SCOPE_BASIS_SELECTED,
@@ -217,3 +220,96 @@ async def test_git_archaeology_falls_back_when_the_key_is_absent(tmp_path):
 
     assert decisions[0].affected_files == _COMMIT_FILES
     assert decisions[0].scope_basis == SCOPE_BASIS_FOOTPRINT
+
+
+async def test_git_archaeology_binds_nothing_when_the_model_selects_nothing(tmp_path):
+    ex = _extractor(tmp_path, _payload(affected_files=[]))
+
+    decisions = await ex.mine_git_archaeology()
+
+    assert decisions[0].affected_files == []
+    assert decisions[0].scope_basis == SCOPE_BASIS_SELECTED
+
+
+async def test_git_archaeology_drops_a_path_the_commit_never_touched(tmp_path):
+    ex = _extractor(
+        tmp_path, _payload(affected_files=[_SUBJECT, "packages/core/src/ghost.py"])
+    )
+
+    decisions = await ex.mine_git_archaeology()
+
+    assert decisions[0].affected_files == [_SUBJECT]
+
+
+async def test_git_archaeology_shows_the_files_in_a_reproducible_order(tmp_path):
+    """Which files the model may choose from is a property of the commit.
+
+    The list is an inversion of a per-file map, so its natural order is
+    whichever file the walk reached first. Truncating that unsorted made the
+    choosable set depend on the index run rather than the commit.
+    """
+    ex = _extractor(tmp_path, _payload(affected_files=[_SUBJECT]))
+
+    await ex.mine_git_archaeology()
+
+    (prompt,) = ex.test_provider.prompts
+    shown = prompt.split("Files changed: ")[1].split("\n")[0].split(", ")
+    assert shown == sorted(shown)
+
+
+# --- what the model returned, when it is not a list of paths ---------------
+
+
+def test_a_malformed_answer_is_not_read_as_an_empty_selection():
+    """A shape error must not permanently bind a record to nothing.
+
+    ``[]`` means "about none of these files", which is a real answer and a
+    common one. A list of dicts or numbers is a provider answering in the
+    wrong shape, and reading it as ``[]`` would silently make the decision
+    govern nothing for good. It falls back instead.
+    """
+    assert _coerce_paths([{"path": "a.py"}]) is None
+    assert _coerce_paths([None]) is None
+    assert _coerce_paths({"files": ["a.py"]}) is None
+    # An answer that really is empty still reads as empty.
+    assert _coerce_paths([]) == []
+
+
+def test_a_bare_string_answer_is_read_as_one_path():
+    assert _coerce_paths("a.py") == ["a.py"]
+
+
+# --- a decision the miner cannot attribute to a commit ---------------------
+
+
+async def test_an_unattributed_decision_keeps_no_model_paths(tmp_path):
+    """No commit means no list to validate against, so the answer is unusable.
+
+    Only the attributed branch called the helper that clears the field, so an
+    unattributed decision carried the model's raw paths into
+    ``dataclasses.asdict`` and on to persistence. Nothing there reads the key,
+    so it was inert -- and the field promises that it cannot be read at all.
+    """
+    payload = _payload(affected_files=["packages/core/src/ghost.py"])
+    del payload[0]["commit_sha"]
+    payload[0]["title"] = "A title matching no commit subject"
+    ex = _extractor(tmp_path, payload)
+
+    (decision,) = await ex.mine_pr_bodies()
+
+    assert decision.proposed_files is None
+    assert decision.evidence_commits == []
+    assert decision.affected_files == []
+
+
+async def test_an_unattributed_archaeology_decision_keeps_no_model_paths(tmp_path):
+    """The same guarantee on the other miner, which has the same branch."""
+    payload = _payload(affected_files=["packages/core/src/ghost.py"])
+    del payload[0]["commit_sha"]
+    payload[0]["title"] = "A title matching no commit message"
+    ex = _extractor(tmp_path, payload)
+
+    decisions = await ex.mine_git_archaeology()
+
+    assert decisions[0].proposed_files is None
+    assert decisions[0].affected_files == []

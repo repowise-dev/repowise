@@ -61,6 +61,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.decisions.lifecycle import ARCHITECTURAL_KIND
 from repowise.core.analysis.decisions.provenance import rank_for_source
 from repowise.core.analysis.decisions.scope import (
+    SCOPE_BASIS_FOOTPRINT,
     SCOPE_BASIS_SELECTED,
     SCOPE_BASIS_STATED,
     binds_to_paths,
@@ -331,14 +332,16 @@ async def apply_dedupe(
             name: set(_json_list(getattr(canonical, column))) for column, name in _UNION_FIELDS
         }
         done = FoldPlan(canonical_id=canonical.id, canonical_title=canonical.title)
-        # Whether every list going into the union was chosen file by file.
-        # One footprint among them makes the union a footprint again.
+        # Whether every list going into the union was chosen file by file,
+        # and whether any of them was a list no surface may bind to.
         all_selected = canonical.scope_basis == SCOPE_BASIS_SELECTED
+        any_unbound = not binds_to_paths(canonical.scope_basis)
         for folded_id, title, score in cluster.folded:
             folded = await session.get(DecisionRecord, folded_id)
             if folded is None or folded_id not in eligible:
                 continue
             all_selected = all_selected and folded.scope_basis == SCOPE_BASIS_SELECTED
+            any_unbound = any_unbound or not binds_to_paths(folded.scope_basis)
             for column, name in _UNION_FIELDS:
                 union[name] |= set(_json_list(getattr(folded, column)))
             # The checkable noun wins a fold. An agreement that absorbs a
@@ -367,12 +370,21 @@ async def apply_dedupe(
         # Duplicates are restatements of one decision, so the union of their
         # selections is still a selection, and recomputing it by breadth would
         # demote a scope no breadth rule ever produced. That holds only while
-        # every member chose: mixing one footprint in makes the union a
-        # footprint again, which is what ``all_selected`` tracks.
+        # every member chose.
+        #
+        # Otherwise, a member that could not bind on its own must not bind
+        # through the union. The breadth rule cannot express that any more:
+        # ``backfill_scope_basis`` now marks a legacy commit list a footprint
+        # at any width, so ``commit_scope_basis`` over a small union returns
+        # the binding empty basis and would hand the canonical files nobody
+        # ever chose. Breadth is left to decide only the case it still owns --
+        # two lists that were both binding to begin with.
         if canonical.scope_basis == SCOPE_BASIS_STATED:
             pass
         elif all_selected:
             canonical.scope_basis = SCOPE_BASIS_SELECTED
+        elif any_unbound:
+            canonical.scope_basis = SCOPE_BASIS_FOOTPRINT
         else:
             canonical.scope_basis = commit_scope_basis(sorted(union["files"]))
         # Sync replaces rather than accretes, so it must see the union.

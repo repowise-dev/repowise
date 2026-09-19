@@ -42,7 +42,12 @@ from .crud.authority import (
     upsert_candidate_meta,
 )
 from .decision_graph import DecisionNodeLink
-from .models import DecisionCandidateMeta, DecisionRecord, GraphNode
+from .models import (
+    DecisionAcceptance,
+    DecisionCandidateMeta,
+    DecisionRecord,
+    GraphNode,
+)
 
 __all__ = [
     "MigrationPlan",
@@ -439,8 +444,17 @@ async def backfill_scope_basis(session: AsyncSession, repository_id: str) -> int
     directly, and it is not needed now.
 
     Only rows with an **empty** basis are touched, which makes this idempotent
-    and leaves both a scope somebody set by hand and a scope the model chose
-    alone.
+    and leaves a scope the model chose alone.
+
+    A record somebody accepted is left alone too, and by its acceptance rather
+    than by its basis: ``accept_decision`` writes
+    :data:`SCOPE_BASIS_STATED` only when the accepter passed an explicit
+    scope, and neither ``repowise decision confirm`` nor the web accept route
+    does. Filtering on the basis alone would therefore silently drop the file
+    links of every decision a reviewer had confirmed as-is -- and take their
+    hotspots with it, since ``governed_files`` is built from accepted
+    path-binding records and an ``ungoverned_hotspot`` finding is emitted for
+    every hotspot outside it.
 
     The record keeps its files and loses its decision-graph links. Those are
     dropped here rather than left to the next ``bulk_upsert_decisions``: a
@@ -454,6 +468,9 @@ async def backfill_scope_basis(session: AsyncSession, repository_id: str) -> int
                     DecisionRecord.repository_id == repository_id,
                     DecisionRecord.source.in_(tuple(_COMMIT_FOOTPRINT_SOURCES)),
                     DecisionRecord.scope_basis == "",
+                    ~select(DecisionAcceptance.id)
+                    .where(DecisionAcceptance.decision_id == DecisionRecord.id)
+                    .exists(),
                 )
             )
         )
