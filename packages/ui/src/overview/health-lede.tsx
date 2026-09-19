@@ -3,7 +3,7 @@ import { healthBand } from "../health/tokens";
 import { LedeLink, PageLede } from "../shared/page-lede";
 
 export interface HealthLedeProps {
-  /** Defect-risk headline, 1–10. Null until the first health run. */
+  /** Code-health headline, 1–10. Higher is better. Null before the first run. */
   score: number | null;
   maintainability?: number | null | undefined;
   /** Static performance score, 1–10. Higher is better, like the other two. */
@@ -96,7 +96,7 @@ export function HealthLede({
         <strong className="font-semibold text-[var(--color-text-primary)]">
           {score.toFixed(1)} out of 10
         </strong>{" "}
-        on defect risk, which we rate {band.label.toLowerCase()}.
+        for code health, which we rate {band.label.toLowerCase()}.
         {pillarSentence && ` ${pillarSentence}`}
         {/* This used to open "The files you change most are the weak spot",
             which reads as an indictment of something every codebase does. Hot

@@ -113,7 +113,7 @@ export function buildChangeStats(summary: OverviewSummaryResponse): ChangeStat[]
   // than news: both figures render to one decimal, so anything smaller shows
   // as "+0.0".
   for (const [value, label] of [
-    [deltas.average_health, "defect risk"],
+    [deltas.average_health, "code health"],
     [deltas.hotspot_health, "hotspot health"],
   ] as const) {
     if (value != null && Math.abs(value) >= 0.05) {

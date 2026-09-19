@@ -117,7 +117,7 @@ export function registerHovers(ctx: RepowiseContext): vscode.Disposable {
     const md = new vscode.MarkdownString();
     md.appendMarkdown("**Repowise health**\n\n");
     md.appendMarkdown(
-      `Defect ${fmt(metric.defect_score ?? metric.score)} · Maintainability ${fmt(
+      `Code health ${fmt(metric.defect_score ?? metric.score)} · Maintainability ${fmt(
         metric.maintainability_score,
       )} · Performance ${fmt(metric.performance_score)}\n\n`,
     );

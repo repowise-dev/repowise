@@ -262,7 +262,7 @@ export function MapInspector({
         {overlay === "performance" ? (
           // Still available, but as one supporting figure among several rather
           // than as the headline the lens is not about.
-          <span className="tabular-nums">defect risk {file.score.toFixed(1)}</span>
+          <span className="tabular-nums">code health {file.score.toFixed(1)}</span>
         ) : null}
         <span className="tabular-nums">{file.nloc.toLocaleString()} NLOC</span>
         {file.line_coverage_pct != null ? (

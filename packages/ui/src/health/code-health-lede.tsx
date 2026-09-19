@@ -217,8 +217,11 @@ export function CodeHealthLede({
           {perf != null && (
             <>
               {" "}
-              Static performance risk is scored separately at {perf.toFixed(1)} out
-              of 10 and never blended into the health score.
+              {/* Not "performance risk": this is a score on the same ladder
+                  as the health number, so a risk noun inverts it. "risk" belongs
+                  to the findings count in the ribbon. Matches HealthLede. */}
+              Static performance is scored separately at {perf.toFixed(1)} out of
+              10 and never blended into the health score.
             </>
           )}
         </p>
