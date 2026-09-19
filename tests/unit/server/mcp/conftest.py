@@ -692,3 +692,26 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
     )
     await session.commit()
     return rid
+
+
+@pytest.fixture(autouse=True)
+def _no_savings_writes_outside_a_test_repo(monkeypatch):
+    """Keep a tool call in these tests from banking a saving in the real repo.
+
+    Clearing the process-global repo path is not enough: the budget layer falls
+    back to the current working directory, which under pytest is the checkout
+    itself. So a test driving ``tool_middleware`` wrote canonical events into
+    the developer's own ledger, where they look like live traffic and are
+    recognisable only by their synthetic tool names.
+
+    Neutralised at the write rather than at the resolver, because the same
+    resolver decides where omission refs are stored and the budget tests depend
+    on that still working. A test that wants a real event drives the recorder
+    itself.
+    """
+    from repowise.server.mcp_server import _state
+
+    monkeypatch.setattr(_state, "_repo_path", None, raising=False)
+    from repowise.core.savings import recorder
+
+    monkeypatch.setattr(recorder, "record_event", lambda repo_root, payload: False)
