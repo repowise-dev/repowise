@@ -77,7 +77,7 @@ const SETTING_DEFAULTS: SettingsValues = {
 };
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
-const DIMENSIONS = ["defect", "maintainability", "performance"];
+const DIMENSIONS = ["defect", "maintainability", "performance", "advisory"];
 
 /**
  * Per-key validator for writes. The webview is untrusted input, so an out-of-

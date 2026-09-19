@@ -52,15 +52,18 @@ def _primary_and_magnitude(findings: list[Any]) -> dict:
       is already the applied, capped value), so it distinguishes two files that
       both floor at 1.0 (a -25 file from a -9 one) without touching ``score``.
 
-    All-null on an empty list: a clean file has no lead and no magnitude.
+    All-null on an empty list: a clean file has no lead and no magnitude. A
+    file whose every finding is advisory gets a null lead and a real magnitude
+    of zero -- ``primary_finding`` declines to name a cause that deducts
+    nothing, and reading that refusal as a finding raised here instead.
     """
     if not findings:
         return {"primary_biomarker": None, "primary_reason": None, "total_deduction": None}
     primary = primary_finding(findings)
     total = sum(float(x.health_impact or 0.0) for x in findings)
     return {
-        "primary_biomarker": primary.biomarker_type,
-        "primary_reason": primary.reason,
+        "primary_biomarker": primary.biomarker_type if primary else None,
+        "primary_reason": primary.reason if primary else None,
         "total_deduction": round(total, 3),
     }
 

@@ -44,8 +44,10 @@ export type ScoredHealthDimension = "defect" | "maintainability" | "performance"
 /**
  * The non-scoring fourth dimension. A marker homes here when it measures
  * something no defect corpus labels, so it can never be calibrated and never
- * earns weight. Its findings carry a zero health impact by construction and are
- * kept out of every impact-ranked queue, so they describe without accusing.
+ * earns weight. Its findings carry a zero health impact by construction and so
+ * are kept out of every impact-ranked queue, describing without accusing. That
+ * is about ranking, not existence: a surface that ranks nothing, such as one
+ * file's findings in an editor, asks for them and gets them.
  *
  * Mirror of `ADVISORY_DIMENSION` in core's `scoring.py`. Deliberately outside
  * `HEALTH_DIMENSIONS`, which stays exactly the set that carries a score.

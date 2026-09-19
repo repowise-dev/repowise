@@ -427,9 +427,14 @@ claims to predict bugs using evidence that says nothing about bugs.
 `advisory` is where those markers live. It is deliberately **not** one of the
 three scored dimensions: there is no weight table, category or cap keyed on it,
 so "never deducts" is structural rather than a promise. Its findings carry a
-`health_impact` of exactly `0.0`, are excluded from every impact-ranked work
-queue, are never counted in a change's introduced/worsened totals, and can never
-make a review verdict blocking.
+`health_impact` of exactly `0.0`, are never counted in a change's
+introduced/worsened totals, and can never make a review verdict blocking.
+
+They are also out of every impact-ranked list, which is a statement about
+ranking rather than about existence: a zero-impact row appended to a list
+ordered by impact reads as a deduction that rounded away. Ask for the dimension
+and you get it, and a surface that ranks nothing -- one file's findings in an
+editor, or a list already filtered to one marker -- gets it without asking.
 
 | Marker | Languages | What it measures |
 |---|---|---|

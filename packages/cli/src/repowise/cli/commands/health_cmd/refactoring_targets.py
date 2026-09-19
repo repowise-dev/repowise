@@ -68,6 +68,10 @@ def _render_refactoring_targets(
         nloc = m.nloc if m is not None else 0
         score = m.score if m is not None else 10.0
         primary = primary_finding(fs)
+        # None means every finding here is advisory, which deducts nothing and
+        # so names no work for a table ranked by impact over effort.
+        if primary is None:
+            continue
         total_impact = round(sum(x.health_impact for x in fs), 3)
         bucket, weight = _effort_bucket(nloc)
         file_sugg = sugg_by_file.get(path, [])

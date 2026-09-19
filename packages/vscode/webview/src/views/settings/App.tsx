@@ -76,13 +76,15 @@ const GROUPS: Group[] = [
       {
         key: "diagnostics.dimensions",
         label: "Problem dimensions",
-        description: "Which health dimensions appear in the Problems panel.",
+        description:
+          "Which health dimensions appear in the Problems panel. Advisory never deducts from a score, so it is off by default and stays in the gutter and in hovers.",
         kind: "multiselect",
         needs: "diagnostics.enabled",
         options: [
           { value: "defect", label: "Defect" },
           { value: "maintainability", label: "Maintainability" },
           { value: "performance", label: "Performance" },
+          { value: "advisory", label: "Advisory" },
         ],
       },
       {

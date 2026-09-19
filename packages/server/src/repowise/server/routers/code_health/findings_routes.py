@@ -41,7 +41,12 @@ async def list_health_findings(
     severity: str | None = Query(
         None, description="Exact severities, comma-separated. Overrides min_severity."
     ),
-    dimension: str | None = Query(None),
+    dimension: str | None = Query(
+        None, description="defect | maintainability | performance | advisory"
+    ),
+    include_zero_impact: bool = Query(
+        False, description="Also return the performance and advisory dimensions"
+    ),
     status: str = Query("open", description=STATUS_FILTER_DESCRIPTION),
     limit: int = Query(100, ge=1, le=1000),
     scope: str = ScopeQuery,
@@ -50,12 +55,30 @@ async def list_health_findings(
 ) -> list[dict]:
     """Findings, ranked by health impact. Open work unless ``status`` says otherwise.
 
-    Performance is out of the unfiltered list by default. Its findings carry a
-    health impact of zero by construction, so ranking them here sorts them
-    below every defect row and reads as "nothing here" rather than as a
-    different unit; the performance surfaces rank the same evidence by cause.
-    Asking for ``dimension=performance`` still returns it.
+    The zero-impact dimensions, performance and advisory, are out of the
+    unfiltered list by default. Their findings carry a health impact of zero by
+    construction, so ranking them here sorts them below every defect row and
+    reads as "nothing here" rather than as a different unit; the performance
+    surfaces rank the same evidence by cause.
+
+    Three things return them. ``dimension`` names one outright and always has.
+    ``biomarker_type`` names a marker, which fixes its dimension, so applying
+    the exclusion on top could only ever answer nothing -- and the marker menu
+    on the work queue is built from a breakdown that counts every dimension,
+    so every zero-impact option in it matched nothing. And
+    ``include_zero_impact`` asks, for the caller whose own narrowing the
+    parameters cannot express.
+
+    That last one is a flag rather than an inference from ``file_path``
+    because two callers pass a path wanting opposite things: an editor
+    signalling one open file wants every finding on it, while the web
+    expander behind "show all N findings" wants exactly the set the queue
+    counted N from, and a wider answer there opens onto more rows than the
+    row above it promised.
     """
+    # The exclusion holds for the list that ranks the whole repository against
+    # itself. See the docstring for the three ways out.
+    ranks_everything = biomarker_type is None and not include_zero_impact
     findings = await crud.get_health_findings(
         session,
         repo_id,
@@ -65,7 +88,9 @@ async def list_health_findings(
         severity=severity,
         dimension=dimension,
         status=parse_status_filter(status),
-        exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS)),
+        exclude_dimensions=(
+            tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if ranks_everything else None
+        ),
     )
     # A finding carries a path, not ``is_test``, so narrowing it needs the
     # metric rows that do. Read them only when the answer depends on them:

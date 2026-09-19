@@ -93,10 +93,10 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["defect", "maintainability", "performance"]
+            "enum": ["defect", "maintainability", "performance", "advisory"]
           },
           "default": ["defect", "maintainability", "performance"],
-          "description": "Health dimensions included in the Problems panel."
+          "description": "Health dimensions included in the Problems panel. Advisory findings never deduct from a score, so they are off by default; they stay visible in the gutter, in hovers and to the language-model tools either way."
         },
         "repowise.gutterHeat.enabled": {
           "type": "boolean",

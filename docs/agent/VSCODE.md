@@ -143,7 +143,7 @@ covering every surface with plain-language descriptions. The full list:
 | `repowise.agentTools.enabled` | `true` | Enable or disable native VS Code Language Model Tools for Copilot Chat |
 | `repowise.diagnostics.enabled` | `false` | Publish health findings to the Problems panel |
 | `repowise.diagnostics.minSeverity` | `high` | Lowest severity surfaced in the Problems panel |
-| `repowise.diagnostics.dimensions` | all | Health dimensions included in the Problems panel |
+| `repowise.diagnostics.dimensions` | defect, maintainability, performance | Health dimensions included in the Problems panel. `advisory` is selectable and off by default: it never deducts from a score, and it reaches the gutter, the hovers and the language-model tools regardless |
 | `repowise.gutterHeat.enabled` | `true` | Shade the gutter next to findings |
 | `repowise.fileDecorations.enabled` | `true` | Badge the worst-health files in the explorer |
 | `repowise.fileDecorations.maxScore` | `4` | Health score at or below which a file is badged |
