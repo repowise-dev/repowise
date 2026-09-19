@@ -3067,6 +3067,13 @@ export interface WorkspaceRepoEntry {
   docs_skip_reason?: string | null;
 }
 
+/** Response returned when a repo is removed from the workspace config. */
+export interface WorkspaceRepoRemovedResponse {
+  ok?: boolean;
+  alias: string;
+  remaining_repos: number;
+}
+
 export interface WorkspaceResponse {
   is_workspace: boolean;
   workspace_root?: string | null;

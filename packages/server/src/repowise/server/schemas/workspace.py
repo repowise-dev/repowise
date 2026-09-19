@@ -5,6 +5,14 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class WorkspaceRepoRemovedResponse(BaseModel):
+    """Response returned when a repo is removed from the workspace config."""
+
+    ok: bool = True
+    alias: str
+    remaining_repos: int
+
+
 class WorkspaceRepoEntry(BaseModel):
     alias: str
     path: str
