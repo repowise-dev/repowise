@@ -1470,9 +1470,16 @@ class CallResolver:
         # A data member is not callable. Tier 3 already refuses one, but this
         # rung answered first and at 0.85, above the tier that declines it, so
         # the refusal only reached whichever sites tier 3 happened to see.
+        #
+        # A std-library name is refused for the same reason tier 3 refuses it:
+        # the name is in scope in every file without an import, so a repo
+        # symbol that merely shares it is not what the call site named. Being
+        # reachable through an import says nothing, because the guess never
+        # attributed the name to one imported file in the first place.
         if (
             target_name in merged_syms
             and merged_syms[target_name] not in self._non_callable_ids
+            and target_name not in get_builtin_methods(self._language_of(file_path) or "")
         ):
             return ResolvedCall(
                 caller_id, merged_syms[target_name], 0.85, call.line, "import_merged"
