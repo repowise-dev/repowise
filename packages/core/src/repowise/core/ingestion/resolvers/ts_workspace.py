@@ -489,6 +489,73 @@ def _probe_path(base: str, path_set: set[str]) -> str | None:
     return None
 
 
+def _read_sub_package_manifest(repo_path: Path, sub_dir_posix: str) -> dict[str, Any] | None:
+    """Read and parse ``<repo_path>/<sub_dir_posix>/package.json``, or None.
+
+    Same read/parse tolerance as :func:`build_workspace_info`'s manifest
+    read. No ``name`` field is required here: the caller already knows the
+    subpath that names this package, since that subpath is how it got here.
+    """
+    manifest = repo_path / sub_dir_posix / "package.json"
+    if not manifest.is_file():
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _resolve_nested_subpackage(dir_posix: str, sub: str, ctx: ResolverContext) -> str | None:
+    """Resolve ``sub`` as a sub-package nested inside a workspace member.
+
+    Some packages ship sub-packages inside their own tree without being
+    separate workspace members (solid's ``packages/solid/web``, ``store``,
+    etc.), each with its own ``package.json`` and entry point, resolved
+    relative to itself rather than under the outer package's ``src``/``lib``/
+    ``dist`` roots. Mirrors the bare-package resolution above (exports
+    field, then ``index``, then ``main``/``module``, then a source-root
+    ``index``), rooted one level deeper at ``<dir_posix>/<sub>``.
+
+    Reached only after every probe on the outer package has already failed,
+    so this can only turn an unresolved import into a real file -- it never
+    competes with a specifier that already resolves.
+    """
+    if ctx.repo_path is None:
+        return None
+    sub_dir = f"{dir_posix}/{sub}"
+    sub_pkg_data = _read_sub_package_manifest(ctx.repo_path, sub_dir)
+    if sub_pkg_data is None:
+        return None
+
+    exports_map = _build_exports_map(sub_pkg_data)
+    targets = _match_export_key("", exports_map) if exports_map else None
+    for target in targets or ():
+        if target.endswith(_DECLARATION_SUFFIXES):
+            continue
+        cand = _probe_path(f"{sub_dir}/{target.lstrip('./')}", ctx.path_set)
+        if cand is not None:
+            return cand
+
+    cand = _probe_path(f"{sub_dir}/index", ctx.path_set)
+    if cand is not None:
+        return cand
+    main = (
+        sub_pkg_data.get("module")
+        if isinstance(sub_pkg_data.get("module"), str)
+        else (sub_pkg_data.get("main") if isinstance(sub_pkg_data.get("main"), str) else None)
+    )
+    if isinstance(main, str):
+        cand = _probe_path(f"{sub_dir}/{main.lstrip('./')}", ctx.path_set)
+        if cand is not None:
+            return cand
+    for source_root in ("src", "lib"):
+        cand = _probe_path(f"{sub_dir}/{source_root}/index", ctx.path_set)
+        if cand is not None:
+            return cand
+    return None
+
+
 def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a bare specifier (``@scope/pkg`` or ``@scope/pkg/sub/file``)
     against the workspace map. Honours each workspace's ``exports``
@@ -581,7 +648,13 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
         cand = _probe_path(f"{dir_posix}/{src_root}/{sub}", ctx.path_set)
         if cand is not None:
             return cand
-    return spare_export_target()
+    cand = spare_export_target()
+    if cand is not None:
+        return cand
+
+    # 4) Nested sub-package fallback — ``sub`` may itself be a package with
+    # its own ``package.json``, not a path under the outer package's layout.
+    return _resolve_nested_subpackage(dir_posix, sub, ctx)
 
 
 # ---------------------------------------------------------------------------
