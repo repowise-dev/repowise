@@ -326,6 +326,22 @@ _UNMIGRATED = "1 = 1"
 #: ``lifecycle.AGREEMENT_KIND``, spelled out for the same reason as _ACCEPTED.
 _AGREEMENT_KIND = "agreement"
 
+#: Capture tiers a record may be delivered on with no acceptance row. A
+#: ``(source, scope_basis)`` pair belongs here only once a census of its
+#: (record, file) pairs has measured at least 90% governs with a 95% lower
+#: bound of at least 80%; today only ``comment`` has. That is a result about
+#: this corpus and not a property of the miner, so re-measure before adding a
+#: pair, and re-measure if comment attribution changes.
+_EVIDENCE_TIERS: frozenset[tuple[str, str]] = frozenset({("comment", "")})
+
+#: Measured trust per tier, for ordering the candidate lane only. It orders,
+#: it does not admit: the relevance floor still decides what enters the lane.
+_TIER_TRUST: dict[tuple[str, str], int] = {
+    ("comment", ""): 2,
+    ("pr", "commit_selected"): 1,
+    ("git_archaeology", "commit_selected"): 1,
+}
+
 
 def _accepted_clause(conn: sqlite3.Connection, ref: str) -> str:
     """The acceptance filter for *ref*, or a no-op on a pre-split store."""
@@ -353,6 +369,64 @@ def _kind_column(conn: sqlite3.Connection) -> str:
     except sqlite3.Error:
         return "NULL"
     return "kind" if any(c[1] == "kind" for c in cols) else "NULL"
+
+
+def _has_column(conn: sqlite3.Connection, column: str) -> bool:
+    """Whether ``decision_records`` has *column* on this store.
+
+    Probed for the reason :func:`_kind_column` gives. A store without
+    ``scope_basis`` cannot say how a record was scoped, so it delivers nothing
+    on evidence and keeps the acceptance path it has.
+    """
+    try:
+        return any(c[1] == column for c in conn.execute("PRAGMA table_info(decision_records)"))
+    except sqlite3.Error:
+        return False
+
+
+def _untouched_clause(conn: sqlite3.Connection, ref: str) -> str:
+    """SQL matching records no reviewer has acted on.
+
+    ``review_state`` is the column that knows, not ``status``: of the four
+    review actions only ``dismiss_candidate`` writes ``status``, so a merged or
+    split-flagged candidate still reads as ``proposed`` with no acceptance row.
+    ``1 = 0`` where the store has no such table -- unreadable is not untouched.
+    """
+    try:
+        found = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("decision_candidate_meta",),
+        ).fetchone()
+    except sqlite3.Error:
+        return "1 = 0"
+    if not found:
+        return "1 = 0"
+    return (
+        f"NOT EXISTS (SELECT 1 FROM decision_candidate_meta m "
+        f"WHERE m.decision_id = {ref}.id AND m.review_state <> 'open')"
+    )
+
+
+def _evidence_tier_clause(conn: sqlite3.Connection, ref: str) -> str:
+    """SQL matching records whose capture tier delivers on its own evidence.
+
+    ``1 = 0`` where the store cannot answer, which is the safe direction: a
+    tier that cannot be read is not a tier that has been earned.
+    """
+    if not _EVIDENCE_TIERS or not _has_column(conn, "scope_basis"):
+        return "1 = 0"
+    # Interpolated, so anything but a bare identifier must not reach the SQL.
+    if any(
+        not isinstance(v, str) or not re.fullmatch(r"[a-z_]*", v)
+        for pair in _EVIDENCE_TIERS
+        for v in pair
+    ):
+        return "1 = 0"
+    terms = [
+        f"({ref}.source = '{src}' AND COALESCE({ref}.scope_basis, '') = '{basis}')"
+        for src, basis in sorted(_EVIDENCE_TIERS)
+    ]
+    return "(" + " OR ".join(terms) + ")"
 
 
 def _load_active_decisions(conn: sqlite3.Connection) -> list[dict]:
@@ -394,6 +468,8 @@ def _load_decisions(conn: sqlite3.Connection, where: str) -> list[dict]:
         rows = conn.execute(
             "SELECT id, title, decision, rationale, confidence, staleness_score, source, "
             + _kind_column(conn)
+            + ", "
+            + ("COALESCE(scope_basis, '')" if _has_column(conn, "scope_basis") else "''")
             + " FROM decision_records WHERE "
             + where
         ).fetchall()
@@ -409,6 +485,7 @@ def _load_decisions(conn: sqlite3.Connection, where: str) -> list[dict]:
             "staleness": r[5] if isinstance(r[5], (int, float)) else 0.0,
             "source": r[6] or "",
             "kind": r[7],
+            "basis": r[8] or "",
             "links": [],
         }
         for r in rows
@@ -517,13 +594,32 @@ _CANDIDATE_HEADER = (
 )
 
 
+def _tier_trust(decision: dict) -> int:
+    """How far the capture tier of *decision* was measured to be trusted."""
+    return _TIER_TRUST.get((decision.get("source") or "", decision.get("basis") or ""), 0)
+
+
 def _rank(
-    decisions: list[dict], seeds: set[str], hop: set[str], tokens: list[str]
+    decisions: list[dict],
+    seeds: set[str],
+    hop: set[str],
+    tokens: list[str],
+    *,
+    by_tier: bool = False,
 ) -> list[dict]:
-    """Decisions above the relevance floor, most relevant first."""
+    """Decisions above the relevance floor, most relevant first.
+
+    *by_tier* orders by measured capture tier before relevance, for the
+    candidate lane only: nobody has agreed to anything there, so how a record
+    was scoped is all that separates two of them. The accepted lane does not
+    use it, because a signature outranks a capture tier.
+    """
     scored = [(d, _score_decision(d, seeds, hop, tokens)) for d in decisions]
     scored = [(d, score) for d, score in scored if score >= _RELEVANCE_FLOOR]
-    scored.sort(key=lambda pair: pair[1], reverse=True)
+    if by_tier:
+        scored.sort(key=lambda pair: (_tier_trust(pair[0]), pair[1]), reverse=True)
+    else:
+        scored.sort(key=lambda pair: pair[1], reverse=True)
     return [d for d, _ in scored]
 
 
@@ -586,7 +682,7 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
         hop = _expand_one_hop(conn, seeds)
         tokens = _branch_tokens(branch)
         ranked = _rank(decisions, seed_set, hop, tokens)
-        ranked_candidates = _rank(candidates, seed_set, hop, tokens)
+        ranked_candidates = _rank(candidates, seed_set, hop, tokens, by_tier=True)
     finally:
         conn.close()
 
@@ -626,7 +722,16 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
 
 
 def _governing_decisions(conn: sqlite3.Connection, rel: str) -> list[dict]:
-    """Active decisions governing *rel* via file links or module-prefix links.
+    """Decisions governing *rel* via file links or module-prefix links.
+
+    Two disjoint ways in: a record someone accepted, or one nobody has
+    reviewed whose capture tier was measured to hold (:data:`_EVIDENCE_TIERS`).
+    Review wins either way -- accepting delivers whatever the tier, and any
+    other review action removes the record from the tier branch.
+
+    **File links only.** What was measured is whether a record governs a file
+    it names; a module link claims a whole subtree, so those stay
+    acceptance-only.
 
     Link node ids are matched in POSIX regardless of how they were stored
     (Windows extraction persists backslashes). Top-level module links are
@@ -635,32 +740,53 @@ def _governing_decisions(conn: sqlite3.Connection, rel: str) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
     native = rel.replace("/", "\\")
+    accepted = _accepted_clause(conn, "d")
+    on_evidence = (
+        f"(d.status IN ('active', 'proposed') AND NOT ({accepted}) "
+        f"AND {_untouched_clause(conn, 'd')} "
+        f"AND {_evidence_tier_clause(conn, 'd')})"
+    )
+    governs_file = f"(d.status = 'active' AND {accepted}) OR {on_evidence}"
+    # A tier delivers on the surface it was measured on: file pairs, not
+    # subtrees.
+    governs_module = f"d.status = 'active' AND {accepted}"
     with contextlib.suppress(sqlite3.Error):
         for row in conn.execute(
-            "SELECT d.id, d.title, d.decision, d.rationale "
+            "SELECT d.id, d.title, d.decision, d.rationale, " + accepted + " "
             "FROM decision_node_links l JOIN decision_records d ON d.id = l.decision_id "
-            "WHERE l.node_id IN (?, ?) AND l.link_type = 'file' AND d.status = 'active' "
-            "AND " + _accepted_clause(conn, "d"),
+            "WHERE l.node_id IN (?, ?) AND l.link_type = 'file' AND (" + governs_file + ")",
             (rel, native),
         ):
             if row[0] not in seen:
                 seen.add(row[0])
-                out.append({"id": row[0], "title": row[1], "decision": row[2], "rationale": row[3]})
+                out.append(_governing_row(row))
         # Module links are few; prefix-match them in Python.
         for row in conn.execute(
-            "SELECT d.id, d.title, d.decision, d.rationale, l.node_id "
+            "SELECT d.id, d.title, d.decision, d.rationale, " + accepted + ", l.node_id "
             "FROM decision_node_links l JOIN decision_records d ON d.id = l.decision_id "
-            "WHERE l.link_type = 'module' AND d.status = 'active' "
-            "AND " + _accepted_clause(conn, "d")
+            "WHERE l.link_type = 'module' AND (" + governs_module + ")"
         ):
             if (
                 row[0] not in seen
-                and _module_deep_enough(row[4])
-                and rel.startswith(_norm_path(row[4]).rstrip("/") + "/")
+                and _module_deep_enough(row[5])
+                and rel.startswith(_norm_path(row[5]).rstrip("/") + "/")
             ):
                 seen.add(row[0])
-                out.append({"id": row[0], "title": row[1], "decision": row[2], "rationale": row[3]})
+                out.append(_governing_row(row))
+    # A reviewed decision outranks a mined one whatever the link order said.
+    out.sort(key=lambda d: not d["accepted"])
     return out
+
+
+def _governing_row(row: tuple) -> dict:
+    """One ``_governing_decisions`` row, with how it earned its place."""
+    return {
+        "id": row[0],
+        "title": row[1],
+        "decision": row[2],
+        "rationale": row[3],
+        "accepted": bool(row[4]),
+    }
 
 
 def _session_evidence_count(conn: sqlite3.Connection, decision_id: str) -> int:
@@ -711,7 +837,15 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
     why = _clip(decision["rationale"] or decision["decision"], _CLIP_RATIONALE)
     if _echoes_title(decision["title"], why):
         why = ""  # legacy rows echo the title into decision/rationale
-    line = f"[repowise] {rel} is governed by a standing decision: {_clip(decision['title'], 100)}"
+    # "Standing" means a person stood behind it, so a record delivered on its
+    # tier alone must not borrow the word.
+    if decision["accepted"]:
+        line = f"[repowise] {rel} is governed by a standing decision: {_clip(decision['title'], 100)}"
+    else:
+        line = (
+            f"[repowise] {rel} has a decision recorded in it, mined but not reviewed: "
+            f"{_clip(decision['title'], 100)}"
+        )
     if why:
         line += f" because {why}"
     if sessions_n >= 2:

@@ -76,12 +76,18 @@ SCOPE_BASIS_REPOSITORY = "repository"
 #: legacy backfill never touches it, so a selected scope survives the repair
 #: that stamps every pre-selector commit record as a footprint.
 #:
-#: Measured out of sample, on 43 selections over 29 records drawn from the dev
-#: store: 93% of selected files govern the file they are shown on and none are
-#: noise, against 27% governs and 18% noise for the same records' whole commit
-#: lists. Every one of the 20 records that had a genuinely governing file kept
-#: one; the 5 the model emptied had none to keep. Evidence in
-#: ``local-stash/decision-layer-research/capture-2026-09-19/RESULTS.md``.
+#: **Measured twice, and the second number is the one to quote.** Offline, on
+#: 43 selections over 29 records, it scored 93% governs and 0% noise against
+#: 27%/18% for the same records' whole commit lists
+#: (``capture-2026-09-19/RESULTS.md``). On the first real index after the
+#: miners' token budget was fixed it scores **71% governs and 3% noise** over a
+#: census of 208 pairs (``tier-2026-09-20/RESULTS.md``).
+#:
+#: So the basis fixed noise and not relevance: what survives is a wide
+#: ``related`` band, files genuinely touched by the change a record describes
+#: where the record is still not a rule about them. It is good enough to offer
+#: an agent as a candidate and not good enough to answer "what governs this
+#: file", which is why ``decision_inject._EVIDENCE_TIERS`` excludes it.
 SCOPE_BASIS_SELECTED = "commit_selected"
 
 #: The basis value marking a scope a person stated: typed at the CLI, written

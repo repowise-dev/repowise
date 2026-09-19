@@ -23,6 +23,7 @@ from repowise.core.analysis.decisions.lifecycle import (
 from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import (
     DecisionAcceptance,
+    DecisionCandidateMeta,
     DecisionEvidence,
     DecisionNodeLink,
     DecisionRecord,
@@ -54,6 +55,7 @@ async def _build_wiki_db(repo_root: Path, decisions: list[dict], extras=None) ->
                     status=spec.get("status", "active"),
                     kind=spec.get("kind", ARCHITECTURAL_KIND),
                     source=spec.get("source", "cli"),
+                    scope_basis=spec.get("scope_basis", ""),
                     confidence=spec.get("confidence", 0.9),
                     staleness_score=spec.get("staleness", 0.0),
                     evidence_file=spec["id"],  # keeps the unique constraint happy
@@ -74,6 +76,16 @@ async def _build_wiki_db(repo_root: Path, decisions: list[dict], extras=None) ->
                         scope_json=json.dumps([spec["id"]]),
                         evidence_json=json.dumps([spec["id"]]),
                         accepter="tester",
+                    )
+                )
+            # Review state lives here, not on the record: three of the four
+            # review actions leave ``status`` alone (see _untouched_clause).
+            if spec.get("review_state"):
+                session.add(
+                    DecisionCandidateMeta(
+                        decision_id=spec["id"],
+                        repository_id=_REPO_ID,
+                        review_state=spec["review_state"],
                     )
                 )
             for node_id, link_type in spec.get("links", []):
@@ -922,3 +934,284 @@ async def test_a_candidate_is_never_injected(tmp_path):
         ],
     )
     assert decision_inject._edit_decision_notice(tmp_path, "src/app.py", "s1", {}) is None
+
+
+# ---------------------------------------------------------------------------
+# Delivery on capture tier (see tier-2026-09-20/RESULTS.md)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_measured_tier_reaches_edit_time_without_an_acceptance(tmp_path, monkeypatch):
+    """A `comment` record governs the file it was extracted from, unreviewed.
+
+    That tier is in `_EVIDENCE_TIERS` because a census of its 27 pairs put it
+    at 100% governs with a Wilson lower bound of 88%, over the pre-registered
+    90/80 bar. Before this, an unaccepted record could not reach this surface
+    at all, and the store has held zero acceptance rows since 2026-09-12.
+    """
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-comment",
+                "title": "Keep the parser allocation-free",
+                "decision": "reuse the buffer",
+                "source": "comment",
+                "scope_basis": "",
+                "accepted": False,
+                "status": "proposed",
+                "links": [("src/core/auth.py", "file")],
+            }
+        ],
+    )
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {})
+    assert notice is not None
+    # It must not borrow the reviewed lane's word for itself.
+    assert "mined but not reviewed" in notice
+    assert "standing decision" not in notice
+
+
+async def test_an_unmeasured_tier_stays_out_of_edit_time(tmp_path, monkeypatch):
+    """`commit_selected` measured 71% on 191 pairs, under the bar, so it does
+    not get to say a file is governed. It remains a SessionStart candidate."""
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-selected",
+                "title": "Bind the selected files",
+                "decision": "whatever the selector chose",
+                "source": "pr",
+                "scope_basis": "commit_selected",
+                "accepted": False,
+                "status": "proposed",
+                "links": [("src/core/auth.py", "file")],
+            }
+        ],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
+
+
+async def test_a_dismissed_record_is_not_rescued_by_its_tier(tmp_path, monkeypatch):
+    """Acceptance overrides downward. A candidate someone tombstoned leaves
+    ``active``/``proposed``, and no capture tier may bring it back."""
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-dismissed",
+                "title": "Keep the parser allocation-free",
+                "decision": "reuse the buffer",
+                "source": "comment",
+                "scope_basis": "",
+                "accepted": False,
+                "status": "dismissed",
+                "links": [("src/core/auth.py", "file")],
+            }
+        ],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
+
+
+async def test_an_accepted_record_still_speaks_as_a_standing_decision(tmp_path, monkeypatch):
+    """Acceptance overrides upward, and keeps its wording. A source outside
+    every measured tier still governs once a person has stood behind it."""
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-accepted",
+                "title": "Never fan out parse subprocesses",
+                "decision": "keep it in-process",
+                "source": "session",
+                "accepted": True,
+                "links": [("src/core/auth.py", "file")],
+            }
+        ],
+    )
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {})
+    assert notice is not None
+    assert "governed by a standing decision" in notice
+
+
+async def test_the_candidate_lane_prefers_the_better_measured_tier(tmp_path, monkeypatch):
+    """The lane holds two slots and was blind to capture, so a `session`
+    record at 29% governs / 29% noise competed evenly with a `commit_selected`
+    one at 71% / 3%. Relevance alone would rank the session record first."""
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-weak",
+                "title": "Weak tier candidate",
+                "decision": "mined from a transcript",
+                "source": "session",
+                "scope_basis": "",
+                "confidence": 0.95,
+                "accepted": False,
+                "status": "proposed",
+                "links": [("src/core/auth.py", "file")],
+            },
+            {
+                "id": "d-strong",
+                "title": "Better tier candidate",
+                "decision": "mined from a commit the model read",
+                "source": "pr",
+                "scope_basis": "commit_selected",
+                "confidence": 0.5,
+                "accepted": False,
+                "status": "proposed",
+                "links": [("src/core/auth.py", "file")],
+            },
+        ],
+    )
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+    assert block is not None
+    lines = [ln for ln in block.splitlines() if "candidate" in ln.lower()]
+    assert lines and "Better tier candidate" in lines[0]
+
+
+async def test_a_store_without_scope_basis_delivers_nothing_on_evidence(tmp_path, monkeypatch):
+    """A tier is a claim about how a record was scoped. A store that cannot
+    answer that question keeps the acceptance path it already had, rather than
+    guessing its way into delivering a whole review queue."""
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-comment",
+                "title": "Keep the parser allocation-free",
+                "decision": "reuse the buffer",
+                "source": "comment",
+                "accepted": False,
+                "status": "proposed",
+                "links": [("src/core/auth.py", "file")],
+            },
+            {
+                "id": "d-accepted-control",
+                "title": "A reviewed decision",
+                "decision": "someone stood behind this",
+                "source": "session",
+                "accepted": True,
+                "links": [("src/other.py", "file")],
+            },
+        ],
+    )
+    conn = sqlite3.connect(tmp_path / ".repowise" / "wiki.db")
+    conn.execute("ALTER TABLE decision_records DROP COLUMN scope_basis")
+    conn.commit()
+    conn.close()
+
+    # Asserting only that the candidate is refused would pass for the wrong
+    # reason: a query that referenced the missing column would raise, the
+    # caller suppresses sqlite3.Error, and silence would look like refusal.
+    # The accepted record is the control — it proves the statement still ran.
+    assert decision_inject._edit_decision_notice(tmp_path, "src/other.py", "s1", {}) is not None
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
+
+
+async def test_a_tier_does_not_reach_through_a_module_link(tmp_path, monkeypatch):
+    """The census measured (record, file) pairs, so the tier delivers on file
+    links and not on module ones. On the live store the difference is 12
+    measured file matches against 78 files a module prefix would have served.
+    """
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-module",
+                "title": "Centralize package attribution",
+                "decision": "one helper decides what a package is",
+                "source": "comment",
+                "scope_basis": "",
+                "accepted": False,
+                "status": "proposed",
+                "links": [("src/core/health", "module")],
+            }
+        ],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/health/engine.py", "s1", {}) is None
+
+
+async def test_an_accepted_module_link_still_governs_its_subtree(tmp_path, monkeypatch):
+    """The control for the test above: restricting the tier to file links must
+    not disturb the module path a reviewed decision already had."""
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-module-accepted",
+                "title": "Centralize package attribution",
+                "decision": "one helper decides what a package is",
+                "source": "comment",
+                "accepted": True,
+                "links": [("src/core/health", "module")],
+            }
+        ],
+    )
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/core/health/engine.py", "s1", {})
+    assert notice is not None
+    assert "governed by a standing decision" in notice
+
+
+async def test_a_merged_candidate_is_not_delivered_on_its_tier(tmp_path, monkeypatch):
+    """Review overrides downward even where it leaves ``status`` alone.
+
+    ``merge_candidate`` records the acceptance on the *target* and leaves the
+    folded-away candidate at ``proposed`` with no acceptance row of its own, so
+    an acceptance test alone reads it as untouched. Only ``review_state`` knows.
+    """
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-open",
+                "title": "Keep the parser allocation-free",
+                "decision": "reuse the buffer",
+                "source": "comment",
+                "scope_basis": "",
+                "accepted": False,
+                "status": "proposed",
+                "links": [("src/core/open.py", "file")],
+            },
+            {
+                "id": "d-merged",
+                "title": "Keep the parser allocation-free",
+                "decision": "reuse the buffer",
+                "source": "comment",
+                "scope_basis": "",
+                "accepted": False,
+                "status": "proposed",
+                "review_state": "merged",
+                "links": [("src/core/auth.py", "file")],
+            },
+        ],
+    )
+    # The control: an untouched record on the same tier is delivered, so the
+    # silence below is a refusal and not a query that failed.
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/open.py", "s1", {}) is not None
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s2", {}) is None
+
+
+async def test_a_candidate_flagged_for_a_split_is_not_delivered_on_its_tier(tmp_path, monkeypatch):
+    """``request_split`` touches neither ``status`` nor the acceptance log
+    either. A record a person flagged as bundling two choices is not one to
+    hand an agent as a single rule about a file."""
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-split",
+                "title": "Keep the parser allocation-free",
+                "decision": "reuse the buffer",
+                "source": "comment",
+                "scope_basis": "",
+                "accepted": False,
+                "status": "proposed",
+                "review_state": "needs_split",
+                "links": [("src/core/auth.py", "file")],
+            }
+        ],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
