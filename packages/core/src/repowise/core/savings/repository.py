@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -17,6 +18,9 @@ from repowise.core.savings.reporting import (
     agent_breakdown_rows,
     breakdown_rows,
 )
+
+#: Kept under SQLite's 999-variable ceiling with room to spare.
+_REF_QUERY_BATCH = 400
 
 _EVENT_COLUMNS = (
     "event_id",
@@ -84,6 +88,28 @@ class SavingsRepository:
             f"GROUP BY 1 ORDER BY {order} LIMIT ?",
             [*params, limit],
         ).fetchall()
+
+    def recorded_omission_refs(self, refs: Sequence[str]) -> set[str]:
+        """Which of *refs* an event already claims, via ``idx_..._omissions_ref``.
+
+        The idempotency key cannot answer this for a producer reading a
+        transcript: a live event's key is seeded on a random id, so it carries
+        no content identity. The omission ref does, and it is the same 12 hex
+        characters in the ledger and in the marker the agent was shown.
+        """
+        found: set[str] = set()
+        for start in range(0, len(refs), _REF_QUERY_BATCH):
+            batch = refs[start : start + _REF_QUERY_BATCH]
+            placeholders = ",".join("?" for _ in batch)
+            found.update(
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT DISTINCT omission_ref FROM savings_event_omissions "
+                    f"WHERE omission_ref IN ({placeholders})",
+                    list(batch),
+                )
+            )
+        return found
 
     def record_event(self, event: SavingsEvent) -> bool:
         """Atomically insert an event and its links; return false for a retry."""

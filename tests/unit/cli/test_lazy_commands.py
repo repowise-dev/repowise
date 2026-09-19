@@ -39,7 +39,7 @@ _EXPECTED_NAMES = frozenset(
         "export", "generate", "generate-claude-md", "health", "hook",
         "impacted-tests", "init", "login", "logout", "mcp", "overlap", "reindex",
         "restyle",
-        "risk", "saved", "search", "security", "serve", "status", "symbol",
+        "risk", "saved", "savings", "search", "security", "serve", "status", "symbol",
         "telemetry", "uninstall", "update", "watch", "whats-new", "whoami", "why",
         "wiki-styles", "workspace",
     }

@@ -104,6 +104,30 @@ from .reporting import show_analysis_summary, show_completion
 from .workspace import _workspace_init
 
 
+def _catch_up_savings(repo_path: Path) -> None:
+    """Bank the savings this repository's agents were shown before indexing.
+
+    Keyless, time-budgeted and best-effort, following the session-decision
+    stage that runs here for the same reason: the history is already on disk,
+    and a first index that ignores it shows an empty savings page for a
+    repository that has been saving tokens for months.
+
+    Not in ``repowise update``: update runs on every commit, and this reads a
+    corpus bounded by how much the user has worked rather than by the repo.
+    """
+    try:
+        from repowise.core.savings.transcript import sync_transcript_savings
+
+        outcome = sync_transcript_savings(repo_path)
+    except Exception:
+        return
+    if outcome.recorded:
+        console.print(
+            f"  [{OK}]✓[/] Recovered {outcome.saved_input_tokens:,} saved tokens "
+            f"from agent history"
+        )
+
+
 def _record_init_outcome(
     *,
     result: Any,
@@ -1683,6 +1707,8 @@ def init_command(
     callback.table.stop("run")
     phase_timings: dict[str, float] = callback.timings
     console.print(f"  [{OK}]✓[/] Database updated")
+
+    _catch_up_savings(repo_path)
 
     # Persist the onboarding choice so subsequent `repowise update` runs
     # honor it without re-passing the flag. Default True is omitted to keep

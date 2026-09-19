@@ -80,6 +80,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("distill", "distill_cmd:distill_command"),
     ("expand", "expand_cmd:expand_command"),
     ("saved", "saved_cmd:saved_command"),
+    ("savings", "savings_cmd:savings_group"),
     ("security", "security_cmd:security_command"),
     ("corrections", "corrections_cmd:corrections_command"),
     ("export", "export_cmd:export_command"),
