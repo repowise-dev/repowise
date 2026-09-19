@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
 
 from repowise.core.co_change import parse_partners
+from repowise.server.schemas._datetime import UTCDateTime
 from repowise.server.schemas.risk_semantics import RiskAuthority
 
 
@@ -17,8 +17,8 @@ class GitMetadataResponse(BaseModel):
     commit_count_total: int
     commit_count_90d: int
     commit_count_30d: int
-    first_commit_at: datetime | None
-    last_commit_at: datetime | None
+    first_commit_at: UTCDateTime | None
+    last_commit_at: UTCDateTime | None
     primary_owner_name: str | None
     primary_owner_email: str | None
     primary_owner_commit_pct: float | None
@@ -50,7 +50,7 @@ class GitMetadataResponse(BaseModel):
     # the same at two weeks and two years. Empty/None on a pre-rollup index.
     fix_symbol_counts: dict = {}
     bug_magnet: bool = False
-    last_fix_at: datetime | None = None
+    last_fix_at: UTCDateTime | None = None
     temporal_hotspot_score: float | None = None
     commit_count_capped: bool = False
     # Rename lineage: the file's path before its most recent move, if any.
@@ -136,7 +136,7 @@ class HotspotResponse(BaseModel):
     merge_commit_count_90d: int = 0
     commit_count_capped: bool = False
     age_days: int = 0
-    last_commit_at: datetime | None = None
+    last_commit_at: UTCDateTime | None = None
     # Change-complexity + defect-history signals.
     change_entropy: float = 0.0
     change_entropy_pct: float = 0.0
@@ -145,7 +145,7 @@ class HotspotResponse(BaseModel):
     # age describes "fixed 4x last month" and "fixed 4x two years ago"
     # identically. Consumers drop the flag when the timestamp is missing.
     bug_magnet: bool = False
-    last_fix_at: datetime | None = None
+    last_fix_at: UTCDateTime | None = None
     original_path: str | None = None
 
 
@@ -179,7 +179,7 @@ class CommitResponse(BaseModel):
     short_sha: str
     author_name: str
     author_email: str
-    committed_at: datetime | None
+    committed_at: UTCDateTime | None
     subject: str
     lines_added: int
     lines_deleted: int
