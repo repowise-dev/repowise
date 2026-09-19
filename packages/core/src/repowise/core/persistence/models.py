@@ -651,6 +651,11 @@ class GitMetadata(Base):
     co_change_mass: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     co_change_scatter_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
+    # Repo-relative rank of prior_defect_count, so the entry gate is a share of
+    # this repository rather than a fixed number of fixes in six months, which
+    # a busy repository clears for most of its files.
+    prior_defect_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
     # Agent-provenance rollup: how much of this file's indexed history is
     # agent-attributed (deterministic local-channel classification — identity
     # fields, message footers, co-author trailers; see

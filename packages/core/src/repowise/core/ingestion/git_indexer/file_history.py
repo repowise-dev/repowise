@@ -131,6 +131,8 @@ def new_meta(file_path: str) -> dict[str, Any]:
         # variant is the same walk before fix-shape filtering (fix_shape.py).
         "prior_defect_count": 0,
         "prior_defect_raw_count": 0,
+        # Repo-relative rank of prior_defect_count; see enrich.compute_percentiles.
+        "prior_defect_pct": 0.0,
         # Agent provenance rollup: how much of this file's indexed history is
         # agent-attributed (local channels only — see agent_provenance module).
         # agent_authored_pct stays None when the file has no commits at all.

@@ -211,6 +211,39 @@ def _rank_within_eligible(
         metadata_list[idx][target_key] = rank / n
 
 
+def _rank_over_population(
+    metadata_list: list[dict],
+    *,
+    source_key: str,
+    target_key: str,
+) -> None:
+    """Rank *source_key* over every file, with tied values sharing a rank.
+
+    For a signal whose zero is a measurement rather than an absent one: a file
+    with no bug-fixes in the window was measured and found clean, unlike a file
+    with no co-change history, so excluding the zeros would rank a count
+    against the wrong denominator.
+
+    Ties share a rank because the source is a small integer. Spreading a tie
+    group across consecutive ranks would put two files with the same count on
+    opposite sides of a gate, decided by sort order alone. Mirrors SQL
+    ``PERCENT_RANK``: the share of the population scoring strictly lower.
+    """
+    values = [float(m.get(source_key) or 0.0) for m in metadata_list]
+    n = len(values)
+    if n < 2:
+        for meta in metadata_list:
+            meta[target_key] = 0.0
+        return
+    below: dict[float, float] = {}
+    running = 0
+    for value in sorted(set(values)):
+        below[value] = running / (n - 1)
+        running += sum(1 for v in values if v == value)
+    for meta, value in zip(metadata_list, values, strict=True):
+        meta[target_key] = min(below[value], 1.0)
+
+
 def compute_percentiles(metadata_list: list[dict]) -> None:
     """Compute churn_percentile, is_hotspot, and the history percentiles.
 
@@ -255,4 +288,10 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
     # the storage cap and never retires, so it can only ever ratchet up.
     _rank_within_eligible(
         metadata_list, source_key="co_change_mass", target_key="co_change_scatter_pct"
+    )
+
+    # Bug-fix history, ranked over every file: a file with no fixes in the
+    # window is a measured zero, not a missing signal.
+    _rank_over_population(
+        metadata_list, source_key="prior_defect_count", target_key="prior_defect_pct"
     )

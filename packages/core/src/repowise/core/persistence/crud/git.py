@@ -256,6 +256,9 @@ async def recompute_git_percentiles(
     churn); commit_count_90d is the tiebreak. Works on both SQLite (3.25+) and
     PostgreSQL.
 
+    ``prior_defect_pct`` ranks over the whole table, ties sharing a rank, since
+    a file with no fixes in the window is a measured zero.
+
     ``change_entropy_pct`` and ``co_change_scatter_pct`` mirror
     ``enrich._rank_within_eligible``: ``ROW_NUMBER`` over the files carrying a
     positive signal, over how many of them there are. Ranking them over the
@@ -307,6 +310,12 @@ scatter_ranked AS (
          WHERE repository_id = :repo_id AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank
   FROM git_metadata
   WHERE repository_id = :repo_id AND COALESCE(co_change_mass, 0.0) > 0.0
+),
+defect_ranked AS (
+  SELECT id,
+    PERCENT_RANK() OVER (ORDER BY COALESCE(prior_defect_count, 0)) AS drank
+  FROM git_metadata
+  WHERE repository_id = :repo_id
 )
 UPDATE git_metadata
 SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id),
@@ -318,7 +327,9 @@ SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.
     change_entropy_pct = COALESCE(
       (SELECT erank FROM entropy_ranked WHERE entropy_ranked.id = git_metadata.id), 0.0),
     co_change_scatter_pct = COALESCE(
-      (SELECT crank FROM scatter_ranked WHERE scatter_ranked.id = git_metadata.id), 0.0)
+      (SELECT crank FROM scatter_ranked WHERE scatter_ranked.id = git_metadata.id), 0.0),
+    prior_defect_pct = COALESCE(
+      (SELECT drank FROM defect_ranked WHERE defect_ranked.id = git_metadata.id), 0.0)
 WHERE repository_id = :repo_id;
 """
     await session.execute(
