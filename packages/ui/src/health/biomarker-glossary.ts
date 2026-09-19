@@ -206,7 +206,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: "Assertion free test",
     category: "test_quality",
     description:
-      "A test case that runs the code under test and then checks nothing, so it passes whatever that code does. A mock verification counts as a check, and so does handing the check to a helper this test calls, in this file or, when the call graph resolves the call, in another one. Advisory: it costs this file no points.",
+      "A test case that runs the code under test and then checks nothing, so it passes whatever that code does. A mock verification counts as a check, so does a `throw` the author wrote by hand, and so does handing the check to a helper this test calls, in this file or, when the call graph resolves the call, in another one. Advisory: it costs this file no points.",
   },
   mock_saturated_test: {
     label: "Mock saturated test",

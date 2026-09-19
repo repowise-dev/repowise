@@ -293,6 +293,41 @@ def test_a_wait_helper_that_gives_up_by_throwing_is_an_oracle(tmp_path: Path) ->
     assert _flagged(walked, graph, "tests/thing.test.ts") == ["it callback"]
 
 
+def test_a_wrapper_sharing_a_start_line_with_its_first_callback_is_still_declined(
+    tmp_path: Path,
+) -> None:
+    """The bound has to cover the exact lookup, not only the fallback.
+
+    ``resolve_function`` answers an exact start-line match before it reaches
+    the containment scan. Put the wrapper and its first callback on one
+    physical line and the wrapper wins that match, so without the same bound
+    on it the fix would be defeated by formatting alone.
+    """
+    _require("typescript")
+    walked, graph = _build(
+        tmp_path,
+        {
+            "tests/helpers.ts": (
+                "export function checkOk(v: string) {\n  expect(v).toBe('ok');\n}\n"
+            ),
+            "tests/thing.test.ts": (
+                "import { checkOk } from './helpers';\n"
+                "export const suite = describe('outer', () => "
+                "{ it('delegates', () => { checkOk(run()); });\n"
+                "  it('checks nothing', () => {\n"
+                "    run();\n"
+                "  });\n"
+                "});\n"
+            ),
+        },
+    )
+    resolved = collect_cross_file_oracles(walked, graph)
+    lines = resolved.get("tests/thing.test.ts", {})
+    assert 3 not in lines, f"the silent callback borrowed the wrapper's edge: {lines}"
+    assert 2 in lines, f"the delegating callback resolved nothing: {lines}"
+    assert lines[2].basis == "file-edge"
+
+
 # --------------------------------------------------------------------------
 # The negative cases: what must still fire
 # --------------------------------------------------------------------------

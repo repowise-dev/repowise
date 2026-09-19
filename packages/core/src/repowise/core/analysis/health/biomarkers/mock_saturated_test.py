@@ -52,7 +52,13 @@ class MockSaturatedTestDetector:
             asserts = fn.assertion_count
             # No assertion at all is a different finding, not this one: it is
             # usually a fixture or a helper, and where it is a real test
-            # ``assertion_free_test`` is the marker that says so.
+            # ``assertion_free_test`` is usually the marker that says so.
+            # Not always: the two stopped asking the same question. This one
+            # gates on ``assertion_count``, that one on
+            # ``asserts/predicate.checks_something``, so a mock-heavy test
+            # whose only oracle is a hand-rolled ``throw`` is reported by
+            # neither. That is the price of keeping ``raise_count`` out of
+            # ``assertion_count`` so this denominator cannot move.
             if mocks < self._MIN_MOCK_SETUP or asserts < 1:
                 continue
             if prefixes and not fn.name.lower().startswith(prefixes):

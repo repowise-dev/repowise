@@ -1,7 +1,8 @@
 """Cross-file oracle resolution for ``assertion_free_test``.
 
-A test whose own assertion count is zero has still checked something if it
-handed the job to a helper that asserts. ``_asserting_names`` resolves that
+A test with no oracle of its own -- ``asserts/predicate.checks_something``
+answers that, and it is four questions rather than an assertion count -- has
+still checked something if it handed the job to a helper that has one. ``_asserting_names`` resolves that
 within one file; a JS/TS suite keeps its helpers in another module and a
 class-based suite inherits them from a base class, so the same delegation is
 invisible to a same-file rule by construction.
@@ -22,6 +23,13 @@ its call edges are attributed to it. A JS/TS test case is an anonymous callback
 handed to ``it(...)``; the graph has **no node for it at all**, and the calls
 inside it are attributed to the enclosing module. Resolving from the module node
 would make one delegating test suppress every other test in its file, so:
+
+Resolution asks for the function, never for whatever encloses it:
+``resolve_function``'s containment fallback exists to tolerate a decorator
+offset, and read as identity it would answer one wrapper symbol for every
+callback inside it. Declining falls through to the file lane, which is
+per-function. The sentence above is therefore true of the shapes that reach the
+file lane *because* of that bound, not independently of it.
 
 * **call-edge** -- the test resolves to a symbol; walk its own outgoing edges.
   Precise attribution, bounded depth. Python, Go, Java.
@@ -84,7 +92,7 @@ from typing import TYPE_CHECKING, Any
 from ....test_paths import is_test_related_path
 from ...execution_graph import ExecutionGraphIndex, file_of_symbol, reachable_to_sink
 from ..coverage import is_test_file
-from .lexicon import checks_something
+from .predicate import checks_something
 
 if TYPE_CHECKING:
     from ..complexity import FileComplexity

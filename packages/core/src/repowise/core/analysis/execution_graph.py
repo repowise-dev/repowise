@@ -115,6 +115,7 @@ class ExecutionGraphIndex:
         "_call_only",
         "_callers_with_site_metadata",
         "_ranges",
+        "_span_end",
         "calls",
         "declares",
         "forward",
@@ -232,6 +233,7 @@ class ExecutionGraphIndex:
         self._callers_with_site_metadata = frozenset(callers_with_site_metadata)
         self._by_file_line = {key: min(values) for key, values in by_file_line_candidates.items()}
         self._ranges = {path: tuple(values) for path, values in ranges.items()}
+        self._span_end = {node_id: end for values in ranges.values() for _, end, node_id in values}
         self.in_degree = {node: len(callers) for node, callers in self.reverse.items()}
 
     @staticmethod
@@ -284,7 +286,12 @@ class ExecutionGraphIndex:
             module = module_node_id(path)
             return module if module in self.nodes else None
         exact = self._by_file_line.get((path, func_start))
-        if exact is not None:
+        if exact is not None and (func_end is None or self._span_end.get(exact, func_end) <= func_end):
+            # Bounded here too: sharing a start line is not being the function.
+            # ``const suite = describe('outer', () => { it(...)`` puts the
+            # wrapper and the first callback on one line, and without this the
+            # exact hit would hand back the wrapper and the fallback below --
+            # the whole point of ``func_end`` -- would never run.
             return exact
         best: str | None = None
         best_start = -1

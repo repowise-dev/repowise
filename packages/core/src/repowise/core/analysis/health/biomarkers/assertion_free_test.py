@@ -7,7 +7,9 @@ never fails the refactor it was written to protect. Meszaros names the smell
 
 It is the one marker in this family that is objectively decidable. The others
 ask a question of degree and need a threshold nobody has calibrated; this one
-asks whether a count is zero.
+asks whether the test has an oracle at all. That is four questions rather than
+one count -- ``asserts/predicate.checks_something`` -- but every one of them is
+yes or no, and none of them is a threshold.
 
 **A mock verification counts as an assertion here, and this is deliberately the
 opposite of ``mock_saturated_test``.** Zhu et al. (FSE 2025,
@@ -35,7 +37,7 @@ per-language precision and the false positives it does not separate.
 
 from __future__ import annotations
 
-from ..asserts.lexicon import checks_something
+from ..asserts.predicate import checks_something
 from ..coverage import is_test_file
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
@@ -106,8 +108,10 @@ def _asserting_names(ctx: FileContext) -> frozenset[str]:
     method on a test-local double suppresses against a module-level function of
     that name. Both directions hide a real finding rather than invent one,
     which is the tolerable way round for an advisory marker, but neither is
-    free. A helper nested inside the test body is not collected as a function
-    at all, so it suppresses nothing.
+    free. A helper nested inside the test body is still not collected as a
+    function at all, so it suppresses nothing *by name* -- but its calls now
+    roll up into the enclosing test's own ``called_names``, so the test it
+    sits in is answered directly rather than through this set.
 
     Same file only, and by name. The cross-file half of the same question --
     a shared JS fixture, an inherited base-class helper -- is answered from the

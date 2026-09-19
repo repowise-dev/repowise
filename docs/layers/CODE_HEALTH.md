@@ -454,7 +454,9 @@ whether an assertion observes a double or production output, which is a dataflow
 question the pass does not ask — and on the TypeScript sample that one question
 accounted for every false positive.
 
-`assertion_free_test` measures **71%** on TypeScript (31 findings, the complete
+`assertion_free_test` measures at least **71%** on TypeScript — a floor
+rather than a current reading, three false-positive families having been closed
+since the labelling (31 findings, the complete
 population of two corpora; an earlier pass published 51% for the larger
 pre-change population, which re-labels to 43.1% against this rubric) and **86%** on Python (29 hand-labelled, a systematic
 sample of 172), and does not report on Go or Java at all; the per-language
@@ -466,8 +468,11 @@ the TypeScript gap. The marker stays advisory on both: neither population is lar
 enough to settle the bar.
 
 It asks a question with a yes-or-no answer rather than a
-threshold, which is why it can be stated plainly: a test case whose assertion
-count and verification count are both zero. A **mock verification counts as an
+threshold, which is why it can be stated plainly: a test case with no oracle of
+any kind — no assertion, no mock verification, no `raise`/`throw` the author
+wrote by hand, and no call to an assertion helper from a position the statement
+scan cannot classify. Four questions, every one of them yes or no and none of
+them a threshold. A **mock verification counts as an
 assertion here**, the opposite of the marker above it, because a test whose only
 oracle is `verify(...)` does check something. The two markers read the same call
 for two different questions; the tiers that keep them apart are in

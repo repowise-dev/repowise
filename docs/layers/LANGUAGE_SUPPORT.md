@@ -433,7 +433,10 @@ honestly cannot carry the marker at all:
 
 **Assertion-free test** asks whether a test case checks anything at all, so it
 needs two things the other markers do not: a per-function "is this a test case"
-rule, and an assertion count that misses nothing. The rules live in
+rule, and a way to tell that a test checks nothing. The second is deliberately not one
+count: `assertion_count` is calibrated and shared with a scored marker, so the
+shapes it cannot classify — a hand-rolled `throw`, an assertion bound to a name
+— are answered beside it rather than folded into it. The rules live in
 `analysis/health/complexity/test_case.py`, one data row per language — a name
 prefix for Python, `go test`'s own case-sensitive `TestXxx` rule for Go, the
 `it(...)` / `test(...)` callback for JS/TS, and `@Test` and its JUnit siblings
@@ -443,7 +446,13 @@ does not report on them — the shipping set is a constant in the detector.
 
 Measured precision, hand-labelled: **71%** on TypeScript (31 findings, the
 complete population of two corpora) and **86%** on Python (29 findings, a
-systematic sample of 172). The marker ships advisory on both: the bar below is a
+systematic sample of 172). **Both are now a floor rather than a current
+reading**, as `mock_saturated_test`'s are a ceiling: three false-positive
+families have been closed since they were labelled, which removed findings
+from the numerator's denominator without re-labelling what survives. On the
+TypeScript population the same 22 true findings now sit in 26 rather than 31,
+which is 84.6% if none of the five removals took a true finding with it — they
+were each read, and none did. The marker ships advisory on both: the bar below is a
 property of the marker rather than of one language, and neither reading settles
 it on a population this size.
 
@@ -534,12 +543,15 @@ sample; the 28-point delta is the part carrying the labeller. A second reader on
 the same population is the cheapest thing that would settle it. Note also that
 22 of 31 is a 95% interval of roughly 53% to 84%, whose lower bound sits below
 the 70% bar exactly as Python's 29-item reading does, so neither language
-demonstrates the bar on these populations. The
-four families that remain are a documented no-throw, a wait helper that throws
-rather than asserts, an `expect(...)` the walk does not count because it is
-bound to a name or nested inside another function, and a guard test whose body
-is a bare `throw`. None is reachable by resolving a call, and none was
-introduced by resolving one.
+demonstrates the bar on these populations. Four families accounted for the remainder, and three have since been closed
+by reading the test rather than the call graph — a wait helper that fails by
+throwing, a guard test whose body is a bare `throw`, and an `expect(...)` the
+statement scan declines because it is bound to a name or sits inside a nested
+function. What remains is a documented no-throw, which is a labelling question
+rather than a code one: every test that executes code already fails if that
+code raises, so a comment saying "should not throw" names an oracle the marker
+cannot distinguish from its absence. None of the four was introduced by
+resolving a call.
 
 Python moves on one corpus and not the other, and the split is the point. One
 corpus suppresses nothing: its tests keep their oracles inline or in the same

@@ -59,7 +59,14 @@ class FunctionComplexity:
     # Mock verifications in the body, counted apart from ``assertion_count``.
     # Why they are separate: ``asserts/lexicon.py``.
     verification_count: int = 0
-    # ``raise`` / ``throw`` statements in the body, from ``raise_kinds``. A
+    # ``raise`` / ``throw`` statements this body checks with, taken from the
+    # node map's ``raise_kinds`` -- which is a CFG-terminator mapping, so it is
+    # Rust's ``?`` there rather than a throw; harmless while the reader ships
+    # four languages, load-bearing if that widens. 0 for a language with no
+    # assertion opt-in, like the counts above. Excludes an abstract stub
+    # (``asserts/lexicon.STUB_EXCEPTIONS``), a bare re-raise, and anything in a
+    # nested function or lambda: a callable handed to the code under test to
+    # make *it* fail is not this body's oracle. A
     # hand-rolled oracle -- ``if (!ok) throw new Error(...)`` -- fails its test
     # exactly as an assertion does, but no assertion vocabulary names it. Kept
     # in its own field rather than folded into ``assertion_count`` because that
@@ -74,8 +81,11 @@ class FunctionComplexity:
     # True when this function is a test case its framework would run, as
     # opposed to a helper or fixture beside it. ``complexity/test_case.py``.
     is_test_case: bool = False
-    # Every name called directly in this function's own body, lowercased,
-    # excluding nested function bodies. Empty for a language with no assertion
+    # Every name called in this function's body, lowercased, **including**
+    # nested function bodies -- where it parts company with the counts above,
+    # which stop at one. A function nested inside an already-collected one is
+    # never collected as an entry of its own, so stopping would attribute its
+    # calls to nobody. Empty for a language with no assertion
     # vocabulary row, because it rides on that traversal. It answers one
     # question: did this function hand its work to something else in the file?
     called_names: frozenset[str] = frozenset()
@@ -84,7 +94,10 @@ class FunctionComplexity:
     # cross-file oracle pass, which pairs a name with a file-scoped call edge:
     # a qualified call names a method on something else that happens to share
     # the name, and pairing it with the file's edge would let one delegating
-    # test license every same-named call beside it.
+    # test license every same-named call beside it. It widened with
+    # ``called_names``, so a name may now come from a nested body -- which is
+    # a suppression path, and means a registered-but-never-invoked callback
+    # contributes. In the direction that lane already errs.
     bare_called_names: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:

@@ -690,3 +690,52 @@ def test_descending_for_names_does_not_move_the_assertion_count() -> None:
     )
     counts = _counts(src, "src/thing.test.ts", "typescript")
     assert counts["it callback"][0] == 0, counts
+
+
+def test_a_throw_inside_a_callback_handed_to_the_code_under_test_is_not_the_oracle() -> None:
+    """The JS sibling of the nested-function case, one token apart.
+
+    The assertion counts deliberately cross a lambda, because
+    ``waitFor(() => expect(x).toBe(1))`` runs its assertion as part of the
+    test. A raise does not follow it across: a callback handed to the code
+    under test exists to fail *that*, and the bare re-throw below checks
+    nothing at all."""
+    _require("typescript")
+    src = (
+        "it('registers a failing callback', () => {\n"
+        "  registry.add(() => { throw new Error('nope'); });\n"
+        "  run();\n"
+        "});\n"
+        "it('rethrows', () => {\n"
+        "  return load().catch(err => { throw err; });\n"
+        "});\n"
+    )
+    assert _flagged(src, "src/thing.test.ts", "typescript") == ["it callback", "it callback"]
+
+
+def test_a_throw_in_the_test_s_own_body_still_counts_beside_those() -> None:
+    """The bound is the lambda, not the shape of the statement around it."""
+    _require("typescript")
+    src = (
+        "it('guards', () => {\n"
+        "  if (!cfg) {\n"
+        "    throw new Error('no cfg');\n"
+        "  }\n"
+        "  registry.add(() => { throw new Error('nope'); });\n"
+        "});\n"
+    )
+    assert _flagged(src, "src/thing.test.ts", "typescript") == []
+
+
+def test_a_bare_python_reraise_is_not_an_oracle() -> None:
+    """``except X: raise`` declines to swallow what is already in flight. It
+    is not a property the author checked."""
+    _require("python")
+    src = (
+        "def test_reraises():\n"
+        "    try:\n"
+        "        run()\n"
+        "    except ValueError:\n"
+        "        raise\n"
+    )
+    assert _flagged(src) == ["test_reraises"]

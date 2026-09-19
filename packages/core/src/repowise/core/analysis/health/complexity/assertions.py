@@ -8,7 +8,7 @@ count. Opt-in per language via the ``LanguageNodeMap`` ``assert_kinds`` /
 ``duplicated_assertion_block`` biomarkers, and by ``mock_saturated_test``,
 which divides mock setup by the total.
 
-Two tiers are counted in one walk, and which marker reads which is the whole
+Four counts come out of one walk, and which marker reads which is the whole
 design (``asserts/lexicon.py`` carries the vocabulary and the evidence):
 
 * ``blocks`` counts the **narrow** tier only — an ``assert``/``expect`` callee
@@ -24,13 +24,21 @@ design (``asserts/lexicon.py`` carries the vocabulary and the evidence):
   verification is an oracle, so it counts there; ``mock_saturated_test``
   measures verification itself, so counting it in that marker's denominator
   would blind it. The same call is read two ways on purpose.
+* ``raises`` counts the hand-rolled oracles no vocabulary can reach, a
+  ``raise`` / ``throw`` being a statement where the tiers match callee names.
+  Read only by ``asserts/predicate.py`` and only as a boolean, so it is in
+  none of the three counts above and moves nothing calibrated.
+
+``called_names`` rides along on the same traversal. Alone among these it is
+collected **through** nested function bodies, because nothing else ever
+collects them.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..asserts.lexicon import NARROW_PREFIXES, AssertDialect
+from ..asserts.lexicon import NARROW_PREFIXES, STUB_EXCEPTIONS, AssertDialect
 from .ast_utils import (
     _IDENTIFIER_SUFFIX,
     _callee_names,
@@ -266,21 +274,23 @@ def _is_assertion_statement(
     return _assertion_tier(stmt, lmap, dialect) in (_NARROW, _BROAD)
 
 
-#: Exceptions whose raise declares a method unimplemented rather than checks
-#: anything. ``raise NotImplementedError`` is the abstract-stub idiom, and
-#: counting it would make every unimplemented base-class method an oracle --
-#: which then suppresses, by name, any test calling a same-named method on a
-#: subclass that does implement it.
-_STUB_EXCEPTIONS = frozenset({"notimplementederror"})
+def _is_oracle_raise(node: Node) -> bool:
+    """Whether a raise statement is the author checking something.
 
+    Two that are not, read off the first named child -- the raised expression,
+    the rest of the statement being a ``from`` clause:
 
-def _is_stub_raise(node: Node) -> bool:
-    """Whether a raise statement raises an abstract-stub exception."""
+    * an abstract-stub exception, ``STUB_EXCEPTIONS``. Only the unqualified
+      spelling is matched, since the chain is read from its head.
+    * no raised expression at all. A Python bare ``raise`` re-raises whatever
+      is in flight, which is the enclosing ``except`` deciding not to swallow
+      it rather than a check the author wrote.
+    """
     for child in node.children:
         if not child.is_named:
             continue
         chain = _identifier_chain(child)
-        return bool(chain) and chain[0] in _STUB_EXCEPTIONS
+        return bool(chain) and chain[0] not in STUB_EXCEPTIONS
     return False
 
 
@@ -315,9 +325,10 @@ def _collect_assertion_facts(
     actually bind; a qualified one names a method on something else that
     happens to share the name.
 
-    *raises* counts ``raise`` / ``throw`` statements other than the
-    abstract-stub ones in ``_STUB_EXCEPTIONS``, wherever the traversal
-    reaches one rather than only at block level: an unbraced ``if (x) throw
+    *raises* counts the ``raise`` / ``throw`` statements ``_is_oracle_raise``
+    admits, in this body only -- not in a nested function and not in a nested
+    lambda -- wherever the traversal reaches one rather than only at block
+    level: an unbraced ``if (x) throw
     ...`` guard is a hand-rolled oracle too, and its only reader asks whether
     the count is zero. In no other count, so no calibrated marker moves.
 
@@ -371,7 +382,7 @@ def _collect_assertion_facts(
         if run_count >= 2:
             blocks.append((run_start, run_end, run_count))
 
-    def _visit(node: Node) -> None:
+    def _visit(node: Node, *, under_lambda: bool = False) -> None:
         nonlocal raises
         # Lambda kinds join the block kinds because an expression-bodied arrow
         # has no statement at all: ``waitFor(() => expect(x).toBe(1))`` keeps
@@ -383,7 +394,15 @@ def _collect_assertion_facts(
             or node.type in lmap.lambda_kinds
         )
         _scan_siblings(node, count_total=counts_here)
-        if node.type in lmap.raise_kinds and not _is_stub_raise(node):
+        # ``under_lambda`` keeps the raise count on this body only. The
+        # assertion counts deliberately cross a lambda, because
+        # ``waitFor(() => expect(x).toBe(1))`` runs its assertion as part of
+        # this test. A raise does not follow: ``registry.add(() => { throw x })``
+        # hands the code under test something whose job is to fail *it*, and
+        # reading that as this test's oracle suppresses a real finding. Nested
+        # named functions are already excluded below; a lambda is the sibling
+        # shape, one token apart in JS and not covered by that branch.
+        if node.type in lmap.raise_kinds and not under_lambda and _is_oracle_raise(node):
             raises += 1
         if node.type in call_kinds:
             names = _callee_names(node)
@@ -392,6 +411,7 @@ def _collect_assertion_facts(
                 if not names[1]:
                     bare.add(names[0])
         for child in node.children:
+            child_under_lambda = under_lambda or child.type in lmap.lambda_kinds
             if child.type in lmap.function_kinds:
                 # Counts stop here: a nested function's assertions are its own,
                 # and so is a raise it makes -- a callable handed to the code
@@ -399,7 +419,7 @@ def _collect_assertion_facts(
                 # do not stop, because nothing else collects them.
                 _visit_names_only(child)
                 continue
-            _visit(child)
+            _visit(child, under_lambda=child_under_lambda)
 
     def _visit_names_only(node: Node) -> None:
         if node.type in call_kinds:
