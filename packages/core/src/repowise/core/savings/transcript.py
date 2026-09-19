@@ -63,9 +63,10 @@ __all__ = ["ESTIMATOR", "SYNC_BUDGET_S", "TranscriptSyncResult", "sync_transcrip
 #: backfilled window's per-agent split is therefore skewed by method.
 ESTIMATOR = "transcript_marker_v1"
 
-#: Seconds of transcript reading per run, split across harnesses. Stopping is
-#: safe rather than lossy: cursors are per file and saved after the loop, so
-#: the next run resumes where this one stopped.
+#: Seconds of transcript reading per run, split across harnesses. Stopping
+#: between files is safe: cursors are per file and saved after the loop, so
+#: the next run resumes where this one stopped. Stopping *within* a file is
+#: what ``_rewind`` covers.
 SYNC_BUDGET_S = 20.0
 
 #: The host truncation the live path applies, in tokens. ``estimate_tokens``
@@ -91,6 +92,9 @@ class TranscriptSyncResult:
     transcripts_read: int = 0
     #: Transcripts the time budget did not reach. Non-zero means run again.
     deferred: int = 0
+    #: Events the ledger refused, usually a contended sidecar. Non-zero holds
+    #: the cursors back so the next run re-reads rather than losing them.
+    write_failures: int = 0
     per_harness: dict[str, int] = field(default_factory=dict)
 
     @property
@@ -159,7 +163,12 @@ def sync_transcript_savings(
 
     with closing(_open_store(repo_root)) as store:
         _apply(repo_root, candidates, result, store=store)
-    # Saved after the writes, so a crash mid-record re-reads rather than loses.
+    if result.write_failures:
+        # The recorder never raises -- a contended sidecar comes back as False,
+        # not as an exception -- so an advanced cursor here would step past a
+        # marker nothing recorded and nothing can find again. Re-reading costs
+        # one pass; the ref anti-join makes it free of double counting.
+        return result
     cursors.save()
     return result
 
@@ -188,12 +197,19 @@ def _sweep(
         if time.monotonic() > deadline:
             result.deferred += len(discovered) - index
             return
+        resume = cursors.get(path)
         try:
             events = iter_new_events(adapter, path, cursors, prefilter=_gate(adapter))
-            _collect(events, harness, repo_root, shell_tools, candidates)
+            unpaired = _collect(events, harness, repo_root, shell_tools, candidates)
             result.transcripts_read += 1
         except OSError:
             continue
+        if unpaired:
+            # A shell call whose result has not been written yet. Its marker is
+            # past the cursor, and the pairing that identifies it as a shell
+            # result is behind it, so advancing now would make the marker
+            # unattributable forever. Re-read this file next time instead.
+            _rewind(cursors, path, resume)
 
 
 def _gate(adapter: HarnessAdapter) -> RawPrefilter | None:
@@ -201,8 +217,9 @@ def _gate(adapter: HarnessAdapter) -> RawPrefilter | None:
 
     The tool call and the result carrying its marker are separate lines, and
     only the pair says a marker came from a shell command, so a marker-only
-    gate sees results it can no longer attribute. Skipping a line is sound
-    either way: the cursor advances per line read, not per event yielded.
+    gate sees results it can no longer attribute. Widening rather than
+    narrowing matters because the cursor advances per line read: a line this
+    gate drops is consumed, not revisited.
     """
     tool_gate = adapter.prefilter(INTENT_TOOL_CALLS)
     if tool_gate is None:
@@ -220,41 +237,64 @@ def _collect(
     repo_root: Path,
     shell_tools: frozenset[str],
     candidates: dict[str, _Candidate],
-) -> None:
+) -> set[str]:
+    """Collect markers from shell results; return shell calls left unanswered."""
     shell_calls: set[str] = set()
     for event in events:
         for use in event.tool_uses:
             if use.name in shell_tools:
                 shell_calls.add(use.id)
-        if not event.tool_results or not _in_repo(event, repo_root):
-            continue
         for block in event.tool_results:
             if block.tool_use_id not in shell_calls:
                 continue
-            for text in _result_texts(block):
-                for marker in parse_markers(text):
-                    candidates.setdefault(
-                        marker.ref,
-                        _Candidate(
-                            marker=marker,
-                            harness=harness,
-                            occurred_at=_occurred_at(event),
-                            delivered_tokens=estimate_tokens(text),
-                            session_id=event.session_id,
-                        ),
-                    )
+            shell_calls.discard(block.tool_use_id)
+            if not _in_repo(event, repo_root):
+                continue
+            _harvest(block, event, harness, candidates)
+    return shell_calls
+
+
+def _harvest(
+    block: ToolResult,
+    event: Event,
+    harness: str,
+    candidates: dict[str, _Candidate],
+) -> None:
+    for text in _result_texts(block):
+        for marker in parse_markers(text):
+            candidates.setdefault(
+                marker.ref,
+                _Candidate(
+                    marker=marker,
+                    harness=harness,
+                    occurred_at=_occurred_at(event),
+                    delivered_tokens=estimate_tokens(text),
+                    session_id=event.session_id,
+                ),
+            )
+
+
+def _rewind(cursors: CursorStore, path: Path, resume: dict[str, Any] | None) -> None:
+    """Put *path*'s cursor back where this pass found it."""
+    if resume is None:
+        cursors.advance(path, offset=0, mtime=0.0)
+    else:
+        cursors.advance(path, offset=resume["offset"], mtime=resume["mtime"])
 
 
 def _in_repo(event: Event, repo_root: Path) -> bool:
-    """True when the event is this repository's, or says nothing either way.
+    """True when the event states a ``cwd`` inside *repo_root*.
 
-    One harness files transcripts per project and states no ``cwd`` on most
-    lines; another files them by date and threads the ``cwd`` through. An
-    absent ``cwd`` is "no opinion", which the first harness's discovery has
-    already answered.
+    A stated ``cwd`` is required rather than assumed, which is also what the
+    sibling scan in ``distill.missed`` does. One harness files transcripts by
+    date and returns every rollout on the machine from ``discover``, so for it
+    ``cwd`` is the only thing separating this repository from another, and
+    reading an absent one as "no opinion" would bank a second repository's
+    savings here -- in a ledger whose ref anti-join is per repository, so both
+    would count it.
     """
     if not event.cwd:
-        return True
+        return False
     try:
         cwd = Path(event.cwd).resolve()
     except OSError:
@@ -267,27 +307,37 @@ def _occurred_at(event: Event) -> datetime:
 
 
 def _result_texts(block: ToolResult) -> Iterable[str]:
-    """Every string a tool result carries, across the shapes harnesses use."""
+    """Every string a tool result carries, across the shapes harnesses use.
+
+    A result is a bare string, a list of content blocks, or a record of named
+    streams, depending on the harness and the tool.
+    """
     for blob in (block.content, block.payload):
-        if isinstance(blob, str):
-            yield blob
-        elif isinstance(blob, list):
-            for item in blob:
-                if isinstance(item, str):
-                    yield item
-                elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                    yield item["text"]
-        elif isinstance(blob, dict):
-            for value in blob.values():
-                if isinstance(value, str):
-                    yield value
+        yield from _strings_in(blob)
+
+
+def _strings_in(blob: Any) -> Iterable[str]:
+    if isinstance(blob, str):
+        yield blob
+    elif isinstance(blob, list):
+        for item in blob:
+            yield from _strings_in(item)
+    elif isinstance(blob, dict):
+        # A content block names its own text; a stream record does not, so
+        # every string it holds is output.
+        text = blob.get("text")
+        if isinstance(text, str):
+            yield text
+        else:
+            yield from (value for value in blob.values() if isinstance(value, str))
 
 
 def _accounting(candidate: _Candidate) -> tuple[int, int]:
     """``(baseline, delivered)`` input tokens for one recovered marker.
 
-    ``delivered`` is measured from the text the agent actually received.
-    ``baseline`` adds back what the marker says was dropped, minus the
+    ``delivered`` is the text the marker was found in, which for a shell
+    result is the command output the model read back. ``baseline`` adds back
+    what the marker says was dropped, minus the
     marker's own cost, then re-applies the host truncation the live path
     applies -- bytes past it never reached the model and cannot be claimed.
     """
@@ -358,27 +408,33 @@ def _apply(
         operation, surface = _origin(origins.get(ref))
         payload = _payload(repo_root, candidate, operation, surface)
         if store is not None and not recorder.record_event_in(store, repo_root, payload):
+            result.write_failures += 1
             continue
         saved = max(payload["baseline_input_tokens"] - payload["delivered_input_tokens"], 0)
         result.recorded += 1
         result.saved_input_tokens += saved
-        result.per_harness[candidate.harness] = (
-            result.per_harness.get(candidate.harness, 0) + saved
-        )
+        result.per_harness[candidate.harness] = result.per_harness.get(candidate.harness, 0) + saved
 
 
 def _origin(source: str | None) -> tuple[str, str]:
     """``omissions.source`` as ``(operation, surface)``.
 
     It reads ``"<origin>:<filter>"`` -- ``cli:git_diff``,
-    ``hook-codex:test_output`` -- and is the only record of which filter ran.
-    It is TTL-pruned, so most refs a transcript reaches are past it and record
-    the filter as unknown rather than guessing one.
+    ``hook-codex:test_output``, ``mcp:get_context`` -- and is the only record
+    of which surface and filter produced a ref. It is TTL-pruned, so most refs
+    a transcript reaches are past it and record the filter as unknown rather
+    than guessing one.
     """
     if not source:
         return "unknown", "distill"
     origin, _, filter_name = source.partition(":")
-    return filter_name or "unknown", "hook" if origin.startswith("hook") else "distill"
+    if origin.startswith("hook"):
+        surface = "hook"
+    elif origin == "mcp":
+        surface = "mcp"
+    else:
+        surface = "distill"
+    return filter_name or "unknown", surface
 
 
 def _read_only_lookup(repo_root: Path, refs: Sequence[str]) -> tuple[set[str], dict[str, str]]:

@@ -63,6 +63,7 @@ RATIO_FLOOR: dict[str, float] = {
 #: estimated savings fall under it would not have produced a marker anyway.
 _MIN_EST_TOKENS = 40
 
+
 def empty_report(days: float = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
     return {
         "events": 0,
