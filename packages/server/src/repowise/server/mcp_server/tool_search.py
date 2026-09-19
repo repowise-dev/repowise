@@ -1147,12 +1147,18 @@ async def search_codebase(
         symbol_kind: filter symbol hits by kind (function|class|method|...).
     """
     grep_hint = _grep_hint_for(query)
-    resolved_mode = _resolve_mode(query, mode)
 
     # An unknown kind used to take the same ``return False`` as a kind that is
     # simply inapplicable, so a typo and a real empty result looked identical.
     ignored: list[dict[str, Any]] = []
     kind = resolve_enum_argument(kind, _VALID_KINDS, argument="kind", ignored=ignored)
+    # An unknown mode used to become ``auto`` with nothing said, so the caller
+    # got a different search than it asked for. Modes have always been
+    # case-insensitive; only a genuine miss is dropped, and under its own spelling.
+    if mode is not None and mode.lower() in _VALID_MODES:
+        mode = mode.lower()
+    mode = resolve_enum_argument(mode, _VALID_MODES, argument="mode", ignored=ignored)
+    resolved_mode = _resolve_mode(query, mode)
 
     if resolved_mode in ("symbol", "path", "hybrid"):
         structured = await _structured_search(
