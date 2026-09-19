@@ -32,6 +32,7 @@ from repowise.core.analysis.decisions.lifecycle import (
     is_governing,
     legacy_status_for_currency,
 )
+from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED
 
 from ..decision_graph import upsert_decision_edge
 from ..models import (
@@ -616,6 +617,11 @@ async def accept_decision(
         record.rationale = reason
     if scope is not None:
         record.affected_files_json = json.dumps(scope)
+        # The accepter chose these files, so the record binds to them. A row
+        # mined from a wide commit keeps a ``commit_footprint`` basis
+        # otherwise, and the scope somebody accepted would be stored and then
+        # ignored by every surface that answers for a file.
+        record.scope_basis = SCOPE_BASIS_STATED
     acceptance = await record_acceptance(
         session,
         record,

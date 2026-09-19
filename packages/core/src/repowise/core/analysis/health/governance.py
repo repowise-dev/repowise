@@ -137,10 +137,16 @@ def _stale_governance_findings(health_summary: dict[str, Any]) -> list[HealthFin
     """
     import json
 
+    from repowise.core.analysis.decisions.scope import binds_to_paths
+
     # file_path → best (staleness_score, decision) seen so far
     best: dict[str, tuple[float, Any]] = {}
 
     for decision in health_summary.get("stale_decisions", []):
+        # One HIGH finding is emitted per file below, so a stale footprint
+        # would flag every file its commit touched.
+        if not binds_to_paths(getattr(decision, "scope_basis", "")):
+            continue
         try:
             affected = json.loads(decision.affected_files_json or "[]")
         except (ValueError, TypeError):

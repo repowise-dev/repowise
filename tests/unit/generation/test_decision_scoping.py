@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+from repowise.core.analysis.decisions.scope import SCOPE_BASIS_FOOTPRINT
 from repowise.core.generation.page_generator.helpers import (
     build_decision_maps,
     decisions_for_files,
@@ -30,7 +31,14 @@ def _decision(title: str, *, confidence: float | None = 1.0, evidence: str = "e.
     return payload
 
 
-def _record(title: str, *, status: str = "proposed", confidence: float = 0.5) -> SimpleNamespace:
+def _record(
+    title: str,
+    *,
+    status: str = "proposed",
+    confidence: float = 0.5,
+    scope_basis: str = "",
+    affected_files: list[str] | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         title=title,
         decision=f"{title}: do the thing",
@@ -38,8 +46,9 @@ def _record(title: str, *, status: str = "proposed", confidence: float = 0.5) ->
         source="session",
         confidence=confidence,
         evidence_file="e.py",
-        affected_files=["src/app.py"],
+        affected_files=affected_files or ["src/app.py"],
         status=status,
+        scope_basis=scope_basis,
     )
 
 
@@ -171,3 +180,57 @@ def test_a_record_that_carries_no_status_reads_as_a_proposal():
     _, all_decisions = build_decision_maps(report)
 
     assert all_decisions[0]["status"] == "proposed"
+
+
+# ---------------------------------------------------------------------------
+# A commit footprint reaches the overview but not a file page
+# ---------------------------------------------------------------------------
+
+
+def test_a_footprint_is_kept_out_of_the_per_file_index():
+    """One 38-file record headed five unrelated file pages before this.
+
+    Its files are the footprint of the commit it was mined from, so it is a
+    true statement about the change and a false one about most of the files.
+    """
+    report = SimpleNamespace(
+        decisions=[
+            _record("Narrow rule"),
+            _record(
+                "Collapse unchanged re-reads",
+                scope_basis=SCOPE_BASIS_FOOTPRINT,
+                affected_files=["src/app.py", "src/unrelated.py"],
+            ),
+        ]
+    )
+
+    by_file, _ = build_decision_maps(report)
+
+    assert [d["title"] for d in by_file["src/app.py"]] == ["Narrow rule"]
+    assert "src/unrelated.py" not in by_file
+
+
+def test_a_footprint_still_reaches_the_repository_overview():
+    """A claim about a whole change belongs on the page about the whole repo."""
+    report = SimpleNamespace(
+        decisions=[_record("Wide rule", scope_basis=SCOPE_BASIS_FOOTPRINT)]
+    )
+
+    _, all_decisions = build_decision_maps(report)
+
+    assert [d["title"] for d in all_decisions] == ["Wide rule"]
+
+
+def test_a_record_with_no_basis_attribute_still_binds():
+    """Resume rehydrates records as plain namespaces.
+
+    That path now carries the basis, but a namespace built somewhere else
+    must not silently lose its file pages.
+    """
+    record = _record("Legacy shape")
+    del record.scope_basis
+    report = SimpleNamespace(decisions=[record])
+
+    by_file, _ = build_decision_maps(report)
+
+    assert [d["title"] for d in by_file["src/app.py"]] == ["Legacy shape"]

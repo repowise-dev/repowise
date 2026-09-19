@@ -53,7 +53,11 @@ from repowise.core.analysis.decisions.policy import (
     DecisionPolicy,
     resolve_policy,
 )
-from repowise.core.analysis.decisions.scope import commit_scope_files, resolve_module_nodes
+from repowise.core.analysis.decisions.scope import (
+    commit_scope_basis,
+    commit_scope_files,
+    resolve_module_nodes,
+)
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.ingestion.traverser import load_gitignore_spec
 
@@ -146,6 +150,10 @@ class ExtractedDecision:
     affected_modules: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     source: str = "inline_marker"
+    #: See :class:`~repowise.core.persistence.models.DecisionRecord.scope_basis`.
+    #: Set by the commit-derived miners, which are the only ones that take a
+    #: file list they did not choose per file.
+    scope_basis: str = ""
     evidence_commits: list[str] = field(default_factory=list)
     evidence_file: str | None = None
     evidence_line: int | None = None
@@ -728,6 +736,9 @@ class DecisionExtractor:
                             break
                 if sha:
                     d.evidence_commits = [sha]
+                    # Basis is judged on the commit's whole list, before the
+                    # cap: 42 files stored as 20 is still a 42-file footprint.
+                    d.scope_basis = commit_scope_basis(commit_files.get(sha))
                     d.affected_files = commit_scope_files(commit_files.get(sha))
                     d.source_text = source_by_sha.get(sha, "")
                 d.source = "git_archaeology"
@@ -990,6 +1001,7 @@ class DecisionExtractor:
                             break
                 if sha:
                     d.evidence_commits = [sha]
+                    d.scope_basis = commit_scope_basis(files_by_sha.get(sha))
                     d.affected_files = commit_scope_files(files_by_sha.get(sha))
                     d.source_text = source_by_sha.get(sha, "")
                 d.source = "pr"

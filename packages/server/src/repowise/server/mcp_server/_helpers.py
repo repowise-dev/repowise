@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.persistence.models import (
     Repository,
@@ -521,6 +522,10 @@ def _sibling_coverage(
 
     for d in all_decisions:
         if getattr(d, "id", None) not in accepted_ids:
+            continue
+        # A per-file computation over a repo-wide list: an accepted footprint
+        # would count as a covered sibling in every directory it touched.
+        if not binds_to_paths(getattr(d, "scope_basis", "")):
             continue
         affected = json.loads(d.affected_files_json)
         for af in affected:

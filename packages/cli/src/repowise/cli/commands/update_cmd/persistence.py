@@ -1014,9 +1014,17 @@ async def _persist_full_update_async(
 
                 # The entity split is only coherent once legacy rows are
                 # classified.
-                from repowise.core.persistence.decision_migration import apply_migration
+                from repowise.core.persistence.decision_migration import (
+                    apply_migration,
+                    backfill_scope_basis,
+                )
 
                 await apply_migration(session, repo_id)
+
+                # Runs every index, beside the classification repair and for
+                # the same reason: a record written before the basis existed
+                # is only reachable from code that runs on an existing store.
+                await backfill_scope_basis(session, repo_id)
 
                 if require_decision_persist_success:
                     from repowise.core.persistence.crud import (

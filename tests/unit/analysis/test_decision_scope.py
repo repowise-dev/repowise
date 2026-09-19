@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from repowise.core.analysis.decisions.scope import (
+    MAX_GOVERNING_FILES,
+    SCOPE_BASIS_FOOTPRINT,
     bind_scope_files,
+    binds_to_paths,
+    commit_scope_basis,
     commit_scope_files,
     derive_decision_scope,
 )
@@ -157,3 +161,51 @@ def test_blanks_and_duplicates_collapse() -> None:
 def test_the_file_cap_still_applies() -> None:
     wide = frozenset(f"pkg/m{i:03d}.py" for i in range(40))
     assert len(bind_scope_files(sorted(wide), wide)) == 20
+
+
+# ---------------------------------------------------------------------------
+# Scope basis: when a file list is a claim, and when it is a footprint
+# ---------------------------------------------------------------------------
+
+
+def test_a_narrow_commit_list_is_a_claim() -> None:
+    assert commit_scope_basis([f"pkg/m{i}.py" for i in range(MAX_GOVERNING_FILES)]) == ""
+
+
+def test_a_wide_commit_list_is_a_footprint() -> None:
+    files = [f"pkg/m{i}.py" for i in range(MAX_GOVERNING_FILES + 1)]
+    assert commit_scope_basis(files) == SCOPE_BASIS_FOOTPRINT
+
+
+def test_the_cap_does_not_launder_a_huge_commit_into_a_claim() -> None:
+    """A 42-file commit stored as 20 files is still a footprint.
+
+    The two limits are independent, and this pins the ordering between them:
+    ``MAX_GOVERNING_FILES`` must stay below ``commit_scope_files``'s own cap.
+    While it does, judging the stored list and judging the whole list agree,
+    so this passes either way. Raise the governing bound to the storage cap
+    and they stop agreeing -- every oversized commit would come back a claim
+    of exactly the cap -- which is the regression this holds the line on.
+    """
+    commit = [f"pkg/m{i:03d}.py" for i in range(42)]
+    stored = commit_scope_files(commit)
+    assert len(stored) < len(commit)
+    assert len(stored) > MAX_GOVERNING_FILES
+    assert commit_scope_basis(commit) == SCOPE_BASIS_FOOTPRINT
+
+
+def test_an_empty_list_is_not_a_footprint() -> None:
+    assert commit_scope_basis([]) == ""
+    assert commit_scope_basis(None) == ""
+
+
+def test_duplicates_do_not_inflate_a_list_into_a_footprint() -> None:
+    files = ["pkg/a.py"] * (MAX_GOVERNING_FILES + 5)
+    assert commit_scope_basis(files) == ""
+
+
+def test_only_the_footprint_basis_stops_a_record_binding_per_file() -> None:
+    assert binds_to_paths("") is True
+    assert binds_to_paths(None) is True
+    assert binds_to_paths("stated") is True
+    assert binds_to_paths(SCOPE_BASIS_FOOTPRINT) is False

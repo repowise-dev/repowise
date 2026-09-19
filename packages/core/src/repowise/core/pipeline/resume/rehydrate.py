@@ -133,6 +133,11 @@ async def rehydrate_decision_report(session: Any, repo_id: str) -> Any:
                 # same way a fresh one does. Without it every rehydrated
                 # record read as a proposal, including the accepted ones.
                 status=r.status,
+                # Same reason: the per-file index reads this, and a namespace
+                # without it fails open, so a resumed run would print on
+                # every file the mined commit touched where a fresh run
+                # prints on none of them.
+                scope_basis=r.scope_basis,
             )
         )
     return SimpleNamespace(decisions=decisions)

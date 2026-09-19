@@ -60,6 +60,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import ARCHITECTURAL_KIND
 from repowise.core.analysis.decisions.provenance import rank_for_source
+from repowise.core.analysis.decisions.scope import (
+    SCOPE_BASIS_STATED,
+    binds_to_paths,
+    commit_scope_basis,
+)
 from repowise.core.analysis.decisions.semantic_match import (
     DECISION_VECTOR_PREFIX,
     DEFAULT_DEDUP_TAU,
@@ -348,13 +353,26 @@ async def apply_dedupe(
 
         for column, name in _UNION_FIELDS:
             setattr(canonical, column, json.dumps(sorted(union[name])))
+        # The union widens the file list, so the basis has to be recomputed
+        # from it rather than inherited. Two things go wrong otherwise, and
+        # both silently undo ``backfill_scope_basis``: a footprint folding
+        # into a narrow canonical hands it 40 files under the canonical's
+        # empty basis -- and the canonical's ``source`` is usually not one the
+        # backfill repairs, so nothing ever catches it again -- while anything
+        # folding into a footprint leaves the basis set and the links written.
+        canonical.scope_basis = (
+            SCOPE_BASIS_STATED
+            if canonical.scope_basis == SCOPE_BASIS_STATED
+            else commit_scope_basis(sorted(union["files"]))
+        )
         # Sync replaces rather than accretes, so it must see the union.
+        binds = binds_to_paths(canonical.scope_basis)
         await sync_decision_node_links(
             session,
             repository_id,
             canonical.id,
-            files=sorted(union["files"]),
-            modules=sorted(union["modules"]),
+            files=sorted(union["files"]) if binds else [],
+            modules=sorted(union["modules"]) if binds else [],
         )
         _rederive_headline(canonical, await list_decision_evidence(session, canonical.id))
         applied.clusters.append(done)

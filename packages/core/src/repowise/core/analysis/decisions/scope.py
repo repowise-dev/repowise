@@ -15,7 +15,12 @@ from repowise.core.support_paths import file_population
 from repowise.core.test_paths import is_test_related_path
 
 __all__ = [
+    "MAX_GOVERNING_FILES",
+    "SCOPE_BASIS_FOOTPRINT",
+    "SCOPE_BASIS_STATED",
     "bind_scope_files",
+    "binds_to_paths",
+    "commit_scope_basis",
     "commit_scope_files",
     "derive_decision_scope",
     "resolve_module_nodes",
@@ -41,6 +46,45 @@ _MAX_MODULES = 12
 _MAX_FILES = 20
 
 
+#: The basis value marking a scope that is a commit's footprint rather than a
+#: claim about particular files. Stored on the record, read wherever a file is
+#: asked what governs it. Any other value (including the empty default) binds.
+SCOPE_BASIS_FOOTPRINT = "commit_footprint"
+
+#: The basis value marking a scope a person stated: typed at the CLI, written
+#: into the decisions manifest, or confirmed on review. It binds, like the
+#: empty default does, and the difference between the two is that the backfill
+#: repairs an empty basis and never touches this one. Without it, a person who
+#: narrows a mined record's scope by hand has that scope re-marked as a
+#: footprint on the next index, because the row still reads as a wide ``pr``
+#: record the repair has not seen yet.
+SCOPE_BASIS_STATED = "stated"
+
+#: Above this many files, a commit-derived list stops being a claim about files
+#: and becomes the footprint of the change it was mined from.
+#:
+#: The miner reads one decision out of one commit body and has no per-file
+#: evidence at all, so it takes the commit's whole file list. That is a true
+#: statement about the commit and a false one about most of those files.
+#: Measured over 41 labelled file/decision pairs from 10 real source files
+#: (``local-stash/decision-layer-research/phase45-scope-2026-09-19``), the
+#: share that actually governs the file tracks breadth and nothing else:
+#:
+#:     1-10 files   100% on topic (n=7)
+#:     11-31 files   43% (n=7)
+#:     32+ files     44% (n=27)
+#:
+#: Two content signals were measured against the same labels and both failed,
+#: so this is a breadth rule rather than a relevance one. Overlap between the
+#: decision's text and the file's own diff hunk ranks the canonical *wrong*
+#: answer highest of all, because lexical similarity tracks the subsystem a
+#: file sits in and not whether the decision governs it; a file's share of the
+#: commit's diff does not separate either. What breadth costs is recall: 80%
+#: of the 3,048 file/decision bindings in the dev store are footprints, and
+#: they stop answering per-file questions here.
+MAX_GOVERNING_FILES = 10
+
+
 #: Which population a scope entry is ranked under, narrowest claim first. A
 #: decision is about the system, so production code outranks the test that
 #: exercises it, which outranks an example, which outranks the docs and
@@ -64,6 +108,37 @@ def commit_scope_files(files: Sequence[str] | None) -> list[str]:
     rather than depending on the order git happened to list them in.
     """
     return sorted(_normalized(files))[:_MAX_FILES]
+
+
+def commit_scope_basis(files: Sequence[str] | None) -> str:
+    """The scope basis for a record mined from one commit's file list.
+
+    Takes the commit's *whole* list, before :func:`commit_scope_files` caps it:
+    a 42-file commit stored as 20 files is still a 42-file footprint, and
+    judging the stored list would call it a claim.
+    """
+    return SCOPE_BASIS_FOOTPRINT if len(_normalized(files)) > MAX_GOVERNING_FILES else ""
+
+
+def binds_to_paths(scope_basis: str | None) -> bool:
+    """Whether a record with this basis may answer "what governs this path".
+
+    The one predicate every path-scoped surface asks, so that the wiki page,
+    the ``get_why`` lanes, ``get_context``, the decision graph and the health
+    findings agree on which records are specific enough to name a path. A
+    record that fails it keeps its files and its place in repository-wide
+    answers -- search, the overview, a lookup by id -- and stops claiming to
+    be about each path in them.
+
+    Modules are gated with files rather than kept, although a commit-wide
+    record does sound like a claim about the areas it touched. Its module list
+    is ``resolve_module_nodes`` over the same unjustified file list, so a
+    42-file commit yields up to twelve directories on exactly the evidence
+    that made the file list wrong. Gating one and not the other also splits
+    the surfaces in half: the ones reading this column would refuse a module
+    question that the ones reading the decision graph answered.
+    """
+    return scope_basis != SCOPE_BASIS_FOOTPRINT
 
 
 def bind_scope_files(

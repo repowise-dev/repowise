@@ -953,6 +953,16 @@ class DecisionRecord(Base):
     identity_quote: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=""
     )
+    #: How ``affected_files_json`` was arrived at, and so whether this record
+    #: may answer "what governs this file". Empty means the files are a claim
+    #: about those files. ``commit_footprint`` means they are the file list of
+    #: the commit the record was mined from, which is true about the commit
+    #: and false about most of the files in it; such a record keeps its list
+    #: for provenance and staleness and is skipped by every per-file surface.
+    #: See :data:`~repowise.core.analysis.decisions.scope.MAX_GOVERNING_FILES`.
+    scope_basis: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="", server_default=""
+    )
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
 
     # Verification (anti-hallucination gate, Phase 1D). Aggregate over the

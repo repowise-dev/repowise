@@ -18,6 +18,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.generation.page_selection import STALE_STATUSES
 from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
@@ -1116,6 +1117,10 @@ async def _resolve_one_target(
         candidates: list[dict[str, Any]] = []
         history: list[dict[str, Any]] = []
         for d in all_decisions:
+            # A record whose files are the footprint of the commit it was
+            # mined from is not a claim about any one of them.
+            if not binds_to_paths(d.scope_basis):
+                continue
             affected_files = json.loads(d.affected_files_json)
             affected_modules = json.loads(d.affected_modules_json)
             if not (

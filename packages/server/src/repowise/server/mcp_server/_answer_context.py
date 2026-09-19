@@ -28,6 +28,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.persistence.crud.authority import decision_currencies
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import DecisionRecord, GitMetadata
@@ -157,6 +158,11 @@ async def fetch_relevant_decisions(
 
     scored: list[tuple[int, float, DecisionRecord]] = []
     for d in all_decisions:
+        # Ranked by how many target paths it overlaps, so a footprint would
+        # outrank a record that names one file exactly -- and the result is
+        # rendered into the prompt as grounded rationale.
+        if not binds_to_paths(d.scope_basis):
+            continue
         try:
             affected = set(json.loads(d.affected_files_json or "[]"))
         except (json.JSONDecodeError, TypeError):

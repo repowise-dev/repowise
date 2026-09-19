@@ -30,6 +30,7 @@ from repowise.core.analysis.decisions.provenance import (
     normalize_text,
     rank_for_source,
 )
+from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED, binds_to_paths
 
 from ..decision_graph import sync_decision_node_links
 from ..models import (
@@ -325,6 +326,10 @@ async def upsert_decision(
         rec.alternatives_json = json.dumps(alternatives or [])
         rec.consequences_json = json.dumps(consequences or [])
         rec.affected_files_json = json.dumps(affected_files or [])
+        # The caller supplied these files, so they are its claim and not the
+        # footprint the row may have carried. Re-stating a record and leaving
+        # a stale basis would store the new scope and ignore it everywhere.
+        rec.scope_basis = SCOPE_BASIS_STATED if affected_files else ""
         rec.affected_modules_json = json.dumps(affected_modules or [])
         rec.tags_json = json.dumps(tags or [])
         rec.evidence_commits_json = json.dumps(evidence_commits or [])
@@ -581,6 +586,12 @@ async def update_decision_metadata(
         rec.affected_modules_json = json.dumps(affected_modules)
     if affected_files is not None:
         rec.affected_files_json = json.dumps(affected_files)
+        # A scope somebody set by hand is stated, whatever the row held
+        # before. Leaving a mined ``commit_footprint`` basis in place here
+        # would accept the new files and then ignore them on every per-file
+        # surface, and leaving it empty would let the backfill re-mark the
+        # row as a footprint on the next index.
+        rec.scope_basis = SCOPE_BASIS_STATED
     rec.updated_at = _now_utc()
     await session.flush()
     return rec
@@ -672,6 +683,10 @@ async def update_decision_by_id(
         "affected_modules": "affected_modules_json",
         "tags": "tags_json",
     }
+    if "affected_files" in fields:
+        # Same rule as every other path that takes a scope from its caller:
+        # the basis has to move with the files it describes.
+        rec.scope_basis = SCOPE_BASIS_STATED if fields["affected_files"] else ""
     _scalar_fields = {
         "title",
         "context",
@@ -1344,6 +1359,10 @@ async def bulk_upsert_decisions(
                 alternatives_json=json.dumps(headline.get("alternatives") or []),
                 consequences_json=json.dumps(headline.get("consequences") or []),
                 affected_files_json=json.dumps(headline_files),
+                # Rides with the file list it describes. A basis that lagged
+                # its own files would let a footprint bind per file, which is
+                # the whole thing it exists to stop.
+                scope_basis=headline.get("scope_basis") or "",
                 affected_modules_json=json.dumps(headline.get("affected_modules") or []),
                 tags_json=json.dumps(headline.get("tags") or []),
                 evidence_commits_json=json.dumps(headline.get("evidence_commits") or []),
@@ -1378,6 +1397,7 @@ async def bulk_upsert_decisions(
             rec.alternatives_json = json.dumps(headline.get("alternatives") or [])
             rec.consequences_json = json.dumps(headline.get("consequences") or [])
             rec.affected_files_json = json.dumps(headline.get("affected_files") or [])
+            rec.scope_basis = headline.get("scope_basis") or ""
             rec.affected_modules_json = json.dumps(headline.get("affected_modules") or [])
             rec.tags_json = json.dumps(headline.get("tags") or [])
             rec.evidence_commits_json = json.dumps(headline.get("evidence_commits") or [])
@@ -1432,12 +1452,19 @@ async def bulk_upsert_decisions(
         # Mirror the JSON file/module arrays into first-class decision→code
         # links so the graph is traversable both directions (Phase 3A). The
         # JSON stays the cheap read cache; these rows are the queryable truth.
+        # A footprint contributes no links at all. The graph is what session
+        # injection and the ``get_risk`` directives ask "which decisions touch
+        # this node", so gating it at this one write path fixes both readers
+        # rather than each of them. Modules go with files: see
+        # :func:`binds_to_paths` for why a commit-wide record's directory list
+        # is no better evidenced than its file list.
+        binds = binds_to_paths(rec.scope_basis)
         await sync_decision_node_links(
             session,
             repository_id,
             rec.id,
-            files=json.loads(rec.affected_files_json or "[]"),
-            modules=json.loads(rec.affected_modules_json or "[]"),
+            files=json.loads(rec.affected_files_json or "[]") if binds else [],
+            modules=json.loads(rec.affected_modules_json or "[]") if binds else [],
         )
 
         # (Re-)embed the record into the shared store so it's matchable by
@@ -1901,6 +1928,11 @@ async def get_decision_health_summary(
         if currency == "uncheckable":
             counts["unscoped"] += 1
             unscoped_decisions.append(d)
+        if not binds_to_paths(d.scope_basis):
+            # ``governed_files`` is the denominator for "ungoverned
+            # hotspots". A footprint would suppress every file its commit
+            # touched from the list of files nothing governs.
+            continue
         for fp in json.loads(d.affected_files_json):
             governed_files.add(fp)
 
