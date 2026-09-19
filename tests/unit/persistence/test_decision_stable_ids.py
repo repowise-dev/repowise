@@ -1,12 +1,17 @@
 """A decision's id derives from its identity, so a rebuild does not move it.
 
-Two contracts. The id of a record is a function of the four columns
-``uq_decision_record`` already declares unique, at every site that mints one;
-and a store whose records predate that keeps working, because the migration
-moves them rather than re-minting them, and leaves an alias behind.
+Identity is the evidence: the files a decision governs, the span it was read
+from, and the quote pinned when it was first captured. Not the title, which
+two extractions of one choice word differently. Three contracts follow. Every
+site that mints an id derives the same one; two records that are the same
+decision worded twice fold into one, and the id of the one that goes away
+keeps resolving; and a record flagged as bundling two decisions is held out of
+that fold.
 """
 
 from __future__ import annotations
+
+import json
 
 import pytest
 from sqlalchemy import func, select
@@ -19,11 +24,13 @@ from repowise.core.persistence.crud.decisions import derive_decision_id
 from repowise.core.persistence.decision_graph import sync_decision_node_links
 from repowise.core.persistence.decision_id_migration import (
     ALIAS_REASON,
+    FOLD_REASON,
     apply_id_migration,
     plan_id_migration,
 )
 from repowise.core.persistence.models import (
     DecisionAlias,
+    DecisionCandidateMeta,
     DecisionEvidence,
     DecisionNodeLink,
     DecisionRecord,
@@ -51,25 +58,98 @@ def _dict(title: str, **overrides) -> dict:
     return base
 
 
+def _derived_for(rec: DecisionRecord) -> str:
+    """The id *rec* would be minted with, read off the row it is stored in."""
+    return derive_decision_id(
+        rec.repository_id,
+        rec.title,
+        source=rec.source,
+        evidence_file=rec.evidence_file,
+        affected_files=json.loads(rec.affected_files_json or "[]"),
+        evidence_line=rec.evidence_line,
+        identity_quote=rec.identity_quote,
+    )
+
+
 # ---------------------------------------------------------------------------
 # The derivation itself
 # ---------------------------------------------------------------------------
 
 
-def test_the_id_is_a_function_of_the_four_columns_the_schema_calls_unique():
-    args = ("repo1", "Prefer the boring option")
-    kwargs = {"source": "session", "evidence_file": "src/app.py"}
-    first = derive_decision_id(*args, **kwargs)
+_KEY = {
+    "source": "session",
+    "evidence_file": "src/app.py",
+    "evidence_line": 12,
+    "affected_files": ["src/app.py", "src/b.py"],
+    "identity_quote": "we chose sqlite because hook writes must not contend",
+}
 
-    assert first == derive_decision_id(*args, **kwargs)
+
+def test_the_id_is_a_function_of_the_evidence():
+    first = derive_decision_id("repo1", "Prefer the boring option", **_KEY)
+
+    assert first == derive_decision_id("repo1", "Prefer the boring option", **_KEY)
     assert len(first) == 32
     assert all(char in "0123456789abcdef" for char in first)
 
-    # Each of the four is load-bearing.
-    assert first != derive_decision_id("repo2", args[1], **kwargs)
-    assert first != derive_decision_id(args[0], "Another title", **kwargs)
-    assert first != derive_decision_id(*args, source="pr", evidence_file="src/app.py")
-    assert first != derive_decision_id(*args, source="session", evidence_file="src/b.py")
+    assert first != derive_decision_id("repo2", "Prefer the boring option", **_KEY)
+    assert first != derive_decision_id(
+        "repo1", "Prefer the boring option", **{**_KEY, "evidence_file": "src/b.py"}
+    )
+    assert first != derive_decision_id(
+        "repo1", "Prefer the boring option", **{**_KEY, "evidence_line": 13}
+    )
+    assert first != derive_decision_id(
+        "repo1", "Prefer the boring option", **{**_KEY, "affected_files": ["src/app.py"]}
+    )
+    assert first != derive_decision_id(
+        "repo1", "Prefer the boring option", **{**_KEY, "identity_quote": "something else"}
+    )
+
+
+def test_the_title_leaves_the_key():
+    """The whole change. Two wordings of one choice are one decision."""
+    assert derive_decision_id("repo1", "Prefer the boring option", **_KEY) == (
+        derive_decision_id("repo1", "Choose the dull option", **_KEY)
+    )
+
+
+def test_the_lane_that_mined_it_leaves_the_key_too():
+    """Two lanes reading the same sentence recorded one decision, not two."""
+    assert derive_decision_id("repo1", "T", **_KEY) == derive_decision_id(
+        "repo1", "T", **{**_KEY, "source": "pr"}
+    )
+
+
+def test_the_scope_is_a_set_rather_than_a_list():
+    """Order and repetition are how a scope was assembled, not what it is."""
+    assert derive_decision_id(
+        "repo1", "T", **{**_KEY, "affected_files": ["src/b.py", "src/app.py"]}
+    ) == derive_decision_id(
+        "repo1", "T", **{**_KEY, "affected_files": ["src/app.py", "src/b.py", "src/app.py"]}
+    )
+
+
+def test_a_reworded_quote_does_not_move_the_id():
+    """Only whitespace and case; the pin is what handles a real rewording."""
+    assert derive_decision_id("repo1", "T", **_KEY) == derive_decision_id(
+        "repo1",
+        "T",
+        **{**_KEY, "identity_quote": "  We Chose SQLite because hook writes" + chr(10) + " must not contend"},
+    )
+
+
+def test_a_bundled_claim_keeps_its_title_in_the_key():
+    """Held out of the fold: it shares evidence with what it bundles."""
+    plain = derive_decision_id("repo1", "Enable WAL; bound the busy timeout", **_KEY)
+    flagged = derive_decision_id(
+        "repo1", "Enable WAL; bound the busy timeout", **_KEY, needs_split=True
+    )
+    assert plain != flagged
+    # And two flagged claims over the same evidence stay apart by title.
+    assert flagged != derive_decision_id(
+        "repo1", "Enable WAL only", **_KEY, needs_split=True
+    )
 
 
 def test_a_null_evidence_file_is_not_an_empty_one():
@@ -90,7 +170,11 @@ async def test_upsert_derives_the_id_it_stores(async_session):
         evidence_file="src/app.py",
     )
     assert rec.id == derive_decision_id(
-        repo.id, "Prefer the boring option", source="cli", evidence_file="src/app.py"
+        repo.id,
+        "Prefer the boring option",
+        source="cli",
+        evidence_file="src/app.py",
+        identity_quote=rec.identity_quote,
     )
 
 
@@ -103,9 +187,7 @@ async def test_bulk_upsert_derives_the_id_it_stores(async_session):
             select(DecisionRecord).where(DecisionRecord.repository_id == repo.id)
         )
     ).scalar_one()
-    assert rec.id == derive_decision_id(
-        repo.id, rec.title, source=rec.source, evidence_file=rec.evidence_file
-    )
+    assert rec.id == _derived_for(rec)
 
 
 @pytest.mark.asyncio
@@ -117,12 +199,21 @@ async def test_a_record_built_anywhere_else_still_derives_its_id(async_session):
         title="Built without an explicit id",
         source="git_archaeology",
         evidence_file=None,
+        decision="keep the loader separate",
+        affected_files_json='["src/app.py"]',
     )
     async_session.add(rec)
     await async_session.flush()
 
+    # The default pins the decision text, the same fallback ``upsert_decision``
+    # uses, so the two paths cannot derive different ids for one record.
     assert rec.id == derive_decision_id(
-        repo.id, "Built without an explicit id", source="git_archaeology", evidence_file=None
+        repo.id,
+        "Built without an explicit id",
+        source="git_archaeology",
+        evidence_file=None,
+        affected_files=["src/app.py"],
+        identity_quote="keep the loader separate",
     )
 
 
@@ -234,7 +325,11 @@ async def test_the_migration_moves_the_record_and_takes_its_dependents_with_it(a
     await async_session.flush()
     old_id = legacy.id
     new_id = derive_decision_id(
-        repo.id, "Legacy one", source="session", evidence_file="src/app.py"
+        repo.id,
+        "Legacy one",
+        source="session",
+        evidence_file="src/app.py",
+        identity_quote="q",
     )
 
     await apply_id_migration(async_session, repo.id)
@@ -309,35 +404,210 @@ async def test_a_second_run_finds_every_id_already_derived(async_session):
 
 
 @pytest.mark.asyncio
-async def test_two_records_that_derive_the_same_id_keep_the_second_one(async_session):
-    """A real collision, and neither record is ours to discard.
+async def test_two_records_with_one_identity_fold_into_one(async_session):
+    """The point of evidence identity: one decision, worded twice.
 
-    ``uq_decision_record`` does not fire when ``evidence_file`` is NULL,
-    because SQL calls two NULLs distinct, so a store can already hold two rows
-    that derive one id. The first moves; the second stays exactly where it is
-    rather than being folded into it.
+    Under title identity these stayed two records forever, because nothing
+    but a person ever noticed they were the same. The later one merges into
+    the earlier and leaves an alias, so an id written down still resolves.
     """
     repo = await insert_repo(async_session)
-    first = await _legacy_record(
-        async_session, repo.id, "Same identity", id="a" * 32, evidence_file=None
-    )
-    second = await _legacy_record(
-        async_session, repo.id, "Same identity", id="b" * 32, evidence_file=None
-    )
-    derived = derive_decision_id(
-        repo.id, "Same identity", source="session", evidence_file=None
-    )
+    first = await _legacy_record(async_session, repo.id, "Cache the parse tree", id="a" * 32)
+    second = await _legacy_record(async_session, repo.id, "Reuse the parsed tree", id="b" * 32)
+    # Same evidence, same scope, same quote: one decision said twice.
+    for rec in (first, second):
+        rec.decision = "cache the parse tree because reparsing dominated the tail"
+        async_session.add(
+            DecisionEvidence(
+                decision_id=rec.id,
+                source="session",
+                evidence_file="src/app.py",
+                source_quote="reparsing dominated the tail",
+            )
+        )
+    await async_session.flush()
 
     plan = await apply_id_migration(async_session, repo.id)
 
-    assert plan.counts() == {"rewrite": 1, "collision": 1}
-    assert (await async_session.get(DecisionRecord, derived)) is not None
-    # The loser kept its row and its id; nothing was merged away.
-    survivor = second.id if first.id == "a" * 32 else first.id
-    assert (await async_session.get(DecisionRecord, survivor)) is not None
-    assert (
-        await async_session.execute(select(func.count(DecisionRecord.id)))
-    ).scalar_one() == 2
+    assert plan.counts() == {"rewrite": 1, "fold": 1}
+    kept = derive_decision_id(
+        repo.id,
+        "Cache the parse tree",
+        source="session",
+        evidence_file="src/app.py",
+        identity_quote="reparsing dominated the tail",
+    )
+    assert plan.rewrites()[0].new_id == kept
+    assert (await async_session.get(DecisionRecord, kept)) is not None
+    assert (await async_session.execute(select(func.count(DecisionRecord.id)))).scalar_one() == 1
+    # The oldest reading is the one the group ends up under.
+    assert (await async_session.get(DecisionRecord, kept)).title == "Cache the parse tree"
+    # The evidence the loser carried came with it.
+    assert set(
+        (await async_session.execute(select(DecisionEvidence.decision_id))).scalars().all()
+    ) == {kept}
+    # And the id that went away still resolves.
+    alias = await async_session.get(DecisionAlias, "b" * 32)
+    assert alias is not None and alias.reason == FOLD_REASON
+    assert await resolve_decision_id(async_session, "b" * 32) == kept
+
+
+@pytest.mark.asyncio
+async def test_a_fold_drops_the_evidence_the_keeper_already_has(async_session):
+    """Two records only fold because they were duplicates.
+
+    That makes them the pair most likely to hold the same evidence row, and
+    ``uq_decision_evidence`` names ``(decision_id, source, evidence_file,
+    evidence_commit)``. Repointing blindly raises out of a migration that runs
+    at the head of every index.
+    """
+    repo = await insert_repo(async_session)
+    first = await _legacy_record(async_session, repo.id, "Cache the parse tree", id="a" * 32)
+    second = await _legacy_record(async_session, repo.id, "Reuse the parsed tree", id="b" * 32)
+    for rec in (first, second):
+        rec.decision = "cache the parse tree because reparsing dominated the tail"
+        async_session.add(
+            DecisionEvidence(
+                decision_id=rec.id,
+                source="session",
+                source_rank=8,
+                evidence_file="src/app.py",
+                evidence_commit="c0ffee",
+                source_quote="reparsing dominated the tail",
+            )
+        )
+        # A second row the keeper has no equivalent of, which must survive.
+        async_session.add(
+            DecisionEvidence(
+                decision_id=rec.id,
+                source="pr",
+                evidence_file=f"src/{rec.id[0]}.py",
+                source_quote="a distinct span",
+            )
+        )
+    await async_session.flush()
+
+    plan = await apply_id_migration(async_session, repo.id)
+
+    assert plan.counts() == {"rewrite": 1, "fold": 1}
+    kept = plan.rewrites()[0].new_id
+    rows = (
+        await async_session.execute(
+            select(DecisionEvidence.source, DecisionEvidence.evidence_file).where(
+                DecisionEvidence.decision_id == kept
+            )
+        )
+    ).all()
+    # The colliding pair collapsed to one; the two distinct rows both survived.
+    assert sorted(rows) == [
+        ("pr", "src/a.py"),
+        ("pr", "src/b.py"),
+        ("session", "src/app.py"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_fold_keeps_the_review_row_of_a_candidate_merged_into_the_loser(async_session):
+    """``merged_into`` is another live candidate's row, not the loser's own.
+
+    Deleting it would take a decision that still exists out of review
+    entirely, and that decision was never part of the fold.
+    """
+    repo = await insert_repo(async_session)
+    first = await _legacy_record(async_session, repo.id, "Cache the parse tree", id="a" * 32)
+    second = await _legacy_record(async_session, repo.id, "Reuse the parsed tree", id="b" * 32)
+    bystander = await _legacy_record(
+        async_session, repo.id, "Something else entirely", id="c" * 32
+    )
+    for rec in (first, second):
+        rec.decision = "cache the parse tree because reparsing dominated the tail"
+    bystander.decision = "an unrelated decision about an unrelated file"
+    async_session.add(
+        DecisionCandidateMeta(
+            decision_id=bystander.id,
+            repository_id=repo.id,
+            review_state="merged",
+            merged_into=second.id,
+        )
+    )
+    await async_session.flush()
+
+    plan = await apply_id_migration(async_session, repo.id)
+    kept = next(r.new_id for r in plan.rewrites() if r.old_id == "a" * 32)
+    moved_bystander = next(r.new_id for r in plan.rewrites() if r.old_id == "c" * 32)
+
+    meta = await async_session.get(DecisionCandidateMeta, moved_bystander)
+    assert meta is not None, "the bystander's review row was deleted with the fold"
+    assert meta.review_state == "merged"
+    # And it now names the record the merge target folded into.
+    assert meta.merged_into == kept
+
+
+@pytest.mark.asyncio
+async def test_a_bundled_claim_is_held_out_of_the_fold(async_session):
+    """A bundle shares its evidence with the decisions it bundles.
+
+    Folding them would file two decisions under a third one's name, so the
+    flagged record keeps its title in the key and stays its own record.
+    """
+    repo = await insert_repo(async_session)
+    first = await _legacy_record(async_session, repo.id, "Enable WAL", id="a" * 32)
+    bundle = await _legacy_record(
+        async_session, repo.id, "Enable WAL; bound the busy timeout", id="b" * 32
+    )
+    for rec in (first, bundle):
+        rec.decision = "enable wal and bound the busy timeout"
+    async_session.add(
+        DecisionCandidateMeta(decision_id=bundle.id, repository_id=repo.id, needs_split=True)
+    )
+    await async_session.flush()
+
+    plan = await apply_id_migration(async_session, repo.id)
+
+    assert plan.counts() == {"rewrite": 2}
+    assert (await async_session.execute(select(func.count(DecisionRecord.id)))).scalar_one() == 2
+
+
+@pytest.mark.asyncio
+async def test_the_quote_is_pinned_rather_than_re_derived(async_session):
+    """A later extraction rewording the same sentence must not move the id."""
+    repo = await insert_repo(async_session)
+    legacy = await _legacy_record(async_session, repo.id, "Legacy one")
+    async_session.add(
+        DecisionEvidence(
+            decision_id=legacy.id,
+            source="session",
+            evidence_file="src/app.py",
+            source_quote="the original wording",
+        )
+    )
+    await async_session.flush()
+
+    await apply_id_migration(async_session, repo.id)
+    moved = (
+        await async_session.execute(
+            select(DecisionRecord).where(DecisionRecord.repository_id == repo.id)
+        )
+    ).scalar_one()
+    pinned_id, pinned_quote = moved.id, moved.identity_quote
+    assert pinned_quote == "the original wording"
+
+    # Re-mine the same decision under a rewritten quote.
+    async_session.add(
+        DecisionEvidence(
+            decision_id=moved.id,
+            source="session",
+            evidence_file="src/app.py",
+            source_quote="a completely different phrasing of the same thing",
+        )
+    )
+    await async_session.flush()
+
+    second = await apply_id_migration(async_session, repo.id)
+
+    assert second.counts() == {"stable": 1}
+    again = await async_session.get(DecisionRecord, pinned_id)
+    assert again is not None and again.identity_quote == pinned_quote
 
 
 @pytest.mark.asyncio
@@ -376,7 +646,11 @@ async def test_the_decision_vectors_move_to_the_new_key(async_session, in_memory
         {"title": "Legacy one", "page_type": "decision_record"},
     )
     new_id = derive_decision_id(
-        repo.id, "Legacy one", source="session", evidence_file="src/app.py"
+        repo.id,
+        "Legacy one",
+        source="session",
+        evidence_file="src/app.py",
+        identity_quote="Legacy one: do the thing",
     )
 
     await apply_id_migration(async_session, repo.id, vector_store=in_memory_vector_store)
@@ -407,6 +681,14 @@ async def test_a_merge_alias_survives_the_move(async_session):
     await async_session.flush()
     folded_id, target_id = folded.id, target.id
 
+    survivor_new = derive_decision_id(
+        repo.id,
+        "The survivor",
+        source="session",
+        evidence_file="src/app.py",
+        identity_quote="The survivor: do the thing",
+    )
+
     await apply_id_migration(async_session, repo.id)
 
     alias = await async_session.get(DecisionAlias, folded_id)
@@ -414,9 +696,7 @@ async def test_a_merge_alias_survives_the_move(async_session):
     # Still points at the survivor, which itself moved, rather than at the
     # candidate that was folded away.
     assert alias.decision_id != folded_id
-    assert alias.decision_id == derive_decision_id(
-        repo.id, "The survivor", source="session", evidence_file="src/app.py"
-    )
+    assert alias.decision_id == survivor_new
     assert target_id != alias.decision_id
 
 

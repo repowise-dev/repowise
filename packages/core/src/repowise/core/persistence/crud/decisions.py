@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
@@ -26,6 +27,7 @@ from repowise.core.analysis.decisions.provenance import (
     SOURCE_RANK,
     completeness,
     compute_confidence,
+    normalize_text,
     rank_for_source,
 )
 
@@ -53,15 +55,21 @@ from .authority import (
 # Namespaced so a decision id can never collide with another kind of derived
 # id, and versioned so a future change of the recipe is a visible new value
 # rather than a silent reshuffle of every id in every store.
-_ID_NAMESPACE = "repowise.decision.id.v1"
+_ID_NAMESPACE = "repowise.decision.id.v2"
 
-# The four identity fields are joined with a separator none of them can
-# contain, so no pair of distinct records can flatten to the same string.
+# The identity fields are joined with a separator none of them can contain,
+# so no pair of distinct records can flatten to the same string.
 _FIELD_SEP = "\x00"
 
 # ``evidence_file`` is nullable and NULL is not the empty string here: the
 # dedupe query treats them as different records, so the derivation must too.
 _NULL_EVIDENCE_FILE = "\x01"
+
+# The pinned quote is truncated before it is hashed. A quote long enough to
+# reach this is a paragraph, and its opening already separates two decisions
+# that share a file set; carrying the rest only widens the surface on which a
+# re-mine can reword the identity out from under a reference somebody wrote.
+_IDENTITY_QUOTE_CHARS = 200
 
 _VALID_DECISION_STATUSES = frozenset(
     {"proposed", "active", "deprecated", "superseded", "dismissed"}
@@ -135,46 +143,90 @@ def _dedup_query(
     return q.where(DecisionRecord.evidence_file.is_(None))
 
 
+def identity_quote_for(text: str | None) -> str:
+    """The pinned form of a decision's quote, for identity only.
+
+    Whitespace-collapsed, lowercased and truncated, so the identity survives a
+    re-mine that reflows or recases the same sentence. The stored column keeps
+    the verbatim text; only this derived form is hashed.
+    """
+    return normalize_text(text)[:_IDENTITY_QUOTE_CHARS]
+
+
 def derive_decision_id(
     repository_id: str,
     title: str,
     *,
     source: str,
     evidence_file: str | None,
+    affected_files: Iterable[str] = (),
+    evidence_line: int | None = None,
+    identity_quote: str = "",
+    needs_split: bool = False,
 ) -> str:
     """The id a decision with this identity has, in every store, on every run.
 
-    Deliberately the same four columns :func:`_dedup_query` matches on, and
-    kept beside it so the id and the dedupe key cannot drift apart. Those
-    columns are what ``uq_decision_record`` names, so this makes the primary
-    key agree with the identity the schema already declares rather than
-    inventing one. A random id, by contrast, is re-minted whenever a store is
-    rebuilt instead of updated, which strands every reference held outside the
-    row: an acceptance, an alias, a vector key, a link somebody wrote down.
+    Keyed on the evidence rather than on the title. A title is the most
+    volatile thing a decision carries: two extractions of the same choice word
+    it differently and produce two records, and rewording one moves its id.
+    Over the dogfood store, title identity collapses **zero** duplicate pairs
+    while the files-plus-evidence-plus-quote key below collapses **120 pairs
+    across 42 classes**, and loses none of what title identity caught.
 
-    That constraint is weaker than it looks, and this is stricter than it:
-    ``evidence_file`` is nullable and SQL calls two NULLs distinct, so the
-    constraint does not fire for the majority of records, while two rows that
-    agree on all four do collapse to one id here. Every write path reaches an
-    insert only after a dedupe that would have found such a row, so the
-    stricter reading is not reachable from them; the migration classifies the
-    pairs a store already holds and leaves them alone.
+    The quote is load-bearing, and is why the file set alone is not the key:
+    two unrelated classes in that store share a file pair and are separated
+    only by what was said. It is also the fragile part, because most records
+    key on mined prose rather than on a committed span, so it is **pinned in
+    the row at first capture and never re-derived**. A later extraction that
+    rewords the same sentence then leaves the id where it is.
 
-    Note the id follows the identity, so editing one of the four moves it. The
-    migration at the head of each run is what settles that.
+    A record with no evidence at all keeps its title, for the same reason the
+    rest of them lose it: identity is the evidence, and a record that has
+    none has no evidence identity to key on. Without this every scopeless,
+    quoteless record in a repository derives one id and the second one to be
+    written collides with the first. Two of the 357 records in the dogfood
+    store are in that state, and the construction paths that supply nothing
+    but a title are all in that state.
 
-    32 lowercase hex, because ``DecisionRecord.id`` is ``String(32)`` and so is
-    every foreign key to it, so a truncated digest fits without a column
-    change. ``evidence_file`` is NULL far more often than not, and NULL is a
-    distinct case in the dedupe query, so it gets a sentinel no path can
-    contain rather than collapsing into the empty string.
+    A record flagged ``needs_split`` keeps its title in the key. A bundled
+    claim shares its files and its evidence with the separate decisions it
+    bundles, so evidence identity would fold all of them together and file two
+    decisions under a third one's name. Holding the flagged record on title
+    identity is what keeps it apart, and it is why the flag has to be set
+    before this key ships. The guard is partial: it reaches the bundles a
+    marker can see and no others, measured at 28 of 357 records held out for
+    20 of 120 merges given up.
+
+    ``source`` is deliberately **not** in the key. Two lanes that mined the
+    same sentence out of the same files recorded one decision, not two, and
+    the quote already separates two that merely share a scope.
+
+    32 lowercase hex, because ``DecisionRecord.id`` is ``String(32)`` and so
+    is every foreign key to it, so a truncated digest fits without a column
+    change. ``evidence_file`` is NULL far more often than not, so it gets a
+    sentinel no path can contain rather than collapsing into the empty string.
+
+    Note the id follows the identity, so editing the scope or the pinned quote
+    moves it. :mod:`decision_id_migration`, which runs at the head of every
+    index, is what settles that, and it leaves an alias behind so an id
+    already written down keeps resolving.
     """
+    files = sorted({str(f) for f in affected_files if f})
+    quote = identity_quote_for(identity_quote)
+    grounded = bool(files) or evidence_file is not None or bool(quote)
     parts = (
         _ID_NAMESPACE,
         repository_id,
-        title,
-        source,
-        _NULL_EVIDENCE_FILE if evidence_file is None else evidence_file,
+        json.dumps(files),
+        json.dumps(
+            [
+                _NULL_EVIDENCE_FILE if evidence_file is None else evidence_file,
+                evidence_line,
+            ]
+        ),
+        quote,
+        title if needs_split or not grounded else "",
+        source if not grounded else "",
     )
     digest = hashlib.sha256(_FIELD_SEP.join(parts).encode("utf-8")).hexdigest()
     return digest[:32]
@@ -256,6 +308,37 @@ async def upsert_decision(
         # path takes no quote. ``verification`` still stores what it was given.
         confidence = compute_confidence(rank_for_source(source), 1, "exact")
 
+    async def _restate(rec: DecisionRecord) -> DecisionRecord:
+        """Write this call's body onto an existing record.
+
+        Shared by the two ways of finding one: the title dedupe query, and
+        the derived id, which catches a second wording of the same decision
+        that the title query cannot see. ``identity_quote`` is not among the
+        fields, because it is pinned at first capture.
+        """
+        rec.status = status
+        if kind is not None:
+            rec.kind = _extraction_kind(kind)
+        rec.context = context
+        rec.decision = decision
+        rec.rationale = rationale
+        rec.alternatives_json = json.dumps(alternatives or [])
+        rec.consequences_json = json.dumps(consequences or [])
+        rec.affected_files_json = json.dumps(affected_files or [])
+        rec.affected_modules_json = json.dumps(affected_modules or [])
+        rec.tags_json = json.dumps(tags or [])
+        rec.evidence_commits_json = json.dumps(evidence_commits or [])
+        rec.evidence_line = evidence_line
+        rec.confidence = confidence
+        rec.verification = verification
+        rec.last_code_change = last_code_change
+        rec.staleness_score = staleness_score
+        rec.superseded_by = superseded_by
+        rec.updated_at = _now_utc()
+        await session.flush()
+        await _write_candidate_meta(session, repository_id, {}, only={rec.id})
+        return rec
+
     q = _dedup_query(
         repository_id, title, source=source, evidence_file=evidence_file
     )
@@ -269,36 +352,33 @@ async def upsert_decision(
     existing = result.scalar_one_or_none()
 
     if existing is not None:
-        existing.status = status
-        if kind is not None:
-            existing.kind = _extraction_kind(kind)
-        existing.context = context
-        existing.decision = decision
-        existing.rationale = rationale
-        existing.alternatives_json = json.dumps(alternatives or [])
-        existing.consequences_json = json.dumps(consequences or [])
-        existing.affected_files_json = json.dumps(affected_files or [])
-        existing.affected_modules_json = json.dumps(affected_modules or [])
-        existing.tags_json = json.dumps(tags or [])
-        existing.evidence_commits_json = json.dumps(evidence_commits or [])
-        existing.evidence_line = evidence_line
-        existing.confidence = confidence
-        existing.verification = verification
-        existing.last_code_change = last_code_change
-        existing.staleness_score = staleness_score
-        existing.superseded_by = superseded_by
-        existing.updated_at = _now_utc()
-        await session.flush()
-        await _write_candidate_meta(session, repository_id, {}, only={existing.id})
-        return existing
+        return await _restate(existing)
+
+    # No quote reaches this path: it is manual entry and the CLI's ``decision
+    # add``, where the decision text is the only verbatim thing the person
+    # wrote. Pinned once, like every other capture path.
+    identity_quote = decision or title
+    # An explicit id still wins: the manifest importer carries ids in from a
+    # tracked file and those are the record's identity, not ours.
+    derived = decision_id or derive_decision_id(
+        repository_id,
+        title,
+        source=source,
+        evidence_file=evidence_file,
+        affected_files=affected_files or [],
+        evidence_line=evidence_line,
+        identity_quote=identity_quote,
+    )
+    # A title the dedupe query did not match can still be the same decision:
+    # identity is the evidence, and two wordings of one choice derive one id.
+    # Inserting over it would collide on the primary key.
+    folded = await session.get(DecisionRecord, derived)
+    if folded is not None and folded.repository_id == repository_id:
+        return await _restate(folded)
 
     rec = DecisionRecord(
-        # An explicit id still wins: the manifest importer carries ids in from
-        # a tracked file and those are the record's identity, not ours.
-        id=decision_id
-        or derive_decision_id(
-            repository_id, title, source=source, evidence_file=evidence_file
-        ),
+        id=derived,
+        identity_quote=identity_quote,
         repository_id=repository_id,
         title=title,
         status=status,
@@ -1222,16 +1302,38 @@ async def bulk_upsert_decisions(
             headline_title = headline.get("title", "")
             headline_source = headline.get("source", "cli")
             headline_evidence_file = headline.get("evidence_file")
+            headline_files = headline.get("affected_files") or []
+            # Pinned now and never revised: the identity is keyed on it, and a
+            # later extraction rewording the same sentence must not move the id.
+            headline_quote = _evidence_quote(headline)
+            derived = derive_decision_id(
+                repository_id,
+                headline_title,
+                source=headline_source,
+                evidence_file=headline_evidence_file,
+                affected_files=headline_files,
+                evidence_line=headline.get("evidence_line"),
+                identity_quote=headline_quote,
+                needs_split=any(bool(d.get("needs_split")) for d in members),
+            )
+            # Identity is evidence, so two titles for one decision derive one
+            # id. Folding into the record that id already names is the point of
+            # the key: inserting instead would collide on the primary key, and
+            # skipping would leave the duplicate this is meant to collapse.
+            folded = id_to_rec.get(derived) or await session.get(DecisionRecord, derived)
+            if folded is not None and folded.repository_id == repository_id:
+                if folded.status == "dismissed":
+                    continue
+                rec = folded
+                existing_by_norm[norm] = rec
+                id_to_rec[rec.id] = rec
+        if rec is None:
             # A source that measures its own conformance supplies the score;
             # otherwise the git-diff recompute fills it in later.
             headline_staleness = headline.get("staleness_score")
             rec = DecisionRecord(
-                id=derive_decision_id(
-                    repository_id,
-                    headline_title,
-                    source=headline_source,
-                    evidence_file=headline_evidence_file,
-                ),
+                id=derived,
+                identity_quote=headline_quote,
                 repository_id=repository_id,
                 title=headline_title,
                 status=_extraction_status(headline.get("status", "proposed")),
@@ -1241,7 +1343,7 @@ async def bulk_upsert_decisions(
                 rationale=headline.get("rationale") or "",
                 alternatives_json=json.dumps(headline.get("alternatives") or []),
                 consequences_json=json.dumps(headline.get("consequences") or []),
-                affected_files_json=json.dumps(headline.get("affected_files") or []),
+                affected_files_json=json.dumps(headline_files),
                 affected_modules_json=json.dumps(headline.get("affected_modules") or []),
                 tags_json=json.dumps(headline.get("tags") or []),
                 evidence_commits_json=json.dumps(headline.get("evidence_commits") or []),

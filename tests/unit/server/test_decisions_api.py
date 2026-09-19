@@ -39,7 +39,9 @@ async def _seed_decision(
             title=title,
             status=status,
             context="Need zero-config storage for CI.",
-            decision="Use aiosqlite in-memory DBs.",
+            # Varies with the title: identity is the evidence, so two
+            # titles over one body and one file are one decision.
+            decision=f"Use aiosqlite in-memory DBs, for {title}.",
             rationale="Fast, no external deps.",
             affected_modules=["packages/core"],
             affected_files=["packages/core/src/repowise/core/persistence/database.py"],

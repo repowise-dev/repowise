@@ -26,7 +26,9 @@ async def _record(session_factory, repo_id: str, title: str) -> str:
             title=title,
             status="proposed",
             context="ctx",
-            decision="dec",
+            # Distinct per seed: identity is the evidence, so ten records
+            # sharing one body over one file are one decision, not ten.
+            decision=f"dec for {title}",
             rationale="why",
             source="inline_marker",
             affected_files=["src/app.py"],

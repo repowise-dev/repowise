@@ -11,6 +11,7 @@ repowise.core.ingestion.models.Symbol in files that import from both modules.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -66,6 +67,16 @@ def _derive_decision_id_default(context: Any) -> str:
         params.get("title") or "",
         source=params.get("source") or DEFAULT_DECISION_SOURCE,
         evidence_file=params.get("evidence_file"),
+        affected_files=json.loads(params.get("affected_files_json") or "[]"),
+        evidence_line=params.get("evidence_line"),
+        # The same fallback ``upsert_decision`` uses: a path that supplies no
+        # quote still pins something, and the two agree on what.
+        identity_quote=(
+            params.get("identity_quote")
+            or params.get("decision")
+            or params.get("title")
+            or ""
+        ),
     )
 
 
@@ -933,6 +944,15 @@ class DecisionRecord(Base):
     )  # git_archaeology | inline_marker | adr | pr | comment | session | cli
     evidence_file: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: The verbatim span this record's identity is keyed on, written once
+    #: at first capture and never revised. Re-extraction rewords a quote
+    #: freely, and the id follows the identity, so re-deriving this would
+    #: move the id of an unchanged decision every time a model phrased it
+    #: differently. Empty on a record captured before the column existed;
+    #: the id migration fills it from the strongest evidence row it holds.
+    identity_quote: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
 
     # Verification (anti-hallucination gate, Phase 1D). Aggregate over the

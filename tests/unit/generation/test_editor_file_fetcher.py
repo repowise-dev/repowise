@@ -149,7 +149,9 @@ async def _add_decision(session, repo_id, title, status="active", rationale="Som
         title=title,
         status=status,
         rationale=rationale,
-        decision="Decided to use X",
+        # Varies with the title: identity is the evidence, so two titles
+        # over one body and one file are one decision.
+        decision=f"Decided to use X, for {title}",
         context="Context here",
         source="inline_marker",
         affected_files_json='["src/app.py"]',

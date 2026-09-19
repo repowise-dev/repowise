@@ -515,7 +515,9 @@ async def test_get_context_decision_titles_capped_at_three(setup_mcp_decisions, 
             title=f"Extra decision {i}",
             status="active",
             context="extra",
-            decision="extra",
+            # Its own body: identity is the evidence, so four records sharing
+            # one body over one file would be one decision.
+            decision=f"extra {i}",
             rationale="extra",
             alternatives_json="[]",
             consequences_json="[]",
