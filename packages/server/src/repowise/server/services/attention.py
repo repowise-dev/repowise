@@ -34,6 +34,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.grading import HealthBand, band_for
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DocDriftFinding,
@@ -106,8 +107,17 @@ def _test_paths(repo_id: str):
     )
 
 
-#: Band edges from `core.analysis.health.grading`, mapped onto this list's
-#: severity vocabulary. A file scores ``10 - sum(impact)``.
+#: The five health bands against this list's four severities. `excellent` and
+#: `good` both mean "not a problem" here; the list has no band above `low`.
+_SEVERITY_OF_BAND: dict[HealthBand, str] = {
+    "at_risk": "critical",
+    "needs_work": "high",
+    "fair": "medium",
+    "good": "low",
+    "excellent": "low",
+}
+
+
 def _severity_of_file_score(score: float) -> str:
     """A file's own band, expressed as a severity.
 
@@ -116,14 +126,12 @@ def _severity_of_file_score(score: float) -> str:
     finding on the per-finding cap (score 7.5, comfortably fair) called itself
     critical and outranked a file carrying thirty-eight findings and twelve
     points of deduction (score 1.0, genuinely at risk).
+
+    `band_for` is the single source of truth for the cutoffs and is called, not
+    reimplemented. A recalibration there has to reach this list, or the same
+    file is `at risk` on the health pages and `medium` here.
     """
-    if score < 4.0:
-        return "critical"
-    if score < 5.5:
-        return "high"
-    if score < 7.0:
-        return "medium"
-    return "low"
+    return _SEVERITY_OF_BAND[band_for(score)]
 
 
 def _severity_of_drift(confidence: float | None) -> str:
