@@ -86,7 +86,17 @@ SCOPE_BASIS_STATED = "stated"
 #: does not work. Overlap between a decision's text and a file's own diff hunk
 #: scores the worst answers highest, since lexical similarity tracks the
 #: subsystem a file sits in and not whether the decision governs it.
-MAX_GOVERNING_FILES = 10
+#:
+#: Five, not ten. Ten was set from a sample the rule was then scored on; the
+#: first out-of-sample measurement put it at 49% on topic with 26% outright
+#: noise. Measured over 61 fresh pairs drawn from files and records that
+#: chose no rule, the drop is sharp and sits well below ten:
+#:
+#:     <=2 files   100% on topic,  0% noise
+#:     <=5 files    94% on topic,  0% noise
+#:     <=8 files    68% on topic, 23% noise
+#:     <=10 files   49% on topic, 26% noise
+MAX_GOVERNING_FILES = 5
 
 
 #: Which population a scope entry is ranked under, narrowest claim first. A
