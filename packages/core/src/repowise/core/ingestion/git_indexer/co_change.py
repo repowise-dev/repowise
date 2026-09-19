@@ -25,6 +25,7 @@ from typing import Any
 
 import structlog
 
+from ...co_change import canonical_pair
 from ._constants import (
     _CO_CHANGE_COMMIT_DECAY_TAU,
     _CO_CHANGE_DECAY_TAU,
@@ -58,6 +59,43 @@ class CoChangeWalk:
     entropy: dict[str, float] = field(default_factory=dict)
     partner_count: dict[str, int] = field(default_factory=dict)
     partner_mass: dict[str, float] = field(default_factory=dict)
+
+
+def _partner_records(
+    kept: dict[str, list[tuple[float, str]]],
+    pair_support: dict[tuple[str, str], int],
+    pair_last_date: dict[tuple[str, str], int],
+    file_commits: dict[str, int],
+) -> dict[str, list[dict]]:
+    """The persisted partner list per file, strongest first.
+
+    ``self_commits`` / ``partner_commits`` are each file's commit total over
+    this same walk, so a reader can state a directional confidence without
+    borrowing a denominator computed over a different window.
+    """
+    out: dict[str, list[dict]] = {}
+    for owner, heap in kept.items():
+        records = []
+        for score, other in heap:
+            pair = canonical_pair(owner, other)
+            last_ts = pair_last_date.get(pair, 0)
+            records.append(
+                {
+                    "file_path": other,
+                    "co_change_count": round(score, 4),
+                    "frequency": pair_support[pair],
+                    "self_commits": file_commits[owner],
+                    "partner_commits": file_commits[other],
+                    "last_co_change": (
+                        datetime.fromtimestamp(last_ts, tz=UTC).strftime("%Y-%m-%d")
+                        if last_ts > 0
+                        else None
+                    ),
+                }
+            )
+        records.sort(key=lambda x: x["co_change_count"], reverse=True)
+        out[owner] = records
+    return out
 
 
 def compute_co_changes_and_entropy(
@@ -233,28 +271,7 @@ def compute_co_changes_and_entropy(
         _offer(a, b, score)
         _offer(b, a, score)
 
-    result: dict[str, list[dict]] = {}
-    for owner, heap in kept.items():
-        records = []
-        for score, other in heap:
-            pair = (owner, other) if owner < other else (other, owner)
-            last_ts = pair_last_date.get(pair, 0)
-            records.append(
-                {
-                    "file_path": other,
-                    "co_change_count": round(score, 4),
-                    "frequency": pair_support[pair],
-                    "self_commits": file_commits[owner],
-                    "partner_commits": file_commits[other],
-                    "last_co_change": (
-                        datetime.fromtimestamp(last_ts, tz=UTC).strftime("%Y-%m-%d")
-                        if last_ts > 0
-                        else None
-                    ),
-                }
-            )
-        records.sort(key=lambda x: x["co_change_count"], reverse=True)
-        result[owner] = records
+    result = _partner_records(kept, pair_support, pair_last_date, file_commits)
 
     entropy = {fp: round(score, 6) for fp, score in entropy_scores.items() if score > 0.0}
 
