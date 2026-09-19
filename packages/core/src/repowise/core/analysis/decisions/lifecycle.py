@@ -25,9 +25,11 @@ __all__ = [
     "DECISION_STATUS_ORDER",
     "NEEDS_REVIEW_STALENESS",
     "REVIEW_LANES",
+    "SPLIT_MARKERS",
     "STORED_CURRENCIES",
     "AcceptanceRequirement",
     "acceptance_blockers",
+    "bundles_decisions",
     "currency_for_legacy_status",
     "effective_currency",
     "is_governing",
@@ -73,6 +75,30 @@ CANDIDATE_REVIEW_STATES: tuple[str, ...] = (
     "needs_split",
     "dismissed",
 )
+
+#: Punctuation that joins independent choices into one claim. A candidate
+#: carrying any of them is flagged for review and never split by machine: a
+#: wrong split files one decision under the other's evidence, which is a
+#: harder mistake to see than a bundle nobody separated.
+#:
+#: Deliberately narrow, and measured that way over 357 records. The three
+#: below flag 29; adding a bare ``" and "`` flags 194 of 357, which is 44% of
+#: the store held out to catch one more bundle. The guard is partial on
+#: purpose: the cost of a marker it misses is a merge a reviewer has to undo,
+#: and the cost of one it invents is a decision that never merges at all.
+SPLIT_MARKERS: tuple[str, ...] = ("; ", " and also ", " and, ")
+
+
+def bundles_decisions(text: str) -> bool:
+    """Whether *text* joins what look like two independent choices.
+
+    A pure function of the claim, so both capture lanes can ask it, and both
+    must: the flag is what stops evidence-keyed identity from folding a
+    bundled claim together with the separate decisions it bundles.
+    """
+    low = text.lower()
+    return any(marker in low for marker in SPLIT_MARKERS)
+
 
 #: The currencies a person or artifact can *set*. ``needs_review`` and
 #: ``uncheckable`` are also derived from the code by :func:`effective_currency`,

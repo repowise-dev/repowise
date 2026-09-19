@@ -59,6 +59,7 @@ import structlog
 from repowise.core.analysis.decisions.discovery.spans import SpanCollector
 from repowise.core.analysis.decisions.extractor import ExtractedDecision
 from repowise.core.analysis.decisions.kinds import classify_kind
+from repowise.core.analysis.decisions.lifecycle import bundles_decisions
 from repowise.core.analysis.decisions.policy import DEFAULT_HARNESSES, resolve_policy
 from repowise.core.analysis.decisions.provenance import (
     completeness,
@@ -820,6 +821,15 @@ def promotion_decisions(
         ),
     )
     sessions = row["sessions"][-_MAX_EVIDENCE_SESSIONS:] or [None]
+    # Flagged here rather than at staging, for the same reason binding and
+    # classification are: a row staged before the flag existed is judged on
+    # its way out instead of staying unflagged forever, which is the whole
+    # backlog. The discovery lane already decides this at grounding time, so
+    # its answer is kept and only ever raised -- the two lanes ask the same
+    # question of the same text and must not disagree by which ran first.
+    needs_split = bool(structured.get("needs_split")) or bundles_decisions(
+        structured.get("decision", "") or ""
+    )
     # Classified here rather than at staging, for the same reason binding is:
     # a candidate staged before the split existed is classified on its way out
     # instead of staying one noun forever.
@@ -844,7 +854,7 @@ def promotion_decisions(
             source_quote=structured.get("source_quote", ""),
             verification=structured.get("verification", "unverified"),
             lane=lane,
-            needs_split=bool(structured.get("needs_split")),
+            needs_split=needs_split,
         )
         for sid in sessions
     ]

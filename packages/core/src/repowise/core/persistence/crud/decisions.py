@@ -1314,10 +1314,17 @@ async def bulk_upsert_decisions(
         touched_ids.append(rec.id)
         # Two title groups can fold onto one record, so this accumulates:
         # the later group must not drop what the earlier one raised.
+        #
+        # The split flag is read from every member, not from the headline
+        # alone. The headline is the highest-ranked source in the group, and
+        # the lane that notices a claim bundles two decisions is usually not
+        # the highest-ranked one: a session-mined candidate that flags itself
+        # loses its flag the moment a CLI-authored record shares its title.
+        # A flag raised by any contributor is a flag on the record.
         prior_lane, prior_split = captured.get(rec.id, ("", False))
         captured[rec.id] = (
             prior_lane or headline.get("lane") or "",
-            prior_split or bool(headline.get("needs_split")),
+            prior_split or any(bool(d.get("needs_split")) for d in members),
         )
 
         # Mirror the JSON file/module arrays into first-class decision→code
