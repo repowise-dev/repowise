@@ -52,36 +52,22 @@ _MAX_FILES = 20
 SCOPE_BASIS_FOOTPRINT = "commit_footprint"
 
 #: The basis value marking a scope a person stated: typed at the CLI, written
-#: into the decisions manifest, or confirmed on review. It binds, like the
-#: empty default does, and the difference between the two is that the backfill
-#: repairs an empty basis and never touches this one. Without it, a person who
-#: narrows a mined record's scope by hand has that scope re-marked as a
-#: footprint on the next index, because the row still reads as a wide ``pr``
-#: record the repair has not seen yet.
+#: into the manifest, or confirmed on review. It binds, like the empty default
+#: does; the difference is that the backfill repairs an empty basis and never
+#: touches this one, so a hand-narrowed scope is not re-marked as a footprint
+#: on the next index.
 SCOPE_BASIS_STATED = "stated"
 
-#: Above this many files, a commit-derived list stops being a claim about files
-#: and becomes the footprint of the change it was mined from.
+#: Above this many files, a commit-derived list stops being a claim about
+#: files and becomes the footprint of the change it was mined from. The miner
+#: reads one decision out of one commit body and has no per-file evidence, so
+#: it takes the commit's whole list: true about the commit, false about most
+#: of the files in it.
 #:
-#: The miner reads one decision out of one commit body and has no per-file
-#: evidence at all, so it takes the commit's whole file list. That is a true
-#: statement about the commit and a false one about most of those files.
-#: Measured over 41 labelled file/decision pairs from 10 real source files
-#: (``local-stash/decision-layer-research/phase45-scope-2026-09-19``), the
-#: share that actually governs the file tracks breadth and nothing else:
-#:
-#:     1-10 files   100% on topic (n=7)
-#:     11-31 files   43% (n=7)
-#:     32+ files     44% (n=27)
-#:
-#: Two content signals were measured against the same labels and both failed,
-#: so this is a breadth rule rather than a relevance one. Overlap between the
-#: decision's text and the file's own diff hunk ranks the canonical *wrong*
-#: answer highest of all, because lexical similarity tracks the subsystem a
-#: file sits in and not whether the decision governs it; a file's share of the
-#: commit's diff does not separate either. What breadth costs is recall: 80%
-#: of the 3,048 file/decision bindings in the dev store are footprints, and
-#: they stop answering per-file questions here.
+#: A breadth rule rather than a relevance one because relevance was tried and
+#: does not work. Overlap between a decision's text and a file's own diff hunk
+#: scores the worst answers highest, since lexical similarity tracks the
+#: subsystem a file sits in and not whether the decision governs it.
 MAX_GOVERNING_FILES = 10
 
 
@@ -113,9 +99,8 @@ def commit_scope_files(files: Sequence[str] | None) -> list[str]:
 def commit_scope_basis(files: Sequence[str] | None) -> str:
     """The scope basis for a record mined from one commit's file list.
 
-    Takes the commit's *whole* list, before :func:`commit_scope_files` caps it:
-    a 42-file commit stored as 20 files is still a 42-file footprint, and
-    judging the stored list would call it a claim.
+    Takes the commit's *whole* list, before :func:`commit_scope_files` caps
+    it, so that a large commit stored as a capped list is still a footprint.
     """
     return SCOPE_BASIS_FOOTPRINT if len(_normalized(files)) > MAX_GOVERNING_FILES else ""
 
@@ -123,20 +108,16 @@ def commit_scope_basis(files: Sequence[str] | None) -> str:
 def binds_to_paths(scope_basis: str | None) -> bool:
     """Whether a record with this basis may answer "what governs this path".
 
-    The one predicate every path-scoped surface asks, so that the wiki page,
-    the ``get_why`` lanes, ``get_context``, the decision graph and the health
+    The one predicate every path-scoped surface asks, so the wiki pages, the
+    ``get_why`` lanes, ``get_context``, the decision graph and the health
     findings agree on which records are specific enough to name a path. A
     record that fails it keeps its files and its place in repository-wide
-    answers -- search, the overview, a lookup by id -- and stops claiming to
-    be about each path in them.
+    answers -- search, the overview, a lookup by id.
 
-    Modules are gated with files rather than kept, although a commit-wide
-    record does sound like a claim about the areas it touched. Its module list
-    is ``resolve_module_nodes`` over the same unjustified file list, so a
-    42-file commit yields up to twelve directories on exactly the evidence
-    that made the file list wrong. Gating one and not the other also splits
-    the surfaces in half: the ones reading this column would refuse a module
-    question that the ones reading the decision graph answered.
+    Modules are gated with files. A record's module list is
+    :func:`resolve_module_nodes` over the same file list, so it is no better
+    evidenced, and gating one without the other would leave the surfaces
+    reading this column disagreeing with the ones reading the graph.
     """
     return scope_basis != SCOPE_BASIS_FOOTPRINT
 

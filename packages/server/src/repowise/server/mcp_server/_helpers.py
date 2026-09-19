@@ -523,8 +523,8 @@ def _sibling_coverage(
     for d in all_decisions:
         if getattr(d, "id", None) not in accepted_ids:
             continue
-        # A per-file computation over a repo-wide list: an accepted footprint
-        # would count as a covered sibling in every directory it touched.
+        # An accepted footprint would count as a covered sibling in every
+        # directory it touched.
         if not binds_to_paths(getattr(d, "scope_basis", "")):
             continue
         affected = json.loads(d.affected_files_json)

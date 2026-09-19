@@ -1023,12 +1023,9 @@ async def _why_path(query: str, repo: str | None) -> dict:
         )
         all_git_meta = all_git_res.scalars().all()
 
-        # ``binds_to_paths`` is the gate: a record whose file list is the
-        # footprint of the commit it was mined from is true about that commit
-        # and false about most of the files in it, so it does not answer
-        # "what governs this file". It keeps its files, its place in search
-        # and its origin-story links; it just stops being specific it is not.
-        # Module membership is gated the same way and for the same reason.
+        # A record whose file list is the footprint of the commit it was
+        # mined from does not answer "what governs this file". It keeps its
+        # files and its place in search; it stops claiming to be specific.
         matched = [
             d
             for d in all_decisions
@@ -1614,8 +1611,7 @@ async def _build_target_context(
         for t in targets:
             governing_records = []
             for d in all_decisions:
-                # Same gate as ``_why_path``: one target is routed there, so
-                # two targets must not answer what one would refuse.
+                # Same gate as ``_why_path``, which one target routes to.
                 if not binds_to_paths(d.scope_basis):
                     continue
                 affected = json.loads(d.affected_files_json)

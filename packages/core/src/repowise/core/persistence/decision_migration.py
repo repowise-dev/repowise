@@ -410,10 +410,9 @@ async def apply_migration(
     return plan
 
 
-#: Sources whose file list was only ever a commit's whole file list. Both
-#: miners read one decision out of one commit body and then take everything
-#: that commit touched; neither ever chose a file. Every other source names
-#: files it saw, so none of them is repaired here.
+#: Sources whose file list was only ever a commit's whole file list. Neither
+#: miner ever chose a file. Every other source names files it saw, so none of
+#: them is repaired here.
 _COMMIT_FOOTPRINT_SOURCES: frozenset[str] = frozenset({"pr", "git_archaeology"})
 
 
@@ -421,21 +420,16 @@ async def backfill_scope_basis(session: AsyncSession, repository_id: str) -> int
     """Mark legacy commit-derived records whose files are a footprint.
 
     Returns the number of records changed. A runtime repair for the same
-    reason as the rest of this module: the rows were written before the basis
-    existed, and only the code that runs on an existing store can fix them.
+    reason as the rest of this module: the rows predate the column, and only
+    code that runs on an existing store can fix them.
 
-    Only rows with an **empty** basis are touched, which is what makes this
-    both idempotent and safe. An empty basis on a ``pr`` row claiming more
-    than :data:`MAX_GOVERNING_FILES` files can only have been written by the
-    code that predates the column, because capture now always sets one; and
-    leaving non-empty rows alone is what stops it overwriting a scope a person
-    confirmed by hand.
+    Only rows with an **empty** basis are touched, which makes this idempotent
+    and leaves a scope somebody set by hand alone.
 
-    The record keeps its files. What it loses is its links in the decision
-    graph, which is what session injection and the ``get_risk`` directives
-    read. They are dropped here rather than left to the next
-    ``bulk_upsert_decisions``, because a record nothing re-extracts is never
-    rewritten and would keep answering path questions from the graph forever.
+    The record keeps its files and loses its decision-graph links. Those are
+    dropped here rather than left to the next ``bulk_upsert_decisions``: a
+    record nothing re-extracts is never rewritten, and would keep answering
+    path questions from the graph forever.
     """
     rows = (
         (

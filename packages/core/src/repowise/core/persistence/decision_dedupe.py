@@ -353,13 +353,10 @@ async def apply_dedupe(
 
         for column, name in _UNION_FIELDS:
             setattr(canonical, column, json.dumps(sorted(union[name])))
-        # The union widens the file list, so the basis has to be recomputed
-        # from it rather than inherited. Two things go wrong otherwise, and
-        # both silently undo ``backfill_scope_basis``: a footprint folding
-        # into a narrow canonical hands it 40 files under the canonical's
-        # empty basis -- and the canonical's ``source`` is usually not one the
-        # backfill repairs, so nothing ever catches it again -- while anything
-        # folding into a footprint leaves the basis set and the links written.
+        # The union widens the file list, so the basis is recomputed from
+        # it rather than inherited: a footprint folding into a narrow
+        # canonical would otherwise hand it the wide list under a binding
+        # basis, on a record whose source the backfill does not repair.
         canonical.scope_basis = (
             SCOPE_BASIS_STATED
             if canonical.scope_basis == SCOPE_BASIS_STATED

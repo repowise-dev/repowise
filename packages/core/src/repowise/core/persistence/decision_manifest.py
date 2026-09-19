@@ -230,8 +230,7 @@ async def _apply_entry(
     record.kind = entry.kind or ARCHITECTURAL_KIND
     record.affected_files_json = json.dumps(sorted(_scope_files(entry.scope)))
     # The file is hand-authored and version controlled, so its scope is
-    # stated. A record mined from a wide commit and then narrowed in the file
-    # must bind to what the file says, not stay a footprint.
+    # stated: a record narrowed here binds to what the file says.
     record.scope_basis = SCOPE_BASIS_STATED
     # The successor is an id the file wrote down, and the file can be older
     # than the store it is being read into. Storing it unresolved would put a

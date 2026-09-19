@@ -143,8 +143,8 @@ def _stale_governance_findings(health_summary: dict[str, Any]) -> list[HealthFin
     best: dict[str, tuple[float, Any]] = {}
 
     for decision in health_summary.get("stale_decisions", []):
-        # One HIGH finding is emitted per file below, so a stale footprint
-        # would flag every file its commit touched.
+        # One HIGH finding per file below, so a stale footprint would flag
+        # every file its commit touched.
         if not binds_to_paths(getattr(decision, "scope_basis", "")):
             continue
         try:

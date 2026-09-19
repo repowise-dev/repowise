@@ -1117,8 +1117,8 @@ async def _resolve_one_target(
         candidates: list[dict[str, Any]] = []
         history: list[dict[str, Any]] = []
         for d in all_decisions:
-            # A record whose files are the footprint of the commit it was
-            # mined from is not a claim about any one of them.
+            # A commit footprint is not a claim about any one of its
+            # files.
             if not binds_to_paths(d.scope_basis):
                 continue
             affected_files = json.loads(d.affected_files_json)

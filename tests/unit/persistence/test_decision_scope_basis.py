@@ -1,15 +1,13 @@
 """A commit footprint keeps its files and stops answering per-file questions.
 
-The defect these pin, measured 2026-09-19 over 41 labelled file/decision pairs:
-``get_why`` on a file answered with decisions about something else 22% of the
-time, and it tracked scope breadth and nothing else. The cause is that the
-``pr`` and ``git_archaeology`` miners read one decision out of one commit body
-and then take that commit's whole file list, so a decision mined from a
-42-file refactor claims every file the refactor touched.
+The defect these pin: the ``pr`` and ``git_archaeology`` miners read one
+decision out of one commit body and then take that commit's whole file list,
+so a decision mined from a large refactor claims every file it touched, and
+``get_why`` on a file answers with decisions about something else.
 
-The canonical case, from the dev store: ``search_digest.py``, whose whole job
-is compacting Grep output, carried five decisions about *collapsing repeated
-file reads* -- a mechanism in a sibling module -- because all five were mined
+The case the fixtures are modelled on: ``search_digest.py``, whose whole job
+is compacting Grep output, carried five decisions about collapsing repeated
+file reads -- a mechanism in a sibling module -- because all five were mined
 from one 38-file commit that happened to touch it.
 """
 
@@ -106,12 +104,8 @@ async def test_a_narrow_record_still_binds(async_session):
 
 
 async def test_a_footprint_links_no_modules_either(async_session):
-    """Its module list is the directories of the same unjustified file list.
-
-    A commit-wide record does sound like a claim about the areas it touched,
-    but a 42-file commit yields a dozen directories on exactly the evidence
-    that made the file list wrong.
-    """
+    """Its module list is the directories of the same file list, so no better
+    evidenced."""
     repo = await insert_repo(async_session)
     payload = _decision(
         "Wide rule", files=_COMMIT_FILES, scope_basis=SCOPE_BASIS_FOOTPRINT
@@ -221,11 +215,8 @@ async def test_backfill_drops_every_link_the_record_had(async_session):
 
 
 async def test_stating_a_scope_by_hand_makes_a_footprint_bind_again(async_session):
-    """``decision confirm --scope`` is how a wide record gets a real scope.
-
-    Accepting the new files and then ignoring them on every per-file surface
-    would be the worst of both.
-    """
+    """Storing the new files and then ignoring them would be the worst of
+    both."""
     repo = await insert_repo(async_session)
     ids = await bulk_upsert_decisions(
         async_session,
@@ -248,11 +239,8 @@ async def test_stating_a_scope_by_hand_makes_a_footprint_bind_again(async_sessio
 
 
 async def test_the_backfill_never_re_marks_a_stated_scope(async_session):
-    """The row still reads as a wide ``pr`` record, and must be left alone.
-
-    Without this the next index walks a hand-narrowed scope back to a
-    footprint, because the repair only looks at source and file count.
-    """
+    """The row still reads as a wide ``pr`` record to the repair, which looks
+    only at source and file count, so the next index would walk it back."""
     repo = await insert_repo(async_session)
     ids = await bulk_upsert_decisions(
         async_session, repo.id, [_decision("Legacy wide", files=_COMMIT_FILES)]
@@ -279,12 +267,8 @@ async def test_patching_only_modules_leaves_the_basis_alone(async_session):
 
 
 async def test_accepting_with_a_corrected_scope_makes_the_record_bind(async_session):
-    """``decision confirm --scope`` runs through ``accept_decision``.
-
-    This is the path a person actually uses to give a wide mined record a real
-    scope, and the one where storing the corrected files and then ignoring
-    them would be least visible.
-    """
+    """``decision confirm --scope`` runs through ``accept_decision``, not
+    through ``update_decision_metadata``."""
     from repowise.core.persistence.crud.authority import accept_decision
 
     repo = await insert_repo(async_session)

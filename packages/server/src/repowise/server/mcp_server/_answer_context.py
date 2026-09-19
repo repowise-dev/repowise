@@ -158,9 +158,8 @@ async def fetch_relevant_decisions(
 
     scored: list[tuple[int, float, DecisionRecord]] = []
     for d in all_decisions:
-        # Ranked by how many target paths it overlaps, so a footprint would
-        # outrank a record that names one file exactly -- and the result is
-        # rendered into the prompt as grounded rationale.
+        # Ranked by overlap count, so a footprint would outrank a record
+        # naming one file exactly, and this renders into the prompt.
         if not binds_to_paths(d.scope_basis):
             continue
         try:

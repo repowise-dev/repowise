@@ -188,11 +188,8 @@ def test_a_record_that_carries_no_status_reads_as_a_proposal():
 
 
 def test_a_footprint_is_kept_out_of_the_per_file_index():
-    """One 38-file record headed five unrelated file pages before this.
-
-    Its files are the footprint of the commit it was mined from, so it is a
-    true statement about the change and a false one about most of the files.
-    """
+    """Its files are the footprint of the commit it was mined from: a true
+    statement about the change, a false one about most of the files."""
     report = SimpleNamespace(
         decisions=[
             _record("Narrow rule"),
@@ -222,11 +219,8 @@ def test_a_footprint_still_reaches_the_repository_overview():
 
 
 def test_a_record_with_no_basis_attribute_still_binds():
-    """Resume rehydrates records as plain namespaces.
-
-    That path now carries the basis, but a namespace built somewhere else
-    must not silently lose its file pages.
-    """
+    """Resume rehydrates records as plain namespaces. That path carries the
+    basis, but one built elsewhere must not silently lose its file pages."""
     record = _record("Legacy shape")
     del record.scope_basis
     report = SimpleNamespace(decisions=[record])

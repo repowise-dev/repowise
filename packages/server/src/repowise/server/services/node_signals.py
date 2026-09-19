@@ -100,8 +100,8 @@ async def collect_node_signals(
     dec_q = select(DecisionRecord.affected_files_json).where(
         DecisionRecord.repository_id == repo_id,
         DecisionRecord.status.in_(("active", "proposed")),
-        # Same claim as everywhere else, one badge wide: a commit footprint
-        # does not make each file it touched a file with a decision.
+        # A commit footprint does not make each file it touched a file
+        # with a decision.
         DecisionRecord.scope_basis != SCOPE_BASIS_FOOTPRINT,
     )
     decision_paths: set[str] = set()

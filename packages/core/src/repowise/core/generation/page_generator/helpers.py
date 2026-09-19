@@ -332,12 +332,10 @@ def build_decision_maps(
                 "status": status,
             }
             decisions_all.append(payload)
-            # Repo-wide lists keep every record; the per-file index does not.
-            # A record whose files are the footprint of the commit it was
-            # mined from would otherwise print on every file that commit
-            # touched, which is how one 38-file record came to head five
-            # unrelated file pages. It still reaches the overview, where a
-            # claim about a whole change belongs.
+            # Repo-wide lists keep every record; the per-file index does
+            # not. A footprint would otherwise print on every file its commit
+            # touched. It still reaches the overview, where a claim about a
+            # whole change belongs.
             if not binds_to_paths(getattr(d, "scope_basis", "")):
                 continue
             for fp in d.affected_files or []:

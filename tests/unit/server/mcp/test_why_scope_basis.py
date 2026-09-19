@@ -1,9 +1,8 @@
 """A commit footprint does not answer "what governs this file".
 
-Pins the ``get_why`` half of the scope-precision fix. The record stays in the
-store, keeps its files and stays findable by text search; what it loses is the
-per-file lanes, which is where a decision mined from one commit was answering
-for every file that commit happened to touch.
+The record stays in the store, keeps its files and stays findable by text
+search. What it loses is the per-file lanes, where a decision mined from one
+commit was answering for every file that commit happened to touch.
 """
 
 from __future__ import annotations
@@ -146,12 +145,8 @@ async def test_two_targets_do_answer_without_the_basis(setup_mcp, factory):
 async def test_get_context_does_not_print_a_footprint_on_a_file_card(
     setup_mcp, factory
 ):
-    """``get_context`` reads the JSON array, not the decision graph.
-
-    Gating the graph at the write path fixes session injection and the risk
-    directives and does nothing here, so this surface needs its own gate --
-    and it is the per-file decisions lane agents hit most.
-    """
+    """``get_context`` reads the JSON array, not the decision graph, so
+    gating the graph at the write path does nothing here."""
     from repowise.server.mcp_server import get_context
 
     await _add_footprint_record(factory, scope_basis=SCOPE_BASIS_FOOTPRINT)

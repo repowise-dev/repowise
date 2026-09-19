@@ -178,14 +178,11 @@ def test_a_wide_commit_list_is_a_footprint() -> None:
 
 
 def test_the_cap_does_not_launder_a_huge_commit_into_a_claim() -> None:
-    """A 42-file commit stored as 20 files is still a footprint.
+    """A large commit stored as a capped list is still a footprint.
 
-    The two limits are independent, and this pins the ordering between them:
-    ``MAX_GOVERNING_FILES`` must stay below ``commit_scope_files``'s own cap.
-    While it does, judging the stored list and judging the whole list agree,
-    so this passes either way. Raise the governing bound to the storage cap
-    and they stop agreeing -- every oversized commit would come back a claim
-    of exactly the cap -- which is the regression this holds the line on.
+    Pins the ordering between two independent limits: ``MAX_GOVERNING_FILES``
+    must stay below ``commit_scope_files``'s own cap. Raise it to the storage
+    cap and every oversized commit comes back a claim of exactly the cap.
     """
     commit = [f"pkg/m{i:03d}.py" for i in range(42)]
     stored = commit_scope_files(commit)

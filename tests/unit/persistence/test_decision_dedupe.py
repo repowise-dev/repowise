@@ -537,13 +537,9 @@ async def _links(session, decision_id) -> set[str]:
 async def test_a_footprint_folding_in_does_not_resurrect_its_files(
     async_session, repo_id
 ):
-    """The union widens the canonical past the bar, so the basis is recomputed.
-
-    Inheriting the canonical's empty basis instead would hand a narrow record
-    thirty files and a binding on every one -- and the canonical's ``source``
-    is usually not one ``backfill_scope_basis`` repairs, so nothing would ever
-    catch it again.
-    """
+    """The union widens the canonical past the bar, so the basis is
+    recomputed rather than inherited: the canonical's ``source`` is usually
+    not one ``backfill_scope_basis`` would repair afterwards."""
     store = _store()
     canonical, _duplicate = await _seed(
         async_session,
