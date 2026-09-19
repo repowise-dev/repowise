@@ -183,10 +183,13 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
             Bus factor 1
           </Badge>
         )}
+        {/* Plain outline, like every other chip in this row. It used to carry
+            --color-error, which made it the loudest mark on the panel and put
+            it in the same colour vocabulary the health bands use. */}
         {fix?.magnet && (
           <Badge
             variant="outline"
-            className="text-[10px] border-[var(--color-error)]/40 text-[var(--color-error)]"
+            className="text-[10px]"
             title={`Repeatedly bug-fixed, most recently ${fix.age}.`}
           >
             <Bug className="h-2.5 w-2.5 mr-1" />
