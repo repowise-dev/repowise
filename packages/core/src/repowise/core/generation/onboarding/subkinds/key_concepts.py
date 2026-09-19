@@ -29,6 +29,7 @@ import structlog
 
 from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
 from ...entry_points import orientation_entry_points
+from ...page_generator.helpers import rank_decisions
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals, file_layer_map
 from ..slots import SLOT_KEY_CONCEPTS, SLOT_TITLES
@@ -631,7 +632,7 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
     community_labels = sorted(set(labels_by_cid.values()))[:_MAX_COMMUNITY_LABELS]
     decision_titles = [
         str(d.get("title", "")).strip()
-        for d in signals.decisions_all[:_MAX_DECISION_RECORDS]
+        for d in rank_decisions(signals.decisions_all)[:_MAX_DECISION_RECORDS]
         if d.get("title")
     ]
 

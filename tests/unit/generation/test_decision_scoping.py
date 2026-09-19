@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 from repowise.core.generation.page_generator.helpers import (
+    build_decision_maps,
     decisions_for_files,
     rank_decisions,
 )
@@ -26,6 +28,19 @@ def _decision(title: str, *, confidence: float | None = 1.0, evidence: str = "e.
     if confidence is not None:
         payload["confidence"] = confidence
     return payload
+
+
+def _record(title: str, *, status: str = "proposed", confidence: float = 0.5) -> SimpleNamespace:
+    return SimpleNamespace(
+        title=title,
+        decision=f"{title}: do the thing",
+        rationale="because the alternative was measured slower",
+        source="session",
+        confidence=confidence,
+        evidence_file="e.py",
+        affected_files=["src/app.py"],
+        status=status,
+    )
 
 
 def test_module_decisions_are_scoped_to_the_modules_files():
@@ -89,3 +104,70 @@ def test_no_page_type_slices_the_repo_wide_decision_list_unranked():
     assert not offenders, "slice a ranked list, or scope it with decisions_for_files: " + "; ".join(
         offenders
     )
+
+
+# ---------------------------------------------------------------------------
+# Authority: a page has room for a handful, and a proposal is not a rule
+# ---------------------------------------------------------------------------
+
+
+def test_an_accepted_decision_outranks_a_more_confident_proposal():
+    """A confidence score and an acceptance measure different things.
+
+    Confidence says how well a candidate is grounded in what it was mined
+    from. An acceptance says a person read it and agreed it binds. The
+    promotion bar admits several times as many proposals as it used to, and
+    without this they crowd the rules off the page.
+    """
+    ranked = rank_decisions(
+        [
+            {"title": "proposal", "confidence": 0.99, "status": "proposed"},
+            {"title": "rule", "confidence": 0.10, "status": "active"},
+        ]
+    )
+    assert [d["title"] for d in ranked] == ["rule", "proposal"]
+
+
+def test_a_payload_with_no_status_still_ranks_by_confidence():
+    """Every pre-existing caller passed no status at all."""
+    ranked = rank_decisions(
+        [{"title": "low", "confidence": 0.1}, {"title": "high", "confidence": 0.9}]
+    )
+    assert [d["title"] for d in ranked] == ["high", "low"]
+
+
+def test_a_dismissed_record_never_reaches_a_page():
+    """A tombstone is what stops re-extraction re-proposing something.
+
+    Publishing it as a decision says the opposite of what the dismissal meant.
+    """
+    report = SimpleNamespace(
+        decisions=[
+            _record("Kept"),
+            _record("Rejected on review", status="dismissed"),
+        ]
+    )
+
+    by_file, all_decisions = build_decision_maps(report)
+
+    assert [d["title"] for d in all_decisions] == ["Kept"]
+    assert [d["title"] for d in by_file["src/app.py"]] == ["Kept"]
+
+
+def test_the_status_reaches_the_payload_so_ranking_can_read_it():
+    report = SimpleNamespace(decisions=[_record("A rule", status="active")])
+
+    _, all_decisions = build_decision_maps(report)
+
+    assert all_decisions[0]["status"] == "active"
+
+
+def test_a_record_that_carries_no_status_reads_as_a_proposal():
+    """Not as a rule: the absence of an acceptance is not an acceptance."""
+    record = _record("Unknown")
+    del record.status
+    report = SimpleNamespace(decisions=[record])
+
+    _, all_decisions = build_decision_maps(report)
+
+    assert all_decisions[0]["status"] == "proposed"

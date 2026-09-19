@@ -252,15 +252,27 @@ def _decision_confidence(payload: dict) -> float:
         return 0.0
 
 
-def rank_decisions(decisions: Iterable[dict]) -> list[dict]:
-    """Most confident first, ties in discovery order (the sort is stable).
+def _is_governing(payload: dict) -> bool:
+    """Whether a person accepted this decision. ``active`` is that projection."""
+    return str(payload.get("status") or "") == "active"
 
-    A page has room for a handful, so which handful matters -- the list is both
-    rendered and fed to the model as context. Taking a raw slice showed whichever
-    happened to be written first.
+
+def rank_decisions(decisions: Iterable[dict]) -> list[dict]:
+    """Accepted first, then most confident, ties in discovery order.
+
+    A page has room for a handful, so which handful matters -- the list is
+    both rendered and fed to the model as context. Taking a raw slice showed
+    whichever happened to be written first.
+
+    Authority leads confidence because the two measure different things. A
+    confidence score says how well a candidate is grounded in what it was
+    mined from; an acceptance says a person read it and agreed it binds. A
+    page with room for three should spend them on the rules before the
+    proposals, and the promotion bar admits several times as many proposals
+    as it used to, which is what would otherwise crowd them out.
     """
     ranked = list(decisions)
-    ranked.sort(key=lambda payload: -_decision_confidence(payload))
+    ranked.sort(key=lambda payload: (not _is_governing(payload), -_decision_confidence(payload)))
     return ranked
 
 
@@ -288,11 +300,27 @@ def decisions_for_files(
 def build_decision_maps(
     decision_report: Any | None,
 ) -> tuple[dict[str, list[dict]], list[dict]]:
-    """Index decision records by file path and as a flat list."""
+    """Index decision records by file path and as a flat list.
+
+    Every page's decisions section is built from these two, and until now they
+    carried no authority at all: a proposal nobody had read was indexed beside
+    a rule somebody accepted, and a dismissed record beside both. The status
+    rides along so :func:`rank_decisions` can lead with what governs.
+    """
     decisions_by_file: dict[str, list[dict]] = {}
     decisions_all: list[dict] = []
     if decision_report is not None and getattr(decision_report, "decisions", None):
         for d in decision_report.decisions:
+            status = str(getattr(d, "status", "") or "proposed")
+            # A tombstone is the one thing that must not reach a page. It is
+            # what stops re-extraction re-proposing something already
+            # rejected, and publishing it as a decision says the opposite of
+            # what the dismissal meant. Everything else is carried, with its
+            # status, rather than filtered: this store holds no acceptances at
+            # all, so an accepted-only filter empties the decisions section of
+            # every page rather than making it more honest.
+            if status == "dismissed":
+                continue
             payload = {
                 "title": d.title,
                 "decision": d.decision,
@@ -300,6 +328,7 @@ def build_decision_maps(
                 "source": d.source,
                 "confidence": d.confidence,
                 "evidence_file": d.evidence_file,
+                "status": status,
             }
             decisions_all.append(payload)
             for fp in d.affected_files or []:

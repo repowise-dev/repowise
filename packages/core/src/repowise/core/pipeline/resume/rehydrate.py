@@ -129,6 +129,10 @@ async def rehydrate_decision_report(session: Any, repo_id: str) -> Any:
                 confidence=r.confidence,
                 evidence_file=r.evidence_file,
                 affected_files=affected,
+                # Carried so the resumed run ranks and filters decisions the
+                # same way a fresh one does. Without it every rehydrated
+                # record read as a proposal, including the accepted ones.
+                status=r.status,
             )
         )
     return SimpleNamespace(decisions=decisions)

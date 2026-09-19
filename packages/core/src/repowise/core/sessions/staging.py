@@ -507,12 +507,35 @@ class SessionStagingStore:
     def promotable(self) -> list[dict[str, Any]]:
         """Decisions that qualify for (re-)emission into decision_records.
 
-        Qualifies when 2+ distinct sessions observed it, or on a single
-        observation for a user correction (the fast path). Emits only when
-        there is something new to say: never promoted before, or observed by
-        more sessions than the last emission. A promoted decision is therefore not
-        re-upserted (and can never resurrect a human status change) on every
-        update.
+        Qualifies on a stated reason: the row carries a non-empty rationale.
+        That is the whole bar, and it replaces "two sessions saw it, or it was
+        a user correction". The recurrence half of that had never fired. The
+        observation distribution over the dogfood store is ``{1: 406}`` -- no
+        staged row has ever been seen twice -- so ``user_correction`` was the
+        entire promotion path and recurrence was rejecting 256 rows on a
+        condition nothing could satisfy. Waiting for a second sighting is not
+        a quality bar when a second sighting never comes.
+
+        A rationale is a bar that measures the record rather than the corpus:
+        it is the difference between a choice somebody explained and a
+        sentence that merely sounded like one, and it admits 224 of 406.
+
+        The bar gates the *first* promotion only. It is not a superset of the
+        old one: 124 of the 150 rows the old bar promoted are corrections
+        carrying no rationale, and they are already in the store. Applying the
+        bar to re-emission would not withdraw any of them, it would only stop
+        them accreting the evidence of a later sighting, which is information
+        about a record that exists either way. A bar admits a record; it does
+        not retract one already admitted.
+
+        Safe to widen only because promoted records land in the labelled
+        ``candidates`` lane under its own cap rather than as rules an agent
+        follows. Nothing here creates authority; a person still accepts.
+
+        Emits only when there is something new to say: never promoted before,
+        or observed by more sessions than the last emission. A promoted
+        decision is therefore not re-upserted (and can never resurrect a human
+        status change) on every update.
         """
         rows = self._conn.execute(
             "SELECT key, kind, title, structured, sessions, quotes, files, "
@@ -522,10 +545,10 @@ class SessionStagingStore:
         for r in rows:
             sessions = json.loads(r[4])
             observations = max(1, len(sessions))
-            qualifies = observations >= 2 or r[1] == "user_correction"
-            if not qualifies:
-                continue
+            structured = json.loads(r[3])
             first_promotion = r[7] is None
+            if first_promotion and not str(structured.get("rationale") or "").strip():
+                continue
             if not first_promotion and observations <= r[8]:
                 continue
             out.append(
@@ -533,7 +556,7 @@ class SessionStagingStore:
                     "key": r[0],
                     "kind": r[1],
                     "title": r[2],
-                    "structured": json.loads(r[3]),
+                    "structured": structured,
                     "sessions": sessions,
                     "quotes": json.loads(r[5]),
                     "files": json.loads(r[6]),
