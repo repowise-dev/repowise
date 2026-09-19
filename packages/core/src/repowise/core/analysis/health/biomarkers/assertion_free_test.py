@@ -26,7 +26,7 @@ apart are in ``complexity/assertions.py``.
 ``if (!ok) throw new Error(...)``, and a wait helper that gives up by throwing
 rather than by asserting, both fail their test on the property the author named.
 No assertion vocabulary reaches either, because a ``throw`` is a statement and
-the vocabularies match callee names. ``asserts/lexicon.checks_something`` is the
+the vocabularies match callee names. ``asserts/predicate.checks_something`` is the
 predicate; it is deliberately not folded into ``assertion_count``, which is
 calibrated.
 

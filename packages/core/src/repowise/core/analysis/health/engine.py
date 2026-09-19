@@ -127,7 +127,7 @@ log = structlog.get_logger(__name__)
 # ``mock_saturated_test`` and ``large_assertion_block`` read ``assertion_count``
 # and ``assertion_blocks`` directly and are untouched. Only
 # ``assertion_free_test`` and the oracle pass behind it read the new field, both
-# through ``asserts/lexicon.checks_something``, and both as a boolean.
+# through ``asserts/predicate.checks_something``, and both as a boolean.
 #
 # v20 finally reads an assertion call from a position ``_assertion_tier`` never
 # classifies, because that pass classifies statements: a ``const e =
