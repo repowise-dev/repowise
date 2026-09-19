@@ -118,8 +118,17 @@ log = structlog.get_logger(__name__)
 # then suppressed its silent siblings through that wrapper's edge. The oracle
 # pass now asks for the function rather than its enclosure, so those findings
 # come back, and nothing re-mints the rows a v19 store suppressed except this
-# stamp. The walk is unchanged by this entry and no score moves; the marker is
-# advisory.
+# stamp.
+#
+# v20 also reads a hand-rolled ``raise`` / ``throw`` as an oracle, for which the
+# walker records one new ``FunctionComplexity`` field, ``raise_count``, that a
+# cached v19 walk does not carry at all. It is its own field rather than a term
+# in ``assertion_count`` precisely so that it moves nothing calibrated:
+# ``mock_saturated_test`` and ``large_assertion_block`` read ``assertion_count``
+# and ``assertion_blocks`` directly and are untouched. Only
+# ``assertion_free_test`` and the oracle pass behind it read the new field, both
+# through ``asserts/lexicon.checks_something``, and both as a boolean. No score
+# moves; the marker is advisory.
 #
 # v19: ``assertion_free_test`` resolves a test's oracle across file
 # boundaries, on a call edge rather than by name, so a test that delegates its

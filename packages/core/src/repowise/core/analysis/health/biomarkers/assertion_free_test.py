@@ -20,6 +20,14 @@ marker measures verification itself and so must exclude it from its denominator.
 Same call, opposite treatment, two different questions. The tiers that keep them
 apart are in ``complexity/assertions.py``.
 
+**A hand-rolled ``throw`` counts as an oracle too.** A test that ends
+``if (!ok) throw new Error(...)``, and a wait helper that gives up by throwing
+rather than by asserting, both fail their test on the property the author named.
+No assertion vocabulary reaches either, because a ``throw`` is a statement and
+the vocabularies match callee names. ``asserts/lexicon.checks_something`` is the
+predicate; it is deliberately not folded into ``assertion_count``, which is
+calibrated.
+
 **This marker is advisory and never deducts.** See ``ADVISORY_DIMENSION`` in
 ``scoring.py``, and LANGUAGE_SUPPORT.md#code-health-coverage for the measured
 per-language precision and the false positives it does not separate.
@@ -27,6 +35,7 @@ per-language precision and the false positives it does not separate.
 
 from __future__ import annotations
 
+from ..asserts.lexicon import checks_something
 from ..coverage import is_test_file
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
@@ -61,7 +70,7 @@ class AssertionFreeTestDetector:
             # is asking precisely the functions that have none.
             if not fn.is_test_case:
                 continue
-            if fn.assertion_count or fn.verification_count:
+            if checks_something(fn):
                 continue
             if fn.called_names & oracles:
                 continue
@@ -107,11 +116,7 @@ def _asserting_names(ctx: FileContext) -> frozenset[str]:
     still cannot see it lists itself; ``super().test_x(...)`` is one of them,
     the resolver having no ``super()`` receiver handling.
     """
-    return frozenset(
-        fn.name.lower()
-        for fn in ctx.all_functions
-        if fn.assertion_count or fn.verification_count
-    )
+    return frozenset(fn.name.lower() for fn in ctx.all_functions if checks_something(fn))
 
 
 BIOMARKER = AssertionFreeTestDetector()

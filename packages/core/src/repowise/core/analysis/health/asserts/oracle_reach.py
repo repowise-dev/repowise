@@ -84,6 +84,7 @@ from typing import TYPE_CHECKING, Any
 from ....test_paths import is_test_related_path
 from ...execution_graph import ExecutionGraphIndex, file_of_symbol, reachable_to_sink
 from ..coverage import is_test_file
+from .lexicon import checks_something
 
 if TYPE_CHECKING:
     from ..complexity import FileComplexity
@@ -189,7 +190,7 @@ def collect_cross_file_oracles(
         if not is_test_related_path(path, pf.file_info.language):
             continue
         for fn in fcx.functions:
-            if not (fn.assertion_count or fn.verification_count):
+            if not checks_something(fn):
                 continue
             sid = index.resolve_function(path, fn.start_line, func_end=fn.end_line)
             if sid is not None:
@@ -317,8 +318,4 @@ def _candidates(pf: Any, fcx: FileComplexity) -> list[Any]:
     """Test cases in a test file that check nothing themselves."""
     if not is_test_file(pf.file_info.path):
         return []
-    return [
-        fn
-        for fn in fcx.functions
-        if fn.is_test_case and not (fn.assertion_count or fn.verification_count)
-    ]
+    return [fn for fn in fcx.functions if fn.is_test_case and not checks_something(fn)]

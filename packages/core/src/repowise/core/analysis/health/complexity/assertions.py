@@ -31,7 +31,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..asserts.lexicon import NARROW_PREFIXES, AssertDialect
-from .ast_utils import _IDENTIFIER_SUFFIX, _callee_names, _receiver_method_verdict
+from .ast_utils import (
+    _IDENTIFIER_SUFFIX,
+    _callee_names,
+    _identifier_chain,
+    _receiver_method_verdict,
+)
 from .languages import LanguageNodeMap
 
 if TYPE_CHECKING:
@@ -261,10 +266,28 @@ def _is_assertion_statement(
     return _assertion_tier(stmt, lmap, dialect) in (_NARROW, _BROAD)
 
 
+#: Exceptions whose raise declares a method unimplemented rather than checks
+#: anything. ``raise NotImplementedError`` is the abstract-stub idiom, and
+#: counting it would make every unimplemented base-class method an oracle --
+#: which then suppresses, by name, any test calling a same-named method on a
+#: subclass that does implement it.
+_STUB_EXCEPTIONS = frozenset({"notimplementederror"})
+
+
+def _is_stub_raise(node: Node) -> bool:
+    """Whether a raise statement raises an abstract-stub exception."""
+    for child in node.children:
+        if not child.is_named:
+            continue
+        chain = _identifier_chain(child)
+        return bool(chain) and chain[0] in _STUB_EXCEPTIONS
+    return False
+
+
 def _collect_assertion_facts(
     body_node: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None = None
-) -> tuple[list[tuple[int, int, int]], int, int, frozenset[str], frozenset[str]]:
-    """``(blocks, total, verifications, called)`` facts for one function body.
+) -> tuple[list[tuple[int, int, int]], int, int, int, frozenset[str], frozenset[str]]:
+    """``(blocks, total, verifications, raises, called, bare)`` for one body.
 
     *blocks* are runs of ≥2 consecutive **narrow-tier** assertion statements,
     each recorded as ``(start_line, end_line, count)``. Runs are found per
@@ -292,6 +315,12 @@ def _collect_assertion_facts(
     actually bind; a qualified one names a method on something else that
     happens to share the name.
 
+    *raises* counts ``raise`` / ``throw`` statements other than the
+    abstract-stub ones in ``_STUB_EXCEPTIONS``, wherever the traversal
+    reaches one rather than only at block level: an unbraced ``if (x) throw
+    ...`` guard is a hand-rolled oracle too, and its only reader asks whether
+    the count is zero. In no other count, so no calibrated marker moves.
+
     *called* is every name called directly in this body, lowercased, excluding
     nested function bodies on the same rule the assertion scan uses. It rides
     along on this traversal because the traversal already reaches every call
@@ -301,10 +330,11 @@ def _collect_assertion_facts(
     ships no language that takes it.
     """
     if not lmap.assert_kinds and not lmap.assert_call_kinds:
-        return [], 0, 0, frozenset(), frozenset()
+        return [], 0, 0, 0, frozenset(), frozenset()
     blocks: list[tuple[int, int, int]] = []
     total = 0
     verifications = 0
+    raises = 0
     called: set[str] = set()
     bare: set[str] = set()
     call_kinds = lmap.call_kinds or lmap.assert_call_kinds
@@ -336,6 +366,7 @@ def _collect_assertion_facts(
             blocks.append((run_start, run_end, run_count))
 
     def _visit(node: Node) -> None:
+        nonlocal raises
         # Lambda kinds join the block kinds because an expression-bodied arrow
         # has no statement at all: ``waitFor(() => expect(x).toBe(1))`` keeps
         # its assertion directly under the arrow. Run detection below is
@@ -346,6 +377,8 @@ def _collect_assertion_facts(
             or node.type in lmap.lambda_kinds
         )
         _scan_siblings(node, count_total=counts_here)
+        if node.type in lmap.raise_kinds and not _is_stub_raise(node):
+            raises += 1
         if node.type in call_kinds:
             names = _callee_names(node)
             if names is not None:
@@ -371,4 +404,4 @@ def _collect_assertion_facts(
                 verifications += 1
             elif tier != _NOT_ASSERTION:
                 total += 1
-    return blocks, total, verifications, frozenset(called), frozenset(bare)
+    return blocks, total, verifications, raises, frozenset(called), frozenset(bare)

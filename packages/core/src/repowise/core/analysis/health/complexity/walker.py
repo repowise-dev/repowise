@@ -165,6 +165,7 @@ def walk_file(
             assertion_blocks,
             assertion_count,
             verifications,
+            raises,
             called,
             bare_called,
         ) = _collect_assertion_facts(body, lmap, asserts)
@@ -183,6 +184,7 @@ def walk_file(
             assertion_blocks=assertion_blocks,
             assertion_count=assertion_count,
             verification_count=verifications,
+            raise_count=raises,
             mock_setup_count=_count_mock_setup(fn_node, body, lmap, mock_dialect, asserts),
             is_test_case=is_test_case(fn_node, name, language),
             called_names=called,

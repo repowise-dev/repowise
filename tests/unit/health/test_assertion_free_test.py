@@ -548,3 +548,84 @@ def test_resolution_is_by_name_and_a_second_class_shares_it() -> None:
         "        self._check(g())\n"
     )
     assert _flagged(source) == []
+
+
+# --------------------------------------------------------------------------
+# A hand-rolled throw is an oracle
+# --------------------------------------------------------------------------
+
+
+def test_a_guard_test_that_reports_a_misconfiguration_by_throwing_is_not_assertion_free() -> None:
+    """``if (!ok) throw`` fails the test on a named property. No vocabulary
+    reaches it, because a throw is a statement and the vocabularies match
+    callee names."""
+    _require("typescript")
+    src = (
+        "it('the fixture directory is configured', () => {\n"
+        "  if (!process.env.FIXTURES) {\n"
+        "    throw new Error('FIXTURES is unset');\n"
+        "  }\n"
+        "});\n"
+        "it('checks nothing', () => {\n"
+        "  run();\n"
+        "});\n"
+    )
+    assert _flagged(src, "src/thing.test.ts", "typescript") == ["it callback"]
+
+
+def test_an_unbraced_throw_guard_counts_too() -> None:
+    """The count is taken wherever the traversal finds a throw, not only at
+    block level, so the brace-less form of the same guard is not a blind spot."""
+    _require("typescript")
+    src = "it('guards', () => {\n  if (!cfg) throw new Error('no cfg');\n  run();\n});\n"
+    assert _flagged(src, "src/thing.test.ts", "typescript") == []
+
+
+def test_a_python_test_that_raises_on_a_bad_state_is_not_assertion_free() -> None:
+    _require("python")
+    src = (
+        "def test_backend_is_reachable():\n"
+        "    if not ping():\n"
+        "        raise RuntimeError('backend down')\n"
+        "\n"
+        "def test_checks_nothing():\n"
+        "    run()\n"
+    )
+    assert _flagged(src) == ["test_checks_nothing"]
+
+
+def test_a_raise_inside_the_code_under_test_is_not_the_test_s_own_oracle() -> None:
+    """The count is per body and stops at a nested definition, so a callable
+    handed to the code under test purely to make it fail is not read as this
+    test having checked anything."""
+    _require("python")
+    src = (
+        "def test_registers_a_failing_callback():\n"
+        "    def boom():\n"
+        "        raise ValueError('nope')\n"
+        "    registry.add(boom)\n"
+    )
+    assert _flagged(src) == ["test_registers_a_failing_callback"]
+
+
+def test_an_abstract_stub_raising_notimplementederror_is_not_an_oracle() -> None:
+    """``raise NotImplementedError`` declares a method unimplemented; it checks
+    nothing. Counting it would make every abstract base-class method an oracle,
+    and the same-file lane matches helper names with the receiver dropped, so
+    one unimplemented stub would then answer for every same-named method on
+    every subclass that does implement it."""
+    _require("python")
+    src = (
+        "class BaseStorageTests:\n"
+        "    def create_backend(self):\n"
+        "        raise NotImplementedError('subclasses must set this')\n"
+        "\n"
+        "    def test_get(self):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "\n"
+        "class ConcreteTests(BaseStorageTests):\n"
+        "    def test_closes_cleanly(self):\n"
+        "        self.create_backend().close()\n"
+    )
+    assert _flagged(src) == ["test_closes_cleanly", "test_get"]

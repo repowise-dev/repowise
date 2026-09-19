@@ -255,6 +255,44 @@ def test_a_delegating_test_inside_such_a_wrapper_still_resolves(tmp_path: Path) 
     assert lines[3].oracle == "tests/helpers.ts::checkOk"
 
 
+def test_a_wait_helper_that_gives_up_by_throwing_is_an_oracle(tmp_path: Path) -> None:
+    """A helper that fails its caller by throwing checks as much as one that
+    asserts. ``waitFor(events, p)`` that throws when the predicate never
+    matches is the common shape, and no assertion vocabulary names ``throw``,
+    so without counting it the helper reads as checking nothing and every test
+    delegating to it is reported."""
+    _require("typescript")
+    walked, graph = _build(
+        tmp_path,
+        {
+            "tests/wait.ts": (
+                "export function waitForEvent(events: string[], want: string) {\n"
+                "  if (!events.includes(want)) {\n"
+                "    throw new Error(`never saw ${want}`);\n"
+                "  }\n"
+                "}\n"
+            ),
+            "tests/thing.test.ts": (
+                "import { waitForEvent } from './wait';\n"
+                "\n"
+                "it('waits', () => {\n"
+                "  waitForEvent(collect(), 'done');\n"
+                "});\n"
+                "\n"
+                "it('checks nothing', () => {\n"
+                "  run();\n"
+                "});\n"
+            ),
+        },
+    )
+    resolved = collect_cross_file_oracles(walked, graph)
+    lines = resolved.get("tests/thing.test.ts", {})
+    assert 3 in lines, f"the throwing helper was not read as an oracle: {lines}"
+    assert lines[3].oracle == "tests/wait.ts::waitForEvent"
+    assert 7 not in lines
+    assert _flagged(walked, graph, "tests/thing.test.ts") == ["it callback"]
+
+
 # --------------------------------------------------------------------------
 # The negative cases: what must still fire
 # --------------------------------------------------------------------------

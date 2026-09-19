@@ -59,6 +59,15 @@ class FunctionComplexity:
     # Mock verifications in the body, counted apart from ``assertion_count``.
     # Why they are separate: ``asserts/lexicon.py``.
     verification_count: int = 0
+    # ``raise`` / ``throw`` statements in the body, from ``raise_kinds``. A
+    # hand-rolled oracle -- ``if (!ok) throw new Error(...)`` -- fails its test
+    # exactly as an assertion does, but no assertion vocabulary names it. Kept
+    # in its own field rather than folded into ``assertion_count`` because that
+    # count is calibrated and this one is not: only ``assertion_free_test`` and
+    # the oracle resolution behind it read this, and both read it as a
+    # boolean. Counted wherever the traversal reaches one rather than at block
+    # level, so an unbraced ``if (x) throw ...`` guard is seen.
+    raise_count: int = 0
     # Mock-setup statements in the body, decorators included. 0 for a language
     # with no entry in ``analysis/health/mocks/lexicon.py``.
     mock_setup_count: int = 0

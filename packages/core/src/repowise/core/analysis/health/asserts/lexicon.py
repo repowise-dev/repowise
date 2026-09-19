@@ -51,6 +51,23 @@ from dataclasses import dataclass, field
 NARROW_PREFIXES: tuple[str, ...] = ("assert", "expect")
 
 
+def checks_something(fn) -> bool:
+    """Whether a walked function carries an oracle of any kind.
+
+    Three counts, because three different things fail a test: a state
+    assertion, a mock verification, and a ``raise`` / ``throw`` the author
+    wrote by hand. The third is not in any assertion vocabulary -- it is a
+    statement, not a call -- so a helper built on ``if (!ok) throw new
+    Error(...)`` reads as checking nothing unless this is asked instead of
+    ``assertion_count``.
+
+    Read by ``assertion_free_test`` and by the oracle resolution behind it,
+    both of which want the boolean. No calibrated marker reads it; they count
+    ``assertion_count`` alone and are unaffected by the third term.
+    """
+    return bool(fn.assertion_count or fn.verification_count or fn.raise_count)
+
+
 @dataclass(frozen=True)
 class AssertVocabulary:
     """One run's configured assertion names, and the cache key they imply.
