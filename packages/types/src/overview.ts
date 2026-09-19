@@ -5,7 +5,7 @@
  */
 
 import type { Hotspot } from "./git.js";
-import type { DefectAccuracy } from "./health.js";
+import type { DefectAccuracy, HealthSeverity } from "./health.js";
 
 export interface OverviewRepoMeta {
   id: string;
@@ -59,6 +59,12 @@ export interface OverviewStats {
   hotspot_count: number;
   silo_count: number;
   module_count: number;
+  /**
+   * Total non-comment lines of code, summed from the per-file health metrics.
+   * Optional: a server predating the field omits it and the caller then has no
+   * lines figure rather than rendering a zero it did not measure.
+   */
+  total_nloc?: number;
   deltas: OverviewStatDeltas;
 }
 
@@ -105,16 +111,91 @@ export type OverviewAttentionType =
   | "proposed_decision"
   | "ungoverned_hotspot"
   | "knowledge_silo"
-  | "dead_code";
+  | "dead_code"
+  | "health_finding"
+  | "security_finding"
+  | "doc_drift"
+  | "refactoring";
 
 export interface OverviewAttentionItem {
   id: string;
   type: OverviewAttentionType;
   title: string;
   description: string;
-  severity: "high" | "medium" | "low";
+  /**
+   * The four-level ladder shared with `HealthSeverity`, rather than the three
+   * levels this used to declare. Sources that publish their own severity are
+   * passed through unchanged; the two that genuinely have none (dead code and
+   * documentation drift carry a confidence float instead) are bucketed onto it
+   * server-side. See `server/services/attention.py`.
+   */
+  severity: HealthSeverity;
   /** Decision id, file path, … — what the item points at. */
   target_id: string;
+  /**
+   * The finding's own kind within its source: a `biomarker_type` for a health
+   * finding, a scanner kind for security, a drift kind. Optional because the
+   * decision and silo sources have no sub-kind.
+   *
+   * Sent raw so the UI can resolve it through the biomarker glossary it
+   * already owns, rather than the server holding a second copy of that
+   * vocabulary and the two drifting.
+   */
+  subtype?: string;
+}
+
+/**
+ * How much each source holds, beside the capped list in `attention`.
+ *
+ * Every source is capped so no single store floods the merged list, which
+ * means `attention.length` is not a total and never was safe to render as one.
+ */
+export type OverviewAttentionArea =
+  | "security"
+  | "health"
+  | "refactoring"
+  | "doc_drift"
+  | "decisions"
+  | "ownership"
+  | "dead_code";
+
+/**
+ * One area of work, with the worst thing in it named.
+ *
+ * Six ranked findings out of sixteen thousand is a sample, not triage, and it
+ * lets one store own every visible row. An area row reports how much that area
+ * holds and leads with the single item that topped it, so the list stays a
+ * fixed, scannable seven rows whatever the underlying volume.
+ */
+export interface OverviewAttentionAreaRow {
+  key: OverviewAttentionArea;
+  /** Everything this area holds, not what is displayed. */
+  total: number;
+  /** Severity of the lead, i.e. the worst thing in the area. */
+  severity: HealthSeverity;
+  /**
+   * What the count is made of, where one number over several lanes would
+   * misstate it — "365 awaiting review · 699 hotspots ungoverned" rather than
+   * a bare 1,064. Empty string for an area with a single lane.
+   */
+  detail?: string;
+  /** Absent only if the area reports a count with no item behind it. */
+  lead: {
+    title: string;
+    description: string;
+    type: OverviewAttentionType;
+    target_id?: string | null;
+    subtype?: string;
+    severity: HealthSeverity;
+  } | null;
+}
+
+export interface OverviewAttentionSummary {
+  total: number;
+  /** Keyed by attention type, plus `decisions` for the three decision lanes. */
+  by_source: Record<string, number>;
+  /** Optional: a server predating the area rows omits it. */
+  areas?: OverviewAttentionAreaRow[];
 }
 
 export interface OverviewOnboardingTarget {
@@ -171,6 +252,9 @@ export interface OverviewSummaryResponse {
   health: OverviewHealth;
   languages: OverviewLanguage[];
   attention: OverviewAttentionItem[];
+  /** Optional: a server predating the merged attention list omits it, and the
+   *  UI then falls back to counting the rows it was given. */
+  attention_summary?: OverviewAttentionSummary;
   onboarding_targets: OverviewOnboardingTarget[];
   top_hotspots: Hotspot[];
   recent_decisions: OverviewDecisionSlim[];
