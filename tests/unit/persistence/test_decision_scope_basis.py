@@ -25,6 +25,7 @@ from repowise.core.analysis.decisions.scope import (
     SCOPE_BASIS_STATED,
 )
 from repowise.core.persistence.crud import bulk_upsert_decisions, update_decision_metadata
+from repowise.core.persistence.crud.authority import accept_decision
 from repowise.core.persistence.decision_graph import (
     get_governed_nodes,
     get_governing_decisions,
@@ -167,6 +168,30 @@ async def test_backfill_repairs_a_narrow_legacy_commit_record_too(async_session)
 
     assert await backfill_scope_basis(async_session, repo.id) == 1
     assert await get_governing_decisions(async_session, repo.id, files[0]) == []
+
+
+async def test_backfill_leaves_an_accepted_record_alone(async_session):
+    """A decision somebody confirmed keeps its files.
+
+    The repair cannot tell an accepted record by its basis: ``accept_decision``
+    writes ``stated`` only when the accepter passed an explicit scope, and
+    neither ``repowise decision confirm`` nor the web accept route does. So a
+    reviewer who confirmed a commit-derived decision as-is would have had its
+    file links deleted on the next index, and its hotspots would have started
+    reporting themselves ungoverned.
+    """
+    repo = await insert_repo(async_session)
+    payload = _decision("Confirmed as is", files=_COMMIT_FILES)
+    payload["evidence_file"] = _MECHANISM
+    ids = await bulk_upsert_decisions(async_session, repo.id, [payload])
+    rec = await async_session.get(DecisionRecord, ids[0])
+    # No ``scope=``, which is what both real accept paths do, so the basis is
+    # left empty and only the acceptance row marks the record as reviewed.
+    await accept_decision(async_session, rec, accepter="tester")
+    assert rec.scope_basis == ""
+
+    assert await backfill_scope_basis(async_session, repo.id) == 0
+    assert await get_governing_decisions(async_session, repo.id, _MECHANISM) != []
 
 
 async def test_backfill_leaves_a_selected_scope_alone(async_session):

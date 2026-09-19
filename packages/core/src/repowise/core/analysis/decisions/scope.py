@@ -92,10 +92,19 @@ SCOPE_BASIS_SELECTED = "commit_selected"
 SCOPE_BASIS_STATED = "stated"
 
 #: Above this many files, a commit-derived list stops being a claim about
-#: files and becomes the footprint of the change it was mined from. The miner
-#: reads one decision out of one commit body and has no per-file evidence, so
-#: it takes the commit's whole list: true about the commit, false about most
-#: of the files in it.
+#: files and becomes the footprint of the change it was mined from.
+#:
+#: **Only the fallback path still consults this.** Both commit miners now ask
+#: the model which files each decision is about and store the answer under
+#: :data:`SCOPE_BASIS_SELECTED`, so breadth decides the scope of one case: a
+#: response that did not answer at all, from a provider that has not seen the
+#: prompt. ``backfill_scope_basis`` no longer consults it, because a legacy
+#: list is a commit's footprint at any width. The reasoning below is kept for
+#: the history of the number, not as a description of the live rule.
+#:
+#: The miner read one decision out of one commit body and had no per-file
+#: evidence, so it took the commit's whole list: true about the commit, false
+#: about most of the files in it.
 #:
 #: A breadth rule rather than a relevance one because relevance was tried and
 #: does not work. Overlap between a decision's text and a file's own diff hunk

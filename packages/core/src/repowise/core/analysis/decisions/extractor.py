@@ -38,7 +38,7 @@ import asyncio
 import contextlib
 import json
 import re
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -143,18 +143,26 @@ def _coerce_dt(value: datetime | str) -> datetime:
 #: How many of a commit's files either commit prompt will show. The model has
 #: to read the list to pick from it, and a commit that touched ninety files is
 #: not one whose decisions can be assigned by reading the list anyway.
+#:
+#: Sorted before truncating at both call sites, so which files the model is
+#: allowed to choose from is a property of the commit rather than of the order
+#: ``_git_meta_map`` happened to be built in.
 _MAX_PROMPT_FILES = 20
 
 
 def _coerce_paths(value: object) -> list[str] | None:
     """A list of path-ish strings out of whatever the model returned.
 
-    ``None`` for an absent key, so that a model which answered ``[]`` is told
-    apart from one that never answered: the first is a decision about none of
-    the commit's files, the second is a response from a provider that has not
-    seen the new prompt. Models return a bare string for a one-element list
-    often enough to be worth handling; anything else is dropped rather than
-    coerced.
+    ``None`` for an absent *or malformed* key, so that a model which answered
+    ``[]`` is told apart from one that never usefully answered: the first is a
+    decision about none of the commit's files, which binds the record to
+    nothing, and the second is a provider that has not seen the new prompt,
+    which falls back to the commit list. A list of dicts or numbers is the
+    second case, not the first -- reading it as "chose nothing" would silently
+    make the record govern nothing forever on a shape error.
+
+    Models return a bare string for a one-element list often enough to be
+    worth handling.
     """
     if value is None:
         return None
@@ -162,7 +170,10 @@ def _coerce_paths(value: object) -> list[str] | None:
         value = [value]
     if not isinstance(value, list):
         return None
-    return [v.strip() for v in value if isinstance(v, str) and v.strip()]
+    kept = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+    if value and not kept:
+        return None
+    return kept
 
 
 @dataclass
@@ -460,7 +471,7 @@ _MARKERS_PER_CALL = 5
 
 def _scope_from_selection(
     decision: ExtractedDecision,
-    commit_files: Collection[str] | None,
+    commit_files: Sequence[str] | None,
 ) -> tuple[list[str], str]:
     """The files and basis for one decision mined out of one commit.
 
@@ -780,7 +791,8 @@ class DecisionExtractor:
                     f"{body_block}"
                     f"Author: {c['author']}\n"
                     f"Date: {c['date']}\n"
-                    f"Files changed: {', '.join(files[:20])}\n"
+                    f"Files changed: "
+                    f"{', '.join(sorted(files)[:_MAX_PROMPT_FILES])}\n"
                 )
                 source_by_sha[c["sha"]] = f"{c['message']}\n{body}".strip()
 
@@ -805,6 +817,10 @@ class DecisionExtractor:
                         d, commit_files.get(sha)
                     )
                     d.source_text = source_by_sha.get(sha, "")
+                # Cleared whether or not the sha resolved: an unattributed
+                # decision has no commit to validate paths against, so the
+                # model's list is unusable rather than merely unused.
+                d.proposed_files = None
                 d.source = "git_archaeology"
                 d.status = "proposed"
                 signal = max(
@@ -1075,6 +1091,7 @@ class DecisionExtractor:
                         d, files_by_sha.get(sha)
                     )
                     d.source_text = source_by_sha.get(sha, "")
+                d.proposed_files = None
                 d.source = "pr"
                 d.status = "proposed"
                 d.confidence = 0.80
