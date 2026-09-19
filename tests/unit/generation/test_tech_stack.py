@@ -366,6 +366,47 @@ def test_detects_ruff_from_pyproject(tmp_path):
     assert "ruff" in cmds["lint"]
 
 
+def test_ruff_lint_mentioning_formatter_does_not_set_a_format_command(tmp_path):
+    """The word "formatter" in a comment is prose, not a declaration (#2384)."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'x'\n\n[tool.ruff]\n\n[tool.ruff.lint]\n"
+        'select = ["E501"]  # line too long (handled by formatter)\n'
+        "# Ruff — linter + formatter\n",
+        encoding="utf-8",
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert "lint" in cmds
+    assert "format" not in cmds
+
+
+def test_declared_ruff_format_sets_the_format_command(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.ruff.lint]\nselect = ["E"]\n\n[tool.ruff.format]\nquote-style = "double"\n',
+        encoding="utf-8",
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert cmds["format"] == "ruff format ."
+
+
+def test_a_competing_formatter_suppresses_the_ruff_format_command(tmp_path):
+    """Ruff-as-linter beside black is not a ruff formatter declaration."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 88\n\n[tool.black]\nline-length = 88\n",
+        encoding="utf-8",
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert "format" not in cmds
+
+
+def test_explicit_ruff_format_in_pre_commit_sets_the_format_command(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n", encoding="utf-8")
+    (tmp_path / ".pre-commit-config.yaml").write_text(
+        "repos:\n  - hooks:\n      - id: ruff-format\n", encoding="utf-8"
+    )
+    cmds = detect_build_commands(tmp_path)
+    assert cmds["format"] == "ruff format ."
+
+
 def test_detects_npm_scripts(tmp_path):
     pkg = {
         "name": "myapp",

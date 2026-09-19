@@ -9,6 +9,8 @@ import json
 import re
 from pathlib import Path
 
+from repowise.core.repo_formatters import declares_ruff_format
+
 from .data import TechStackItem
 
 # Node.js framework/library signatures to detect from package.json dependencies
@@ -455,7 +457,7 @@ def detect_build_commands(repo_path: Path) -> dict[str, str]:
             commands["test"] = "pytest"
         if "lint" not in commands and "ruff" in text:
             commands["lint"] = "ruff check ."
-        if "format" not in commands and "ruff" in text and "format" in text:
+        if "format" not in commands and declares_ruff_format(repo_path):
             commands["format"] = "ruff format ."
         if "typecheck" not in commands and "mypy" in text:
             commands["typecheck"] = "mypy ."

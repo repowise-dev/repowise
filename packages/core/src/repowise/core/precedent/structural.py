@@ -26,6 +26,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from repowise.core.repo_formatters import declares_ruff_format
+
 from .store import TIER_STRUCTURAL, Episode, EpisodeStore
 
 _log = logging.getLogger(__name__)
@@ -387,7 +389,7 @@ def _formatter_drift(root: Path, _traverser: Any) -> list[Episode]:
     executable, a timeout, a crash, unparsable output — yields no episode. A
     budget that quietly produces a partial count is worse than no fact at all.
     """
-    if not _declares_ruff_format(root):
+    if not declares_ruff_format(root):
         return []
     executable = _ruff_executable(root)
     if executable is None:
@@ -432,41 +434,6 @@ def _formatter_drift(root: Path, _traverser: Any) -> list[Episode]:
             birth_commit=_head_commit(root),
         )
     ]
-
-
-def _declares_ruff_format(root: Path) -> bool:
-    """True when the repo names ruff, and only ruff, as its formatter.
-
-    Deliberately stricter than :func:`detect_build_commands`, whose format
-    inference fires on a ``pyproject.toml`` containing the words "ruff" and
-    "format" anywhere. That is fine for a suggested command and wrong as the
-    premise of a stored fact: ruff-as-linter beside black-as-formatter is a
-    common pairing, and the two disagree, so the inference would tell a
-    black-clean repo it is not formatter-clean by a formatter it never chose.
-    A repo that declares any competing formatter is silent regardless.
-    """
-    pyproject = _read_text(root / "pyproject.toml")
-    if any(marker in pyproject for marker in _COMPETING_FORMATTERS):
-        return False
-    if "[tool.ruff.format]" in pyproject:
-        return True
-    # An explicit invocation anywhere a project records its own commands.
-    for candidate in ("Makefile", "package.json", ".pre-commit-config.yaml", "justfile"):
-        text = _read_text(root / candidate)
-        if "ruff format" in text or "ruff-format" in text:
-            return True
-    return False
-
-
-#: Declaring one of these means the repo formats with something else.
-_COMPETING_FORMATTERS: tuple[str, ...] = ("[tool.black]", "[tool.blue]", "[tool.yapf]")
-
-
-def _read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
 
 
 def _head_commit(root: Path) -> str | None:
