@@ -93,6 +93,8 @@ const IMPACT: ChangeImpactReport = {
         structural_score: 0.3,
         risk_score: 0.3,
         temporal_hotspot: 0.1,
+        churn_percentile: 0.35,
+        is_hotspot: false,
         centrality: 0.8,
       },
       {
@@ -100,6 +102,8 @@ const IMPACT: ChangeImpactReport = {
         structural_score: 0.82,
         risk_score: 0.82,
         temporal_hotspot: 0.9,
+        churn_percentile: 0.95,
+        is_hotspot: true,
         centrality: 0.1,
       },
     ],

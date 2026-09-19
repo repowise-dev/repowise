@@ -19,6 +19,10 @@ export interface DirectRiskEntry {
   risk_score: number;
   /** Raw decayed churn sum, unbounded; use churn_percentile for 0–1 normalised rank. */
   temporal_hotspot: number;
+  /** Repo-relative rank of temporal_hotspot, 0–1. Comparable as a rank, not as activity. */
+  churn_percentile: number;
+  /** The index's hotspot verdict: top-quartile churn AND its absolute activity floors. */
+  is_hotspot: boolean;
   /** Raw graph centrality (pagerank); typically well below 1. */
   centrality: number;
 }

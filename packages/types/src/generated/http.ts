@@ -982,6 +982,8 @@ export interface DirectRiskEntry {
   structural_score: number;
   risk_score: number;
   temporal_hotspot: number;
+  churn_percentile: number;
+  is_hotspot: boolean;
   centrality: number;
 }
 

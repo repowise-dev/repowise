@@ -125,6 +125,17 @@ def meets_hotspot_floors(meta: dict) -> bool:
     90-day window AND real line movement (or a sustained commit volume
     that is hotspot-grade on its own). See ``_constants`` for the floor
     rationale; the SQL mirror lives in ``crud/git.py``.
+
+    Audited as the velocity artifact #2437/#2438 fixed elsewhere and kept; do
+    not strip them without repeating the measurement. Across 41 indexed
+    repositories hotspot share tracks velocity (0-21%, Spearman 0.94 on
+    per-file 90-day commit density) where the percentile alone is flat at 25%,
+    but it moves because hotness moves. The floor that arbitrates is the
+    temporal one, over files at 3-7 commits in the window: it withheld the flag
+    from 152 of the 3,833 files that reached that band, at most 2.6% of any one
+    repository. Dropping the floors would instead call a quarter of a dormant
+    repository hot, since churn_percentile ranks a decayed score that stays
+    positive long after the commits stop.
     """
     try:
         commit_90d = int(meta.get("commit_count_90d") or 0)

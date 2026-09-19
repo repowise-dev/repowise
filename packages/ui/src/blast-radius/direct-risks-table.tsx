@@ -29,7 +29,7 @@ function MiniBar({
           style={{ width: `${pct}%`, background: color }}
         />
       </div>
-      <span className="w-10 shrink-0 text-right tabular-nums text-[var(--color-text-secondary)]">
+      <span className="w-12 shrink-0 text-right tabular-nums text-[var(--color-text-secondary)]">
         {display}
       </span>
     </div>
@@ -77,17 +77,22 @@ const COLUMNS: ResponsiveColumn<DisplayDirectRisk>[] = [
   },
   {
     key: "temporal_hotspot",
-    header: "Temporal hotspot",
+    header: "Temporal hotspot (bar: rank)",
     headerClassName: "w-[24%]",
     priority: 2,
+    // The bar reads churn_percentile: temporal_hotspot is an unbounded churn
+    // sum whose median is already above 1.0, so a [0,1] bar pinned most rows
+    // full. The raw sum stays as the printed figure, without the *10 that
+    // made it look like a 0-10 score when it can exceed 40. The ?? 0 is for a
+    // server predating the field, where undefined would render width: NaN%.
     render: (r) => (
       <MiniBar
-        value01={r.temporal_hotspot}
+        value01={r.churn_percentile ?? 0}
         color="var(--color-accent-secondary)"
-        display={(r.temporal_hotspot * 10).toFixed(1)}
+        display={r.temporal_hotspot.toFixed(1)}
       />
     ),
-    mobileRender: (r) => (r.temporal_hotspot * 10).toFixed(1),
+    mobileRender: (r) => r.temporal_hotspot.toFixed(1),
   },
   {
     key: "centrality",
