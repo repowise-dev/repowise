@@ -25,6 +25,11 @@ export {
 export { Toaster, toast, type ToasterProps } from "./toast";
 export * from "./breadcrumb";
 export * from "./empty-state";
+export {
+  DismissibleNotice,
+  type DismissibleNoticeProps,
+  type NoticeTone,
+} from "./dismissible-notice";
 export { InfoTip, type InfoTipProps } from "./info-tip";
 export { OwlLoader, type OwlLoaderProps } from "./owl-loader";
 export {
