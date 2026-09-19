@@ -150,15 +150,19 @@ async def _coverage_for_rescore(
     return coverage_map, [], source_format, False
 
 
-async def _persist_partial_health(session: Any, repo_id: str, report: Any) -> None:
+async def _persist_partial_health(
+    session: Any, repo_id: str, report: Any, repo_path: Any = None
+) -> None:
     """Upsert health findings + metrics for the changed-files subset.
 
     Delegates to :mod:`repowise.core.pipeline.incremental` — the logic moved
-    to core so workspace updates can reuse the incremental path.
+    to core so workspace updates can reuse the incremental path. ``repo_path``
+    is what lets it also re-score the git-derived markers on files this run did
+    not walk; without it those markers keep whatever the last full index said.
     """
     from repowise.core.pipeline.incremental import persist_partial_health
 
-    await persist_partial_health(session, repo_id, report)
+    await persist_partial_health(session, repo_id, report, repo_path)
 
 
 async def _persist_incremental_commits(session: Any, repo_id: str, repo_path: Any) -> None:
@@ -1117,7 +1121,9 @@ async def _persist_full_update_async(
             if partial_health_report is not None:
                 try:
                     with timed(timings, "persist.health"):
-                        await _persist_partial_health(session, repo_id, partial_health_report)
+                        await _persist_partial_health(
+                            session, repo_id, partial_health_report, repo_path
+                        )
                 except Exception as exc:
                     _skip("Health persist", exc)
 
