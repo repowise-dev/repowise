@@ -26,7 +26,7 @@ from .agent_provenance import (
     classifier_from_repo_config,
 )
 from .backfill import BACKFILL_PHASE, backfill_full_tier
-from .co_change import compute_co_changes_and_entropy
+from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import (
     compute_percentiles,
     count_active_contributors,
@@ -69,6 +69,7 @@ __all__ = [
     "_RECORD_SEP",
     "AgentProvenance",
     "AgentProvenanceClassifier",
+    "CoChangeWalk",
     "FixCommit",
     "FixWalk",
     "GitIndexSummary",

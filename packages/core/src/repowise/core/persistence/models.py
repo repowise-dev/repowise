@@ -642,6 +642,15 @@ class GitMetadata(Base):
     change_entropy: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     change_entropy_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
+    # Co-change breadth, measured over every partner rather than over the
+    # truncated ``co_change_partners_json`` list: the distinct-partner total,
+    # the commit-decayed sum of their pair weights, and the repo-relative rank
+    # of that mass among files that have any (as ``change_entropy_pct`` does).
+    # All zero when the walk did not run, which keeps the biomarker silent.
+    co_change_partner_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    co_change_mass: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    co_change_scatter_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
     # Agent-provenance rollup: how much of this file's indexed history is
     # agent-attributed (deterministic local-channel classification — identity
     # fields, message footers, co-author trailers; see

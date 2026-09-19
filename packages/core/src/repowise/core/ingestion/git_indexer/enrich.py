@@ -188,11 +188,37 @@ def count_active_contributors(metadata_list: list[dict], *, window_days: int = 9
     return sum(1 for ts in author_last_ts.values() if ts >= cutoff)
 
 
-def compute_percentiles(metadata_list: list[dict]) -> None:
-    """Compute churn_percentile and is_hotspot. Mutates in place.
+def _rank_within_eligible(
+    metadata_list: list[dict],
+    *,
+    source_key: str,
+    target_key: str,
+) -> None:
+    """Rank *source_key* among the files that carry a positive value for it.
 
-    Primary sort key is temporal_hotspot_score (exponentially decayed churn);
-    commit_count_90d is used as a tiebreak, matching the SQL PERCENT_RANK path.
+    Files without the signal keep ``target_key`` at 0.0 rather than entering the
+    ranking: a percentile over a mostly-zero population hands the topmost zero a
+    high rank. Shared by both percentile-gated history signals.
+    """
+    for meta in metadata_list:
+        meta.setdefault(target_key, 0.0)
+    eligible = [i for i, m in enumerate(metadata_list) if (m.get(source_key) or 0.0) > 0.0]
+    if not eligible:
+        return
+    eligible.sort(key=lambda i: metadata_list[i].get(source_key) or 0.0)
+    n = len(eligible)
+    for rank, idx in enumerate(eligible):
+        metadata_list[idx][target_key] = rank / n
+
+
+def compute_percentiles(metadata_list: list[dict]) -> None:
+    """Compute churn_percentile, is_hotspot, and the history percentiles.
+
+    Primary sort key for churn is temporal_hotspot_score (exponentially decayed
+    churn); commit_count_90d is used as a tiebreak, matching the SQL
+    PERCENT_RANK path. ``change_entropy_pct`` and ``co_change_scatter_pct`` are
+    ranked among the files that carry the signal at all -- see
+    :func:`_rank_within_eligible`.
     """
     if not metadata_list:
         return
@@ -217,21 +243,16 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
         # rank loop so the list is scanned once.
         if churn_pct >= 0.75 and meets_hotspot_floors(meta):
             meta["is_hotspot"] = True
-        # change_entropy percentile default — overwritten below for files
-        # carrying a positive entropy signal.
-        meta.setdefault("change_entropy_pct", 0.0)
 
-    # change_entropy percentile (mirrors churn_percentile). Rank ONLY files
-    # that carry a positive entropy signal; files with zero entropy — every
-    # file on the ESSENTIAL tier, plus FULL-tier files that only ever changed
-    # alone — keep pct 0.0 so the change_entropy biomarker stays silent. (A
-    # naive rank-everything would hand the topmost zero-entropy file a high
-    # percentile when most files are zero.)
-    entropy_idxs = [
-        i for i in range(total) if (metadata_list[i].get("change_entropy") or 0.0) > 0.0
-    ]
-    n_ent = len(entropy_idxs)
-    if n_ent > 0:
-        entropy_idxs.sort(key=lambda i: metadata_list[i].get("change_entropy") or 0.0)
-        for rank, idx in enumerate(entropy_idxs):
-            metadata_list[idx]["change_entropy_pct"] = rank / n_ent
+    # Files with zero entropy — every file on the ESSENTIAL tier, plus
+    # FULL-tier files that only ever changed alone — stay at 0.0 so the
+    # change_entropy biomarker is silent for them.
+    _rank_within_eligible(
+        metadata_list, source_key="change_entropy", target_key="change_entropy_pct"
+    )
+
+    # Ranked on the decayed partner mass, not the count: a count saturates at
+    # the storage cap and never retires, so it can only ever ratchet up.
+    _rank_within_eligible(
+        metadata_list, source_key="co_change_mass", target_key="co_change_scatter_pct"
+    )

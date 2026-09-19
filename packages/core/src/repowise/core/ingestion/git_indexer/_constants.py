@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from ...co_change import (
+    CO_CHANGE_COMMIT_DECAY_TAU,
     CO_CHANGE_DECAY_TAU,
     MAX_PARTNERS_PER_FILE,
     MIN_CO_CHANGE_SUPPORT,
@@ -339,8 +340,12 @@ def classify_commit_category(subject: str) -> str:
     return "other"
 
 
-# Co-change temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
+# Change-entropy temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
+# Keeps the co-change name; the pair weight uses the commit clock below.
 _CO_CHANGE_DECAY_TAU: float = CO_CHANGE_DECAY_TAU
+
+# Co-change pair decay, measured in commits rather than days.
+_CO_CHANGE_COMMIT_DECAY_TAU: float = CO_CHANGE_COMMIT_DECAY_TAU
 
 # Hotspot temporal decay: half-life for exponentially weighted churn score.
 HOTSPOT_HALFLIFE_DAYS: float = 180.0

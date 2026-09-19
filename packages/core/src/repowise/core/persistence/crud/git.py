@@ -191,6 +191,8 @@ async def get_dead_code_git_fields(session: AsyncSession, repository_id: str) ->
 # wiped the init-computed values for exactly the files that change most.
 _WALK_FIELD_EMPTIES: dict[str, tuple] = {
     "co_change_partners_json": ("[]", "", None),
+    "co_change_partner_count": (0, None),
+    "co_change_mass": (0, 0.0, None),
     "change_entropy": (0, 0.0, None),
     # AI line share comes from the whole trace file, merged only into files
     # reindexed this pass. Preserve a prior non-empty share when a transient
@@ -245,17 +247,21 @@ async def recompute_git_percentiles(
     session: AsyncSession,
     repository_id: str,
 ) -> int:
-    """Recompute churn_percentile, is_hotspot, and change_entropy_pct using SQL
-    PERCENT_RANK window functions.
+    """Recompute churn_percentile, is_hotspot, and the history percentiles in SQL.
 
     Called after incremental updates so that percentile rankings stay fresh
     without a full ``repowise init``.  Returns the number of rows updated.
 
     Primary churn ranking signal is temporal_hotspot_score (exponentially decayed
-    churn); commit_count_90d is the tiebreak. change_entropy_pct ranks files by
-    change_entropy ascending — zero-entropy files tie at the minimum (0.0), so
-    they stay below the biomarker's ≥0.80 gate. Works on both SQLite (3.25+) and
+    churn); commit_count_90d is the tiebreak. Works on both SQLite (3.25+) and
     PostgreSQL.
+
+    ``change_entropy_pct`` and ``co_change_scatter_pct`` mirror
+    ``enrich._rank_within_eligible``: ``ROW_NUMBER`` over the files carrying a
+    positive signal, over how many of them there are. Ranking them over the
+    whole table instead gives a file a different percentile here than the
+    Python path gives it, and a gate at 0.80 turns that into findings that
+    appear and disappear on an unchanged tree.
 
     Hotspot classification mirrors ``enrich.meets_hotspot_floors`` (issue #361):
     the repo-relative top-quartile gate AND the absolute activity floors —
@@ -282,13 +288,25 @@ WITH ranked AS (
     PERCENT_RANK() OVER (
       PARTITION BY repository_id
       ORDER BY COALESCE(temporal_hotspot_score, 0.0), commit_count_90d
-    ) AS prank,
-    PERCENT_RANK() OVER (
-      PARTITION BY repository_id
-      ORDER BY COALESCE(change_entropy, 0.0)
-    ) AS erank
+    ) AS prank
   FROM git_metadata
   WHERE repository_id = :repo_id
+),
+entropy_ranked AS (
+  SELECT id,
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0)) - 1) * 1.0
+      / (SELECT COUNT(*) FROM git_metadata
+         WHERE repository_id = :repo_id AND COALESCE(change_entropy, 0.0) > 0.0) AS erank
+  FROM git_metadata
+  WHERE repository_id = :repo_id AND COALESCE(change_entropy, 0.0) > 0.0
+),
+scatter_ranked AS (
+  SELECT id,
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0)) - 1) * 1.0
+      / (SELECT COUNT(*) FROM git_metadata
+         WHERE repository_id = :repo_id AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank
+  FROM git_metadata
+  WHERE repository_id = :repo_id AND COALESCE(co_change_mass, 0.0) > 0.0
 )
 UPDATE git_metadata
 SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id),
@@ -297,7 +315,10 @@ SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.
                   AND (git_metadata.commit_count_90d >= :high_commits_90d
                        OR COALESCE(git_metadata.temporal_hotspot_score, 0.0)
                           >= :min_temporal_score)),
-    change_entropy_pct = (SELECT erank FROM ranked WHERE ranked.id = git_metadata.id)
+    change_entropy_pct = COALESCE(
+      (SELECT erank FROM entropy_ranked WHERE entropy_ranked.id = git_metadata.id), 0.0),
+    co_change_scatter_pct = COALESCE(
+      (SELECT crank FROM scatter_ranked WHERE scatter_ranked.id = git_metadata.id), 0.0)
 WHERE repository_id = :repo_id;
 """
     await session.execute(
