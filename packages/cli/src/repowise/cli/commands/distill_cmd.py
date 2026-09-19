@@ -48,9 +48,10 @@ from repowise.cli.helpers import find_repowise_repo_root
     hidden=True,
     type=click.Choice([SHELL_POSIX, SHELL_POWERSHELL]),
     help=(
-        "Shell dialect COMMAND was written for. Unlike --source this is not a "
-        "label: it decides which interpreter executes the command. Omitted "
-        "means this host's default shell."
+        "Shell dialect COMMAND was written for. Unlike --source this is not "
+        "only a label: 'posix' makes a command carrying POSIX shell syntax run "
+        "in a POSIX shell rather than this host's default one. Omitted, and "
+        "'powershell', both mean the host default."
     ),
 )
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
@@ -71,17 +72,20 @@ def distill_command(source: str, dialect: str | None, command: tuple[str, ...]) 
     restore it with ``repowise expand <ref>``. On any filter problem the raw
     output is printed unchanged. The command's exit code is preserved.
     """
-    # A POSIX-dialect command needs POSIX rendering wherever it runs; on a
-    # POSIX host every command is one, which is what keeps today's behaviour
-    # for plain `repowise distill ...` from a terminal.
-    posix_dialect = dialect == SHELL_POSIX
+    # Only a command handed over as ONE token carries shell syntax of its
+    # own — that is the shape the hook wraps a chain or a pipeline in, and the
+    # shape a user quotes deliberately. A multi-token argv is the same command
+    # in either dialect, and rendering it for this host is what has always
+    # worked, so the POSIX shell — and the refusal when there is none — stays
+    # confined to exactly the commands that need it.
+    needs_posix_shell = dialect == SHELL_POSIX and sys.platform == "win32" and len(command) == 1
     try:
-        command_str = _render_command(command, posix=posix_dialect or sys.platform != "win32")
+        command_str = _render_command(command)
     except UnrenderableCommandError as exc:
         # Refusing is the safe half of the trade: running a command the user
         # did not type is worse than not running one they did.
         raise click.ClickException(str(exc)) from exc
-    if posix_dialect and sys.platform == "win32":
+    if needs_posix_shell:
         shell_exe = _posix_shell()
         if shell_exe is None:
             # cmd.exe would accept most of these and mean something else by
@@ -115,6 +119,12 @@ def distill_command(source: str, dialect: str | None, command: tuple[str, ...]) 
     sys.exit(proc.returncode)
 
 
+#: Shells that read a POSIX command line from ``-c``. An allowlist rather
+#: than a "does this file exist" test, because the wrong answer here is not an
+#: error — it is a different command running and reporting success.
+_POSIX_SHELL_NAMES = frozenset({"bash", "sh"})
+
+
 def _posix_shell() -> str | None:
     """Absolute path to the POSIX shell that launched this process, or None.
 
@@ -126,14 +136,44 @@ def _posix_shell() -> str | None:
     for its children, so a command that arrived from the agent's Bash tool is
     handed back to the very interpreter that started us.
 
-    None when nothing in the environment names a POSIX shell that exists. The
-    caller must refuse rather than substitute one: the whole point is that the
-    command means something different in the wrong shell.
+    Existence is not the test. ``-c`` is also how ``powershell.exe`` takes a
+    command, so the name has to be one of ``_POSIX_SHELL_NAMES``, and WSL's
+    ``System32\\bash.exe`` is excluded by path even though it passes that.
+
+    None when nothing in the environment names a POSIX shell this process can
+    use. The caller must refuse rather than substitute one: the whole point is
+    that the command means something different in the wrong shell.
     """
     shell = os.environ.get("SHELL")
-    if shell and os.path.isfile(shell):
-        return shell
-    return None
+    if not shell or not os.path.isfile(shell):
+        return None
+    name = os.path.basename(shell).lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    if name not in _POSIX_SHELL_NAMES:
+        # ``-c`` is also how powershell.exe and pwsh.exe take a command, so an
+        # existence check alone would hand a POSIX command line to PowerShell
+        # and get a plausible answer to a different question.
+        return None
+    if _under_system32(shell):
+        # System32's ``bash.exe`` is WSL: another filesystem, another ``git``,
+        # and no reading of a ``C:`` path that matches this process's. It is a
+        # POSIX shell and still the wrong one.
+        return None
+    return shell
+
+
+def _under_system32(path: str) -> bool:
+    # os.environ is case-insensitive on Windows, which is the only host
+    # this is reached on.
+    root = os.environ.get("SYSTEMROOT")
+    if not root:
+        return False
+    try:
+        prefix = os.path.normcase(os.path.join(os.path.abspath(root), "system32")) + os.sep
+        return os.path.normcase(os.path.abspath(path)).startswith(prefix)
+    except (OSError, ValueError):
+        return False
 
 
 # cmd.exe consumes these before the child ever sees them. ``^`` escapes each
@@ -149,12 +189,8 @@ class UnrenderableCommandError(Exception):
     """A token cmd.exe cannot be handed over without changing the command."""
 
 
-def _render_command(tokens: tuple[str, ...], *, posix: bool) -> str:
+def _render_command(tokens: tuple[str, ...]) -> str:
     """Rejoin click's pre-split tokens into one shell command string.
-
-    *posix* selects the quoting dialect, and it is the dialect of the shell
-    that will run the result rather than the dialect of this host: a command
-    the agent wrote for bash is rejoined for bash even on Windows.
 
     A single token is passed through untouched: the user quoted the whole
     command themselves, so shell syntax in it is what they asked for.
@@ -187,7 +223,7 @@ def _render_command(tokens: tuple[str, ...], *, posix: bool) -> str:
     """
     if len(tokens) == 1:
         return tokens[0]
-    if posix:
+    if sys.platform != "win32":
         import shlex
 
         return shlex.join(tokens)

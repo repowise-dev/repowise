@@ -13,7 +13,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from repowise.cli.commands.distill_cmd import _render_command, distill_command
+from repowise.cli.commands.distill_cmd import (
+    _posix_shell,
+    _render_command,
+    distill_command,
+)
 from repowise.cli.commands.expand_cmd import expand_command
 from repowise.core.distill.markers import parse_marker_refs
 from repowise.core.distill.store import OmissionStore
@@ -102,7 +106,7 @@ def test_render_command_quotes_shell_metacharacters() -> None:
     unquoted; ``_render_command`` caret-escapes the rendered line to close
     that.
     """
-    rendered = _render_command(("git", "log", "--grep=a&&b"), posix=os.name == "posix")
+    rendered = _render_command(("git", "log", "--grep=a&&b"))
     if os.name == "posix":
         assert rendered == "git log '--grep=a&&b'"
     else:
@@ -111,8 +115,7 @@ def test_render_command_quotes_shell_metacharacters() -> None:
 
 def test_render_command_passes_a_single_token_through() -> None:
     """One token means the user quoted the command themselves; that is intent."""
-    for posix in (True, False):
-        assert _render_command(("pytest -x | head -5",), posix=posix) == "pytest -x | head -5"
+    assert _render_command(("pytest -x | head -5",)) == "pytest -x | head -5"
 
 
 @pytest.mark.parametrize(
@@ -149,7 +152,7 @@ def test_render_command_roundtrips_argv_through_the_shell(payload: str, tmp_path
     """
     tokens = (sys.executable, "-c", "import sys,json;print(json.dumps(sys.argv[1:]))", payload)
     proc = subprocess.run(
-        _render_command(tokens, posix=os.name == "posix"),
+        _render_command(tokens),
         shell=True,
         capture_output=True,
         text=True,
@@ -183,7 +186,7 @@ def test_render_command_keeps_an_executable_path_with_spaces_intact(tmp_path: Pa
     shim.write_text("@echo SHIM_OK\n", encoding="utf-8")
 
     proc = subprocess.run(
-        _render_command((str(shim), "arg one", "a&b"), posix=False),
+        _render_command((str(shim), "arg one", "a&b")),
         shell=True,
         capture_output=True,
         text=True,
@@ -203,7 +206,7 @@ def test_render_command_refuses_a_defined_env_var_expansion(monkeypatch) -> None
     value is command execution. There is no escape for it, so refuse."""
     monkeypatch.setenv("REPOWISE_TEST_EVIL", "x&echo pwned")
     with pytest.raises(Exception, match="REPOWISE_TEST_EVIL"):
-        _render_command(("git", "log", "--grep=%REPOWISE_TEST_EVIL%"), posix=False)
+        _render_command(("git", "log", "--grep=%REPOWISE_TEST_EVIL%"))
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
@@ -211,7 +214,7 @@ def test_render_command_allows_an_undefined_percent_pair(monkeypatch) -> None:
     """`git log --format=%h%n%s` reads as %h% to cmd but expands to nothing."""
     monkeypatch.delenv("h", raising=False)
     monkeypatch.delenv("n", raising=False)
-    assert "%h%n%s" in _render_command(("git", "log", "--format=%h%n%s"), posix=False)
+    assert "%h%n%s" in _render_command(("git", "log", "--format=%h%n%s"))
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
@@ -220,7 +223,7 @@ def test_render_command_refuses_newlines(payload: str) -> None:
     """cmd truncates the command line at a newline and drops a bare CR, both
     silently, so the child would get a quietly different argv."""
     with pytest.raises(Exception, match="newline"):
-        _render_command(("git", "log", f"--grep={payload}"), posix=False)
+        _render_command(("git", "log", f"--grep={payload}"))
 
 
 # ---------------------------------------------------------------------------
@@ -234,16 +237,53 @@ def test_render_command_refuses_newlines(payload: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_render_command_follows_the_dialect_not_the_host() -> None:
-    """A bash command line is rejoined for bash even when the host is Windows.
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
+@pytest.mark.parametrize(
+    "shell_value",
+    [
+        pytest.param(None, id="unset"),
+        pytest.param("powershell.exe", id="powershell-also-takes--c"),
+        pytest.param("system32-bash", id="wsl-is-a-posix-shell-and-still-wrong"),
+    ],
+)
+def test_only_a_real_posix_shell_is_accepted(monkeypatch, shell_value) -> None:
+    """Breaking what the guard protects, one substitute at a time.
 
-    This is the whole of 1a in one assertion: rendering used to key on
-    ``sys.platform``, so a POSIX-dialect token was caret-escaped for cmd.exe
-    whatever shell was about to read it.
+    ``-c`` is how ``powershell.exe`` takes a command too, so an
+    existence check would hand a POSIX pipeline to PowerShell and get a
+    plausible answer to a different question. WSL's ``System32\bash.exe``
+    passes a name test and is still another machine.
     """
-    tokens = ("git", "log", "--grep=a&&b")
-    assert _render_command(tokens, posix=True) == "git log '--grep=a&&b'"
-    assert _render_command(tokens, posix=False) == "git log --grep=a^&^&b"
+    if shell_value is None:
+        monkeypatch.delenv("SHELL", raising=False)
+    elif shell_value == "system32-bash":
+        root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+        wsl = os.path.join(root, "System32", "bash.exe")
+        if not os.path.isfile(wsl):
+            pytest.skip("WSL bash.exe not installed on this host")
+        monkeypatch.setenv("SHELL", wsl)
+    else:
+        found = shutil.which(shell_value)
+        if found is None:
+            pytest.skip(f"{shell_value} not on this host")
+        monkeypatch.setenv("SHELL", found)
+    assert _posix_shell() is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
+def test_a_plain_command_never_needs_a_posix_shell(repo_cwd: Path, monkeypatch) -> None:
+    """The refusal must not reach commands that were always fine in cmd.exe.
+
+    A multi-token argv is the same command in either dialect. Only the
+    single-token shape the hook wraps a chain in carries POSIX syntax of its
+    own, so only that shape may ever refuse to run.
+    """
+    monkeypatch.delenv("SHELL", raising=False)
+    result = CliRunner().invoke(
+        distill_command, ["--shell", "posix", *_py("print('still runs')")]
+    )
+    assert result.exit_code == 0, result.output
+    assert "still runs" in result.output
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
@@ -255,7 +295,7 @@ def test_posix_dialect_runs_in_a_posix_shell(repo_cwd: Path) -> None:
     than an error — which is why the hook used to decline the command
     outright.
     """
-    if shutil.which("bash") is None and not os.environ.get("SHELL"):
+    if _posix_shell() is None:
         pytest.skip("no POSIX shell on this host")
     command = ['echo "a b" | tr " " "_"']
     posix = CliRunner().invoke(distill_command, ["--shell", "posix", *command])
