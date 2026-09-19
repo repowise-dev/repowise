@@ -135,6 +135,40 @@ def _isolate_structlog_config():
     finally:
         structlog.configure(**saved)
 
+@pytest.fixture(autouse=True)
+def _isolate_silenced_logger_levels():
+    """Restore stdlib logger levels mutated by silence_logs_for_machine_output.
+
+    That helper also calls ``logging.getLogger(name).setLevel(logging.ERROR)``
+    on ``httpx``, ``httpcore``, ``repowise.core``, and ``repowise.server`` —
+    process-global state that ``_isolate_structlog_config`` (above) does not
+    touch, since it only snapshots structlog's own configuration.
+
+    Without this, a test that exercises any ``--format json``/``--format md``
+    command leaves those loggers raised to ERROR for the rest of the session.
+    A later test asserting a ``caplog`` record from a module under
+    ``repowise.core`` or ``repowise.server`` then reads an empty list: the
+    module's own logger has no level set, so its *effective* level is
+    inherited from the ancestor now pinned at ERROR, and
+    ``logger.warning(...)`` is dropped before any handler — including
+    ``caplog``'s — ever runs. Same failure shape as the structlog case
+    above: passes when the file is run alone, fails only in a full run,
+    depending on whether a machine-output command executed first (#1976).
+
+    Snapshot and restore rather than reset to ``NOTSET``: a test that sets a
+    level on purpose keeps working, and the next test still starts clean.
+    """
+    import logging
+
+    from repowise.cli.helpers import MACHINE_OUTPUT_LOGGER_NAMES
+
+    loggers = [logging.getLogger(name) for name in MACHINE_OUTPUT_LOGGER_NAMES]
+    previous_levels = [logger.level for logger in loggers]
+    try:
+        yield
+    finally:
+        for logger, level in zip(loggers, previous_levels, strict=True):
+            logger.setLevel(level)
 
 @pytest.fixture(scope="session")
 def repo_root() -> Path:

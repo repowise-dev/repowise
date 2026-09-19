@@ -77,35 +77,85 @@ def _clean_flag(value: str | None) -> bool:
 # Logging / structlog helpers
 # ---------------------------------------------------------------------------
 
+MACHINE_OUTPUT_LOGGER_NAMES = ("httpx", "httpcore", "repowise.core", "repowise.server")
 
-def silence_logs_for_machine_output() -> None:
-    """Suppress info/debug log output when stdout is machine-readable (JSON/md).
+@contextlib.contextmanager
+def silence_logs_for_machine_output():
+    """Suppress info/debug log output while stdout is machine-readable (JSON/md).
 
     Structlog and stdlib loggers write to stdout by default. When a command
     emits JSON or Markdown, those lines corrupt the output for downstream
     consumers (e.g. ``repowise health --format json | jq .kpis``).
 
-    Call this at the top of any command that supports ``--format json`` or
-    ``--format md`` before the ingestion pipeline starts.
+    Context manager, not a bare call: logger levels and the structlog
+    wrapper class are process-global with no other owner, so a caller that
+    forgot to restore them would permanently silence its own process — the
+    case that mattered in practice was a test session, where the mutation
+    outlived the test that made it and broke unrelated caplog assertions
+    later in the same run (see #1976).
+
+    Use as:
+
+        with silence_logs_for_machine_output():
+            emit_json_or_markdown(...)
     """
     import logging
 
-    logging.getLogger("httpx").setLevel(logging.ERROR)
-    logging.getLogger("httpcore").setLevel(logging.ERROR)
-    for _name in ("repowise.core", "repowise.server"):
-        logging.getLogger(_name).setLevel(logging.ERROR)
+    loggers = [logging.getLogger(name) for name in MACHINE_OUTPUT_LOGGER_NAMES]
+    previous_levels = [logger.level for logger in loggers]
+
+    previous_structlog_config: dict[str, Any] | None = None
     try:
         import structlog
 
-        # cache_logger_on_first_use=False is required: module-level
-        # ``structlog.get_logger`` calls snapshot the logger before configure()
-        # runs and would bypass this filter without it.
-        structlog.configure(
-            wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
-            cache_logger_on_first_use=False,
-        )
+        previous_structlog_config = dict(structlog.get_config())
     except ImportError:
         pass
+
+    try:
+        for logger in loggers:
+            logger.setLevel(logging.ERROR)
+        if previous_structlog_config is not None:
+            import structlog
+
+            # cache_logger_on_first_use=False is required: module-level
+            # ``structlog.get_logger`` calls snapshot the logger before
+            # configure() runs and would bypass this filter without it.
+            structlog.configure(
+                wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
+                cache_logger_on_first_use=False,
+            )
+        yield
+    finally:
+        for logger, level in zip(loggers, previous_levels, strict=True):
+            logger.setLevel(level)
+        if previous_structlog_config is not None:
+            import structlog
+
+            structlog.configure(**previous_structlog_config)
+
+def silence_logs_for_machine_output_until_close() -> None:
+    """Enter ``silence_logs_for_machine_output`` and restore it when the
+    current click command finishes.
+
+    ``silence_logs_for_machine_output`` is a context manager because it must
+    always restore what it mutates — but not every call site has a single
+    lexical block to wrap it around. An option callback (see the ``--format``
+    and ``--json`` callbacks in ``output.py``) returns before the command body
+    even starts running, so a ``with`` block there would restore the levels
+    before the command does any work. Re-indenting an entire command
+    function's body under one ``with`` is also a large, easy-to-get-wrong
+    diff at call sites deep inside long functions.
+
+    Solved the same way ``update_cmd`` already solves it for restoring
+    ``console.file``: register the undo against click's context instead of a
+    lexical scope, so it fires when the command finishes regardless of how
+    much code runs in between or where the call sits.
+    """
+    ctx = click.get_current_context()
+    cm = silence_logs_for_machine_output()
+    cm.__enter__()
+    ctx.call_on_close(lambda: cm.__exit__(None, None, None))
 
 
 # ---------------------------------------------------------------------------
