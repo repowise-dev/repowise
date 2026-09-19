@@ -535,6 +535,11 @@ def _select_lines(
     Returns the header plus the rendered lines, and the decisions behind them.
     The caps are arguments rather than module reads because the two sections
     are budgeted separately, which is the point of having two.
+
+    A line that does not fit is skipped, not read as the end of the list. One
+    line can cost more than a whole section's budget, so stopping there makes
+    the section's contents a function of the top record's verbosity rather
+    than of its rank, and a single wordy record silences the section.
     """
     lines = [header]
     budget = token_cap - _estimate_tokens(header)
@@ -549,7 +554,7 @@ def _select_lines(
         line = _format_decision_line(decision)
         cost = _estimate_tokens(line)
         if cost > budget:
-            break
+            continue
         lines.append(line)
         budget -= cost
         shown.append(decision)

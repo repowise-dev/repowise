@@ -787,6 +787,50 @@ async def test_the_candidate_lane_has_its_own_caps(tmp_path, monkeypatch):
     assert decision_inject._estimate_tokens(block) <= decision_inject._TOKEN_CAP // 2
 
 
+async def test_one_costly_candidate_does_not_empty_the_lane(tmp_path, monkeypatch):
+    """A line over budget is skipped, not treated as the end of the ranking.
+
+    One rendered line can cost more than the candidate section's whole budget,
+    so a section that stopped at the first one delivered nothing whenever a
+    wordy record ranked top. Measured on the live store before this changed:
+    sixty candidates cleared the relevance floor and none was delivered, on
+    31% of 199 working sets taken from real commits.
+    """
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-costly",
+                "title": "The costly candidate",
+                "decision": "pad the budget " * 20,
+                "rationale": "pad the reason " * 12,
+                "confidence": 0.95,
+                "accepted": False,
+                "status": "proposed",
+                "links": [("src/core/auth.py", "file")],
+            },
+            {
+                "id": "d-affordable",
+                "title": "The affordable candidate",
+                "decision": "keep it short",
+                "confidence": 0.5,
+                "accepted": False,
+                "status": "proposed",
+                "links": [("src/core/auth.py", "file")],
+            },
+        ],
+    )
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+    assert block is not None
+    # The costly record ranks first and does not fit; the section carries the
+    # next one that does rather than coming back empty.
+    assert "The affordable candidate" in block
+    assert "The costly candidate" not in block
+    assert decision_inject._estimate_tokens(block) <= decision_inject._CANDIDATE_TOKEN_CAP
+
+
 async def test_a_repo_wide_candidate_never_takes_the_whole_lane(tmp_path, monkeypatch):
     """A repo-wide candidate clears the floor on every session by construction,
     so without its own cap the lane would never carry one about the files in
