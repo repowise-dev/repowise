@@ -156,9 +156,32 @@ async def test_generate_token_counts_with_cache():
         provider._client = mock_client.return_value
         result = await provider.generate("sys", "user")
 
-    assert result.input_tokens == 200
+    # input_tokens is the full prompt: uncached remainder (200) + cache reads (50)
+    # + cache creation (0)
+    assert result.input_tokens == 250
     assert result.output_tokens == 80
     assert result.cached_tokens == 50
+
+
+async def test_generate_token_counts_all_cache_dispositions():
+    """All three disjoint dispositions sum into input_tokens."""
+    provider = AnthropicProvider(api_key="sk-ant-test")
+    mock_response = _make_mock_response()
+    mock_response.usage.input_tokens = 100          # uncached remainder
+    mock_response.usage.cache_read_input_tokens = 300
+    mock_response.usage.cache_creation_input_tokens = 50
+
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value.messages.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
+        result = await provider.generate("sys", "user")
+
+    assert result.input_tokens == 450  # 100 + 300 + 50
+    assert result.cached_tokens == 300
+    assert result.usage["uncached_input_tokens"] == 100
+    assert result.usage["cache_creation_input_tokens"] == 50
+    assert result.usage["cache_read_input_tokens"] == 300
+    assert result.usage["input_tokens"] == 450
 
 
 async def test_generate_sends_correct_params():
