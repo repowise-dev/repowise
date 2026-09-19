@@ -265,6 +265,7 @@ _UNIVERSAL_NON_IMPORTABLE: frozenset[str] = frozenset(
         "type_alias",
         "namespace",
         "module",
+        "impl",
     }
 )
 
@@ -354,6 +355,7 @@ _UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset(
         "interface",
         "enum",
         "type_alias",
+        "impl",
     }
 )
 
