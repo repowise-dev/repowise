@@ -1563,15 +1563,16 @@ async def get_health(
     Every block and accepted value: docs/agent/MCP_TOOLS.md.
 
     Args:
-        targets: file paths or ``module:<name>``; empty means dashboard,
-            unmatched ones land in ``unresolved``.
+        targets: file paths or ``module:<name>``; unmatched ones land in
+            ``unresolved``.
         include: ``biomarkers``|``refactoring``|``trend``|``coverage``|
             ``accuracy``|``signals``|``churn_complexity``|``doc_drift``,
-            or a dimension; ``performance``/``refactoring`` add queues.
+            or a dimension incl. ``advisory``; ``performance`` and
+            ``refactoring`` add queues.
         only: keys to keep; identity, totals, recovery survive.
             ``biomarkers``/``accuracy``/``refactoring`` alias their block key;
-            ``performance``/``defect``/``maintainability`` do not: they filter
-            rows and land in ``unknown_only_keys``.
+            ``performance``/``defect``/``maintainability``/``advisory``
+            do not: they filter rows into ``unknown_only_keys``.
         repo: usually omitted.
         limit: max rows per ranked list, ``0`` for none.
         cursor: zero-based offset into a ranked list.
@@ -1583,8 +1584,8 @@ async def get_health(
         performance_view/_context/_boundary/_confidence/_sort: queue
             projection and filters; the facets list them.
         scope / counts: default ``all``/``everything``. ``production`` drops
-            test files, which score higher; ``code_shape`` drops the
-            git-derived half of the score and its findings.
+            test files; ``code_shape`` drops the git-derived half of the
+            score and its findings.
 
     """
     started = perf_counter()
