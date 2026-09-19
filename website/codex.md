@@ -84,6 +84,12 @@ codex exec --ephemeral --sandbox read-only --json --cd <repo> -
 
 Repowise records token usage from Codex JSONL and treats `codex_cli/*` cost as `$0.00`. `--model` is passed to Codex only when explicitly configured.
 
+Concurrency defaults to 4 processes. The variable below overrides it in either direction -- lower it if you are hitting limits, and note that raising it past 4 is allowed but is the quickest way to hit them:
+
+```bash
+REPOWISE_CODEX_CLI_CONCURRENCY=2 repowise generate --unwritten
+```
+
 ## Plugin and skills
 
 The Repowise repository includes a local Codex plugin at `plugins/codex` and a marketplace entry at `.agents/plugins/marketplace.json`.
