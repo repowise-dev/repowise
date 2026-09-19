@@ -101,7 +101,34 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: every marker now reads ``FileContext.all_functions``, the full
+# Current stamp: a multi-item ``with`` header is classified on its oracle rather
+# than on whichever context manager the author happened to type first.
+# ``assert_call_kinds`` is the language's plain call node, not an assertion
+# shape, so the header scan returned the first call it met and classified only
+# that one: ``with pytest.raises(E), atomic():`` counted nothing while
+# ``with atomic(), pytest.raises(E):`` counted one. Each item is classified now,
+# and a declining call's arguments are not scanned, so an assertion passed as an
+# argument still does not stand in for the header's oracle.
+#
+# v21 moves two stored counts, both of which were order-dependent in the same
+# way. ``assertion_count`` rises on such a header. ``mock_setup_count`` falls on
+# it, because ``mock_walk._count_body_setup`` skips a statement
+# ``_is_assertion_statement`` admits and that predicate runs this same branch --
+# ``with patch(...), pytest.raises(E):`` already counted no mock setup in v20,
+# and the reversed spelling now agrees with it. Both feed
+# ``mock_saturated_test``, one per side of its ratio, and it is advisory.
+#
+# ``assertion_blocks`` does not move at all: a ``with`` header is capped at the
+# broad tier, so it can never join a narrow run. Verified set-for-set against
+# v20 on four corpora, with the average defect score unmoved on all four and no
+# ``mock_saturated_test`` finding gained or lost. The two calibrated block
+# markers read that field alone and are untouched, and every reader of the two
+# counts above is advisory, so no score moves. Python is the only language that
+# maps ``with_kinds`` and opts into assertion detection, so no other language's
+# rows change. A cached v20 walk carries the old counts, and this stamp is what
+# re-walks them.
+#
+# v20: every marker now reads ``FileContext.all_functions``, the full
 # walked list, where eleven of them used to read a ``function_metrics`` map keyed
 # by function name. That key kept one row per distinct name, so a file's anonymous
 # ``it`` callbacks collapsed into one and a method shadowed its same-named
@@ -213,7 +240,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 20
+HEALTH_ANALYZER_VERSION = 21
 
 
 def walked_functions(

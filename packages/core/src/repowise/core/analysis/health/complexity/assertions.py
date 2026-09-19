@@ -190,15 +190,41 @@ def _find_assert_call(stmt: Node, kinds: frozenset[str]) -> Node | None:
     return None
 
 
-def _find_context_manager_call(stmt: Node, lmap: LanguageNodeMap) -> Node | None:
-    """An assertion-shaped call in a ``with`` header, body excluded."""
-    stack = [c for c in stmt.children if c.is_named and c.type not in lmap.block_kinds]
+def _context_manager_tier(
+    stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None
+) -> int:
+    """The tier a ``with`` header asserts at, body excluded.
+
+    ``assert_call_kinds`` is the language's plain call node, so stopping at the
+    first one met answered on whichever item came first:
+    ``with self.assertRaises(E), atomic():`` was classified on ``atomic()``.
+    Every item is classified instead, and an assertion anywhere beats a
+    verification anywhere, so no verdict turns on the order they were typed in.
+    A header holding only a verification still reports one, as the single-item
+    form always has.
+
+    A declining call's own children are not scanned -- the *argument* half of
+    the bound :func:`_find_assert_call` puts on a statement. The depth half
+    does not carry over: a with-item's call sits under an ``as_pattern`` or a
+    ``with_clause``, so the descent must reach through any non-call node.
+    """
+
+    def _header_children(node: Node) -> list[Node]:
+        return [c for c in node.children if c.is_named and c.type not in lmap.block_kinds]
+
+    verification = _NOT_ASSERTION
+    stack = _header_children(stmt)[::-1]
     while stack:
         node = stack.pop()
         if node.type in lmap.assert_call_kinds:
-            return node
-        stack.extend(c for c in node.children if c.is_named and c.type not in lmap.block_kinds)
-    return None
+            tier = _tier_without_narrow(node, dialect)
+            if tier == _VERIFICATION:
+                verification = tier
+            elif tier != _NOT_ASSERTION:
+                return tier
+            continue
+        stack.extend(reversed(_header_children(node)))
+    return verification
 
 
 def _assertion_tier(stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None) -> int:
@@ -231,8 +257,7 @@ def _assertion_tier(stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | 
         # ``with pytest.raises(...)`` / ``with self.assertRaises(...)`` is the
         # oracle, but the call sits in the header rather than in a statement of
         # its own, so every tier above misses it.
-        call = _find_context_manager_call(stmt, lmap)
-        return _NOT_ASSERTION if call is None else _tier_without_narrow(call, dialect)
+        return _context_manager_tier(stmt, lmap, dialect)
     else:
         return _NOT_ASSERTION
     if call is None:
