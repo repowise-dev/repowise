@@ -927,8 +927,8 @@ def resolve_provider(
     """Resolve a provider instance from CLI flags or environment variables.
 
     Resolution order:
-      1. Explicit ``--provider`` flag
-      2. ``REPOWISE_PROVIDER`` env var
+      1. Explicit ``--provider`` / ``--model`` flag
+      2. ``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env var
       3. ``.repowise/config.yaml`` (written by ``repowise init``)
       4. Auto-detect from API key env vars
     """
@@ -954,6 +954,9 @@ def resolve_provider(
 
     if provider_name is None and cfg.get("provider"):
         provider_name = cfg["provider"]
+
+    if model is None:
+        model = (os.environ.get("REPOWISE_MODEL") or "").strip() or None
 
     # Honor the config model regardless of how the provider was resolved (#416).
     if model is None and cfg.get("model"):

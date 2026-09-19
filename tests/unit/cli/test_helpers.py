@@ -658,6 +658,30 @@ class TestResolveProviderConfigModel:
         assert resolve_provider("openrouter", "anthropic/claude-opus-4", repo_path=tmp_path)
         assert captured["kwargs"].get("model") == "anthropic/claude-opus-4"
 
+    def test_env_model_used_when_set(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-sonnet-5")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "anthropic/claude-sonnet-5"
+
+    def test_env_model_overrides_config_model(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "anthropic/claude-opus-5"
+
+    def test_explicit_model_flag_overrides_env_model(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
+
+        assert resolve_provider("openrouter", "openai/gpt-5.6-luna", repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "openai/gpt-5.6-luna"
+
 
 # ---------------------------------------------------------------------------
 # Update queued / pending markers — coalescing primitives that prevent the
