@@ -639,7 +639,7 @@ async def _lifespan(server: FastMCP):
         db_url = resolve_db_url(_state._repo_path)
 
         _log.info("repowise MCP: initialising database…")
-        engine = create_engine(db_url)
+        engine = create_engine(db_url, short_lived=False)
         try:
             await init_db(engine)
         except (OSError, OperationalError):
