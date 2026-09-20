@@ -249,3 +249,50 @@ def test_dead_end_records_debit_row(tmp_path, monkeypatch) -> None:
         assert per["saved_tokens"] == -350
     finally:
         store.close()
+
+
+def test_a_file_card_without_a_skeleton_earns_the_file_floor() -> None:
+    """Skeleton-by-default went away on 2026-08-11 and nothing replaced the
+    credit, so the commonest ``get_context`` call earned nothing at all."""
+    result = {"targets": {"a.py": {"target": "a.py", "type": "file"}}, "_meta": {}}
+    assert cf.replaced_tokens_for("get_context", result) == cf.CONTEXT_FILE_FLOOR
+
+
+def test_a_skeleton_still_wins_over_the_file_floor() -> None:
+    """The floor is the fallback, never an addition: an exact size beats it."""
+    result = {
+        "targets": {"a.py": {"target": "a.py", "type": "file", "skeleton": {"full_tokens": 4321}}},
+        "_meta": {},
+    }
+    assert cf.replaced_tokens_for("get_context", result) == 4321
+
+
+def test_a_failed_file_target_earns_nothing() -> None:
+    result = {"targets": {"a.py": {"target": "a.py", "type": "file", "error": "nope"}}, "_meta": {}}
+    assert cf.replaced_tokens_for("get_context", result) == 0
+
+
+def test_change_risk_scales_with_the_files_in_the_diff() -> None:
+    """The flat floor credited 500 against live delivered sizes of 4,439-4,671,
+    so the tool recorded itself as a net cost on every call it answered."""
+    three = {"summary": "x", "features": {"nf": 3}}
+    assert cf.replaced_tokens_for("get_change_risk", three) == (
+        cf.CHANGE_RISK_FLOOR + 3 * cf.CHANGE_RISK_PER_FILE
+    )
+
+
+def test_change_risk_is_capped_on_a_huge_diff() -> None:
+    huge = {"summary": "x", "features": {"nf": 500}}
+    assert cf.replaced_tokens_for("get_change_risk", huge) == cf.CHANGE_RISK_MAX
+
+
+def test_change_risk_falls_back_to_the_floor_without_a_file_count() -> None:
+    """A payload with no ``features.nf`` keeps the old behaviour rather than
+    guessing a diff size."""
+    assert cf.replaced_tokens_for("get_change_risk", {"summary": "x"}) == cf.CHANGE_RISK_FLOOR
+    assert cf.replaced_tokens_for("get_change_risk", {"features": {"nf": 0}}) == (
+        cf.CHANGE_RISK_FLOOR
+    )
+    assert cf.replaced_tokens_for("get_change_risk", {"features": {"nf": "three"}}) == (
+        cf.CHANGE_RISK_FLOOR
+    )

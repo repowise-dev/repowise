@@ -40,13 +40,28 @@ SEARCH_FLOOR_PER_HIT = 400
 #: thousands of tokens at that size) and opening five to fifteen files, so the
 #: real counterfactual sits higher still — the cap keeps the claim an undersell
 #: while leaving the per-file scaling meaningful for mid-sized modules.
-CONTEXT_MODULE_FILE_FLOOR = 250
-CONTEXT_MODULE_MAX = 12_000
+CONTEXT_MODULE_FILE_FLOOR = 600
+CONTEXT_MODULE_MAX = 20_000
 
 #: A ``get_context`` *symbol* card carries the signature, docstring and usage
 #: sites for one symbol — standing in for the agent locating and reading that
-#: definition plus scanning who calls it. A single conservative floor.
-CONTEXT_SYMBOL_FLOOR = 350
+#: definition plus scanning who calls it. Finding it at all is a capped grep,
+#: measured at 1,584 tokens of output on this repository (5,443 uncapped);
+#: reading enough of the definition and its callers to answer the same question
+#: is more again. Floored at well under half that measured grep alone.
+CONTEXT_SYMBOL_FLOOR = 1_200
+
+#: A ``get_context`` *file* card with no skeleton stands in for the agent
+#: Reading that file. Skeleton-by-default was removed on 2026-08-11
+#: (``tool_context/targets.py:87``) because the symbol-list card is cheaper,
+#: and nothing replaced the credit — so the commonest call this tool serves has
+#: been earning nothing at all. The card carries no size for the file it
+#: describes and this module does no disk reads, so the credit is a flat floor
+#: taken from the corpus rather than from the dict: across 4,115 source files
+#: in this repository the p25 is 620 estimated tokens and the median is 1,296.
+#: 600 is under the p25 — three quarters of real files cost more to Read than
+#: this claims, which is the undersell this module is for.
+CONTEXT_FILE_FLOOR = 600
 
 
 def _estimate_get_context(result: dict[str, Any]) -> int:
@@ -83,6 +98,10 @@ def _estimate_get_context(result: dict[str, Any]) -> int:
                 total += min(CONTEXT_MODULE_MAX, len(files) * CONTEXT_MODULE_FILE_FLOOR)
         elif target_type == "symbol":
             total += CONTEXT_SYMBOL_FLOOR
+        elif target_type == "file":
+            # Reached only when the caller did not ask for a skeleton, which is
+            # the default since 2026-08-11. See CONTEXT_FILE_FLOOR.
+            total += CONTEXT_FILE_FLOOR
     return total
 
 
@@ -121,7 +140,16 @@ OVERVIEW_FLOOR = 1200
 
 #: ``get_change_risk`` reasons about a whole diff's defect risk — standing in
 #: for the agent reading the diff and its coverage/co-change context by hand.
+#: The flat floor was the most plainly wrong constant here: it credited 500
+#: tokens against live delivered sizes of 4,439-4,671, so the tool recorded
+#: itself as a net cost on every call. Reading the diff is what it replaces,
+#: and ``git show`` with patch measures a 6,094-token median on this
+#: repository's commits, so the per-file term is a quarter of that median
+#: divided across a typical diff. The cap keeps a 200-file refactor from
+#: claiming a number nobody would have read.
 CHANGE_RISK_FLOOR = 500
+CHANGE_RISK_PER_FILE = 1_500
+CHANGE_RISK_MAX = 12_000
 #: ``get_architecture`` renders the C4 map — replacing a read of many files and
 #: entry points to infer how the system is layered (workspace-level, so higher).
 ARCHITECTURE_FLOOR = 1200
@@ -169,6 +197,22 @@ def _estimate_get_answer(result: dict[str, Any]) -> int:
     if not paths:
         return 0
     return ANSWER_SEARCH_FLOOR + len(paths) * ANSWER_READ_FLOOR_PER_FILE
+
+
+def _estimate_get_change_risk(result: dict[str, Any]) -> int:
+    """Floor plus a per-changed-file term — the diff the agent did not read.
+
+    ``features.nf`` is the changed-file count the scorer already computed
+    (``core/analysis/change_risk/service.py:316``), so this stays dict-only.
+    Falls back to the flat floor when the payload carries no count.
+    """
+    if result.get("error"):
+        return 0
+    features = result.get("features")
+    files = features.get("nf") if isinstance(features, dict) else None
+    if not isinstance(files, int) or files <= 0:
+        return CHANGE_RISK_FLOOR
+    return min(CHANGE_RISK_MAX, CHANGE_RISK_FLOOR + files * CHANGE_RISK_PER_FILE)
 
 
 def _fixed_floor(tokens: int) -> Callable[[dict[str, Any]], int]:
@@ -313,7 +357,7 @@ _ESTIMATORS: dict[str, Callable[[dict[str, Any]], int]] = {
     "get_health": _fixed_floor(HEALTH_FLOOR),
     "get_overview": _fixed_floor(OVERVIEW_FLOOR),
     "get_dead_code": _fixed_floor(DEAD_CODE_FLOOR),
-    "get_change_risk": _fixed_floor(CHANGE_RISK_FLOOR),
+    "get_change_risk": _estimate_get_change_risk,
     "get_blast_radius": _estimate_get_blast_radius,
     "get_execution_flows": _estimate_get_execution_flows,
     "get_architecture": _fixed_floor(ARCHITECTURE_FLOOR),
