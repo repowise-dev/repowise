@@ -344,6 +344,11 @@ class DecisionPolicy:
     sources: dict[str, SourceSetting]
     discovery: DiscoveryBudget = _DEFAULT_DISCOVERY
     harnesses: tuple[str, ...] = DEFAULT_HARNESSES
+    #: Whether an agent may grant authority, not merely withdraw it. Off is the
+    #: shipped posture and the one every other switch here leaves alone: this
+    #: is the only setting that lets something other than a person create a
+    #: constraint the repository then enforces.
+    agent_acceptance: bool = False
 
     # -- queries ---------------------------------------------------------
 
@@ -402,6 +407,7 @@ class DecisionPolicy:
                 and self.sources == spec["sources"]
                 and self.discovery == _DEFAULT_DISCOVERY
                 and self.harnesses == DEFAULT_HARNESSES
+                and not self.agent_acceptance
             ):
                 return name
         return "custom"
@@ -485,6 +491,8 @@ class DecisionPolicy:
             block["discovery"] = self.discovery.to_dict()
         if self.harnesses != DEFAULT_HARNESSES:
             block["harnesses"] = list(self.harnesses)
+        if self.agent_acceptance:
+            block["agent_acceptance"] = True
         return block
 
     def to_dict(self, *, provider_available: bool = True) -> dict[str, Any]:
@@ -495,6 +503,7 @@ class DecisionPolicy:
             "preset": self.preset_name(),
             "discovery": self.discovery.to_dict(),
             "harnesses": list(self.harnesses),
+            "agent_acceptance": self.agent_acceptance,
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -528,6 +537,9 @@ class DecisionPolicy:
 
     def with_enabled(self, value: bool) -> DecisionPolicy:
         return replace(self, enabled=value)
+
+    def with_agent_acceptance(self, value: bool) -> DecisionPolicy:
+        return replace(self, agent_acceptance=value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,6 +605,24 @@ def _resolve_harnesses(raw: Any, warnings: list[str]) -> tuple[str, ...]:
         warnings.append("`decisions.harnesses` named no known harness; using the default.")
         return DEFAULT_HARNESSES
     return tuple(names)
+
+
+#: Every key under ``decisions:`` this module owns, live and legacy. A write
+#: replaces all of them rather than merging over them: ``to_config_block``
+#: omits a setting that equals its default, so merging leaves a stale ``true``
+#: behind and switching one back off does nothing.
+POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "preset",
+        "enabled",
+        "llm",
+        "sources",
+        "session_mining",
+        "discovery",
+        "harnesses",
+        "agent_acceptance",
+    }
+)
 
 
 def preset_policy(name: str) -> DecisionPolicy:
@@ -740,13 +770,25 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     discovery = _resolve_discovery(raw.get("discovery"), warnings)
     harnesses = _resolve_harnesses(raw.get("harnesses"), warnings)
 
-    known = {"preset", "enabled", "llm", "sources", "session_mining", "discovery", "harnesses"}
-    for field in set(raw) - known:
+    # Off unless the config says the word. A non-boolean is a warning and not a
+    # grant: the failure mode this setting must not have is reading as on.
+    agent_acceptance = _as_bool(raw.get("agent_acceptance"))
+    if agent_acceptance is None:
+        if "agent_acceptance" in raw:
+            warnings.append("`decisions.agent_acceptance` is not a boolean; ignoring it.")
+        agent_acceptance = False
+
+    for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
 
     return PolicyResolution(
         policy=DecisionPolicy(
-            enabled=enabled, llm=llm, sources=sources, discovery=discovery, harnesses=harnesses
+            enabled=enabled,
+            llm=llm,
+            sources=sources,
+            discovery=discovery,
+            harnesses=harnesses,
+            agent_acceptance=agent_acceptance,
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),

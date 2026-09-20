@@ -110,6 +110,13 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
     # Named even at the default: this is the one setting that widens whose
     # transcripts are read, and a reader cannot check a line that is absent.
     console.print(f"  [dim]Harnesses read: {', '.join(policy.harnesses)}.[/dim]")
+    if policy.agent_acceptance:
+        console.print(
+            "  [yellow]Agent acceptance is ON: an agent may grant a decision "
+            "authority. Its acceptances are signed as an agent's, not yours.[/yellow]"
+        )
+    else:
+        console.print("  [dim]Agent acceptance: off. Agents withdraw authority, never grant it.[/dim]")
     console.print("")
 
     for warning in resolution.warnings:
@@ -178,6 +185,14 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
             changes.append(
                 {"key": f"discovery.{key}", "from": str(old_value), "to": str(new_value)}
             )
+    if before.agent_acceptance != after.agent_acceptance:
+        changes.append(
+            {
+                "key": "agent_acceptance",
+                "from": str(before.agent_acceptance),
+                "to": str(after.agent_acceptance),
+            }
+        )
     if before.harnesses != after.harnesses:
         changes.append(
             {
@@ -223,10 +238,20 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
     from repowise.core.analysis.decisions.policy import preset_policy
 
     repo_path = _resolve_decision_repo(path, fmt)
-    # A preset names source membership, not which harnesses are read, so the
-    # harness list the caller did not touch survives applying one.
+    # A preset names source membership. The harness list and the agent-grant
+    # switch are not membership, so applying one leaves both as the caller set
+    # them rather than silently revoking an authority grant.
     current = _load(repo_path).policy
-    _apply(repo_path, replace(preset_policy(name), harnesses=current.harnesses), fmt, dry_run)
+    _apply(
+        repo_path,
+        replace(
+            preset_policy(name),
+            harnesses=current.harnesses,
+            agent_acceptance=current.agent_acceptance,
+        ),
+        fmt,
+        dry_run,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +302,28 @@ def config_discovery(
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _apply(repo_path, policy, fmt, dry_run)
+
+
+@config_group.command("agent-acceptance")
+@click.argument("path", required=False, default=None)
+@click.option("--on/--off", "enabled", default=None, required=True, help="Let agents accept.")
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_agent_acceptance(
+    path: str | None, enabled: bool | None, dry_run: bool, fmt: str
+) -> None:
+    """Allow, or forbid, an agent granting a decision authority.
+
+    Off by default, and off is the complete posture: an agent still withdraws
+    authority, proposes candidates and reads what governs. Turning it on does
+    not make an agent's acceptance look like yours — it is recorded as an
+    agent's, with the session that signed it, on every surface.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt)
+    current = _load(repo_path).policy
+    _apply(repo_path, current.with_agent_acceptance(bool(enabled)), fmt, dry_run)
 
 
 @click.group("source")

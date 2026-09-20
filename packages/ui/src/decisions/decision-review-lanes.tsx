@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import {
+  ACCEPTER_KIND_LABELS,
   DECISION_CURRENCY_DESCRIPTIONS,
   DECISION_CURRENCY_LABELS,
   DECISION_KIND_LABELS,
@@ -12,6 +13,7 @@ import {
   isRetiredDecisionSource,
 } from "@repowise-dev/types/decisions";
 import type {
+  AccepterKind,
   DecisionCurrency,
   DecisionLane,
   DecisionRecord,
@@ -300,6 +302,7 @@ function DecisionLaneRow({
           {currency !== null && currency !== "active" && (
             <CurrencyMark currency={currency as DecisionCurrency} />
           )}
+          <SignatureMark decision={d} />
           {d.verification && d.verification !== "exact" && (
             <VerificationBadge verification={d.verification} />
           )}
@@ -403,6 +406,33 @@ function DecisionLaneRow({
         </div>
       )}
     </li>
+  );
+}
+
+/**
+ * Who signed, marked only where it is not a person.
+ *
+ * A person accepting is the case this surface was built for and carries no
+ * badge. An agent's acceptance and an import both need one, because the
+ * `accepter` string alone reads as a name and a reader would take it for a
+ * colleague's. An unrecorded kind is marked too: it is a row from before the
+ * column, and letting it render as nothing would read as "a person did this".
+ */
+function SignatureMark({ decision }: { decision: DecisionRecord }) {
+  const kind = decision.accepter_kind;
+  if (kind === null || kind === undefined || kind === "person") return null;
+  const label =
+    kind === "" ? "Signer not recorded" : ACCEPTER_KIND_LABELS[kind as AccepterKind];
+  const who = [decision.accepter, decision.accepter_session]
+    .filter(Boolean)
+    .join(", session ");
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-[11px] text-[var(--color-text-tertiary)]"
+      title={who ? `${label}: ${who}` : label}
+    >
+      {label}
+    </span>
   );
 }
 

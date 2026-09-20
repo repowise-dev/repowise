@@ -140,6 +140,7 @@ review as though they were the team's.
 |---------|-----------------|
 | `decision confirm ID...` | Accept, optionally editing the reason and scope on the way. Takes many ids. |
 | `decision confirm ID` on a decision | Reaffirm it after review. |
+| `decision confirm ID --agent SLUG` | An agent accepting as itself. Refused unless the repository allows it. |
 | `decision merge ID INTO_ID` | Fold a candidate into an existing decision. The old id resolves to the target. |
 | `decision dedupe` | Fold candidates that duplicate another candidate, in one sweep. Dry run until `--apply`. |
 | `decision split ID` | Flag a candidate as bundling two choices. Never splits it for you. |
@@ -477,6 +478,31 @@ of the acceptance event, not the authority itself — the acceptance is — but 
 two are kept in step, so a reader that only has the status column stays correct
 rather than merely stale. See [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_why).
 
+### An agent may withdraw authority; granting it is a switch
+
+An acceptance records what signed it — `person`, `agent` or `import` — beside
+who. The two are different questions, and only the first one was ever stored:
+`accepter` resolves to `git config user.name`, so an agent confirming a
+decision signed the maintainer's name and no surface could tell them apart.
+
+The asymmetry follows. A machine can withdraw authority without asking: the
+worst a wrong withdrawal does is stop a rule binding, and re-accepting undoes
+it. Granting authority mints a constraint nobody agreed to, under a signature
+that reads as an acceptance, so it is refused unless the repository says
+otherwise:
+
+```bash
+repowise decision config agent-acceptance --on   # off by default
+repowise decision confirm ID --agent claude_code --session $SESSION_ID
+```
+
+`--agent` takes the agent's slug and is refused without the switch. What it
+records is visibly an agent's: `decision show --format json` returns
+`accepted_by` with the kind and the session, the API carries `accepter_kind`
+on every decision row, and the dashboard badges any acceptance a person did
+not sign. A row written before these columns existed reads as `unrecorded`,
+not as a person's — those are the two things the field exists to keep apart.
+
 ## Session-mined decisions
 
 `repowise update` (docs mode) reads your local coding-agent transcripts and mines
@@ -644,7 +670,7 @@ the scope that decision governs.
 | `repowise decision add` | Guided interactive capture: kind, title, context, decision, rationale, rejected alternatives, tradeoffs, affected files, tags. Answering the prompts is an acceptance, recorded as one. An architectural record that names no files is kept as a candidate instead, because a decision that names nothing cannot be checked against the code. `--kind agreement` records the other noun — a rule about how the work is conducted — which is accepted without naming files, because it governs the repository rather than part of it, and reaches an agent at session start rather than when a file is edited. |
 | `repowise decision list` | Table of id, title, status, source, confidence, staleness, created date. |
 | `repowise decision show ID` | Full record including alternatives, consequences, affected files, and the evidence file and line. |
-| `repowise decision confirm ID...` | Accept candidates. Refuses, naming the gap, when one has no reason, scope or evidence; `--reason`, `--scope` and `--evidence` supply them. A refused id does not stop the others. `--preview` writes nothing. |
+| `repowise decision confirm ID...` | Accept candidates. Refuses, naming the gap, when one has no reason, scope or evidence; `--reason`, `--scope` and `--evidence` supply them. A refused id does not stop the others. `--preview` writes nothing. `--agent SLUG` signs as an agent rather than as you, and needs `decision config agent-acceptance --on`. |
 | `repowise decision dismiss ID...` | Tombstone them. Never re-proposed on reindex. `--preview` writes nothing. |
 | `repowise decision deprecate ID` | Retire it, optionally `--superseded-by <ID>`, which writes the lineage edge. |
 | `repowise decision candidates` | What is awaiting review, and why each was raised. |
@@ -656,6 +682,7 @@ the scope that decision governs.
 | `repowise decision status` | What capture did: policy and preset, per-source state and why, review lanes and backlog age, staging queues, model spend. |
 | `repowise decision config show` | The resolved capture policy: every source, its status, and why. |
 | `repowise decision config preset NAME` | Apply `off`, `local_only`, `balanced`, or `full`. |
+| `repowise decision config agent-acceptance --on/--off` | Whether an agent may grant a decision authority. Off by default; no preset changes it. |
 | `repowise decision source list` | The source registry with capabilities and current state. |
 | `repowise decision source set SRC --on/--off` | Switch one source. `--llm/--no-llm` switches only its model stage. |
 | `repowise decision llm --on/--off` | Master switch for decision-extraction model calls. |

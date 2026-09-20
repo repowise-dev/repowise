@@ -382,6 +382,7 @@ async def apply_migration(
                     action="accepted",
                     currency="active",
                     accepter=f"migration:{rec.source}",
+                    kind="import",
                     note="reconstructed from a self-authored legacy record",
                 )
             except AcceptanceRefusedError as exc:

@@ -20,7 +20,9 @@ from repowise.cli.helpers import (
     run_async,
 )
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
+from repowise.core.agents.identity import is_agent_slug
 from repowise.core.analysis.decisions.lifecycle import (
+    AGENT_ACCEPTANCE_REMEDY,
     AGREEMENT_KIND,
     ARCHITECTURAL_KIND,
     DECISION_KINDS,
@@ -51,6 +53,35 @@ def _resolve_decision_repo(path: str | None, fmt: str = "table"):
         return primary
     assert target.repo_path is not None
     return target.repo_path
+
+
+def _describe_signature(acceptance) -> dict[str, str] | None:
+    """Who signed *acceptance*, as a label and its parts. ``None`` for a candidate.
+
+    A row with no stored kind reads as ``unrecorded`` rather than as a
+    person's: those are the two things the field exists to keep apart.
+    """
+    if acceptance is None:
+        return None
+    who = acceptance.accepter or acceptance.artifact
+    kind = acceptance.accepter_kind or "unrecorded"
+    label = f"{who} ({kind})"
+    if acceptance.accepter_session:
+        label += f", session {acceptance.accepter_session}"
+    return {
+        "label": label,
+        "accepter": who,
+        "kind": kind,
+        "session": acceptance.accepter_session,
+        "action": acceptance.action,
+    }
+
+
+def _load_policy(repo_path: Path):
+    """The resolved policy, through the same loader ``decision config`` uses."""
+    from repowise.cli.commands.decision_config_cmd import _load
+
+    return _load(repo_path).policy
 
 
 @click.group("decision")
@@ -565,6 +596,7 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
             get_session,
             init_db,
         )
+        from repowise.core.persistence.crud.authority import latest_acceptance
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
@@ -574,11 +606,13 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
         async with get_session(sf) as session:
             full_id = await _resolve_decision_id(session, decision_id)
             rec = await get_decision(session, full_id) if full_id else None
+            acceptance = await latest_acceptance(session, rec.id) if rec else None
+            signed = _describe_signature(acceptance)
 
         await engine.dispose()
-        return rec
+        return rec, signed
 
-    rec = run_async(_query())
+    rec, signed = run_async(_query())
     if rec is None:
         notice_console(fmt).print(f"[red]Decision not found: {decision_id}[/red]")
         if fmt == "json":
@@ -599,6 +633,7 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
                     "confidence": rec.confidence,
                     "staleness_score": rec.staleness_score,
                     "created_at": rec.created_at.isoformat() if rec.created_at else None,
+                    "accepted_by": signed,
                     "currency": describe_decision_currency(
                         repo_path,
                         created_at=rec.created_at,
@@ -637,6 +672,10 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     )
     if currency:
         lines.append(f"[dim]{currency}[/dim]")
+    # A candidate has no line here at all: "not accepted" is what the absence
+    # of an acceptance row says, and status already carries it.
+    if signed:
+        lines.append(f"Accepted by: {signed['label']}")
     lines.append("")
     if rec.context:
         lines.append(f"[cyan]Context:[/cyan] {rec.context}")
@@ -878,6 +917,12 @@ def _emit_single(result: dict, token: str, verb: str, fmt: str, note: str, remed
 )
 @click.option("--as", "accepter", default="", help="Record a different accepter identity.")
 @click.option(
+    "--agent",
+    default="",
+    help="Sign as this agent (e.g. claude_code) rather than as a person.",
+)
+@click.option("--session", "agent_session", default="", help="The agent session signing.")
+@click.option(
     "--preview", is_flag=True, default=False, help="Report what each id would do, and write nothing."
 )
 @format_option()
@@ -887,6 +932,8 @@ def decision_confirm(
     scope: tuple[str, ...],
     evidence: tuple[str, ...],
     accepter: str,
+    agent: str,
+    agent_session: str,
     preview: bool,
     fmt: str,
 ) -> None:
@@ -900,9 +947,25 @@ def decision_confirm(
     supply what is missing, and correcting them here corrects the record too.
     A refused id does not stop the others, and the run exits non-zero if any
     were refused.
+
+    ``--agent`` is how an agent signs as itself. Without it the acceptance is
+    recorded as a person's, because without it the identity resolves to the
+    repository's git name and a person's is what it would be. It is refused
+    unless ``decision config agent-acceptance`` is on for this repository.
     """
     ids, path = _split_ids_and_path(decision_ids)
     repo_path = _resolve_decision_repo(path, fmt)
+
+    if agent and accepter:
+        raise click.ClickException("Pass --agent or --as, not both: they name different signers.")
+    if agent and not is_agent_slug(agent):
+        raise click.ClickException(
+            f"{agent!r} is not a well-formed agent slug (lowercase, digits and underscores)."
+        )
+    if agent_session and not agent:
+        raise click.ClickException("--session names the agent signing; pass --agent too.")
+
+    granted = _load_policy(repo_path).agent_acceptance if agent else False
 
     async def _accept(session, rec) -> None:
         from repowise.core.analysis.decisions.accepter import resolve_accepter
@@ -911,7 +974,10 @@ def decision_confirm(
         await accept_decision(
             session,
             rec,
-            accepter=resolve_accepter(repo_path, override=accepter),
+            accepter=agent or resolve_accepter(repo_path, override=accepter),
+            kind="agent" if agent else "person",
+            accepter_session=agent_session,
+            agent_acceptance=granted,
             reason=reason,
             scope=list(scope) or None,
             evidence=list(evidence) or None,
@@ -925,7 +991,10 @@ def decision_confirm(
     if len(ids) > 1 or preview:
         _emit_batch(results, "accepted", "accept", preview, fmt)
         return
-    _emit_single(results[0], ids[0], "accept", fmt, "(governing)", _ACCEPT_REMEDY)
+    # An agent refused for want of the switch cannot fix it with --scope, and
+    # the flags remedy sends it looking for a gap in the record that is not there.
+    remedy = AGENT_ACCEPTANCE_REMEDY if (agent and not granted) else _ACCEPT_REMEDY
+    _emit_single(results[0], ids[0], "accept", fmt, "(governing)", remedy)
 
 
 @decision_group.command("dismiss")

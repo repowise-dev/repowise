@@ -756,6 +756,7 @@ export interface DecisionCountsResponse {
 
 export interface DecisionCreate {
   title: string;
+  kind?: "architectural" | "agreement";
   context?: string;
   decision?: string;
   rationale?: string;
@@ -897,6 +898,9 @@ export interface DecisionRecordResponse {
   evidence_count?: number | null;
   evidence_preview?: EvidencePreview | null;
   currency?: string | null;
+  accepter?: string | null;
+  accepter_kind?: string | null;
+  accepter_session?: string | null;
 }
 
 /** The resolved decision capture policy for one repository. */
@@ -904,6 +908,7 @@ export interface DecisionSettings {
   enabled?: boolean;
   llm?: boolean;
   preset?: string;
+  agent_acceptance?: boolean;
   discovery?: DecisionDiscoveryBudget;
   sources?: DecisionSourceState[];
   provider_available?: boolean;
@@ -917,6 +922,7 @@ export interface DecisionSettingsUpdate {
   enabled?: boolean | null;
   llm?: boolean | null;
   preset?: string | null;
+  agent_acceptance?: boolean | null;
   sources?: Record<string, DecisionSourcePatch> | null;
   discovery?: DecisionDiscoveryPatch | null;
   etag?: string | null;

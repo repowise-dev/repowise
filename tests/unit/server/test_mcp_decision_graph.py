@@ -333,6 +333,7 @@ async def decision_db(session: AsyncSession, repo_id: str) -> str:
         action="superseded",
         currency="superseded",
         accepter="test",
+        kind="person",
         evidence=["seed:dec_superseded"],
     )
     await session.flush()

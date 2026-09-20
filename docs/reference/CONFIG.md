@@ -411,7 +411,14 @@ decisions:
     max_input_tokens: 30000 # 2000-60000
   harnesses:                # whose transcripts the session lane reads
     - claude_code           # the default; add codex to read that store too
+  agent_acceptance: false   # may an agent grant a decision authority?
 ```
+
+`agent_acceptance` is the one key here that is not about capture. Off, an agent
+can propose candidates and withdraw authority but never grant it; on, it may
+accept, and the acceptance is recorded as an agent's — with the session that
+signed it — on every surface, never as yours. It ships off and no preset turns
+it on.
 
 Every key is optional. **A config with no `decisions:` block behaves exactly as
 it did before these switches existed**: every source that shipped on is on,

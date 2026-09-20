@@ -1011,6 +1011,7 @@ repowise decision add [PATH]            # interactive add
 repowise decision add --kind agreement  # a rule about how the work is done
 repowise decision candidates [PATH]     # what is awaiting review; these govern nothing
 repowise decision confirm ID... [PATH]  # accept candidates: this is what makes them govern
+repowise decision confirm ID --agent SLUG  # an agent signing as itself, not as you
 repowise decision dismiss ID... [PATH]  # tombstone them (sticky; never re-proposed)
 repowise decision merge ID INTO_ID      # fold a candidate into an existing decision
 repowise decision dedupe [PATH]         # fold candidates that duplicate another candidate (dry run by default)
@@ -1026,6 +1027,7 @@ repowise decision migrate [PATH]        # classify pre-split rows (dry run unles
 repowise decision config show [PATH]              # the resolved capture policy
 repowise decision config preset NAME [PATH]       # default | off | local_only | balanced | full
 repowise decision config discovery [PATH]         # budget for the one broad discovery call
+repowise decision config agent-acceptance --on|--off  # may an agent grant authority? off by default
 repowise decision source list [PATH]              # the source registry and its state
 repowise decision source set SRC --on|--off       # switch one source
 repowise decision source set SRC --llm|--no-llm   # switch only its model stage

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.analysis.decisions.lifecycle import AGREEMENT_KIND, is_governing
 from repowise.core.persistence import crud, decision_graph
 from repowise.core.persistence.models import DecisionEvidence
 from repowise.server.deps import get_db_session, verify_api_key
@@ -40,6 +40,28 @@ router = APIRouter(
     tags=["decisions"],
     dependencies=[Depends(verify_api_key)],
 )
+
+
+def _attach_signature(item: DecisionRecordResponse, signature) -> None:
+    """Copy who signed onto a response row. A candidate is left null.
+
+    Split out because the three read paths that carry ``currency`` have to
+    carry this beside it: a surface that shows one and not the other cannot say
+    whether the authority it is displaying was granted by a person.
+    """
+    if signature is None:
+        return
+    item.accepter = signature.accepter or signature.artifact
+    item.accepter_kind = signature.kind
+    item.accepter_session = signature.session
+
+
+async def _one_with_signature(session, repo_id: str, rec) -> DecisionRecordResponse:
+    """One record, carrying who signed its current acceptance."""
+    item = DecisionRecordResponse.from_orm(rec)
+    signatures = await crud.decision_signatures(session, repo_id, [rec])
+    _attach_signature(item, signatures.get(rec.id))
+    return item
 
 
 def _in_lane(currency: str | None, lane: str) -> bool:
@@ -140,9 +162,11 @@ async def list_decisions(
         decisions = [d for d in decisions if _in_lane(currencies.get(d.id), lane)]
     if derived:
         decisions = decisions[offset : offset + limit]
+    signatures = await crud.decision_signatures(session, repo_id, decisions)
     items = [DecisionRecordResponse.from_orm(d) for d in decisions]
     for item in items:
         item.currency = currencies.get(item.id)
+        _attach_signature(item, signatures.get(item.id))
 
     ids = [d.id for d in decisions]
     if ids:
@@ -337,6 +361,7 @@ def _settings_payload(repo_path: Path, resolution) -> DecisionSettings:
         enabled=policy.enabled,
         llm=policy.llm,
         preset=policy.preset_name(),
+        agent_acceptance=policy.agent_acceptance,
         discovery=DecisionDiscoveryBudget(**policy.discovery.to_dict()),
         sources=[
             DecisionSourceState(**rt.to_dict())
@@ -414,6 +439,7 @@ async def update_decision_settings(
                 preset_policy(body.preset),
                 discovery=policy.discovery,
                 harnesses=policy.harnesses,
+                agent_acceptance=policy.agent_acceptance,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -421,6 +447,8 @@ async def update_decision_settings(
         policy = policy.with_enabled(body.enabled)
     if body.llm is not None:
         policy = policy.with_llm(body.llm)
+    if body.agent_acceptance is not None:
+        policy = policy.with_agent_acceptance(body.agent_acceptance)
     for key, patch in (body.sources or {}).items():
         try:
             policy = policy.with_source(key, enabled=patch.enabled, llm=patch.llm)
@@ -474,7 +502,7 @@ async def get_decision(
     rec = await crud.get_decision(session, decision_id)
     if rec is None or rec.repository_id != repo_id:
         raise HTTPException(status_code=404, detail="Decision not found")
-    return DecisionRecordResponse.from_orm(rec)
+    return await _one_with_signature(session, repo_id, rec)
 
 
 @router.get(
@@ -558,7 +586,9 @@ async def create_decision(
     existing = await crud.find_decision_by_title(
         session, repo_id, body.title, source="cli"
     )
-    scoped = bool(body.affected_files or body.affected_modules)
+    # An agreement's scope is the repository, which is why it names no file.
+    # Requiring one of it would leave the noun permanently unacceptable.
+    scoped = bool(body.affected_files or body.affected_modules) or body.kind == AGREEMENT_KIND
     if existing is not None and not scoped and await crud.is_accepted(
         session, existing.id
     ):
@@ -585,6 +615,7 @@ async def create_decision(
         affected_files=body.affected_files,
         affected_modules=body.affected_modules,
         tags=body.tags,
+        kind=body.kind,
         source="cli",
         # No confidence: upsert_decision scores a manual entry.
     )
@@ -595,8 +626,8 @@ async def create_decision(
         # a missing rationale would be the worse answer. The response's
         # ``status`` reports which of the two happened.
         with contextlib.suppress(crud.AcceptanceRefusedError):
-            await crud.accept_decision(session, rec, accepter="web")
-    return DecisionRecordResponse.from_orm(rec)
+            await crud.accept_decision(session, rec, accepter="web", kind="person")
+    return await _one_with_signature(session, repo_id, rec)
 
 
 @router.patch(
@@ -633,6 +664,7 @@ async def patch_decision(
                 body.status,
                 superseded_by=superseded_by,
                 accepter="web",
+                kind="person",
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -655,4 +687,4 @@ async def patch_decision(
             raise HTTPException(status_code=404, detail="Decision not found")
 
     assert rec is not None
-    return DecisionRecordResponse.from_orm(rec)
+    return await _one_with_signature(session, repo_id, rec)

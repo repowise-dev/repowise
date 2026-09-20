@@ -13,7 +13,13 @@ from typing import Any
 
 from repowise.core.repo_config import load_repo_config, save_repo_config
 
-from .policy import PRESETS, DecisionPolicy, PolicyResolution, resolve_policy
+from .policy import (
+    POLICY_CONFIG_KEYS,
+    PRESETS,
+    DecisionPolicy,
+    PolicyResolution,
+    resolve_policy,
+)
 
 __all__ = ["PolicyConflictError", "load_policy", "policy_etag", "write_policy"]
 
@@ -67,10 +73,15 @@ def write_policy(
 
     merged: dict[str, Any] = dict(config)
     existing = merged.get("decisions")
-    decisions = dict(existing) if isinstance(existing, dict) else {}
-    # `session_mining` is now expressed as `sources.session`; leaving it behind
-    # would let a stale legacy key contradict the block written above.
-    decisions.pop("session_mining", None)
+    # Every key the policy owns is replaced, not merged over. `to_config_block`
+    # omits a setting that equals its default, so a merge left the stored value
+    # behind and switching one back off wrote nothing at all. Unrelated keys
+    # under `decisions:` survive, which is what this merge is for.
+    decisions = {
+        k: v
+        for k, v in (existing.items() if isinstance(existing, dict) else ())
+        if k not in POLICY_CONFIG_KEYS
+    }
     decisions.update(block)
     preset = policy.preset_name()
     if preset in PRESETS:

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from repowise.core.analysis.decisions.lifecycle import ARCHITECTURAL_KIND, DECISION_KINDS
 from repowise.core.analysis.decisions.policy import DISCOVERY_BOUNDS
 from repowise.core.analysis.decisions.scope import derive_decision_scope
 
@@ -63,6 +65,13 @@ class DecisionRecordResponse(BaseModel):
     # readers that predate the split. A record can be stored ``active`` and
     # carry no currency at all, which is precisely what a candidate is.
     currency: str | None = None
+    # Who signed the current acceptance, and what they were: person | agent |
+    # import, or "" on a row written before provenance was recorded. Null on a
+    # candidate, alongside ``currency``. ``accepter`` alone cannot answer it —
+    # it is a free string that resolves to the repository's git identity.
+    accepter: str | None = None
+    accepter_kind: str | None = None
+    accepter_session: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:
@@ -141,6 +150,10 @@ class DecisionLaneCountsResponse(BaseModel):
 
 class DecisionCreate(BaseModel):
     title: str
+    # An agreement governs the repository and names no file, so without this
+    # field the route could only ever create the checkable noun and an
+    # agreement posted here was stored unacceptable.
+    kind: Literal[DECISION_KINDS] = ARCHITECTURAL_KIND
     context: str = ""
     decision: str = ""
     rationale: str = ""
@@ -336,6 +349,10 @@ class DecisionSettings(BaseModel):
     llm: bool = True
     #: default | off | local_only | balanced | full | custom
     preset: str = "default"
+    #: Whether an agent may grant a decision authority, as against withdrawing
+    #: it. False is the shipped posture, so a settings form that omits this
+    #: field is reporting the default rather than hiding a grant.
+    agent_acceptance: bool = False
     discovery: DecisionDiscoveryBudget = DecisionDiscoveryBudget()
     sources: list[DecisionSourceState] = []
     provider_available: bool = True
@@ -372,6 +389,7 @@ class DecisionSettingsUpdate(BaseModel):
     llm: bool | None = None
     #: Applied first, so a preset plus per-source overrides works in one call.
     preset: str | None = None
+    agent_acceptance: bool | None = None
     sources: dict[str, DecisionSourcePatch] | None = None
     #: Budget for broad session discovery. Omitted fields keep their value.
     discovery: DecisionDiscoveryPatch | None = None

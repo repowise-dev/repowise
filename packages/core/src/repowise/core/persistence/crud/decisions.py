@@ -600,6 +600,7 @@ async def update_decision_status(
     *,
     superseded_by: str | None = None,
     accepter: str = "",
+    kind: str = "person",
 ) -> DecisionRecord | None:
     """Move a decision record between statuses, recording authority changes.
 
@@ -631,7 +632,9 @@ async def update_decision_status(
     try:
         if status == "active":
             if not accepted:
-                await accept_decision(session, rec, accepter=accepter or "unrecorded")
+                await accept_decision(
+                    session, rec, accepter=accepter or "unrecorded", kind=kind
+                )
         elif accepted and status in ("dismissed", "deprecated", "superseded"):
             await record_acceptance(
                 session,
@@ -639,6 +642,7 @@ async def update_decision_status(
                 action="superseded" if status == "superseded" else "dismissed",
                 currency="superseded" if status == "superseded" else "dismissed",
                 accepter=accepter or "unrecorded",
+                kind=kind,
             )
     except AcceptanceRefusedError as exc:
         raise ValueError(str(exc)) from exc
@@ -1128,6 +1132,7 @@ async def _accept_from_tracked_artifact(
             action="accepted",
             currency="active",
             artifact=artifact,
+            kind="import",
             note="accepted by a tracked decision record",
         )
     except AcceptanceRefusedError as exc:

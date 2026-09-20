@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 __all__ = [
     "ACCEPTANCE_ACTIONS",
+    "ACCEPTER_KINDS",
+    "AGENT_ACCEPTANCE_REMEDY",
     "AGREEMENT_KIND",
     "AGREEMENT_SCOPE",
     "ARCHITECTURAL_KIND",
@@ -23,17 +25,21 @@ __all__ = [
     "DECISION_CURRENCIES",
     "DECISION_KINDS",
     "DECISION_STATUS_ORDER",
+    "GRANTING_ACTIONS",
     "NEEDS_REVIEW_STALENESS",
     "REVIEW_LANES",
     "SPLIT_MARKERS",
     "STORED_CURRENCIES",
+    "UNRECORDED_ACCEPTER_KIND",
     "AcceptanceRequirement",
     "acceptance_blockers",
+    "accepter_kind_blocker",
     "bundles_decisions",
     "currency_for_legacy_status",
     "effective_currency",
     "is_governing",
     "legacy_status_for_currency",
+    "machine_grant_blocker",
     "status_rank",
 ]
 
@@ -155,6 +161,52 @@ ACCEPTANCE_ACTIONS: tuple[str, ...] = (
     "dismissed",
     "returned_to_review",
 )
+
+#: Actions that create or renew authority, against the three that withdraw it.
+GRANTING_ACTIONS: frozenset[str] = frozenset({"accepted", "reaffirmed", "merged"})
+
+#: Who signed an acceptance. ``person`` is a human identity, ``agent`` is a
+#: coding agent or a pipeline stage, ``import`` is a tracked artifact or a
+#: manifest speaking for whoever committed it.
+#:
+#: Stored ``""`` is none of these: it is a row written before this column
+#: existed. Never backfilled to ``person`` — "unrecorded" and "a human signed"
+#: are the two things this distinction exists to keep apart.
+ACCEPTER_KINDS: tuple[str, ...] = ("person", "agent", "import")
+UNRECORDED_ACCEPTER_KIND = ""
+
+#: What fixes a :func:`machine_grant_blocker` refusal, kept beside the blocker
+#: the way every other refusal here separates the two.
+AGENT_ACCEPTANCE_REMEDY = (
+    "Allow it with `repowise decision config agent-acceptance --on`, "
+    "or accept it yourself."
+)
+
+
+def accepter_kind_blocker(kind: str) -> str | None:
+    """Why *kind* cannot be stamped on a new acceptance, or ``None``."""
+    if kind in ACCEPTER_KINDS:
+        return None
+    if kind == UNRECORDED_ACCEPTER_KIND:
+        return "no accepter kind: say whether a person, an agent or an import signed this"
+    return f"unknown accepter kind {kind!r}: one of {', '.join(ACCEPTER_KINDS)}"
+
+
+def machine_grant_blocker(kind: str, action: str, *, granted: bool) -> str | None:
+    """Why an agent may not take *action*, or ``None``.
+
+    A machine revokes but does not grant. Withdrawing authority narrows what a
+    record claims and re-accepting undoes it; granting mints a constraint
+    nobody agreed to, under a signature that reads as an acceptance. Stated
+    here rather than left true by omission.
+    """
+    if kind != "agent" or action not in GRANTING_ACTIONS or granted:
+        return None
+    return (
+        f"an agent may not record a {action!r} acceptance: machines withdraw "
+        "authority but do not grant it"
+    )
+
 
 #: The fraction of a decision's files that must have moved before the decision
 #: is worth re-reading. Same 0.5 the staleness surfaces already use; the number

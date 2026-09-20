@@ -262,6 +262,58 @@ describe("currency marks the exception, not the default", () => {
   });
 });
 
+describe("who signed is marked where it is not a person", () => {
+  const rows = () => within(screen.getByRole("list"));
+
+  it("says nothing about the case the surface was built for", () => {
+    renderLanes("active", {
+      decisions: [
+        record({ currency: "active", accepter: "Raghav", accepter_kind: "person" }),
+      ],
+    });
+
+    expect(rows().queryByText(/Accepted by/)).not.toBeInTheDocument();
+  });
+
+  it("names an agent, and the session behind it", () => {
+    renderLanes("active", {
+      decisions: [
+        record({
+          currency: "active",
+          accepter: "claude_code",
+          accepter_kind: "agent",
+          accepter_session: "sess-42",
+        }),
+      ],
+    });
+
+    const mark = rows().getByText("Accepted by an agent");
+    expect(mark).toBeInTheDocument();
+    expect(mark).toHaveAttribute(
+      "title",
+      "Accepted by an agent: claude_code, session sess-42",
+    );
+  });
+
+  it("marks a row written before the kind was recorded", () => {
+    // '' is not `person`: leaving it unmarked would read as one.
+    renderLanes("active", {
+      decisions: [
+        record({ currency: "active", accepter: "Raghav", accepter_kind: "" }),
+      ],
+    });
+
+    expect(rows().getByText("Signer not recorded")).toBeInTheDocument();
+  });
+
+  it("says nothing about a candidate, which nobody signed", () => {
+    renderLanes("candidates", { decisions: [record({ currency: null })] });
+
+    expect(rows().queryByText(/Accepted by/)).not.toBeInTheDocument();
+    expect(rows().queryByText("Signer not recorded")).not.toBeInTheDocument();
+  });
+});
+
 describe("the source filter is a second axis, not a second lane control", () => {
   it("offers every live source and no retired one", () => {
     renderLanes("candidates", { onSourceChange: vi.fn() });

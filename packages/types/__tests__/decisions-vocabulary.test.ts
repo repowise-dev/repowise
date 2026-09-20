@@ -11,6 +11,8 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  ACCEPTER_KINDS,
+  ACCEPTER_KIND_LABELS,
   CANDIDATE_REVIEW_STATES,
   DECISION_CURRENCIES,
   DECISION_SOURCES,
@@ -46,6 +48,16 @@ describe("decision vocabulary matches the engine", () => {
 
   it("names the same currencies", () => {
     expect([...DECISION_CURRENCIES]).toEqual(fixture.currencies);
+  });
+
+  it("names the same accepter kinds", () => {
+    expect([...ACCEPTER_KINDS]).toEqual(fixture.accepter_kinds);
+  });
+
+  it("labels every accepter kind", () => {
+    expect(Object.keys(ACCEPTER_KIND_LABELS).sort()).toEqual(
+      [...fixture.accepter_kinds].sort(),
+    );
   });
 
   it("names the same candidate review states", () => {
