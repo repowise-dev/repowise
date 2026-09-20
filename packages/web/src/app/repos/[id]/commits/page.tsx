@@ -122,7 +122,7 @@ export default async function CommitsPage({
         <CommitDistribution stats={stats} recent={recent?.items ?? []} />
       </OverviewSection>
 
-      <CommitDetailSheet repoId={id} reviewCut={stats?.high_cut} />
+      <CommitDetailSheet repoId={id} />
     </PageShell>
   );
 }
