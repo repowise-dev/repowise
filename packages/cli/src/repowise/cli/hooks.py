@@ -10,6 +10,7 @@ in the same file (a lint hook, another tool's index hook).
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import stat
 import subprocess
@@ -238,9 +239,7 @@ def _strip_legacy_block(content: str) -> tuple[str, bool]:
             start = i
             for j in range(i - 1, -1, -1):
                 stripped = lines[j].strip()
-                if stripped.startswith("# post-commit hook") or stripped.startswith(
-                    "# Auto-syncs"
-                ):
+                if stripped.startswith("# post-commit hook") or stripped.startswith("# Auto-syncs"):
                     start = j
                     break
                 if not stripped or stripped.startswith("#!"):
@@ -257,7 +256,7 @@ def _strip_legacy_block(content: str) -> tuple[str, bool]:
             break
         end = k
 
-    cleaned = "\n".join(lines[:start] + lines[end + 1:]).rstrip() + "\n"
+    cleaned = "\n".join(lines[:start] + lines[end + 1 :]).rstrip() + "\n"
     return cleaned, True
 
 
@@ -327,18 +326,12 @@ def install(repo_path: Path) -> str:
             # Marker block present. Decide whether to leave alone or upgrade.
             current_block = _HOOK_SCRIPT.rstrip() + "\n"
             if current_block in content:
-                return _annotate(
-                    "migrated legacy hook" if migrated_legacy else "already installed"
-                )
+                state = "migrated legacy hook" if migrated_legacy else "already installed"
+                return _annotate(_with_hook_execution_state(hook_path, state))
             content, replaced = _replace_marker_block(content, _HOOK_SCRIPT)
             if replaced:
                 hook_path.write_text(content, encoding="utf-8")
-                with contextlib.suppress(OSError):
-                    hook_path.chmod(
-                        hook_path.stat().st_mode
-                        | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
-                    )
-                return _annotate("upgraded")
+                return _annotate(_with_hook_execution_state(hook_path, "upgraded"))
             return _annotate("already installed")
         # Append to existing hook
         hook_path.write_text(
@@ -348,11 +341,23 @@ def install(repo_path: Path) -> str:
     else:
         hook_path.write_text("#!/bin/sh\n" + _HOOK_SCRIPT, encoding="utf-8")
 
-    # Make executable (no-op on Windows but harmless)
-    with contextlib.suppress(OSError):
-        hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return _annotate(_with_hook_execution_state(hook_path, "installed"))
 
-    return _annotate("installed")
+
+def _is_executable(path: Path) -> bool:
+    if os.name == "nt":
+        return True
+    try:
+        return bool(path.stat().st_mode & stat.S_IXUSR)
+    except OSError:
+        return False
+
+
+def _with_hook_execution_state(path: Path, state: str) -> str:
+    if os.name != "nt":
+        with contextlib.suppress(OSError):
+            path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return state if _is_executable(path) else f"{state} but not executable"
 
 
 def uninstall(repo_path: Path) -> str:
@@ -407,5 +412,6 @@ def status(repo_path: Path) -> str:
     content = hook_path.read_text(encoding="utf-8")
     if _HOOK_MARKER in content:
         pending = husky_pending_reason(hook_path.parent)
-        return f"installed ({pending})" if pending else "installed"
+        state = "installed" if _is_executable(hook_path) else "installed but not executable"
+        return f"{state} ({pending})" if pending else state
     return "not installed"
