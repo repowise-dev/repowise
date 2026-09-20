@@ -23,7 +23,7 @@ const finding = {
 
 const data: RiskReportArtifactData = {
   ref: "HEAD",
-  score: 6.4,
+  diff_shape: "Diff shape: bigger than 82% of this repo's recent commits.",
   risk_percentile: 82,
   review_priority: "Elevated",
   classification: "Higher-risk than most recent commits",
@@ -96,15 +96,16 @@ describe("change risk artifact", () => {
     expect(screen.getByText("42 changes")).toBeInTheDocument();
   });
 
-  it("demotes the diff-shape score behind progressive disclosure", () => {
+  it("states the diff shape in words, with no raw score", () => {
     render(<RiskReportRenderer data={data} />);
 
     // The ranked reading stays in the compact context row...
     expect(screen.getByText("p82")).toBeInTheDocument();
-    // ...while the raw model score is inside the collapsed section.
+    // ...and the sentence replaces the raw 0-10 the renderer used to show.
     const disclosure = screen.getByText("More detail");
     expect(disclosure.closest("details")).not.toBeNull();
-    expect(screen.getByText("Diff-shape score")).toBeInTheDocument();
+    expect(screen.getByText(/bigger than 82%/)).toBeInTheDocument();
+    expect(screen.queryByText("Diff-shape score")).toBeNull();
   });
 
   it("announces a partial comparison as a live status, not a clean result", () => {
@@ -145,7 +146,7 @@ describe("change risk artifact", () => {
   it("still renders a legacy payload that has no delta", () => {
     render(
       <RiskReportRenderer
-        data={{ ref: "HEAD", score: 3.1, risk_percentile: 40, review_priority: "Normal" }}
+        data={{ ref: "HEAD", risk_percentile: 40, review_priority: "Normal" }}
       />,
     );
 

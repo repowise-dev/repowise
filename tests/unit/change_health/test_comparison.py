@@ -228,6 +228,76 @@ def test_findings_are_ordered_by_severity_not_by_dimension(make_repo):
     assert severities == sorted(severities, key=lambda s: -ranks[s])
 
 
+def _finding(**kw):
+    from repowise.core.analysis.change_health.models import ChangeFinding
+
+    base = dict(
+        change_finding_id="id",
+        change_kind="introduced",
+        dimension="defect",
+        biomarker_type="complexity",
+        severity="low",
+        path="app.py",
+        symbol="f",
+        line_start=1,
+        line_end=2,
+        reason="r",
+        attribution_basis="added_lines",
+        attribution_confidence="high",
+        attribution_detail="d",
+        suggestion="",
+        follow_up="",
+    )
+    base.update(kw)
+    return ChangeFinding(**base)
+
+
+def test_what_the_change_wrote_outranks_what_it_only_touched():
+    """A capped list must not spend its slots on pre-existing problems."""
+    from repowise.core.analysis.change_health.service import _priority
+
+    mine = _finding(severity="low", attribution_basis="added_lines")
+    inherited = _finding(
+        severity="critical", attribution_basis="file_change", change_kind="worsened"
+    )
+    scaffolding = _finding(severity="high", path="tests/test_app.py")
+
+    assert sorted([inherited, mine], key=_priority) == [mine, inherited]
+    assert sorted([scaffolding, mine], key=_priority) == [mine, scaffolding]
+    assert sorted([inherited, scaffolding], key=_priority) == [scaffolding, inherited]
+
+
+def test_a_performance_finding_on_test_code_is_not_reported(make_repo):
+    """The perf model reasons about request-reachable paths; a test is not one."""
+    repo = make_repo()
+    repo.commit("seed", {"tests/test_app.py": python_io_in_loop(in_loop=False)})
+    repo.commit("loop", {"tests/test_app.py": python_io_in_loop(in_loop=True)})
+
+    delta = compare(repo)
+
+    assert not [f for f in delta.findings if f.dimension == "performance"], [
+        (f.path, f.biomarker_type) for f in delta.findings
+    ]
+
+
+def test_test_file_findings_sort_below_source_findings(make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "x = 1\n", "tests/test_app.py": "y = 1\n"})
+    repo.commit(
+        "add",
+        {
+            "app.py": python_complex("source", 14),
+            "tests/test_app.py": python_complex("scaffolding", 26),
+        },
+    )
+
+    delta = compare(repo)
+    in_tests = [f.path.startswith("tests/") for f in delta.findings]
+
+    assert any(in_tests) and not all(in_tests), "fixture must produce both kinds"
+    assert in_tests == sorted(in_tests), [(f.path, f.severity) for f in delta.findings]
+
+
 # -- honesty ----------------------------------------------------------------
 
 

@@ -180,7 +180,10 @@ Read the result in this order:
 - **`fix_history`**: uncalibrated historical evidence about where the change
   lands, reported separately rather than folded into a probability.
 - **`score`** (0–10 normalized points): supporting diff size and spread,
-  offline-calibrated and corpus-anchored to a single commit.
+  offline-calibrated and corpus-anchored to a single commit. It ranks 0.99
+  against lines added on every repository measured, so `get_change_risk` keeps
+  it behind `include=["diagnostics"]` rather than on the wire; the CLI and the
+  REST range endpoint still report it.
 - **`fallback_band`**: the heuristic-thresholded absolute `low` / `moderate` /
   `high` model-score band. Present
   *only* when there was no baseline to rank against (a shallow repo, or
@@ -300,7 +303,7 @@ no report.
 It surfaces in two places. `repowise risk` prints the groups under the driver
 table, naming each group's files, its bridging files, and the first ten ungrouped
 paths; `--format json` carries the same object under `independent_changes`. In
-`get_change_risk` it is `change_shape.independent_changes`, which needs an index
+`get_change_risk` it is `independent_changes`, which needs an index
 and is absent without one.
 
 ## Calibration & accuracy

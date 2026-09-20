@@ -125,15 +125,21 @@
       "contract_version": null,
       "embedder_degraded": null,
       "index_age_days": null,
-      "indexed_commit": null,
-      "omitted": {
-        "refs": [
-          null
-        ],
-        "restore": null,
-        "tokens": null
+      "index_behind": null,
+      "index_scope": {
+        "content_provenance": null,
+        "fingerprint": null,
+        "full": null,
+        "git_tier": null,
+        "projection": null,
+        "run_mode": null,
+        "status": null,
+        "version": null
       },
+      "indexed_commit": null,
+      "live_head": null,
       "source": null,
+      "stale_warning": null,
       "timing_ms": null
     },
     "branch_overlap": {
@@ -146,8 +152,7 @@
           "files": [
             {
               "basis": null,
-              "file": null,
-              "partner": null
+              "file": null
             }
           ],
           "last_commit": null
@@ -159,30 +164,17 @@
       "total": null,
       "truncated": null
     },
-    "change_shape": {
-      "classification": null,
-      "diagnostics_via": null,
-      "independent_changes": null,
-      "fallback_band": null,
-      "is_fix": null,
-      "measures": null,
-      "review_priority": null,
-      "risk_percentile": null,
-      "score": null
-    },
     "classification": null,
+    "diff_shape": null,
     "directive": {
       "headline": null,
       "next_actions": [
         null
       ],
-      "reasons": [
-        null
-      ],
+      "reasons": [],
       "status": null
     },
     "exclude_patterns": [],
-    "fallback_band": null,
     "fix_history": {
       "available": null,
       "density": null,
@@ -193,6 +185,24 @@
           "path": null
         }
       ],
+      "overlap": {
+        "changed_lines_in_fixed_files": null,
+        "files": [
+          {
+            "changed_lines": null,
+            "file_path": null,
+            "fix_count": null,
+            "last_fix_days_ago": null,
+            "overlapping_lines": null,
+            "share_of_change": null
+          }
+        ],
+        "files_with_fixes": null,
+        "line_overlap": null,
+        "summary": null,
+        "total_fixes": null,
+        "truncated": null
+      },
       "percentile": null
     },
     "health_delta": {
@@ -257,29 +267,9 @@
       "truncated": null
     },
     "is_fix": null,
-    "omission_marker": null,
-    "prior_fixes": {
-      "changed_lines_in_fixed_files": null,
-      "files": [
-        {
-          "changed_lines": null,
-          "file_path": null,
-          "fix_count": null,
-          "last_fix_days_ago": null,
-          "overlapping_lines": null,
-          "share_of_change": null
-        }
-      ],
-      "files_with_fixes": null,
-      "line_overlap": null,
-      "summary": null,
-      "total_fixes": null,
-      "truncated": null
-    },
     "ref": null,
     "review_priority": null,
     "risk_percentile": null,
-    "score": null,
     "working_tree": null
   },
   "get_conformance": {

@@ -272,15 +272,14 @@ export interface RiskReportArtifactData {
   /** `get_change_risk` action-first blocks. */
   directive?: ChangeRiskDirective;
   health_delta?: ChangeHealthDeltaData;
-  change_shape?: {
-    independent_changes?: {
-      count?: number;
-      summary?: string;
-      basis?: string;
-      ungrouped_files?: string[];
-      groups?: Array<{ files: string[]; bridging_files?: string[] }>;
-      [k: string]: unknown;
-    };
+  /** One line on diff size and spread; never a danger verdict. */
+  diff_shape?: string;
+  independent_changes?: {
+    count?: number;
+    summary?: string;
+    basis?: string;
+    ungrouped_files?: string[];
+    groups?: Array<{ files: string[]; bridging_files?: string[] }>;
     [k: string]: unknown;
   };
   impacted_tests?: { tests_to_run?: string[]; status?: string; summary?: string };
@@ -288,8 +287,8 @@ export interface RiskReportArtifactData {
   fix_history?: {
     available?: boolean;
     files?: Array<{ path: string; churn: number; fix_pressure: number }>;
+    overlap?: { files_with_fixes?: number; total_fixes?: number };
   };
-  prior_fixes?: { files_with_fixes?: number; total_fixes?: number };
   /** Other open branches editing the files this change edits. */
   branch_overlap?: {
     base?: string;

@@ -629,16 +629,19 @@ ranking it against the same measure over the repo's own recent commits. It is
 the part that separates a small edit to a fragile file from a large edit to a
 safe one. `available` is false when the history walk could not run.
 
-`change_shape` carries the supporting diff-shape reading: `score`,
-`risk_percentile`, `review_priority`, `classification`, `fallback_band` and
-`is_fix`, which also stay at the top level. `score` is an offline-calibrated
-0-10 output measuring diff size and spread — not a probability, and not where
-the change lands. `fallback_band` appears only when no baseline was available.
+`diff_shape` is one sentence ranking the diff's size against the repo's recent
+commits, alongside the top-level `risk_percentile`, `review_priority`,
+`classification` and `is_fix`. It is size and spread, never a danger verdict.
 `working_tree` says whether uncommitted work was the subject.
 
-`include=["diagnostics"]` adds the raw mechanics: `risk_authority`,
-`score_measures`, `score_unit`, `baseline_sample_size`, `features` and
-`drivers`. `include=["scales"]` adds each field's kind, unit, range,
+The raw 0-10 `score` is not on the wire by default. It ranks 0.99 against lines
+added on every repository measured, so the percentile beside it already carried
+the ranking while the number invited being read as a probability. It remains
+available, with `fallback_band`, behind `include=["diagnostics"]`.
+
+`include=["diagnostics"]` adds the raw mechanics: `score`, `fallback_band`,
+`risk_authority`, `score_measures`, `score_unit`, `baseline_sample_size`,
+`features` and `drivers`. `include=["scales"]` adds each field's kind, unit, range,
 calibration and thresholds. Both are identical on every call, so ask once.
 
 It also returns `impacted_tests`, whose `tests_to_run` names the tests the
@@ -677,13 +680,13 @@ followed, and `unresolved_detail` names what failed.
 `is_fix` is the defect benchmark's keyword rule read over the commit subject,
 not the conventional-commit type, so a `feat:` commit whose subject says it
 fixes something reads true; the rule is frozen for comparability rather than
-tuned. `prior_fixes` below is the tuned view: it applies a diff-shape filter on
-top of that rule, counting only commits that actually edited production code.
-`fix_history` above runs the same unfiltered rule, and `prior_fixes` is the one
-block of the three that needs an index.
+tuned. `fix_history.overlap` is the tuned view: it applies a diff-shape filter
+on top of that rule, counting only commits that actually edited production
+code. `fix_history` itself runs the same unfiltered rule, and `overlap` is the
+one part of the three that needs an index.
 
-When the changed files carry counted bug fixes, the response also holds
-`prior_fixes`: per file, how many past bug-fix commits touched it
+When the changed files carry counted bug fixes, `fix_history.overlap` reports
+per file how many past bug-fix commits touched it
 (`fix_count`), how many of the change's lines fall inside the ranges one of
 those fixes replaced (`overlapping_lines`), and how long ago the most recent
 was (`last_fix_days_ago`). `total_fixes` counts distinct commits, not rows,
@@ -746,7 +749,7 @@ different fact: it reports the branch scan bound, not a cap. The block is absent
 no counted files, when no other branch edits a shared file, and when the scan
 exceeds its 20-second ceiling or git cannot answer.
 
-`change_shape.independent_changes` says when the diff is several changes rather
+`independent_changes` says when the diff is several changes rather
 than one. It groups the changed files by connectivity, over index edges (imports,
 calls, type references, framework and dynamic edges), stored co-change pairs, and,
 when `revspec` is a `base..head` range, the files each commit of that range
@@ -773,8 +776,8 @@ recoverable with `repowise expand <ref>`; nothing else in the block is capped. T
 block needs an index and is absent without one, and it is absent whenever the diff
 is one change: fewer than two changed files, fewer than two of them eligible to be
 grouped, or fewer than two groups surviving. Under a response over budget it is
-the first thing shed, ahead of the rest of `change_shape`; `branch_overlap` sheds
-after `prior_fixes` and before `cross_repo`.
+the first thing shed, ahead of `diff_shape`; `branch_overlap` sheds after
+`fix_history` and before `cross_repo`.
 
 The freshness envelope is scoped to the files this change edits, whether or not
 the repo is indexed: `branch_overlap` reads files on other branches, and that

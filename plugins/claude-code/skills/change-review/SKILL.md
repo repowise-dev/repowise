@@ -18,15 +18,14 @@ architectural decisions that govern the touched code.
 Two complementary risk signals, use both:
 
 - **`get_change_risk(revspec=…)` (MCP)** scores the *whole change as one unit* (a
-  commit or a `base..head` range) from its diff shape: a single 0-10 defect-risk
-  score with drivers (lines added/deleted, files, directories, subsystems,
-  change entropy, author familiarity). No LLM, no network. Prefer this in-MCP
+  commit or a `base..head` range). No LLM, no network. Prefer this in-MCP
   tool; it takes a revspec and diffs server-side, so you never shell out. Lead
   with `directive` and `health_delta` — what the change actually made worse.
+  Findings the change wrote sort above pre-existing ones it only touched.
   Then `risk_percentile` (this change ranked against sampled recent commits),
-  summarized by `review_priority` and `classification`. `score` is calibrated
-  per single commit, so a PR-sized change reads high by construction, and
-  `fallback_band` appears only when there was no baseline to rank against.
+  summarized by `review_priority` and `classification`. The raw 0-10 `score`
+  ranks 0.99 against lines added, so it sits behind `include=["diagnostics"]`
+  rather than on the wire; `diff_shape` states the ranking in one line.
   Omit `revspec` to score uncommitted work. This is the pre-merge gate: "how risky is this
   change overall?" The `repowise risk <revspec>` CLI is the identical scorer for
   when you are already in a terminal.
