@@ -358,24 +358,38 @@ def is_read_only_segment(words: list[str]) -> bool:
     rules = _READONLY_SEGMENT_FLAGS.get(tool)
     if rules is None:
         return False
+    operands = _allowed_operands(words[1:], rules)
+    if operands is None:
+        return False
+    if tool == "sed":
+        return _sed_script_is_read_only(operands)
+    return True
+
+
+def _allowed_operands(
+    args: list[str], rules: tuple[frozenset[str], frozenset[str]]
+) -> list[str] | None:
+    """The non-flag arguments in *args*, or ``None`` if any flag is unlisted.
+
+    A bare ``-`` is stdin, not a flag. Everything else starting with ``-``
+    has to be in this tool's allowlist; an unknown flag declines the segment.
+    """
     short, long = rules
     operands: list[str] = []
-    for arg in words[1:]:
+    for arg in args:
         bare = arg.strip("\"'")
         if bare.startswith("--"):
             if bare.split("=", 1)[0] not in long:
-                return False
+                return None
         elif bare.startswith("-") and bare != "-":
             cluster = _short_cluster(bare)
             # A cluster of unknown letters, or one that swallowed a value
             # (``-o out``), declines: every admitted letter is a pure switch.
             if not cluster or any(letter not in short for letter in cluster):
-                return False
+                return None
         else:
             operands.append(arg)
-    if tool == "sed":
-        return _sed_script_is_read_only(operands)
-    return True
+    return operands
 
 
 def analyze_pipeline(command: str) -> Pipeline | None:
