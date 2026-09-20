@@ -53,6 +53,13 @@ def as_result(value: HookResult | str | None) -> HookResult:
         return value
     return HookResult(context=value or None)
 
+
+def join_notices(*notices: str | None) -> str | None:
+    """One context block from several handlers, or ``None`` when all are quiet."""
+    spoken = [n for n in notices if n]
+    return "\n".join(spoken) if spoken else None
+
+
 #: Wall clock at the first moment repowise code runs in this hook process.
 #: Every ledger row carries the elapsed time to its own write, which is the
 #: part of hook latency repowise controls. It is a *lower bound* on what the

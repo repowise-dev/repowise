@@ -348,6 +348,9 @@ class DecisionPolicy:
     #: setting here that lets something other than a person create a
     #: constraint, so it ships off and no preset turns it on.
     agent_acceptance: bool = False
+    #: Whether the commit hook asks the agent to record a decision. An agent
+    #: cannot decline a hook, so this ships off and no preset turns it on.
+    capture_prompt: bool = False
 
     # -- queries ---------------------------------------------------------
 
@@ -496,6 +499,8 @@ class DecisionPolicy:
             block["harnesses"] = list(self.harnesses)
         if self.agent_acceptance:
             block["agent_acceptance"] = True
+        if self.capture_prompt:
+            block["capture_prompt"] = True
         return block
 
     def to_dict(self, *, provider_available: bool = True) -> dict[str, Any]:
@@ -507,6 +512,7 @@ class DecisionPolicy:
             "discovery": self.discovery.to_dict(),
             "harnesses": list(self.harnesses),
             "agent_acceptance": self.agent_acceptance,
+            "capture_prompt": self.capture_prompt,
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -543,6 +549,9 @@ class DecisionPolicy:
 
     def with_agent_acceptance(self, value: bool) -> DecisionPolicy:
         return replace(self, agent_acceptance=value)
+
+    def with_capture_prompt(self, value: bool) -> DecisionPolicy:
+        return replace(self, capture_prompt=value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -623,6 +632,7 @@ POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
         "discovery",
         "harnesses",
         "agent_acceptance",
+        "capture_prompt",
     }
 )
 
@@ -780,6 +790,12 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             warnings.append("`decisions.agent_acceptance` is not a boolean; ignoring it.")
         agent_acceptance = False
 
+    capture_prompt = _as_bool(raw.get("capture_prompt"))
+    if capture_prompt is None:
+        if "capture_prompt" in raw:
+            warnings.append("`decisions.capture_prompt` is not a boolean; ignoring it.")
+        capture_prompt = False
+
     for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
 
@@ -791,6 +807,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             discovery=discovery,
             harnesses=harnesses,
             agent_acceptance=agent_acceptance,
+            capture_prompt=capture_prompt,
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),

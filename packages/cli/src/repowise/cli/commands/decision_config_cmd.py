@@ -117,6 +117,13 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
         )
     else:
         console.print("  [dim]Agent acceptance: off. Agents withdraw authority, never grant it.[/dim]")
+    if policy.capture_prompt:
+        console.print(
+            "  [dim]Capture prompt: on. After a commit that states a choice, the "
+            "agent is asked once a session to record it.[/dim]"
+        )
+    else:
+        console.print("  [dim]Capture prompt: off. Nothing asks an agent to record a decision.[/dim]")
     console.print("")
 
     for warning in resolution.warnings:
@@ -193,6 +200,14 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
                 "to": str(after.agent_acceptance),
             }
         )
+    if before.capture_prompt != after.capture_prompt:
+        changes.append(
+            {
+                "key": "capture_prompt",
+                "from": str(before.capture_prompt),
+                "to": str(after.capture_prompt),
+            }
+        )
     if before.harnesses != after.harnesses:
         changes.append(
             {
@@ -238,8 +253,9 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
     from repowise.core.analysis.decisions.policy import preset_policy
 
     repo_path = _resolve_decision_repo(path, fmt)
-    # A preset names source membership; the harness list and the agent-grant
-    # switch are not, so applying one leaves both as the caller set them.
+    # A preset names source membership. The harness list and the two agent
+    # switches are not membership, so applying one leaves them as the caller
+    # set them.
     current = _load(repo_path).policy
     _apply(
         repo_path,
@@ -247,6 +263,7 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
             preset_policy(name),
             harnesses=current.harnesses,
             agent_acceptance=current.agent_acceptance,
+            capture_prompt=current.capture_prompt,
         ),
         fmt,
         dry_run,
@@ -322,6 +339,30 @@ def config_agent_acceptance(
     repo_path = _resolve_decision_repo(path, fmt)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_agent_acceptance(bool(enabled)), fmt, dry_run)
+
+
+@config_group.command("capture-prompt")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--on/--off", "enabled", default=None, required=True, help="Ask the agent to record."
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_capture_prompt(
+    path: str | None, enabled: bool | None, dry_run: bool, fmt: str
+) -> None:
+    """Ask the agent to record a decision after a commit that states one.
+
+    Off by default. An agent cannot decline a hook, so this fires at most once
+    a session, only on a commit whose message carries two or more decision
+    signals, and never on one a record already cites. It proposes; nothing is
+    recorded without the agent running `repowise decision add`.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt)
+    current = _load(repo_path).policy
+    _apply(repo_path, current.with_capture_prompt(bool(enabled)), fmt, dry_run)
 
 
 @click.group("source")

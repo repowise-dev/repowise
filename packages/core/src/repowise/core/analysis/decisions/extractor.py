@@ -63,6 +63,7 @@ from repowise.core.analysis.decisions.scope import (
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.ingestion.traverser import load_gitignore_spec
 
+from .commit_signals import count_decision_signals
 from .prompts import (
     _SYSTEM_PROMPT,
     COMMENT_ARCHAEOLOGY_PROMPT,
@@ -375,31 +376,6 @@ _BINARY_EXTENSIONS = frozenset(
     }
 )
 
-# ---------------------------------------------------------------------------
-# Decision signal keywords for git archaeology
-# ---------------------------------------------------------------------------
-
-DECISION_SIGNAL_KEYWORDS = [
-    "migrate",
-    "migration",
-    "switch to",
-    "replace",
-    "replaced",
-    "refactor to",
-    "move from",
-    "adopt",
-    "introduce",
-    "deprecate",
-    "remove",
-    "drop",
-    "upgrade",
-    "rewrite",
-    "extract",
-    "split",
-    "convert",
-    "transition",
-    "revert",
-]
 
 # ---------------------------------------------------------------------------
 # ADR / PR / comment source configuration
@@ -767,7 +743,7 @@ class DecisionExtractor:
                 # Scan subject + body for signals — squash-merge repos carry the
                 # decision rationale in the body, not the one-line subject.
                 signal_text = f"{msg}\n{body}".lower()
-                signal_count = sum(1 for kw in DECISION_SIGNAL_KEYWORDS if kw in signal_text)
+                signal_count = count_decision_signals(signal_text)
                 if signal_count > 0:
                     commit_map[sha] = {
                         "sha": sha,
@@ -1051,7 +1027,7 @@ class DecisionExtractor:
                     continue
                 low = body.lower()
                 is_prish = c.get("pr_number") is not None or any(m in low for m in _PR_BODY_MARKERS)
-                has_signal = any(k in low for k in DECISION_SIGNAL_KEYWORDS)
+                has_signal = count_decision_signals(low) > 0
                 if is_prish and has_signal:
                     candidates[sha] = {
                         "sha": sha,
