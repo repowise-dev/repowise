@@ -646,5 +646,7 @@ unchanged files stay put; no nightly full re-index.
   the full marker roster, and the complete weight tables.
 - [`docs/BENCHMARKS.md`](../BENCHMARKS.md): every published number with its
   sample size and test.
+- [DOC_DRIFT.md](DOC_DRIFT.md): the other thing this layer checks, your own
+  documentation against the tree.
 - [REFACTORING.md](REFACTORING.md) · [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md) ·
   [BUG_HISTORY.md](BUG_HISTORY.md)

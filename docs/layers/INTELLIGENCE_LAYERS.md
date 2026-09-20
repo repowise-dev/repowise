@@ -220,6 +220,11 @@ repowise health --refactoring-targets # ranked by impact / effort
 repowise health --trend               # snapshots + declining-health alerts
 ```
 
+The same layer also checks **documentation drift**: the claims your markdown
+makes about the tree (a path, a link, a heading, a command), resolved against
+the graph, with the refuted ones reported. No model, and it runs on every
+update. [`DOC_DRIFT.md`](DOC_DRIFT.md).
+
 Full guide, the calibration story and the head-to-head against CodeScene:
 [`CODE_HEALTH.md`](CODE_HEALTH.md).
 

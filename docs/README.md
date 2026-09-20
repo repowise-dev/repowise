@@ -59,6 +59,7 @@ your agent in under five minutes, with no API key.
 | [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph: what is in it, how every edge is resolved, and how much to trust each one |
 | [layers/DECISIONS.md](layers/DECISIONS.md) | Architectural decisions mined from your repo and from your own agent sessions |
 | [layers/DEAD_CODE.md](layers/DEAD_CODE.md) | Unreachable files, unused exports, and zombie packages by confidence tier |
+| [layers/DOC_DRIFT.md](layers/DOC_DRIFT.md) | Documentation claims checked against the tree: what is checked, what is not, and how to read a finding |
 | [layers/SECURITY.md](layers/SECURITY.md) | The local pattern scan: what the sixteen patterns catch, what they do not, and how far to trust the result |
 | [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 26 parsed to a full AST, 40 on the five-rung ladder |
 | [layers/WIKI.md](layers/WIKI.md) | The generated wiki: page types, what `update` re-renders, styles, output language |
