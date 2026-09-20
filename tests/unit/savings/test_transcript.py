@@ -777,8 +777,8 @@ def test_claude_codes_cap_is_not_charged_to_codex(repo: Path) -> None:
     """Codex delivers results two orders of magnitude larger and truncates
     nowhere near 7,500 tokens. Charging it Claude Code's limit clipped 23% of
     this ledger's events and made 125 of them deliver more than they cost."""
-    # Between the two caps on purpose: over Claude Code's 7,500, under
-    # Codex's own. Nothing clips, so the marker's arithmetic survives whole.
+    # Over Claude Code's 7,500 and under Codex's own, so nothing clips and
+    # the marker's arithmetic survives whole.
     baseline, _ = _accounting_for("codex", delivered=100, omitted=9_000)
 
     assert baseline > HOST_OUTPUT_CAP_TOKENS
@@ -796,17 +796,18 @@ def test_codex_is_capped_at_its_own_measured_plateau(repo: Path) -> None:
     """
     baseline, _ = _accounting_for("codex", delivered=100, omitted=5_000_000)
 
-    assert baseline == 10_000  # 40,000 characters, its measured plateau
+    # 2,552,250 characters: the largest result Codex was observed to deliver.
+    assert baseline == 638_062
 
 
 def test_a_harness_nobody_measured_is_not_charged_someone_elses_cap(repo: Path) -> None:
     """Asserting a truncation we have not observed is how this bug happened,
     so an unlisted harness gets no cap rather than the nearest one."""
-    baseline, _ = _accounting_for("some_future_agent", delivered=100, omitted=5_000_000)
+    baseline, _ = _accounting_for("some_future_agent", delivered=100, omitted=9_000_000)
 
     # Larger than any cap in the table, so this pins "no cap" rather than
-    # "some other cap" -- giving the unlisted harness Codex's 10,000 fails.
-    assert baseline > 1_000_000
+    # "some other cap": giving the unlisted harness Codex's fails.
+    assert baseline > 8_000_000
 
 
 def test_a_cap_never_clips_below_what_the_host_actually_delivered(repo: Path) -> None:

@@ -75,27 +75,33 @@ SYNC_BUDGET_S = 20.0
 #: is ``len // 4``, so capping characters and capping tokens agree exactly.
 HOST_OUTPUT_CAP_TOKENS = HOST_OUTPUT_CAP_CHARS // 4
 
-#: Codex truncates its own shell results, just not where Claude Code does.
+#: The largest shell result Codex was observed to actually deliver, across
+#: 95,814 of them in this repository. A host cannot have truncated below what
+#: it demonstrably handed the model, so this is a *measured* lower bound on
+#: Codex's cap rather than an estimate of one.
 #:
-#: Found by looking for a plateau -- the length a hard cap makes many
-#: unrelated results land on exactly -- across 95,814 Codex shell result
-#: texts in this repository. Above 5,000 characters the commonest lengths
-#: are 24,133 (164 texts) and then a tight cluster at 40,100 / 40,102 /
-#: 40,103 / 40,104, over 200 texts within four characters of one another.
-#: That is a cap followed by a variable-length truncation notice, not a
-#: coincidence of content. Claude Code's plateau is the same shape and
-#: sharper: 24 texts at exactly 30,000, and nothing above it at all.
+#: Two observations sit behind this number and they disagree, so both are
+#: recorded:
 #:
-#: Set *under* the observed plateau, so it undersells by the width of the
-#: notice rather than claiming a character the host may not have sent.
+#: - Most large Codex results stop at a plateau: above 5,000 characters the
+#:   commonest lengths are 24,133 (164 texts) and a tight cluster at
+#:   40,100-40,104, over 200 texts within four characters of one another.
+#:   That is a cap with a variable-length truncation notice after it. Claude
+#:   Code's plateau is the same shape and sharper -- 24 texts at exactly
+#:   30,000, nothing above it.
+#: - But Codex does not always stop there. Results run to 159,585, 434,762,
+#:   1,510,994 and 2,552,250 characters, none of them truncated.
 #:
-#: Deliberately NOT the largest result observed (2,552,250 characters). A
-#: few Codex results run to megabytes, and crediting those in full makes
-#: five events 49% of this ledger -- savings on output no model could have
-#: received, which is the "shed from what?" objection that sank the idea of
-#: banking pre-budget size. Those outliers are not capped shell output; the
-#: plateau is.
-_CODEX_OUTPUT_CAP_CHARS = 40_000
+#: So the plateau is a cap Codex applies *sometimes*, and picking it would
+#: undercount every result that escaped it. Set at the maximum instead, on
+#: the standing preference that a figure this ledger reports should err high
+#: rather than low. That is a real trade and not a free one: the five largest
+#: events become 29% of the recorded total, each crediting a single command
+#: with more tokens than a model's context can hold. The plateau figure
+#: (40,000 characters) is the conservative alternative and costs about 4x.
+#:
+#: Claude Code needs no equivalent choice -- its plateau *is* its maximum.
+_CODEX_OUTPUT_CAP_CHARS = 2_552_250
 
 #: Per-harness output cap, in tokens. ``estimate_tokens`` is ``len // 4``, so
 #: capping characters and capping tokens agree exactly.
