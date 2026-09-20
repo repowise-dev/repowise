@@ -338,6 +338,70 @@ class TestSafeTails:
     def test_unsafe_chains_pass_through(self, command) -> None:
         assert classify(command) is None
 
+    @pytest.mark.parametrize(
+        ("command", "family"),
+        [
+            # Phase 1c: read-only `sed`/`cat`/`wc`/`sort` are inert chain
+            # segments. Every shape here is taken verbatim from the measured
+            # 30-day corpus, which is overwhelmingly `sed -n '<range>p' f`.
+            ("cd pkg && sed -n '1,60p' README.md && git diff", "git_diff"),
+            ("cd pkg && cat notes.md && git diff", "git_diff"),
+            ("git diff && wc -l src/a.py src/b.py", "git_diff"),
+            ("git log -3 && sort -u names.txt", "git_log"),
+            ("ls a && sed -n 'p' f.txt", "file_listing"),
+            ("ls a && cat -n f.txt", "file_listing"),
+            ("ls a && wc -lw f.txt", "file_listing"),
+        ],
+    )
+    def test_read_only_forms_are_inert_chain_segments(self, command, family) -> None:
+        assert classify(command) == family
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # The guard. Each of these is the *same tool* in a form that
+            # writes, executes, or reads a file we cannot vet. A rewrite is
+            # auto-allowed, so admitting the name rather than the form would
+            # hand the agent an approval nobody granted.
+            "git diff && sed -i 's/a/b/' f.py",  # in-place edit
+            "git diff && sed --in-place 's/a/b/' f.py",
+            "git diff && sort -o sorted.txt names.txt",  # -o writes
+            "git diff && sort --output=sorted.txt names.txt",
+            "git diff && sed -n '1,5w out.txt' f.py",  # script writes a file
+            "git diff && sed -n '1,5e rm -rf x' f.py",  # script executes
+            "git diff && sed -n '/secret/p' f.py",  # regex address not admitted
+            "git diff && sed -f script.sed f.py",  # unvettable script file
+            "git diff && sed -e '1,5p' f.py",  # -e moves the script operand
+            "git diff && sed -n '1,5d' f.py",  # not a print
+            "git diff && cat --help-me f.py",  # unknown long flag
+            "git diff && wc --files0-from=list f",  # reads a file list
+            "git diff && cat f.py > out.txt",  # stdout redirect
+            # `$` is a valid sed address, but the chain gate bails on `$`
+            # before any segment is looked at, because expansion timing
+            # differs inside the wrapped shell. Recorded so the interaction
+            # is not rediscovered as a bug in the allowlist.
+            "ls a && sed -n '$p' f.txt",
+        ],
+    )
+    def test_a_writing_form_of_an_admitted_tool_still_declines(self, command) -> None:
+        assert classify(command) is None
+
+    def test_the_allowlist_is_what_declines_the_writing_forms(self) -> None:
+        """Proves the guard by breaking what it protects.
+
+        Without the per-form check these tools would be admitted on their
+        name alone, and `sed -i` -- a command that edits files in place --
+        would be wrapped and auto-allowed. Pinned here rather than trusted,
+        because the failure is silent: a rewrite that runs.
+        """
+        from repowise.cli import shell_lexer
+
+        writing = ["sed", "-i", "s/a/b/", "f.py"]
+        assert shell_lexer.is_read_only_segment(writing) is False
+        # And with the name admitted but the form unchecked, the chain gate
+        # would have said yes -- which is exactly the bug this prevents.
+        assert shell_lexer._basename(writing[0]) in shell_lexer.READONLY_SEGMENT_TOOLS
+
     def test_chains_never_rewrite_in_powershell(self) -> None:
         """``&&`` is POSIX syntax; distill would hand this to cmd.exe."""
         assert classify("ls a && ls b", SHELL_POWERSHELL) is None

@@ -72,9 +72,11 @@ from repowise.cli.agent_adapters.base import (
 # deferred into the writer, so a command that bails never opens a database.
 from repowise.cli.hook_ledger import BAILED, REWRITTEN
 from repowise.cli.shell_lexer import (
+    READONLY_SEGMENT_TOOLS,
     SAFE_FINAL_TOOLS,
     analyze_pipeline,
     is_plain_stdin_filter,
+    is_read_only_segment,
     tokenize,
 )
 
@@ -346,6 +348,9 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
       - a command ``_classify_head`` recognizes (the same closed set a lone
         command must be in),
       - an inert builtin (``_INERT_SEGMENT_TOKENS``),
+      - a read-only invocation of ``sed``/``cat``/``wc``/``sort``
+        (``is_read_only_segment`` -- the *form* is checked, not the name,
+        because ``sed -i`` and ``sort -o`` write),
       - a bare stdin filter on the right of a pipe (``SAFE_FINAL_TOOLS``),
 
     and at least one segment is recognized. That rule is the whole safety
@@ -409,6 +414,16 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
             return None
         first = normalized.split(None, 1)[0]
         if first in _INERT_SEGMENT_TOKENS:
+            continue
+        if first in READONLY_SEGMENT_TOOLS:
+            # Read-only `sed`/`cat`/`wc`/`sort`. Inert for the same reason the
+            # builtins above are: the agent could already run them, so
+            # wrapping a chain containing one grants nothing. Unlike those,
+            # the tool is only inert in *some* invocations -- `sed -i` and
+            # `sort -o` write -- so the form is checked rather than the name,
+            # and an unlisted flag declines the whole chain.
+            if not is_read_only_segment(segment):
+                return None
             continue
         if index in piped_from and first in SAFE_FINAL_TOOLS:
             # grep/tail are both producer families and stdin filters, and on

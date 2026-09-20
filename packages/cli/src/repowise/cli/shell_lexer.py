@@ -26,11 +26,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 __all__ = [
+    "READONLY_SEGMENT_TOOLS",
     "SAFE_FINAL_TOOLS",
     "Pipeline",
     "Token",
     "analyze_pipeline",
     "is_plain_stdin_filter",
+    "is_read_only_segment",
     "render",
     "tokenize",
 ]
@@ -258,6 +260,122 @@ def is_plain_stdin_filter(words: list[str]) -> bool:
         return False
     tool = _basename(words[0])
     return tool in SAFE_FINAL_TOOLS and not _disqualifies_final_stage(tool, words[1:])
+
+
+#: Tools admitted as inert chain segments, each with the flags that keep them
+#: read-only. An allowlist rather than a blocklist of the write flags: a
+#: blocklist has to know every way each tool can be made to write, and the
+#: cost of being wrong is a rewrite that is auto-allowed. A flag nobody
+#: listed declines the whole chain, which is the failure direction we want.
+#:
+#: Short flags are matched per letter so bundles (``-rn``) work. Long forms
+#: are listed whole; a ``--flag=value`` spelling is matched on its stem.
+_READONLY_SEGMENT_FLAGS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    # ``cat`` writes nothing itself -- ``cat > f`` is the redirect, which the
+    # caller's redirect rule already declines. These are its display flags.
+    "cat": (frozenset("AbeEnstTuv"), frozenset({"--number", "--number-nonblank",
+        "--show-all", "--show-ends", "--show-nonprinting", "--show-tabs",
+        "--squeeze-blank"})),
+    "wc": (frozenset("clLmw"), frozenset({"--bytes", "--chars", "--lines",
+        "--max-line-length", "--words"})),
+    # ``-o``/``--output`` is the whole reason this is an allowlist: it makes
+    # ``sort`` a writer, and it is the one flag a reader would forget.
+    "sort": (frozenset("bdfghikMnrstuVz"), frozenset({"--dictionary-order",
+        "--general-numeric-sort", "--human-numeric-sort", "--ignore-case",
+        "--ignore-leading-blanks", "--key", "--month-sort", "--numeric-sort",
+        "--reverse", "--sort", "--stable", "--unique", "--version-sort",
+        "--zero-terminated"})),
+    # ``sed`` is admitted on its script as well as its flags -- see
+    # ``_sed_script_is_read_only``. ``-e`` and ``-f`` are absent on purpose:
+    # ``-f`` reads a script file this cannot vet, and ``-e`` moves the script
+    # into a position the one-script rule below does not model.
+    "sed": (frozenset("nrsEz"), frozenset({"--quiet", "--silent",
+        "--regexp-extended", "--separate", "--null-data"})),
+}
+
+READONLY_SEGMENT_TOOLS = frozenset(_READONLY_SEGMENT_FLAGS)
+
+
+def _is_sed_address(part: str) -> bool:
+    """True for a line number. Regex addresses are not admitted.
+
+    ``$`` (last line) is a valid sed address and is deliberately absent: the
+    hook's chain gate bails on ``$`` anywhere in the command before a segment
+    is examined, so admitting it here would be unreachable code that reads as
+    a supported shape. Rejecting is the safe direction for any other caller.
+    """
+    return part.isdigit()
+
+
+def _sed_script_is_read_only(operands: list[str]) -> bool:
+    """True when ``sed``'s script is an optional line address/range then ``p``.
+
+    Deliberately far narrower than "scripts that do not write". Vetting flags
+    alone is not enough for ``sed``, because the script is a language:
+    ``w``/``W`` and ``s///w`` write files, ``e`` and ``s///e`` execute shell
+    commands, and ``r``/``R`` splice files in. A regex address would also
+    have to be parsed to find where the command letter even starts.
+
+    Every ``sed`` in the measured corpus is ``sed -n '<range>p' <file>``, so
+    the narrow rule costs nothing real and needs no argument about which
+    script commands are safe. Written as a hand parser rather than a regex
+    because this module commits to importing nothing, and ``test_rewrite_perf``
+    pins that.
+
+    The first non-flag operand is the script and the rest are files, which
+    holds only while ``-e``/``-f`` are rejected -- which is why they are.
+    """
+    if not operands:
+        return False
+    script = operands[0].strip("\"'").strip()
+    if script.endswith(";"):
+        script = script[:-1].strip()
+    if not script.endswith("p"):
+        return False
+    address = script[:-1].strip()
+    if not address:
+        return True  # a bare ``p``: print every line
+    start, separator, end = address.partition(",")
+    if separator and not _is_sed_address(end.strip()):
+        return False
+    return _is_sed_address(start.strip())
+
+
+def is_read_only_segment(words: list[str]) -> bool:
+    """True when *words* is a read-only invocation of an admitted tool.
+
+    The chain gate treats such a segment as inert: wrapping a chain whose
+    every segment is inert or already recognized grants the agent nothing it
+    could not already run, and a rewrite is auto-allowed, so "reads and
+    cannot be made to write" is the bar rather than "usually harmless".
+
+    A bare ``-`` is stdin, not a flag. Anything else starting with ``-`` must
+    be in this tool's allowlist, and an unknown flag declines.
+    """
+    if not words:
+        return False
+    tool = _basename(words[0])
+    rules = _READONLY_SEGMENT_FLAGS.get(tool)
+    if rules is None:
+        return False
+    short, long = rules
+    operands: list[str] = []
+    for arg in words[1:]:
+        bare = arg.strip("\"'")
+        if bare.startswith("--"):
+            if bare.split("=", 1)[0] not in long:
+                return False
+        elif bare.startswith("-") and bare != "-":
+            cluster = _short_cluster(bare)
+            # A cluster of unknown letters, or one that swallowed a value
+            # (``-o out``), declines: every admitted letter is a pure switch.
+            if not cluster or any(letter not in short for letter in cluster):
+                return False
+        else:
+            operands.append(arg)
+    if tool == "sed":
+        return _sed_script_is_read_only(operands)
+    return True
 
 
 def analyze_pipeline(command: str) -> Pipeline | None:
