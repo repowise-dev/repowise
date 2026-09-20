@@ -445,10 +445,11 @@ def upgrade_to_full(
     # not have one configured yet. resolve_provider surfaces a clear error.
     provider = resolve_provider(provider_name, model, repo_path=repo_path)
 
+    from repowise.core.repo_config import resolve_language
     config = GenerationConfig.from_repo_config(
         cfg,
         max_concurrency=concurrency,
-        language=cfg.get("language", "en"),
+        language=resolve_language(repo_path, config=cfg),
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
         # A whole-repo selection, so the file-page cap chosen at init applies

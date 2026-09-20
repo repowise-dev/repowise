@@ -49,6 +49,22 @@ async def test_run_pipeline_language_from_repowise_language_env(
 
     monkeypatch.setenv("REPOWISE_LANGUAGE", "pt")
 
+    # Spy on the language the generator is constructed with. The phase imports
+    # ``PageGenerator`` inside the function body from ``repowise.core.generation``,
+    # so the patch goes on that module: the real pipeline still runs and only the
+    # constructor argument is recorded.
+    seen_language: list[str] = []
+    import repowise.core.generation as gen_pkg
+
+    RealPageGenerator = gen_pkg.PageGenerator
+
+    class _SpyPageGenerator(RealPageGenerator):
+        def __init__(self, *args, **kwargs):
+            seen_language.append(kwargs.get("language"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(gen_pkg, "PageGenerator", _SpyPageGenerator)
+
     provider = MockProvider()
     result = await run_pipeline(
         repo_path,
@@ -59,8 +75,9 @@ async def test_run_pipeline_language_from_repowise_language_env(
     )
 
     assert result.generated_pages
-    # The language flows into the generation config; exercise the resolved
-    # generation pipeline did not fall back to English default.
-    from repowise.core.pipeline.orchestrator import _resolve_language
-
-    assert _resolve_language(repo_path) == "pt"
+    # Assert on what the generator actually received. Asserting on
+    # ``resolve_language(repo_path)`` would test the helper twice and the wiring
+    # not at all: run_pipeline would still pass if the ``language=`` argument
+    # above it were reverted to the English default.
+    assert seen_language, "PageGenerator was never constructed"
+    assert seen_language[0] == "pt"

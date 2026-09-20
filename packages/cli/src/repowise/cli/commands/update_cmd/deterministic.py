@@ -148,12 +148,13 @@ def _render_pages(
         return []
 
     try:
+        from repowise.core.repo_config import resolve_language
         config = GenerationConfig.from_repo_config(
             cfg,
             deterministic=True,
             file_pages_only=True,
             max_concurrency=concurrency,
-            language=cfg.get("language", "en"),
+                language=resolve_language(repo_path, config=cfg),
             enable_onboarding=bool(cfg.get("enable_onboarding", True)),
             wiki_style=cfg.get("wiki_style", "comprehensive"),
         )
