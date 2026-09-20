@@ -307,17 +307,9 @@ def _collect(
     # Scoped to this call, which is one transcript, so a model never leaks
     # across sessions. A read resuming mid-file starts with None and leaves
     # its first markers unpriced, which is the right way to be wrong here.
-    #
-    # Sidechains are skipped for the same reason every other miner here skips
-    # them (``sessions/miners/decisions.py``, ``precedent``, ``decisions``):
-    # Claude Code interleaves Task sub-agent lines into the main transcript,
-    # and a sub-agent can run a different model. Carrying one would price the
-    # main thread's next command at the sub-agent's rate -- a 5x error where
-    # a Haiku sub-agent lands between an Opus tool call and its result.
     model: str | None = None
     for event in events:
-        if event.model and _is_model_id(event.model) and not event.sidechain:
-            model = event.model
+        model = _carried_model(event, model)
         for use in event.tool_uses:
             if use.name in shell_tools:
                 shell_calls.add(use.id)
@@ -411,16 +403,27 @@ def _strings_in(blob: Any) -> Iterable[str]:
             yield from (value for value in blob.values() if isinstance(value, str))
 
 
-def _is_model_id(value: str) -> bool:
-    """False for a harness's sentinel labels, which are not models.
+def _carried_model(event: Event, current: str | None) -> str | None:
+    """The model in the chair after *event*, given it was *current* before.
 
-    Claude Code writes ``<synthetic>`` for an API error or an interrupted
-    message. Those resolve to no rate, which is correct -- but the carry
-    forward has to reject them *before* that, or a sentinel overwrites a
-    known-good model and leaves every later marker in the file unpriced.
-    Angle brackets are the shape harnesses use for "not a real value".
+    Two lines are refused rather than carried, and both were found by review
+    rather than by the numbers, because both fail quietly:
+
+    - **A sidechain.** Claude Code interleaves Task sub-agent lines into the
+      main transcript and a sub-agent can run a different model, so carrying
+      one prices the main thread's next command at the sub-agent's rate -- a
+      5x error where a Haiku sub-agent lands between an Opus tool call and
+      its result. Every other miner here filters them for the same reason
+      (``sessions/miners/decisions.py``, ``precedent``, ``decisions``).
+    - **A sentinel.** Claude Code writes ``<synthetic>`` for an API error or
+      an interrupted message. It resolves to no rate, which is right, but it
+      has to be refused *here* too: letting it overwrite a known-good model
+      leaves every later marker in the file unpriced. Angle brackets are the
+      shape harnesses use for "not a real value".
     """
-    return not value.startswith("<")
+    if not event.model or event.sidechain or event.model.startswith("<"):
+        return current
+    return event.model
 
 
 def _accounting(candidate: _Candidate) -> tuple[int, int]:
