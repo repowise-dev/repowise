@@ -23,6 +23,7 @@ from repowise.core.savings import recorder
 from repowise.core.savings.transcript import (
     ESTIMATOR,
     HOST_OUTPUT_CAP_TOKENS,
+    _Candidate,
     sync_transcript_savings,
 )
 from repowise.core.sessions import transcript_dir_for
@@ -701,3 +702,105 @@ def test_a_models_reach_stops_at_the_transcript_it_was_stated_in(
     events = _events(repo)
     assert len(events) == 2
     assert sorted(row["model"] or "" for row in events) == ["", "claude-opus-5"]
+
+
+# -- the baseline is a ceiling, not a guess ---------------------------------
+
+
+def test_no_event_can_deliver_more_than_its_own_baseline(
+    repo: Path, projects: Path
+) -> None:
+    """The invariant a measured pair cannot violate, and nothing asserted it.
+
+    ``baseline`` is what the output cost before distillation and ``delivered``
+    is what the model read back, so ``delivered <= baseline`` holds by
+    construction -- unless the cap applied to the baseline is not the cap the
+    host actually applied. On this machine 305 stored events carry a baseline
+    of exactly 7,500 tokens and 125 of them deliver more than that, which is
+    proof by contradiction that the cap did not apply to them.
+
+    Written against a delivered size larger than the Claude Code cap, which
+    is exactly the shape that was being mis-accounted.
+    """
+    big = "x" * (HOST_OUTPUT_CAP_TOKENS * 4 * 3)
+    _write(
+        projects,
+        repo,
+        _pair(_distilled("abcdef012345", 500, kept=big), cwd=str(repo)),
+    )
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["delivered_input_tokens"] <= event["baseline_input_tokens"], (
+        f"delivered {event['delivered_input_tokens']} exceeds baseline "
+        f"{event['baseline_input_tokens']}: the cap charged to this event is "
+        "not the cap its host applied"
+    )
+
+
+def _accounting_for(harness: str, *, delivered: int, omitted: int) -> tuple[int, int]:
+    """``_accounting`` for one synthetic marker, at the unit level.
+
+    Direct rather than through ``_sync`` because the fixtures here speak only
+    the Claude Code transcript shape, and what is under test is precisely the
+    behaviour that must differ *between* harnesses.
+    """
+    from repowise.core.distill.markers import parse_markers
+    from repowise.core.savings.transcript import _accounting
+
+    text = render_marker("abcdef012345", 100, omitted)
+    (marker,) = parse_markers(text)
+    candidate = _Candidate(
+        marker=marker,
+        harness=harness,
+        occurred_at=datetime.fromtimestamp(NOW, UTC),
+        delivered_tokens=delivered,
+        session_id=None,
+    )
+    return _accounting(candidate)
+
+
+def test_claude_codes_cap_is_still_charged_to_claude_code(repo: Path) -> None:
+    """The confinement. Its 30,000 characters were measured exactly right:
+    across 117,148 shell results the largest it ever delivered is 30,000
+    characters to the byte, and none exceeds it."""
+    baseline, _ = _accounting_for("claude_code", delivered=100, omitted=5_000_000)
+
+    assert baseline == HOST_OUTPUT_CAP_TOKENS
+
+
+def test_claude_codes_cap_is_not_charged_to_codex(repo: Path) -> None:
+    """Codex delivers results two orders of magnitude larger and truncates
+    nowhere near 7,500 tokens. Charging it Claude Code's limit clipped 23% of
+    this ledger's events and made 125 of them deliver more than they cost."""
+    # Between the two caps on purpose: over Claude Code's 7,500, under
+    # Codex's own. Nothing clips, so the marker's arithmetic survives whole.
+    baseline, _ = _accounting_for("codex", delivered=100, omitted=9_000)
+
+    assert baseline > HOST_OUTPUT_CAP_TOKENS
+    assert baseline == 9_000 + 100 - estimate_tokens(
+        render_marker("abcdef012345", 100, 9_000)
+    )
+
+
+def test_a_harness_nobody_measured_is_not_charged_someone_elses_cap(repo: Path) -> None:
+    """Asserting a truncation we have not observed is how this bug happened,
+    so an unlisted harness gets no cap rather than the nearest one."""
+    baseline, _ = _accounting_for("some_future_agent", delivered=100, omitted=40_000)
+
+    assert baseline > HOST_OUTPUT_CAP_TOKENS
+
+
+def test_a_cap_never_clips_below_what_the_host_actually_delivered(repo: Path) -> None:
+    """The invariant, made true by construction rather than by luck.
+
+    A host cannot have truncated below what it demonstrably handed the model.
+    Pinned on the *capped* harness, which is the only one where clipping can
+    happen at all.
+    """
+    delivered = HOST_OUTPUT_CAP_TOKENS * 3
+    baseline, reported = _accounting_for("claude_code", delivered=delivered, omitted=10)
+
+    assert reported == delivered
+    assert baseline >= delivered

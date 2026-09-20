@@ -75,6 +75,46 @@ SYNC_BUDGET_S = 20.0
 #: is ``len // 4``, so capping characters and capping tokens agree exactly.
 HOST_OUTPUT_CAP_TOKENS = HOST_OUTPUT_CAP_CHARS // 4
 
+#: Codex truncates its own shell results, just not where Claude Code does.
+#:
+#: Found by looking for a plateau -- the length a hard cap makes many
+#: unrelated results land on exactly -- across 95,814 Codex shell result
+#: texts in this repository. Above 5,000 characters the commonest lengths
+#: are 24,133 (164 texts) and then a tight cluster at 40,100 / 40,102 /
+#: 40,103 / 40,104, over 200 texts within four characters of one another.
+#: That is a cap followed by a variable-length truncation notice, not a
+#: coincidence of content. Claude Code's plateau is the same shape and
+#: sharper: 24 texts at exactly 30,000, and nothing above it at all.
+#:
+#: Set *under* the observed plateau, so it undersells by the width of the
+#: notice rather than claiming a character the host may not have sent.
+#:
+#: Deliberately NOT the largest result observed (2,552,250 characters). A
+#: few Codex results run to megabytes, and crediting those in full makes
+#: five events 49% of this ledger -- savings on output no model could have
+#: received, which is the "shed from what?" objection that sank the idea of
+#: banking pre-budget size. Those outliers are not capped shell output; the
+#: plateau is.
+_CODEX_OUTPUT_CAP_CHARS = 40_000
+
+#: Per-harness output cap, in tokens. ``estimate_tokens`` is ``len // 4``, so
+#: capping characters and capping tokens agree exactly.
+#:
+#: The defect this replaces: ``HOST_OUTPUT_CAP_CHARS`` is exactly right for
+#: Claude Code, and its own comment said it was "applied to every source".
+#: Charging it to Codex clipped 306 of this ledger's events to 7,500 tokens
+#: and left 111 of them delivering *more* than their own baseline, which is
+#: incoherent for a measured pair and banks zero.
+#:
+#: An unlisted harness gets ``None``, meaning no cap: a cap is a claim that a
+#: host truncated, and asserting one we never observed is precisely how this
+#: happened. ``_accounting`` never clips below what was actually delivered,
+#: so the invariant holds whatever this table says.
+_HARNESS_OUTPUT_CAP_TOKENS: dict[str, int | None] = {
+    "claude_code": HOST_OUTPUT_CAP_TOKENS,
+    "codex": _CODEX_OUTPUT_CAP_CHARS // 4,
+}
+
 #: Cursors for this surface alone. Sharing the decision miner's would starve
 #: whichever ran second, silently: that cursor advances as bytes are read.
 _CURSOR_FILENAME = "transcript-cursors.json"
@@ -369,14 +409,27 @@ def _accounting(candidate: _Candidate) -> tuple[int, int]:
 
     ``delivered`` is the text the marker was found in, which for a shell
     result is the command output the model read back. ``baseline`` adds back
-    what the marker says was dropped, minus the
-    marker's own cost, then re-applies the host truncation the live path
-    applies -- bytes past it never reached the model and cannot be claimed.
+    what the marker says was dropped, minus the marker's own cost, then
+    re-applies **this harness's** truncation -- bytes past it never reached
+    the model and cannot be claimed.
+
+    Whose truncation matters, and it used to be nobody's in particular:
+    Claude Code's 30,000-character cap was charged to every source, Codex
+    included, and Codex does not truncate. See
+    ``_HARNESS_OUTPUT_CAP_TOKENS`` for the measurement.
+
+    The cap never clips below ``delivered``. A host cannot have truncated
+    below what it demonstrably handed the model, so this is not a fudge but
+    the definition -- and it keeps the invariant true for a harness nobody
+    has measured yet, which is the case that produced this bug.
     """
     delivered = candidate.delivered_tokens
     kept = max(delivered - estimate_tokens(candidate.marker.text), 0)
     stored = kept + candidate.marker.tokens_omitted
-    return min(stored, HOST_OUTPUT_CAP_TOKENS), delivered
+    cap = _HARNESS_OUTPUT_CAP_TOKENS.get(candidate.harness)
+    if cap is None:
+        return stored, delivered
+    return max(min(stored, cap), delivered), delivered
 
 
 def _payload(
