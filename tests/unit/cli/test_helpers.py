@@ -816,10 +816,50 @@ class TestResolveProviderOrPrompt:
             helpers.resolve_provider_or_prompt(None, None, tmp_path, interactive=False)
         assert called["prompt"] == 0
 
+    def test_explicit_provider_prompt_resolves_after_setup(self, tmp_path, monkeypatch):
+        """An explicit provider gets inline credential setup only when interactive."""
+        import click
+
+        from repowise.cli import helpers
+
+        sentinel = object()
+        calls = {"resolve": 0, "prompt": 0}
+
+        def _resolve(provider_name, model, repo_path=None):
+            calls["resolve"] += 1
+            if calls["resolve"] == 1:
+                raise click.ClickException("Provider 'openai' requires a key")
+            assert provider_name == "anthropic"
+            assert model == "ag/gemini-3.7-flash-medium"
+            assert repo_path == tmp_path
+            return sentinel
+
+        monkeypatch.setattr(helpers, "resolve_provider", _resolve)
+
+        def _credentials(console, provider, *, repo_path=None, save_key=True):
+            calls["prompt"] += 1
+            assert provider == "anthropic"
+            assert repo_path == tmp_path
+            assert save_key is True
+            return True
+
+        monkeypatch.setattr(
+            "repowise.cli.ui.provider_selection.interactive_provider_credentials",
+            _credentials,
+        )
+
+        result = helpers.resolve_explicit_provider_or_prompt(
+            "anthropic",
+            "ag/gemini-3.7-flash-medium",
+            tmp_path,
+            interactive=True,
+        )
+
+        assert result is sentinel
+        assert calls == {"resolve": 2, "prompt": 1}
+
     @pytest.mark.parametrize("exc_name", ["EOFError", "Abort"])
-    def test_unanswerable_prompt_falls_back_to_clean_error(
-        self, tmp_path, monkeypatch, exc_name
-    ):
+    def test_unanswerable_prompt_falls_back_to_clean_error(self, tmp_path, monkeypatch, exc_name):
         """A tty that lies: the prompt hits EOF/Abort, so we surface the clean
         actionable error instead of a bare 'Aborted!' — the agent-safe path."""
         import click

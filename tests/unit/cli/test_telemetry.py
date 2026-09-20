@@ -352,6 +352,62 @@ class TestOutcomeClassification:
         rec = self._run(monkeypatch, body)
         assert rec and rec[0]["properties"]["status"] == "error"
 
+    def test_a_reasoned_failure_reports_why(self, monkeypatch: pytest.MonkeyPatch):
+        """The gap this exists to close: a bare class name says nothing.
+
+        1,612 installs a month died on a `ClickException` in `init` and the
+        reason was not recoverable after the fact - a bad path, a cost gate with
+        no terminal, and an editor config that will not parse all reported the
+        same thing.
+        """
+        from repowise.cli.errors import reasoned_error
+
+        def body() -> None:
+            raise reasoned_error("nope", reason="invalid_path")
+
+        rec = self._run(monkeypatch, body)
+        assert rec
+        props = rec[0]["properties"]
+        assert props["status"] == "error"
+        assert props["failure_reason"] == "invalid_path"
+        # The class is unchanged on purpose. A subclass here would split the
+        # error_type histogram this reason code exists to make readable, with
+        # converted and unconverted sites landing in different buckets.
+        assert props["error_type"] == "ClickException"
+
+    def test_a_plain_failure_reports_no_reason(self, monkeypatch: pytest.MonkeyPatch):
+        """Absence stays honest: an uninstrumented raise must not invent a code."""
+        import click
+
+        def body() -> None:
+            raise click.ClickException("no index found")
+
+        rec = self._run(monkeypatch, body)
+        assert rec and "failure_reason" not in rec[0]["properties"]
+
+    def test_a_recovered_failure_reports_nothing(self, monkeypatch: pytest.MonkeyPatch):
+        """A caught exception did not fail the command, so it must not say it did.
+
+        `init` catches the no-provider error and renders a template wiki instead.
+        Recording at the raise site attributed a failure to a run that went on to
+        succeed, which is exactly the histogram this reason code feeds.
+        """
+        import click
+
+        from repowise.cli.errors import reasoned_error
+
+        def body() -> None:
+            try:
+                raise reasoned_error("nope", reason="no_provider_configured")
+            except click.ClickException:
+                pass
+
+        rec = self._run(monkeypatch, body)
+        assert rec
+        props = rec[0]["properties"]
+        assert props["status"] == "ok"
+        assert "failure_reason" not in props
+
     def test_command_outcome_rides_the_event(self, monkeypatch: pytest.MonkeyPatch):
         from repowise.cli.platform import telemetry
 

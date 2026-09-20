@@ -4,6 +4,7 @@ import * as React from "react";
 import type { StatsPunchCard } from "@repowise-dev/types/stats";
 import { DEFAULT_WEEKEND_PRESET, weekendShare } from "./weekend";
 import { repoArchetype } from "./archetype";
+import { parseDate } from "../lib/format";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 /** One gap value on both axes, so the cells read as an even lattice. */
@@ -34,7 +35,7 @@ function weekdayLong(i: number): string {
 function spanLabel(first: string | null, last: string | null): string | null {
   if (!first || !last) return null;
   const fmt = (iso: string) => {
-    const d = new Date(iso);
+    const d = parseDate(iso);
     return Number.isNaN(d.getTime())
       ? null
       : // UTC deliberately: this is a coarse month label on an absolute instant,

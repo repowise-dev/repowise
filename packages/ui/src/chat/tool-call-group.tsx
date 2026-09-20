@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { ToolCallBlock } from "./tool-call-block";
-import type { ChatUIToolCall } from "@repowise-dev/types/chat";
+import { WorkingOrb } from "./working-orb";
+import type { ChatArtifact, ChatUIToolCall } from "@repowise-dev/types/chat";
 
 interface ToolCallGroupProps {
   toolCalls: ChatUIToolCall[];
-  onViewArtifact?: (artifact: { type: string; data: Record<string, unknown> }) => void;
+  onViewArtifact?: (artifact: ChatArtifact) => void;
 }
 
 /**
@@ -27,7 +28,7 @@ export function ToolCallGroup({ toolCalls, onViewArtifact }: ToolCallGroupProps)
   if (toolCalls.length === 0) return null;
 
   const shell =
-    "rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] text-xs overflow-hidden";
+    "border-y border-[var(--color-border-default)] text-xs overflow-hidden";
 
   // A lone tool call doesn't need a group wrapper, but it still needs the
   // container the row no longer carries itself.
@@ -36,7 +37,7 @@ export function ToolCallGroup({ toolCalls, onViewArtifact }: ToolCallGroupProps)
     const artifact = tc.artifact;
     const handler = artifact && onViewArtifact ? () => onViewArtifact(artifact) : undefined;
     return (
-      <div className={shell}>
+      <div data-activity-trail="true" className={shell}>
         <ToolCallBlock toolCall={tc} {...(handler ? { onViewArtifact: handler } : {})} />
       </div>
     );
@@ -45,18 +46,16 @@ export function ToolCallGroup({ toolCalls, onViewArtifact }: ToolCallGroupProps)
   const open = expanded || running;
 
   return (
-    <div className={shell}>
+    <div data-activity-trail="true" className={shell}>
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
         onClick={() => setExpanded((e) => !e)}
         aria-expanded={open}
       >
-        {running && (
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent-primary)] shrink-0" />
-        )}
+        {running && <WorkingOrb />}
         <span className="font-medium text-[var(--color-text-secondary)]">
-          {running ? "Working" : "Thinking"}
+          {running ? "Working" : "Activity"}
         </span>
         <span className="text-[var(--color-text-tertiary)] tabular-nums">
           · {toolCalls.length} steps

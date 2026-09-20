@@ -31,11 +31,20 @@ async def _seed(
             title=title,
             status=status,
             context="ctx",
-            decision="dec",
+            # Distinct per seed: identity is the evidence, so ten records
+            # sharing one body over one file are one decision, not ten.
+            decision=f"dec for {title}",
             rationale="why",
             source=source,
+            affected_files=["src/app.py"],
+            evidence_file="src/app.py",
             confidence=confidence,
         )
+        # ``active`` is a projection of an acceptance, so a seed that wants a
+        # governing decision has to perform one; a bare upsert lands a
+        # candidate however the status argument reads.
+        if status == "active":
+            await crud.accept_decision(session, rec, accepter="tester")
         return rec.id
 
 

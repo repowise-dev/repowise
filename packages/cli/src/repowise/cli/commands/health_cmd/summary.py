@@ -12,9 +12,9 @@ from repowise.cli.helpers import console
 
 
 def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> None:
-    """Honest performance headline: finding count + density + coverage + scope.
+    """Honest performance headline: risk count + density + coverage + scope.
 
-    Leads with the open-finding count and how much of the analyzed code a perf
+    Leads with the open-risk count and how much of the analyzed code a perf
     detector actually ran on, so a mostly-unsupported-language repo reads a low
     coverage % rather than a meaningless bounded 10/10. Silent when no code file
     carries a supported language (nothing to say).
@@ -29,14 +29,16 @@ def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> No
     )
     perf_avg = report.kpis.get("performance_average")
 
-    parts = [f"[bold]{perf_findings}[/bold] finding{'s' if perf_findings != 1 else ''}"]
+    parts = [f"[bold]{perf_findings}[/bold] risk{'s' if perf_findings != 1 else ''}"]
     if coverage.covered_nloc > 0:
         density = round(10000.0 * perf_findings / coverage.covered_nloc, 2)
         parts.append(f"{density}/10K covered LOC")
     if isinstance(perf_avg, (int, float)):
-        parts.append(f"avg {perf_avg:.1f}/10")
+        parts.append(f"avg score {perf_avg:.1f}/10")
     console.print(
-        "\n[bold]Performance risk[/bold] "
+        # "risk" sits on the count, where more is worse, not on a heading over
+        # a score where more is better.
+        "\n[bold]Performance[/bold] "
         "[dim](static, high-precision/low-recall)[/dim]: " + " · ".join(parts)
     )
 
@@ -54,16 +56,35 @@ def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> No
     )
 
 
+def _render_split_line(kpis: dict) -> None:
+    """The headline's two halves, so a reader can see which one holds it down."""
+    structure = kpis.get("structure_average")
+    history = kpis.get("history_average")
+    if structure is None or history is None:
+        return
+    console.print(
+        f"[dim]Of that deduction, [/dim]{structure:.2f}[dim] is code shape and [/dim]"
+        f"{history:.2f}[dim] is history — history answers to time, not to editing.[/dim]"
+    )
+
+
 def _render_distribution_line(dist: dict) -> None:
-    """One compact line: the NLOC-weighted file split across the 3 bands."""
+    """One compact line: the NLOC-weighted file split across the bands."""
+    from repowise.core.analysis.health.grading import (
+        BAND_LABEL,
+        BAND_ORDER,
+        BAND_TERMINAL_COLOR,
+    )
+
     bands = dist.get("bands") or {}
     if not dist.get("total_files"):
         return
     parts = []
-    for band, color in (("healthy", "green"), ("warning", "yellow"), ("alert", "red")):
+    for band in BAND_ORDER:
+        color = BAND_TERMINAL_COLOR[band]
         share = bands.get(band) or {}
         parts.append(
-            f"[{color}]{share.get('pct', 0)}%[/{color}] {band} "
+            f"[{color}]{share.get('pct', 0)}%[/{color}] {BAND_LABEL[band].lower()} "
             f"([dim]{share.get('files', 0)} files[/dim])"
         )
     console.print("[dim]Distribution (by code volume):[/dim] " + " · ".join(parts) + "\n")
@@ -75,13 +96,12 @@ def _render_badge(average_health: object) -> None:
     Emits a static shields badge for the current score (immediately usable) and
     documents the live endpoint form for a running Repowise server / hosted repo.
     """
-    from repowise.core.analysis.health.grading import band_for
+    from repowise.core.analysis.health.grading import BAND_BADGE_COLOR, band_for
 
     if not isinstance(average_health, (int, float)):
         console.print("[yellow]No health score yet — run `repowise health` first.[/yellow]")
         return
-    band = band_for(float(average_health))
-    color = {"healthy": "brightgreen", "warning": "yellow", "alert": "red"}[band]
+    color = BAND_BADGE_COLOR[band_for(float(average_health))]
     msg = f"{float(average_health):.1f}/10"
     static = f"https://img.shields.io/badge/health-{msg.replace('/', '%2F')}-{color}"
     console.print("[bold]Static badge (current score):[/bold]")
@@ -101,8 +121,13 @@ def _render_defect_accuracy_line(report: Any) -> None:
     """
     try:
         from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+        from repowise.core.analysis.health.ranking import deduction_by_path
 
-        stat = compute_defect_accuracy(report.metrics, report.findings)
+        stat = compute_defect_accuracy(
+            report.metrics,
+            report.findings,
+            deductions=deduction_by_path(report.findings),
+        )
     except Exception:
         return
     if not stat:

@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from repowise.core.generation.entry_points import orientation_entry_points
+from repowise.core.support_paths import CONFIG_EXTENSIONS, DOC_EXTENSIONS
 
 _log = logging.getLogger(__name__)
 
@@ -147,10 +148,7 @@ class KnowledgeGraphResult:
 # Node classification helpers
 # ---------------------------------------------------------------------------
 
-_CONFIG_EXTENSIONS = frozenset({
-    ".yaml", ".yml", ".toml", ".json", ".env", ".ini", ".cfg", ".conf",
-    ".properties", ".xml",
-})
+_CONFIG_EXTENSIONS = CONFIG_EXTENSIONS
 
 _INFRA_EXTENSIONS = frozenset({
     ".dockerfile", ".tf", ".hcl",
@@ -163,9 +161,7 @@ _INFRA_NAMES = frozenset({
 
 _INFRA_LANGUAGES = frozenset({"dockerfile", "makefile"})
 
-_DOC_EXTENSIONS = frozenset({
-    ".md", ".rst", ".txt", ".adoc",
-})
+_DOC_EXTENSIONS = DOC_EXTENSIONS
 
 
 def _classify_file_type(path: str, language: str, is_config: bool) -> str:

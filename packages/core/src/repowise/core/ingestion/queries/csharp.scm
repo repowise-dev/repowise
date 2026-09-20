@@ -205,6 +205,40 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Chained call: factory().Method(args). Carry the inner invocation as an AST
+; node so resolution can use its declared return type without scanning text.
+(invocation_expression
+  function: (member_access_expression
+    expression: (invocation_expression) @call.receiver_call
+    name: [
+      (identifier) @call.target
+      (generic_name (identifier) @call.target)
+    ]
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Null-conditional call: obj?.Method(args).
+; tree-sitter-c-sharp spells the `?.` form as a `conditional_access_expression`
+; wrapping a `member_binding_expression`, not a `member_access_expression`, so
+; none of the member-call patterns above can match it and the call site is
+; never produced at all rather than produced unresolved.
+; Scoped to the plain identifier receiver: a chained or constructed receiver
+; inside the conditional access raises its own receiver-typing question, which
+; belongs with the patterns that already answer it.
+(invocation_expression
+  function: (conditional_access_expression
+    condition: (identifier) @call.receiver
+    (member_binding_expression
+      name: [
+        (identifier) @call.target
+        (generic_name (identifier) @call.target)
+      ]
+    )
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Fluent construction: new Builder().Method(args).
 ; The receiver is captured from the constructed type rather than from a
 ; variable, because here the type is written at the call site. That keeps the

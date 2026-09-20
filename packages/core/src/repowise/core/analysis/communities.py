@@ -22,6 +22,7 @@ import structlog
 
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
+from repowise.core.support_paths import is_example_path
 from repowise.core.test_paths import is_test_related_path
 
 log = structlog.get_logger(__name__)
@@ -72,6 +73,9 @@ class CommunityInfo:
     size: int
     cohesion: float
     dominant_language: str
+    #: ``cut / (2 * intra + cut)`` over the production members, lower is
+    #: tighter. ``None`` when nothing is linked. Does not decay with size.
+    conductance: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +213,29 @@ def _cohesion_score(graph: nx.Graph, community_nodes: list[str]) -> float:
     return round(actual / possible, 4) if possible > 0 else 0.0
 
 
+def _conductance(graph: nx.Graph, community_nodes: list[str]) -> float | None:
+    """Share of the community's edge volume that crosses its boundary.
+
+    ``cohesion`` divides by ``n(n-1)/2`` and so measures size on anything
+    above a few dozen files; this compares edges leaving against edges staying.
+    """
+    members = set(community_nodes)
+    intra = 0
+    cut = 0
+    for node in members:
+        if node not in graph:
+            continue
+        for neighbor in graph.neighbors(node):
+            if neighbor in members:
+                intra += 1  # counted from both ends: 2 * intra
+            else:
+                cut += 1
+    volume = intra + cut  # intra is already doubled
+    if volume == 0:
+        return None
+    return round(cut / volume, 4)
+
+
 # ---------------------------------------------------------------------------
 # Heuristic labeling
 # ---------------------------------------------------------------------------
@@ -280,6 +307,24 @@ def _best_sub_label(
     return ""
 
 
+def _join_segments(member_paths: list[str], primary: str, sub: str) -> str:
+    """``"a/b"`` with the two segments in the order the paths nest them.
+
+    Frequency picked them, so it says nothing about which is the parent.
+    Ties keep *primary* first.
+    """
+    primary_first = 0
+    sub_first = 0
+    for path in member_paths:
+        lowers = [p.lower() for p in PurePosixPath(path).parts[:-1]]
+        if primary in lowers and sub in lowers:
+            if lowers.index(primary) <= lowers.index(sub):
+                primary_first += 1
+            else:
+                sub_first += 1
+    return f"{sub}/{primary}" if sub_first > primary_first else f"{primary}/{sub}"
+
+
 def _heuristic_label(
     member_paths: list[str],
     community_id: int,
@@ -304,7 +349,12 @@ def _heuristic_label(
         if best_count / len(member_paths) >= 0.4:
             # Try to find a distinguishing sub-segment
             sub = _best_sub_label(member_paths, best_seg, extra_generic)
-            return f"{best_seg}/{sub}" if sub else best_seg
+            return _join_segments(member_paths, best_seg, sub) if sub else best_seg
+        # Two areas sharing one community: name both rather than fall through
+        # to a filename stem.
+        top = seg_counter.most_common(2)
+        if len(top) == 2 and all(c / len(member_paths) >= 0.2 for _, c in top):
+            return f"{top[0][0]}, {top[1][0]}"
 
     # Strategy 2: keyword frequency in filenames
     stem_counter: Counter[str] = Counter()
@@ -323,7 +373,12 @@ def _heuristic_label(
     stem_counter2: Counter[str] = Counter()
     for path in member_paths:
         stem = PurePosixPath(path).stem.lower()
-        if stem not in _GENERIC_SEGMENTS and stem not in extra_generic and len(stem) > 1:
+        if (
+            stem not in _GENERIC_SEGMENTS
+            and stem not in extra_generic
+            and len(stem) > 1
+            and not stem.startswith("__")  # __init__, __main__: not a name
+        ):
             stem_counter2[stem] += 1
     if stem_counter2:
         return stem_counter2.most_common(1)[0][0]
@@ -334,11 +389,14 @@ def _heuristic_label(
 def _deduplicate_labels(
     communities_info: dict[int, CommunityInfo],
     extra_generic: frozenset[str] = frozenset(),
+    label_members: dict[int, list[str]] | None = None,
 ) -> None:
     """Add sub-labels to disambiguate communities that share the same label.
 
     Mutates *communities_info* in place.  Only touches communities whose
-    label (before the ``/``) duplicates another community.
+    label (before the ``/``) duplicates another community. *label_members*
+    narrows the paths a sub-label is drawn from (the production members);
+    without it every member counts.
     """
     # Group by base label (part before "/")
     by_base: dict[str, list[int]] = {}
@@ -356,16 +414,20 @@ def _deduplicate_labels(
             if "/" in ci.label:
                 continue  # already has a sub-label
 
-            sub = _best_sub_label(ci.members, base, extra_generic)
+            paths = label_members.get(cid, ci.members) if label_members else ci.members
+            sub = _best_sub_label(paths, base, extra_generic)
             if sub:
-                ci.label = f"{base}/{sub}"
+                ci.label = _join_segments(paths, base, sub)
 
-        # If duplicates still remain, append size as disambiguator
+        # If duplicates still remain, append the labelled member count
+        def _count(c: int) -> int:
+            return len(label_members[c]) if label_members and c in label_members else communities_info[c].size
+
         seen_labels: dict[str, int] = {}
-        for cid in sorted(cids, key=lambda c: -communities_info[c].size):
+        for cid in sorted(cids, key=lambda c: -_count(c)):
             ci = communities_info[cid]
             if ci.label in seen_labels:
-                ci.label = f"{ci.label} ({ci.size})"
+                ci.label = f"{ci.label} ({_count(cid)})"
             seen_labels[ci.label] = cid
 
 
@@ -402,28 +464,44 @@ def _is_test_node(node_id: str, data: dict) -> bool:
     return is_test_related_path(node_id, data.get("language"))
 
 
+def _is_example_node(node_id: str, data: dict) -> bool:
+    """Whether a graph file node is example, demo, or benchmark code.
+
+    Derived from the path rather than a stored flag. Unlike ``is_test`` there
+    is no ``is_example`` on the node, and the path is the whole signal, so this
+    does not justify a new ``FileInfo`` field and ``GraphNode`` column.
+    """
+    return is_example_path(node_id)
+
+
 def _assign_tests_to_communities(
     test_nodes: list[str],
     prod_assignment: dict[str, int],
     graph: nx.DiGraph,
 ) -> dict[str, int]:
-    """Assign each test file to the community of a production file it links to.
+    """Assign each non-core file to the community of a file it links to.
 
-    Falls back to a catch-all "tests" community when no import link exists.
+    Falls back to a shared catch-all community when no import link exists.
+    Used for tests and for example/benchmark code alike: both are real files a
+    reader may open, but neither should shape what the production communities
+    are or what they are called.
     """
     result: dict[str, int] = {}
     next_cid = max(prod_assignment.values(), default=-1) + 1
     test_community_id = next_cid  # shared fallback
 
     for test_path in test_nodes:
-        # Production files this test links to, either direction. Every link
-        # weighs the same, so the tie is broken on the path. Edge iteration
-        # order is graph insertion order and varies between runs.
+        # The community most of the linked production files belong to, one
+        # vote per linked file, either direction. Ties break on community id:
+        # edge iteration order is insertion order and varies between runs.
+        votes: Counter[int] = Counter()
         linked = {t for _, t in graph.out_edges(test_path) if t in prod_assignment}
         linked |= {s for s, _ in graph.in_edges(test_path) if s in prod_assignment}
+        for prod_path in linked:
+            votes[prod_assignment[prod_path]] += 1
 
-        if linked:
-            result[test_path] = prod_assignment[min(linked)]
+        if votes:
+            result[test_path] = min(votes, key=lambda cid: (-votes[cid], cid))
         else:
             result[test_path] = test_community_id
 
@@ -437,8 +515,12 @@ def _assign_tests_to_communities(
 
 def detect_file_communities(
     graph: nx.DiGraph,
+    repo_name: str | None = None,
 ) -> tuple[dict[str, int], dict[int, CommunityInfo], str]:
     """Detect communities among file nodes.
+
+    *repo_name* is a generic segment for labelling: a monorepo repeating
+    ``packages/<x>/src/<repo>`` keeps it under ``dominant_segments``' bar.
 
     Returns:
         (file_assignment, communities_info, algorithm_used)
@@ -457,13 +539,21 @@ def detect_file_communities(
     if not file_nodes:
         return {}, {}, "none"
 
-    # Separate test files from production files.  Test files are clustered
-    # separately then assigned to the community of their most-imported
-    # production file, preventing test directories from dominating labels
-    # and mixing unrelated production modules.
-    is_test = {n: _is_test_node(n, graph.nodes[n]) for n in file_nodes}
-    prod_nodes = [n for n in file_nodes if not is_test[n]]
-    test_nodes = [n for n in file_nodes if is_test[n]]
+    # Separate test and example files from production files. Both are clustered
+    # separately then assigned to the community of a production file they link
+    # to, preventing those directories from dominating labels and mixing
+    # unrelated production modules.
+    #
+    # Examples join tests here rather than being dropped: demos import across
+    # the whole system, so left in the partition they merge otherwise-distinct
+    # subsystems into one community and name it after the demo. They keep their
+    # nodes and their assignment, so nothing becomes unreachable.
+    non_core = {
+        n: _is_test_node(n, graph.nodes[n]) or _is_example_node(n, graph.nodes[n])
+        for n in file_nodes
+    }
+    prod_nodes = [n for n in file_nodes if not non_core[n]]
+    test_nodes = [n for n in file_nodes if non_core[n]]
 
     # Build undirected subgraph from production files + relevant edges
     undirected = nx.Graph()
@@ -541,22 +631,33 @@ def detect_file_communities(
 
     # Repo-dominant namespace segments (the repo's own package name, ``src``…)
     # are noise, not labels — same data-driven stripping as module naming.
-    extra_generic = frozenset(s.lower() for s in dominant_segments(sorted(file_nodes)))
+    generic = {s.lower() for s in dominant_segments(sorted(file_nodes))}
+    if repo_name:
+        stem = repo_name.rsplit("/", 1)[-1].lower()
+        generic |= {stem, stem.replace("-", "_"), stem.replace("_", "-")}
+    extra_generic = frozenset(generic)
 
+    # Labels and conductance come from the production members: tests were kept
+    # out of the partition so they would not shape a community, and they must
+    # not name it either. The non-core catch-all is labelled from what it has.
+    label_members: dict[int, list[str]] = {}
     for cid, members in community_members.items():
         sorted_members = sorted(members)
+        prod_members = [m for m in sorted_members if not non_core[m]]
+        label_members[cid] = prod_members or sorted_members
         communities_info[cid] = CommunityInfo(
             community_id=cid,
-            label=_heuristic_label(sorted_members, cid, extra_generic),
+            label=_heuristic_label(label_members[cid], cid, extra_generic),
             members=sorted_members,
             size=len(sorted_members),
             cohesion=_cohesion_score(full_undirected, sorted_members),
             dominant_language=_dominant_language(sorted_members, graph),
+            conductance=_conductance(undirected, prod_members),
         )
 
     # Deduplicate labels — add sub-labels when multiple communities
     # share the same base (e.g. "web" → "web/components", "web/api")
-    _deduplicate_labels(communities_info, extra_generic)
+    _deduplicate_labels(communities_info, extra_generic, label_members)
 
     log.info(
         "file_communities_detected",

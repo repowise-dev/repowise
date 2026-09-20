@@ -40,7 +40,7 @@ class ComplexConditionalDetector:
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
-        for fn_name, fc in ctx.function_metrics.items():
+        for fc in ctx.all_functions:
             for cond in fc.complex_conditions or []:
                 if cond.operator_count < _LOW:
                     continue
@@ -48,7 +48,7 @@ class ComplexConditionalDetector:
                     BiomarkerResult(
                         biomarker_type=self.name,
                         severity=_severity_for(cond.operator_count),
-                        function_name=fn_name,
+                        function_name=fc.name,
                         line_start=cond.line,
                         line_end=cond.line,
                         details={

@@ -362,3 +362,26 @@ async def test_a_run_with_no_glossary_page_does_not_build_the_corpus(tmp_path):
 
     assert store.asked == []
     assert all(s.module_corroboration == () for s in run.gen.onboarding_signals)
+
+
+async def test_the_overview_is_handed_the_repositorys_own_prose(tmp_path):
+    """The front page's only natural-language input, wired at the level.
+
+    Structure keeps every path and count; this supplies the words. Without it
+    the payload is entirely structural and nothing in the prompt says what the
+    product is for.
+    """
+    run = _run(tmp_path)
+    await build_level6_coros(run)
+
+    digest = run.gen.overview_kwargs["prose_digest"]
+    assert "## Blast radius" in digest
+    assert "Blast radius is the set of files a change can reach" in digest
+
+
+async def test_a_repository_with_no_path_still_generates_an_overview(tmp_path):
+    """``repo_path`` is optional on the run, and an absent one is not a crash."""
+    run = _run(tmp_path)
+    run.repo_path = None
+    assert await build_level6_coros(run)
+    assert run.gen.overview_kwargs["prose_digest"] == ""

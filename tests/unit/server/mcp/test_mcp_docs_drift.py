@@ -45,11 +45,13 @@ def test_surface_counts_match_registry(doc_text: str):
     entries = _entries()
     total = len(entries)
     single_default = sum(1 for e in entries if e.default and not e.requires_workspace)
-    workspace_only = sum(1 for e in entries if e.default and e.requires_workspace)
+    workspace_default = sum(1 for e in entries if e.default)
+    opt_in = sum(1 for e in entries if not e.default)
 
     m = re.search(
         r"(\d+) tools are registered in total\. A single-repo server advertises "
-        r"(\d+) by default.*?Workspace mode adds (\d+) more automatically.*?, for (\d+)",
+        r"(\d+) by default: exactly the canonical tools\. Workspace mode adds .*?, for "
+        r"(\d+)\. (\d+) specialist tools are opt-in",
         doc_text,
         flags=re.DOTALL,
     )
@@ -57,9 +59,29 @@ def test_surface_counts_match_registry(doc_text: str):
     assert [int(g) for g in m.groups()] == [
         total,
         single_default,
-        workspace_only,
-        single_default + workspace_only,
+        workspace_default,
+        opt_in,
     ], "MCP_TOOLS.md surface counts drifted from the registry"
+
+
+def _inventory_names(doc_text: str, heading: str) -> set[str]:
+    match = re.search(rf"\*\*{re.escape(heading)}[^\n]*\*\*\n(.*?)(?=\n\n)", doc_text, re.DOTALL)
+    assert match, f"missing inventory heading: {heading}"
+    return set(re.findall(r"\[([a-z_]+)\]\(#", match.group(1)))
+
+
+def test_inventory_tiers_and_mode_eligibility_match_registry(doc_text: str):
+    entries = _entries()
+    canonical = {entry.name for entry in entries if entry.tier == "canonical"}
+    utilities = {entry.name for entry in entries if entry.tier == "utility"}
+    specialists = {entry.name for entry in entries if entry.tier == "specialist"}
+    assert _inventory_names(doc_text, "Canonical tools") == canonical
+    assert _inventory_names(doc_text, "Workspace discovery utility") == utilities
+    assert _inventory_names(doc_text, "Opt-in specialists") == specialists
+
+    assert all(entry.default for entry in entries if entry.tier in {"canonical", "utility"})
+    assert all(not entry.default for entry in entries if entry.tier == "specialist")
+    assert all(entry.requires_workspace for entry in entries if entry.tier == "utility")
 
 
 def test_lean_profile_paragraph_names_the_lean_tools(doc_text: str):

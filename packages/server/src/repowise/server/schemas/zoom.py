@@ -3,21 +3,14 @@
 One nested containment tree (system -> layer -> group -> folder -> file) served
 as a flat list of nodes (each carrying its own id), plus parent-relative
 relations. The canvas renderer indexes the list by id and reconstructs the tree
-from ``parent_id`` / ``children``, then uses ``layout`` (parent ``[0,1]`` space)
-for clip-and-scale and ``importance`` / ``sibling_rank`` for density caps. The
-list is emitted in a stable order (sorted by id).
+from ``parent_id`` / ``children``, lays the children out itself, and uses
+``importance`` / ``sibling_rank`` for density caps. The list is emitted in a
+stable order (sorted by id).
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-
-
-class ZoomRectResponse(BaseModel):
-    x: float
-    y: float
-    w: float
-    h: float
 
 
 class ZoomMetricsResponse(BaseModel):
@@ -40,9 +33,10 @@ class ZoomNodeResponse(BaseModel):
     importance: float = 0.0
     sibling_rank: int = 0
     metrics: ZoomMetricsResponse = Field(default_factory=ZoomMetricsResponse)
-    layout: ZoomRectResponse | None = None
     summary: str = ""
     language: str | None = None
+    # Id of the module page documenting this folder, when one does; "" otherwise.
+    page_id: str = ""
     # Code-health score (0..10, higher = healthier), matching the /files treemap.
     # None when the file/subtree was unscored (health is sparse); the renderer
     # reads that as neutral.
@@ -67,6 +61,10 @@ class ZoomMapResponse(BaseModel):
     root_id: str
     project_name: str
     total_files: int
+    # Files in the repository view that curation put in no layer, so they are on
+    # no tree. Additive and defaulted: an older consumer reading ``total_files``
+    # gets the same number it always did.
+    unclaimed_files: int = 0
     max_depth: int
     truncated: bool = False
     nodes: list[ZoomNodeResponse]

@@ -10,7 +10,10 @@ from repowise.server.mcp_server._tool_selection import (
 )
 
 
-def test_describe_tool_surface_single_repo(tmp_path):
+def test_describe_tool_surface_single_repo(tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _tool_selection
+
+    monkeypatch.setattr(_tool_selection, "_is_workspace", lambda _path: False)
     (tmp_path / ".repowise").mkdir()
     surface = describe_tool_surface(str(tmp_path))
 
@@ -21,6 +24,14 @@ def test_describe_tool_surface_single_repo(tmp_path):
     assert {"get_answer", "get_context", "get_blast_radius"} <= names
     by_name = {t["name"]: t for t in surface["tools"]}
     assert by_name["get_answer"]["enabled"] is True
+    assert by_name["get_answer"]["tier"] == "canonical"
+    assert by_name["get_answer"]["artifact_type"] == "answer"
+    assert by_name["get_answer"]["presentation"] == "answer"
+    assert by_name["get_answer"]["safety"] == "read_only"
+    assert by_name["get_risk"]["evidence_basis"] == "measured"
+    assert by_name["list_repos"]["tier"] == "utility"
+    assert by_name["list_repos"]["eligible"] is False
+    assert by_name["list_repos"]["enabled"] is False
     assert by_name["get_blast_radius"]["requires_workspace"] is True
     assert by_name["get_blast_radius"]["enabled"] is False
     # Opt-in tools registered but off by default.
@@ -77,6 +88,10 @@ async def test_router_get_and_patch(tmp_path, monkeypatch):
     got = await mcp_router.get_tool_surface(request=None, repo_id="r1")
     assert got.repo_id == "r1"
     assert any(t.name == "get_answer" and t.enabled for t in got.tools)
+    answer = next(t for t in got.tools if t.name == "get_answer")
+    assert answer.artifact_type == "answer"
+    assert answer.presentation == "answer"
+    assert answer.safety == "read_only"
 
     from repowise.server.schemas import UpdateMcpToolsRequest
 
@@ -85,6 +100,61 @@ async def test_router_get_and_patch(tmp_path, monkeypatch):
         request=None,
     )
     assert any(t.name == "get_dependency_path" and t.enabled for t in updated.tools)
+
+
+@pytest.mark.asyncio
+async def test_router_patch_routes_body_repo_id_to_workspace_database(tmp_path, session_factory):
+    """A body-only repo ID must select that repo's workspace database."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import StaticPool
+
+    from repowise.core.persistence import crud
+    from repowise.core.persistence.database import get_session, init_db
+    from repowise.server.deps import verify_api_key
+    from repowise.server.routers import mcp as mcp_router
+
+    repo_id = "workspace-repo"
+    repo_path = tmp_path / repo_id
+    (repo_path / ".repowise").mkdir(parents=True)
+
+    workspace_engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    await init_db(workspace_engine)
+    workspace_factory = async_sessionmaker(
+        workspace_engine, expire_on_commit=False, class_=AsyncSession
+    )
+    async with get_session(workspace_factory) as workspace_session:
+        await crud.upsert_repository(
+            workspace_session,
+            repo_id=repo_id,
+            name="workspace-repo",
+            local_path=str(repo_path),
+        )
+
+    app = FastAPI()
+    app.state.session_factory = session_factory
+    app.state.workspace_sessions = {repo_id: workspace_factory}
+    app.dependency_overrides[verify_api_key] = lambda: None
+    app.include_router(mcp_router.router)
+
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.patch(
+                "/api/mcp/tools",
+                json={"repo_id": repo_id, "tools": ["+get_dependency_path"]},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["repo_id"] == repo_id
+        assert response.json()["override"] == ["+get_dependency_path"]
+    finally:
+        await workspace_engine.dispose()
 
 
 @pytest.mark.asyncio

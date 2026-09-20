@@ -11,7 +11,7 @@ that **every edge carries its own evidence**.
 <p>
   <img src="https://img.shields.io/badge/17-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="17 edge types" />
   <img src="https://img.shields.io/badge/29-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="29 resolution origins" />
-  <img src="https://img.shields.io/badge/19-languages-F59520?style=flat-square&labelColor=0A0A0A" alt="19 languages" />
+  <img src="https://img.shields.io/badge/26-languages-F59520?style=flat-square&labelColor=0A0A0A" alt="26 languages" />
   <img src="https://img.shields.io/badge/22-framework_detectors-7F52FF?style=flat-square&labelColor=0A0A0A" alt="22 framework detectors" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
   <img src="https://img.shields.io/badge/compiler_graded-7_of_7_cells_undominated-DC2626?style=flat-square&labelColor=0A0A0A" alt="no tool is both more precise and more complete, in 7 of 7 compiler-graded cells" />
@@ -452,7 +452,7 @@ graph, which is why the graph is reproducible and why indexing needs no API key.
 - [architecture/language-support.md](../architecture/language-support.md) · call resolution internals and the contributor recipe
 - [architecture/graph-algorithms.md](../architecture/graph-algorithms.md) · PageRank, Leiden, betweenness and SCC in detail
 - [DEAD_CODE.md](DEAD_CODE.md) · how reachability becomes a confidence-tiered report
-- [CHANGE_RISK.md](CHANGE_RISK.md) · how the graph feeds a per-change risk score
+- [CHANGE_RISK.md](CHANGE_RISK.md) · how live diff-shape review and structural PR impact remain distinct
 - [reference/COMPUTED_GLOSSARY.md](../reference/COMPUTED_GLOSSARY.md) · every derived metric, defined
 - [BENCHMARKS.md §7](../BENCHMARKS.md#7-edge-precision) and [§8](../BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control) · the precision numbers on this page, with their sample sizes and intervals
 - [repowise-bench/graph](https://github.com/repowise-dev/repowise-bench/tree/master/graph) · the harnesses, the five arms, the graded rows and the pre-registrations behind all of it

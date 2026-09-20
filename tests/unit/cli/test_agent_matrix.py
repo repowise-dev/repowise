@@ -78,8 +78,7 @@ def _on_disk(path: Path) -> str:
 def test_the_generated_matrix_matches_the_registry(path: Path) -> None:
     expected = GEN.rendered_files()[path]
     assert path.exists(), (
-        f"{path.relative_to(ROOT).as_posix()} is missing. "
-        "Run: python scripts/gen_agent_matrix.py"
+        f"{path.relative_to(ROOT).as_posix()} is missing. Run: python scripts/gen_agent_matrix.py"
     )
     assert _on_disk(path) == expected, (
         f"{path.relative_to(ROOT).as_posix()} has drifted from the agent registry. "
@@ -223,12 +222,9 @@ def test_the_hooks_column_cannot_lie() -> None:
 #: say "the ten flagship tools" are describing a documented subset rather than
 #: the default surface.
 COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
-    # The README and the image at the top of it count the flagship tools, a
-    # narrower claim than the advertised surface. See NON_FLAGSHIP_TOOLS.
+    # The README and the image at the top of it count the canonical tier.
     ("README.md", "flagship", "**{w} task-shaped MCP tools**"),
     ("README.md", "flagship", "## The {w} MCP tools"),
-    ("README.md", "flagship", "#the-{w}-mcp-tools"),
-    ("README.md", "flagship", "decisions, and {w} MCP tools"),
     ("README.md", "flagship", "{W} is a deliberate ceiling"),
     ("docs/README.md", "flagship", "decisions, and {w} MCP tools"),
     ("docs/README.md", "flagship", "The {w} task-shaped tools,"),
@@ -297,26 +293,17 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
 
 
 def test_the_flagship_set_is_a_real_subset_of_the_default_surface() -> None:
-    """Removing a name that is not there would silently do nothing.
-
-    ``flagship`` is the default surface minus :data:`NON_FLAGSHIP_TOOLS`. If a
-    tool in that set is renamed or made opt-in, the subtraction stops removing
-    anything and the README's ten quietly becomes the surface's eleven, which
-    is precisely the drift this file exists to catch.
-    """
+    """The published flagship count is exactly the registry canonical tier."""
     from repowise.core.registry import mcp_tool_registry
     from repowise.server.mcp_server import ensure_full_surface
     from repowise.server.mcp_server._tool_selection import resolve_enabled_tools
 
     ensure_full_surface()
-    default = resolve_enabled_tools(mcp_tool_registry.entries(), is_workspace=False)
-    absent = GEN.NON_FLAGSHIP_TOOLS - default
-    assert not absent, (
-        f"{sorted(absent)} are excluded from the flagship count but are not in the "
-        "default surface, so excluding them does nothing. Update NON_FLAGSHIP_TOOLS "
-        "in scripts/gen_agent_matrix.py."
-    )
-    assert COUNTS["flagship"] == COUNTS["single_repo"] - len(GEN.NON_FLAGSHIP_TOOLS)
+    entries = mcp_tool_registry.entries()
+    default = resolve_enabled_tools(entries, is_workspace=False)
+    canonical = {entry.name for entry in entries if entry.tier == "canonical"}
+    assert canonical == default
+    assert COUNTS["flagship"] == len(canonical)
 
 
 def test_the_readme_tool_table_lists_exactly_the_flagship_tools() -> None:
@@ -335,10 +322,12 @@ def test_the_readme_tool_table_lists_exactly_the_flagship_tools() -> None:
         f"README.md's tool table lists {len(listed)} tools ({listed}) but the "
         f"flagship count is {COUNTS['flagship']}."
     )
-    excluded = sorted(set(listed) & GEN.NON_FLAGSHIP_TOOLS)
-    assert not excluded, (
-        f"{excluded} is excluded from the README's count but has a row in its table."
-    )
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
+    canonical = {entry.name for entry in mcp_tool_registry.entries() if entry.tier == "canonical"}
+    assert set(listed) == canonical
 
 
 @pytest.mark.parametrize(
@@ -379,9 +368,7 @@ def _appears(phrase: str, text: str) -> bool:
     COUNT_CLAIMS,
     ids=[f"{rel}:{tmpl}" for rel, _, tmpl in COUNT_CLAIMS],
 )
-def test_a_published_tool_count_matches_the_registry(
-    relpath: str, key: str, template: str
-) -> None:
+def test_a_published_tool_count_matches_the_registry(relpath: str, key: str, template: str) -> None:
     path = ROOT / relpath
     assert path.exists(), f"{relpath} is named in COUNT_CLAIMS but does not exist"
     expected = _phrase(template, COUNTS[key])

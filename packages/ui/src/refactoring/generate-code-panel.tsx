@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Check, Copy, Loader2, RotateCw, Sparkles, TriangleAlert, Wand2 } from "lucide-react";
+import { Check, Copy, RotateCw, Sparkles, TriangleAlert, Wand2 } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { DiffView } from "./diff-view";
 import {
   generatedVerdict,
@@ -65,7 +66,7 @@ export function GenerateCodePanel({ plan, onGenerate }: GenerateCodePanelProps) 
       <button
         type="button"
         onClick={run}
-        className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] px-3.5 py-2 text-sm font-semibold text-[var(--color-accent-primary)] transition-colors hover:bg-[var(--color-accent-primary)] hover:text-[var(--color-bg-surface)]"
+        className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-model)]/40 bg-[var(--color-model-muted)] px-3.5 py-2 text-sm font-semibold text-[var(--color-model)] transition-colors hover:bg-[var(--color-model)] hover:text-[var(--color-text-on-model)]"
       >
         <Wand2 className="h-4 w-4" />
         Generate code
@@ -76,7 +77,7 @@ export function GenerateCodePanel({ plan, onGenerate }: GenerateCodePanelProps) 
   if (state.status === "loading") {
     return (
       <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
-        <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent-primary)]" />
+        <Spinner className="text-[var(--color-model)]" />
         Generating the refactored code…
       </div>
     );
@@ -92,7 +93,7 @@ export function GenerateCodePanel({ plan, onGenerate }: GenerateCodePanelProps) 
         <button
           type="button"
           onClick={run}
-          className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs font-semibold text-[var(--color-accent-primary)] transition-colors hover:bg-[var(--color-accent-muted)]"
+          className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs font-semibold text-[var(--color-model)] transition-colors hover:bg-[var(--color-model-muted)]"
         >
           <RotateCw className="h-3.5 w-3.5" />
           Try again
@@ -119,7 +120,7 @@ function GeneratedResult({
       {/* meta row — provider/model, cache, tokens, self-check verdict */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)]">
-          <Sparkles className="h-3.5 w-3.5 text-[var(--color-accent-primary)]" />
+          <Sparkles className="h-3.5 w-3.5 text-[var(--color-model)]" />
           {result.provider}
           {result.model ? <span className="text-[var(--color-text-tertiary)]">· {result.model}</span> : null}
         </span>

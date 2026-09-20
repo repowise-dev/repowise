@@ -175,6 +175,31 @@ def test_defect_dimension_matches_legacy_golden():
         assert scores["defect"] == _legacy_score_file(fixture)
 
 
+# The widened maintainability pillar, pinned per fixture. Maintainability is
+# the number a refactor is meant to move, so it needs a golden of its own: the
+# defect gate above cannot see a change here, and every pure code-shape marker
+# now counts toward it. A deliberate retune updates these; a surprise does not.
+_MAINTAINABILITY_GOLDEN: list[float] = [10.0, 8.0, 6.0, 6.1, 8.0, 10.0, 4.2, 10.0, 10.0]
+
+
+def test_maintainability_dimension_matches_golden():
+    for fixture, expected in zip(_FIXTURES, _MAINTAINABILITY_GOLDEN, strict=True):
+        scores, _ = score_file(fixture)
+        assert round(scores["maintainability"], 4) == expected
+
+
+def test_code_shape_markers_reach_maintainability():
+    """A method too complex to follow is a maintainability problem.
+
+    These three are calibrated defect predictors and were scored as nothing
+    else, which left the pillar a reader watches while refactoring blind to the
+    most common thing a refactor removes.
+    """
+    for marker in ("complex_method", "complex_conditional", "bumpy_road"):
+        scores, _ = score_file([_r(marker, Severity.CRITICAL)])
+        assert scores["maintainability"] < 10.0, marker
+
+
 def test_defect_deductions_unchanged():
     """The returned per-finding deductions still drive defect-based health_impact."""
     fixture = _FIXTURES[3]

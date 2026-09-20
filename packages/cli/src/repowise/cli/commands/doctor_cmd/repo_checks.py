@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools as _functools
 from pathlib import Path as _DoctorPath
 
 from rich.table import Table
@@ -16,6 +17,7 @@ from repowise.cli.helpers import (
     reconcile_schema_best_effort,
     run_async,
 )
+from repowise.core.exclusion import build_exclude_spec, is_excluded
 
 from ._types import DoctorCheck, _check, _status_markup
 from .advisories import _advise_claude_md_stamp
@@ -59,6 +61,186 @@ def _is_stub_fallback_row(page) -> bool:
     return isinstance(meta, dict) and STUB_FALLBACK_ERROR in meta
 
 
+
+async def _page_count(session: object, repo_id: str) -> int:
+    """Count this repository's pages in SQL.
+
+    Counted in the database rather than by measuring a fetched list. The
+    previous spelling took ``len()`` of a ``list_pages`` page, whose ``limit``
+    defaults to 100 and was passed 10000 here, so every repository with more
+    than 10000 pages reported exactly 10000 — a plausible-looking number that
+    never moves.
+    """
+    from sqlalchemy import func, select
+
+    from repowise.core.persistence.models import Page
+
+    result = await session.execute(  # type: ignore[attr-defined]
+        select(func.count()).select_from(Page).where(Page.repository_id == repo_id)
+    )
+    return int(result.scalar_one())
+
+
+async def _stale_page_counts(session: object, repo_id: str) -> dict[str, int]:
+    """Count stale pages by type without hydrating their rendered content."""
+    from sqlalchemy import func, select
+
+    from repowise.core.persistence.models import Page
+
+    result = await session.execute(  # type: ignore[attr-defined]
+        select(Page.page_type, func.count())
+        .where(
+            Page.repository_id == repo_id,
+            Page.freshness_status.in_(["stale", "expired"]),
+        )
+        .group_by(Page.page_type)
+    )
+    return {str(page_type): int(count) for page_type, count in result.all()}
+
+
+def _stale_page_guidance(counts: dict[str, int]) -> str:
+    """Describe stale work by owner and name commands that can clear it."""
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+
+    total = sum(counts.values())
+    model_written = sum(
+        count for page_type, count in counts.items() if page_type in MODEL_WRITTEN_PAGE_TYPES
+    )
+    structural = total - model_written
+    categories = []
+    if model_written:
+        categories.append(f"{model_written} model-written")
+    if structural:
+        categories.append(f"{structural} structural")
+
+    detail = (
+        f"{total} stale ({', '.join(categories)}) — content no longer matches its "
+        "current inputs or generation selection."
+    )
+    if model_written:
+        detail += (
+            " `repowise generate --stale` is the cheaper refresh for model-written "
+            "pages that are still selected."
+        )
+    detail += (
+        " `repowise update --full` performs the authoritative reconciliation and "
+        "retires pages no longer selected."
+    )
+    return detail + " `--repair` only fixes store drift."
+
+
+async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
+    """Every page this repository has, for reconciling against the indexes.
+
+    The reconciliation asks which store entries have no page behind them, so
+    anything it cannot see it calls an orphan. It read the pages through
+    ``list_pages(limit=10000)`` — a paginated listing helper whose ``limit``
+    defaults to 100 — and treated that page-one result as the whole database.
+    Every page past the 10000th was therefore invisible, and each one turned
+    its vector and FTS row into a phantom orphan: on a 18900-page repository,
+    8900 of them. ``--repair`` deletes what this reports, so what it removed
+    was the live index.
+
+    Four columns rather than whole rows: the id to match against the stores,
+    the content for the information floor, metadata_json for the stub
+    predicate, and target_path to tell whether the file is excluded. Nothing downstream reads any other field, and hydrating full
+    ORM objects for every page only to discard them is what made a cap look
+    necessary in the first place.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    result = await session.execute(  # type: ignore[attr-defined]
+        select(Page.id, Page.content, Page.metadata_json, Page.target_path).where(
+            Page.repository_id == repo_id
+        )
+    )
+    return list(result.all())
+
+
+def _provider_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
+    """Report provider implementations, configuration errors, and usability.
+
+    These are three distinct claims.  In particular, an empty validation
+    warning list means no configured key is malformed; it does not prove that
+    an LLM provider will resolve for this repository.
+    """
+    checks: list[DoctorCheck] = []
+
+    try:
+        from repowise.core.providers import list_providers
+
+        providers = list_providers()
+        checks.append(
+            _check(
+                "Providers",
+                bool(providers),
+                f"Implementations loaded: {', '.join(providers)}",
+            )
+        )
+    except Exception as exc:
+        checks.append(_check("Providers", False, str(exc)))
+
+    from repowise.cli.helpers import validate_provider_config
+
+    config_warnings = validate_provider_config()
+    config_ok = not config_warnings
+    config_detail = "No misconfigured provider keys" if config_ok else "; ".join(config_warnings)
+    checks.append(_check("Provider config", config_ok, config_detail))
+
+    from repowise.core.providers.llm.registry import provider_available_for_repo
+
+    llm_available = provider_available_for_repo(repo_path)
+    llm_detail = (
+        "Resolves for this repository"
+        if llm_available
+        else "None configured — prose degrades to a structural wiki; set a key or pass --provider"
+    )
+    # Keyless operation is supported, so this is informational rather than a
+    # failing health check.  The detail tells users what init will actually do.
+    checks.append(_check("LLM provider", True, llm_detail))
+    return checks
+
+
+def _repowise_dir_check(repowise_dir: _DoctorPath) -> DoctorCheck:
+    """Exists and writable, probed with a real file: os.access lies on Windows."""
+    if not repowise_dir.exists():
+        return _check(".repowise/ directory", False, f"{repowise_dir} (run 'repowise init')")
+    probe = repowise_dir / ".doctor-write-probe"
+    try:
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        return _check(
+            ".repowise/ directory",
+            False,
+            f"{repowise_dir} is not writable ({exc.strerror or exc}); fix its permissions",
+        )
+    return _check(".repowise/ directory", True, str(repowise_dir))
+
+
+def _autosync_hook_check(repo_path: _DoctorPath) -> DoctorCheck:
+    """Report the post-commit hook through hooks.status, which asks git for the
+    real hooks directory, so worktrees and core.hooksPath read correctly."""
+    try:
+        from repowise.cli.hooks import status as _hook_status
+
+        state = _hook_status(repo_path)
+    except Exception as exc:
+        return _check("Post-commit hook", True, f"could not read hook state ({exc})")
+    if state.startswith("installed"):
+        return _check("Post-commit hook", True, state)
+    if state == "not installed":
+        return _check(
+            "Post-commit hook",
+            True,
+            "not installed; the index updates only when you run 'repowise update' "
+            "('repowise hook install' turns auto-sync on)",
+        )
+    return _check("Post-commit hook", True, state)
+
+
 def _run_repo_checks(
     repo_path: _DoctorPath, repair: bool, *, fmt: str = "table"
 ) -> tuple[bool, list[DoctorCheck]]:
@@ -81,9 +263,15 @@ def _run_repo_checks(
     except Exception:
         checks.append(_check("Git repository", False, "Not a git repo"))
 
-    # 2. .repowise/ exists?
+    # 2. .repowise/ exists and takes a write? The MCP server refuses to start
+    # on a directory it cannot write, so an existence-only row would say OK
+    # for the one state that makes every tool call fail.
     repowise_dir = get_repowise_dir(repo_path)
-    checks.append(_check(".repowise/ directory", repowise_dir.exists(), str(repowise_dir)))
+    checks.append(_repowise_dir_check(repowise_dir))
+
+    # 2b. Post-commit auto-sync hook. init installs it by default; not having
+    # it is a choice (--no-hook), so its absence is informational, not a fail.
+    checks.append(_autosync_hook_check(repo_path))
 
     # 3. Database connectable?
     db_path = repowise_dir / "wiki.db"
@@ -99,7 +287,6 @@ def _run_repo_checks(
                     create_session_factory,
                     get_repository_by_path,
                     get_session,
-                    list_pages,
                 )
 
                 url = get_db_url_for_repo(repo_path)
@@ -112,8 +299,7 @@ def _run_repo_checks(
                 async with get_session(sf) as session:
                     repo = await get_repository_by_path(session, str(repo_path))
                     if repo:
-                        pages = await list_pages(session, repo.id, limit=10000)
-                        count = len(pages)
+                        count = await _page_count(session, repo.id)
                 await engine.dispose()
                 return count
 
@@ -161,24 +347,8 @@ def _run_repo_checks(
         except Exception as e:
             checks.append(_check("Store format", True, f"Could not check: {e}"))
 
-    # 5. Provider importable?
-    provider_ok = False
-    try:
-        from repowise.core.providers import list_providers
-
-        providers = list_providers()
-        provider_ok = len(providers) > 0
-        checks.append(_check("Providers", provider_ok, ", ".join(providers)))
-    except Exception as e:
-        checks.append(_check("Providers", False, str(e)))
-
-    # 6. Provider configuration?
-    from repowise.cli.helpers import validate_provider_config
-
-    config_warnings = validate_provider_config()
-    config_ok = len(config_warnings) == 0
-    config_detail = "All required API keys configured" if config_ok else "; ".join(config_warnings)
-    checks.append(_check("Provider config", config_ok, config_detail))
+    # 5-6. Provider implementations, configuration, and repo-level usability.
+    checks.extend(_provider_checks(repo_path))
 
     # 6b. Hosted account (informational: signed out is not a failure).
     try:
@@ -205,6 +375,7 @@ def _run_repo_checks(
 
     # 7. Stale page count
     stale_count = 0
+    stale_counts: dict[str, int] = {}
     if db_ok and page_count > 0:
         try:
 
@@ -214,7 +385,6 @@ def _run_repo_checks(
                     create_session_factory,
                     get_repository_by_path,
                     get_session,
-                    get_stale_pages,
                 )
 
                 url = get_db_url_for_repo(repo_path)
@@ -224,14 +394,24 @@ def _run_repo_checks(
                 async with get_session(sf) as session:
                     repo = await get_repository_by_path(session, str(repo_path))
                     if repo:
-                        stale = await get_stale_pages(session, repo.id)
+                        counts = await _stale_page_counts(session, repo.id)
                         await engine.dispose()
-                        return len(stale)
+                        return counts
                 await engine.dispose()
-                return 0
+                return {}
 
-            stale_count = run_async(_check_stale())
-            checks.append(_check("Stale pages", stale_count == 0, f"{stale_count} stale"))
+            stale_counts = run_async(_check_stale())
+            stale_count = sum(stale_counts.values())
+            if stale_count:
+                checks.append(
+                    _check(
+                        "Stale pages",
+                        False,
+                        _stale_page_guidance(stale_counts),
+                    )
+                )
+            else:
+                checks.append(_check("Stale pages", True, "0 stale"))
         except Exception:
             checks.append(_check("Stale pages", True, "Could not check"))
 
@@ -251,7 +431,6 @@ def _run_repo_checks(
                     create_session_factory,
                     get_repository_by_path,
                     get_session,
-                    list_pages,
                 )
                 from repowise.core.persistence.information_floor import (
                     meets_information_floor,
@@ -272,7 +451,8 @@ def _run_repo_checks(
                     if not repo:
                         await engine.dispose()
                         return set(), set(), set(), set()
-                    pages = await list_pages(session, repo.id, limit=10000)
+                    pages = await _all_pages_for_reconciliation(session, repo.id)
+                    sql_ids = {p.id for p in pages}
                     # ``Page``'s primary key is the column ``id``; there is no
                     # ``page_id`` attribute. The old spelling raised here on
                     # every run, was swallowed below, and left both store
@@ -280,7 +460,7 @@ def _run_repo_checks(
                     # drift was ever detected and --repair never had anything
                     # to repair. The FTS repair block had the same defect and
                     # was fixed; this half was missed.
-                    sql_ids = {p.id for p in pages}
+
                     # The page vector store also holds decision embeddings under
                     # the "decision:<id>" namespace, so they belong on the SQL
                     # side of the ORPHAN check (but NOT FTS, which only indexes
@@ -298,8 +478,35 @@ def _run_repo_checks(
                     # excluded for, one line above. It stays on the ORPHAN
                     # side: a stored vector for a page now below the floor is
                     # real drift, and deleting it is a repair that works.
+                    # A page whose FILE the user excluded is absent from both
+                    # indexes because they asked for that, so reporting it as
+                    # missing is drift no action can clear: `--repair`'s only
+                    # remedy is to index content they excluded. Every other read
+                    # path already filters here — `filter_graph_nodes`,
+                    # `_node_id_is_excluded`, `_prose_symbols` — and
+                    # `core/exclusion.py` documents why: rows outlive an
+                    # `exclude_patterns` edit by design, so readers filter rather
+                    # than force a reindex. This check was the one reader that did
+                    # not, and on a repo excluding its generated sources that was
+                    # 5015 of 5049 reported-missing rows.
+                    #
+                    # Matched on the FILE: a symbol page's target_path is
+                    # `path::Name`, which no file pattern matches. Same split
+                    # `_node_id_is_excluded` does, for the same reason.
+                    #
+                    # MISSING side only, like the floor and stub exclusions
+                    # above. Whether a store entry for a newly-excluded file is
+                    # itself drift worth deleting is a separate question, and
+                    # answering it here would make `--repair` delete on a rules
+                    # edit — too sharp an edge to add in passing.
+                    exclude_spec = build_exclude_spec(repo_path)
                     indexable_ids = {
-                        p.id for p in pages if meets_information_floor(p.content or "")
+                        p.id
+                        for p in pages
+                        if meets_information_floor(p.content or "")
+                        and not is_excluded(
+                            (p.target_path or "").split("::", 1)[0], exclude_spec
+                        )
                     }
                     # A stub standing in for a failed model page is held out of
                     # the vector store on purpose: ``_seed_resume`` reads the
@@ -359,8 +566,13 @@ def _run_repo_checks(
             # Held-back stubs are not drift, but they are also not nothing: the
             # wiki has a page there that no model wrote. Say so on the same row
             # rather than letting "in sync" imply the wiki is complete.
+            # Name the command, not just the flag. `--resume` exists only on
+            # `init`, so a reader who takes this advice tries `generate
+            # --resume` first — 0.48.0 answers "No such option '--resume'. Did
+            # you mean '--yes'?" — and has to guess which command was meant. A
+            # health report is the worst place to make someone guess.
             if stub_count:
-                vec_detail += f" · {stub_count} stub(s) awaiting --resume"
+                vec_detail += f" · {stub_count} stub(s) awaiting `repowise init --resume`"
             checks.append(_check("SQL ↔ Vector Store", vec_ok, vec_detail))
 
             fts_ok = not missing_from_fts and not orphaned_fts
@@ -490,6 +702,11 @@ def _run_repo_checks(
     # 12. Claude Code MCP registration: wedged-path detection
     registration_check, registration_wedged = _claude_registration_check()
     checks.append(registration_check)
+
+    # 12b. Does that registration actually start? Reported separately, because
+    # a wired-up server that dies on every invocation is a different problem
+    # with a different fix than one that is not wired up at all.
+    checks.append(_mcp_responds_check())
 
     # 13. Per-agent health, reported by each agent's own descriptor
     agent_checks, agents_need_refresh = _agent_target_checks()
@@ -691,8 +908,16 @@ def _run_repo_checks(
 
         repaired_count = run_async(_repair())
         console.print(f"[bold green]Repaired {repaired_count} entries.[/bold green]")
+        if stale_count:
+            console.print(f"[yellow]{_stale_page_guidance(stale_counts)}[/yellow]")
     elif repair and not has_mismatches and not registration_wedged and not agents_need_refresh:
-        console.print("[green]Nothing to repair.[/green]")
+        if stale_count:
+            console.print(
+                f"[yellow]No store drift to repair. "
+                f"{_stale_page_guidance(stale_counts)}[/yellow]"
+            )
+        else:
+            console.print("[green]Nothing to repair.[/green]")
 
     if repair and agents_need_refresh:
         from repowise.cli.commands.agents_cmd import refresh_wired_agents
@@ -786,6 +1011,74 @@ def _agent_target_checks() -> tuple[list[DoctorCheck], bool]:
     return checks, needs_refresh
 
 
+def _registered_mcp_entry() -> dict | None:
+    """The Claude Code ``mcpServers.repowise`` entry, or None if there isn't one.
+
+    Delegates to ``claude_config``, which owns reading this entry, so the two
+    doctor checks and the registration writer cannot drift apart on what counts
+    as registered. Both checks must judge the same entry: a smoke check that
+    launched a *different* command than the one registered would give a clean
+    bill of health to the broken thing.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _claude_code_settings_path,
+        _stored_repowise_entry,
+    )
+
+    return _stored_repowise_entry(_claude_code_settings_path())
+
+
+def _unregistered_detail() -> str:
+    """Why there is no entry: absent, or present but unreadable.
+
+    Those have different fixes, and collapsing them tells a user with a
+    hand-broken settings.json to run ``init``, which will fail on the same
+    file. Only reached when there is no entry, so it costs nothing normally.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _claude_code_settings_path,
+        load_existing_config,
+    )
+
+    settings_path = _claude_code_settings_path()
+    if settings_path.exists():
+        try:
+            load_existing_config(settings_path)
+        except Exception:
+            return f"could not parse {settings_path}"
+    return "not registered (repowise init registers it)"
+
+
+@_functools.cache
+def _mcp_responds_check() -> DoctorCheck:
+    """Launch the registered MCP server and complete one round trip.
+
+    Reported separately from the registration row: registration answers "is it
+    wired up", this answers "does it run". An install whose server dies on
+    every invocation passes the first and fails this one, which is the whole
+    point. Absence of a registration is informational, matching
+    the registration check.
+
+    Cached for the process because there is one global ``mcpServers.repowise``
+    entry and this takes no repo argument, while workspace mode runs the repo
+    checks once per entry. Without the cache a ten-repo workspace would launch
+    the same server ten times and pay the startup cost for each.
+    """
+    from .mcp_smoke import CHECK_NAME, mcp_smoke_check
+
+    try:
+        entry = _registered_mcp_entry()
+        if entry is None:
+            return _check(CHECK_NAME, True, "not registered - nothing to launch")
+        command = entry.get("command")
+        args = entry.get("args")
+        if not isinstance(command, str) or not isinstance(args, list):
+            return _check(CHECK_NAME, True, "registration is hand-shaped - not launching it")
+        return mcp_smoke_check(command, [str(a) for a in args], entry.get("env"))
+    except Exception as exc:  # a doctor check must never be the crash
+        return _check(CHECK_NAME, True, f"Could not check: {exc}")
+
+
 def _claude_registration_check() -> tuple[DoctorCheck, bool]:
     """Detect a wedged Claude Code MCP registration (stale paths).
 
@@ -795,24 +1088,15 @@ def _claude_registration_check() -> tuple[DoctorCheck, bool]:
     server silently fails to start in every Claude Code session. Returns
     ``(check, wedged)``; ``wedged`` drives the ``--repair`` re-registration.
     Absence of a registration is informational, never a failure.
+
+    This is a *static* check. Whether the server actually starts is
+    ``_mcp_responds_check``.
     """
     name = "Claude Code MCP entry"
     try:
-        import json as _json
-
-        from repowise.cli.editor_integrations.claude_config import _claude_code_settings_path
-
-        settings_path = _claude_code_settings_path()
-        if not settings_path.exists():
-            return _check(name, True, "not registered (repowise init registers it)"), False
-        try:
-            settings = _json.loads(settings_path.read_text(encoding="utf-8"))
-        except (OSError, _json.JSONDecodeError):
-            return _check(name, True, f"could not parse {settings_path}"), False
-        servers = settings.get("mcpServers") if isinstance(settings, dict) else None
-        entry = servers.get("repowise") if isinstance(servers, dict) else None
-        if not isinstance(entry, dict):
-            return _check(name, True, "not registered (repowise init registers it)"), False
+        entry = _registered_mcp_entry()
+        if entry is None:
+            return _check(name, True, _unregistered_detail()), False
 
         problems: list[str] = []
         command = entry.get("command")

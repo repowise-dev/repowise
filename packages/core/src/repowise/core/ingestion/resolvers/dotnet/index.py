@@ -15,10 +15,11 @@ from .global_usings import collect_project_global_usings
 from .msbuild import (
     MSBuildProject,
     find_csproj_files,
+    find_vbproj_files,
     parse_csproj,
     path_has_dotnet_scan_skip_dir,
 )
-from .namespace_map import build_namespace_map
+from .namespace_map import build_namespace_map, build_vb_namespace_map
 from .solution import find_sln_files, parse_sln
 
 if TYPE_CHECKING:
@@ -36,7 +37,11 @@ class DotNetProjectIndex:
     """Keyed by absolute .csproj path."""
 
     namespace_map: dict[str, list[Path]] = field(default_factory=dict)
-    """Maps a fully-qualified namespace to the set of .cs files declaring it."""
+    """Maps a fully-qualified namespace to the .cs and .vb files declaring it.
+
+    VB.NET namespaces are recorded under the project's ``<RootNamespace>`` as
+    well as their source-literal form, so a mixed solution resolves across
+    both languages from one map."""
 
     type_map: dict[str, list[Path]] = field(default_factory=dict)
     """Maps an unqualified type name (e.g. ``IBasketService``) to defining files.
@@ -54,7 +59,14 @@ class DotNetProjectIndex:
     """Maps a project's directory → global+implicit using namespaces."""
 
     file_to_project: dict[Path, Path] = field(default_factory=dict)
-    """Maps a .cs file's absolute path → enclosing project's .csproj path."""
+    """Maps a .cs or .vb file's absolute path → enclosing project file path."""
+
+    vb_root_namespaces: dict[Path, str] = field(default_factory=dict)
+    """Maps a .vb file's absolute path → its project's ``<RootNamespace>``.
+
+    VB files usually declare no ``Namespace`` block at all and sit directly in
+    the root namespace, so the same-namespace pass needs this to know which
+    scope a bare file belongs to."""
 
     project_refs_by_proj: dict[Path, set[Path]] = field(default_factory=dict)
     """Maps a .csproj path → set of referenced .csproj paths (transitive=False)."""
@@ -107,6 +119,33 @@ class DotNetProjectIndex:
     def files_for_type(self, type_name: str) -> list[Path]:
         return self.type_map.get(type_name, [])
 
+    def rank_namespace_candidates(
+        self, namespace: str, importer_csproj: Path | None
+    ) -> list[Path]:
+        """Return files declaring *namespace*, best candidate first.
+
+        Same project, then a directly-referenced project, then anywhere in
+        the repo. Shared by the C# and VB.NET resolvers so a mixed solution
+        ranks both languages the same way.
+        """
+        candidates = self.namespace_map.get(namespace, [])
+        if not candidates or importer_csproj is None:
+            return candidates
+
+        ref_csprojs = self.referenced_projects(importer_csproj)
+        same_project: list[Path] = []
+        referenced: list[Path] = []
+        other: list[Path] = []
+        for cand in candidates:
+            cand_proj = self.file_to_project.get(cand)
+            if cand_proj == importer_csproj:
+                same_project.append(cand)
+            elif cand_proj in ref_csprojs:
+                referenced.append(cand)
+            else:
+                other.append(cand)
+        return same_project or referenced or other
+
     def rank_type_candidates(
         self,
         type_name: str,
@@ -157,10 +196,14 @@ class DotNetProjectIndex:
         return package_id in self.package_refs.get(csproj, set())
 
 
-def _walk_repo_cs_files(
-    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
+def _walk_repo_source_files(
+    repo_path: Path,
+    pattern: str,
+    *,
+    prune_nested_git: bool = True,
+    snapshot: Any | None = None,
 ) -> list[Path]:
-    """Single repo-wide rglob for ``*.cs`` files, dedup by resolved path.
+    """Single repo-wide rglob for *pattern*, dedup by resolved path.
 
     Lives at module scope (not nested inside ``build_index``) so it's
     independently testable and so the skip-list is shared with the
@@ -168,11 +211,11 @@ def _walk_repo_cs_files(
     """
     seen: set[Path] = set()
     out: list[Path] = []
-    for cs in glob_via(snapshot, repo_path, "*.cs", prune_nested_git=prune_nested_git):
-        if path_has_dotnet_scan_skip_dir(cs, repo_path):
+    for src in glob_via(snapshot, repo_path, pattern, prune_nested_git=prune_nested_git):
+        if path_has_dotnet_scan_skip_dir(src, repo_path):
             continue
         try:
-            resolved = cs.resolve()
+            resolved = src.resolve()
         except OSError:
             continue
         if resolved in seen:
@@ -246,10 +289,11 @@ def build_index(
     repo_path = repo_path.resolve()
     index = DotNetProjectIndex(repo_path=repo_path)
 
-    # ---- 1. Parse every .csproj ----
-    for csproj_path in find_csproj_files(
+    # ---- 1. Parse every .csproj and .vbproj ----
+    project_paths = find_csproj_files(
         repo_path, prune_nested_git=prune_nested_git, snapshot=snapshot
-    ):
+    ) + find_vbproj_files(repo_path, prune_nested_git=prune_nested_git, snapshot=snapshot)
+    for csproj_path in project_paths:
         proj = parse_csproj(csproj_path)
         if proj is None:
             continue
@@ -274,12 +318,15 @@ def build_index(
                     index.package_refs.setdefault(proj.path, set()).update(proj.package_references)
 
     # ---- 3. Single master walk: enumerate .cs files & read each once ----
-    all_cs_files = _walk_repo_cs_files(
-        repo_path, prune_nested_git=prune_nested_git, snapshot=snapshot
+    all_cs_files = _walk_repo_source_files(
+        repo_path, "*.cs", prune_nested_git=prune_nested_git, snapshot=snapshot
+    )
+    all_vb_files = _walk_repo_source_files(
+        repo_path, "*.vb", prune_nested_git=prune_nested_git, snapshot=snapshot
     )
     cs_texts: dict[Path, str] = {}
-    for f in all_cs_files:
-        # ``_walk_repo_cs_files`` resolves every path and *repo_path* is
+    for f in all_cs_files + all_vb_files:
+        # ``_walk_repo_source_files`` resolves every path and *repo_path* is
         # resolved too, so a file the traverser indexed keys the map exactly.
         # Files it skipped — and anything outside the root — miss and read.
         try:
@@ -296,12 +343,31 @@ def build_index(
     project_dirs: list[tuple[Path, Path]] = [
         (proj.project_dir.resolve(), proj.path) for proj in index.projects.values()
     ]
-    index.file_to_project = _bucket_files_by_project(all_cs_files, project_dirs)
+    index.file_to_project = _bucket_files_by_project(all_cs_files + all_vb_files, project_dirs)
 
     # ---- 4. Namespace + type + partial maps from cached texts ----
     index.namespace_map, index.type_map, index.partial_types = build_namespace_map(
         all_cs_files, texts=cs_texts
     )
+    if all_vb_files:
+        # VB namespaces hang off <RootNamespace>, which defaults to the
+        # project name when the project file does not set it.
+        vb_roots: dict[Path, str] = {}
+        for vb in all_vb_files:
+            vbproj = index.file_to_project.get(vb)
+            proj = index.projects.get(vbproj) if vbproj else None
+            if proj is not None:
+                vb_roots[vb] = proj.root_namespace or proj.path.stem
+        index.vb_root_namespaces = vb_roots
+        vb_namespaces, vb_types, vb_partials = build_vb_namespace_map(
+            all_vb_files, texts=cs_texts, root_namespaces=vb_roots
+        )
+        for key, paths in vb_namespaces.items():
+            index.namespace_map.setdefault(key, []).extend(paths)
+        for key, paths in vb_types.items():
+            index.type_map.setdefault(key, []).extend(paths)
+        for key, paths in vb_partials.items():
+            index.partial_types.setdefault(key, []).extend(paths)
 
     # ---- 5. Per-project global+implicit usings from cached texts ----
     # Bucket the cached texts by project once so each project's call to
@@ -334,6 +400,7 @@ def build_index(
         repo=str(repo_path),
         projects=len(index.projects),
         cs_files=len(all_cs_files),
+        vb_files=len(all_vb_files),
         namespaces=len(index.namespace_map),
         types=len(index.type_map),
         sln=len(index.sln_paths),

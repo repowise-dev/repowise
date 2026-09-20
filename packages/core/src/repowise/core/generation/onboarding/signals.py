@@ -62,3 +62,16 @@ class OnboardingSignals:
     # independently. Empty on every run that emits no page needing it, because
     # building it costs a store read.
     module_corroboration: tuple[str, ...] = ()
+
+
+def file_layer_map(signals: OnboardingSignals) -> dict[str, str]:
+    """Map repository-relative file paths to KG layer names, when available."""
+    out: dict[str, str] = {}
+    for layer in getattr(signals, "kg_layers", ()):
+        name = str(layer.get("name", "")).strip()
+        if not name:
+            continue
+        for node_id in layer.get("nodeIds", []) or []:
+            if isinstance(node_id, str) and node_id.startswith("file:"):
+                out[node_id[len("file:") :]] = name
+    return out

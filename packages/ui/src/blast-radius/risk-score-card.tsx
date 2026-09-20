@@ -1,28 +1,44 @@
 import { Card, CardContent } from "../ui/card";
 import { cn } from "../lib/cn";
+import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 
 interface RiskScoreCardProps {
-  /** 0–10. */
+  /** Uncalibrated structural-impact heuristic, 0–10. */
   score: number;
+  /** Server-classified band. Omit for legacy payloads; no client threshold is inferred. */
+  band?: BlastRadiusResponse["structural_impact_band"];
 }
 
-export function RiskScoreCard({ score }: RiskScoreCardProps) {
+/** Legacy component name retained for callers; copy uses structural semantics. */
+export function RiskScoreCard({ score, band }: RiskScoreCardProps) {
   const tone =
-    score >= 7
+    band === "broad"
       ? {
           text: "text-[var(--color-error)]",
           card: "border-[var(--color-error)]/30 bg-[var(--color-error)]/5",
         }
-      : score >= 4
+      : band === "moderate"
         ? {
             text: "text-[var(--color-warning)]",
             card: "border-[var(--color-warning)]/30 bg-[var(--color-warning)]/5",
           }
-        : {
+        : band === "localized"
+          ? {
             text: "text-[var(--color-success)]",
             card: "border-[var(--color-success)]/30 bg-[var(--color-success)]/5",
-          };
-  const label = score >= 7 ? "High Risk" : score >= 4 ? "Medium Risk" : "Low Risk";
+            }
+          : {
+              text: "text-[var(--color-info)]",
+              card: "border-[var(--color-info)]/30 bg-[var(--color-info)]/5",
+            };
+  const label =
+    band === "broad"
+      ? "Broad structural impact"
+      : band === "moderate"
+        ? "Moderate structural impact"
+        : band === "localized"
+          ? "Localized structural impact"
+          : "Structural impact";
 
   return (
     <Card className={cn("border", tone.card)}>
@@ -32,7 +48,7 @@ export function RiskScoreCard({ score }: RiskScoreCardProps) {
         </span>
         <span className={cn("text-sm font-medium", tone.text)}>{label}</span>
         <span className="text-xs text-[var(--color-text-tertiary)]">
-          Overall Risk Score (0–10)
+          Uncalibrated structural heuristic (0–10)
         </span>
       </CardContent>
     </Card>

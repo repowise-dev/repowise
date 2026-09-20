@@ -31,6 +31,7 @@ from repowise.core.ingestion.git_indexer import (
     canonicalize_author_email,
 )
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
+from repowise.server.services.module_health import top_level_module
 
 # ---------------------------------------------------------------------------
 # Identity
@@ -51,11 +52,6 @@ def owner_key(name: str | None, email: str | None) -> str:
     if name:
         return f"name:{name.strip()}"
     return ""
-
-
-def _module_of(file_path: str) -> str:
-    parts = file_path.split("/", 1)
-    return parts[0] if len(parts) > 1 else "root"
 
 
 def _as_utc(dt: datetime | None) -> datetime | None:
@@ -178,7 +174,7 @@ async def aggregate_owners(
         except json.JSONDecodeError:
             authors = []
 
-        module = _module_of(m.file_path)
+        module = top_level_module(m.file_path)
         module_totals[module] += 1
         categories: dict[str, int] = {}
         with contextlib.suppress(json.JSONDecodeError):

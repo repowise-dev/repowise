@@ -21,6 +21,12 @@ import { Label } from "../ui/label";
  * The comma-separated list fields mirror the CLI's prompts rather than
  * inventing a chip editor. They are the fields people leave blank most often,
  * and a text input that accepts "a, b" needs no keyboard contract explained.
+ *
+ * Affected files is the one field that changes what the write produces. An
+ * acceptance has to name what it governs, so an entry naming nothing is stored
+ * as a candidate instead. That is the same outcome `repowise decision add`
+ * gives the same input, and the form says which one is coming before the
+ * button is pressed rather than reporting it in a failure toast afterwards.
  */
 
 const FIELD = "space-y-1.5";
@@ -68,6 +74,9 @@ export function DecisionCreateForm({
   // as it is at the prompts.
   const canSubmit = title.trim().length > 0 && decision.trim().length > 0 && !saving;
 
+  // Mirrors the server: scope present means the write records an acceptance.
+  const governs = splitList(affectedFiles).length > 0;
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!canSubmit) return;
@@ -83,7 +92,11 @@ export function DecisionCreateForm({
         affected_files: splitList(affectedFiles),
         tags: splitList(tags),
       });
-      toast.success("Decision recorded");
+      toast.success(
+        governs
+          ? "Decision recorded and confirmed"
+          : "Saved as a candidate. Add the files it governs to confirm it.",
+      );
       onCreated?.();
     } catch (err) {
       toast.error(
@@ -172,16 +185,6 @@ export function DecisionCreateForm({
           />
         </div>
         <div className={FIELD}>
-          <Label htmlFor="decision-files">Affected files</Label>
-          <Input
-            id="decision-files"
-            value={affectedFiles}
-            onChange={(e) => setAffectedFiles(e.target.value)}
-            placeholder="src/auth/service.py, src/auth/middleware.py"
-            disabled={saving}
-          />
-        </div>
-        <div className={FIELD}>
           <Label htmlFor="decision-tags">Tags</Label>
           <Input
             id="decision-tags"
@@ -193,14 +196,39 @@ export function DecisionCreateForm({
         </div>
       </div>
 
-      <div className="flex justify-end gap-2 pt-1">
+      <div className={FIELD}>
+        <Label htmlFor="decision-files">Affected files</Label>
+        <Input
+          id="decision-files"
+          value={affectedFiles}
+          onChange={(e) => setAffectedFiles(e.target.value)}
+          placeholder="src/auth/service.py, src/auth/middleware.py"
+          disabled={saving}
+          aria-describedby="decision-outcome"
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2 pt-1">
+        <p
+          id="decision-outcome"
+          aria-live="polite"
+          className="min-w-0 flex-1 text-xs text-[var(--color-text-secondary)]"
+        >
+          {governs
+            ? "Recorded as confirmed, because you are the person confirming it. It will govern the files above."
+            : "Name the files it governs to confirm it. Without them it is saved as a candidate: nothing checks it against the code, and it does not reach an agent."}
+        </p>
         {onCancel && (
           <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>
             Cancel
           </Button>
         )}
         <Button type="submit" disabled={!canSubmit}>
-          {saving ? "Recording…" : "Record decision"}
+          {saving
+            ? "Recording…"
+            : governs
+              ? "Record decision"
+              : "Save as candidate"}
         </Button>
       </div>
     </form>

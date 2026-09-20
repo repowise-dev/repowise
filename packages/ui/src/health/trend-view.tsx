@@ -18,8 +18,8 @@
  * double-fetched alongside anything else on the page.
  */
 
-import { AlertTriangle } from "lucide-react";
-import type { HealthTrendResponse } from "@repowise-dev/types/health";
+import { AlertTriangle, Info } from "lucide-react";
+import type { HealthCounts, HealthTrendResponse } from "@repowise-dev/types/health";
 
 import { Skeleton } from "../ui/skeleton";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
@@ -35,14 +35,43 @@ import { deltaColor, formatDelta, scoreTextColor } from "./tokens";
  */
 const SLOPE_MAX = 18;
 
+/**
+ * Colour, lead phrase and icon per alert kind.
+ *
+ * A `history_drag` fall is not the reader's doing and there is nothing to act
+ * on, so it takes the neutral treatment the drawer gives history findings
+ * rather than the error red. Painting it red is what told a reader their
+ * refactoring had made things worse. An unknown kind falls through to the
+ * warning treatment, which is the safe reading of a signal we cannot classify.
+ */
+function alertTreatment(kind: string): { color: string; label: string; watch: boolean } {
+  if (kind === "declining") {
+    // Not "Declining health.": three different figures raise this alert and the
+    // message names which one, so a lead that named a fourth thing contradicted it.
+    return { color: "var(--color-error)", label: "Declining.", watch: false };
+  }
+  if (kind === "history_drag") {
+    return {
+      color: "var(--color-text-secondary)",
+      label: "Change history, not code.",
+      watch: true,
+    };
+  }
+  return { color: "var(--color-warning)", label: "Predicted decline.", watch: false };
+}
+
+
 export function TrendView({
   data,
   isLoading,
   error,
+  counts,
 }: {
   data: HealthTrendResponse | undefined;
   isLoading: boolean;
   error: unknown;
+  /** What the page's figures count, so this section cannot claim the other reading. */
+  counts?: HealthCounts;
 }) {
   if (isLoading) return <Skeleton className="h-64 w-full rounded-lg" />;
   if (error || !data) {
@@ -64,24 +93,46 @@ export function TrendView({
     return `${formatDelta(delta)} vs. ${previous?.toFixed(1) ?? "—"}`;
   };
 
+  // Absent under a narrowed scope: only the average was recorded for both
+  // populations, so a repo-wide hotspot figure would describe files this view
+  // has dropped. Say so rather than printing one.
+  const hotspot = summary.current_hotspot_health;
+
+  // Snapshots recorded the full score, so there is no code-shape series to
+  // read. These two carry the same labels as the lede's figures, and showing
+  // the other reading of them here put two different numbers under one name on
+  // one screen — the exact confusion the single headline exists to end.
+  const otherReading = counts === "code_shape";
+
   const stats: RibbonStat[] = [
     {
-      label: "Average health",
-      value: summary.current_average_health.toFixed(1),
-      valueColor: scoreTextColor(summary.current_average_health),
-      sub: deltaSub(summary.average_delta, summary.previous_average_health),
-      ...(Math.abs(summary.average_delta ?? 0) >= 0.05
-        ? { subColor: deltaColor(summary.average_delta) }
-        : {}),
+      label: "Code health",
+      value: otherReading ? "—" : summary.current_average_health.toFixed(1),
+      ...(otherReading
+        ? { sub: "recorded on the full score" }
+        : {
+            valueColor: scoreTextColor(summary.current_average_health),
+            sub: deltaSub(summary.average_delta, summary.previous_average_health),
+            ...(Math.abs(summary.average_delta ?? 0) >= 0.05
+              ? { subColor: deltaColor(summary.average_delta) }
+              : {}),
+          }),
     },
     {
       label: "Hotspot health",
-      value: summary.current_hotspot_health.toFixed(1),
-      valueColor: scoreTextColor(summary.current_hotspot_health),
-      sub: deltaSub(summary.hotspot_delta, summary.previous_hotspot_health),
-      ...(Math.abs(summary.hotspot_delta ?? 0) >= 0.05
-        ? { subColor: deltaColor(summary.hotspot_delta) }
-        : {}),
+      value: otherReading || hotspot == null ? "—" : hotspot.toFixed(1),
+      ...(otherReading
+        ? { sub: "recorded on the full score" }
+        : {
+            ...(hotspot == null ? {} : { valueColor: scoreTextColor(hotspot) }),
+            sub:
+              hotspot == null
+                ? "not measured for this scope"
+                : deltaSub(summary.hotspot_delta, summary.previous_hotspot_health),
+            ...(hotspot != null && Math.abs(summary.hotspot_delta ?? 0) >= 0.05
+              ? { subColor: deltaColor(summary.hotspot_delta) }
+              : {}),
+          }),
     },
     {
       label: "Snapshots",
@@ -97,18 +148,14 @@ export function TrendView({
       {data.alerts.length > 0 && (
         <div className="flex flex-col gap-2">
           {data.alerts.map((a, i) => {
-            const color =
-              a.kind === "declining" ? "var(--color-error)" : "var(--color-warning)";
+            const { color, label, watch } = alertTreatment(a.kind);
+            const Icon = watch ? Info : AlertTriangle;
             return (
               <p key={i} className="flex items-start gap-2 text-sm">
-                <AlertTriangle
-                  className="mt-0.5 h-4 w-4 shrink-0"
-                  style={{ color }}
-                  aria-hidden
-                />
+                <Icon className="mt-0.5 h-4 w-4 shrink-0" style={{ color }} aria-hidden />
                 <span>
                   <strong className="font-semibold" style={{ color }}>
-                    {a.kind === "declining" ? "Declining health." : "Predicted decline."}
+                    {label}
                   </strong>{" "}
                   <span className="text-[var(--color-text-secondary)]">{a.message}</span>
                 </span>

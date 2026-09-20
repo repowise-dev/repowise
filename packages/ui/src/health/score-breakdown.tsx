@@ -4,8 +4,23 @@ import {
   biomarkerLabel,
   type BiomarkerCategory,
 } from "./biomarker-glossary";
-import { scoreBadgeClass, type Severity } from "./tokens";
+import { type Severity } from "./tokens";
+import { ImpactFigure } from "./impact-figure";
 import { SeverityMark } from "./severity-mark";
+
+/**
+ * The proportion bars carry no colour.
+ *
+ * They were all the deduction red, which on a file with seven scoring
+ * categories is seven red bars: the colour said "bad" seven times and ranked
+ * nothing. Nothing was gained by tying the tone to severity either, because
+ * the bar's own length already is the magnitude and the rows are sorted by it.
+ * So the bar states one thing, in one channel, and the red is left to mean
+ * something where it is still used.
+ */
+const BAR_FILL = "color-mix(in srgb, var(--color-text-tertiary) 55%, transparent)";
+/** Fainter again when there is no cap, so the bar's scale is approximate. */
+const BAR_FILL_UNCAPPED = "color-mix(in srgb, var(--color-text-tertiary) 30%, transparent)";
 
 export interface ScoreBreakdownCategoryFinding {
   id: string;
@@ -43,17 +58,13 @@ export function ScoreBreakdown({
 }: ScoreBreakdownProps) {
   return (
     <div className="space-y-3">
-      <div className="flex items-baseline gap-3">
-        <span
-          className={`inline-flex items-center rounded-md px-2 py-1 text-lg font-bold tabular-nums ${scoreBadgeClass(score)}`}
-        >
-          {score.toFixed(1)}
-          <span className="ml-0.5 text-xs font-normal opacity-70">/10</span>
-        </span>
-        <span className="text-xs text-[var(--color-text-tertiary)]">
-          10.0 − {totalDeduction.toFixed(2)} = {score.toFixed(2)}
-        </span>
-      </div>
+      {/* The arithmetic, once, quietly. This led with the score again as a
+          large coloured badge, a second copy of the figure the surface above
+          it already shows at four times the size. What this section is for is
+          the subtraction, not the total. */}
+      <p className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
+        10.0 − {totalDeduction.toFixed(2)} = {score.toFixed(1)}
+      </p>
 
       <div className="space-y-2.5">
         {[...categories]
@@ -104,17 +115,16 @@ export function ScoreBreakdown({
               </div>
               <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
                 <div
-                  className={
-                    cap != null
-                      ? "h-full bg-[var(--color-error)]/70"
-                      : "h-full bg-[var(--color-text-tertiary)]/40"
-                  }
+                  className="h-full"
                   title={
                     cap == null
                       ? "No defined cap for this category — bar scale is approximate."
                       : undefined
                   }
-                  style={{ width: `${pct}%` }}
+                  style={{
+                    width: `${pct}%`,
+                    background: cap == null ? BAR_FILL_UNCAPPED : BAR_FILL,
+                  }}
                 />
               </div>
               {c.findings.length > 0 && (
@@ -133,9 +143,10 @@ export function ScoreBreakdown({
                           {f.function_name}
                         </span>
                       ) : null}
-                      <span className="ml-auto tabular-nums text-[var(--color-error)]">
-                        −{f.applied_impact.toFixed(2)}
-                      </span>
+                      {/* Muted: the severity mark at the head of the row is
+                          already the colour channel, and six red numbers under
+                          a red bar rank nothing. */}
+                      <ImpactFigure impact={f.applied_impact} tone="muted" className="ml-auto" />
                     </li>
                   ))}
                   {c.findings.length > 6 ? (

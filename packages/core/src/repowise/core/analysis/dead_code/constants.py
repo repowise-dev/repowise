@@ -25,6 +25,12 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 # languages plus "unknown".
 _NON_CODE_LANGUAGES: frozenset[str] = _LANG_REGISTRY.unparseable_or_unknown_languages()
 
+# Code languages whose files/symbols are entered through an external runtime
+# that the static graph cannot observe (COBOL via JCL/schedulers, for example).
+_DEAD_CODE_EXEMPT_LANGUAGES: frozenset[str] = (
+    _NON_CODE_LANGUAGES | _LANG_REGISTRY.dead_code_exempt_languages()
+)
+
 # Patterns that should never be flagged as dead.
 _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # Shell scripts are invoked by name from CI configs, Makefiles, and humans
@@ -76,6 +82,19 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/default.tsx",
     # Nuxt route pages
     "*/pages/*.vue",
+    # ---- Qt / QML ---------------------------------------------------
+    # Instantiated by type name and loaded by the runtime (qrc, Loader,
+    # qmlRegisterType), so a QML file never has a static importer.
+    "*.qml",
+    # ---- Objective-C conventions ------------------------------------
+    # The app delegate is named in Info.plist and instantiated by
+    # UIApplicationMain / NSApplicationMain, and a scene delegate by the
+    # scene manifest, so no file ever imports either by name. (main.m is
+    # already an entry point through the language spec.)
+    "*AppDelegate.m",
+    "*AppDelegate.h",
+    "*SceneDelegate.m",
+    "*SceneDelegate.h",
     # ---- .NET / C# conventions --------------------------------------
     # Implicit / generated / framework-loaded files that have no
     # static importers by design.
@@ -92,6 +111,13 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.g.cs",  # Roslyn-generated
     "*.g.i.cs",
     "*.AssemblyInfo.cs",
+    # VB.NET equivalents. "My Project" holds the generated Application,
+    # Resources and Settings designers that no .vb file imports by name.
+    "*.Designer.vb",
+    "*.designer.vb",
+    "*AssemblyInfo.vb",
+    "*/My Project/*.vb",
+    "*ApplicationEvents.vb",  # My.MyApplication hooks, raised by the VB runtime
     "*MauiProgram.cs",  # MAUI app entry — invoked by host, not imported
     "*App.xaml.cs",
     "*AppShell.xaml.cs",

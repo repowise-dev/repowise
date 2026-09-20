@@ -22,6 +22,7 @@ later CLI run in the repo picks it up.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -130,6 +131,32 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "claude_cli",
+        "name": "Claude Code (Local CLI)",
+        "default_model": "claude_cli/claude-haiku-4-5",
+        "models": [
+            "claude_cli/claude-haiku-4-5",
+            "claude_cli/claude-sonnet-4-6",
+            "claude_cli/claude-opus-4-6",
+        ],
+        "env_keys": [],
+        "requires_key": False,
+    },
+    {
+        "id": "codex_cli",
+        "name": "Codex (Local CLI)",
+        "default_model": "codex_cli/default",
+        "models": [
+            # The CLI's model list comes from the authenticated codex catalog
+            # at runtime (see core/providers/llm/codex_cli.py), so the static
+            # catalog only names the sentinel default; list_provider_status
+            # appends the resolved active model when it isn't cataloged.
+            "codex_cli/default",
+        ],
+        "env_keys": [],
+        "requires_key": False,
+    },
+    {
         "id": "opencode",
         "name": "OpenCode (Local CLI)",
         "default_model": "opencode/default",
@@ -176,14 +203,30 @@ def _load_config() -> dict[str, Any]:
     return {}
 
 
+def _redact_key(text: str) -> str:
+    """Redact API key material from *text* for logging/error responses."""
+    import re
+
+    # Matches common key prefixes: sk-..., sk-ant-..., sk-proj-..., etc.
+    # Keep first 3 chars to indicate presence, redact rest.
+    return re.sub(r"(sk-[A-Za-z0-9\-_]{4,})", "sk-***", text)
+
+
 def _save_config(config: dict[str, Any]) -> None:
     # Write-then-rename so a concurrent reader (or a second writer racing on
     # the read-modify-write) never sees a half-written file or a truncated one.
+    # Keys are sensitive — ensure 0600 permissions (owner read/write only).
+    import os as _os
+
     path = _config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f"{path.suffix}.tmp.{os.getpid()}")
     tmp.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    with contextlib.suppress(OSError):
+        _os.chmod(tmp, 0o600)  # best-effort on platforms without chmod (e.g. Windows)
     os.replace(tmp, path)
+    with contextlib.suppress(OSError):
+        _os.chmod(path, 0o600)
 
 
 # ---------------------------------------------------------------------------
@@ -201,14 +244,24 @@ def _load_repo_context(repo_path: str | Path | None) -> tuple[dict[str, Any], di
     """
     if repo_path is None:
         return {}, {}
-    from repowise.core.repo_config import load_repo_config, load_repo_env
+    from repowise.core.repo_config import RepoConfigError, load_repo_config, load_repo_env
 
     try:
         cfg = load_repo_config(repo_path)
+    except RepoConfigError:
+        # A broken config.yaml must surface, not silently resolve as defaults:
+        # the user's provider/model selection would vanish and chat would pick
+        # an auto-detected provider nobody configured. Name the repo so a
+        # workspace server points at the right one.
+        logger.warning("Repo config parse failed for %s; using defaults", repo_path)
+        cfg = {}
     except Exception:
         cfg = {}
     try:
         env = load_repo_env(repo_path)
+    except RepoConfigError:
+        logger.warning("Repo .env unreadable for %s; using environment only", repo_path)
+        env = {}
     except Exception:
         env = {}
     return cfg, env
@@ -481,7 +534,7 @@ def get_chat_provider_instance(
 
     Returns a provider that implements both BaseProvider and ChatProvider.
     """
-    from repowise.core.providers.llm.registry import get_provider
+    from repowise.core.providers.llm.registry import get_provider, provider_kwargs
 
     repo_cfg, repo_env = _load_repo_context(repo_path)
 
@@ -506,7 +559,11 @@ def get_chat_provider_instance(
     base_url = _get_base_url_for_provider(provider_id, repo_env, repo_cfg)
     catalog = _CATALOG_BY_ID[provider_id]
 
-    kwargs: dict[str, Any] = {"model": model or catalog["default_model"]}
+    kwargs = provider_kwargs(
+        provider_id,
+        model=model or catalog["default_model"],
+        repo_path=repo_path,
+    )
     if api_key:
         kwargs["api_key"] = api_key
     if base_url:

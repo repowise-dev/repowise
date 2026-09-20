@@ -31,6 +31,7 @@ import sys
 import threading
 
 from repowise.core.procutils import ProcInfo, ancestor_chain, pid_alive, process_create_token
+from repowise.server.mcp_server._transport import CLIENT_GONE, log_outcome
 
 _log = logging.getLogger(__name__)
 
@@ -124,10 +125,13 @@ def start_parent_watchdog() -> threading.Thread | None:
             try:
                 for info in watch:
                     if _ancestor_died(info):
-                        _log.info(
-                            "MCP watchdog: ancestor %s(%d) is gone — exiting",
-                            info.name or "?",
-                            info.pid,
+                        # Named in the same vocabulary as every other way a
+                        # session ends, so one grep over a host's stderr tells
+                        # a dead client from a dead server.
+                        log_outcome(
+                            CLIENT_GONE,
+                            "stdio",
+                            f"ancestor {info.name or '?'}({info.pid}) is gone",
                         )
                         # os._exit skips interpreter shutdown, which includes
                         # flushing, so the line above can sit in a buffer and

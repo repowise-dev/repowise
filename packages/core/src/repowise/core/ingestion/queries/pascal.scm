@@ -171,6 +171,39 @@
     lhs: (_) @call.receiver
     rhs: (exprTpl entity: (identifier) @call.target))) @call.site
 
+; A parenless call is just as idiomatic on an assignment's RHS as it is
+; bare-statement -- `Result := GetDefaultNDNProfile;` is the standard shape
+; for a niladic Delphi function, arguably *more* common than the bare-
+; statement form above (a niladic function is normally called for its
+; result, which means an assignment). Verified against MTN2: every call
+; site of a real niladic function (GetDefaultNDNProfile, 8 call sites) was
+; this shape, and none were captured before this pattern -- the function
+; read as having zero callers even from within its own file. `assignment`
+; is a distinct node from `statement` (not nested in it), so the earlier
+; `statement`-anchored patterns never fire here regardless of order.
+;
+; Unlike the bare-statement form, this is genuinely ambiguous at the
+; grammar level: `X := Y;` fires this pattern whether `Y` is a niladic
+; function call or a plain variable read -- Pascal's grammar doesn't (and
+; can't, without a symbol table) distinguish them. Left deliberately
+; over-eager rather than trying to disambiguate: a stray edge to an
+; unrelated same-named local only ever ADDS usage evidence somewhere in
+; the graph, which can suppress a real dead-code finding (a false
+; negative) but can never manufacture a "confidently dead" false
+; positive -- the failure direction this whole pass exists to avoid.
+(assignment
+  rhs: (identifier) @call.target) @call.site
+
+(assignment
+  rhs: (exprDot
+    lhs: (_) @call.receiver
+    rhs: (identifier) @call.target)) @call.site
+
+(assignment
+  rhs: (exprDot
+    lhs: (_) @call.receiver
+    rhs: (exprTpl entity: (identifier) @call.target))) @call.site
+
 ; ---------------------------------------------------------------
 ; `inherited Foo;` / `inherited Foo(...)` -- calls the base class's
 ; same-named method. The bare `inherited;` form (no explicit name) is
@@ -188,3 +221,61 @@
   entity: (inherited
     (identifier) @call.target)
   args: (exprArgs)? @call.arguments) @call.site
+
+; ---------------------------------------------------------------
+; Type references -- a class/interface/record named only in a field,
+; parameter, local-variable, or return-type position (never called,
+; never subclassed) previously minted no usage edge at all, since
+; pascal.scm had no `@param.type` captures (unlike C#/Go/Java/Kotlin/TS).
+; ``parser.py:_extract_type_refs`` collects these into TypeReference
+; records generically; ``_pascal_head_type_identifier`` in
+; parser_helpers.py unwraps the `typeref` shape (plain / generic
+; `typerefTpl` / qualified `typerefDot`) down to the head identifier.
+; Verified against MTN2: TConsoleBuffer / TDialogHost read as having zero
+; importers despite being referenced in 10-18 files, exclusively through
+; declarations of this shape (`FBuf: TConsoleBuffer;`), never through a
+; call or heritage edge.
+;
+; `declField`/`declArg`/`declVar` wrap their type in an intermediate
+; `type` node (which can also hold array/set/generic-class-body shapes
+; the `typeref` case doesn't cover); `declProc`'s return-type field holds
+; a bare `typeref` directly -- see the grammar note at the top of this
+; file. Both shapes are captured; anything under `type` that isn't a
+; `typeref` (e.g. an inline `array of X`) is simply not matched, same
+; "no rule, no capture" degradation as everywhere else in this file.
+; ---------------------------------------------------------------
+
+(declField
+  type: (type (typeref) @param.type))
+
+(declArg
+  type: (type (typeref) @param.type))
+
+(declVar
+  type: (type (typeref) @param.type))
+
+(declProc
+  type: (typeref) @param.type)
+
+; ---------------------------------------------------------------
+; `Application.CreateForm(TMainForm, MainForm);` -- the classic VCL/FMX/
+; LCL entry-point idiom, universal across Delphi and Lazarus project
+; (.dpr/.lpr) files. The class argument is a bare identifier passed by
+; value, not a receiver or a type-position declaration -- no other
+; pattern in this file captures it, so a form class referenced ONLY this
+; way (never a `var x: TMainForm` elsewhere, which is otherwise the norm
+; for every other class) still read as having zero importers even after
+; the type-reference captures above. Scoped tightly to the literal
+; `CreateForm` call target (case-insensitive -- Pascal identifiers are)
+; specifically to avoid the much broader, much noisier alternative of
+; treating every bare-identifier call argument as a possible type
+; reference. Only the first argument is captured (`.` anchors it) --
+; `CreateForm`'s second parameter is a `var` reference, not a class.
+; ---------------------------------------------------------------
+
+(exprCall
+  entity: (exprDot
+    rhs: (identifier) @_pascal_create_form_check)
+  args: (exprArgs
+    . (identifier) @param.type)
+  (#match? @_pascal_create_form_check "(?i)^CreateForm$"))

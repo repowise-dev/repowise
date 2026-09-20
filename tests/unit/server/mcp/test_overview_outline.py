@@ -8,15 +8,48 @@ built, and that a parent cycle cannot hang the walk.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server.tool_overview import (
+    _build_guided_tour,
     _build_outline,
     _module_order_key,
     _outline_index,
     _section_sort_key,
 )
+
+
+def test_guided_tour_renumbers_surviving_steps_without_mutating_metadata():
+    metadata = {
+        "guided_tour": [
+            {"order": 1, "kind": "entry", "reason": "root", "target_path": "a.py"},
+            {"order": 2, "kind": "module", "reason": "import", "target_path": "b.py"},
+            {"order": 4, "kind": "module", "reason": "import", "target_path": "b.py"},
+            {"order": 5, "kind": "leaf", "reason": "import", "target_path": "d.py"},
+        ]
+    }
+    page = SimpleNamespace(metadata_json=json.dumps(metadata))
+    result = {}
+
+    _build_guided_tour(page, result, {}, True)
+
+    assert [step["order"] for step in result["guided_tour"]] == [1, 2, 3]
+    assert [step["target_path"] for step in result["guided_tour"]] == ["a.py", "b.py", "d.py"]
+    assert json.loads(page.metadata_json) == metadata
+
+
+def test_guided_tour_is_omitted_when_not_requested():
+    page = SimpleNamespace(
+        metadata_json='{"guided_tour": [{"order": 1, "kind": "entry", "reason": "root"}]}'
+    )
+    result = {}
+
+    _build_guided_tour(page, result, {}, False)
+
+    assert "guided_tour" not in result
+    assert "guided_tour_hint" not in result
 
 
 def _row(pid: str, **kw) -> SimpleNamespace:
@@ -195,3 +228,46 @@ def test_key_modules_lead_with_the_top_of_the_spine_not_the_alphabet():
 def test_section_sort_key_is_numeric_and_puts_unplaced_last():
     ordered = sorted(["8.10", "8.9", None, "10.1", "2"], key=_section_sort_key)
     assert ordered == ["2", "8.9", "8.10", "10.1", None]
+
+
+def test_guided_tour_renumbers_steps_after_deduplication():
+    metadata = {
+        "guided_tour": [
+            {
+                "order": 1,
+                "page_type": "file_page",
+                "target_path": "a.py",
+                "kind": "entry",
+                "reason": "first",
+            },
+            {
+                "order": 2,
+                "page_type": "file_page",
+                "target_path": "b.py",
+                "kind": "layer",
+                "reason": "same",
+            },
+            {
+                "order": 3,
+                "page_type": "file_page",
+                "target_path": "c.py",
+                "kind": "layer",
+                "reason": "same",
+            },
+            {
+                "order": 4,
+                "page_type": "file_page",
+                "target_path": "d.py",
+                "kind": "leaf",
+                "reason": "last",
+            },
+        ]
+    }
+    page = SimpleNamespace(metadata_json=json.dumps(metadata))
+    result = {}
+
+    _build_guided_tour(page, result, {}, want_tour=True)
+
+    assert [step["order"] for step in result["guided_tour"]] == [1, 2, 3]
+    assert [step["target_path"] for step in result["guided_tour"]] == ["a.py", "b.py", "d.py"]
+    assert json.loads(page.metadata_json) == metadata

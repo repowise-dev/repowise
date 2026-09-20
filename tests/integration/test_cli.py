@@ -155,6 +155,103 @@ class TestInitDryRun:
         # No DB should be created
         assert not (work_repo / ".repowise" / "wiki.db").exists()
 
+    def test_no_prose_dry_run_writes_no_wiki(self, runner, work_repo):
+        """The branch above prices a model and returns; this one never did.
+
+        ``--no-prose`` and a keyless run both reach the deterministic
+        generation phase, which takes no ``dry_run`` argument at all.
+        """
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--no-prose", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        assert not (work_repo / ".repowise" / "wiki.db").exists()
+        assert not (work_repo / ".repowise" / "state.json").exists()
+
+    def test_no_provider_dry_run_writes_no_wiki(self, runner, work_repo, monkeypatch):
+        """The other half of the predicate, and the worse one.
+
+        A keyless run sets ``no_provider`` rather than ``index_only``, so it
+        walked past the downgrade guard at the top of the command even
+        interactively.
+        """
+        for key in (
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "REPOWISE_PROVIDER",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--prose", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        assert not (work_repo / ".repowise" / "wiki.db").exists()
+        assert not (work_repo / ".repowise" / "state.json").exists()
+
+    def test_fast_dry_run_promises_no_wiki(self, runner, work_repo):
+        """Fast skips generation, so the preview must not promise a wiki."""
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--mode", "fast", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "No wiki written" in result.output
+        assert "Generation Plan" not in result.output
+        assert not (work_repo / ".repowise" / "wiki.db").exists()
+
+    def test_dry_run_does_not_replace_a_model_written_wiki(self, runner, work_repo):
+        """Rendering templates over an existing wiki rewrote every page and
+        downgraded ``docs_mode``, on the one command that promises not to act.
+        Recoverable through page history, but every reader served templates
+        afterwards and the spend behind the originals was wasted.
+        """
+        import json
+        import sqlite3
+        from contextlib import closing
+
+        seed = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--provider", "mock", "--yes"],
+            catch_exceptions=False,
+        )
+        assert seed.exit_code == 0, seed.output
+
+        db_path = work_repo / ".repowise" / "wiki.db"
+        state_path = work_repo / ".repowise" / "state.json"
+        with closing(sqlite3.connect(db_path)) as db:
+            db.execute("UPDATE wiki_pages SET provider_name='gemini', content='WRITTEN'")
+            db.commit()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["docs_mode"] = "llm"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--no-prose", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        written = _db_scalar(db_path, "SELECT COUNT(*) FROM wiki_pages WHERE content='WRITTEN'")
+        templated = _db_scalar(
+            db_path, "SELECT COUNT(*) FROM wiki_pages WHERE provider_name='template'"
+        )
+        assert templated == 0
+        assert written > 0
+        assert json.loads(state_path.read_text(encoding="utf-8"))["docs_mode"] == "llm"
+
 
 class TestInitFullMock:
     def test_creates_db_and_state(self, runner, work_repo):
@@ -388,6 +485,209 @@ class TestStatusDoctorWithEnvDb:
         # contradictory "wiki.db not found" row.
         assert "file is not a" in result.output
         assert "wiki.db not found" not in result.output
+
+
+class TestDeleteWithConfiguredDb:
+    """Regression guard for #2320: ``repowise delete`` must reach the configured
+    database, and ``--path`` must select the repository at that path.
+
+    The command checked for a repo-local ``.repowise/wiki.db`` before it
+    resolved the configured URL, so a repository indexed into a shared
+    PostgreSQL store (which has no local file at all) could not be deleted.
+    """
+
+    @pytest.fixture
+    def shared_db(self, tmp_path, monkeypatch):
+        """An external DB holding one indexed repo that has no local store.
+
+        ``REPOWISE_DB_URL`` points outside the repo, the way a PostgreSQL
+        container does. Nothing in the repo is created: the whole scenario is
+        "the rows live in the shared database, the checkout has no wiki.db".
+        """
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_page,
+            upsert_repository,
+        )
+
+        repo_path = tmp_path / "example-repository"
+        repo_path.mkdir()
+        db_path = tmp_path / "shared" / "wiki.db"
+        db_path.parent.mkdir()
+        url = f"sqlite+aiosqlite:///{db_path}"
+        monkeypatch.setenv("REPOWISE_DB_URL", url)
+
+        async def seed(*, pages: int = 1) -> str:
+            engine = create_engine(url)
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=repo_path.name, local_path=str(repo_path.resolve())
+                )
+                for i in range(pages):
+                    await upsert_page(
+                        session,
+                        page_id=f"file_page:src/module_{i}.py",
+                        repository_id=repo.id,
+                        page_type="file_page",
+                        title=f"module_{i}.py",
+                        content=f"# module {i}\n\nBody text for module {i}.",
+                        target_path=f"src/module_{i}.py",
+                        source_hash=f"hash-{i}",
+                        model_name="mock",
+                        provider_name="mock",
+                    )
+            await engine.dispose()
+            return repo.id
+
+        return {"repo_path": repo_path, "db_path": db_path, "seed": seed}
+
+    def test_deletes_from_configured_db_without_local_wiki_db(self, runner, shared_db, monkeypatch):
+        """The reported bug: no ``.repowise/`` at all, rows in the shared DB."""
+        import asyncio
+
+        repo_path = shared_db["repo_path"]
+        repo_id = asyncio.run(shared_db["seed"]())
+        assert not (repo_path / ".repowise").exists()
+
+        result = runner.invoke(
+            cli,
+            ["delete", "--path", str(repo_path), "--force"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Database not found" not in result.output
+        assert "No .repowise/ directory found" not in result.output
+        assert "Deleted" in result.output
+        # The rows really went: the repository is gone from the shared store.
+        assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM repositories") == 0
+        assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM wiki_pages") == 0
+        assert repo_id  # the seed returned a real primary key
+
+    def test_path_selects_the_matching_repo_instead_of_prompting(self, runner, shared_db, tmp_path):
+        """``--path`` names the repository; a second row must not be offered.
+
+        The command listed every repository and prompted for a number even
+        when a path was supplied, so in a shared database the deletion target
+        came from the prompt rather than from the argument.
+        """
+        import asyncio
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            upsert_repository,
+        )
+
+        repo_path = shared_db["repo_path"]
+        asyncio.run(shared_db["seed"]())
+        other_path = tmp_path / "other-repository"
+        other_path.mkdir()
+
+        async def add_other() -> None:
+            engine = create_engine(f"sqlite+aiosqlite:///{shared_db['db_path']}")
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(
+                    session, name=other_path.name, local_path=str(other_path.resolve())
+                )
+            await engine.dispose()
+
+        asyncio.run(add_other())
+
+        result = runner.invoke(
+            cli,
+            ["delete", "--path", str(repo_path), "--force"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Deleted" in result.output
+        assert "Enter number to delete" not in result.output
+        remaining = _db_column(shared_db["db_path"], "SELECT local_path FROM repositories")
+        assert remaining == [str(other_path.resolve())]
+
+    def test_path_with_no_matching_row_does_not_delete_anything(self, runner, shared_db, tmp_path):
+        """A path the database does not know must not fall back to the prompt."""
+        import asyncio
+
+        asyncio.run(shared_db["seed"]())
+        unknown = tmp_path / "never-indexed"
+        unknown.mkdir()
+
+        result = runner.invoke(
+            cli,
+            ["delete", "--path", str(unknown), "--force"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert f"No repository in the database matches {unknown.resolve()}" in result.output
+        assert "Deleted" not in result.output
+        assert _db_scalar(shared_db["db_path"], "SELECT COUNT(*) FROM repositories") == 1
+
+    def test_local_sqlite_missing_messages_are_unchanged(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        """With no configured URL the pre-existing messages still fire."""
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+
+        result = runner.invoke(cli, ["delete", "--path", str(dest), "--force"])
+        assert result.exit_code == 0, result.output
+        assert "No .repowise/ directory found. Run 'repowise init' first." in result.output
+
+        (dest / ".repowise").mkdir()
+        result = runner.invoke(cli, ["delete", "--path", str(dest), "--force"])
+        assert result.exit_code == 0, result.output
+        assert "Database not found." in result.output
+
+    def test_deletes_from_local_wiki_db_when_configured(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        """The SQLite path still works: local wiki.db, no configured URL."""
+        import asyncio
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+        db_path = dest / ".repowise" / "wiki.db"
+        db_path.parent.mkdir()
+        url = f"sqlite+aiosqlite:///{db_path}"
+
+        async def seed() -> None:
+            engine = create_engine(url)
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                await upsert_repository(session, name="repo", local_path=str(dest.resolve()))
+            await engine.dispose()
+
+        asyncio.run(seed())
+
+        result = runner.invoke(
+            cli, ["delete", "--path", str(dest), "--force"], catch_exceptions=False
+        )
+        assert result.exit_code == 0, result.output
+        assert "Deleted" in result.output
+        assert _db_scalar(db_path, "SELECT COUNT(*) FROM repositories") == 0
 
 
 class TestSearchFulltext:
@@ -1104,7 +1404,8 @@ class TestInitSeedFrom:
 
         from click.testing import CliRunner
 
-        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        # Leave REPOWISE_DB_URL pinned (as git_work_repo sets it) to verify
+        # that the delegated update does not leak worktree pages into the base DB.
 
         # Every file gets a structural page now, so no coverage knob is needed
         # to keep the new file from being tier-gated out.
@@ -1116,7 +1417,7 @@ class TestInitSeedFrom:
         assert r0.exit_code == 0, r0.output
 
         _git(["checkout", "-b", "feature"], git_work_repo)
-        (git_work_repo / "new_file.py").write_text("print('hello')\n", encoding="utf-8")
+        (git_work_repo / "new_file.py").write_text("def my_func(): pass\n", encoding="utf-8")
         _git(["add", "new_file.py"], git_work_repo)
         _git(["commit", "-m", "feature commit"], git_work_repo)
 
@@ -1151,11 +1452,9 @@ class TestInitSeedFrom:
                 "SELECT target_path FROM wiki_pages",
             )
             assert len(paths) > 0, "Seeded pages should have survived"
-            # Note: no assertion that new_file.py gets its own file page. The
-            # update-time selection budget is computed over the affected-file
-            # subset (not the whole repo), so a small update batch rarely
-            # selects a brand-new file for a page. Tracked as #746;
-            # independent of seeding.
+
+            # Since the file has a symbol and we have 1.0 coverage, it must be selected
+            assert "new_file.py" in paths, f"Expected 'new_file.py' in {paths}"
             state = json.loads(
                 (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
             )

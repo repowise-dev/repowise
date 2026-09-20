@@ -27,6 +27,11 @@ _MIN_REFERENCE_CONFIDENCE = 0.85
 _BARE_REFERENCE_KINDS = frozenset({"function"})
 _QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method"})
 
+#: Languages that share the MSBuild project graph, so the namespace and
+#: partial-class passes below serve both. Call resolution and receiver typing
+#: stay per-language and are deliberately not gated on this.
+_DOTNET_LANGUAGES = frozenset({"csharp", "vbnet"})
+
 
 class ResolveMixin:
     """Symbol-level edge resolution passes run during ``build()``."""
@@ -158,25 +163,33 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_csharp_same_namespace(self, ctx: Any, progress: Any | None = None) -> None:
-        """Emit same-namespace / global-using ``imports`` edges for C# files.
+    def _resolve_dotnet_same_namespace(self, ctx: Any, progress: Any | None = None) -> None:
+        """Emit same-namespace ``imports`` edges for C# and VB.NET files.
 
-        C# references same-namespace types with no using directive, and
-        ``global using`` / csproj ``<Using>`` items make namespaces visible
-        project-wide — both leave cohesive code (and whole test suites)
-        looking like zero-edge orphans. Conservative text-level scan, same
-        shape as the JVM same-package pass.
+        Both languages reference same-namespace types with no import
+        directive, and project-wide ``global using`` / ``<Using>`` /
+        ``<Import>`` items widen that further, so cohesive code (and whole
+        test suites) otherwise read as zero-edge orphans. VB.NET adds the
+        harder case: most .vb files declare no namespace at all and sit in
+        the project's ``<RootNamespace>``. Conservative text-level scan,
+        same shape as the JVM same-package pass.
         """
         from ..languages.csharp_member_reads import collect_csharp_source_texts
         from ..languages.csharp_same_namespace import (
             resolve_csharp_same_namespace_refs,
         )
+        from ..languages.scope_scan import collect_source_texts
+        from ..languages.vbnet_same_namespace import (
+            resolve_vbnet_same_namespace_refs,
+        )
         from ..resolvers.dotnet import get_or_build_index
 
-        has_csharp = any(
-            pf.file_info.language == "csharp" for pf in self._parsed_files.values()
-        )
-        if not has_csharp:
+        languages = {
+            pf.file_info.language
+            for pf in self._parsed_files.values()
+            if pf.file_info.language in _DOTNET_LANGUAGES
+        }
+        if not languages:
             return
 
         phase = "graph.same_namespace"
@@ -184,14 +197,25 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             index = get_or_build_index(ctx)
-            cs_texts = collect_csharp_source_texts(self._parsed_files, self._source_map)
             repo = getattr(index, "repo_path", None) if index is not None else None
-            added = resolve_csharp_same_namespace_refs(
-                self._graph, index, cs_texts, repo
-            )
-            log.info("same_namespace_edges", language="csharp", added=added)
+            if "csharp" in languages:
+                cs_texts = collect_csharp_source_texts(
+                    self._parsed_files, self._source_map
+                )
+                added = resolve_csharp_same_namespace_refs(
+                    self._graph, index, cs_texts, repo
+                )
+                log.info("same_namespace_edges", language="csharp", added=added)
+            if "vbnet" in languages:
+                vb_texts = collect_source_texts(
+                    self._parsed_files, ("vbnet",), self._source_map
+                )
+                added = resolve_vbnet_same_namespace_refs(
+                    self._graph, index, vb_texts, repo
+                )
+                log.info("same_namespace_edges", language="vbnet", added=added)
         except Exception as exc:
-            log.warning("csharp_same_namespace_failed", error=str(exc))
+            log.warning("dotnet_same_namespace_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)
@@ -257,7 +281,8 @@ class ResolveMixin:
                     done(phase)
 
     def _resolve_cpp_header_pairs(self, progress: Any | None = None) -> None:
-        """Pair C/C++ headers with their same-stem same-dir implementations.
+        """Pair C/C++/Objective-C headers with their same-stem same-dir
+        implementations.
 
         ``foo.c`` → ``foo.h`` exists via the #include, but nothing ever
         points ``foo.h`` → ``foo.c`` — so a consumer that includes the
@@ -277,13 +302,19 @@ class ResolveMixin:
             ".cpp",
             ".cxx",
             ".c++",
+            # Objective-C and Objective-C++. Both carry ``language ==
+            # "objectivec"`` (``specs/objectivec.py`` claims ``.m`` and
+            # ``.mm``; nothing maps ``.mm`` to cpp), so without them the
+            # language gate below has nothing to admit for an ObjC repo.
+            ".m",
+            ".mm",
             *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
         )
 
         cpp_files = [
             p
             for p, pf in self._parsed_files.items()
-            if pf.file_info.language in ("c", "cpp")
+            if pf.file_info.language in ("c", "cpp", "objectivec")
         ]
         if not cpp_files:
             return
@@ -335,19 +366,22 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_csharp_partials(self, ctx: Any, progress: Any | None = None) -> None:
-        """Link C# ``partial`` co-fragments of one type bidirectionally.
+    def _resolve_dotnet_partials(self, ctx: Any, progress: Any | None = None) -> None:
+        """Link ``partial`` co-fragments of one type bidirectionally.
 
         Fragments of a partial class across files are literally one
         class — without these edges the secondary fragment files read as
-        disconnected from their own type.
+        disconnected from their own type. VB.NET leans on this far harder
+        than C#: every WinForms designer splits ``Form.vb`` from
+        ``Form.Designer.vb`` as a ``Partial Class``.
         """
         from ..resolvers.dotnet import get_or_build_index
 
-        has_csharp = any(
-            pf.file_info.language == "csharp" for pf in self._parsed_files.values()
+        has_dotnet = any(
+            pf.file_info.language in _DOTNET_LANGUAGES
+            for pf in self._parsed_files.values()
         )
-        if not has_csharp:
+        if not has_dotnet:
             return
 
         phase = "graph.partials"
@@ -382,9 +416,9 @@ class ResolveMixin:
                                 hint_source="partial_class",
                             )
                             added += 1
-            log.info("partial_class_edges", language="csharp", added=added)
+            log.info("partial_class_edges", added=added)
         except Exception as exc:
-            log.warning("csharp_partials_failed", error=str(exc))
+            log.warning("dotnet_partials_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)
@@ -558,6 +592,7 @@ class ResolveMixin:
                 self._graph.nodes[decl_id]["defined_by"] = def_id
 
         total_resolved = 0
+        total_referenced = 0
 
         files_with_calls = [
             (p, pf) for p, pf in self._parsed_files.items() if pf.calls
@@ -567,29 +602,55 @@ class ResolveMixin:
         for path, parsed in files_with_calls:
             resolved = resolver.resolve_file(path, parsed.calls)
             for rc in resolved:
-                if rc.caller_id in self._graph and rc.callee_id in self._graph:
-                    if not self._graph.has_edge(rc.caller_id, rc.callee_id):
-                        self._graph.add_edge(
-                            rc.caller_id,
-                            rc.callee_id,
-                            edge_type="calls",
-                            confidence=rc.confidence,
-                            resolution_origin=rc.origin,
-                            call_lines=[rc.line],
-                        )
+                if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
+                    continue
+                if not self._graph.has_edge(rc.caller_id, rc.callee_id):
+                    attrs = (
+                        {
+                            "edge_type": "calls",
+                            "call_lines": [rc.line],
+                            "supplied_props": rc.supplied_props,
+                        }
+                        if rc.edge_type == "calls"
+                        else {"edge_type": "references"}
+                    )
+                    self._graph.add_edge(
+                        rc.caller_id,
+                        rc.callee_id,
+                        confidence=rc.confidence,
+                        resolution_origin=rc.origin,
+                        **attrs,
+                    )
+                    if rc.edge_type == "calls":
                         total_resolved += 1
                     else:
-                        # Several call sites collapse onto one edge; the
-                        # strongest wins, and the origin has to follow the
-                        # confidence it explains.
-                        existing = self._graph[rc.caller_id][rc.callee_id]
-                        lines = existing.setdefault("call_lines", [])
-                        if rc.line not in lines:
-                            lines.append(rc.line)
-                            lines.sort()
-                        if rc.confidence > existing.get("confidence", 0):
-                            existing["confidence"] = rc.confidence
-                            existing["resolution_origin"] = rc.origin
+                        total_referenced += 1
+                    continue
+                existing = self._graph[rc.caller_id][rc.callee_id]
+                if rc.edge_type != "calls":
+                    # A pair reached by both an invocation and a non-invoking
+                    # site keeps the call: it is the stronger claim, and the
+                    # same rule ``_add_reference_edges`` applies.
+                    continue
+                if existing.get("edge_type") == "references":
+                    existing["edge_type"] = "calls"
+                    total_referenced -= 1
+                    total_resolved += 1
+                # Several call sites collapse onto one edge; the strongest
+                # wins, and the origin has to follow the confidence it
+                # explains.
+                lines = existing.setdefault("call_lines", [])
+                if rc.line not in lines:
+                    lines.append(rc.line)
+                    lines.sort()
+                if rc.confidence > existing.get("confidence", 0):
+                    existing["confidence"] = rc.confidence
+                    existing["resolution_origin"] = rc.origin
+                ex_props = existing.get("supplied_props")
+                if ex_props is None or rc.supplied_props is None:
+                    existing["supplied_props"] = None
+                else:
+                    existing["supplied_props"] = frozenset(ex_props | rc.supplied_props)
             if progress:
                 progress.on_item_done("graph.calls")
 
@@ -597,7 +658,11 @@ class ResolveMixin:
             _phase_done = getattr(progress, "on_phase_done", None)
             if _phase_done is not None:
                 _phase_done("graph.calls")
-        log.info("Call edges resolved", total=total_resolved)
+        log.info(
+            "Call edges resolved",
+            total=total_resolved,
+            non_invoking=total_referenced,
+        )
 
         self._add_reference_edges(resolver)
 

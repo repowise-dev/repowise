@@ -10,12 +10,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
     GenerationJob,
     Page,
+    PageVersion,
     Repository,
     WebhookEvent,
     _new_uuid,
@@ -128,6 +129,19 @@ def _read_head_commit(local_path: str) -> str | None:
     return head or None
 
 
+async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:
+    """Store the repo-wide function-mod p80 a full index measured.
+
+    Deliberately not folded into :func:`update_repo_git_totals`: that one
+    carries whole-history git totals (#730), and this is a health quantity that
+    happens to live on the same row. No-ops on a missing repo.
+    """
+    repo = await session.get(Repository, repo_id)
+    if repo is None:
+        return
+    repo.function_mod_p80 = int(value)
+
+
 async def update_repo_git_totals(
     session: AsyncSession,
     repo_id: str,
@@ -193,10 +207,18 @@ async def delete_repository(session: AsyncSession, repo_id: str) -> bool:
 
     NOTE: The caller should clean up the FTS index *before* calling this,
     since the CASCADE will delete Page rows and we lose the page IDs.
+
+    ``PageVersion`` is swept explicitly first. Its ``page_id`` foreign key is
+    declared without ``ondelete="CASCADE"``, so the cascade that removes the
+    repository's ``Page`` rows leaves the snapshots pointing at rows that no
+    longer exist and SQLite aborts the whole statement with ``FOREIGN KEY
+    constraint failed``. The pipeline's page-pruning paths already pre-delete
+    snapshots for exactly this reason; deletion is the one path that did not.
     """
     repo = await session.get(Repository, repo_id)
     if repo is None:
         return False
+    await session.execute(delete(PageVersion).where(PageVersion.repository_id == repo_id))
     await session.delete(repo)
     await session.flush()
     return True

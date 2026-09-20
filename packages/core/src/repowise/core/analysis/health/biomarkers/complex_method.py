@@ -18,7 +18,7 @@ class ComplexMethodDetector:
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
-        for fn in ctx.function_metrics.values():
+        for fn in ctx.all_functions:
             if fn.ccn < self._CCN_THRESHOLD:
                 continue
             severity = (

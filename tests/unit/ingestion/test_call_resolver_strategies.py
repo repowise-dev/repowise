@@ -207,6 +207,7 @@ _LANGUAGE_STRATEGIES = (
     "_resolve_go_same_package",
     "_resolve_go_package_call",
     "_resolve_jvm_same_package",
+    "_resolve_java_same_package_unique",
     "_resolve_jvm_receiver_same_package",
     "_resolve_cpp_same_target",
 )
@@ -250,7 +251,8 @@ class TestLanguageDispatch:
                 "Main.java",
                 "java",
                 "class Main {\n    void run() {\n        elsewhere();\n    }\n}\n",
-                ["_resolve_jvm_same_package"],
+                # java gates the package tier on uniqueness, kotlin does not.
+                ["_resolve_java_same_package_unique"],
             ),
             (
                 "main.cc",
@@ -643,3 +645,191 @@ class TestImportedTypeThroughAReExport:
             for origin in origins.values()
         ]
         assert not [o for o in recorded if o.startswith("external:")]
+
+
+class TestForeignReceiverTypes:
+    """The repo-wide receiver tier must not answer a call on a type we do not own.
+
+    Both tests write the *same* call. Only the import differs, which is the
+    whole claim: the name cannot decide this and the caller's import list can.
+    """
+
+    @staticmethod
+    def _workspace(tmp_path: Path) -> None:
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/a", "crates/b"]\n'
+        )
+        for name in ("a", "b"):
+            crate = tmp_path / "crates" / name
+            crate.mkdir(parents=True, exist_ok=True)
+            (crate / "Cargo.toml").write_text(
+                f'[package]\nname = "{name}"\nversion = "0.1.0"\n'
+            )
+
+    _DECLARES = (
+        "rust",
+        "pub struct HashMap;\n\nimpl HashMap {\n    pub fn new() -> Self {\n"
+        "        HashMap\n    }\n}\n",
+    )
+
+    def test_a_std_named_receiver_gets_no_repo_wide_guess(self, tmp_path: Path) -> None:
+        self._workspace(tmp_path)
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "crates/a/src/lib.rs": self._DECLARES,
+                "crates/b/src/lib.rs": (
+                    "rust",
+                    "use std::collections::HashMap;\n\npub fn run() {\n"
+                    "    let m = HashMap::new();\n}\n",
+                ),
+            },
+        )
+        assert _edges(parsed, tmp_path) == []
+
+    def test_the_same_call_resolves_when_the_file_rebinds_the_name(
+        self, tmp_path: Path
+    ) -> None:
+        self._workspace(tmp_path)
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "crates/a/src/lib.rs": self._DECLARES,
+                "crates/b/src/lib.rs": (
+                    "rust",
+                    "use a::HashMap;\n\npub fn run() {\n"
+                    "    let m = HashMap::new();\n}\n",
+                ),
+            },
+        )
+        assert (
+            "crates/b/src/lib.rs::run",
+            "crates/a/src/lib.rs::HashMap::new",
+            0.75,
+            "receiver_global",
+        ) in _edges(parsed, tmp_path)
+
+    def test_no_other_language_carries_the_set(self) -> None:
+        """The refusal is a no-op elsewhere by construction, not by measurement."""
+        from repowise.core.ingestion.language_data import get_external_receiver_types
+        from repowise.core.ingestion.languages.registry import REGISTRY
+
+        populated = {
+            spec.tag
+            for spec in REGISTRY.all_specs()
+            if get_external_receiver_types(spec.tag)
+        }
+        assert populated == {"rust"}
+
+
+class TestOwnerAwareModuleTier:
+    """The module and import-name tiers pick an owner, not just a file.
+
+    Both end in a lookup on ``_file_symbols``, which is flat and last-wins. A
+    file declaring ``new`` on several types answered every ``Type::new()`` with
+    whichever came last: the right file, the wrong owner.
+    """
+
+    def test_a_scoped_call_reaches_its_own_type_not_the_files_last(
+        self, tmp_path: Path
+    ) -> None:
+        """Without the owner lookup this lands on ``Second::new``."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "shapes.rs": (
+                    "rust",
+                    "pub struct First;\n"
+                    "pub struct Second;\n"
+                    "\n"
+                    "impl First {\n"
+                    "    pub fn new() -> First { First }\n"
+                    "}\n"
+                    "\n"
+                    "impl Second {\n"
+                    "    pub fn new() -> Second { Second }\n"
+                    "}\n",
+                ),
+                "main.rs": (
+                    "rust",
+                    "use crate::shapes::First;\n"
+                    "\n"
+                    "pub fn run() -> First {\n"
+                    "    First::new()\n"
+                    "}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"main.rs": {"crate::shapes::First": "shapes.rs"}})
+        assert (
+            "main.rs::run",
+            "shapes.rs::First::new",
+            0.88,
+            "module_alias",
+        ) in _edges(parsed, tmp_path)
+
+    def test_a_module_qualifier_still_reaches_the_free_function(
+        self, tmp_path: Path
+    ) -> None:
+        """``util::helper()`` names a module, and a module owns nothing."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "util.rs": (
+                    "rust",
+                    "pub struct Thing;\n"
+                    "\n"
+                    "impl Thing {\n"
+                    "    pub fn helper() -> u8 { 1 }\n"
+                    "}\n"
+                    "\n"
+                    "pub fn helper() -> u8 { 2 }\n",
+                ),
+                "main.rs": (
+                    "rust",
+                    "use crate::util;\n"
+                    "\n"
+                    "pub fn run() -> u8 {\n"
+                    "    util::helper()\n"
+                    "}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"main.rs": {"crate::util": "util.rs"}})
+        assert (
+            "main.rs::run",
+            "util.rs::helper",
+            0.88,
+            "module_alias",
+        ) in _edges(parsed, tmp_path)
+
+    def test_a_python_module_alias_is_not_hijacked_by_a_method_of_that_name(
+        self, tmp_path: Path
+    ) -> None:
+        """Strategy 1 carries the same lookup, and a real alias owns nothing."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "models.py": (
+                    "python",
+                    "class Widget:\n"
+                    "    def build(self):\n"
+                    "        return 2\n"
+                    "\n"
+                    "\n"
+                    "def build():\n"
+                    "    return 1\n",
+                ),
+                "caller.py": (
+                    "python",
+                    "import models\n\ndef run():\n    return models.build()\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"caller.py": {"models": "models.py"}})
+        assert (
+            "caller.py::run",
+            "models.py::build",
+            0.88,
+            "module_alias",
+        ) in _edges(parsed, tmp_path)

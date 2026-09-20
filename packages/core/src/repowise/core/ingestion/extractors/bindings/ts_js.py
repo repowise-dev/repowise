@@ -59,7 +59,7 @@ def _extract_require_bindings(
                 if key is not None and val is not None:
                     exported = node_text(key, src)
                     local = node_text(val, src)
-                    names.append(local)
+                    names.append(exported)
                     bindings.append(
                         NamedBinding(local_name=local, exported_name=exported, source_file=None)
                     )
@@ -72,11 +72,21 @@ def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[N
 
     Handles both ``import ... from`` and barrel ``export ... from`` (re-export)
     statements — the query tags re-exports carrying a ``source`` as
-    ``@import.statement`` so they flow through the same pipeline. For a
-    re-export, ``imported_names`` carries the name as it exists in the *source*
-    module (``export { A as B } from`` records ``A``), so the dead-code
-    analyzer can match it to the re-exported symbol and an ``index.ts`` barrel
-    no longer hides every component it forwards.
+    ``@import.statement`` so they flow through the same pipeline.
+
+    ``imported_names`` carries names as they exist in the *source* module, for
+    named imports (``import { A as B } from`` records ``A``) exactly as for
+    re-exports (``export { A as B } from`` records ``A``) — that is what
+    downstream matches against, because the dead-code analyzer compares it to
+    the source file's symbol names. Recording the local alias instead made
+    every aliased import read as "no importers", so an alias-only consumer got
+    its export reported ``safe_to_delete``; aliasing is forced whenever two
+    modules export the same name, so registries of same-named symbols took the
+    brunt. The local alias stays on the binding (``local_name``) for call
+    resolution. Default and namespace imports keep the local name: their
+    source-side name is ``default`` / the whole module, so the local name is
+    the only useful one, and the analyzer's namespace rescue matches it
+    against the file stem.
     """
     require_result = _extract_require_bindings(stmt_node, src)
     if require_result is not None:
@@ -144,7 +154,7 @@ def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[N
                     if name_node:
                         exported = node_text(name_node, src)
                         local = node_text(alias_node, src) if alias_node else exported
-                        names.append(local)
+                        names.append(exported)
                         bindings.append(
                             NamedBinding(
                                 local_name=local, exported_name=exported, source_file=None

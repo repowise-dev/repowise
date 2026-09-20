@@ -18,11 +18,12 @@ feeds it lives in the persistence layer.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..complexity.languages import LANGUAGE_MAPS
+from ..rows import field as _row_field  # aliased: ``field`` here is dataclasses'
 from .dialects import PERF_DIALECTS
 
 
@@ -32,7 +33,10 @@ def supported_perf_languages() -> frozenset[str]:
 
 
 class _FileMetricRow(Protocol):
-    """The two fields coverage needs off a per-file metric row (duck-typed)."""
+    """The two fields coverage needs off a per-file metric row (duck-typed).
+
+    A mapping carrying the same two keys is read identically.
+    """
 
     file_path: str
     nloc: int
@@ -109,7 +113,7 @@ def compute_perf_coverage(
 
 
 def coverage_for_metrics(
-    metrics: Iterable[_FileMetricRow],
+    metrics: Iterable[_FileMetricRow | Mapping[str, Any]],
     lang_by_path: dict[str, str],
     *,
     supported: frozenset[str] | None = None,
@@ -122,9 +126,12 @@ def coverage_for_metrics(
     never dilute the coverage math. *lang_by_path* maps ``file_path`` → language
     tag (from the graph's file nodes).
     """
+    # One language lookup per row rather than one per row per clause: this runs
+    # over the whole metrics table on every read that reports coverage.
+    tagged = ((lang_by_path.get(_row_field(m, "file_path"), ""), m) for m in metrics)
     code_rows = [
-        (lang_by_path.get(m.file_path, ""), m.nloc)
-        for m in metrics
-        if lang_by_path.get(m.file_path, "") in LANGUAGE_MAPS
+        (language, int(_row_field(row, "nloc", 0) or 0))
+        for language, row in tagged
+        if language in LANGUAGE_MAPS
     ]
     return compute_perf_coverage(code_rows, supported=supported)

@@ -41,6 +41,7 @@ your agent in under five minutes, with no API key.
 | [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The ten task-shaped tools, what each answers, and worked multi-tool examples |
 | [agent/HOOKS.md](agent/HOOKS.md) | Proactive delivery: context and warnings that arrive without the agent asking |
 | [agent/DISTILL.md](agent/DISTILL.md) | `repowise distill`: compress noisy command output before your agent reads it |
+| [agent/CHANGE_REVIEW.md](agent/CHANGE_REVIEW.md) | Reviewing a change from Python, with or without a checkout, and what each evidence state means |
 | [agent/VSCODE.md](agent/VSCODE.md) | The VS Code extension: health in the gutter, risk before you push, dashboards in the editor |
 | [agent/CODEX.md](agent/CODEX.md) | Wiring repowise into the Codex CLI |
 | [agent/OPENCODE.md](agent/OPENCODE.md) | Wiring repowise into opencode |
@@ -58,7 +59,8 @@ your agent in under five minutes, with no API key.
 | [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph: what is in it, how every edge is resolved, and how much to trust each one |
 | [layers/DECISIONS.md](layers/DECISIONS.md) | Architectural decisions mined from your repo and from your own agent sessions |
 | [layers/DEAD_CODE.md](layers/DEAD_CODE.md) | Unreachable files, unused exports, and zombie packages by confidence tier |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 19 parsed to a full AST, 35 on the five-rung ladder |
+| [layers/SECURITY.md](layers/SECURITY.md) | The local pattern scan: what the sixteen patterns catch, what they do not, and how far to trust the result |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 26 parsed to a full AST, 40 on the five-rung ladder |
 | [layers/WIKI.md](layers/WIKI.md) | The generated wiki: page types, what `update` re-renders, styles, output language |
 
 ## Scale it

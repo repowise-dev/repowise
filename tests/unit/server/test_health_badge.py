@@ -16,9 +16,20 @@ from repowise.server.routers.code_health import (
 
 
 def test_badge_fields_band_colors() -> None:
-    assert _badge_fields(9.0) == ("health", "9.0/10", "brightgreen", "healthy")
-    assert _badge_fields(6.0) == ("health", "6.0/10", "yellow", "warning")
-    assert _badge_fields(2.0) == ("health", "2.0/10", "red", "alert")
+    assert _badge_fields(9.0) == ("health", "9.0/10", "brightgreen", "excellent")
+    assert _badge_fields(7.5) == ("health", "7.5/10", "brightgreen", "good")
+    assert _badge_fields(6.0) == ("health", "6.0/10", "yellow", "fair")
+    assert _badge_fields(4.5) == ("health", "4.5/10", "orange", "needs_work")
+    assert _badge_fields(2.0) == ("health", "2.0/10", "red", "at_risk")
+
+
+def test_every_band_colour_has_a_hex_for_the_self_rendered_svg() -> None:
+    # The JSON endpoint hands shields a colour name; the SVG endpoint has to
+    # resolve it here. A band colour without a hex renders grey.
+    from repowise.core.analysis.health.grading import BAND_BADGE_COLOR
+    from repowise.server.routers.code_health.badge import _BADGE_COLOR_HEX
+
+    assert set(BAND_BADGE_COLOR.values()) <= set(_BADGE_COLOR_HEX)
 
 
 def test_badge_fields_no_data() -> None:
@@ -164,3 +175,23 @@ def test_churn_complexity_to_dict_wire_shape() -> None:
         "score": 3.4,
         "churn_percentile": 92.0,
     }
+
+
+def test_the_badge_response_model_keeps_schema_version() -> None:
+    """Shields renders "invalid response" without it, so the model must carry it.
+
+    The route builds the payload as a plain dict, so a model that omitted this
+    key would drop it silently and break every embedded badge.
+    """
+    from repowise.server.schemas import HealthBadgeResponse
+
+    label, message, color, band = _badge_fields(9.0)
+    body = {
+        "schemaVersion": 1,
+        "label": label,
+        "message": message,
+        "color": color,
+        "band": band,
+    }
+
+    assert HealthBadgeResponse.model_validate(body).model_dump() == body

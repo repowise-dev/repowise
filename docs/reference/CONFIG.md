@@ -14,7 +14,8 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `hooks:` block](#the-hooks-block) ·
 [The `mcp:` block](#the-mcp-block) ·
 [The `decisions:` block](#the-decisions-block) ·
-[The `refactoring:` block](#the-refactoring-block)
+[The `refactoring:` block](#the-refactoring-block) ·
+[The `assertions:` block](#the-assertions-block)
 
 **Code health rules**
 [The `health-rules.json` file](#the-health-rulesjson-file)
@@ -126,6 +127,9 @@ mcp:                                 # see "The mcp: block" below
 
 refactoring:                         # see "The refactoring: block" below
   enabled: true
+
+assertions:                          # see "The assertions: block" below
+  extra_names: []
 ```
 
 You can edit this file directly. Changes take effect on the next `init`,
@@ -382,35 +386,145 @@ mcp:
 
 ### The `decisions:` block
 
-Controls decision extraction. Each key under `sources:` names an index-time
-capture source; set it to `false` to skip that source on the next
-`init` / `update`. Unknown keys are ignored, and sources you don't mention
-stay enabled.
+Controls decision capture: whether it runs at all, which sources it uses, and
+whether any of them may call a model. One resolved policy backs the CLI, the
+API, and the index pipeline, so all three agree about what will run.
 
 ```yaml
 decisions:
-  session_mining: true      # mine agent-session transcripts (see below)
+  enabled: true             # master switch for automatic capture
+  llm: true                 # master switch for decision-extraction model calls
+  preset: balanced          # default | off | local_only | balanced | full
   sources:
-    comment: false          # LLM comment archaeology (top central files)
-    # inline_marker: false  # WHY:/DECISION: markers
-    # git_archaeology: false
-      # adr: false
-    # changelog: false
-    # pr: false
+    inline_marker: true     # WHY:/DECISION: markers
+    git_archaeology: true   # commit messages
+    adr: true               # ADR files
+    pr: true                # PR / squash-merge bodies
+    comment: false          # comment archaeology on top central files
+    session:                # off by default; long form runs the deterministic
+      enabled: true         #   parse and skips the model stage
+      llm: false
+    session_discovery: true # one broad model pass over new transcript prose
+    conventions: false      # import patterns the graph proves, no model
+  discovery:                # budget for that one pass, per update
+    max_sessions: 12        # 1-24
+    max_input_tokens: 30000 # 2000-60000
+  harnesses:                # whose transcripts the session lane reads
+    - claude_code           # the default; add codex to read that store too
 ```
 
-`session_mining` (default on) lets `repowise update` mine coding-agent
-session transcripts (Claude Code's `~/.claude/projects/`) for durable
-decisions: user corrections, explicit choices with a stated reason, and
-failed approaches replaced by working ones. Candidates pass deterministic
-gates first, then one batched LLM structuring call per update, and every
-produced field must quote the transcript verbatim or it is dropped. A
-decision observed in two or more sessions is promoted as `active` with
-`source: session`; a direct user correction promotes after one. Everything
-stays local: transcripts are read from your machine, staging lives in
-`.repowise/sessions/sessions.db`, and only the distilled decision text about
-the codebase is stored. Set `session_mining: false` to turn the whole
-pipeline off.
+Every key is optional. **A config with no `decisions:` block behaves exactly as
+it did before these switches existed**: every source that shipped on is on,
+model stages on. That resolved policy is named `default`. A source added after
+those switches existed (`session_discovery` and `conventions`) stays off until you
+ask for it, so upgrading never starts a model call nobody enabled. `session` is
+the one default that has moved: it now ships **off**, because what it captured
+read as working agreements from a transcript rather than decisions the codebase
+had taken. `repowise decision source set session --on` turns it back on, and
+`local_only` still carries it. The same
+holds for a config that names a preset *and* lists its sources: that list is
+what the preset covered when it was written, so a source added to that preset
+later does not join it retroactively. Re-apply the preset to pick it up.
+
+A source is a bare boolean or a `{enabled, llm}` mapping. The long form only
+matters for a source with both a deterministic and a model stage
+(`inline_marker`, `adr`, `session`): it keeps the deterministic parse and skips
+the model call. A source that is model-only (`git_archaeology`, `pr`,
+`comment`, `session_discovery`) is skipped entirely when its model stage is
+off, because running it would produce a zero indistinguishable from an empty
+repository.
+
+Unknown keys are reported as warnings rather than discarded, so a typo'd source
+name shows up instead of silently reading as a working switch. Retired names
+(`code_comment`, `changelog`, `readme_mining`) are among them: an old config
+still loads, it just says which key it ignored.
+
+**Presets** are conveniences that write the same keys:
+
+| Preset | Effect |
+|--------|--------|
+| `default` | What a config with no `decisions:` block resolves to. Every long-standing source on; session mining and broad discovery off. |
+| `off` | No automatic capture. Stored decisions and manual entry keep working. |
+| `local_only` | Deterministic capture only, session mining included — it is the only lane that produces without a key. Zero decision-extraction model calls. |
+| `balanced` | The high-signal sources plus session mining and broad session discovery, which is fed by it; comment archaeology off. |
+| `full` | Every source, every model stage. |
+
+Editing any individual key after applying a preset drops the `preset` line and
+the resolved policy reads as `custom`.
+
+`llm: false` is a complete mode, not a degraded one: transcripts are still
+read, markers and ADRs are still parsed, episodes are still recorded, manual
+decisions still work, and already-accepted decisions keep governing. It is the
+one switch that proves no decision extraction reaches a model.
+
+Set these from the CLI rather than by hand if you prefer:
+
+```bash
+repowise decision config show          # the resolved policy, per source
+repowise decision config preset local_only
+repowise decision source set comment --off
+repowise decision source set adr --no-llm     # keep the parse, skip the model
+repowise decision source set session_discovery --on
+repowise decision config discovery --max-sessions 6 --max-input-tokens 12000
+repowise decision llm --off
+```
+
+Every mutating command takes `--dry-run` to print the change without writing,
+and `--format json` for scripts. Writes are atomic and preserve every unrelated
+key in `config.yaml`.
+
+The legacy `decisions.session_mining: true|false` key is still honoured and
+resolves to the `session` source, in both directions: since that source now
+ships off, a config that says `true` still switches it on. An explicit
+`sources.session` may narrow that, never widen it. The first write through the
+CLI or the API replaces the legacy key with `sources.session`.
+
+### `.repowise/decisions.yaml`
+
+Everything else under `.repowise/` is a local index you can delete and rebuild.
+This one file is not: it holds the decisions you accepted, and it is meant to be
+committed. `repowise decision export` writes it and un-ignores it in your
+`.gitignore` if a `.repowise/` rule was hiding it; `repowise decision import`
+reconciles the store to it, with the file as the authority. Its format carries
+its own `version`, and a file written by a newer repowise is refused rather than
+downgraded. See [DECISIONS.md](../layers/DECISIONS.md) for the round trip.
+
+`session` mining is **off by default**. Switched on, it lets `repowise update`
+read coding-agent session transcripts
+(Claude Code's `~/.claude/projects/`) for durable decisions: user corrections,
+explicit choices with a stated reason, and failed approaches replaced by working
+ones. Candidates pass deterministic gates first, then one batched LLM
+structuring call per update, and every produced field must quote the transcript
+verbatim or it is dropped. **Mined decisions are stored as candidates**, however
+many sessions they recur across; accepting one with `repowise decision confirm`
+is what makes it govern. Everything stays local: transcripts are read from your
+machine, staging lives in `.repowise/sessions/sessions.db`, and only the
+distilled decision text about the codebase is stored.
+
+`session_discovery` is the broad lane beside those gates. Once per update it
+sends the user and assistant prose that update newly read, bounded by
+`discovery.max_sessions` and `discovery.max_input_tokens`, to the model in a
+single call, and asks for durable decisions the gates never surfaced. It reuses
+the transcript read the `session` source already performs, so enabling it does
+not read your transcripts twice.
+
+Every candidate it returns must cite the span ids it rests on, and each cited
+quote is verified against that span's exact text before anything is stored.
+A candidate that cites a span that was not sent, quotes something no span
+says, or names a file the cited turns never touched is rejected and counted,
+never stored. Scope comes from the files those turns' tools touched; the model
+may select among them and may not add one. Everything it produces is a
+candidate: like the deterministic lane it is written `proposed`, and only
+`repowise decision confirm` makes a decision govern.
+
+Prose that does not fit one update's budget is not dropped. It stays queued in
+`.repowise/sessions/sessions.db`, the next update sends it oldest-first, and a
+queued span is never aged out before it is read. A provider failure leaves the
+same prose queued and retries it on the next two updates before retiring it, so
+an outage costs a round rather than the input. Switching the source off leaves
+what is already queued in place; new prose is only captured while the source is
+on, so there is no backfill of what was read while it was off. Discovery reads
+what the `session` source read, so it needs that source on too.
 
 Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 `dismissed` tombstone, so reindexing never re-proposes the same decision, and
@@ -450,6 +564,35 @@ refactoring:
 - Per-path disables reuse the `.repowise/health-rules.json` glob mechanism (the
   same one markers use).
 - Full reference: [REFACTORING.md](../layers/REFACTORING.md).
+
+### The `assertions:` block
+
+Names your own assertion helpers, for the test-quality markers that divide by a
+test's assertion count.
+
+```yaml
+assertions:
+  extra_names: [ensureInvariant, mustMatch]   # exact callee names, not prefixes
+```
+
+Repowise recognises the xUnit and BDD families out of the box (`assert*`,
+`expect*`) plus a per-language vocabulary for the idioms those miss, such as
+Go's `t.Fatalf` and testify's `require`. A house helper that follows neither
+convention is invisible to it, and a test built entirely of those helpers reads
+as having no assertions at all. This block is the escape hatch, the same one
+SonarQube, Qodana and ESLint's `expect-expect` rule each provide.
+
+- **Names are exact and case-insensitive, never prefixes.** `ensureInvariant`
+  matches `ensureInvariant(...)` and not `ensureConnectionPool(...)`. Prefix
+  matching was measured against three real test corpora and matched production
+  functions under test far more often than assertions.
+- A name matches whether it is the call itself or the receiver of one, so both
+  `ensureInvariant(x)` and `ensureInvariant(x).isTrue()` count.
+- **Nothing here can change a health score.** These names reach only the
+  advisory assertion total; the calibrated `large_assertion_block` and
+  `duplicated_assertion_block` markers read a separate count that takes no
+  configuration. Adding a wrong name costs you signal, never a wrong score.
+- Changing the list re-walks the affected files on the next `init` / `update`.
 
 ---
 
@@ -527,6 +670,42 @@ For an OpenAI-compatible Qwen3 endpoint served by vLLM or SGLang:
 export OPENAI_BASE_URL="http://localhost:8000/v1"
 repowise init --provider openai --model qwen3 --reasoning off
 ```
+
+The same adapter works with local gateways such as 9router and with any
+OpenAI-compatible custom provider. Set the gateway's API key under
+`OPENAI_API_KEY`, point `OPENAI_BASE_URL` at its `/v1` endpoint, and use the
+model id returned by that endpoint's `/models` response:
+
+```bash
+export OPENAI_API_KEY="your-9router-dashboard-key"
+export OPENAI_BASE_URL="http://localhost:20128/v1"
+repowise init --provider openai --model ag/gemini-3.7-flash-medium
+```
+
+Repowise discovers namespaced model ids from compatible gateways as-is, so
+the model does not need to start with `gpt-`. For another local provider,
+replace the key, URL, and model with that provider's values.
+
+In an interactive `repowise init`, choose **OpenAI-compatible (Custom / local
+gateway)**. Repowise then validates the endpoint, collects the key without
+echoing it, verifies the gateway through `/models`, and lets you search the
+discovered models or enter an exact model id. If `/models` is unavailable, you
+can retry the endpoint/key, continue with a manual model id, or return to the
+provider menu:
+
+```text
+Base URL [http://localhost:20128/v1]:
+API key (hidden): <paste the gateway key>
+✓ Connected — discovered 47 model(s).
+Select model: ag/gemini-3.7-flash-medium
+```
+
+The endpoint is placed in the repo's gitignored `.repowise/.env`; the key is
+saved there only after confirmation, and `--no-save-key` always keeps it
+process-local. The selected runtime provider (`openai`) and exact model id are
+written to `config.yaml`. Choose the separate **openai** row for the official
+OpenAI endpoint. Scripted runs (`--yes`, CI, or non-TTY) remain non-interactive
+and should continue to use environment variables and `--provider openai`.
 
 ### OpenRouter
 
@@ -702,7 +881,7 @@ The `.repowise/.env` file is gitignored automatically.
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key |
-| `OPENAI_API_KEY` | OpenAI API key |
+| `OPENAI_API_KEY` | OpenAI or OpenAI-compatible gateway API key |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
@@ -715,7 +894,7 @@ The `.repowise/.env` file is gitignored automatically.
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_BASE_URL` | Override the Anthropic API base URL |
-| `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang-compatible endpoints) |
+| `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang, 9router, and other compatible endpoints) |
 | `GEMINI_BASE_URL` | Override the Gemini API base URL |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
 | `DEEPSEEK_BASE_URL` | Override the DeepSeek API base URL |
@@ -740,6 +919,7 @@ The `.repowise/.env` file is gitignored automatically.
 | `REPOWISE_EMBEDDING_MODEL` | Embedding model, applies to any embedder |
 | `REPOWISE_EMBEDDING_DIMS` | Embedding output dimensions (optional; inferred from the model otherwise) |
 | `REPOWISE_EMBEDDING_TIMEOUT` | Embed request timeout in seconds (default: `30` for `ollama`, `10` elsewhere). Raise it for a local endpoint — one request embeds a whole batch, and an expired batch is reported only as `N/N items failed to embed`. An unparseable value warns and keeps the default |
+| `REPOWISE_VECTOR_SEARCH_TIMEOUT_S` | Seconds one vector-store query may take (default: `30`, capped at `120`). The first query in a process pays for the store open, the first embed and the first ANN probe, which can run past 13s on a cold index where a warm query takes under a second. Raise it on a slow disk or a very large wiki; a timeout drops the semantic leg and logs a warning, leaving full-text hits only. An unparseable value warns and keeps the default |
 | `OPENAI_EMBEDDING_TIMEOUT` | As above, `openai` only; takes precedence over the shared variable |
 | `GEMINI_EMBEDDING_TIMEOUT` | As above, `gemini` only |
 | `OPENROUTER_EMBEDDING_TIMEOUT` | As above, `openrouter` only |

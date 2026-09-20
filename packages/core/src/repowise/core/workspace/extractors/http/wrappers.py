@@ -39,7 +39,9 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from repowise.core.ingestion.models import ParsedFile, Symbol
+    from collections.abc import Sequence
+
+    from repowise.core.workspace.repo_index import IndexedSymbol
 
 # Hop budget for wrapper confirmation. 2 is not arbitrary: the real chain in
 # ``frontend/src/lib/api/client.ts`` is
@@ -107,6 +109,7 @@ _SINK_CALL_NAMES_BY_SUFFIX: dict[str, frozenset[str]] = {
     ".js": frozenset({"fetch"}),
     ".jsx": frozenset({"fetch"}),
     ".mjs": frozenset({"fetch"}),
+    ".py": frozenset({"urlopen"}),  # stdlib, and its first argument is the URL
 }
 
 
@@ -116,6 +119,17 @@ _JS_LIKE = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs"})
 # significant character cannot end an expression. The standard heuristic, and
 # enough to stop a ``/\\)/`` corrupting a parenthesis scan.
 _REGEX_PRECEDERS = frozenset("(,=:[!&|?{};+-*%~^<>")
+
+
+def _string_prefix(text: str, quote_idx: int) -> str:
+    """The ``rb``/``f``/``u`` prefix letters immediately before a quote, if any."""
+    k = quote_idx
+    while k > 0 and text[k - 1] in "rRbBuUfF":
+        k -= 1
+    # Preceded by more identifier means those letters end a name, not a prefix.
+    if k > 0 and (text[k - 1].isalnum() or text[k - 1] == "_"):
+        return ""
+    return text[k:quote_idx]
 
 
 def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
@@ -133,29 +147,44 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
     reappearing through the back door. The call-site scanner masks comments
     only, since it still has to read the URL literal it is looking for.
     """
-    if suffix.lower() not in _JS_LIKE:
-        # Python: ``#`` to end of line. Triple-quoted strings are left alone;
-        # no sink pattern here matches inside one without a call following it.
-        if suffix.lower() != ".py":
-            return text
+    if suffix.lower() != ".py" and suffix.lower() not in _JS_LIKE:
+        return text
+
+    if suffix.lower() == ".py":
+        # Python: ``#`` to end of line, plus string bodies when asked. Both the
+        # triple-quoted delimiter and the ``r`` prefix are read, because getting
+        # either wrong desynchronises the scan for the rest of the file — a
+        # docstring containing a ``"`` would close early and leave real code
+        # masked, and ``r"\"`` would swallow its own closing quote.
         out = list(text)
-        i, n, in_str = 0, len(text), ""
+        i, n = 0, len(text)
         while i < n:
             ch = text[i]
-            if in_str:
-                if ch == "\\":
-                    i += 2
-                    continue
-                if ch == in_str:
-                    in_str = ""
-            elif ch in "'\"":
-                in_str = ch
-            elif ch == "#":
+            if ch == "#":
                 while i < n and text[i] != "\n":
                     out[i] = " "
                     i += 1
                 continue
-            i += 1
+            if ch not in "'\"":
+                i += 1
+                continue
+            delim = text[i : i + 3] if text[i : i + 3] in ("'''", '"""') else ch
+            raw = "r" in _string_prefix(text, i).lower()
+            i += len(delim)
+            while i < n:
+                if text[i] == "\\" and not raw:
+                    if strings:
+                        out[i] = " "
+                        if i + 1 < n and text[i + 1] != "\n":
+                            out[i + 1] = " "
+                    i += 2
+                    continue
+                if text.startswith(delim, i):
+                    i += len(delim)
+                    break
+                if strings and text[i] != "\n":
+                    out[i] = " "
+                i += 1
         return "".join(out)
 
     out = list(text)
@@ -239,7 +268,7 @@ def sink_call_names(suffix: str) -> frozenset[str]:
     return _SINK_CALL_NAMES_BY_SUFFIX.get(suffix.lower(), frozenset())
 
 
-def symbol_body(lines: list[str], symbol: Symbol) -> str:
+def symbol_body(lines: list[str], symbol: IndexedSymbol) -> str:
     """The source text of *symbol*'s body, excluding its own declaration.
 
     The declaration must be excluded because a symbol *named* like a sink
@@ -267,7 +296,73 @@ def symbol_body(lines: list[str], symbol: Symbol) -> str:
     return "\n".join([head, *rest]) if head else "\n".join(rest)
 
 
-def _callable_symbols(parsed: ParsedFile) -> dict[str, list[Symbol]]:
+# The module qualifier is required and is what makes this safe: a bare
+# ``Session(`` is SQLAlchemy far more often than requests, and binding it would
+# read every ``session.get(Model, pk)`` as an endpoint call.
+_PY_CLIENT_CTOR = (
+    r"(?P<lib>httpx|requests|aiohttp)\s*\.\s*"
+    r"(?:AsyncClient|Client|ClientSession|Session)\s*\("
+)
+
+# ``client = httpx.AsyncClient(...)``, ``self._c = client or httpx.Client()``.
+_PY_CLIENT_ASSIGN_RE = re.compile(
+    r"^[ \t]*(?P<attr>self\s*\.\s*)?(?P<var>[A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?!=)"
+    r"(?:[^\n=]*?\bor\s+)?(?:await\s+)?" + _PY_CLIENT_CTOR,
+    re.MULTILINE,
+)
+
+# ``async with httpx.AsyncClient(...) as client:``
+_PY_CLIENT_WITH_RE = re.compile(
+    r"\bwith\s+(?:await\s+)?" + _PY_CLIENT_CTOR + r"[^\n]*?\bas\s+(?P<var>[A-Za-z_]\w*)"
+)
+
+
+def bound_clients(
+    content: str, suffix: str, symbols: Sequence[IndexedSymbol]
+) -> list[tuple[str, str, int, int]]:
+    """``(var, library, from_line, to_line)`` for each HTTP client instance bound.
+
+    Python's dominant client shape binds the client to a variable
+    (``async with httpx.AsyncClient() as http``) and calls the endpoint through
+    it (``http.post(url)``). That receiver is neither absent nor ``self``, so
+    :func:`confirm_wrappers` never sees the call — the sink *is* the call.
+
+    The binding is scoped to the enclosing symbol, not to the file. Measured on
+    ``backend/modal_app/content_engine_chain.py``: ``client`` is an
+    ``httpx.AsyncClient`` in one function and a Supabase client in another, so a
+    file-wide binding would read a database call as an endpoint call. An
+    *attribute* binding (``self._client = httpx.Client()``) is file-scoped
+    instead, since it is assigned in one method to be read from others.
+
+    Empty for a language with no entry, like the sink tables.
+    """
+    if suffix.lower() != ".py":
+        return []
+    # Narrowest span first, so the first hit is the tightest enclosing scope.
+    spans = sorted(
+        ((s.start_line, s.end_line) for s in symbols if s.kind in _CALLABLE_KINDS),
+        key=lambda se: se[1] - se[0],
+    )
+    whole_file = (1, content.count("\n") + 1)
+
+    def scope(line: int, is_attr: bool) -> tuple[int, int]:
+        if is_attr:
+            return whole_file
+        for start, end in spans:
+            if start <= line <= end:
+                return start, end
+        return whole_file  # module level: the client really is file-wide
+
+    out: list[tuple[str, str, int, int]] = []
+    for regex in (_PY_CLIENT_ASSIGN_RE, _PY_CLIENT_WITH_RE):
+        for m in regex.finditer(content):
+            line = content.count("\n", 0, m.start()) + 1
+            start, end = scope(line, m.groupdict().get("attr") is not None)
+            out.append((m.group("var"), m.group("lib"), start, end))
+    return out
+
+
+def _callable_symbols(symbols: Sequence[IndexedSymbol]) -> dict[str, list[IndexedSymbol]]:
     """Callable symbols in this file, indexed by bare name.
 
     A name can be declared more than once (two classes with a ``get`` method);
@@ -276,15 +371,15 @@ def _callable_symbols(parsed: ParsedFile) -> dict[str, list[Symbol]]:
     the alternative — dropping ambiguous names — would lose real calls in every
     file with two similarly-shaped classes.
     """
-    out: dict[str, list[Symbol]] = {}
-    for sym in parsed.symbols:
+    out: dict[str, list[IndexedSymbol]] = {}
+    for sym in symbols:
         if sym.kind in _CALLABLE_KINDS:
             out.setdefault(sym.name, []).append(sym)
     return out
 
 
 def confirm_wrappers(
-    parsed: ParsedFile,
+    symbols: Sequence[IndexedSymbol],
     content: str,
     suffix: str,
     budget: int = DEFAULT_HOP_BUDGET,
@@ -305,7 +400,7 @@ def confirm_wrappers(
     # confirming a wrapper on it would reintroduce name-guessing by another
     # route. Masking preserves offsets, so symbol line ranges still apply.
     lines = mask_source(content, suffix, strings=True).split("\n")
-    by_name = _callable_symbols(parsed)
+    by_name = _callable_symbols(symbols)
     if not by_name:
         return set()
 
@@ -315,26 +410,26 @@ def confirm_wrappers(
     failed_at: dict[str, int] = {}
     confirmed: set[str] = set()
 
-    def reaches_sink(sym: Symbol, hops: int, stack: frozenset[str]) -> bool:
-        if sym.id in stack:  # a cycle cannot introduce a new sink
+    def reaches_sink(sym: IndexedSymbol, hops: int, stack: frozenset[str]) -> bool:
+        if sym.symbol_id in stack:  # a cycle cannot introduce a new sink
             return False
-        if failed_at.get(sym.id, -1) >= hops:
+        if failed_at.get(sym.symbol_id, -1) >= hops:
             return False
         body = symbol_body(lines, sym)
         if not body:
-            failed_at[sym.id] = max(failed_at.get(sym.id, -1), hops)
+            failed_at[sym.symbol_id] = max(failed_at.get(sym.symbol_id, -1), hops)
             return False
         if any(p.search(body) for p in patterns):
             return True
         if hops <= 0:
-            failed_at[sym.id] = max(failed_at.get(sym.id, -1), hops)
+            failed_at[sym.symbol_id] = max(failed_at.get(sym.symbol_id, -1), hops)
             return False
-        inner = stack | {sym.id}
+        inner = stack | {sym.symbol_id}
         for m in _LOCAL_CALL_RE.finditer(body):
             for callee in by_name.get(m.group(1), ()):
-                if callee.id != sym.id and reaches_sink(callee, hops - 1, inner):
+                if callee.symbol_id != sym.symbol_id and reaches_sink(callee, hops - 1, inner):
                     return True
-        failed_at[sym.id] = max(failed_at.get(sym.id, -1), hops)
+        failed_at[sym.symbol_id] = max(failed_at.get(sym.symbol_id, -1), hops)
         return False
 
     for name, syms in by_name.items():

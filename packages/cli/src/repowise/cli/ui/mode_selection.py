@@ -450,7 +450,7 @@ def _prompt_generation(
 
     # Embedder selection
     detected_embedder = _resolve_embedder_from_env()
-    embedder_choices = ["gemini", "openai", "openrouter", "ollama", "mock"]
+    embedder_choices = ["gemini", "openai", "openrouter", "ollama", "edenai", "mock"]
     result["embedder"] = click.prompt(
         "  Embedder for RAG",
         default=detected_embedder,
@@ -644,7 +644,7 @@ def _prompt_index_only_search(console: Console, result: dict[str, Any]) -> None:
     result["embedder"] = click.prompt(
         "  Embedder for semantic search (mock = full-text only)",
         default="mock",
-        type=click.Choice(["mock", "ollama", "gemini", "openai", "openrouter"]),
+        type=click.Choice(["mock", "ollama", "gemini", "openai", "openrouter", "edenai"]),
     )
 
 
@@ -658,7 +658,16 @@ def _resolve_embedder_from_env() -> str:
         return "openrouter"
     if os.environ.get("OLLAMA_EMBEDDING_MODEL"):
         return "ollama"
-    return "mock"
+    # Last, like the shared resolver in cli/providers/embedders.py: an unrelated
+    # EDENAI_API_KEY in the environment must not outrank a provider the user was
+    # already resolving to.
+    if os.environ.get("EDENAI_API_KEY"):
+        return "edenai"
+    # Same last tier as the shared resolver, or the advanced prompt would
+    # default to mock on a machine whose run header just said otherwise.
+    from repowise.cli.providers.keys import global_config_embedder
+
+    return global_config_embedder() or "mock"
 
 
 def print_index_only_intro(console: Console, has_provider: bool = False) -> None:

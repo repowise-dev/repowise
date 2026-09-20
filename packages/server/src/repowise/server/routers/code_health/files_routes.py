@@ -15,7 +15,10 @@ from repowise.server.deps import get_db_session
 
 from ._router import router
 from .breakdown import _score_breakdown_from_findings
+from .counts import CountsQuery, project
+from .file_filters import FAILING_DESCRIPTION, hotspot_paths, metric_filter
 from .loaders import _attach_symbol_ids, _load_file_signals
+from .scope import ScopeQuery, narrow
 from .serializers import (
     _file_signals_to_dict,
     _file_trend_to_dict,
@@ -47,7 +50,7 @@ async def list_health_files(
     module: str | None = Query(None, description="Filter to a module prefix"),
     only_hotspots: bool = Query(False),
     only_untested: bool = Query(False),
-    only_failing: bool = Query(False, description="score < 7"),
+    only_failing: bool = Query(False, description=FAILING_DESCRIPTION),
     fields: str = Query(
         "full",
         pattern="^(full|summary)$",
@@ -58,29 +61,27 @@ async def list_health_files(
             "narrows the finding read that produces them."
         ),
     ),
+    scope: str = ScopeQuery,
+    counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if sort not in _SORT_FIELDS:
         sort = "score"
     metrics = await crud.get_health_metrics(session, repo_id)
+    (metrics,) = narrow(scope, metrics)
+    # Projected before every filter and the sort, so `total` and the ranking
+    # describe the same population the score does.
+    metrics, _unscored = project(counts, metrics)
 
-    hotspot_paths: set[str] = set()
-    if only_hotspots:
-        git_meta = await crud.get_all_git_metadata(session, repo_id)
-        hotspot_paths = {p for p, gm in git_meta.items() if getattr(gm, "is_hotspot", False)}
-
-    def _keep(m: Any) -> bool:
-        if search and search.lower() not in m.file_path.lower():
-            return False
-        if module and not m.file_path.startswith(module):
-            return False
-        if only_hotspots and m.file_path not in hotspot_paths:
-            return False
-        if only_untested and m.has_test_file:
-            return False
-        return not (only_failing and m.score >= 7)
-
-    filtered = [m for m in metrics if _keep(m)]
+    keep = metric_filter(
+        search=search,
+        module=module,
+        only_hotspots=only_hotspots,
+        only_untested=only_untested,
+        only_failing=only_failing,
+        hotspots=await hotspot_paths(session, repo_id) if only_hotspots else None,
+    )
+    filtered = [m for m in metrics if keep(m)]
 
     def _key(m: Any):
         v = getattr(m, sort, None)
@@ -143,14 +144,19 @@ async def list_health_files(
 async def file_score_breakdown(
     repo_id: str,
     file_path: str = Query(..., description="File path to break down"),
+    counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
     metrics = await crud.get_health_metrics(session, repo_id, file_paths=[file_path])
-    metric = metrics[0] if metrics else None
     findings = await crud.get_health_findings(session, repo_id, file_path=file_path)
+    # This drawer opens from a row the reader just saw a score on. Reading it
+    # under the other counts would answer a click on 8.5 with a 2.0 and list
+    # the findings the page had just said were excluded.
+    metrics, findings, _unscored = project(counts, metrics, findings)
+    metric = metrics[0] if metrics else None
     breakdown = _score_breakdown_from_findings(findings)
     finding_dicts = await _attach_symbol_ids(
         session, repo_id, [_finding_to_dict(f) for f in findings]

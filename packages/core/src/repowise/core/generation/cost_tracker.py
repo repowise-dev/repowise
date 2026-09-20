@@ -7,6 +7,7 @@ the ``llm_costs`` table for historical reporting via ``repowise costs``.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
@@ -61,9 +62,15 @@ _PRICING: dict[str, dict[str, float]] = {
     "gemini-3.1-flash-lite-preview": {"input": 0.075, "output": 0.30},
     "gemini-3-flash-preview": {"input": 0.075, "output": 0.30},
     "gemini-3.5-flash-lite": {"input": 0.25, "output": 1.50},
-    # DeepSeek
-    "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
-    "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
+    # DeepSeek — https://api-docs.deepseek.com/quick_start/pricing
+    "deepseek-v4-flash": {"input": 0.27, "output": 1.10},
+    "deepseek-v4-pro": {"input": 0.55, "output": 2.19},
+    "deepseek-chat": {"input": 0.27, "output": 1.10},
+    "deepseek-reasoner": {"input": 0.55, "output": 2.19},
+    # Kimi / Moonshot — https://platform.moonshot.cn/docs/pricing/chat
+    "kimi-for-coding": {"input": 0.60, "output": 2.40},
+    "kimi-k2.5": {"input": 0.60, "output": 2.40},
+    "kimi-k2.6": {"input": 0.60, "output": 2.40},
 }
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
@@ -90,12 +97,13 @@ def is_local_model(model: str) -> bool:
 
     Both the cost ledger and the savings estimate price these at $0: no dollars
     change hands per token. Covers Ollama/LM Studio/llama.cpp model strings and
-    the agent-CLI passthrough prefixes (``codex_cli/``, ``opencode/``).
+    the agent-CLI passthrough prefixes (``codex_cli/``, ``claude_cli/``,
+    ``opencode/``).
     """
     return (
         model == "mock"
         or model.startswith(_LOCAL_MODEL_PREFIXES)
-        or model.startswith(("codex_cli/", "opencode/"))
+        or model.startswith(("codex_cli/", "claude_cli/", "opencode/"))
         # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`,
         # and a `family:size` tag is not a shape any hosted vendor uses.
         or (":" in model and "/" not in model)
@@ -175,6 +183,25 @@ def get_model_pricing(model: str) -> dict[str, float]:
     into dollar estimates with the same table the cost ledger uses.
     """
     return _get_pricing(model)
+
+
+def pricing_table_version() -> str:
+    """Stable identifier for the rate tables this module resolves against.
+
+    Savings events snapshot the rate they were priced at so history is never
+    repriced, and that snapshot is only auditable if it also records *which*
+    table produced it. Derived from the table contents rather than declared as
+    a constant: a hand-maintained version is one more thing to keep in sync,
+    and it would go stale silently on exactly the edit that matters.
+    """
+    payload = repr(
+        (
+            sorted(_PRICING.items()),
+            _CLAUDE_FAMILY_PRICING,
+            sorted(_FALLBACK_PRICING.items()),
+        )
+    )
+    return "pricing:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------

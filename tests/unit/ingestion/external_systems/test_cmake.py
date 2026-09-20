@@ -121,3 +121,47 @@ def test_malformed_does_not_raise(tmp_path):
     # Trailing-open paren is tolerated; either zero targets or the args are
     # captured but we don't crash.
     assert isinstance(cm.targets, list)
+
+
+def test_orphan_glob_reads_the_snapshot_when_given_one(tmp_path):
+    """A snapshot answers the orphan sweep, and answers it the same way.
+
+    ``discover_cmake_reactor`` falls back to a repo-wide glob for
+    ``CMakeLists.txt`` files no ``add_subdirectory`` chain reached. That glob
+    is the one every resolver used to pay for separately; it now reads a
+    shared :class:`WalkSnapshot` when the caller has one. Same files either
+    way — a caller must not be able to tell which path served it.
+    """
+    from repowise.core.fs_walk import WalkSnapshot
+
+    _write(tmp_path, "CMakeLists.txt", "project(top)")
+    _write(tmp_path, "orphan/CMakeLists.txt", "add_library(orphan STATIC o.cc)")
+
+    live = cmake.discover_cmake_reactor(tmp_path)
+    shared = cmake.discover_cmake_reactor(tmp_path, snapshot=WalkSnapshot(tmp_path))
+
+    assert {f.path for f in shared} == {f.path for f in live}
+    assert "orphan/CMakeLists.txt" in {f.path for f in shared}
+
+
+def test_orphan_glob_honours_the_snapshot_nested_repo_setting(tmp_path):
+    """The snapshot decides whether a nested checkout is in scope.
+
+    Pruning nested git repos is the default, so an orphan under one stays
+    hidden. A snapshot built with ``prune_nested_git=False`` — what a repo
+    indexed with ``--include-nested-repos`` gets — surfaces it, which is the
+    point of sharing the traverser's own boundary rather than restating it.
+    """
+    from repowise.core.fs_walk import WalkSnapshot
+
+    _write(tmp_path, "CMakeLists.txt", "project(top)")
+    _write(tmp_path, "vendored/.git", "gitdir: elsewhere")
+    _write(tmp_path, "vendored/CMakeLists.txt", "add_library(vend STATIC v.cc)")
+
+    pruned = cmake.discover_cmake_reactor(tmp_path, snapshot=WalkSnapshot(tmp_path))
+    included = cmake.discover_cmake_reactor(
+        tmp_path, snapshot=WalkSnapshot(tmp_path, prune_nested_git=False)
+    )
+
+    assert "vendored/CMakeLists.txt" not in {f.path for f in pruned}
+    assert "vendored/CMakeLists.txt" in {f.path for f in included}

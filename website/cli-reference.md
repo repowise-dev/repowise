@@ -65,6 +65,7 @@ repowise init [PATH] [OPTIONS]
 | `--agents` / `--no-agents` | flag | config | Generate or skip managed `AGENTS.md` for Codex |
 | `--codex` / `--no-codex` | flag | prompt/skip | Generate or skip project-local Codex MCP config and hooks |
 | `--distill-hook` / `--no-distill-hook` | flag | prompt/skip | Install or skip the Claude Code command-rewrite hook that routes noisy commands through `repowise distill` |
+| `--hook` / `--no-hook` | flag | on | Install or skip the post-commit hook that runs `repowise update` after each commit. Interactive runs ask; `--yes` and non-interactive runs install it and print how to undo it |
 | `--editor-setup` / `--no-editor-setup` | flag | true | Register the MCP server and hooks in your global Claude Code / Claude Desktop config. `--no-editor-setup` indexes the repo and leaves everything outside it untouched |
 | `--yes` / `-y` | flag | false | Skip the cost confirmation prompt |
 
@@ -319,7 +320,7 @@ TARGETS are file paths, module paths, or `path/to/file.py::Symbol` ids.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--include` | choice | — | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `health`, `skeleton` |
+| `--include` | choice | — | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `health`, `skeleton`, `doc_drift` |
 | `--no-compact` | flag | false | Add structure, imports and docstrings to each card |
 | `--path` | string | cwd | Repo (or workspace) root |
 | `--repo` | string | — | Workspace repo alias to query |
@@ -517,6 +518,8 @@ repowise health [PATH] [OPTIONS]
 |------|------|---------|-------------|
 | `--file` | string | — | Deep-dive a single file (relative path) |
 | `--module` | string | — | Restrict to files whose path starts with this prefix |
+| `--scope` | choice | all | `all` or `production`. Tests score higher than production code, so narrowing lowers every figure without a defect being found |
+| `--counts` | choice | everything | `everything` or `code_shape`. `code_shape` removes the git-derived half of the score, which rises as a file is worked on |
 | `--refactoring-targets` | flag | false | Ranked refactoring candidates by impact/effort |
 | `--trend` | flag | false | Last health snapshots + declining alerts |
 | `--badge` | flag | false | Ready-to-paste health badge Markdown |
@@ -536,7 +539,9 @@ repowise health --trend
 
 ## `risk`
 
-Score the defect risk of a *change* (commit or `base..head` range). No LLM.
+Rank a *change* (commit or `base..head` range) for review. The repo-relative
+percentile/classification is authoritative; the supporting 0-10 score measures
+diff size and spread and is not a probability. No LLM.
 
 ```bash
 repowise risk [REVSPEC] [OPTIONS]
@@ -559,6 +564,47 @@ repowise risk HEAD            # score the last commit
 repowise risk main..HEAD      # score a branch / PR range
 repowise risk --ext .ts,.tsx
 ```
+
+With a readable index the command also prints whether the diff is one change or
+several: the changed files grouped by the links the index holds plus, for a
+`base..head` range, the files each commit touched. Only indexed, non-test source
+files a resolver can link are grouped; docs, config, data and tests are always
+printed under `Left out of the grouping:`. Each group names its files and the
+files that alone hold it together, and a closing `Basis:` line says what was
+checked. Silent when the diff is one change, and it carries no score.
+
+---
+
+## `overlap`
+
+Which other open branches edit the files this change edits. Git answers it, so it
+works with no index; an index orders the shared files and adds the files history
+pairs with them. Every row states its basis in words, `same file` or
+`co-change pair, N of M commits`. No score. Branches stacked on the current one
+are skipped, as are noise paths and dependency manifests.
+
+```bash
+repowise overlap [OPTIONS]
+```
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--base` | ref | trunk | Base ref both sides are diffed against (`origin/HEAD`, else `main` or `master`) |
+| `--branch` | ref | HEAD | The change to compare |
+| `--path` | path | cwd | Git repository path |
+| `--limit` | int | 50 | How many branches to diff, newest committer date first |
+| `--format` | choice | table | `table` or `json` |
+
+### Examples
+
+```bash
+repowise overlap                          # who else is editing what you are editing
+repowise overlap --base main --limit 100  # a wider scan against an explicit base
+```
+
+When nothing overlaps, the command prints one line saying so with the scan counts.
 
 ---
 
@@ -713,7 +759,7 @@ repowise decision SUBCOMMAND [OPTIONS]
 | Flag | Type | Description |
 |------|------|-------------|
 | `--status` | choice | Filter by status: `proposed`, `active`, `deprecated`, `superseded`, `all` |
-| `--source` | choice | Filter by origin: `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
+| `--source` | choice | Filter by origin: `adr`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | flag | Show only proposed decisions |
 | `--stale-only` | flag | Show only decisions with staleness score ≥ 0.5 |
 

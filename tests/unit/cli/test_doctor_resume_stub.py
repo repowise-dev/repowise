@@ -107,7 +107,10 @@ def test_an_unembedded_stub_is_not_vector_drift(tmp_path: Path) -> None:
     assert "missing" not in detail
     # Not drift, but not nothing either: the wiki has a page there that no
     # model wrote, and "in sync" alone would imply the wiki is complete.
-    assert "1 stub(s) awaiting --resume" in detail
+    #
+    # The command is named, not just the flag: `--resume` exists only on `init`,
+    # so a bare "--resume" sends the reader to try it on `generate` first.
+    assert "1 stub(s) awaiting `repowise init --resume`" in detail
 
 
 def test_the_stub_is_still_indexed_for_full_text(tmp_path: Path) -> None:

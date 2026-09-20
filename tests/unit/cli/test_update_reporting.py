@@ -84,6 +84,90 @@ class TestRenderChangedFiles:
         assert "1 deleted" in summary
 
 
+class TestDegradedPanelRetryPromise:
+    """The degraded panel must only promise a retry when retry can actually help.
+
+    Transient failures (a lock, a server that recovered) re-run and heal on
+    the next update, so "(will retry on the next update)" is honest. A config
+    error — the canonical case is the embedder with a bad env value or an
+    unreachable endpoint the user configured — reads the same config next run
+    and fails identically, so promising a retry is a promise nothing will keep.
+    Those steps surface with the fix (reindex) instead.
+    """
+
+    def _entries(self, *entries: str) -> list[str]:
+        return list(entries)
+
+    def test_retryable_step_still_promises_retry(self, monkeypatch):
+        printed = _capture(monkeypatch)
+        reporting.render_degraded(["Graph nodes persist: lock timeout"])
+        text = "\n".join(printed.lines)
+        assert "degraded step(s)" in text
+        assert "(will retry on the next update)" in text
+        assert "Graph nodes persist" in text
+        assert "a retry cannot heal" not in text
+
+    def test_config_embedder_error_says_fix_config_not_retry(self, monkeypatch):
+        printed = _capture(monkeypatch)
+        reporting.render_degraded(
+            [
+                "Page embedding: OpenAI API key required. Pass api_key= or set OPENAI_API_KEY env var."
+            ]
+        )
+        text = "\n".join(printed.lines)
+        # It must not promise something a retry cannot deliver.
+        assert "will retry on the next update" not in text
+        # It must say how to actually fix the config.
+        assert "a retry cannot heal" in text
+        assert "repowise reindex" in text
+        assert "Page embedding" in text
+
+    def test_mixed_entries_are_split_into_both_channels(self, monkeypatch):
+        printed = _capture(monkeypatch)
+        reporting.render_degraded(
+            [
+                "Page embedding: Gemini API key required",
+                "Graph nodes persist: lock timeout",
+            ]
+        )
+        text = "\n".join(printed.lines)
+        assert "degraded step(s)" in text
+        assert "(will retry on the next update)" in text
+        assert "a retry cannot heal" in text
+        assert "Graph nodes persist" in text
+        assert "Page embedding" in text
+
+    def test_only_config_error_omits_the_retry_block(self, monkeypatch):
+        printed = _capture(monkeypatch)
+        reporting.render_degraded(["Page embedding: bad REPOWISE_EMBEDDER"])
+        text = "\n".join(printed.lines)
+        assert "degraded step(s)" not in text
+        assert "a retry cannot heal" in text
+
+    def test_empty_list_renders_nothing(self, monkeypatch):
+        printed = _capture(monkeypatch)
+        reporting.render_degraded([])
+        assert printed.lines == []
+
+    def test_none_renders_nothing(self, monkeypatch):
+        printed = _capture(monkeypatch)
+        reporting.render_degraded(None)
+        assert printed.lines == []
+
+    def test_split_degraded_classifies_embedder_as_config(self):
+        config, retryable = reporting._split_degraded(
+            [
+                "Page embedding: bad env",
+                "Graph nodes persist: lock timeout",
+                "Page embedding: unreachable endpoint",
+            ]
+        )
+        assert len(config) == 2
+        assert all(e.startswith("Page embedding") for e in config)
+        assert len(retryable) == 1
+        assert retryable[0].startswith("Graph nodes persist")
+
+
 class TestCompletionPanels:
     def test_full_completion_renders(self, monkeypatch):
         printed = _capture(monkeypatch)

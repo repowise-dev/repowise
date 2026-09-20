@@ -63,7 +63,9 @@ analysis/health/
 ├── __init__.py                     # public API: HealthAnalyzer, HealthReport
 ├── engine.py                       # orchestrator: walker → biomarkers → scorer
 ├── scoring.py                      # weighted aggregation, category caps, KPIs
-├── grading.py                      # 3 defect-backed bands + NLOC-weighted distribution
+├── ranking.py                      # canonical worst-first key + deduction fold
+├── aggregation.py                  # module rollups, severity/biomarker/score breakdowns
+├── grading.py                      # the five absolute bands + NLOC-weighted distribution
 ├── defect_accuracy.py              # "does the score find the bugs?" self-validation
 ├── trends.py                       # snapshot diff, Declining/Predicted alerts, per-file score series
 ├── signals.py                      # per-file process/people/topology join (surfacing-only)
@@ -138,7 +140,7 @@ core/alembic/versions/
 
 ```
 core/pipeline/
-├── orchestrator.py                 # _run_health_analysis(): builds module_map, runs analyzer
+├── orchestrator.py                 # _run_health_analysis(): builds community_label_map, runs analyzer
 └── persist.py                      # persist_pipeline_result(): writes findings/metrics/snapshot
 ```
 
@@ -169,7 +171,6 @@ server/src/repowise/server/
 
 ```
 packages/ui/src/health/             # shared React components (used by web + future hosted frontend)
-├── kpi-cards.tsx
 ├── file-table.tsx
 ├── biomarker-list.tsx
 ├── coverage-bar.tsx
@@ -177,8 +178,8 @@ packages/ui/src/health/             # shared React components (used by web + fut
 ├── untested-hotspot-warning.tsx
 ├── refactoring-card.tsx
 ├── refactoring-target-list.tsx
-├── health-badge.tsx               # score pill, colored by the 3 health bands
-├── health-distribution-bar.tsx    # NLOC-weighted Alert/Warning/Healthy split
+├── health-badge.tsx               # score pill, colored by the health band
+├── health-distribution-bar.tsx    # NLOC-weighted split across the five bands
 ├── trend-chart.tsx                # repo KPI history (3 series)
 ├── file-trend-chart.tsx           # single file's score-over-time + delta + declining flag
 ├── sparkline.tsx                  # compact inline series (drawer trend)
@@ -536,8 +537,9 @@ KPI cards.
 
 ## 8. Trends (`trends.py`)
 
-State-free: callers pass an oldest-first list of snapshot rows. Two
-alerts:
+State-free: callers pass an oldest-first list of snapshot rows. Both alerts
+run over every metric in `_ALERT_METRICS` — hotspot health, the composite
+headline and maintainability — skipping any a snapshot never recorded:
 
 - **Declining Health**: current is ≥ `DECLINE_THRESHOLD` (default 0.5)
   below the snapshot `DECLINE_LOOKBACK` (5) positions back. Fires on the
@@ -545,6 +547,14 @@ alerts:
 - **Predicted Decline**: the three most recent snapshots are each
   strictly below the one before. Magnitude is not required; direction is
   the signal.
+
+Either can come back as a third `kind`, **`history_drag`**: a fall on the
+composite headline where `driver` is `history` and the structure half held or
+improved. It carries the same numbers and the opposite reading, because a
+decline the code shape did not contribute to has nothing to act on and
+reporting it in error red tells a reader their refactoring made things worse.
+Maintainability is code shape already, so it has no halves to split and never
+softens — it is the fall that always deserves the alarm.
 
 `recent_kpis(history, limit=10)` returns a newest-first serialised view
 for the CLI table and MCP `get_health(include=["trend"])` response.
@@ -660,6 +670,9 @@ by the dashboard's file table.
 | Column | Notes |
 |---|---|
 | `score` | 1.0–10.0 final |
+| `defect_score`, `maintainability_score`, `performance_score` | per-pillar; nullable |
+| `structure_deduction`, `history_deduction` | the two halves of the total deduction; nullable on rows written before the split. `counts=code_shape` rescores from `structure_deduction` alone, and a null pair is reported as unscored rather than counted as a ten |
+| `is_test` | stored, not re-derived per surface, so `scope` is one row filter everywhere; nullable on rows predating the column |
 | `max_ccn`, `max_nesting`, `nloc` | aggregate function metrics |
 | `duplication_pct` | percent of NLOC covered by clones; nullable |
 | `has_test_file` | paired or heuristic |
@@ -714,7 +727,7 @@ silently re-scored for changed files only.
 Defined in `tool_health.py`. Modes:
 
 - **Dashboard mode** (`targets=None`): returns repo-level KPIs (with the
-  repo `band`) + the NLOC-weighted `distribution` across the 3 bands +
+  repo `band`) + the NLOC-weighted `distribution` across the bands +
   `worst_files` (top N lowest-scoring) + `top_findings` + a per-module
   `modules` rollup.
 - **Targeted mode** (`targets=[...]`): returns full `metrics` +
@@ -749,8 +762,9 @@ Every response carries the standard `_meta` envelope via `build_meta()`.
 
 ## 13. REST surface
 
-`packages/server/src/repowise/server/routers/code_health.py`. All under
-`/api/repos/{repo_id}/health/`:
+`packages/server/src/repowise/server/routers/code_health/` — a package, one
+module per surface, sharing `scope.py`, `counts.py`, `file_filters.py` and
+`statuses.py`. All routes under `/api/repos/{repo_id}/health/`:
 
 | Route | Returns |
 |---|---|
@@ -761,12 +775,24 @@ Every response carries the standard `_meta` envelope via `build_meta()`.
 | `GET /files/breakdown` | one file's metric + score breakdown + findings + suggestions + per-file `trend` + `signals` |
 | `GET /files/trend` | one file's score-over-time series + current delta + `declining` flag (`?file_path=`) |
 | `GET /trend` | repo KPI history + alerts + last-two-snapshot per-file deltas |
-| `GET /findings` | findings list (filterable by biomarker_type, severity, file_path) |
+| `GET /findings` | findings list, filterable by `biomarker_type`, `file_path`, `dimension`, `status` and severity (`severity` exact, or the `min_severity` floor). The zero-impact dimensions, performance and advisory, are out of the ranked list: name one in `dimension`, name a marker in `biomarker_type`, or pass `include_zero_impact=true` |
 | `GET /coverage` | coverage summary + per-file rows |
 | `POST /coverage` | ingest a coverage report (used by some CI integrations) |
-| `GET /refactoring-targets` | ranked by `total_impact / effort_bucket` |
+| `GET /refactoring-targets` | the work queue: files carrying findings, ranked by `total_impact / effort_bucket`. Takes the findings filters plus `search`, `module` and the `only_hotspots` / `only_untested` / `only_failing` row filters, pages by `limit` + `offset`, and returns `total` with `finding_total` beside it. Impact counts open findings only, so dismissing work moves a file down |
 | `GET /churn-complexity` | churn × complexity scatter points (one per churned file: `commit_count_90d`, `max_ccn`, `nloc`, `score`, `churn_percentile`) |
 | `GET /modules` | NLOC-weighted module rollup table |
+
+`scope` and `counts` are accepted by every route whose figures they could
+change, parsed by the shared `ScopeQuery` / `CountsQuery`, and echoed back. An
+unrecognized value falls back to the default rather than answering a different
+question under the name that was asked for.
+
+`counts=code_shape` is a projection over the two stored deduction columns, not
+a rescore: it re-derives each score from `structure_deduction`, drops
+history-derived findings from the row sets so a list cannot sum past the figure
+above it, and recomputes `total` and every ranking afterwards. Rows with no
+stored split are removed and counted in `unscored_files`. Nothing is written
+back.
 
 Auth is the standard `verify_api_key` dependency from
 `server/deps.py`.
@@ -919,7 +945,7 @@ phases may revisit; the constraints kept v1 shippable.
   flag.
 - **No symbol-level scoring.** Score lives at the file granularity to
   match how engineers think about refactor units. Symbol-level CCN
-  still feeds the file score via `function_metrics`.
+  still feeds the file score via `all_functions`.
 - **No `complexity_estimate` propagation backfill.** The walker writes
   the field as a side effect during the current run; old indexes don't
   get touched until a re-index.
@@ -929,12 +955,11 @@ phases may revisit; the constraints kept v1 shippable.
   `repowise risk` scores a commit or base..head range with a calibrated
   logistic model.)
 - **No letter grade.** The 1–10 score is the single number. The only
-  categorical layer is the 3 defect-backed bands (Healthy/Warning/Alert,
-  `grading.py`); a letter on top would be a third overlapping scale with
-  arbitrary cliffs. The legacy 4-step `scoreBand` in `ui/health/tokens.ts`
-  is retained only as a finer color ramp for file-table pills, not a
-  labeling scheme: surfaced band labels and the distribution use the 3
-  bands.
+  categorical layer is the five absolute bands (Excellent / Good / Fair /
+  Needs work / At risk, `grading.py`); a letter on top would be a third
+  overlapping scale with arbitrary cliffs. Every surface that shows a band
+  word or a band colour reads that one vocabulary — there is no second
+  ramp.
 
 ---
 

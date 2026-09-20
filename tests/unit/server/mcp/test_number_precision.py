@@ -288,6 +288,51 @@ def test_churn_risk_biomarker_emits_percentile_on_the_zero_to_one_hundred_scale(
     assert results[0].details["churn_percentile"] == 98.9
 
 
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        (0.973, "top 2.7% among eligible files"),
+        (0.99, "top 1% among eligible files"),
+        (0.999, "top 0.1% among eligible files"),
+        (0.9995, "top <0.1% among eligible files"),
+        (1.0, "top <0.1% among eligible files"),
+    ],
+)
+def test_health_percentile_formatter_is_bounded_and_preserves_precision(stored, expected):
+    from repowise.core.analysis.health.semantics import format_top_percentile
+
+    assert format_top_percentile(stored, "eligible files") == expected
+    assert "top 0%" not in expected
+
+
+def test_health_biomarkers_share_honest_extreme_percentile_wording():
+    from repowise.core.analysis.health.biomarkers.change_entropy import (
+        BIOMARKER as ENTROPY_BIOMARKER,
+    )
+    from repowise.core.analysis.health.biomarkers.churn_risk import (
+        BIOMARKER as CHURN_BIOMARKER,
+    )
+
+    entropy = ENTROPY_BIOMARKER.detect(
+        _file_context(change_entropy=4.0, change_entropy_pct=1.0, commit_count_90d=10)
+    )[0]
+    churn = CHURN_BIOMARKER.detect(
+        _file_context(
+            churn_percentile=1.0,
+            lines_added_90d=10,
+            lines_deleted_90d=0,
+            commit_count_90d=5,
+            is_hotspot=True,
+        )
+    )[0]
+    assert "top <0.1%" in entropy.reason
+    assert "top <0.1%" in churn.reason
+    assert "top 0%" not in entropy.reason
+    assert "top 0%" not in churn.reason
+    assert entropy.details["change_entropy_pct"] == 100.0
+    assert churn.details["churn_percentile"] == 100.0
+
+
 # ---------------------------------------------------------------------------
 # NaN at the source, not stripped per-boundary
 # ---------------------------------------------------------------------------

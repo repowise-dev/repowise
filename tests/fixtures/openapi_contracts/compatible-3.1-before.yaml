@@ -1,0 +1,21 @@
+openapi: 3.1.2
+info: {title: Notes, version: '1'}
+paths:
+  /notes:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: {type: string}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  note: {type: [string, 'null']}

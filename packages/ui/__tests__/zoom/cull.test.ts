@@ -39,7 +39,7 @@ function leaf(id: string, rank: number): ZoomNode {
       entry_point_count: 0,
       on_flow_count: 0,
     },
-    layout: { x: 0, y: 0, w: 1, h: 1 },
+    page_id: "",
     summary: "",
     language: null,
     is_entry_point: false,

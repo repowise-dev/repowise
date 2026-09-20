@@ -73,7 +73,15 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
       <div>
         <div className="space-y-2">
           <PercentileBar value={metrics.pagerank_percentile} label="PageRank" />
-          <PercentileBar value={metrics.betweenness_percentile} label="Centrality" />
+          {metrics.betweenness_scored === false ? (
+            // Never measured, so a percentile bar would draw a rank it does not have.
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[var(--color-text-tertiary)]">Centrality</span>
+              <span className="text-xs text-[var(--color-text-tertiary)]">Not scored yet</span>
+            </div>
+          ) : (
+            <PercentileBar value={metrics.betweenness_percentile} label="Centrality" />
+          )}
           <div className="flex items-center justify-between">
             <span className="text-xs text-[var(--color-text-tertiary)]">Degree</span>
             <span className="text-xs font-mono text-[var(--color-text-secondary)]">
@@ -92,7 +100,7 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs text-[var(--color-text-tertiary)]">Community</span>
           <Link
-            href={`/repos/${repoId}/architecture?view=graph&colorMode=community`}
+            href={`/repos/${repoId}/architecture?view=communities`}
             className="inline-flex items-center gap-1 truncate text-xs text-[var(--color-accent)] hover:underline"
           >
             {metrics.community_label}
@@ -175,10 +183,13 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
             Bus factor 1
           </Badge>
         )}
+        {/* Plain outline, like every other chip in this row. It used to carry
+            --color-error, which made it the loudest mark on the panel and put
+            it in the same colour vocabulary the health bands use. */}
         {fix?.magnet && (
           <Badge
             variant="outline"
-            className="text-[10px] border-[var(--color-error)]/40 text-[var(--color-error)]"
+            className="text-[10px]"
             title={`Repeatedly bug-fixed, most recently ${fix.age}.`}
           >
             <Bug className="h-2.5 w-2.5 mr-1" />

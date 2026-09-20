@@ -10,12 +10,13 @@
  *
  * Band cutoffs are the SINGLE TypeScript mirror of the canonical Python source
  * in `packages/core/src/repowise/core/analysis/health/grading.py`. The two are
- * kept in sync by a parity test (`__tests__/health/band-cutoffs.test.ts` here,
- * `tests/unit/health/test_grading.py` in core). Do not hardcode `4`/`8` band
- * cutoffs anywhere else — derive from these consts or read the API `band`.
+ * kept in sync by a parity test (`__tests__/health.test.ts` here,
+ * `tests/unit/health/test_grading.py` in core). Do not hardcode band cutoffs
+ * anywhere else — derive from these consts or read the API `band`.
  */
 
 import type { C4IoKind } from "./external-systems.js";
+import type { Paginated } from "./pagination.js";
 
 /** Finding severity used across the health surface. */
 export type HealthSeverity = "low" | "medium" | "high" | "critical";
@@ -38,20 +39,58 @@ export type HealthSeverity = "low" | "medium" | "high" | "critical";
  * a parity test (`__tests__/health.test.ts` here,
  * `tests/unit/health/test_scoring_dimensions.py` in core).
  */
-export type HealthDimension = "defect" | "maintainability" | "performance";
+export type ScoredHealthDimension = "defect" | "maintainability" | "performance";
 
-/** Canonical dimension order (parity-locked against core's `DIMENSIONS`). */
-export const HEALTH_DIMENSIONS: readonly HealthDimension[] = [
+/**
+ * The non-scoring fourth dimension. A marker homes here when it measures
+ * something no defect corpus labels, so it can never be calibrated and never
+ * earns weight. Its findings carry a zero health impact by construction and so
+ * are kept out of every impact-ranked queue, describing without accusing. That
+ * is about ranking, not existence: a surface that ranks nothing, such as one
+ * file's findings in an editor, asks for them and gets them.
+ *
+ * Mirror of `ADVISORY_DIMENSION` in core's `scoring.py`. Deliberately outside
+ * `HEALTH_DIMENSIONS`, which stays exactly the set that carries a score.
+ */
+export type AdvisoryHealthDimension = "advisory";
+
+/** Every dimension label a finding may carry on the wire, scored or not. */
+export type HealthDimension = ScoredHealthDimension | AdvisoryHealthDimension;
+
+/** Canonical SCORED dimension order (parity-locked against core's `DIMENSIONS`). */
+export const HEALTH_DIMENSIONS: readonly ScoredHealthDimension[] = [
   "defect",
   "maintainability",
   "performance",
 ] as const;
 
+/** The dimension whose findings never move a number. */
+export const ADVISORY_DIMENSION: AdvisoryHealthDimension = "advisory";
+
+/**
+ * What a code-health figure counts. `everything` is the calibrated score;
+ * `code_shape` removes the git-derived half, which rises as a file is worked
+ * on and so answers what a repository has been through rather than what its
+ * code is like.
+ */
+export type HealthCounts = "everything" | "code_shape";
+export const HEALTH_COUNTS: readonly HealthCounts[] = ["everything", "code_shape"] as const;
+
+/**
+ * Which half of a repository a health figure describes. Tests score higher
+ * than production code, so narrowing lowers every figure without a defect
+ * having been found — `all` is the default for that reason.
+ */
+export type HealthScope = "all" | "production";
+
+export const HEALTH_SCOPES: readonly HealthScope[] = ["all", "production"] as const;
+
 /** Display labels for the dimensions surfaced today. */
 export const HEALTH_DIMENSION_LABEL: Record<HealthDimension, string> = {
-  defect: "Defect risk",
+  defect: "Code health",
   maintainability: "Maintainability",
   performance: "Performance",
+  advisory: "Advisory",
 };
 
 /**
@@ -74,22 +113,41 @@ export const PERF_BOUNDARY_LABEL: Record<C4IoKind, string> = {
  * ------------------------------------------------------------------ */
 
 /**
- * The 3 defect-backed health buckets. Alert files carry roughly 17x the
- * defect rate of Healthy files on our calibration corpus, so the boundaries
- * are empirically defensible rather than arbitrary. This replaces the legacy
- * ad-hoc 4-band labeling (`critical/poor/fair/good`).
+ * The five absolute health bands: a score means the same thing behind a
+ * firewall as against a public corpus. Excellent and Good share one green and
+ * are told apart by the word. Mirror of `grading.py`, parity-tested both ways.
  */
-export type HealthBand = "healthy" | "warning" | "alert";
+export type HealthBand = "excellent" | "good" | "fair" | "needs_work" | "at_risk";
 
-/** Score at or above this is Healthy. */
-export const HEALTHY_MIN = 8.0;
-/** Score below this is Alert; `[ALERT_MAX, HEALTHY_MIN)` is Warning. */
-export const ALERT_MAX = 4.0;
+export const EXCELLENT_MIN = 8.5;
+export const GOOD_MIN = 7.0;
+export const FAIR_MIN = 5.5;
+export const NEEDS_WORK_MIN = 4.0;
+
+/** Worst-first, matching how the surfaces list files. */
+export const HEALTH_BAND_ORDER: readonly HealthBand[] = [
+  "at_risk",
+  "needs_work",
+  "fair",
+  "good",
+  "excellent",
+] as const;
 
 export const HEALTH_BAND_LABEL: Record<HealthBand, string> = {
-  healthy: "Healthy",
-  warning: "Warning",
-  alert: "Alert",
+  excellent: "Excellent",
+  good: "Good",
+  fair: "Fair",
+  needs_work: "Needs work",
+  at_risk: "At risk",
+};
+
+/** The range each band covers, for keys and legends that show the boundaries. */
+export const HEALTH_BAND_RANGE_LABEL: Record<HealthBand, string> = {
+  excellent: "8.5+",
+  good: "7.0 to 8.5",
+  fair: "5.5 to 7.0",
+  needs_work: "4.0 to 5.5",
+  at_risk: "under 4.0",
 };
 
 /**
@@ -97,9 +155,11 @@ export const HEALTH_BAND_LABEL: Record<HealthBand, string> = {
  * API-provided `band` where available; use this only when deriving locally.
  */
 export function bandForScore(score: number): HealthBand {
-  if (score < ALERT_MAX) return "alert";
-  if (score < HEALTHY_MIN) return "warning";
-  return "healthy";
+  if (score >= EXCELLENT_MIN) return "excellent";
+  if (score >= GOOD_MIN) return "good";
+  if (score >= FAIR_MIN) return "fair";
+  if (score >= NEEDS_WORK_MIN) return "needs_work";
+  return "at_risk";
 }
 
 export interface HealthBandShare {
@@ -112,7 +172,7 @@ export interface HealthBandShare {
 }
 
 /**
- * NLOC-weighted distribution of files across the 3 bands. The repo-level
+ * NLOC-weighted distribution of files across the bands. The repo-level
  * "health distribution" surfaced on the dashboard + badge.
  */
 export interface HealthDistribution {
@@ -179,6 +239,20 @@ export interface HealthFileMetric {
   maintainability_score?: number | null;
   performance_score?: number | null;
   /**
+   * The defect deduction split into the half a rewrite can move (code shape)
+   * and the half only time can (git history). They sum to the total deduction,
+   * so `unclamped_score` is `10 - structure - history` — the only number that
+   * moves for a file held at the score floor. Absent on older payloads.
+   */
+  structure_deduction?: number | null;
+  history_deduction?: number | null;
+  unclamped_score?: number | null;
+  /**
+   * Test material, decided at ingestion. Drives the production/all scope
+   * without re-deriving the answer from the path on every surface.
+   */
+  is_test?: boolean;
+  /**
    * Open performance-risk findings on this file. The performance lens on the
    * code-health map colors by this count (+ `performance_analyzed`), not by the
    * [9,10]-compressed `performance_score`, so a file with 40 N+1s reads
@@ -193,6 +267,24 @@ export interface HealthFileMetric {
    * surfaced nothing", never "verified fast". `null`/absent on older payloads.
    */
   performance_analyzed?: boolean | null;
+  /**
+   * Open causal opportunities on this file, and the observations behind them.
+   * The map's performance lens sizes its pressure ring by the opportunity
+   * count, because an opportunity is one thing a reader could go and do while
+   * an observation is one place a detector looked. Absent on payloads from a
+   * server that serves no materialized read model, which the lens renders as
+   * an unknown state rather than as zero.
+   */
+  performance_opportunities?: number | null;
+  performance_observations?: number | null;
+  /**
+   * Best available next step on this file: a stored plan outranks an advisory
+   * intervention, which outranks an investigation. `null` when the file
+   * carries no open opportunity. Never a claim about runtime magnitude.
+   */
+  performance_actionability?: PerformanceActionabilityState | null;
+  /** Best (lowest) queue rank position among this file's opportunities. */
+  performance_rank?: number | null;
   /**
    * Dominant-cause lead: the biomarker + reason of this file's worst finding, so
    * a low file can headline "the one reason" instead of a wall of markers. Null
@@ -231,6 +323,208 @@ export interface HealthFinding {
   dimension?: HealthDimension;
 }
 
+export type PerformanceExecutionContext = "production" | "tooling" | "test" | "unknown";
+export type PerformanceOpportunityConfidence = "high" | "medium" | "low";
+
+export interface PerformanceOpportunityFix {
+  strategy: string;
+  safety: "proven" | "advisory";
+  rationale: string;
+}
+
+export interface PerformanceOpportunityEvidence {
+  finding_id: string;
+  file_path: string;
+  biomarker_type: string;
+  function_name: string | null;
+  line_start: number | null;
+  line_end: number | null;
+  reason: string;
+  path: string[];
+  provenance: string;
+}
+
+export type PerformanceActionabilityState = "plan_ready" | "advisory" | "investigate";
+export type PerformancePlanStatus = "available" | "no_safe_plan" | "not_persisted";
+
+/** One rank term, the input it read, and the points it contributed. */
+export interface PerformanceWhyRanked {
+  factor: string;
+  value: string | number | boolean | null;
+  points: number;
+}
+
+/**
+ * The facets that are not published anywhere else on the row.
+ * `confidence` stays evidence confidence and `fix.safety` stays fix safety,
+ * so no value appears twice.
+ */
+export interface PerformanceOpportunityFacets {
+  actionability_confidence: PerformanceOpportunityConfidence;
+  exposure: string;
+  amplification: string;
+  leverage: string;
+  change_risk: string;
+}
+
+export interface PerformanceOpportunity {
+  opportunity_id: string;
+  /** Ids are stable within a model version and never translated across one. */
+  performance_model_version: number;
+  biomarker_type: string;
+  biomarker_types: string[];
+  boundary_kind: C4IoKind | null;
+  execution_context: PerformanceExecutionContext;
+  terminal_sink: string | null;
+  shared_path_suffix: string[];
+  intervention_symbol: string | null;
+  /** The file holding the symbol worth editing. */
+  file_path: string;
+  resource_fingerprints: string[];
+  affected_call_sites_total: number;
+  affected_files_total: number;
+  observations_total: number;
+  evidence: PerformanceOpportunityEvidence[];
+  evidence_truncated: boolean;
+  evidence_total: number;
+  evidence_emitted: number;
+  /** Offset for the next evidence page, absent once the last one is emitted. */
+  evidence_next_cursor?: number;
+  reliable_entry_reachability: boolean | null;
+  provenance: string;
+  /** Evidence confidence: how reliably the call path resolved. */
+  confidence: PerformanceOpportunityConfidence;
+  facets: PerformanceOpportunityFacets;
+  actionability_state: PerformanceActionabilityState;
+  actionability_reason: string;
+  prerequisites: string[];
+  rank_score: number;
+  rank_position: number;
+  rank_factors: Record<string, number>;
+  why_ranked: PerformanceWhyRanked[];
+  fix: PerformanceOpportunityFix | null;
+  /** Exact stored match. Never inferred from file, marker, or rank. */
+  plan_id: string | null;
+  plan_status: PerformancePlanStatus;
+  plan_reason: string;
+}
+
+/** Whether a quoted id still names something this index can resolve. */
+export interface PerformanceModelState {
+  state: "current" | "stale_model" | "unrecognized";
+  opportunity_id: string;
+  requested_model_version: number | null;
+  performance_model_version: number;
+  refresh_required: boolean;
+}
+
+/**
+ * One opportunity by id. An unresolved id still answers, with the model state
+ * and what to do about it, rather than reading as "nothing to fix here".
+ */
+export type PerformanceOpportunityDetail =
+  | ({
+      resolved: true;
+      lifecycle_status: "open" | "resolved";
+      analyzed_commit: string | null;
+      model_state: PerformanceModelState;
+      evidence_total: number;
+      evidence_emitted: number;
+      evidence_next_cursor?: number;
+    } & PerformanceOpportunity)
+  | {
+      resolved: false;
+      opportunity_id: string;
+      model_state: PerformanceModelState;
+      detail: string;
+    };
+
+/**
+ * Counts per value for one filter, computed from the base result rather than
+ * the filtered one, so selecting a value never erases its own alternatives.
+ * A value with no rows is absent rather than reported as zero.
+ */
+export interface PerformanceFacetCount {
+  value: string;
+  total: number;
+}
+
+/**
+ * The filters the server owns. Every key except `plan_state` is also a query
+ * parameter; plan state is counted per value but is not something the queue
+ * narrows by.
+ */
+export type PerformanceFacetKey =
+  | "context"
+  | "boundary"
+  | "confidence"
+  | "actionability"
+  | "plan_state";
+
+export type PerformanceFacets = Partial<Record<PerformanceFacetKey, PerformanceFacetCount[]>>;
+
+/** `all` widens the context filter; the four contexts stay separate under it. */
+export type PerformanceContextFilter = PerformanceExecutionContext | "all";
+
+/**
+ * The query the server answers, shared by the REST client and the views.
+ * An alias rather than an interface so a client can hand it to a generic
+ * query-parameter helper without restating every field.
+ */
+export type PerformanceOpportunityQuery = {
+  /**
+   * Canonical contexts. `production_tooling` is a retired spelling an older
+   * server still answers as Production+Tooling. It is never returned as a
+   * context, so only a legacy-compatibility path should send it.
+   */
+  context?: PerformanceContextFilter | "production_tooling";
+  boundary?: string;
+  /** Evidence confidence, requested apart from fix safety and actionability. */
+  confidence?: PerformanceOpportunityConfidence;
+  actionability?: PerformanceActionabilityState;
+  /** `summary` drops the explanatory fields and keeps identity and counts. */
+  view?: "detail" | "summary";
+  sort?: "rank" | "leverage" | "observations";
+  /**
+   * Scope to the opportunities whose intervention lives in these files. This
+   * is how a file-scoped surface asks the queue about one file instead of
+   * filtering a page it already narrowed.
+   */
+  file_paths?: string[];
+  limit?: number;
+  offset?: number;
+};
+
+export interface PerformanceOpportunitySummary {
+  /** `current` once materialized, `stale_model` after a model bump, or
+   * `unavailable` when this index has not been analyzed yet. */
+  status: "current" | "stale_model" | "unavailable";
+  /** Causes in the selected context. Equal to `repository_total` under `all`. */
+  total: number;
+  /** Causes in every context, so a scoped headline never hides the census.
+   * Absent from a server that predates context scoping, whose `total` is
+   * already the repository-wide count. */
+  repository_total?: number;
+  performance_model_version?: number;
+  /** The model the stored rows were written by, when it trails the current one. */
+  materialized_model_version?: number;
+  analyzed_commit?: string | null;
+  actionability?: Partial<Record<PerformanceActionabilityState, number>>;
+  context?: Partial<Record<PerformanceExecutionContext, number>>;
+  boundary?: Record<string, number>;
+  with_plan_total: number;
+  /** Why the queue is not current, when it is not. */
+  reason?: string;
+  detail?: string;
+}
+
+export interface PerformanceOpportunityPage extends Paginated<PerformanceOpportunity> {
+  summary: PerformanceOpportunitySummary;
+  facets: PerformanceFacets;
+  /** Filter values the server did not recognize, named rather than dropped. */
+  ignored_arguments?: Record<string, string>;
+}
+
 export interface HealthModuleRow {
   module: string;
   file_count: number;
@@ -260,7 +554,12 @@ export interface HealthOverviewSummary {
   worst_performer_path: string | null;
   worst_performer_score: number | null;
   open_findings: number;
-  severity_breakdown?: { critical: number; high: number; medium: number; low: number };
+  severity_breakdown?: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
   /** Repo-level band derived from `average_health` (added in the band/distribution layer). */
   band?: HealthBand;
   /**
@@ -287,11 +586,23 @@ export interface HealthOverviewSummary {
    *  (a clean repo returns `null` rather than a misleading "worst" at 10.0). */
   worst_performance_path?: string | null;
   worst_performance_score?: number | null;
+  /**
+   * `average_health`'s two halves, in deduction points: what the code's own
+   * shape costs, and what its git history costs. They sum to the total
+   * deduction, so ten minus both is the unclamped score. `null`/absent until
+   * the rows carry the split.
+   */
+  structure_average?: number | null;
+  history_average?: number | null;
+  /** What this response counted. Echoed so a label cannot get ahead of its data. */
+  counts?: HealthCounts;
+  /** Files a code-shape reading cannot answer for, having no recorded split. */
+  unscored_files?: number;
 }
 
 export interface HealthOverviewResponse {
   summary: HealthOverviewSummary;
-  /** NLOC-weighted file distribution across the 3 bands. */
+  /** NLOC-weighted file distribution across the health bands. */
   distribution?: HealthDistribution | null;
   defect_accuracy?: DefectAccuracy | null;
   files: HealthFileMetric[];
@@ -317,6 +628,9 @@ export interface HealthFilesResponse {
 }
 
 export interface HealthFilesQuery {
+  counts?: HealthCounts;
+  /** Which half of the repository to describe. Defaults to `"all"`. */
+  scope?: HealthScope;
   limit?: number;
   offset?: number;
   sort?: string;
@@ -336,6 +650,96 @@ export interface HealthFilesQuery {
    * row parses as one; ask for `"full"` (the default) if you print any of them.
    */
   fields?: "full" | "summary";
+}
+
+/* ------------------------------------------------------------------ *
+ * Map feed
+ * ------------------------------------------------------------------ */
+
+/**
+ * How the server chose the drawn field.
+ *
+ * `active_then_performance_then_nloc`: the caller's guaranteed paths first,
+ * then the files carrying open performance opportunities in rank order, then
+ * lines-of-code descending for whatever capacity is left. Ranking the whole
+ * repository by size alone is a defensible sample for the health lens and the
+ * wrong one for performance, because a small file can hold the worst cause.
+ */
+export type HealthMapSelectionBasis = "active_then_performance_then_nloc";
+
+export interface HealthMapSelection {
+  basis: HealthMapSelectionBasis;
+  /** Paths the caller asked to pin, in the order they were asked for. */
+  active_requested: string[];
+  active_shown: string[];
+  /** Requested paths with no drawable metric row, so nothing pretends they are there. */
+  active_missing: string[];
+  performance_shown: number;
+  performance_eligible: number;
+  nloc_shown: number;
+}
+
+/** What the cap pushed out, in the units a reader would ask about. */
+export interface HealthMapOmissions {
+  files: number;
+  performance_files: number;
+  opportunities: number;
+  observations: number;
+}
+
+export interface HealthMapModuleRollup {
+  module: string;
+  files_shown: number;
+  opportunities: number;
+  observations: number;
+  plan_ready: number;
+  /** Best queue rank in the module, or `null` when it carries no opportunity. */
+  best_rank: number | null;
+}
+
+/** Repository-wide performance state the lens needs to describe itself. */
+export interface HealthMapPerformance {
+  files_with_opportunities: number;
+  files_with_opportunities_eligible: number;
+  opportunities_total: number;
+  observations_total: number;
+  actionability: {
+    plan_ready: number;
+    advisory: number;
+    investigate: number;
+  };
+  model_version: number | null;
+  analyzed_commit: string | null;
+}
+
+/**
+ * The bounded field the map draws, plus the exact scope of what it leaves out.
+ *
+ * The rendered set and the counts describing it come from one response, so a
+ * caption can never disagree with the field beside it.
+ */
+export interface HealthMapFeed {
+  files: HealthFileMetric[];
+  cap: number;
+  shown: number;
+  /** Files that could be drawn at all: a zero-NLOC file cannot be sized. */
+  eligible_total: number;
+  repository_total: number;
+  selection: HealthMapSelection;
+  omitted: HealthMapOmissions;
+  recovery: Record<string, string>;
+  modules: HealthMapModuleRollup[];
+  /** `null` when this index has never materialized the performance read model. */
+  performance: HealthMapPerformance | null;
+}
+
+export interface HealthMapQuery {
+  counts?: HealthCounts;
+  cap?: number;
+  /** Paths guaranteed a node, admitted before any other band. */
+  active?: string[];
+  /** Which half of the repository to describe. Defaults to `"all"`. */
+  scope?: HealthScope;
 }
 
 /* ------------------------------------------------------------------ *
@@ -466,35 +870,70 @@ export interface FileHealthTrend {
 export interface HealthTrendResponse {
   history: Array<{
     taken_at: string | null;
-    hotspot_health: number;
+    /** `null` under a narrowed scope, which recorded only the average. */
+    hotspot_health: number | null;
     average_health: number;
     worst_performer_path: string | null;
     worst_performer_score: number | null;
+    /**
+     * The headline's two halves in deduction points, and the maintainability
+     * pillar, at this snapshot. `null` before each was recorded and under a
+     * narrowed scope, so a series can start partway along the axis rather than
+     * reading an unrecorded point as a zero.
+     */
+    structure_average?: number | null;
+    history_average?: number | null;
+    maintainability_average?: number | null;
   }>;
   summary: {
-    current_hotspot_health: number;
+    /** `null` under a narrowed scope: only the average covers both populations. */
+    current_hotspot_health: number | null;
     current_average_health: number;
     previous_hotspot_health: number | null;
     previous_average_health: number | null;
     hotspot_delta: number | null;
     average_delta: number | null;
+    /** The newest reading's two halves, in deduction points. */
+    current_structure_deduction?: number | null;
+    current_history_deduction?: number | null;
   };
   alerts: Array<{
+    /**
+     * `"declining"` and `"predicted_decline"` are regressions. `"history_drag"`
+     * is a fall whose whole cause is git history while the code shape held or
+     * improved: the same numbers with the opposite reading, and nothing to fix.
+     */
     kind: string;
     metric: string;
     current: number;
     baseline: number | null;
     delta: number;
     message: string;
+    /**
+     * Which half of the headline moved, and how far each half moved in score
+     * points. These are changes in mean deduction, so they sum to `delta` only
+     * while no file sits at the score floor. `null` on the hotspot metric,
+     * whose halves are not snapshotted, and on histories predating the split.
+     */
+    driver?: "structure" | "history" | null;
+    structure_delta?: number | null;
+    history_delta?: number | null;
   }>;
   /** Largest movements first, in either direction, capped server-side. */
-  file_deltas: Array<{ file_path: string; before: number; after: number; delta: number }>;
+  file_deltas: Array<{
+    file_path: string;
+    before: number;
+    after: number;
+    delta: number;
+  }>;
   /**
    * How many files moved in total, before the cap. Optional: the hosted
    * backend does not send it, so consumers fall back to `file_deltas.length`.
    */
   file_deltas_total?: number;
   snapshot_count: number;
+  /** Which half of the repository these figures describe. */
+  scope?: HealthScope;
 }
 
 /* ------------------------------------------------------------------ *
@@ -582,6 +1021,13 @@ export interface InferredTestMap {
   files_reached: number;
   files_not_reached: number;
   test_file_count: number;
+  /**
+   * Present only when `basis` is `measured` (the hybrid shape): how many files
+   * carry a measured coverage row. On that shape `inferred` is scoped to the
+   * files *without* a measured row, so this lets the UI state the split
+   * (measured vs graph-answered) honestly. Absent on the pure-inferred shape.
+   */
+  measured_file_count?: number;
 }
 
 /** Which tests reach one file, and which tier found them. */
@@ -623,9 +1069,13 @@ export interface HealthCoverageResponse {
    */
   basis?: CoverageBasis;
   /**
-   * Present only when `basis` is `inferred`. `summary`, `files` and `modules`
-   * are then empty: measured rows and inferred rows never share an array, so no
-   * consumer can render one through the other's code path by accident.
+   * Present only when `basis` is `inferred` (pure-inferred shape: `summary`,
+   * `files` and `modules` are empty so no consumer renders one through the
+   * other's code path) OR when `basis` is `measured` and the repo has files
+   * with no measured row (hybrid shape: the measured fields are populated, and
+   * `inferred` holds the graph answer for exactly the non-measured files).
+   * On the hybrid shape `measured_file_count` states the split. In both shapes
+   * the inferred map carries counts only — never a percentage.
    */
   inferred?: InferredTestMap;
 }
@@ -649,6 +1099,11 @@ export interface HealthWorkItem {
   primary_finding_id?: string;
   total_impact: number;
   finding_count: number;
+  /**
+   * How many of those are still open. Equal to `finding_count` under the
+   * default status filter. Optional: an older backend does not send it.
+   */
+  open_finding_count?: number;
   biomarkers: string[];
   effort_bucket: "S" | "M" | "L" | "XL";
   impact_per_effort: number;
@@ -672,16 +1127,42 @@ export interface HealthWorkItem {
 
 export interface HealthWorkQueueResponse {
   targets: HealthWorkItem[];
+  /** Files matching the filters, before the page slice. */
   total: number;
+  /**
+   * Findings across those files. The view lists files but triages findings, so
+   * the file count alone leaves the size of the work unsaid. Optional: an older
+   * backend does not send it and the view omits the clause rather than
+   * inventing one.
+   */
+  finding_total?: number;
+  offset?: number;
+  limit?: number;
 }
 
 export interface HealthWorkQueueQuery {
+  counts?: HealthCounts;
   limit?: number;
+  offset?: number;
   module?: string;
   biomarker?: string;
+  /** Severity floor. Ignored by the server when `severity` is given. */
   min_severity?: string;
+  /** Exact severities, comma-separated. */
+  severity?: string;
+  dimension?: HealthDimension;
+  /** Comma-separated statuses, or `"all"`. Defaults to open work. */
+  status?: string;
+  /** Substring filter on `file_path`. */
+  search?: string;
+  only_hotspots?: boolean;
+  only_untested?: boolean;
+  /** Files below the score green starts at. */
+  only_failing?: boolean;
   max_effort?: string;
   sort?: "impact_per_effort" | "total_impact" | "score" | "finding_count";
+  /** Which half of the repository to describe. Defaults to `"all"`. */
+  scope?: HealthScope;
 }
 
 /** @deprecated Use HealthWorkItem; this is a file triage row, not a plan. */

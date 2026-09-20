@@ -3,20 +3,23 @@
 Two delivery moments, both pure indexed-SQLite lookups (no LLM, no network,
 target well under 100ms):
 
-  * SessionStart — score the repo's active decisions against the session's
-    likely working set (dirty/staged files, branch-vs-main changed files, the
-    previous session's edited files, branch-name tokens) expanded one hop via
-    import edges and co-change partners, and inject the top few under a hard
-    token cap. Relevance or silence: nothing clears the floor, nothing is
-    injected. Never top-confidence-globally.
+  * SessionStart — score the repo's decisions against the session's likely
+    working set (dirty/staged files, branch-vs-main changed files, the previous
+    session's edited files, branch-name tokens) expanded one hop via import
+    edges and co-change partners, and inject the top few under a hard token
+    cap. Relevance or silence: nothing clears the floor, nothing is injected.
+    Never top-confidence-globally. Two labelled sections under two separate
+    caps: accepted decisions, then the candidates nobody has agreed to. The
+    second cannot shrink the first. A dismissed record is in neither.
   * Edit-time (PostToolUse Edit/Write) — when the edited file has a governing
     decision (via decision_node_links), say so once per session per decision,
     under a strict per-session cap.
 
-Repo-wide session rules (user corrections with no named files, so no node
-links) can only reach the agent here: they carry a flat base relevance at
-SessionStart so a rule like "never use em dashes" is deliverable at all, but
-they still compete under the same floor and cap as everything else.
+Working agreements (records whose ``kind`` says they govern how the work is
+conducted, so they name no file and have no node links) can only reach the
+agent here: they carry a flat base relevance at SessionStart so a rule like
+"never use em dashes" is deliverable at all, but they still compete under the
+same floor and cap as everything else.
 
 Every injected decision id is recorded in the sessions.db sidecar so the
 update-time miner can check whether the guidance was followed or contradicted
@@ -32,12 +35,16 @@ import re
 import sqlite3
 from pathlib import Path
 
+from repowise.core.co_change import parse_partners
+
 # --- SessionStart tunables -------------------------------------------------
 
 #: Hard budget for the whole injected block, in estimated tokens (chars/4).
 _TOKEN_CAP = 400
-#: Minimum final score a decision needs to be injected at all.
-_RELEVANCE_FLOOR = 0.25
+#: Minimum final score a decision needs to be injected at all. Rescaled when
+#: confidence stopped being near-constant per source: keeping 0.25 would have
+#: turned this into a gate on how much a record states.
+_RELEVANCE_FLOOR = 0.20
 #: Never inject more than this many decisions regardless of the token cap.
 _MAX_ITEMS = 6
 #: Working-set caps keep the SQL IN-lists and the hop expansion bounded.
@@ -52,7 +59,7 @@ _W_HOP_FILE = 0.3
 _MODULE_FACTOR = 0.5
 #: Score contribution when a branch-name token appears in the decision text.
 _W_BRANCH_TOKEN = 0.4
-#: Base relevance for repo-wide session rules (active, session-sourced, no
+#: Base relevance for working agreements (accepted, ``kind = 'agreement'``, no
 #: node links). They apply everywhere, so SessionStart is their only path.
 _W_GLOBAL_RULE = 0.5
 #: At most this many unlinked global rules per block. Working-set-relevant
@@ -60,6 +67,21 @@ _W_GLOBAL_RULE = 0.5
 #: mis-promoted one-off (dogfood: "merge the backend PRs" made it to active)
 #: costs at most one slot until it is dismissed.
 _MAX_GLOBAL_RULES = 2
+
+#: Budget for the candidate section, held separately from ``_TOKEN_CAP`` rather
+#: than carved out of it. A shared cap would mean every candidate admitted
+#: displaces an accepted decision that is injected today, which is the one
+#: thing restoring candidates must not do; a separate cap makes the trade
+#: explicit and bounded instead. Tighter than the accepted block by design:
+#: nobody has agreed to any of these.
+_CANDIDATE_TOKEN_CAP = 120
+#: Never more than this many candidates, whatever the token budget allows.
+_MAX_CANDIDATE_ITEMS = 2
+#: And at most one of those slots may go to an unlinked repo-wide rule. A
+#: repo-wide candidate clears the relevance floor on every session by
+#: construction, so without this the lane would never carry a candidate that
+#: is actually about the files in hand.
+_MAX_CANDIDATE_GLOBALS = 1
 
 #: Branch-name tokens that identify workflow, not topic.
 _GENERIC_BRANCH_TOKENS = frozenset(
@@ -275,16 +297,9 @@ def _expand_one_hop(conn: sqlite3.Connection, seeds: list[str]) -> set[str]:
             tuple(seeds),
         ).fetchall()
         for (raw,) in rows:
-            try:
-                partners = json.loads(raw or "[]")
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(partners, list):
-                continue
-            for p in partners:
-                path = p.get("file_path") if isinstance(p, dict) else None
-                if isinstance(path, str) and path and path not in seeds:
-                    hop.add(path)
+            for partner in parse_partners(raw):
+                if partner.file_path not in seeds:
+                    hop.add(partner.file_path)
                     if len(hop) >= _MAX_HOP:
                         return hop
     return hop
@@ -295,12 +310,168 @@ def _expand_one_hop(conn: sqlite3.Connection, seeds: list[str]) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
+#: Governance is acceptance, not a status string. Spelled out here rather than
+#: imported because this path opens the store with stdlib sqlite3 and never
+#: imports ``repowise.core``; it mirrors ``crud.authority.ACCEPTED_SQL_PREDICATE``.
+_ACCEPTED = "EXISTS (SELECT 1 FROM decision_acceptances a WHERE a.decision_id = {ref}.id)"
+
+#: What to add to a governance query on a store that predates the entity split.
+#: Nothing, deliberately. This path opens the store read-only and never runs the
+#: schema reconciler, so it cannot create the table and cannot wait for one: an
+#: acceptance filter there would silently strip every standing decision from the
+#: agent, with no error and no way for this process to fix it. The status column
+#: is what such a store has, and it is what the split's own migration reads.
+_UNMIGRATED = "1 = 1"
+
+#: ``lifecycle.AGREEMENT_KIND``, spelled out for the same reason as _ACCEPTED.
+_AGREEMENT_KIND = "agreement"
+
+#: Capture tiers a record may be delivered on with no acceptance row. A
+#: ``(source, scope_basis)`` pair belongs here only once a census of its
+#: (record, file) pairs has measured at least 90% governs with a 95% lower
+#: bound of at least 80%; today only ``comment`` has. That is a result about
+#: this corpus and not a property of the miner, so re-measure before adding a
+#: pair, and re-measure if comment attribution changes.
+_EVIDENCE_TIERS: frozenset[tuple[str, str]] = frozenset({("comment", "")})
+
+#: Measured trust per tier, for ordering the candidate lane only. It orders,
+#: it does not admit: the relevance floor still decides what enters the lane.
+_TIER_TRUST: dict[tuple[str, str], int] = {
+    ("comment", ""): 2,
+    ("pr", "commit_selected"): 1,
+    ("git_archaeology", "commit_selected"): 1,
+}
+
+
+def _accepted_clause(conn: sqlite3.Connection, ref: str) -> str:
+    """The acceptance filter for *ref*, or a no-op on a pre-split store."""
+    try:
+        found = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("decision_acceptances",),
+        ).fetchone()
+    except sqlite3.Error:
+        return _UNMIGRATED
+    return _ACCEPTED.format(ref=ref) if found else _UNMIGRATED
+
+
+def _kind_column(conn: sqlite3.Connection) -> str:
+    """``kind`` where the store has the column, ``NULL`` where it does not.
+
+    Probed the way :func:`_accepted_clause` probes for the acceptance table,
+    and for the same reason: this path opens the store read-only, never runs
+    the schema reconciler, and so has to read whatever it is given. Selecting
+    a literal NULL keeps one shape of row for both stores, and NULL is what
+    :func:`_is_repo_wide` reads as "this store cannot answer".
+    """
+    try:
+        cols = conn.execute("PRAGMA table_info(decision_records)").fetchall()
+    except sqlite3.Error:
+        return "NULL"
+    return "kind" if any(c[1] == "kind" for c in cols) else "NULL"
+
+
+def _has_column(conn: sqlite3.Connection, column: str) -> bool:
+    """Whether ``decision_records`` has *column* on this store.
+
+    Probed for the reason :func:`_kind_column` gives. A store without
+    ``scope_basis`` cannot say how a record was scoped, so it delivers nothing
+    on evidence and keeps the acceptance path it has.
+    """
+    try:
+        return any(c[1] == column for c in conn.execute("PRAGMA table_info(decision_records)"))
+    except sqlite3.Error:
+        return False
+
+
+def _untouched_clause(conn: sqlite3.Connection, ref: str) -> str:
+    """SQL matching records no reviewer has acted on.
+
+    ``review_state`` is the column that knows, not ``status``: of the four
+    review actions only ``dismiss_candidate`` writes ``status``, so a merged or
+    split-flagged candidate still reads as ``proposed`` with no acceptance row.
+    ``1 = 0`` where the store has no such table -- unreadable is not untouched.
+    """
+    try:
+        found = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("decision_candidate_meta",),
+        ).fetchone()
+    except sqlite3.Error:
+        return "1 = 0"
+    if not found:
+        return "1 = 0"
+    return (
+        f"NOT EXISTS (SELECT 1 FROM decision_candidate_meta m "
+        f"WHERE m.decision_id = {ref}.id AND m.review_state <> 'open')"
+    )
+
+
+def _evidence_tier_clause(conn: sqlite3.Connection, ref: str) -> str:
+    """SQL matching records whose capture tier delivers on its own evidence.
+
+    ``1 = 0`` where the store cannot answer, which is the safe direction: a
+    tier that cannot be read is not a tier that has been earned.
+    """
+    if not _EVIDENCE_TIERS or not _has_column(conn, "scope_basis"):
+        return "1 = 0"
+    # Interpolated, so anything but a bare identifier must not reach the SQL.
+    if any(
+        not isinstance(v, str) or not re.fullmatch(r"[a-z_]*", v)
+        for pair in _EVIDENCE_TIERS
+        for v in pair
+    ):
+        return "1 = 0"
+    terms = [
+        f"({ref}.source = '{src}' AND COALESCE({ref}.scope_basis, '') = '{basis}')"
+        for src, basis in sorted(_EVIDENCE_TIERS)
+    ]
+    return "(" + " OR ".join(terms) + ")"
+
+
 def _load_active_decisions(conn: sqlite3.Connection) -> list[dict]:
-    """Active decisions with their node links, as plain dicts."""
+    """Accepted, current decisions with their node links, as plain dicts."""
+    return _load_decisions(
+        conn,
+        "status = 'active' AND " + _accepted_clause(conn, "decision_records"),
+    )
+
+
+def _load_candidate_decisions(conn: sqlite3.Connection) -> list[dict]:
+    """Records nobody has accepted, and that nobody has tombstoned either.
+
+    The mirror image of :func:`_load_active_decisions`, and the same statuses
+    ``_answer_context.fetch_relevant_decisions`` reads: ``active`` and
+    ``proposed`` are live claims, while ``deprecated``, ``superseded`` and
+    ``dismissed`` are history and must not be put to an agent as something to
+    consider. Dismissed is the load-bearing one — a candidate tombstoned
+    without ever having been accepted carries no acceptance row, so the
+    acceptance test alone reads it as an ordinary candidate.
+
+    On a store that predates the entity split :func:`_accepted_clause` is
+    ``1 = 1``, so this returns nothing at all. That is the right answer rather
+    than a degradation: such a store cannot tell a candidate from a decision,
+    and the fallback it does have already delivers its records through the
+    accepted path. Guessing here would inject its whole review queue.
+    """
+    return _load_decisions(
+        conn,
+        "status IN ('active', 'proposed') AND NOT ("
+        + _accepted_clause(conn, "decision_records")
+        + ")",
+    )
+
+
+def _load_decisions(conn: sqlite3.Connection, where: str) -> list[dict]:
+    """Decision rows matching *where*, with their node links, as plain dicts."""
     try:
         rows = conn.execute(
-            "SELECT id, title, decision, rationale, confidence, staleness_score, source "
-            "FROM decision_records WHERE status = 'active'"
+            "SELECT id, title, decision, rationale, confidence, staleness_score, source, "
+            + _kind_column(conn)
+            + ", "
+            + ("COALESCE(scope_basis, '')" if _has_column(conn, "scope_basis") else "''")
+            + " FROM decision_records WHERE "
+            + where
         ).fetchall()
     except sqlite3.Error:
         return []
@@ -313,6 +484,8 @@ def _load_active_decisions(conn: sqlite3.Connection) -> list[dict]:
             "confidence": r[4] if isinstance(r[4], (int, float)) else 0.5,
             "staleness": r[5] if isinstance(r[5], (int, float)) else 0.0,
             "source": r[6] or "",
+            "kind": r[7],
+            "basis": r[8] or "",
             "links": [],
         }
         for r in rows
@@ -329,6 +502,23 @@ def _load_active_decisions(conn: sqlite3.Connection) -> list[dict]:
         ):
             by_id[decision_id]["links"].append((_norm_path(node_id), link_type))
     return decisions
+
+
+def _is_repo_wide(decision: dict) -> bool:
+    """Whether *decision* governs the repository rather than particular files.
+
+    Mirrors ``crud.authority._is_repo_wide``, which this path cannot import:
+    an agreement that names files has been given a real scope by something and
+    the ordinary overlap rules apply to it, so the noun is necessary and not
+    sufficient.
+
+    A store written before the entity split has no noun to read, and refusing
+    to call anything repo-wide there would stop delivering the rules it does
+    hold. That store gets the guess this function replaces.
+    """
+    if decision["kind"] is None:
+        return not decision["links"] and decision["source"] == "session"
+    return decision["kind"] == _AGREEMENT_KIND and not decision["links"]
 
 
 def _freshness(staleness: float) -> float:
@@ -362,9 +552,9 @@ def _score_decision(
         text = f"{decision['title']} {decision['decision']}".lower()
         if any(t in text for t in branch_tokens):
             relevance = min(1.0, relevance + _W_BRANCH_TOKEN)
-    if not decision["links"] and decision["source"] == "session":
-        # A repo-wide rule mined from user corrections: applies everywhere,
-        # so it gets a base relevance instead of file overlap.
+    if _is_repo_wide(decision):
+        # A working agreement: it applies everywhere, so it gets a base
+        # relevance instead of file overlap.
         relevance = max(relevance, _W_GLOBAL_RULE)
     return relevance * decision["confidence"] * _freshness(decision["staleness"])
 
@@ -390,57 +580,138 @@ def _format_decision_line(decision: dict) -> str:
     return line
 
 
-def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
-    """The relevance-ranked SessionStart decision block, or None (silence)."""
-    conn = _open_wiki_ro(repo_path)
-    if conn is None:
-        return None
-    try:
-        decisions = _load_active_decisions(conn)
-        if not decisions:
-            return None
-        seeds, branch = _collect_seeds(repo_path)
-        hop = _expand_one_hop(conn, seeds)
-        tokens = _branch_tokens(branch)
+_ACCEPTED_HEADER = (
+    "[repowise] Standing decisions relevant to this session's working set "
+    "(accumulated from prior sessions; follow them unless the user says otherwise):"
+)
 
-        scored = [(d, _score_decision(d, set(seeds), hop, tokens)) for d in decisions]
-        scored = [(d, s) for d, s in scored if s >= _RELEVANCE_FLOOR]
-        if not scored:
-            return None
+#: Candidates are mined, not agreed. The header carries the whole of that
+#: distinction in the transcript, so it says it in words rather than leaving an
+#: agent to infer a lane from a blank line.
+_CANDIDATE_HEADER = (
+    "[repowise] Proposed but NOT accepted - mined from prior sessions and "
+    "awaiting review. Weigh these; do not treat them as rules:"
+)
+
+
+def _tier_trust(decision: dict) -> int:
+    """How far the capture tier of *decision* was measured to be trusted."""
+    return _TIER_TRUST.get((decision.get("source") or "", decision.get("basis") or ""), 0)
+
+
+def _rank(
+    decisions: list[dict],
+    seeds: set[str],
+    hop: set[str],
+    tokens: list[str],
+    *,
+    by_tier: bool = False,
+) -> list[dict]:
+    """Decisions above the relevance floor, most relevant first.
+
+    *by_tier* orders by measured capture tier before relevance, for the
+    candidate lane only: nobody has agreed to anything there, so how a record
+    was scoped is all that separates two of them. The accepted lane does not
+    use it, because a signature outranks a capture tier.
+    """
+    scored = [(d, _score_decision(d, seeds, hop, tokens)) for d in decisions]
+    scored = [(d, score) for d, score in scored if score >= _RELEVANCE_FLOOR]
+    if by_tier:
+        scored.sort(key=lambda pair: (_tier_trust(pair[0]), pair[1]), reverse=True)
+    else:
         scored.sort(key=lambda pair: pair[1], reverse=True)
-    finally:
-        conn.close()
+    return [d for d, _ in scored]
 
-    header = (
-        "[repowise] Standing decisions relevant to this session's working set "
-        "(accumulated from prior sessions; follow them unless the user says otherwise):"
-    )
+
+def _select_lines(
+    ranked: list[dict], header: str, token_cap: int, max_items: int, max_globals: int
+) -> tuple[list[str], list[dict]]:
+    """Render *ranked* under its own caps.
+
+    Returns the header plus the rendered lines, and the decisions behind them.
+    The caps are arguments rather than module reads because the two sections
+    are budgeted separately, which is the point of having two.
+
+    A line that does not fit is skipped, not read as the end of the list. One
+    line can cost more than a whole section's budget, so stopping there makes
+    the section's contents a function of the top record's verbosity rather
+    than of its rank, and a single wordy record silences the section.
+    """
     lines = [header]
-    budget = _TOKEN_CAP - _estimate_tokens(header)
+    budget = token_cap - _estimate_tokens(header)
     shown: list[dict] = []
     globals_shown = 0
-    for decision, _score in scored:
-        if len(shown) >= _MAX_ITEMS:
+    for decision in ranked:
+        if len(shown) >= max_items:
             break
-        is_global = not decision["links"] and decision["source"] == "session"
-        if is_global and globals_shown >= _MAX_GLOBAL_RULES:
+        is_global = _is_repo_wide(decision)
+        if is_global and globals_shown >= max_globals:
             continue
         line = _format_decision_line(decision)
         cost = _estimate_tokens(line)
         if cost > budget:
-            break
+            continue
         lines.append(line)
         budget -= cost
         shown.append(decision)
         if is_global:
             globals_shown += 1
-    if not shown:
+    return lines, shown
+
+
+def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
+    """The relevance-ranked SessionStart decision block, or None (silence).
+
+    Two sections under two budgets: accepted decisions under ``_TOKEN_CAP``,
+    exactly as before, then candidates under ``_CANDIDATE_TOKEN_CAP``. The
+    accepted section is selected first and nothing in the second can reduce
+    what it holds, so restoring candidates cannot cost an agent a rule it is
+    given today. Either section may come back empty; the block is emitted when
+    either one is not.
+    """
+    conn = _open_wiki_ro(repo_path)
+    if conn is None:
+        return None
+    try:
+        decisions = _load_active_decisions(conn)
+        candidates = _load_candidate_decisions(conn)
+        if not decisions and not candidates:
+            return None
+        seeds, branch = _collect_seeds(repo_path)
+        seed_set = set(seeds)
+        hop = _expand_one_hop(conn, seeds)
+        tokens = _branch_tokens(branch)
+        ranked = _rank(decisions, seed_set, hop, tokens)
+        ranked_candidates = _rank(candidates, seed_set, hop, tokens, by_tier=True)
+    finally:
+        conn.close()
+
+    accepted_lines, shown = _select_lines(
+        ranked, _ACCEPTED_HEADER, _TOKEN_CAP, _MAX_ITEMS, _MAX_GLOBAL_RULES
+    )
+    candidate_lines, candidates_shown = _select_lines(
+        ranked_candidates,
+        _CANDIDATE_HEADER,
+        _CANDIDATE_TOKEN_CAP,
+        _MAX_CANDIDATE_ITEMS,
+        _MAX_CANDIDATE_GLOBALS,
+    )
+    lines: list[str] = []
+    if shown:
+        lines += accepted_lines
+    if candidates_shown:
+        lines += candidate_lines
+    if not lines:
         return None
     from repowise.cli.hook_ledger import _record_injections
 
     block = "\n".join(lines)
     _record_injections(
-        repo_path, session_id, [d["id"] for d in shown], node_id="", chars=len(block)
+        repo_path,
+        session_id,
+        [d["id"] for d in shown + candidates_shown],
+        node_id="",
+        chars=len(block),
     )
     return block
 
@@ -451,7 +722,16 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
 
 
 def _governing_decisions(conn: sqlite3.Connection, rel: str) -> list[dict]:
-    """Active decisions governing *rel* via file links or module-prefix links.
+    """Decisions governing *rel* via file links or module-prefix links.
+
+    Two disjoint ways in: a record someone accepted, or one nobody has
+    reviewed whose capture tier was measured to hold (:data:`_EVIDENCE_TIERS`).
+    Review wins either way -- accepting delivers whatever the tier, and any
+    other review action removes the record from the tier branch.
+
+    **File links only.** What was measured is whether a record governs a file
+    it names; a module link claims a whole subtree, so those stay
+    acceptance-only.
 
     Link node ids are matched in POSIX regardless of how they were stored
     (Windows extraction persists backslashes). Top-level module links are
@@ -460,30 +740,53 @@ def _governing_decisions(conn: sqlite3.Connection, rel: str) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
     native = rel.replace("/", "\\")
+    accepted = _accepted_clause(conn, "d")
+    on_evidence = (
+        f"(d.status IN ('active', 'proposed') AND NOT ({accepted}) "
+        f"AND {_untouched_clause(conn, 'd')} "
+        f"AND {_evidence_tier_clause(conn, 'd')})"
+    )
+    governs_file = f"(d.status = 'active' AND {accepted}) OR {on_evidence}"
+    # A tier delivers on the surface it was measured on: file pairs, not
+    # subtrees.
+    governs_module = f"d.status = 'active' AND {accepted}"
     with contextlib.suppress(sqlite3.Error):
         for row in conn.execute(
-            "SELECT d.id, d.title, d.decision, d.rationale "
+            "SELECT d.id, d.title, d.decision, d.rationale, " + accepted + " "
             "FROM decision_node_links l JOIN decision_records d ON d.id = l.decision_id "
-            "WHERE l.node_id IN (?, ?) AND l.link_type = 'file' AND d.status = 'active'",
+            "WHERE l.node_id IN (?, ?) AND l.link_type = 'file' AND (" + governs_file + ")",
             (rel, native),
         ):
             if row[0] not in seen:
                 seen.add(row[0])
-                out.append({"id": row[0], "title": row[1], "decision": row[2], "rationale": row[3]})
+                out.append(_governing_row(row))
         # Module links are few; prefix-match them in Python.
         for row in conn.execute(
-            "SELECT d.id, d.title, d.decision, d.rationale, l.node_id "
+            "SELECT d.id, d.title, d.decision, d.rationale, " + accepted + ", l.node_id "
             "FROM decision_node_links l JOIN decision_records d ON d.id = l.decision_id "
-            "WHERE l.link_type = 'module' AND d.status = 'active'"
+            "WHERE l.link_type = 'module' AND (" + governs_module + ")"
         ):
             if (
                 row[0] not in seen
-                and _module_deep_enough(row[4])
-                and rel.startswith(_norm_path(row[4]).rstrip("/") + "/")
+                and _module_deep_enough(row[5])
+                and rel.startswith(_norm_path(row[5]).rstrip("/") + "/")
             ):
                 seen.add(row[0])
-                out.append({"id": row[0], "title": row[1], "decision": row[2], "rationale": row[3]})
+                out.append(_governing_row(row))
+    # A reviewed decision outranks a mined one whatever the link order said.
+    out.sort(key=lambda d: not d["accepted"])
     return out
+
+
+def _governing_row(row: tuple) -> dict:
+    """One ``_governing_decisions`` row, with how it earned its place."""
+    return {
+        "id": row[0],
+        "title": row[1],
+        "decision": row[2],
+        "rationale": row[3],
+        "accepted": bool(row[4]),
+    }
 
 
 def _session_evidence_count(conn: sqlite3.Connection, decision_id: str) -> int:
@@ -534,7 +837,15 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
     why = _clip(decision["rationale"] or decision["decision"], _CLIP_RATIONALE)
     if _echoes_title(decision["title"], why):
         why = ""  # legacy rows echo the title into decision/rationale
-    line = f"[repowise] {rel} is governed by a standing decision: {_clip(decision['title'], 100)}"
+    # "Standing" means a person stood behind it, so a record delivered on its
+    # tier alone must not borrow the word.
+    if decision["accepted"]:
+        line = f"[repowise] {rel} is governed by a standing decision: {_clip(decision['title'], 100)}"
+    else:
+        line = (
+            f"[repowise] {rel} has a decision recorded in it, mined but not reviewed: "
+            f"{_clip(decision['title'], 100)}"
+        )
     if why:
         line += f" because {why}"
     if sessions_n >= 2:

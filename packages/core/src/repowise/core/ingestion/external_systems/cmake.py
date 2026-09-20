@@ -31,6 +31,8 @@ from pathlib import Path, PurePosixPath
 
 import structlog
 
+from repowise.core.fs_walk import WalkSnapshot
+
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .base import ExternalSystemRecord
 
@@ -595,6 +597,7 @@ def discover_cmake_reactor(
     repo_root: Path,
     *,
     max_files: int = 2000,
+    snapshot: WalkSnapshot | None = None,
 ) -> list[CMakeFile]:
     """Walk the repo from ``repo_root`` following ``add_subdirectory`` links.
 
@@ -637,9 +640,9 @@ def discover_cmake_reactor(
     skip_dirs = {".git", "build", "_build", "out", "_deps", "cmake-build-debug",
                  "cmake-build-release", "node_modules", ".venv", "venv"}
     if len(out) < max_files:
-        from repowise.core.fs_walk import iter_glob
+        from repowise.core.fs_walk import glob_via
 
-        for cml in iter_glob(repo_root, "CMakeLists.txt"):
+        for cml in glob_via(snapshot, repo_root, "CMakeLists.txt"):
             try:
                 rel = cml.resolve().relative_to(repo_root).as_posix()
             except ValueError:

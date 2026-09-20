@@ -259,6 +259,8 @@ def run_repo_generation(
     resume: bool,
     verbose: bool,
     test_run: bool = False,
+    timings: Any | None = None,
+    warnings: list[str] | None = None,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
@@ -275,14 +277,24 @@ def run_repo_generation(
     ``verbose`` controls only console output: the single-repo flow prints the
     page count + KG status; the workspace flow stays quiet and prints its own
     per-repo summary.
+
+    ``timings`` is the run's :class:`PhaseTimings` table. Generation owns its
+    own progress bar, so without it the phases here land nowhere.
     """
+    from repowise.core.pipeline import PhaseTimingRecorder, timed
+
     from ._generation_persist import run_generation_with_persistence
 
     if verbose:
         announce_file_page_cap(result.parsed_files, gen_config)
 
     embedder_impl: Any = build_embedder(embedder_name_resolved, repo_path)
-    vector_store: Any = build_vector_store(repo_path, embedder_impl)
+    # One run, one store: ``init`` builds it before the pipeline and it arrives
+    # on ``result``. Only a caller whose embedder matches
+    # ``embedder_name_resolved`` may pre-set it.
+    vector_store: Any = getattr(result, "vector_store", None)
+    if vector_store is None:
+        vector_store = build_vector_store(repo_path, embedder_impl)
     result.vector_store = vector_store
 
     deterministic = bool(getattr(gen_config, "deterministic", False))
@@ -323,9 +335,13 @@ def run_repo_generation(
     # is what persistence reads however the block exits.
     preserved_page_ids: set[str] = set()
     result.preserved_page_ids = preserved_page_ids
+    generation_scope: dict[str, int | None] = {}
+    result.generation_scope = generation_scope
 
     with Progress(*columns, console=console) as gen_progress:
-        gen_callback = RichProgressCallback(gen_progress, console)
+        gen_callback: Any = RichProgressCallback(gen_progress, console)
+        if timings is not None:
+            gen_callback = PhaseTimingRecorder(gen_callback, timings)
         generated_pages = run_async(
             run_generation_with_persistence(
                 repo_path=repo_path,
@@ -359,8 +375,11 @@ def run_repo_generation(
                     else None
                 ),
                 test_run=test_run,
+                selection_out=generation_scope,
             )
         )
+        if warnings is not None:
+            warnings.extend(gen_callback.warnings)
 
     jobs_dir = Path(repo_path) / ".repowise" / "jobs"
     failed_page_ids: list[str] = []
@@ -437,13 +456,14 @@ def run_repo_generation(
     # A deterministic run has no model to ask, and the skeleton's structural
     # layers stand on their own.
     if not deterministic:
-        _enrich_knowledge_graph(
-            result=result,
-            provider=provider,
-            gen_config=gen_config,
-            generated_pages=generated_pages,
-            verbose=verbose,
-        )
+        with timed(timings, "generation.kg_enrich"):
+            _enrich_knowledge_graph(
+                result=result,
+                provider=provider,
+                gen_config=gen_config,
+                generated_pages=generated_pages,
+                verbose=verbose,
+            )
         flush_cost_tracker(cost_tracker)
 
     # What the run actually spent, for the completion panel. The user was shown

@@ -43,3 +43,167 @@ def test_coverage_add_help_lists_verbose() -> None:
 
     assert result.exit_code == 0
     assert "--verbose" in result.output
+
+
+def _no_discovered_reports(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Point the command at an empty repo so auto-discovery finds nothing."""
+    monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda _p: tmp_path)
+    monkeypatch.setattr(coverage_cmd, "ensure_repowise_dir", lambda _p: None)
+    monkeypatch.setattr(coverage_cmd, "_discover_context_reports", lambda _p: [])
+
+
+def test_coverage_add_exits_non_zero_when_it_discovers_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """
+    A refresh is scripted as `coverage add ... || exit 1`, so a run that stored
+    nothing has to be distinguishable from a complete one by its exit status.
+    """
+    _no_discovered_reports(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(cli, ["coverage", "add"])
+
+    assert result.exit_code == 1
+    assert "No coverage report found" in result.output
+
+
+@pytest.mark.parametrize(("stored", "expected_exit"), [(True, 0), (False, 1)])
+def test_coverage_add_exit_status_follows_whether_anything_was_stored(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, stored: bool, expected_exit: int
+) -> None:
+    """
+    Every no-op branch inside the ingest returns False -- no index, no indexed
+    files, nothing mapped, or --strict with unmapped report files. This pins
+    the wiring that turns that answer into the process exit status.
+    """
+    monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda _p: tmp_path)
+    monkeypatch.setattr(coverage_cmd, "ensure_repowise_dir", lambda _p: None)
+
+    def fake_run_async(coro):
+        coro.close()  # never awaited; the DB is not part of this test
+        return stored
+
+    monkeypatch.setattr(coverage_cmd, "run_async", fake_run_async)
+
+    report = tmp_path / "lcov.info"
+    report.write_text("TN:", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["coverage", "add", str(report)])
+
+    assert result.exit_code == expected_exit
+
+
+def _coverage_add_source() -> str:
+    """Source of the `coverage add` callback (Click wraps it in a Command)."""
+    import inspect
+
+    return inspect.getsource(coverage_cmd.coverage_add.callback)
+
+
+def test_strict_counts_unmapped_before_the_resolved_files_branch() -> None:
+    """Total mapping loss on the aggregate leg must still be able to trip --strict.
+
+    The count used to be read inside `if resolved.files:`, so the one run where
+    every report file failed to map was also the run that saw zero unmapped
+    files. With a per-test map present, `map_records` is non-empty, the
+    "nothing mapped" branch is skipped, and a --strict run exited 0 having
+    stored no per-file coverage at all.
+
+    This is a structural guard, not a behavioural one: the branch lives in the
+    async closure that needs a DB session, so this pins the ordering that makes
+    the branch reachable rather than the branch itself.
+    """
+    source = _coverage_add_source()
+
+    assert source.index("unmapped = len(skipped)") < source.index("if resolved.files:"), (
+        "the unmapped count must be computed before the resolved.files branch"
+    )
+
+
+def test_strict_failure_is_reported_before_the_success_guidance() -> None:
+    """A failing --strict run must not first advise running `repowise health`."""
+    source = _coverage_add_source()
+
+    assert source.index("if strict and unmapped:") < source.index(
+        "to fold coverage into the defect "
+    )
+
+
+def test_coverage_add_help_documents_strict() -> None:
+    result = CliRunner().invoke(cli, ["coverage", "add", "--help"])
+
+    assert result.exit_code == 0
+    assert "--strict" in result.output
+
+
+def test_coverage_add_stamps_live_head_not_stored_column(tmp_path, monkeypatch) -> None:
+    """Regression for #1747: coverage describes the working tree, so it must be
+    stamped with the live HEAD, not the stored ``head_commit`` column.
+
+    The stored column names the last *indexed* commit. Commit, run tests, then
+    ``coverage add`` without an intervening ``repowise update``: the coverage
+    describes the working tree, the column names the older indexed commit, and
+    they differ. This test fails on main, which stamps the stale column.
+    """
+    import git as gitpython
+
+    from repowise.cli.commands import coverage_cmd
+
+    # A real repo with one commit; the stored column will claim an older sha.
+    repo = gitpython.Repo.init(tmp_path)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("x = 1\n")
+    repo.index.add(["src/foo.py"])
+    repo.index.commit("feat: add foo")
+    live_head = repo.head.commit.hexsha
+    repo.close()
+
+    lcov = tmp_path / "coverage" / "lcov.info"
+    lcov.parent.mkdir()
+    lcov.write_text("TN:\nSF:src/foo.py\nDA:1,2\nLF:1\nLH:1\nend_of_record\n")
+
+    class _FakeRepoRow:
+        id = "repo-1"
+        head_commit = "0" * 40  # stale: the indexed commit, not live HEAD
+
+    recorded: dict = {}
+
+    async def _fake_save_coverage_files(session, repository_id, files, **kwargs):
+        recorded["sha"] = kwargs.get("ingested_commit_sha")
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _fake_get_repository_by_path(session, local_path):
+        return _FakeRepoRow()
+
+    monkeypatch.setattr(
+        "repowise.core.persistence.crud.get_repository_by_path",
+        _fake_get_repository_by_path,
+    )
+    monkeypatch.setattr(
+        "repowise.core.persistence.crud.save_coverage_files", _fake_save_coverage_files
+    )
+    async def _fake_repo_file_keys(session, repo_id):
+        return {"src/foo.py"}
+
+    monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _fake_repo_file_keys)
+    monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+    monkeypatch.setattr("repowise.core.persistence.create_engine", lambda url: object())
+    monkeypatch.setattr("repowise.core.persistence.create_session_factory", lambda engine: object())
+    monkeypatch.setattr("repowise.core.persistence.get_session", lambda sf: _FakeSession())
+
+    result = CliRunner().invoke(
+        cli, ["coverage", "add", str(lcov), "--path", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert recorded["sha"] == live_head
+    assert recorded["sha"] != _FakeRepoRow.head_commit

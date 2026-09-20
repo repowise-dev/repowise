@@ -24,6 +24,7 @@ import {
 } from "@repowise-dev/ui/docs/reader-persona";
 import { DocsHeader } from "./docs-header";
 import { DocsViewer } from "./docs-viewer";
+import { AskAboutThis } from "@repowise-dev/ui/chat";
 import {
   DocsPageActions,
   ExportMenu,
@@ -355,6 +356,19 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
               persona={persona}
               setPersona={setPersona}
               personaHasEffect={personaHasEffect}
+            />
+          )}
+          {selectedPage && (
+            <AskAboutThis
+              context={{
+                kind: "documentation",
+                label: selectedPage.title,
+                target: selectedPage.id,
+                targetKind: "documentation",
+              }}
+              question={`Explain "${selectedPage.title}" using the source code, and name the files it rests on.`}
+              label={`Ask about ${selectedPage.title}`}
+              className="shrink-0"
             />
           )}
           {selectedPage && isModelWrittenType(selectedPage.page_type) && (

@@ -265,8 +265,16 @@ def _find_rust_type_file(
         if type_name in defined_names.get(imp_file, _EMPTY_NAMES):
             return imp_file, False
 
+    # The stem match is Rust-only for the reason the unique-owner index below
+    # states: the stem map spans every language, so a type named ``Tool``
+    # matched ``Tool.tsx`` and a ``Meta`` matched a ``meta.json``.
     candidates = ctx.stem_map.get(type_name.lower(), [])
-    if len(candidates) == 1 and candidates[0] != from_path and graph.has_node(candidates[0]):
+    if (
+        len(candidates) == 1
+        and candidates[0] != from_path
+        and graph.has_node(candidates[0])
+        and graph.nodes[candidates[0]].get("language") == "rust"
+    ):
         return candidates[0], True
 
     owner = _rust_unique_owner_index(graph, defined_names).get(type_name)
@@ -468,6 +476,7 @@ def _resolve_c_type_refs(
 
     emitted = 0
     seen_targets: set[tuple[str, str]] = set()
+    same_file_refs: set[str] = set()
     for ref in parsed.type_refs:
         name = ref.type_name
         if not name or name in c_builtin_types:
@@ -478,7 +487,17 @@ def _resolve_c_type_refs(
             name, from_path, sorted_imports, sorted_siblings, ctx, graph,
             defined_names,
         )
-        if target is None or target == from_path:
+        # A type defined in this very translation unit has no cross-file edge
+        # to mint — ``_find_c_type_file`` returns ``None`` for it (the stem
+        # map excludes ``from_path``). It is still genuinely referenced, so
+        # stamp it onto ``local_type_uses`` so the dead-code analyzer rescues
+        # it, exactly as the Go and TS resolvers do for intra-module type
+        # refs. Otherwise a struct/class used only inside its own .cpp reads
+        # as an unused_export with ``safe_to_delete: ✓``, yet deleting it
+        # breaks the build.
+        if target is None:
+            if name in defined_names.get(from_path, _EMPTY_NAMES):
+                same_file_refs.add(name)
             continue
         if (name, target) in seen_targets:
             continue
@@ -486,6 +505,14 @@ def _resolve_c_type_refs(
         _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
                                     type_name=name, origin=ref.origin)
         emitted += 1
+
+    if same_file_refs and graph.has_node(from_path):
+        existing = graph.nodes[from_path].get("local_type_uses")
+        if existing is None:
+            graph.nodes[from_path]["local_type_uses"] = same_file_refs
+        else:
+            existing.update(same_file_refs)
+
     return emitted
 
 

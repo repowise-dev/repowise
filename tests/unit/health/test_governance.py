@@ -74,11 +74,41 @@ def test_ungoverned_hotspot_details_has_is_hotspot():
     assert hit.details.get("is_hotspot") is True
 
 
-def test_ungoverned_hotspot_health_impact_nonzero():
-    summary = _summary(ungoverned_hotspots=["src/main.py"])
+def test_governance_findings_carry_no_health_impact():
+    """This pass runs after scoring and deducts nothing, so it claims nothing.
+
+    A severity-shaped impact here was summed as though it had been deducted,
+    putting governance above findings that had actually cost the file points.
+    """
+    summary = _summary(
+        ungoverned_hotspots=["src/main.py"],
+        stale_decisions=[
+            _Decision(
+                id="d1",
+                title="Keep the pipeline synchronous",
+                affected_files_json=json.dumps(["src/main.py"]),
+                staleness_score=0.9,
+            )
+        ],
+    )
     findings = build_governance_findings(health_summary=summary, decisions=[])
-    hit = next(f for f in findings if f.biomarker_type == "ungoverned_hotspot")
-    assert hit.health_impact > 0
+    assert findings
+    assert all(f.health_impact == 0.0 for f in findings)
+
+
+def test_ungoverned_hotspot_skips_test_files():
+    summary = _summary(ungoverned_hotspots=["tests/test_main.py", "src/main.py"])
+    findings = build_governance_findings(health_summary=summary, decisions=[])
+    paths = [f.file_path for f in findings if f.biomarker_type == "ungoverned_hotspot"]
+    assert paths == ["src/main.py"]
+
+
+def test_scored_paths_drops_findings_health_does_not_score():
+    summary = _summary(ungoverned_hotspots=["docs/CHANGELOG.md", "src/main.py"])
+    findings = build_governance_findings(
+        health_summary=summary, decisions=[], scored_paths={"src/main.py"}
+    )
+    assert [f.file_path for f in findings] == ["src/main.py"]
 
 
 def test_ungoverned_hotspot_empty():

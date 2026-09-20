@@ -66,6 +66,16 @@ const ORIGINS = {
     because: "a framework decorator retyped the receiver, and that class is in this file",
     tier: "direct",
   },
+  receiver_extension_same_file: {
+    label: "Extension method, same file",
+    because: "an extension method in this file extends the receiver's type",
+    tier: "direct",
+  },
+  return_type_same_file: {
+    label: "Return type, same file",
+    because: "the inner call's declared return type is a class in this file",
+    tier: "direct",
+  },
 
   // --- scoped: an import, a package, a module, a supertype ---------------
   same_package: {
@@ -108,6 +118,11 @@ const ORIGINS = {
     because: "the name is in one of the imported files, and we cannot say which",
     tier: "scoped",
   },
+  scoped_name: {
+    label: "Qualified at the call site",
+    because: "the call names the class, and that class declares this method",
+    tier: "scoped",
+  },
   same_target: {
     label: "Same build target",
     because: "the target is a sibling translation unit of the same build target",
@@ -116,6 +131,11 @@ const ORIGINS = {
   receiver_typed_same_package: {
     label: "Inferred type, same package",
     because: "the receiver's declared type is a class in the same package",
+    tier: "scoped",
+  },
+  receiver_extension_import: {
+    label: "Extension method, imported",
+    because: "an imported file extends the receiver's type with this method",
     tier: "scoped",
   },
   receiver_typed_import: {
@@ -143,6 +163,16 @@ const ORIGINS = {
     because: "a framework decorator retyped the receiver, and that class was found in an imported file",
     tier: "scoped",
   },
+  return_type_same_package: {
+    label: "Return type, same package",
+    because: "the inner call's declared return type is a class in the same package",
+    tier: "scoped",
+  },
+  return_type_import: {
+    label: "Return type, imported",
+    because: "the inner call's declared return type was found in an imported file",
+    tier: "scoped",
+  },
   self_inherited: {
     label: "Inherited",
     because: "the caller's class does not declare it but one ancestor does",
@@ -160,6 +190,11 @@ const ORIGINS = {
     because: "that class and method pair exists somewhere in the repo",
     tier: "name_match",
   },
+  receiver_extension_global: {
+    label: "Name match",
+    because: "one extension method in the repo extends this type with this name",
+    tier: "name_match",
+  },
   receiver_typed_global: {
     label: "Name match",
     because: "the inferred type and method pair exists somewhere in the repo",
@@ -173,6 +208,11 @@ const ORIGINS = {
   receiver_framework_global: {
     label: "Name match",
     because: "the framework type and method pair exists somewhere in the repo",
+    tier: "name_match",
+  },
+  return_type_global: {
+    label: "Name match",
+    because: "the returned type and method pair exists somewhere in the repo",
     tier: "name_match",
   },
   global_unique: {

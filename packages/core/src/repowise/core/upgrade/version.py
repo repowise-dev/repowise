@@ -42,7 +42,19 @@ STORE_FORMAT_VERSION: int = 2
 
 #: Current parser/extractor schema. Folded into the parse-cache fingerprint in
 #: place of the package version. See :mod:`repowise.core.ingestion.parse_cache`.
-PARSER_SCHEMA_VERSION: int = 1
+#:
+#: v2: ``RawCall`` gained ``scope_name`` (the C++ ``Ns::f()`` qualifier as
+#: written) and ``receiver_call`` (the inner call of a chained expression), and
+#: a Rust macro invocation stopped being extracted as a call. A cache written
+#: before that carries neither field, so the scoped-call, chained-call and
+#: macro fixes would resolve against stale rows instead of firing.
+#:
+#: v3: a Python import that resolves to no repo file now becomes an
+#: ``external:`` node and edge instead of resolving to nothing. The fingerprint
+#: change makes ``persist_incremental_edges`` reconcile every file's edges once
+#: on the next update, so an existing index does not keep half its Python files
+#: without external edges.
+PARSER_SCHEMA_VERSION: int = 3
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"

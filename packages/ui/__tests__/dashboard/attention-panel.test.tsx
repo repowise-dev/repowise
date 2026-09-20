@@ -5,6 +5,7 @@ import {
   type AttentionItem,
   type AttentionItemType,
 } from "../../src/dashboard/attention-panel";
+import { ATTENTION_SEVERITY_RANK } from "../../src/dashboard/attention-href";
 
 function item(
   id: string,
@@ -16,8 +17,9 @@ function item(
 
 /** Server order: strictly severity-sorted, which is what the panel re-mixes. */
 function severitySorted(items: AttentionItem[]): AttentionItem[] {
-  const rank = { high: 0, medium: 1, low: 2 } as const;
-  return [...items].sort((a, b) => rank[a.severity] - rank[b.severity]);
+  return [...items].sort(
+    (a, b) => ATTENTION_SEVERITY_RANK[a.severity] - ATTENTION_SEVERITY_RANK[b.severity],
+  );
 }
 
 describe("AttentionPanel", () => {

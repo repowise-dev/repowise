@@ -1,11 +1,15 @@
-"""``repowise saved`` — report tokens saved by output distillation.
+"""``repowise saved`` — report the input tokens agents did not have to read.
 
-Reads the savings ledger in the omissions sidecar
-(``.repowise/omissions/omissions.db``). The ledger covers the
-``repowise distill`` path (direct invocations and hook rewrites) plus MCP
-counterfactual savings — each tool answer priced against the raw file
-exploration it replaced, recorded under ``source='mcp:<tool>'``. Group by
-source to split the two surfaces.
+Reads the canonical savings ledger in the omissions sidecar
+(``.repowise/omissions/omissions.db``) through the one core report service, so
+this command, the savings endpoint and the repository overview headline report
+the same figures by construction. They previously did not: each aggregated and
+priced the ledger for itself, and the three disagreed about which rows counted
+as distillation, whether MCP tokens entered the dollar figure, whether a fixed
+output credit was added, and what window applied.
+
+The ledger covers the ``repowise distill`` path, the hooks that replace a tool
+result, and MCP calls. ``--by surface`` splits them.
 
 Named ``saved`` rather than ``distill --stats`` because ``repowise distill``
 captures everything after it as the command to run (``ignore_unknown_options``)
@@ -17,9 +21,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 from rich.table import Table
+
+if TYPE_CHECKING:
+    from repowise.core.savings.contracts import SavingsReport
 
 from repowise.cli.helpers import console
 from repowise.cli.output import emit_json, format_option, notice_console
@@ -35,10 +43,10 @@ DEFAULT_PRICING_MODEL = "claude-sonnet-4-6"
 @click.option(
     "--by",
     "group_by",
-    type=click.Choice(["filter", "day", "source"]),
-    default="filter",
+    type=click.Choice(["operation", "surface", "agent", "model", "day"]),
+    default="operation",
     show_default=True,
-    help="Group savings by filter, day, or source surface.",
+    help="Group savings by operation, surface, agent, pricing model, or day.",
 )
 @click.option(
     "--since",
@@ -52,9 +60,10 @@ DEFAULT_PRICING_MODEL = "claude-sonnet-4-6"
     default=None,
     metavar="MODEL",
     help=(
-        "Pricing model for the dollar estimate (input-token rate). Defaults to "
-        "the model detected from this repo's most recent agent session, and "
-        f"falls back to {DEFAULT_PRICING_MODEL} when there is none."
+        "Pricing model for the opportunity estimates under --missed. Recorded "
+        "savings are priced at the rate captured on each event, so this does "
+        "not affect them. Defaults to the model detected from this repo's most "
+        f"recent agent session, falling back to {DEFAULT_PRICING_MODEL}."
     ),
 )
 @click.option(
@@ -81,22 +90,29 @@ def saved_command(
     missed_days: float,
     fmt: str,
 ) -> None:
-    """Show tokens (and estimated dollars) saved by ``repowise distill``.
+    """Show the input tokens agents did not have to read, and what they were worth.
 
-    PATH defaults to the current directory; the report covers that repo's
-    omission store (or the user-level fallback store when the repo has no
-    ``.repowise/``). Covers the distill command/hook path plus MCP
-    counterfactual savings (``source='mcp:<tool>'``); ``--by source`` splits them.
+    PATH defaults to the current directory. The report covers that repository's
+    savings ledger; a directory with no ``.repowise/`` has none, which is
+    reported as "nothing recorded" rather than as zero. Covers the distill
+    path, the replacement hooks and MCP calls; ``--by surface`` splits them.
     """
-    from repowise.core.distill.store import OmissionStore, default_store_path
+    from repowise.core.distill.store import default_store_path
+    from repowise.core.savings.service import load_report
 
     notices = notice_console(fmt)
     since_ts = _parse_since(since)
+    window_days = _window_days(since_ts)
 
     start = Path(path).resolve() if path else Path.cwd()
-    pricing_model, pricing_note = _resolve_pricing(start, pricing_model)
 
     if show_missed:
+        # Resolved only on this branch. Detection scans the local agent
+        # transcripts -- seconds, on a repository with no Codex history -- and
+        # only the opportunity estimates need it. Recorded savings carry the
+        # rate they were written with, so the default report must never pay for
+        # a detection it does not use.
+        pricing_model, _ = _resolve_pricing(start, pricing_model)
         if fmt == "json":
             emit_json(
                 {
@@ -111,7 +127,8 @@ def saved_command(
         return
 
     db_path = default_store_path(start)
-    if not db_path.exists():
+    report = load_report(start, days=window_days)
+    if report is None:
         notices.print(
             "[yellow]No savings recorded yet.[/yellow] Run commands through "
             "'repowise distill <cmd>' (or install the rewrite hook with "
@@ -121,98 +138,165 @@ def saved_command(
             emit_json({"ledger": str(db_path), "events": 0, "rows": []})
         return
 
-    store = OmissionStore(db_path)
-    try:
-        summary = store.savings_summary(since=since_ts)
-        rows = store.savings_rollup(by=group_by, since=since_ts)
-    finally:
-        store.close()
+    rows = _breakdown_rows(report, group_by)
+    saved = report.saved_input_tokens
 
     if fmt == "json":
-        saved_tokens = summary["saved_tokens"]
-        usd, rate = _estimate_usd(saved_tokens, pricing_model)
         emit_json(
             {
                 "ledger": str(db_path),
                 "group_by": group_by,
                 "since": since,
-                "pricing_model": pricing_model,
-                "pricing_source": pricing_note,
-                "input_rate_usd_per_mtok": rate,
-                "summary": {**summary, "estimated_usd": usd},
+                "window_days": window_days,
+                "summary": {
+                    "events": report.unique_events,
+                    "saved_input_tokens": saved,
+                    "measured_saved_input_tokens": report.measured_saved_input_tokens,
+                    "inferred_saved_input_tokens": report.inferred_saved_input_tokens,
+                    "priced_saved_input_tokens": report.priced_saved_input_tokens,
+                    "unpriced_saved_input_tokens": report.unpriced_saved_input_tokens,
+                    "estimated_usd": report.priced_input_savings_usd,
+                    "mcp_queries_answered": report.mcp_queries_answered,
+                    "dead_ends": report.dead_ends,
+                    "first_event_at": report.first_event_at,
+                    "last_event_at": report.last_event_at,
+                },
                 "rows": rows,
-                "mcp_truncation": _mcp_truncation_rows(db_path, since_ts),
-                "net": _net_data(start, saved_tokens, since_ts),
+                "opportunities": {
+                    "count": report.opportunity_count,
+                    "estimated_potential_input_tokens": report.opportunity_tokens_excluded,
+                    "per_kind": [dict(row) for row in report.per_opportunity_kind],
+                },
+                "net": _net_data(start, saved, since_ts),
                 "missed_distill": _missed_report(start, missed_days),
                 "missed_mcp_rereads": _reread_report(start, missed_days),
                 "forgone": _forgone_rows(start, db_path, since_ts),
             }
         )
+        _warm_pricing_cache(start, report)
         return
 
-    if summary["events"] == 0:
-        msg = "No distillation events recorded"
+    if report.unique_events == 0:
+        msg = "No savings events recorded"
         if since_ts is not None:
             msg += f" since {since}"
         console.print(f"[yellow]{msg}.[/yellow]")
         # Before returning, not after. Declining the init prompt turns off
         # distill rewrites *and* skeleton-served Reads in the same write, so
         # the cohort the counterfactual exists to inform is exactly the cohort
-        # with zero distillation events — and returning here first would make
+        # with zero distillation events -- and returning here first would make
         # its rows unreadable by the only command that reports them.
         _print_forgone_read_skeleton_line(start, db_path, since_ts)
         return
 
-    saved = summary["saved_tokens"]
-    pct = 100.0 * saved / summary["raw_tokens"] if summary["raw_tokens"] else 0.0
-    usd, rate = _estimate_usd(saved, pricing_model)
-
     table = Table(
-        title=f"Distill savings - grouped by {group_by}",
+        title=f"Savings - grouped by {group_by}",
         border_style="dim",
         show_footer=True,
         caption=(
-            "Covers the 'repowise distill' command/hook path, MCP "
-            "counterfactual savings (mcp:<tool>), and the hooks that replace a "
-            "tool result: a Read served as a skeleton (read_skeleton), an "
-            "unchanged re-read served as a pointer (read_reread), and a search "
-            "flood served as a digest (search_digest). Group by filter or "
-            "source to split them."
+            "Input tokens agents did not have to read, from the canonical "
+            "savings ledger: the 'repowise distill' command path, the hooks "
+            "that replace a tool result, and MCP calls. Group by surface, "
+            "agent, model or day to split them."
         ),
     )
     table.add_column(group_by.capitalize(), style="cyan", footer="[bold]TOTAL[/bold]")
-    table.add_column("Events", justify="right", footer=str(summary["events"]))
-    table.add_column("Raw Tokens", justify="right", footer=f"{summary['raw_tokens']:,}")
-    table.add_column("Distilled Tokens", justify="right", footer=f"{summary['distilled_tokens']:,}")
+    table.add_column("Events", justify="right", footer=str(report.unique_events))
     table.add_column(
-        "Saved Tokens",
-        justify="right",
-        footer=f"[bold green]{saved:,} ({pct:.0f}%)[/bold green]",
+        "Saved Tokens", justify="right", footer=f"[bold green]{saved:,}[/bold green]"
     )
     for row in rows:
-        row_pct = 100.0 * row["saved_tokens"] / row["raw_tokens"] if row["raw_tokens"] else 0.0
         table.add_row(
             str(row["group"] or "-"),
             str(row["events"]),
-            f"{row['raw_tokens']:,}",
-            f"{row['distilled_tokens']:,}",
-            f"[green]{row['saved_tokens']:,} ({row_pct:.0f}%)[/green]",
+            f"[green]{row['saved_input_tokens']:,}[/green]",
         )
 
     console.print()
     console.print(table)
-    console.print(
-        f"  Estimated saved: [bold green]${usd:.4f}[/bold green] "
-        f"[dim](at ${rate:.2f}/M input tokens, {pricing_note}; "
-        f"tokens are chars/4 estimates)[/dim]"
-    )
+    _print_evidence_and_pricing(report)
     console.print(f"  [dim]Ledger: {db_path}[/dim]")
-    _print_mcp_truncation_line(db_path, since_ts)
     _print_net(start, saved, since_ts)
     _print_missed_summary_line(start, missed_days)
     _print_reread_summary_line(start, missed_days)
     _print_forgone_read_skeleton_line(start, db_path, since_ts)
     console.print()
+    _warm_pricing_cache(start, report)
+
+
+def _warm_pricing_cache(start: Path, report: SavingsReport) -> None:
+    """Resolve the pricing snapshot so future events can be priced.
+
+    The surfaces that write events all run inside an agent's tool call and read
+    this cache without ever filling it, so something has to. This command is
+    the right place: a human typed it and is reading a dollar figure.
+
+    Run only when the report actually shows unpriced savings, and only after
+    the output is on screen. Resolving costs seconds on a cold cache, and it is
+    self-limiting: once the cache is warm the events it prices stop being
+    unpriced, so this stops firing.
+    """
+    if not report.unpriced_saved_input_tokens:
+        return
+    from repowise.core.savings.pricing import resolve_pricing_snapshot
+
+    resolve_pricing_snapshot(start)
+
+
+#: Which report breakdown each ``--by`` value reads, and the key its rows use
+#: for the group. One mapping, so adding a breakdown is one line here rather
+#: than a new branch in the table renderer and another in the JSON writer.
+_BREAKDOWNS = {
+    "operation": ("per_operation", "operation"),
+    "surface": ("per_surface", "surface"),
+    "agent": ("per_agent", "agent"),
+    "model": ("per_model", "model"),
+    "day": ("per_day", "day"),
+}
+
+
+def _breakdown_rows(report: SavingsReport, group_by: str) -> list[dict]:
+    """One breakdown as uniform ``group``/``events``/``saved`` rows.
+
+    Agents are labelled from the identity registry, which the report already
+    carried through, so this never spells an agent name itself.
+    """
+    attribute, key = _BREAKDOWNS[group_by]
+    rows = getattr(report, attribute)
+    return [
+        {
+            "group": row.get("agent_display_name") or row[key] if key == "agent" else row[key],
+            "events": row["events"],
+            "saved_input_tokens": row["saved_input_tokens"],
+        }
+        for row in rows
+    ]
+
+
+def _print_evidence_and_pricing(report: SavingsReport) -> None:
+    """The two splits that stop the total reading as one confident number.
+
+    Measured against inferred says how the saving was established; priced
+    against unpriced says how much of it carries a rate at all. Both are
+    reported rather than folded in, because an event is priced at the rate
+    captured when it happened and some events carry none -- pricing those at
+    today's rate would be inventing evidence.
+    """
+    console.print(
+        f"  Measured: [bold]{report.measured_saved_input_tokens:,}[/bold]  "
+        f"Inferred: [bold]{report.inferred_saved_input_tokens:,}[/bold]"
+    )
+    if report.priced_saved_input_tokens:
+        console.print(
+            f"  Estimated saved: [bold green]${report.priced_input_savings_usd:.4f}[/bold green] "
+            f"[dim](on {report.priced_saved_input_tokens:,} priced tokens; "
+            f"tokens are chars/4 estimates)[/dim]"
+        )
+    if report.unpriced_saved_input_tokens:
+        console.print(
+            f"  [dim]{report.unpriced_saved_input_tokens:,} tokens carry no recorded "
+            f"rate and are not priced.[/dim]"
+        )
 
 
 def _net_data(start: Path, saved_tokens: int, since_ts: float | None) -> dict | None:
@@ -369,53 +453,6 @@ _FORGONE_SURFACES = (
         "repowise hook read-reread install",
     ),
 )
-
-
-def _mcp_truncation_rows(db_path: Path, since_ts: float | None) -> list[dict]:
-    """Per-tool truncation drops, or ``[]`` when this repo has never served MCP."""
-    import sqlite3
-
-    from repowise.core.distill import tracking
-
-    try:
-        con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2)
-        try:
-            summary = tracking.mcp_savings_summary(con, since=since_ts)
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return []  # no such table: this repo has never served MCP, not an error
-    return [r for r in summary["per_tool"] if r["kind"] == "truncation"]
-
-
-def _print_mcp_truncation_line(db_path: Path, since_ts: float | None) -> None:
-    """MCP savings the table above structurally cannot show.
-
-    Two MCP signals exist. Counterfactual rows (``source='mcp:<tool>'`` in
-    ``savings``) are already in the table, because they went through
-    ``record_saving`` like everything else. Truncation drops are not: a tool
-    with no counterfactual estimator writes only to ``omissions``, never
-    calls ``record_saving``, and so is invisible to ``savings_summary`` --
-    real savings that happened, sitting one table over.
-
-    They are printed rather than folded into the footer because the table's
-    columns are raw/distilled pairs and a drop has no raw counterpart to
-    put in them. ``mcp_savings_summary`` merges with counterfactual
-    precedence, so taking only the ``truncation`` rows adds each tool once.
-    """
-    rows = _mcp_truncation_rows(db_path, since_ts)
-    if not rows:
-        return
-    tokens = sum(r["tokens"] for r in rows)
-    events = sum(r["events"] for r in rows)
-    tools = ", ".join(r["tool"] for r in rows[:3])
-    if len(rows) > 3:
-        tools += f", +{len(rows) - 3} more"
-    console.print(
-        f"  [dim]Not counted above:[/dim] [green]{tokens:,}[/green] tokens dropped past "
-        f"the response budget by {events:,} MCP call(s) ([dim]{tools}[/dim]) - tools with "
-        "no counterfactual estimator yet, so only the truncation is measurable."
-    )
 
 
 def _forgone_rows(start: Path, db_path: Path, since_ts: float | None) -> list[dict]:
@@ -771,13 +808,38 @@ def _parse_since(value: str | None) -> float | None:
         return None
     try:
         return datetime.fromisoformat(value).timestamp()
-    except ValueError as exc:
+    # OSError, not just ValueError: on Windows a pre-epoch date parses fine and
+    # then raises errno 22 from timestamp(), which would be a traceback rather
+    # than a usage error.
+    except (ValueError, OSError, OverflowError) as exc:
         raise click.BadParameter(f"Cannot parse date '{value}': {exc}") from exc
 
 
 def _estimate_usd(saved_tokens: int, model: str) -> tuple[float, float]:
-    """Dollar estimate for *saved_tokens* at *model*'s input rate."""
+    """Dollar estimate for *saved_tokens* at *model*'s input rate.
+
+    Used only for the ``--missed`` opportunity estimates, which are hypothetical
+    tokens with no event and therefore no captured rate. Recorded savings are
+    never priced this way: each event carries the rate it was worth when it
+    happened, so repricing history at today's model would move past figures.
+    """
     from repowise.core.generation.cost_tracker import get_model_pricing
 
     rate = get_model_pricing(model)["input"]
     return saved_tokens * rate / 1_000_000, rate
+
+
+def _window_days(since_ts: float | None) -> int | None:
+    """``--since`` as a whole-day window, or ``None`` for all time.
+
+    The report windows by days back from now, so a date becomes the number of
+    days that covers it. Rounded up, because a window that excluded the day the
+    user named would report less than they asked for.
+    """
+    if since_ts is None:
+        return None
+    import math
+    import time
+
+    elapsed = time.time() - since_ts
+    return max(0, math.ceil(elapsed / 86_400))

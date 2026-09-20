@@ -27,6 +27,7 @@ from repowise.server.schemas import (
     WorkspaceCoChangeEntry,
     WorkspaceCoChangesResponse,
     WorkspaceConformanceResponse,
+    WorkspaceContractDetail,
     WorkspaceContractEntry,
     WorkspaceContractLinkEntry,
     WorkspaceContractsResponse,
@@ -38,7 +39,9 @@ from repowise.server.schemas import (
     WorkspaceGraphResponse,
     WorkspaceRepoEntry,
     WorkspaceResponse,
+    WorkspaceSyncResponse,
     WorkspaceSystemGraphResponse,
+    WorkspaceTestImpactResponse,
 )
 from repowise.server.services.module_health import read_repo_health_score
 
@@ -148,7 +151,7 @@ def _query_repo_stats(db_path: Path) -> dict:
         if row:
             result["repo_id"] = row[0]
 
-        # file count (graph_nodes) 
+        # file count (graph_nodes)
         row = c.execute("SELECT COUNT(*) FROM graph_nodes WHERE node_type = 'file'").fetchone()
         result["file_count"] = row[0] if row else 0
 
@@ -245,6 +248,47 @@ async def get_workspace(
     )
 
 
+def _contract_entry(c: dict) -> WorkspaceContractEntry:
+    """Project one raw ``contracts.json`` row onto the wire model.
+
+    ``schema`` is dropped on purpose — it is the one field the list endpoint
+    cannot afford and the detail endpoint carries separately.
+    """
+    return WorkspaceContractEntry(
+        contract_id=c.get("contract_id", ""),
+        contract_type=c.get("contract_type", ""),
+        role=c.get("role", ""),
+        repo=c.get("repo", ""),
+        file_path=c.get("file_path", ""),
+        symbol_name=c.get("symbol_name", ""),
+        confidence=c.get("confidence", 0.0),
+        service=c.get("service"),
+        line=c.get("line"),
+        symbol_id=c.get("symbol_id"),
+        meta=c.get("meta") or {},
+    )
+
+
+def _contract_link(lk: dict) -> WorkspaceContractLinkEntry:
+    """Project one raw ``contract_links`` row onto the wire model."""
+    return WorkspaceContractLinkEntry(
+        contract_id=lk.get("contract_id", ""),
+        contract_type=lk.get("contract_type", ""),
+        match_type=lk.get("match_type", "exact"),
+        confidence=lk.get("confidence", 0.0),
+        provider_repo=lk.get("provider_repo", ""),
+        provider_file=lk.get("provider_file", ""),
+        provider_symbol=lk.get("provider_symbol", ""),
+        consumer_repo=lk.get("consumer_repo", ""),
+        consumer_file=lk.get("consumer_file", ""),
+        consumer_symbol=lk.get("consumer_symbol", ""),
+        provider_service=lk.get("provider_service"),
+        consumer_service=lk.get("consumer_service"),
+        provider_symbol_id=lk.get("provider_symbol_id"),
+        consumer_symbol_id=lk.get("consumer_symbol_id"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /api/workspace/contracts
 # ---------------------------------------------------------------------------
@@ -254,7 +298,9 @@ async def get_workspace(
 async def get_contracts(
     ws_config=Depends(get_workspace_config),
     enricher=Depends(get_cross_repo_enricher),
-    contract_type: str | None = Query(None, description="Filter: http, grpc, socket, topic, or data"),
+    contract_type: str | None = Query(
+        None, description="Filter: http, grpc, socket, topic, or data"
+    ),
     repo: str | None = Query(None, description="Filter by repo alias"),
     role: str | None = Query(None, description="Filter: provider or consumer"),
     limit: int = Query(200, ge=1, le=1000),
@@ -299,37 +345,94 @@ async def get_contracts(
     contracts_page = contracts[offset : offset + limit]
 
     return WorkspaceContractsResponse(
-        contracts=[
-            WorkspaceContractEntry(
-                contract_id=c.get("contract_id", ""),
-                contract_type=c.get("contract_type", ""),
-                role=c.get("role", ""),
-                repo=c.get("repo", ""),
-                file_path=c.get("file_path", ""),
-                symbol_name=c.get("symbol_name", ""),
-                confidence=c.get("confidence", 0.0),
-                service=c.get("service"),
-            )
-            for c in contracts_page
-        ],
-        links=[
-            WorkspaceContractLinkEntry(
-                contract_id=lk.get("contract_id", ""),
-                contract_type=lk.get("contract_type", ""),
-                match_type=lk.get("match_type", "exact"),
-                confidence=lk.get("confidence", 0.0),
-                provider_repo=lk.get("provider_repo", ""),
-                provider_file=lk.get("provider_file", ""),
-                provider_symbol=lk.get("provider_symbol", ""),
-                consumer_repo=lk.get("consumer_repo", ""),
-                consumer_file=lk.get("consumer_file", ""),
-                consumer_symbol=lk.get("consumer_symbol", ""),
-            )
-            for lk in links
-        ],
+        contracts=[_contract_entry(c) for c in contracts_page],
+        links=[_contract_link(lk) for lk in links],
         total_contracts=total_contracts,
         total_links=total_links,
         by_type=by_type,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/contracts/detail
+# ---------------------------------------------------------------------------
+
+
+def _unmatched_reason(enricher, repo: str, file_path: str, contract_id: str) -> str | None:
+    """Look up why one consumer matched nothing, from the system graph.
+
+    The reasons live in ``system_graph.json``, not ``contracts.json``, and are
+    keyed by the same ``(repo, file_path, contract_id)`` triple this endpoint
+    takes. Returns None when no graph is built or the consumer did match.
+    """
+    diagnostics = enricher.get_diagnostics() or {}
+    for u in diagnostics.get("unmatched_consumers", []):
+        if (
+            u.get("repo") == repo
+            and u.get("file_path") == file_path
+            and u.get("contract_id") == contract_id
+        ):
+            return u.get("reason")
+    return None
+
+
+@router.get("/contracts/detail", response_model=WorkspaceContractDetail)
+async def get_contract_detail(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    repo: str = Query(..., description="Repo alias the contract was extracted from"),
+    file: str = Query(..., description="File path, relative to that repo's root"),
+    id: str = Query(..., description="Contract id, e.g. 'http::GET::/api/users'"),
+):
+    """One contract with its schema, its links, and its unmatched reason.
+
+    Keyed by query parameters rather than a path segment because ``file`` is a
+    path and carries slashes. All three are required: ``id`` alone is not
+    unique, several repos declare the same ``http::GET::/user``.
+
+    The triple is the shareable identity, not a primary key. One file may call
+    the same endpoint from two lines; when it does, the first row wins. The link
+    list is filtered by the same triple, so it is identical whichever row wins;
+    the enclosing symbol is not, so the response names one of the call sites.
+    Keying on the line instead would rot every saved link on an edit above the
+    call.
+    """
+    _require_workspace(ws_config)
+
+    if enricher is None:
+        raise HTTPException(status_code=404, detail="No contract data for this workspace")
+
+    match = next(
+        (
+            c
+            for c in getattr(enricher, "_contracts", [])
+            if c.get("repo") == repo and c.get("file_path") == file and c.get("contract_id") == id
+        ),
+        None,
+    )
+    if match is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    role = match.get("role", "")
+    if role == "consumer":
+        repo_key, file_key = "consumer_repo", "consumer_file"
+    else:
+        repo_key, file_key = "provider_repo", "provider_file"
+    links = [
+        lk
+        for lk in getattr(enricher, "_contract_links", [])
+        if lk.get("contract_id") == id and lk.get(repo_key) == repo and lk.get(file_key) == file
+    ]
+
+    reason = None
+    if role == "consumer" and not links:
+        reason = _unmatched_reason(enricher, repo, file, id)
+
+    return WorkspaceContractDetail(
+        contract=_contract_entry(match),
+        contract_schema=match.get("schema"),
+        links=[_contract_link(lk) for lk in links],
+        unmatched_reason=reason,
     )
 
 
@@ -585,6 +688,50 @@ async def get_blast_radius(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/workspace/test-impact
+# ---------------------------------------------------------------------------
+
+
+@router.get("/test-impact", response_model=WorkspaceTestImpactResponse)
+async def get_test_impact(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    repo: str = Query(..., description="Provider repo alias the changed files belong to."),
+    file: list[str] = Query(
+        ..., description="Changed file path, relative to that repo's root. Repeatable."
+    ),
+):
+    """Which tests in the consumer repos guard a change to these provider files.
+
+    Rows carry the basis they came from: ``measured`` when a coverage map
+    recorded the test against the consumer call site, ``inferred`` when the
+    consumer's call or import graph reaches it. A link the join could not
+    follow is reported in ``unresolved`` with its reason, never dropped, so an
+    empty answer always names the state that produced it.
+
+    Shares :func:`cross_repo_tests` with the MCP tools, so the REST answer and
+    the agent answer cannot drift apart.
+    """
+    _require_workspace(ws_config)
+
+    if enricher is None:
+        return WorkspaceTestImpactResponse(summary={"reason": "no_contract_data"})
+
+    # Imported here, not at module scope: the helper pulls in the cross-repo
+    # join and holds consumer indexes open, and a single-repo server never
+    # reaches this route.
+    from repowise.server.mcp_server._test_impact import cross_repo_tests
+
+    result = await cross_repo_tests(repo, list(file))
+    if result is None:
+        return WorkspaceTestImpactResponse(summary={"reason": "no_contract_data"})
+
+    from repowise.core.workspace.test_impact import workspace_test_impact_to_dict
+
+    return WorkspaceTestImpactResponse(**workspace_test_impact_to_dict(result))
+
+
+# ---------------------------------------------------------------------------
 # GET /api/workspace/breaking-changes
 # ---------------------------------------------------------------------------
 
@@ -596,12 +743,13 @@ async def get_breaking_changes(
     repo: str | None = Query(None, description="Filter to changes whose provider is in this repo."),
     severity: str | None = Query(None, description="Filter: breaking or warning."),
 ):
-    """Provider contract changes that break consumers across repos.
+    """Provider contract findings and directly linked consumer exposure across repos.
 
     Computed during the most recent ``repowise update --workspace`` by diffing the
     freshly-extracted contracts against the previously-indexed set, then resolving
-    each change's direct consumers from the matched links. Returns an empty report
-    (not 404) when no breaking changes were detected or no report exists yet.
+    each finding's direct consumers from the matched links. Returns an empty report
+    (not 404) when no findings were detected or no report exists yet; ``generated_at``
+    distinguishes those states.
     """
     _require_workspace(ws_config)
 
@@ -747,7 +895,7 @@ async def get_architecture(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/sync", status_code=202)
+@router.post("/sync", response_model=WorkspaceSyncResponse, status_code=202)
 async def sync_workspace(
     request: Request,
     repo_alias: str | None = Query(
@@ -767,10 +915,7 @@ async def sync_workspace(
     scheduler, cost ledger, and live-progress hooks all work without
     special cases.
     """
-    from repowise.server.schemas import (
-        WorkspaceSyncResponse,
-        WorkspaceSyncResult,
-    )
+    from repowise.server.schemas import WorkspaceSyncResult
 
     _require_workspace(ws_config)
 

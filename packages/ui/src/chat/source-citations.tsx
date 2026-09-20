@@ -28,6 +28,24 @@ export function extractSources(
   const seen = new Set<string>();
   const sources: SourceReference[] = [];
 
+  // The scored tools (risk, health, dead code, change risk, one symbol) cite
+  // the files they scored. Without this the claims a reader most needs to
+  // check, a risk score or a health finding, carry no link at all.
+  const pushFile = (toolCallId: string, toolName: string, filePath: unknown) => {
+    if (typeof filePath !== "string" || !filePath) return;
+    const pageId = filePageId(filePath);
+    if (seen.has(pageId)) return;
+    seen.add(pageId);
+    sources.push({
+      id: `${toolCallId}:${pageId}`,
+      pageId,
+      title: filePath.split("/").pop() ?? filePath,
+      pageType: "file_page",
+      targetPath: filePath,
+      toolName,
+    });
+  };
+
   for (const tc of toolCalls) {
     if (tc.status !== "done" || !tc.result) continue;
 
@@ -98,6 +116,45 @@ export function extractSources(
       }
     }
 
+    // `targets` is a path-keyed object on the MCP wire and an array on legacy
+    // fixtures; both shapes appear in stored conversations.
+    if (tc.name === "get_risk" || tc.name === "get_change_risk") {
+      const targets = result.targets as Record<string, unknown> | unknown[] | undefined;
+      if (Array.isArray(targets)) {
+        for (const row of targets.slice(0, 8)) {
+          const r = row as Record<string, unknown>;
+          pushFile(tc.id, tc.name, r.file_path ?? r.target);
+        }
+      } else if (targets && typeof targets === "object") {
+        for (const key of Object.keys(targets).slice(0, 8)) pushFile(tc.id, tc.name, key);
+      }
+      const fixHistory = result.fix_history as { files?: Array<{ path?: string }> } | undefined;
+      for (const f of (fixHistory?.files ?? []).slice(0, 5)) pushFile(tc.id, tc.name, f.path);
+    }
+
+    if (tc.name === "get_health") {
+      const findings = (result.findings as Array<Record<string, unknown>>) ?? [];
+      for (const f of findings.slice(0, 8)) pushFile(tc.id, tc.name, f.file_path);
+      const opportunities =
+        (result.refactoring_opportunities as Array<Record<string, unknown>>) ?? [];
+      for (const o of opportunities.slice(0, 5)) pushFile(tc.id, tc.name, o.file_path);
+      const targets = (result.targets as unknown[]) ?? [];
+      for (const t of targets.slice(0, 8)) pushFile(tc.id, tc.name, t);
+    }
+
+    if (tc.name === "get_dead_code") {
+      const rows = [
+        ...((result.high_confidence as Array<Record<string, unknown>>) ?? []),
+        ...((result.medium_confidence as Array<Record<string, unknown>>) ?? []),
+      ];
+      for (const r of rows.slice(0, 10)) pushFile(tc.id, tc.name, r.file_path);
+    }
+
+    // get_symbol names the file it verified as `file`, not `file_path`.
+    if (tc.name === "get_symbol") {
+      pushFile(tc.id, tc.name, result.file);
+    }
+
     if (tc.name === "get_why") {
       const decisions = (result.decisions as Array<Record<string, unknown>>)
         ?? (result.matching_decisions as Array<Record<string, unknown>>)
@@ -161,21 +218,22 @@ export function SourceCitations({
   if (sources.length === 0) return null;
 
   return (
-    <div className="mt-5 pt-4 border-t border-[var(--color-border-default)]">
-      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] mb-2.5">
-        Sources
-      </p>
+    <details className="group mt-5 border-t border-[var(--color-border-default)] pt-3">
+      <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+        <span>Sources · {sources.length}</span>
+        <span aria-hidden className="transition-transform group-open:rotate-90">›</span>
+      </summary>
       {/* Links, not chips. Each one goes somewhere, so the accent is earned on
           hover; a border and a ground on every entry turned a list of eight
           into a wall of boxes that outweighed the answer above it. The counter
           badge went with them — numbering is only worth its weight when the
           prose cites [1], and a reply does not. */}
-      <ul className="flex flex-col gap-1.5">
+      <ul className="flex flex-col gap-1.5 pb-1 pt-2">
         {sources.map((source) => (
           <li key={source.id}>
             <a
               href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
-              className="group inline-flex items-baseline gap-2 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
+              className="group flex w-full min-w-0 items-baseline gap-2 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
             >
               <SourceIcon
                 pageType={source.pageType}
@@ -183,7 +241,7 @@ export function SourceCitations({
               />
               {/* No truncation: a cut title reports a layout decision to the
                   reader as missing content. Long ones wrap. */}
-              <span className="font-medium">{source.title}</span>
+              <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{source.title}</span>
               {source.confidence != null && (
                 <span className="font-mono text-[11px] text-[var(--color-text-tertiary)] tabular-nums">
                   {(source.confidence * 100).toFixed(0)}%
@@ -194,6 +252,6 @@ export function SourceCitations({
           </li>
         ))}
       </ul>
-    </div>
+    </details>
   );
 }

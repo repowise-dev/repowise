@@ -17,6 +17,10 @@ function link(
     consumer_repo: "web-app",
     consumer_file: "src/api/users-client.ts",
     consumer_symbol: "fetchUser",
+    provider_service: null,
+    consumer_service: null,
+    provider_symbol_id: null,
+    consumer_symbol_id: null,
     ...overrides,
   };
 }

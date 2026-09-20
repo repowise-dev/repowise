@@ -71,13 +71,13 @@ async def vector_store():
 
 
 @pytest.fixture
-async def repo_id(session: AsyncSession) -> str:
+async def repo_id(session: AsyncSession, tmp_path) -> str:
     """Create a test repository and return its ID."""
     repo = Repository(
         id="repo1",
         name="test-repo",
         url="https://github.com/example/test-repo",
-        local_path="/tmp/test-repo",
+        local_path=str(tmp_path),
         default_branch="main",
         settings_json="{}",
         created_at=_NOW,
@@ -564,15 +564,21 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
 
 
 @pytest.fixture
-async def setup_mcp(factory, fts, vector_store, populated_db):
+async def setup_mcp(factory, fts, vector_store, populated_db, tmp_path):
     """Configure the MCP module's global state for testing."""
     import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import _basis, _scope
+
+    # Every test repo shares one id and one updated_at, so a grouping cached
+    # from an earlier test would be served to the next one's different seed.
+    _basis.reset_cache()
+    _scope.reset_cache()
 
     mcp_mod._session_factory = factory
     mcp_mod._fts = fts
     mcp_mod._vector_store = vector_store
     mcp_mod._decision_store = InMemoryVectorStore(embedder=MockEmbedder())
-    mcp_mod._repo_path = "/tmp/test-repo"
+    mcp_mod._repo_path = str(tmp_path)
 
     yield populated_db
 
@@ -585,6 +591,8 @@ async def setup_mcp(factory, fts, vector_store, populated_db):
     mcp_mod._registry = None
     mcp_mod._workspace_root = None
     mcp_mod._embedder_status = None
+    mcp_mod._release_check = None
+    mcp_mod._release_announced = None
 
 
 @pytest.fixture
@@ -684,3 +692,26 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
     )
     await session.commit()
     return rid
+
+
+@pytest.fixture(autouse=True)
+def _no_savings_writes_outside_a_test_repo(monkeypatch):
+    """Keep a tool call in these tests from banking a saving in the real repo.
+
+    Clearing the process-global repo path is not enough: the budget layer falls
+    back to the current working directory, which under pytest is the checkout
+    itself. So a test driving ``tool_middleware`` wrote canonical events into
+    the developer's own ledger, where they look like live traffic and are
+    recognisable only by their synthetic tool names.
+
+    Neutralised at the write rather than at the resolver, because the same
+    resolver decides where omission refs are stored and the budget tests depend
+    on that still working. A test that wants a real event drives the recorder
+    itself.
+    """
+    from repowise.server.mcp_server import _state
+
+    monkeypatch.setattr(_state, "_repo_path", None, raising=False)
+    from repowise.core.savings import recorder
+
+    monkeypatch.setattr(recorder, "record_event", lambda repo_root, payload: False)

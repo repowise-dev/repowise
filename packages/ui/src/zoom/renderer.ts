@@ -21,6 +21,18 @@ import type { ZoomScene } from "./scene";
 import type { ZoomPalette } from "./theme";
 import type { ZoomNode } from "./types";
 
+/**
+ * Set equality, so a caller that rebuilds its verb set every render does not
+ * force a repaint. The sets hold at most the label vocabulary (seven verbs), so
+ * a pair of loops beats keeping a sorted key around.
+ */
+function sameVerbs(a: ReadonlySet<string> | null, b: ReadonlySet<string> | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
 export interface FrameStats {
   drawn: number;
   culled: number;
@@ -75,7 +87,7 @@ export class ZoomRenderer {
 
   private selectedId: string | null = null;
   private hoveredId: string | null = null;
-  private relationVerb: string | null = null;
+  private relationVerbs: ReadonlySet<string> | null = null;
   private lowDetailFrames = 0;
   private tween: Tween | null = null;
   private lastFocusId: string | null = null;
@@ -129,10 +141,10 @@ export class ZoomRenderer {
     this.invalidate();
   }
 
-  /** Restrict drawn relations to one verb, or null for all of them. */
-  setRelationVerb(verb: string | null): void {
-    if (verb === this.relationVerb) return;
-    this.relationVerb = verb;
+  /** Restrict drawn relations to these verbs, or null for all of them. */
+  setRelationVerbs(verbs: ReadonlySet<string> | null): void {
+    if (sameVerbs(verbs, this.relationVerbs)) return;
+    this.relationVerbs = verbs;
     this.invalidate();
   }
 
@@ -260,7 +272,7 @@ export class ZoomRenderer {
         hoveredId: this.hoveredId,
         lowDetail,
         paper: this.paper,
-        relationVerb: this.relationVerb,
+        relationVerbs: this.relationVerbs,
       });
       if (this.onStats) {
         this.onStats({

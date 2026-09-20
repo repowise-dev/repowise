@@ -4,8 +4,10 @@ Tokenizing every file (a full tree-sitter re-parse plus a pure-Python
 leaf walk) and re-rolling 1M+ window hashes dominates the duplication
 pass — and an incremental ``repowise update`` re-pays it for the whole
 repo when a single file changed. Both outputs are pure functions of the
-file *bytes* (given fixed window size and pinned hash constants), so they
-cache safely by content hash.
+file *bytes* and the grammar it is read with (given fixed window size and
+pinned hash constants), so they cache safely by the key the detector builds
+from the two. The grammar is a second term only for a file whose extension
+picks a grammar its language tag does not, which today means ``.tsx``.
 
 Cached per file: the normalized token-kind sequence (all the verifier
 ever compares), the non-blank line count, and the rolling-hash windows
@@ -37,9 +39,13 @@ _CACHE_FILENAME = "duplication_cache.pkl"
 class DuplicationTokenCache:
     """Pickle-backed ``content_hash -> (kinds, nloc, windows)`` store."""
 
-    def __init__(self, cache_dir: Path, window_tokens: int) -> None:
+    def __init__(self, cache_dir: Path, window_tokens: int, analyzer_version: int) -> None:
         self._path = Path(cache_dir) / _CACHE_FILENAME
         self._window_tokens = window_tokens
+        # A tokenizer change alters these streams for the same bytes, and
+        # nothing else in the payload would notice. The walk cache next door
+        # has carried this stamp for the same reason since it existed.
+        self._analyzer_version = analyzer_version
         self._entries: dict[str, tuple[list[str], int, list[tuple[int, int, int, int]]]] = {}
         self._fresh: dict[str, tuple[list[str], int, list[tuple[int, int, int, int]]]] = {}
         self.hits = 0
@@ -53,6 +59,7 @@ class DuplicationTokenCache:
             if (
                 payload.get("version") != _CACHE_VERSION
                 or payload.get("window_tokens") != self._window_tokens
+                or payload.get("analyzer_version") != self._analyzer_version
             ):
                 return
             self._entries = payload.get("files", {})
@@ -67,11 +74,22 @@ class DuplicationTokenCache:
             payload = {
                 "version": _CACHE_VERSION,
                 "window_tokens": self._window_tokens,
+                "analyzer_version": self._analyzer_version,
                 "files": self._fresh,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
         except Exception as exc:
             log.debug("duplication_cache_save_failed", error=str(exc))
+
+    def release_memory(self) -> None:
+        """Drop cached representations after a full scan has persisted them.
+
+        Callers retain the kind lists they still need for collision
+        verification. The cache-owned window tuples are otherwise a second
+        repo-sized copy of the live ``WindowHash`` population.
+        """
+        self._entries.clear()
+        self._fresh.clear()
 
     # -- access ------------------------------------------------------------
 
@@ -118,8 +136,11 @@ class DuplicationTokenCache:
         nloc: int,
         windows: list[tuple[int, int, int, int]],
     ) -> None:
-        # Interned kinds keep the pickle compact (each distinct kind is
-        # memoized once by identity) and make later equality checks cheap.
-        entry = ([sys.intern(k) for k in kinds], nloc, windows)
+        # Intern in place so the detector and cache share one kind list rather
+        # than holding two repo-sized lists of references during a full scan.
+        # Identity reuse also keeps the pickle compact and comparisons cheap.
+        for index, kind in enumerate(kinds):
+            kinds[index] = sys.intern(kind)
+        entry = (kinds, nloc, windows)
         self._entries[content_hash] = entry
         self._fresh[content_hash] = entry

@@ -11,12 +11,18 @@ from typing import Any
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.models import primary_finding
+from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
+from repowise.server.schemas import HealthWorkQueueResponse
 
 from ._router import router
-from .aggregation import _clean_module
+from .counts import CountsQuery, project
+from .file_filters import FAILING_DESCRIPTION, hotspot_paths, metric_filter
+from .scope import ScopeQuery, narrow
+from .statuses import STATUS_FILTER_DESCRIPTION, parse_status_filter
 
 _SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
@@ -34,10 +40,11 @@ _SORT_KEYS = {
     # top and sorting on it alone returns them in dict-insertion order.
     # ``total_impact`` is the same pre-clamp deduction magnitude the crud layer
     # ranks metrics by — but summed over the findings that survived this
-    # request's ``biomarker`` / ``min_severity`` filters, so under a filter this
-    # ranks by the filtered depth rather than the file's full depth. That is
-    # what a filtered queue should do; it just means the order is not expected
-    # to match /health/files once a filter is on.
+    # request's finding-level filters (biomarker, severity, min_severity,
+    # dimension, status), so under a filter this ranks by the filtered depth
+    # rather than the file's full depth. That is what a filtered queue should
+    # do; it just means the order is not expected to match /health/files once
+    # a filter is on.
     "score": lambda t: (t["score"], -t["total_impact"], t["file_path"]),
     "finding_count": lambda t: -t["finding_count"],
 }
@@ -50,17 +57,34 @@ def _effort_for_nloc(nloc: int) -> str:
     return "XL"
 
 
-@router.get("/api/repos/{repo_id}/health/refactoring-targets")
+@router.get(
+    "/api/repos/{repo_id}/health/refactoring-targets",
+    response_model=HealthWorkQueueResponse,
+)
 async def health_work_queue(
     repo_id: str,
     limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     module: str | None = Query(None, description="Filter to files in this module path"),
     biomarker: str | None = Query(None, description="Filter to one biomarker type"),
-    min_severity: str | None = Query(None),
+    min_severity: str | None = Query(None, description="Severity floor"),
+    severity: str | None = Query(
+        None, description="Exact severities, comma-separated. Overrides min_severity."
+    ),
+    dimension: str | None = Query(
+        None, description="defect | maintainability | performance | advisory"
+    ),
+    status: str = Query("open", description=STATUS_FILTER_DESCRIPTION),
+    search: str | None = Query(None, description="Substring filter on file_path"),
+    only_hotspots: bool = Query(False),
+    only_untested: bool = Query(False),
+    only_failing: bool = Query(False, description=FAILING_DESCRIPTION),
     max_effort: str | None = Query(None, description="S | M | L | XL"),
     sort: str = Query(
         "impact_per_effort", pattern="^(impact_per_effort|total_impact|score|finding_count)$"
     ),
+    scope: str = ScopeQuery,
+    counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Health work items ranked by impact / effort.
@@ -78,14 +102,47 @@ async def health_work_queue(
         raise HTTPException(status_code=404, detail="Repository not found")
 
     metrics = await crud.get_health_metrics(session, repo_id)
-    metric_by_path = {m.file_path: m for m in metrics}
-    findings = await crud.get_health_findings(session, repo_id)
+    # As the findings list does, so a row's count and the list behind it agree:
+    # the zero-impact dimensions stay out of the ranking, and naming one thing
+    # -- here a marker -- takes the caller out of that ranking and returns it.
+    # The marker options come from the unfiltered breakdown, so without this
+    # every advisory and performance marker in that menu matches nothing.
+    findings = await crud.get_health_findings(
+        session,
+        repo_id,
+        dimension=dimension,
+        status=parse_status_filter(status),
+        exclude_dimensions=(
+            tuple(sorted(ZERO_IMPACT_DIMENSIONS)) if biomarker is None else None
+        ),
+    )
+    metrics, findings = narrow(scope, metrics, findings)
+    metrics, findings, _unscored = project(counts, metrics, findings)
+
+    keep_metric = metric_filter(
+        search=search,
+        module=module,
+        only_hotspots=only_hotspots,
+        only_untested=only_untested,
+        only_failing=only_failing,
+        hotspots=await hotspot_paths(session, repo_id) if only_hotspots else None,
+    )
+    metric_by_path = {m.file_path: m for m in metrics if keep_metric(m)}
+
+    # An all-empty list (","; " ") means the caller selected nothing, not that
+    # nothing matches — falling through to ``min_severity`` keeps a stray
+    # serialization from silently emptying the queue behind a 200.
+    picked = {v.strip().lower() for v in (severity or "").split(",") if v.strip()}
+    exact_severities = picked or None
 
     by_file: dict[str, list[Any]] = {}
     for f in findings:
         if biomarker and f.biomarker_type != biomarker:
             continue
-        if min_severity:
+        if exact_severities is not None:
+            if (f.severity or "").lower() not in exact_severities:
+                continue
+        elif min_severity:
             order = _SEVERITY_ORDER
             if order.get(f.severity, 0) < order.get(min_severity, 0):
                 continue
@@ -96,13 +153,29 @@ async def health_work_queue(
 
     targets: list[dict] = []
     for file_path, fs in by_file.items():
-        if module and not file_path.startswith(module):
-            continue
         m = metric_by_path.get(file_path)
-        nloc = m.nloc if m is not None else 0
-        score = m.score if m is not None else 10.0
-        primary = max(fs, key=lambda x: x.health_impact)
-        total_impact = round(sum(x.health_impact for x in fs), 3)
+        # Absent means either filtered out above, or a file this reading
+        # cannot score: under ``code_shape``, a row with no recorded split.
+        # Ranking that on a stand-in 10.0 would put an unmeasured file at the
+        # top of a list ordered by how bad things are.
+        if m is None:
+            continue
+        nloc = m.nloc
+        score = m.score
+        primary = primary_finding(fs)
+        if primary is None:
+            # Every finding here is advisory, so no cause accuses this file and
+            # the general queue never reaches this: advisory is excluded from
+            # it. A caller who filtered to an advisory marker did reach it, and
+            # the marker they asked for is the honest lead for the row.
+            primary = max(
+                fs, key=lambda x: (_SEVERITY_ORDER.get(x.severity, 0), -(x.line_start or 0))
+            )
+        # Impact, and therefore the ranking, counts only findings still open:
+        # ``score`` on this row was computed from open findings, and a file
+        # whose findings were all dismissed is not work to rank near the top.
+        open_fs = [x for x in fs if (getattr(x, "status", None) or "open") == "open"]
+        total_impact = round(sum(x.health_impact for x in open_fs), 3)
         effort_bucket = _effort_for_nloc(nloc)
         if effort_rank[effort_bucket] > max_effort_rank:
             continue
@@ -113,7 +186,7 @@ async def health_work_queue(
                 "file_path": file_path,
                 "score": round(score, 2),
                 "nloc": nloc,
-                "module": _clean_module(m.module) if (m and m.module) else None,
+                "module": m.module if (m and m.module) else None,
                 "primary_biomarker": primary.biomarker_type,
                 "primary_severity": primary.severity,
                 "primary_reason": primary.reason,
@@ -124,6 +197,7 @@ async def health_work_queue(
                 "primary_finding_id": primary.id,
                 "total_impact": total_impact,
                 "finding_count": len(fs),
+                "open_finding_count": len(open_fs),
                 "biomarkers": sorted({x.biomarker_type for x in fs}),
                 "effort_bucket": effort_bucket,
                 "impact_per_effort": ratio,
@@ -131,4 +205,12 @@ async def health_work_queue(
         )
 
     targets.sort(key=_SORT_KEYS[sort])
-    return {"targets": targets[:limit], "total": len(targets)}
+    # Both counts, because the view lists files but triages findings: "50 of
+    # 812 files" alone leaves the size of the work unsaid.
+    return {
+        "targets": targets[offset : offset + limit],
+        "total": len(targets),
+        "finding_total": sum(t["finding_count"] for t in targets),
+        "offset": offset,
+        "limit": limit,
+    }

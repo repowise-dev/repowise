@@ -2,9 +2,9 @@
 
 Complete reference for all `repowise` commands. For a guided introduction, see the [Quickstart](../start/QUICKSTART.md).
 
-Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
+Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `doc-drift`, `health`, `risk`, `overlap`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
-**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--prose` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `security`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
+**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--prose` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `doc-drift`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `security`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
 
 ## Contents
 
@@ -31,7 +31,9 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 **Health and risk**
 [`health`](#repowise-health-path) ·
 [`risk`](#repowise-risk-revspec) ·
+[`overlap`](#repowise-overlap) ·
 [`dead-code`](#repowise-dead-code-path) ·
+[`doc-drift`](#repowise-doc-drift-path) ·
 [`security`](#repowise-security) ·
 [`impacted-tests`](#repowise-impacted-tests-revspec) ·
 [`coverage`](#repowise-coverage)
@@ -96,7 +98,7 @@ Most commands auto-detect whether you're in a workspace root and route according
 | `--repo <alias>` | Scope a workspace command to one repo. Available on commands where it makes sense. |
 | `--all` | Fan out across every workspace repo (on `costs`, `search`). |
 
-The commands that grew these flags: `update`, `status`, `watch`, `doctor`, `costs`, `search`, `dead-code`, `decision`, `coverage`, `generate-claude-md`, `hook install/status/uninstall`.
+The commands that grew these flags: `update`, `status`, `watch`, `doctor`, `costs`, `search`, `dead-code`, `doc-drift`, `decision`, `coverage`, `generate-claude-md`, `hook install/status/uninstall`.
 
 ---
 
@@ -171,12 +173,13 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--agents` / `--no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
 | `--codex` / `--no-codex` | Generate or skip project-local Codex MCP/hooks setup. Interactive runs prompt when Codex CLI is installed and logged in; non-interactive runs require `--codex`. |
 | `--distill-hook` / `--no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates the repo off in config so a globally installed hook stays inert here. In workspace mode the verdict applies to every selected repo. See [DISTILL.md](../agent/DISTILL.md). |
-| `--editor-setup` / `--no-editor-setup` | Wire repowise into your editors, both halves at once. Machine-wide: the Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP server entry, plus the Claude Code PostToolUse/SessionStart hooks. Project-local: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`. Default: on. `--no-editor-setup` indexes the repo writing nothing into it and nothing outside it — only `.repowise/` is touched — which is what you want for a scratch checkout, a throwaway venv, a git worktree, or a CI run: each config holds a single `repowise` MCP key, so a second `init` repoints it at the newest repo instead of adding a second entry. `repowise mcp .` still prints the config to connect a client by hand. It also skips the `--distill-hook` offer, which installs a user-level hook; `--no-distill-hook`, `--no-claude-md` and `--no-agents-md` still record their opt-outs in this repo's config, because those flags mean "never", not "not this run". `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch for CI and sandboxes, and it wins: with it set, an explicit `--editor-setup` does not turn setup back on. |
+| `--hook` / `--no-hook` | Install or skip the post-commit hook that runs `repowise update` after each commit. Default: on. Interactive runs ask; `--yes` and non-interactive runs install it and print how to undo it (`repowise hook uninstall`). `--no-editor-setup` skips it too, since a git hook is a write outside `.repowise/`. In workspace mode the choice applies to every selected repo. |
+| `--editor-setup` / `--no-editor-setup` | Wire repowise into your editors, both halves at once. Machine-wide: the Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP server entry, plus the Claude Code PostToolUse/SessionStart hooks. Project-local: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`. Default: on. `--no-editor-setup` indexes the repo writing nothing into it and nothing outside it — only `.repowise/` is touched — which is what you want for a scratch checkout, a throwaway venv, a git worktree, or a CI run: each config holds a single `repowise` MCP key, so a second `init` repoints it at the newest repo instead of adding a second entry. `repowise mcp .` still prints the config to connect a client by hand. It also skips the post-commit auto-sync hook (a write into the git hooks directory) and the `--distill-hook` offer, which installs a user-level hook; `--no-distill-hook`, `--no-claude-md` and `--no-agents-md` still record their opt-outs in this repo's config, because those flags mean "never", not "not this run". `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch for CI and sandboxes, and it wins: with it set, an explicit `--editor-setup` does not turn setup back on. |
 | `--save-key` / `--no-save-key` | Save the provider API key this run authenticated with into `.repowise/.env` (git-ignored, owner-only). Default: on, because a scripted `init` that succeeds must leave a repo whose MCP server can actually answer, and a key supplied through the environment would otherwise vanish with the shell that set it. The file is what `repowise mcp`, `serve` and `update` read back; without it `get_answer` degrades to `no-llm-provider` and returns retrieval-only output. Use `--no-save-key` when the key is injected per-process (CI secrets, a shared machine) and must not reach disk; `REPOWISE_NO_SAVE_KEY=1` is the same switch for CI and sandboxes. Answering No to the interactive key prompt also wins over the default. Note this writes one line to the repo's `.gitignore`, so pair it with `--no-save-key` when you need `--no-editor-setup`'s "nothing written into the repo" guarantee. |
 | `--seed-from` | Seed the index from an explicit base checkout instead of the auto-detected one. Rarely needed: inside a linked git worktree the base is detected and seeded automatically. See [WORKTREES.md](../scale/WORKTREES.md). |
 | `--no-seed` | Disable worktree auto-seeding and run a full init even inside a linked worktree. |
 | `--yes` / `-y` | Skip confirmation prompts |
-| `--dry-run` | Show generation plan and cost estimate without running |
+| `--dry-run` | Show the generation plan and cost estimate. Writes no wiki |
 | `--test-run` | Generate docs for only the top 10 files (by PageRank) |
 | `--all` | In multi-repo mode, index every detected repo without prompting |
 | `--no-workspace` | Force single-repo mode even when invoked from a workspace root (indexes only the target PATH instead of fanning out across workspace repos) |
@@ -221,14 +224,14 @@ plus the exported `knowledge-graph.json`. In docs mode it also regenerates the
 affected wiki pages. Index-only updates carry forward the previously generated
 layer names and node summaries, so no LLM call is ever made without docs mode.
 
-Docs-mode updates (and `init`) also mine local coding-agent session
+Docs-mode updates (and `init`) can also mine local coding-agent session
 transcripts for durable decisions: user corrections, explicit choices with a
 stated reason, and failed approaches replaced by working ones. Candidates
 pass deterministic gates and a verbatim-quote grounding check; a decision
 observed in two or more sessions (or one direct user correction) is promoted
 into the decision records with `source: session`. Everything stays on your
-machine. Disable with `decisions.session_mining: false` in
-`.repowise/config.yaml` (see [CONFIG.md](CONFIG.md)).
+machine. **This lane is off by default**; `repowise decision source set session
+--on` enables it (see [CONFIG.md](CONFIG.md)).
 
 If any best-effort step fails (git metadata, decisions, dead code, ...), the
 run still exits 0 but lists the degraded steps in the completion panel (and in
@@ -264,7 +267,11 @@ See [WORKTREES.md](../scale/WORKTREES.md).
 
 **First-time indexing:** `update --workspace` runs full first-time indexing for workspace entries that have no `.repowise/` dir yet (previously skipped with `"not_indexed"`). The pipeline runs index-only, no LLM cost, and writes a state.json marker. Doc generation then follows on the next update once the repo has an index: pass `--docs` (or set its `docs_enabled`) and it regenerates pages like any other member.
 
-**Upgrading a fast index to full (`--full`):** a repo first indexed with `repowise init --mode fast` has the full dependency graph + metrics persisted, but only the *essential* git tier (last commits, no per-file blame or co-change) and no LLM docs. `repowise update --full` upgrades it **incrementally**: it backfills the git tier to FULL (per-file blame + repo-wide co-change) using a resumable, checkpointed worker, then generates the docs that fast mode skipped. Crucially, it **reuses the persisted graph**, the dependency graph is rehydrated from SQL rather than re-parsed and re-resolved, so the expensive import/call/heritage resolution and centrality computation the fast index already did are not repeated. This is measurably cheaper than re-running a full `init`. The backfill is resumable: if it is interrupted, re-running `repowise update --full` picks it up. A provider is required (the fast index made no LLM calls), so pass `--provider`/`--model` or have one configured. It does not build the vector store, so run `repowise reindex` afterwards if you want semantic search. Single-repo only; it errors if run in workspace mode.
+**Upgrading a fast index to full (`--full`):** a repo first indexed with `repowise init --mode fast` has the full dependency graph + metrics persisted, but only the *essential* git tier (last commits, no per-file blame or co-change) and no model-written docs. `repowise update --full` upgrades it **incrementally**: it backfills the git tier to FULL using a resumable checkpoint, reuses the persisted graph, generates the missing prose, rebuilds full-text search, embeds pages when the resolved embedder is available, and recomputes health against FULL history. The command records the transition before work and checkpoints each completed stage; failure or cancellation leaves the prior scope truthful and a retryable upgrade instead of stamping the repository full early. Persisted provider/model/embedder choices are reused when valid, overrides remain explicit, and estimated model cost is shown before paid generation. If embedding is unavailable the completed scope says so and gives the exact recovery command, `repowise reindex`; it never implies semantic search was built. Single-repo only; it errors in workspace mode.
+
+`state.json:index_scope` is the canonical machine-readable description used by `status --format json`, `/api/repos`, generated agent guidance, and MCP `_meta.index_scope`. It separately records run mode, content provenance (`none`, `template`, or `model`), Git tier, configured commit cap, achieved Git-history coverage, configured/effective file-page caps, eligible/generated/omitted file-page counts, unavailable/skipped analysis, search availability, provider choices, and upgrade state. Older indexes project missing facts as `unknown`/`null`; a configured cap is never reported as achieved coverage and a missing analysis result is never reported as a clean result.
+
+Over MCP, an ordinary tool response carries a **compact projection** of this object rather than all of it: the run mode, content provenance, Git tier, a `status` of `complete`, `partial`, `degraded`, `upgrading` or `unknown`, the names of any degraded analyses, and a `fingerprint` identifying the canonical object. `get_overview` carries the canonical object in full, with the same `fingerprint` beside it, so a held copy can be checked against a later digest without either side resending it. `status` reaches `complete` only when the evidence exists and is clean; an index whose coverage was never recorded reports `unknown`. Set `REPOWISE_MCP_INDEX_SCOPE=full` to put the canonical object on every MCP response, as builds before `_meta.contract_version` 2 did.
 
 **Examples:**
 
@@ -571,7 +578,7 @@ call.
 
 | Flag | Description |
 |------|-------------|
-| `--include` | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `skeleton` |
+| `--include` | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `health`, `skeleton`, `doc_drift` |
 | `--no-compact` | Add structure, imports and docstrings to each card |
 
 ```bash
@@ -726,6 +733,42 @@ repowise dead-code --repo backend        # workspace, single repo
 
 ---
 
+### `repowise doc-drift [PATH]`
+
+Show documentation this repository's own tree no longer satisfies: a path a
+document names that no longer exists, a link pointing at a heading that was
+renamed, a `make` target the manifest no longer declares.
+
+Reads what the last `init` or `update` stored rather than re-scanning, so it
+agrees with `get_health(include=["doc_drift"])` on the same tree.
+
+It checks only references it can resolve. Most references in a typical
+repository are uncheckable by design and are neither counted nor reported, so a
+clean run is not a claim that every sentence is true.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--min-confidence` | Hide findings below this confidence (default: 0.4) |
+| `--kind` | Only this reference class: `path`, `link`, `anchor`, `command`. Repeatable |
+| `--format` | Output: `table` (default), `json` |
+| `--repo` | In workspace mode, target a specific repo (defaults to primary) |
+| `--no-workspace` | Force single-repo mode |
+
+```bash
+repowise doc-drift
+repowise doc-drift --kind anchor            # just the renamed-heading links
+repowise doc-drift --min-confidence 0.9     # the near-certain ones
+repowise doc-drift --format json
+```
+
+Exits non-zero when there is no readable index, or when the index predates
+drift storage; in both cases `--format json` still emits a document naming the
+reason, rather than an empty finding list that would read as a clean tree.
+
+---
+
 ### `repowise risk [REVSPEC]`
 
 Just-in-time change-risk scoring for a commit or diff range. Scores the defect
@@ -749,9 +792,9 @@ to the model's baseline commit, not this repo.
 | `--path` | Path to the git repository (default: current directory) |
 | `--ext` | Comma-separated file suffixes to count (e.g. `.py` or `.ts,.tsx`) |
 | `--exclude` / `-x` | Gitignore-style path pattern to omit. Repeatable; filters both the change and baseline. Root `.riskignore` patterns also apply. |
-| `--baseline` | Recent commits to sample for the repo-relative percentile (default 200; `0` shows only the absolute calibrated band) |
+| `--baseline` | Recent commits to sample for the repo-relative percentile (default 200; `0` shows only the absolute per-commit model-score band) |
 | `--target` / `-t` | Score what history says about these **files** instead of a change. Repeatable; switches the command to the `get_risk` tool |
-| `--changed-file` | With `--target`: PR mode. Leads with a directive naming what will break, which co-changes and tests are missing, and what to run |
+| `--changed-file` | With `--target`: PR mode. Leads with a directive naming what may break, which co-changes and tests are missing, and what to run |
 | `--format` | Output format: `table` (default) or `json` |
 | `--full` | With `--target`: emit the complete tool payload as JSON (implies `--format json`) |
 
@@ -779,7 +822,55 @@ repowise risk -t src/auth.py --changed-file src/auth.py  # PR mode + directive
 Note `--path` on this command already means "the git repository", which is why
 the files are named with `--target`.
 
+**Independent changes.** When the index can be read, the command also prints
+whether the diff is one change or several: the changed files grouped by what
+connects them, which is the links the index holds (imports, calls, type
+references, stored co-change pairs) plus, for a `base..head` range, the files each
+commit touched, since putting two files in one commit is the author's own
+statement that they belong together. Only indexed, non-test source files a
+resolver can link are grouped; docs, config, data and tests are always printed
+under `Left out of the grouping:`, never as a change of their own, and only the
+first ten names are listed. Each group prints its files and the files that alone
+hold it together, where moving one out would split the group. A closing `Basis:`
+line says what was checked, naming a shared commit only when there were commits to
+read. It is silent when the diff is one change, and it carries no score.
+`--format json` puts the same object under `independent_changes`. See
+[Independent changes](../layers/CHANGE_RISK.md#independent-changes).
+
 See [`docs/layers/CHANGE_RISK.md`](../layers/CHANGE_RISK.md) for the scoring model.
+
+---
+
+### `repowise overlap`
+
+Which other open branches edit the files this change edits. Pure git for the
+answer, so it works in a fresh clone with no index; when an index is readable it
+orders the shared files and adds the files history pairs with them. Every row
+states its basis in words, `same file` or `co-change pair, N of M commits`, and
+there is no score anywhere in the output.
+
+Branches stacked on the current one (and the ones it is stacked on) are skipped,
+as are noise paths and dependency manifests, which every branch touches. A branch
+that shares no file produces no row. The scan is bounded to the newest branches by
+committer date and reports how many it scanned of how many exist.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--base` | Base ref to diff both sides against (default: the repository's trunk, from `origin/HEAD`, else `main` or `master`) |
+| `--branch` | The change to compare (default: `HEAD`) |
+| `--path` | Path to the git repository (default: current directory) |
+| `--limit` | How many branches to diff, newest committer date first (default 50) |
+| `--format` | Output format: `table` (default) or `json` |
+
+```bash
+repowise overlap                             # who else is editing what you are editing
+repowise overlap --base main --limit 100     # a wider scan against an explicit base
+```
+
+When nothing overlaps, the command prints one line saying so with the scan
+counts. See [Branch overlap](../layers/CHANGE_RISK.md#branch-overlap).
 
 ---
 
@@ -876,6 +967,8 @@ Compute per-file code-health scores from 49 deterministic detectors (McCabe comp
 |------|-------------|
 | `--file <path>` | Deep-dive a single file (relative path) |
 | `--module <prefix>` | Restrict the report to files whose path starts with this prefix |
+| `--scope` | `all` (default) or `production`. Which files every figure describes. Tests score higher than production code, so narrowing lowers the number without a defect being found. |
+| `--counts` | `everything` (default) or `code_shape`. `code_shape` drops the git-derived half of the deduction, which rises as a file is worked on — the reading that answers whether the code itself is improving. |
 | `--refactoring-targets` | Print structured, graph-aware refactoring plans (Extract Class / Helper / Move Method / Break Cycle), ranked `impact × centrality × blast radius`. See [REFACTORING.md](../layers/REFACTORING.md) |
 | `--generate-code <selector>` | Generate an actual refactoring patch for one target. The only `health` flag that calls an LLM; needs a configured provider. |
 | `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
@@ -892,6 +985,7 @@ repowise health --module packages/server              # restrict to a directory
 repowise health --refactoring-targets                 # ranked by impact / effort
 repowise health --generate-code packages/server/app.py::handler   # LLM patch for one target
 repowise health --trend                               # snapshot history + alerts
+repowise health --counts code_shape                   # ignore the git-derived half
 repowise coverage add coverage.lcov   # ingest coverage, then:
 repowise health
 repowise health --format json | jq .kpis              # machine-readable
@@ -911,26 +1005,152 @@ Manage architectural decision records.
 **Subcommands:**
 
 ```bash
-repowise decision list [PATH]           # list decisions
+repowise decision list [PATH]           # list records
 repowise decision show ID [PATH]        # full details
 repowise decision add [PATH]            # interactive add
-repowise decision confirm ID [PATH]     # confirm a proposal
-repowise decision dismiss ID [PATH]     # dismiss a proposal (sticky; never re-proposed)
-repowise decision deprecate ID [PATH]   # mark deprecated
+repowise decision add --kind agreement  # a rule about how the work is done
+repowise decision candidates [PATH]     # what is awaiting review; these govern nothing
+repowise decision confirm ID... [PATH]  # accept candidates: this is what makes them govern
+repowise decision dismiss ID... [PATH]  # tombstone them (sticky; never re-proposed)
+repowise decision merge ID INTO_ID      # fold a candidate into an existing decision
+repowise decision dedupe [PATH]         # fold candidates that duplicate another candidate (dry run by default)
+repowise decision split ID [PATH]       # flag a candidate as bundling two choices
+repowise decision deprecate ID [PATH]   # retire a decision, optionally naming its successor
 repowise decision health [PATH]         # health dashboard
+repowise decision status [PATH]         # what capture did, and what it cost
+
+repowise decision export [PATH]         # write accepted decisions to .repowise/decisions.yaml
+repowise decision import [PATH]         # reconcile the store to that file
+repowise decision migrate [PATH]        # classify pre-split rows (dry run unless --apply)
+
+repowise decision config show [PATH]              # the resolved capture policy
+repowise decision config preset NAME [PATH]       # default | off | local_only | balanced | full
+repowise decision config discovery [PATH]         # budget for the one broad discovery call
+repowise decision source list [PATH]              # the source registry and its state
+repowise decision source set SRC --on|--off       # switch one source
+repowise decision source set SRC --llm|--no-llm   # switch only its model stage
+repowise decision llm --on|--off [PATH]           # all decision-extraction model calls
 ```
+
+**Review options:**
+
+| Flag | Description |
+|------|-------------|
+| `--reason TEXT` | On `confirm`: the rationale, or why a constraint needs none. Also corrects the record. |
+| `--scope PATH` | On `confirm`: a file or module this governs. Repeatable, and replaces the proposed scope. |
+| `--evidence REF` | On `confirm`: a commit, file or link it rests on. Repeatable. |
+| `--as NAME` | On `confirm`: record a different accepter than the repo's git identity. |
+| `--preview` | On `confirm` and `dismiss`: report what each id would do, and write nothing. |
+| `--reason TEXT` | On `dismiss`: why it was tombstoned. |
+| `--superseded-by ID` | On `deprecate`: writes an explicit lineage edge and keeps the retired id resolving. |
+| `--state STATE` | On `candidates`: `open` (default), `accepted`, `merged`, `needs_split`, `dismissed`, `all`. |
+| `--lane NAME` | On `candidates`: only candidates raised by that extraction lane (`pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `conventions`, `cli`). Unrelated to the review lanes the Decisions page splits on. |
+| `--apply` | On `migrate`: write the plan. Without it the command reports and writes nothing. |
+| `--dry-run` | On `import`: report and write nothing. |
+
+`candidates` is a review queue, so it leads with the candidates the acceptance
+contract would take, as judged at the last index, and puts the rest below them.
+Its `Acceptable` column is either `yes` or the same blockers `confirm` would
+refuse with, so the work you can finish and the work waiting on somebody is
+separated before you start. Under `--format json` each row carries a `blockers`
+array.
+
+`confirm` refuses rather than storing a blank acceptance: a candidate needs a
+reason, a scope and an evidence reference, and the flags above supply whatever
+is missing. Under `--format json` the refusal is a document
+(`{"error": "acceptance_refused", "blockers": [...]}`) and the exit code is 1,
+so a scripted review can tell it apart from a crash.
+
+`confirm` and `dismiss` take one id or many, with the optional repository path
+still last. A refused id does not stop the others, and each id is applied
+independently, so a batch that refuses one commits the rest and exits 1.
+`--preview` puts every id through the same acceptance contract and then rolls
+the whole run back, so what it reports is what the write would have said.
+
+One id keeps the transition document those verbs already emitted
+(`{"id", "status", "action"}`). Two or more, or `--preview`, emit a results
+document instead:
+
+```json
+{
+  "action": "accepted",
+  "preview": false,
+  "results": [
+    {"given": "9f3c", "id": "...", "title": "...", "ok": true, "action": "accepted", "status": "active"},
+    {"given": "2b70", "id": "...", "title": "...", "ok": false,
+     "error": "acceptance_refused", "blockers": ["no scope: name the files or modules it governs"]}
+  ],
+  "succeeded": 1,
+  "failed": 1
+}
+```
+
+**Capture-control options:**
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Print the change and write nothing. On `config preset`, `config discovery`, `source set`, `llm`. |
+| `--format` | `table` (default) or `json`. `json` returns the full source registry. |
+| `--max-sessions` | `config discovery` only: session deltas one broad call may read (1-24, default 12). |
+| `--max-input-tokens` | `config discovery` only: input-token ceiling for one broad call (2000-60000, default 30000). |
+
+`config discovery` with neither budget flag just prints the resolved policy.
+Broad discovery itself is a source, so it is switched with
+`repowise decision source set session_discovery --on|--off`; it is off in the
+`default` policy and on in the `balanced` and `full` presets.
+
+`confirm` is the acceptance event. Nothing else promotes a record to `active`:
+extraction, recurrence across sessions, and confidence all stop at `proposed`.
+
+`--status` filters the status column, which is a projection of the acceptance
+kept in step for readers that predate the split, so it is not the same question
+as "what governs". `repowise decision candidates` is the authoritative list of
+what nobody has accepted, and the Decisions page splits the same repository
+into five lanes over the acceptance join.
+
+**Reporting on capture:** `repowise decision status` answers what the sources
+actually did, in one screen: the effective policy and preset, every source with
+its state and the reason it made no call, what each one has captured and when,
+the five review lanes, how much of the unreviewed backlog a reviewer can accept
+today against how much is blocked, the age of that backlog, the staging queues,
+and the model spend booked to decision extraction.
+
+Nothing records a capture run, so every figure is derived from a durable trace
+rather than a run ledger. That has two consequences the command states rather
+than papering over: spend is all-time with the last call named, because no
+stored boundary says which call belonged to which run; and a queue that a
+store predates is reported absent rather than as zero.
+
+```
+repowise decision status
+
+  Decision capture
+
+    Capture on  ·  LLM extraction on  ·  preset default
+
+  Source             Status               Records  Accepted  Last seen   Why
+  inline_marker      enabled              4        2         2026-08-31  Runs with model structuring.
+  pr                 skipped_no_provider  213      0         2026-08-31  No LLM provider is configured.
+  session_discovery  disabled             0        0         -           This source is switched off.
+```
+
+**Scripting these:** every subcommand takes `--format json`, and `confirm`,
+`dismiss`, `deprecate`, and `show` exit non-zero on an unknown id with
+`{"error": "decision_not_found", "decision_id": "..."}` so a caller can tell a
+typo from a successful transition. `dismiss` skips its confirmation prompt under
+`--format json`, or with `--yes`.
 
 **List options:**
 
 | Flag | Description |
 |------|-------------|
-| `--status` | `active`, `proposed`, `deprecated`, `superseded`, `all` |
-| `--source` | `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
+| `--status` | `active`, `proposed`, `deprecated`, `superseded`, `dismissed`, `all` |
+| `--source` | `adr`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | Shortcut for `--status proposed` |
 | `--stale-only` | Only stale decisions |
 | `--format` | `table` (default) or `json` |
 
-`--format json` is also available on `decision show` and `decision health`. In JSON, `decision list` emits full ids rather than the table's 8-character prefixes, and `show` / `health` skip the caps the human output applies to keep a panel readable.
+`--format json` is available on every `decision` subcommand. In JSON, `decision list` emits full ids rather than the table's 8-character prefixes, and `show` / `health` skip the caps the human output applies to keep a panel readable.
 
 ---
 
@@ -1022,17 +1242,23 @@ repowise expand a1b2c3d4e5f6 -q "FAILED"
 
 ### `repowise saved [PATH]`
 
-Report tokens (and estimated dollars) saved for your coding agent. Combines
-`repowise distill` savings (direct invocations and hook rewrites) with MCP
-tool-response savings — each curated answer counted against the raw file
-exploration it replaced. Group `--by source` to split the `mcp:*` rows from the
-distill filters.
+Report the input tokens your coding agent never had to read, and what they were
+worth. Reads the canonical savings ledger through the same report service the
+savings endpoint and the dashboard overview use, so the three cannot disagree.
+Covers the `repowise distill` path, the hooks that replace a tool result, and
+MCP calls; group `--by surface` to split them.
+
+Two figures travel with the total rather than being folded into it. *Measured*
+savings compare a known before and after; *inferred* savings estimate the
+exploration an answer replaced. And because each event is priced at the rate
+recorded when it happened, savings recorded without a rate are counted but not
+valued — reported as unpriced rather than valued at today's model.
 
 | Flag | Description |
 |------|-------------|
-| `--by` | Grouping: `filter` (default), `day`, `source` |
-| `--since` | Only count savings since this ISO date |
-| `--model` | Pricing model for the dollar estimate (input-token rate). Defaults to the model detected from this repo's most recent agent session, falling back to `claude-sonnet-4-6` |
+| `--by` | Grouping: `operation` (default), `surface`, `agent`, `model`, `day` |
+| `--since` | Only count savings on or after this ISO date. Converted to a whole-day window, rounded up, so the named day is always fully included |
+| `--model` | Pricing model for the `--missed` opportunity estimates. Recorded savings are priced per event, so this does not affect them. Defaults to the model detected from this repo's most recent agent session, falling back to `claude-sonnet-4-6` |
 | `--missed` | Report commands that looked distillable but weren't rewritten |
 | `--missed-days` | Window in days for `--missed` (default 7.0) |
 | `--format` | `table` (default) or `json` |
@@ -1040,8 +1266,9 @@ distill filters.
 JSON folds the table, the net, and every trailing advisory line into one document.
 
 ```bash
-repowise saved                       # per-filter rollup + totals
-repowise saved --by day              # daily rollup
+repowise saved                       # per-operation rollup + totals
+repowise saved --by surface          # distill vs hooks vs MCP
+repowise saved --by agent            # which agent the savings went to
 repowise saved --since 2026-06-01
 repowise saved --missed              # what's slipping past the hook
 ```
@@ -1577,16 +1804,23 @@ repowise whoami
 
 Delete a repository's index and all stored intelligence (wiki, graph, embeddings,
 git metadata). Does **not** touch your source files. Prompts for confirmation
-unless `--force` is passed.
+unless `--force` is passed. The index may live in a shared database configured
+with `REPOWISE_DB_URL`; no repository-local `.repowise/wiki.db` is required.
 
 | Flag | Description |
 |------|-------------|
 | `--force` / `-f` | Skip the confirmation prompt |
 | `--path` / `-p` | Path to the repository directory |
 
+With `--path`, the repository whose stored `local_path` matches that path is
+selected, so a shared `REPOWISE_DB_URL` (PostgreSQL) database does not prompt
+for a numbered choice. Without `--path` the command lists every repository in
+the database and prompts.
+
 ```bash
 repowise delete                          # delete the current repo's index (prompts)
 repowise delete <repo-id> --force        # delete a specific repo's index, no prompt
+repowise delete --path /workspace/api -f # delete the repo indexed at that path
 ```
 
 ---
@@ -1649,6 +1883,11 @@ To remove a single agent rather than all of them, use
 ### `repowise augment`
 
 Hook-driven context enrichment engine. Not meant to be called manually, invoked by Claude Code and Codex hooks installed during `repowise init`. Claude Code uses it for search-result enrichment, stale-wiki checks, and decision injection: session start gets the standing decisions relevant to the session's working set (relevance-ranked, hard token cap, silent when nothing clears the floor), and editing a governed file gets a one-line "governed by" notice once per session per decision. Codex uses it for `SessionStart` and `PostToolUse` lifecycle guidance. Shown decisions are recorded in `.repowise/sessions/sessions.db` so the next `repowise update` can judge whether the guidance was followed or contradicted and adjust decision staleness.
+
+| Flag | Meaning |
+|---|---|
+| `--client` | Hook client marker: `codex`. Codex lifecycle hooks pass this explicitly. |
+| `--verbose`, `-v` | Show debug logs from the hook pipeline. |
 
 ### `repowise-augment` / `repowise-rewrite`
 

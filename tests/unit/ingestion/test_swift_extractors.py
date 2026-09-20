@@ -80,6 +80,41 @@ extension Foo: A, B {}
         assert ("Foo", "A") in rels
         assert ("Foo", "B") in rels
 
+    def test_qualified_extension_records_only_the_type(self, parser: ASTParser) -> None:
+        # `extension Ns.Type: P {}` parses as ONE flat user_type with two
+        # type_identifier children. An unanchored capture matches both, so the
+        # qualifier was recorded as conforming to P on its own. Equality is the
+        # assertion that matters here: containment would pass against the bug.
+        src = b"""\
+enum Ns { struct Type {} }
+protocol P {}
+extension Ns.Type: P {}
+"""
+        result = parser.parse_file(_file(), src)
+        rels = {(r.child_name, r.parent_name) for r in result.heritage}
+        assert rels == {("Type", "P")}
+
+    def test_deeply_qualified_extension_takes_the_trailing_identifier(
+        self, parser: ASTParser
+    ) -> None:
+        src = b"""\
+enum A { enum B { struct C {} } }
+protocol P {}
+extension A.B.C: P {}
+"""
+        result = parser.parse_file(_file(), src)
+        rels = {(r.child_name, r.parent_name) for r in result.heritage}
+        assert rels == {("C", "P")}
+
+    def test_plain_extension_is_unaffected_by_the_anchor(self, parser: ASTParser) -> None:
+        src = b"""\
+protocol P {}
+extension Foo: P {}
+"""
+        result = parser.parse_file(_file(), src)
+        rels = {(r.child_name, r.parent_name) for r in result.heritage}
+        assert rels == {("Foo", "P")}
+
 
 class TestSwiftExportedImport:
     def test_exported_import_is_reexport(self, parser: ASTParser) -> None:

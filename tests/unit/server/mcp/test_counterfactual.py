@@ -108,13 +108,13 @@ def test_get_context_module_credit_is_capped() -> None:
     assert cf.replaced_tokens_for("get_context", result) == cf.CONTEXT_MODULE_MAX
 
 
-def test_get_risk_unions_will_break_and_missing_cochanges() -> None:
+def test_get_risk_unions_may_break_and_missing_cochanges() -> None:
     # A file that both breaks and is a missed co-change partner is one file.
     # Two targets so the total clears RISK_FLOOR — otherwise the floor masks
     # whether the overlapping file was counted once or twice.
     result = {
         "targets": {"a.py": {}, "b.py": {}},
-        "directive": {"will_break": ["c.py"], "missing_cochanges": ["c.py"]},
+        "directive": {"may_break": ["c.py"], "missing_cochanges": ["c.py"]},
     }
     expected = 2 * cf.RISK_PER_TARGET + 1 * cf.RISK_PER_RELATED_FILE
     assert expected > cf.RISK_FLOOR
@@ -156,7 +156,7 @@ def test_get_context_skeleton_file_not_double_counted() -> None:
 def test_get_risk_scales_with_targets_and_blast() -> None:
     result = {
         "targets": {"a.py": {}, "b.py": {}},
-        "directive": {"will_break": ["c.py"], "missing_cochanges": ["d.py", "e.py"]},
+        "directive": {"may_break": ["c.py"], "missing_cochanges": ["d.py", "e.py"]},
     }
     expected = 2 * cf.RISK_PER_TARGET + 3 * cf.RISK_PER_RELATED_FILE
     assert cf.replaced_tokens_for("get_risk", result) == expected

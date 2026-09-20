@@ -18,6 +18,7 @@ anything.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 from repowise.server.mcp_server._query_terms import content_terms
@@ -153,6 +154,36 @@ def clears_floor(score: float) -> bool:
     return score >= RELEVANCE_FLOOR
 
 
+def query_scorer(query: str, corpus: list[str]) -> Callable[[str], float]:
+    """A ``text -> relevance`` function bound to *query* and *corpus*'s rarity.
+
+    The same judgement the decision ranker makes, exposed for the blocks a
+    target-anchored call carries beside the ranked records. Those blocks are
+    built from a path and never saw the question, so on this repo two unrelated
+    questions about one file returned byte-identical governing decisions, origin
+    stories and episodes — and at 13,397 of a 20,000-char response they crowded
+    out the mined comment that actually answered both.
+
+    *corpus* supplies the rarity half, so pass the whole population a block is
+    drawn from rather than the survivors: idf computed over three episodes makes
+    every word one of them happens to share look ordinary.
+    """
+    terms = question_terms(query)
+    idf = term_idf(terms, corpus)
+    return lambda text: relevance(text.lower(), idf)
+
+
+def recovery_note(total: int, recall: str) -> dict[str, Any]:
+    """What a block reduces to when a query is present and nothing bears on it.
+
+    A count and the exact call that returns the block in full. Silence would be
+    a lie by omission — the reader cannot tell "this file has no history" from
+    "none of its history mentions what you asked" — and the full block is the
+    padding that teaches an agent the tool is not worth calling.
+    """
+    return {"suppressed": total, "reason": "query-irrelevant", "recover_with": recall}
+
+
 # --- Redirect ---------------------------------------------------------------
 #
 # What to return when nothing clears the floor. The premise of the whole tool is
@@ -195,4 +226,32 @@ def redirect_for(query: str) -> dict[str, Any]:
             "No decision record covers this question. The store holds none "
             "carrying its terms, and the closest ones would be noise."
         ),
+    }
+
+
+def redirect_when_served(lanes: list[str], recall: str) -> dict[str, Any]:
+    """The redirect for a call that missed the store but *answered anyway*.
+
+    Once the relevance floor started rejecting target-anchored records, the
+    branch that used to serve three unrelated decisions began serving this
+    file's mined rationale comments instead — and on the two questions this was
+    measured with, that lane carried the exact docstring each one was asking
+    about, where ``get_answer`` scoped to the same file returned "No wiki hits"
+    and unscoped returned a hedge that said its excerpts did not include the
+    symbol.
+
+    So the plain redirect is withdrawn here. Naming another tool beside a
+    correct answer is worse than naming none: the agent pays for a second call
+    to reach something weaker, and learns from that trade that this tool's
+    answers are not to be acted on. What is left is the true and narrower
+    statement — the *decision store* was silent, these other lanes were not.
+    """
+    served = " and ".join(lanes)
+    return {
+        "reason": (
+            f"No decision record covers this question. This file's {served} "
+            "carry what the store does not. Read them here, as evidence from "
+            "the code rather than as a ruling. For this file's full history, "
+            f"unfiltered by the question: {recall}."
+        )
     }

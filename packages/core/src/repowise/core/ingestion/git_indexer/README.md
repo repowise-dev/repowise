@@ -49,7 +49,7 @@ Imported via `repowise.core.ingestion.git_indexer`:
 - `backfill_full_tier(indexer, repo_id, *, job_store=None)` — promote an
   ESSENTIAL index to FULL as a resumable phase.
 - Module-level building blocks (unit-tested directly): `index_file`,
-  `compute_co_changes`, `compute_co_changes_and_entropy`, `compute_percentiles`,
+  `compute_co_changes_and_entropy`, `compute_percentiles`,
   `compute_prior_defects`, `get_blame_ownership`, `is_significant_commit`,
   `detect_original_path`, `is_fix_commit`.
 
@@ -166,7 +166,7 @@ and a per-file rollup on `git_metadata` (`agent_commit_count`,
 | `file_history.py` | `index_file` — per-file parse + base metrics (blame gated by tier) |
 | `enrich.py` | blame ownership, commit significance, rename detection, percentiles |
 | `function_blame.py` | per-line blame index → per-function modification counts + line age (FULL tier; feeds `function_hotspot` / `code_age_volatility`) |
-| `co_change.py` | `compute_co_changes` / `compute_co_changes_and_entropy` — repo-wide decay-weighted pair walk + Hassan HCM |
+| `co_change.py` | `compute_co_changes_and_entropy` — repo-wide decay-weighted pair walk + Hassan HCM |
 | `prior_defects.py` | `compute_prior_defects` — windowed bug-fix count per file (leakage-aware, benchmark-mirroring) |
 | `indexer.py` | `GitIndexer` class wiring the above; merges co-change/entropy/prior-defects into per-file metadata; back-compat instance shims |
 | `backfill.py` | `backfill_full_tier` resumable ESSENTIAL→FULL promotion |

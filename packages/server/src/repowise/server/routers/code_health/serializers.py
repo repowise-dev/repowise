@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from repowise.core.analysis.health.models import primary_finding
+from repowise.core.analysis.health.scoring import unclamped_score
 from repowise.core.analysis.health.signals import FileSignals
 from repowise.core.analysis.health.trends import FileTrend
 
@@ -50,15 +52,18 @@ def _primary_and_magnitude(findings: list[Any]) -> dict:
       is already the applied, capped value), so it distinguishes two files that
       both floor at 1.0 (a -25 file from a -9 one) without touching ``score``.
 
-    All-null on an empty list: a clean file has no lead and no magnitude.
+    All-null on an empty list: a clean file has no lead and no magnitude. A
+    file whose every finding is advisory gets a null lead and a real magnitude
+    of zero -- ``primary_finding`` declines to name a cause that deducts
+    nothing, and reading that refusal as a finding raised here instead.
     """
     if not findings:
         return {"primary_biomarker": None, "primary_reason": None, "total_deduction": None}
-    primary = max(findings, key=lambda x: x.health_impact)
+    primary = primary_finding(findings)
     total = sum(float(x.health_impact or 0.0) for x in findings)
     return {
-        "primary_biomarker": primary.biomarker_type,
-        "primary_reason": primary.reason,
+        "primary_biomarker": primary.biomarker_type if primary else None,
+        "primary_reason": primary.reason if primary else None,
         "total_deduction": round(total, 3),
     }
 
@@ -121,6 +126,14 @@ def _metric_to_dict(
     out["performance_findings"] = perf_findings
     out["performance_analyzed"] = perf_analyzed
     if not summary:
+        # The headline's two halves, and the score the file would carry without
+        # the floor. A file pinned at 1.0 reads 1.0 for months while real work
+        # lands on it; the unclamped number is the only place that shows.
+        structure = _round_opt(getattr(m, "structure_deduction", None))
+        history = _round_opt(getattr(m, "history_deduction", None))
+        out["structure_deduction"] = structure
+        out["history_deduction"] = history
+        out["unclamped_score"] = unclamped_score(structure, history)
         # Dominant-cause lead + pre-clamp magnitude (null when findings weren't
         # loaded for this row, or the file is clean). Additive; readers degrade.
         out["primary_biomarker"] = lead.get("primary_biomarker") if lead else None

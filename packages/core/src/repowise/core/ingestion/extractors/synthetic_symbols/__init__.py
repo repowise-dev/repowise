@@ -54,6 +54,9 @@ _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
     "c": [cpp_macro_synthetic_symbols],
     "svelte": [sfc_component_symbols],
     "vue": [sfc_component_symbols],
+    # A .razor/.cshtml file *is* the component: the name comes from the
+    # filename (PascalCase by convention), same as Svelte/Vue.
+    "razor": [sfc_component_symbols],
 }
 
 

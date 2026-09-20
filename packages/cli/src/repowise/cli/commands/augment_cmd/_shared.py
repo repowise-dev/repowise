@@ -212,8 +212,14 @@ def record_saving(
     command: str,
     raw_tokens: int,
     distilled_tokens: int,
+    hook_adapter: str | None = None,
 ) -> None:
     """Bill one replacement to the savings ledger so ``repowise saved`` sees it.
+
+    Writes the legacy row and the canonical event. The legacy one stays until
+    the costs endpoint, the overview headline and ``repowise saved`` read the
+    canonical report instead; writing both means this change neither regresses
+    a published figure nor claims the old row improved.
 
     Never creates the omission store: its absence means this repo has not
     opted into distill bookkeeping, and a hook is not the place to decide
@@ -238,8 +244,83 @@ def record_saving(
                 raw_tokens=raw_tokens,
                 distilled_tokens=distilled_tokens,
             )
+            _record_event(
+                con,
+                repo_path,
+                filter_name=filter_name,
+                raw_tokens=raw_tokens,
+                distilled_tokens=distilled_tokens,
+                hook_adapter=hook_adapter,
+            )
         finally:
             con.close()
+    except Exception:
+        return
+
+
+def _record_event(
+    connection: object,
+    repo_path: Path,
+    *,
+    filter_name: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+    hook_adapter: str | None,
+) -> None:
+    """Record the canonical event for one hook replacement. Never raises.
+
+    Written on the connection this function's caller already opened, which is
+    the point. Reaching the ledger through ``OmissionStore`` would import
+    ``distill.store`` and therefore structlog -- roughly 250ms, on the surface
+    whose entire justification is latency, and the exact import
+    :func:`_omission_db` spells its path out to avoid. This still runs before
+    the hook process exits, so the agent does wait on it; "after the response
+    is computed" is not the same as free.
+
+    Attribution is real here rather than ``unknown``. The hook was handed the
+    serving agent's own adapter, so which agent saved these tokens is evidence,
+    not a guess.
+
+    Pricing is read from cache only, never resolved. Detecting the agent's
+    model means scanning local transcripts -- around six seconds when the
+    repository has no Codex history -- and this is a fresh process per tool
+    call, so it could not amortize that even once. An unpriced event is the
+    correct outcome here; the report counts priced and unpriced tokens
+    separately, and the next distill or MCP call refills the cache for us.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from repowise.core.agents.identity import slug_for_hook_adapter
+        from repowise.core.savings import recorder
+        from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
+        from repowise.core.savings.pricing import resolve_pricing_snapshot
+
+        agent = slug_for_hook_adapter(hook_adapter)
+        event_id = new_event_id()
+        pricing = resolve_pricing_snapshot(repo_path, allow_scan=False)
+        recorder.record_event_on(
+            connection,
+            repo_path,
+            {
+                "event_id": event_id,
+                "idempotency_key": scoped_idempotency_key(str(repo_path), "hook", event_id),
+                "occurred_at": datetime.now(UTC),
+                "surface": "hook",
+                "integration": agent,
+                "agent": agent,
+                "operation": filter_name,
+                "evidence_kind": "measured",
+                "estimator": "chars_per_token_floor_v1",
+                "token_unit": "estimated_tokens",
+                "result_state": "success",
+                "is_usable": True,
+                "baseline_input_tokens": raw_tokens,
+                "pre_budget_input_tokens": raw_tokens,
+                "delivered_input_tokens": distilled_tokens,
+                **(pricing.as_payload() if pricing else {}),
+            },
+        )
     except Exception:
         return
 
@@ -279,6 +360,51 @@ def record_forgone(
             con.commit()
         finally:
             con.close()
+    except Exception:
+        return
+    _record_opportunity(
+        repo_path,
+        filter_name=filter_name or source,
+        raw_tokens=raw_tokens,
+        distilled_tokens=distilled_tokens,
+    )
+
+
+def _record_opportunity(
+    repo_path: Path,
+    *,
+    filter_name: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+) -> None:
+    """Record a forgone saving as an observed opportunity. Never raises.
+
+    An opportunity, not an event, and that distinction is the whole reason this
+    is a separate function: this repository did not save these tokens, it only
+    could have. The canonical ledger keeps the two in different tables so no
+    later aggregation can accidentally sum a hypothetical into what was actually
+    achieved.
+
+    The path is deliberately not carried over. The legacy table stores it to
+    tell a user which file to turn the surface on for; an opportunity row only
+    needs the size of what was missed, and a repo-relative path is still a path.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from repowise.core.savings import recorder
+        from repowise.core.savings.correlation import new_event_id
+
+        recorder.record_opportunity(
+            repo_path,
+            {
+                "observation_id": new_event_id(),
+                "occurred_at": datetime.now(UTC),
+                "integration": "unknown",
+                "kind": f"hook_surface_disabled:{filter_name}",
+                "estimated_potential_input_tokens": max(raw_tokens - distilled_tokens, 0),
+            },
+        )
     except Exception:
         return
 

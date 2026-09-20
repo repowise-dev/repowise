@@ -17,9 +17,15 @@ Optional ``include`` parameter widens the response:
   - include=["last_change"]→ last commit date and author
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
-  - include=["decisions"] → full decision records (default returns titles only)
+  - include=["decisions"] → decisions governing the target, in three labelled
+                            lanes: ``decisions`` (accepted and binding),
+                            ``candidates`` (proposed, nobody has agreed),
+                            ``history`` (accepted then withdrawn). The last
+                            two appear only when non-empty, and are capped.
+                            A dismissed record is in none of them.
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
   - include=["health"]    → code-health scores and biomarkers for the target
+  - include=["doc_drift"] → documents that name this file, and their drift
 
 An unrecognised key is dropped and named in ``ignored_arguments`` rather than
 silently ignored: an unknown key otherwise produces exactly the response the
@@ -36,9 +42,10 @@ import logging
 from typing import Any
 
 from repowise.core.persistence.database import get_session
+from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._budget import OmissionCollector, truncate_to_budget
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -49,7 +56,9 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import completeness_line as _completeness_line
 from repowise.server.mcp_server._meta import context_hint as _context_hint
+from repowise.server.mcp_server.tool_context.enrichment import attach_doc_references
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
 _log = logging.getLogger("repowise.mcp.context")
@@ -73,11 +82,44 @@ _INCLUDE_BLOCKS = frozenset(
         "decisions",
         "skeleton",
         "health",
+        "doc_drift",
     }
 )
 
 
-@mcp.tool()
+async def _scope_hint(session: Any, repository: Any, raw_results: list[Any]) -> str | None:
+    """One sentence naming index layers that hold none of the files served here."""
+    try:
+        from repowise.server.mcp_server._basis import basis_cache_key
+        from repowise.server.mcp_server._scope import unrelated_scope_hint
+
+        served = [
+            r.get("path") or str(r.get("target") or "").split("::", 1)[0]
+            for r in raw_results
+            if isinstance(r, dict)
+        ]
+        return await unrelated_scope_hint(
+            session,
+            repository.id,
+            served,
+            cache_key=f"{repository.id}:{basis_cache_key(repository)}",
+        )
+    except Exception:
+        return None
+
+
+@mcp.tool(
+    surface_order=20,
+    artifact_type="context",
+    presentation="context",
+    recipes=(
+        ToolRecipe(
+            "read_file_shape",
+            'get_context(targets=["path"], include=["skeleton"])',
+            ("get_context",),
+        ),
+    ),
+)
 async def get_context(
     targets: list[str],
     include: list[str] | None = None,
@@ -97,10 +139,16 @@ async def get_context(
     include=["skeleton"] for the whole file body-elided and line-verified in
     ONE call, or Read it. Do not call get_symbol per signature.
 
+    Default responses fit 24,000 serialized chars; nonempty ``include`` uses
+    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
+    ``_meta.recovery_unavailable`` names a storage failure.
+    Include-gated blocks are projections, not omissions.
+
     Args:
         targets: file paths, module paths, or "path::Symbol" ids.
         include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | metrics | community | decisions | skeleton | health.
+            | callees | metrics | community | decisions | skeleton | health
+            | doc_drift (documents naming this file).
             An unrecognised key is named in ignored_arguments.
         compact: default True; False adds structure+imports+docstrings.
         repo: usually omitted.
@@ -108,6 +156,7 @@ async def get_context(
     if repo == "all":
         return _unsupported_repo_all("get_context")
     ctx = await _resolve_repo_context(repo)
+    collector = OmissionCollector("get_context", repo_root=ctx.path)
 
     # docs + freshness are ALWAYS returned (the tool contract says
     # "defaults are always returned"); ``include`` only adds blocks on top.
@@ -151,11 +200,29 @@ async def get_context(
                     compact,
                     exclude_spec=exclude_spec,
                     repo_root=ctx.path,
+                    collector=collector,
                 )
                 for t in targets
             ],
             return_exceptions=True,
         )
+
+        # One batched read for every target that asked for it, on the session
+        # they share, and a no-op for every call that did not. Deliberately
+        # not per-target inside the gather above: savepoints opened
+        # concurrently on one session close each other, and
+        # ``attach_doc_references`` carries the account of that.
+        await attach_doc_references(
+            session,
+            repository,
+            {r["target"]: r for r in raw_results if isinstance(r, dict)},
+            exclude_spec=exclude_spec,
+            collector=collector,
+        )
+
+        # repo="all" already returned above, so ctx here is always one repo.
+        # Computed on the open session: never open a second one for this.
+        scope_hint = await _scope_hint(session, repository, raw_results)
 
     results: list[dict[str, Any]] = []
     for t, r in zip(targets, raw_results, strict=True):
@@ -189,6 +256,17 @@ async def get_context(
             targets=targets,
         ),
     }
+    if scope_hint:
+        response["_meta"]["scope_hint"] = scope_hint
+    # A "raw" skeleton is the file's own source served untouched; the
+    # signatures and smart modes elide bodies, so they are not whole files.
+    whole_files = sum(
+        1
+        for r in results
+        if isinstance(r.get("skeleton"), dict) and r["skeleton"].get("mode") == "raw"
+    )
+    if whole_files:
+        response["_meta"]["complete"] = _completeness_line(files=whole_files)
 
     # Cross-repo enrichment (Phase 3 + 4)
     from repowise.server.mcp_server._helpers import _is_workspace_mode
@@ -234,12 +312,6 @@ async def get_context(
             if cross_repo:
                 target_data["cross_repo"] = cross_repo
 
-    # Enforce the global token cap. Anything dropped is persisted via the
-    # collector so a truncated response always carries expandable
-    # ``[repowise#<ref>]`` markers instead of silently losing content.
-    collector = OmissionCollector("get_context", repo_root=ctx.path)
-    truncated = truncate_to_budget(response, collector=collector)
-    # After the cap, never before: a note about a dropped argument that the
-    # budget can itself drop is no note at all.
-    attach_ignored_arguments(truncated, ignored)
-    return truncated
+    attach_ignored_arguments(response, ignored)
+    collector.attach(response)
+    return response

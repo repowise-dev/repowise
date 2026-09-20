@@ -7,6 +7,10 @@ the health engine; see the per-class docstrings for the downstream reader.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..asserts.oracle_reach import OracleReach
 
 
 @dataclass
@@ -49,6 +53,52 @@ class FunctionComplexity:
     # ``LanguageNodeMap`` opts into assertion detection (``assert_kinds`` /
     # ``assert_call_kinds``). Consumed by the test-quality biomarkers.
     assertion_blocks: list[tuple[int, int, int]] = None  # type: ignore[assignment]
+    # Every assertion statement in the body, runs or not. Same per-language
+    # opt-in as ``assertion_blocks``.
+    assertion_count: int = 0
+    # Mock verifications in the body, counted apart from ``assertion_count``.
+    # Why they are separate: ``asserts/lexicon.py``.
+    verification_count: int = 0
+    # ``raise`` / ``throw`` statements this body checks with, taken from the
+    # node map's ``raise_kinds`` -- which is a CFG-terminator mapping, so it is
+    # Rust's ``?`` there rather than a throw; harmless while the reader ships
+    # four languages, load-bearing if that widens. 0 for a language with no
+    # assertion opt-in, like the counts above. Excludes an abstract stub
+    # (``asserts/lexicon.STUB_EXCEPTIONS``), a bare re-raise, and anything in a
+    # nested function or lambda: a callable handed to the code under test to
+    # make *it* fail is not this body's oracle. A
+    # hand-rolled oracle -- ``if (!ok) throw new Error(...)`` -- fails its test
+    # exactly as an assertion does, but no assertion vocabulary names it. Kept
+    # in its own field rather than folded into ``assertion_count`` because that
+    # count is calibrated and this one is not: only ``assertion_free_test`` and
+    # the oracle resolution behind it read this, and both read it as a
+    # boolean. Counted wherever the traversal reaches one rather than at block
+    # level, so an unbraced ``if (x) throw ...`` guard is seen.
+    raise_count: int = 0
+    # Mock-setup statements in the body, decorators included. 0 for a language
+    # with no entry in ``analysis/health/mocks/lexicon.py``.
+    mock_setup_count: int = 0
+    # True when this function is a test case its framework would run, as
+    # opposed to a helper or fixture beside it. ``complexity/test_case.py``.
+    is_test_case: bool = False
+    # Every name called in this function's body, lowercased, **including**
+    # nested function bodies -- where it parts company with the counts above,
+    # which stop at one. A function nested inside an already-collected one is
+    # never collected as an entry of its own, so stopping would attribute its
+    # calls to nobody. Empty for a language with no assertion
+    # vocabulary row, because it rides on that traversal. It answers one
+    # question: did this function hand its work to something else in the file?
+    called_names: frozenset[str] = frozenset()
+    # The subset of ``called_names`` whose call site carried no receiver.
+    # ``checkOk()`` is in it, ``harness.checkOk()`` is not. Read only by the
+    # cross-file oracle pass, which pairs a name with a file-scoped call edge:
+    # a qualified call names a method on something else that happens to share
+    # the name, and pairing it with the file's edge would let one delegating
+    # test license every same-named call beside it. It widened with
+    # ``called_names``, so a name may now come from a nested body -- which is
+    # a suppression path, and means a registered-but-never-invoked callback
+    # contributes. In the direction that lane already errs.
+    bare_called_names: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:
@@ -295,6 +345,11 @@ class FileComplexity:
     # function holds a bare (non-loop) I/O sink. Empty when the language opts
     # out of the perf pass. Consumed by ``perf.crossfn``, not by a biomarker.
     perf_fn_facts: list[PerfFnFacts] = field(default_factory=list)
+    # Test cases here whose call edges reach a function that asserts, keyed
+    # by the test's 1-indexed start line. Filled by a graph pre-pass after the
+    # walk (``asserts.oracle_reach``), never by the walker, so a cached walk
+    # neither carries nor stores one. Read by ``assertion_free_test``.
+    cross_file_oracles: dict[int, OracleReach] = field(default_factory=dict)
     # True when the file carries co-located tests that the filename/dir
     # heuristic cannot see — e.g. Rust ``#[cfg(test)] mod tests`` blocks,
     # which live inside the source file itself. OR'd into ``has_test_file``
@@ -302,3 +357,14 @@ class FileComplexity:
     # flips a file from "untested" to "tested", so it can silence a finding
     # but never invent one.
     has_inline_tests: bool = False
+    # 1-indexed ``(start_line, end_line)`` spans of Rust test-only code: a
+    # ``#[cfg(test)]``-gated ``mod``/``impl`` (whole span, including any
+    # undecorated helper fns nested inside it) or a directly ``#[test]`` /
+    # ``#[tokio::test]`` / ``#[rstest]``-marked ``fn``. Computed once from the
+    # SAME parsed tree ``walk_file`` already builds — no extra parse. Rust-only
+    # (empty for every other language); the Phase-7b centrality gate
+    # (``perf.gated.collect_centrality_gated``) uses it to keep a
+    # ``PerfFnFacts.func_start`` line from ever emitting a ``hot_path_sync_io``
+    # / ``nested_loop_quadratic`` hit for inline test code the file-level
+    # ``is_test`` heuristic can't see.
+    rust_test_line_ranges: tuple[tuple[int, int], ...] = field(default_factory=tuple)

@@ -1,3 +1,4 @@
+export * from "./activity-dot";
 export * from "./badge";
 export * from "./button";
 export * from "./card";
@@ -13,6 +14,7 @@ export * from "./separator";
 export * from "./sheet";
 export * from "./skeleton";
 export * from "./slider";
+export * from "./spinner";
 export * from "./switch";
 export * from "./tabs";
 export * from "./tooltip";

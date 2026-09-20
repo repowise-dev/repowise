@@ -23,7 +23,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileType2, Loader2, ChevronDown } from "lucide-react";
+import { FileType2, ChevronDown } from "lucide-react";
+import { Spinner } from "@repowise-dev/ui/ui/spinner";
 import { toast } from "sonner";
 import { getStructurizrDsl } from "@repowise-dev/api-client/c4";
 import { downloadTextFile } from "@/lib/utils/download";
@@ -105,7 +106,7 @@ export function ZoomExportButton({
         className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
       >
         {working ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <Spinner size="sm" />
         ) : (
           <FileType2 className="h-3.5 w-3.5" />
         )}

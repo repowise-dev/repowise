@@ -20,6 +20,21 @@
   parameters: (parameters) @symbol.params
 ) @symbol.def
 
+; function_signature_item WITH visibility -- a bodiless ``fn foo();``. Shared by
+; a trait's undefaulted methods, which may not write a modifier, and an
+; ``extern "C"`` block's declarations, which may and often do.
+(function_signature_item
+  (visibility_modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
+; function_signature_item WITHOUT visibility
+(function_signature_item
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
 ; struct_item WITH visibility
 (struct_item
   (visibility_modifier) @symbol.modifiers
@@ -370,6 +385,26 @@
   type_arguments: (type_arguments
     (type_identifier) @param.type
   )
+)
+
+; Type argument: Option<MyType>, Vec<super::MyType>, HashMap<K, MyType>.
+; One pattern for every shape: the Rust head extractor unwraps
+; ``scoped_type_identifier`` / ``reference_type`` / ``generic_type`` and
+; filters the builtins, so widening the capture costs nothing.
+(type_arguments
+  (_) @param.type
+)
+
+; Field type: struct Foo { bar: MyType }, including ``&T``, ``super::T`` and
+; ``Option<T>``. ``enum_variant`` reuses ``field_declaration`` for struct-like
+; variant bodies (``Received { state: MyType }``), so this covers those too.
+;
+; Rust intra-crate field references need no ``use`` -- path-qualified or
+; same-module access is legal without importing -- so without this capture the
+; reference never becomes a graph edge and the field's type reads as having no
+; importers.
+(field_declaration
+  type: (_) @param.type
 )
 
 ; ---------------------------------------------------------------------------

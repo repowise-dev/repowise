@@ -11,12 +11,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repowise.server.mcp_server._verify import end_anchor_holds, name_at_line
 from repowise.server.mcp_server.tool_answer.config import (
     _ENRICH_TOP_N_HITS,
     _INLINE_BODY_MAX_LINES,
     _INLINE_BODY_MAX_SYMBOLS,
 )
 from repowise.server.mcp_server.tool_answer.symbols import (
+    _read_repo_text,
     _read_symbol_source,
     attach_truncation_contract,
 )
@@ -118,13 +120,15 @@ def _build_symbol_bodies(
     ``withheld_symbols`` it covers. That is why the degraded path can call this
     too.
 
-    ``source`` is the live body sliced at the indexed bounds; it is NOT
-    bounds-verified, so the field stays deliberately distinct from get_symbol's
-    ``verified`` contract and this entry never carries that key.
+    ``source`` is the live body sliced at the indexed bounds. ``verified: True``
+    is set only when the cheap bounds gate holds on the live file (the name is
+    still on its definition line and the stored end still closes the body), the
+    same gate get_symbol uses; an entry that fails it carries no such key.
     """
     symbol_bodies: list[dict] = []
     seen: set[tuple[str, str]] = set()
     served_named_body = False
+    texts: dict[str, str | None] = {}
     for tier, _kind, start, path, s in body_candidates:
         if len(symbol_bodies) >= _INLINE_BODY_MAX_SYMBOLS:
             break
@@ -136,11 +140,24 @@ def _build_symbol_bodies(
         # the agent, so a docstring-heavy def shouldn't spend its whole window
         # on docstring and truncate the logic the question asked about. Falls
         # back to the hydrator's excerpt if the re-read fails.
-        body = _read_symbol_source(
-            repo_root, path, start, sym_end, max_lines=_INLINE_BODY_MAX_LINES
+        if path not in texts:
+            texts[path] = _read_repo_text(repo_root, path)
+        text = texts[path]
+        body = (
+            _read_symbol_source(
+                repo_root, path, start, sym_end, max_lines=_INLINE_BODY_MAX_LINES, text=text
+            )
+            if text is not None
+            else None
         ) or s.get("source_excerpt")
         if not body:
             continue
+        verified = False
+        if text is not None:
+            file_lines = text.splitlines()
+            verified = name_at_line(file_lines, name, start) and (
+                not sym_end or end_anchor_holds(file_lines, start, sym_end)
+            )
         served = body.count("\n") + 1
         end_served = start + served - 1
         sym_end = sym_end or end_served
@@ -150,6 +167,8 @@ def _build_symbol_bodies(
             "lines": [start, end_served],
             "source": body,
         }
+        if verified:
+            entry["verified"] = True
         attach_truncation_contract(
             entry, indexed_end=sym_end, end_served=end_served, repo_root=repo_root
         )

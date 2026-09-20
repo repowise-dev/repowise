@@ -111,6 +111,10 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "prior_defect": "organizational",
     "large_assertion_block": "test_quality",
     "duplicated_assertion_block": "test_quality",
+    # Moves no score: its only dimension is ``advisory``, so ``score_file``
+    # filters it out before any category is summed.
+    "assertion_free_test": "test_quality",
+    "mock_saturated_test": "test_quality",
     "error_handling": "error_handling",
     # Phase 4B governance biomarkers.
     "ungoverned_hotspot": "organizational",

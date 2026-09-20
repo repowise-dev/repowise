@@ -68,13 +68,13 @@ def test_grouping_and_order_are_input_order_independent():
 
 
 def test_cross_function_id_survives_new_caller_and_stronger_multiplier_observation():
-    first = _finding("a.py", 2, call_path=("a.py::run", "db.py::fetch"))
+    first = _finding("a.py", 2, call_path=("a.py::run", "shared.py::load", "db.py::fetch"))
     original = build_performance_opportunities([first])[0]
     added = _finding(
         "b.py",
         3,
         marker="nested_loop_with_io",
-        call_path=("b.py::run", "db.py::fetch"),
+        call_path=("b.py::run", "shared.py::load", "db.py::fetch"),
     )
     expanded = build_performance_opportunities([added, first])[0]
     assert expanded.opportunity_id == original.opportunity_id
@@ -84,7 +84,11 @@ def test_cross_function_id_survives_new_caller_and_stronger_multiplier_observati
 
 def test_capped_evidence_retains_true_totals():
     rows = [
-        _finding(f"caller_{index}.py", index, call_path=(f"caller_{index}.py::run", "db.py::fetch"))
+        _finding(
+            f"caller_{index}.py",
+            index,
+            call_path=(f"caller_{index}.py::run", "shared.py::load", "db.py::fetch"),
+        )
         for index in range(1, 7)
     ]
     opportunity = build_performance_opportunities(rows, evidence_limit=2)[0]
@@ -141,16 +145,24 @@ def test_strategy_preconditions_distinguish_proven_advisory_and_no_plan():
     assert concat.fix and concat.fix.safety == "advisory"
 
 
-def test_generic_sink_without_shared_caller_stays_advisory_without_a_plan():
-    opportunity = build_performance_opportunities(
+def test_a_generic_sink_splits_by_caller_so_each_workflow_keeps_its_plan():
+    """Two unrelated callers on one session opener are two causes.
+
+    Merging them named an intervention nobody could make, and the merged group
+    then failed the coherence check and lost its plan, so the more callers a
+    sink had the less actionable it became. Each caller now keeps its own.
+    """
+    opportunities = build_performance_opportunities(
         [
             _finding("a.py", 2, call_path=("a.py::run", "db.py::get_session")),
             _finding("b.py", 3, call_path=("b.py::run", "db.py::get_session")),
         ]
-    )[0]
+    )
 
-    assert opportunity.shared_path_suffix == ("db.py::get_session",)
-    assert opportunity.fix is None
+    assert len(opportunities) == 2
+    assert {item.intervention_symbol for item in opportunities} == {"a.py::run", "b.py::run"}
+    assert all(item.fix and item.fix.strategy == "batch_or_prefetch_io" for item in opportunities)
+    assert all(item.actionability_state == "advisory" for item in opportunities)
 
 
 def test_incompatible_cross_function_cost_shapes_never_share_a_fix():
@@ -189,25 +201,29 @@ def test_lock_fix_targets_the_single_lock_owner_not_the_shared_sink():
     assert plan.target_symbol == "lock.py::critical"
 
 
-def test_distinct_lock_owners_sharing_a_sink_do_not_claim_one_lock_fix():
+def test_distinct_lock_owners_behind_one_helper_do_not_claim_one_lock_fix():
+    """One shared helper, two critical sections: no single scope to shorten."""
     opportunity = build_performance_opportunities(
         [
             _finding(
                 "a.py",
                 3,
                 marker="blocking_io_under_lock",
-                call_path=("a.py::critical", "db.py::fetch"),
+                call_path=("a.py::critical", "store.py::flush", "db.py::fetch"),
             ),
             _finding(
                 "b.py",
                 4,
                 marker="blocking_io_under_lock",
-                call_path=("b.py::critical", "db.py::fetch"),
+                call_path=("b.py::critical", "store.py::flush", "db.py::fetch"),
             ),
         ]
     )[0]
 
+    assert opportunity.observations_total == 2
     assert opportunity.fix is None
+    assert opportunity.actionability_state == "investigate"
+    assert opportunity.prerequisites == ("single_lock_owner",)
 
 
 def test_performance_fix_plan_carries_closed_strategy_and_true_totals():
@@ -230,3 +246,78 @@ def test_performance_fix_plan_carries_closed_strategy_and_true_totals():
     assert plan.plan["paths_total"] == 2
     assert plan.plan["evidence_truncated"] is True
     assert performance_fix_suggestions([opportunity], min_confidence="high") == []
+
+
+def test_a_proven_strategy_on_an_unreliable_path_is_not_offered_as_proven():
+    """The demotion has to reach the plan, not just the label.
+
+    Dataflow can prove a loop carries no cross-iteration dependence and still
+    be proving it about the wrong loop, if the call path that grouped the
+    evidence was guessed. A plan stamped high confidence on that basis is the
+    wrong plan, which costs more than no plan at all.
+
+    No detector emits this shape today: the two markers carrying a proven
+    strategy never travel with a call path, so their provenance is always
+    direct. The guard is pinned here rather than in the corpus because the
+    corpus records shapes the analyzer produces.
+    """
+    opportunity = build_performance_opportunities(
+        [
+            _finding(
+                "async.py",
+                5,
+                marker="serial_await_in_loop",
+                boundary="network",
+                call_path=("async.py::run", "http.py::send", "http.py::_write"),
+                dataflow_verified=True,
+                resolution_basis="name-fallback",
+            )
+        ]
+    )[0]
+
+    assert opportunity.confidence == "low"
+    assert opportunity.actionability_state == "advisory"
+    assert opportunity.actionability_reason == "low_evidence_confidence"
+    assert "reliable_call_path" in opportunity.prerequisites
+    assert opportunity.fix and opportunity.fix.safety == "advisory"
+    assert performance_fix_suggestions([opportunity])[0].confidence == "medium"
+
+
+def test_a_reliable_path_keeps_the_proven_strategy_and_its_plan_confidence():
+    opportunity = build_performance_opportunities(
+        [
+            _finding(
+                "async.py",
+                5,
+                marker="serial_await_in_loop",
+                boundary="network",
+                dataflow_verified=True,
+            )
+        ]
+    )[0]
+
+    assert opportunity.actionability_state == "plan_ready"
+    assert opportunity.fix and opportunity.fix.safety == "proven"
+    assert performance_fix_suggestions([opportunity])[0].confidence == "high"
+
+
+def test_a_cross_function_group_always_shares_its_last_two_path_nodes():
+    """The published suffix and the identity kernel must not drift apart.
+
+    Grouping matches on caller and sink, so the suffix can be longer than two
+    nodes but never shorter, and its tail is exactly what the key already
+    names. A redefinition of either that broke this would silently point plans
+    at a symbol the group does not share.
+    """
+    rows = [
+        _finding("a.py", 10, call_path=("a.py::run", "mid.py::step", "shared.py::load", "g.py::head")),
+        _finding("b.py", 20, call_path=("b.py::run", "other.py::step", "shared.py::load", "g.py::head")),
+    ]
+    opportunity = build_performance_opportunities(rows)[0]
+
+    assert opportunity.observations_total == 2
+    assert opportunity.shared_path_suffix == ("shared.py::load", "g.py::head")
+    assert opportunity.shared_path_suffix[-2:] == (
+        opportunity.intervention_symbol,
+        opportunity.terminal_sink,
+    )

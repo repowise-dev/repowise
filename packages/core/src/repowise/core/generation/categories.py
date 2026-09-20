@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
+from repowise.core.support_paths import DOC_EXTENSIONS
+
 # Categories the file_page prompt knows how to adapt to.
 CATEGORY_CODE = "code"
 CATEGORY_CONFIG = "config"
@@ -20,7 +22,7 @@ CATEGORY_DOC = "doc"
 CATEGORY_DATA = "data"
 CATEGORY_PIPELINE = "pipeline"
 
-_DOC_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".txt", ".adoc"})
+_DOC_SUFFIXES = DOC_EXTENSIONS
 _CONFIG_LANGUAGES = frozenset({"yaml", "toml", "json", "ini", "properties", "hcl"})
 _DATA_DIR_TOKENS = frozenset({"migrations", "versions", "models", "schema", "schemas", "entities"})
 _DATA_SUFFIXES = frozenset({".sql", ".prisma", ".graphql", ".proto"})

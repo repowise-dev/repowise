@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ChurnComplexityResponse,
   HealthOverviewResponse,
-  HealthFilesResponse,
+  HealthMapFeed,
   HealthTrendResponse,
 } from "@repowise-dev/types/health";
 import type { WebviewHost } from "../../runtime/rpc";
@@ -30,7 +30,7 @@ const CHURN_POINT_LIMIT = 5000;
 
 export interface DashboardData {
   overview: HealthOverviewResponse;
-  files: HealthFilesResponse;
+  files: HealthMapFeed;
   trend: HealthTrendResponse;
 }
 
@@ -58,7 +58,7 @@ export function useDashboardData(host: WebviewHost, refreshToken: number): Dashb
 
     Promise.all([
       host.api.healthOverview(OVERVIEW_LIMIT),
-      host.api.healthFiles({ limit: MAP_FILE_LIMIT, sort: "nloc", order: "desc" }),
+      host.api.healthMap({ cap: MAP_FILE_LIMIT }),
       host.api.healthTrend(TREND_LIMIT),
     ])
       .then(([overview, files, trend]) => {
@@ -95,9 +95,9 @@ export function useDashboardData(host: WebviewHost, refreshToken: number): Dashb
  */
 export function useChurnLens(
   host: WebviewHost,
-  files: HealthFilesResponse,
+  files: HealthMapFeed,
   wanted: boolean,
-): { files: HealthFilesResponse; loading: boolean; failed: boolean } {
+): { files: HealthMapFeed; loading: boolean; failed: boolean } {
   const [churn, setChurn] = useState<ChurnComplexityResponse | null>(null);
   const [failed, setFailed] = useState(false);
   // Unmount, not lens-change. Cancelling when the reader switches away would

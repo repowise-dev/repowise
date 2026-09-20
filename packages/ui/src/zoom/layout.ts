@@ -1,16 +1,14 @@
 /**
  * Per-parent masonry pack layout. Pure, browser-free and unit-testable.
  *
- * The backend ships a containment tree but its layout rects are a squarified
- * treemap (space-filling, extreme aspect ratios). We ignore those and lay each
- * parent's children out client-side instead: every card is sized by importance
- * (more central = bigger, within bounds so nothing is unreadably small) and the
- * cards are row-packed into centred, variable-width rows. The staggered row
- * edges and the size variation give an organic architecture-map feel rather than
- * a rigid grid, while the whole cluster is uniform-fit (aspect-preserving) into
- * the parent so cards keep a single landscape shape. The rect emitted is still in
- * parent `[0,1]` space, so the clip-and-scale composition in `geometry.ts` is
- * unchanged.
+ * The backend ships a containment tree and no placement. Every card is sized by
+ * importance (more central = bigger, within bounds so nothing is unreadably
+ * small) and the cards are row-packed into centred, variable-width rows. The
+ * staggered row edges and the size variation give an organic architecture-map
+ * feel rather than a rigid grid, while the whole cluster is uniform-fit
+ * (aspect-preserving) into the parent so cards keep a single landscape shape.
+ * The rect emitted is in parent `[0,1]` space, which is what the clip-and-scale
+ * composition in `geometry.ts` consumes.
  */
 
 import type { Rect } from "./camera";

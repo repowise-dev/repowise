@@ -83,13 +83,36 @@ SUPERSEDE_AUTOFLIP_CONFIDENCE = 0.85
 # supersession is a chain, 18-in is noise) and auto-retired 74 records, 25% of
 # the store, correct ones included.
 #
-# It stays as code rather than a deletion because the *shape* is right and
-# Phase 2 re-enables it structurally: a conflict must require intersecting node
-# sets — two records that touch the same code — and similarity may then rank
-# those candidates but never scope them. The 3B tests flip it to True to
-# exercise the machinery; flipping it in a real run does not work, because both
-# persist paths run ``unretire_auto_superseded`` ahead of the detector and the
-# next run reverts whatever the previous one wrote.
+# The fix this comment used to propose — require intersecting node sets, let
+# similarity only rank — was then measured against the same store and does not
+# work. Replaying this function over 626 real records with their real vectors:
+# 475 edges, and requiring a shared *file* link leaves 465. A 2% cut, because
+# decisions mined from one repository share files as a matter of course.
+#
+# The reason no gate helped is that the band is mislabelled. ``[RELATED_TAU,
+# DEFAULT_DEDUP_TAU)`` is described above as "related but not a duplicate"; on
+# real data it is exactly where the duplicates that 0.83 failed to merge live.
+# Of the 465 pairs, 418 share an evidence commit and 232 have a title Jaccard
+# over 0.3; all 20 of a random sample and all 23 of the pairs matching neither
+# were read by hand and every one is the same decision written twice, by two
+# runs that phrased the title differently. This store contains no supersession
+# for the detector to find, so everything it finds is a duplicate.
+#
+# ``contradicts`` is what converts them into edges, and it is not a
+# contradiction test: ``is_reversal`` reads the record's *own subject matter* —
+# a decision to replace something in the code — as a signal that it reverses
+# another decision. 171 of the 465 fired on the bare word "replace".
+#
+# One more thing to know before re-enabling: the ``conflicts_with`` branch
+# below is unreachable in a real store. It needs both sides ``active``, and
+# after the entity split machine capture lands at ``proposed`` (0 of 626 here
+# are active), so every pair takes the supersedes branch and 87 records — 14%
+# — would be auto-retired. Re-enabling means fixing that, fixing
+# ``contradicts``, and finding a corpus that actually contains a supersession;
+# not a threshold and not a node-set gate. Both persist paths also run
+# ``unretire_auto_superseded`` ahead of the detector, so the next run reverts
+# whatever the previous one wrote. The 3B tests flip this to True to exercise
+# the machinery.
 #
 # ``run_update_evolution`` (3C) is a different mechanism — diff-driven, per
 # changed file, with an LLM verdict — and is not gated by this flag.
@@ -347,8 +370,6 @@ async def detect_supersessions_and_conflicts(
     if not touched_ids or vector_store is None:
         return summary
 
-    from datetime import UTC, datetime
-
     from repowise.core.persistence.decision_graph import upsert_decision_edge
     from repowise.core.persistence.models import DecisionRecord
 
@@ -426,9 +447,7 @@ async def detect_supersessions_and_conflicts(
                 if edge is not None:
                     summary["supersedes"] += 1
                     if conf >= autoflip_confidence and older.status in ("active", "proposed"):
-                        older.status = "superseded"
-                        older.superseded_by = newer.id
-                        older.updated_at = datetime.now(UTC)
+                        await _retire(session, older, successor_id=newer.id)
                         summary["flipped"] += 1
             else:
                 # Two active decisions contradict, neither clearly reverses the
@@ -447,8 +466,6 @@ async def detect_supersessions_and_conflicts(
 
     await session.flush()
     return summary
-
-
 _CONTRADICTION_SYSTEM = (
     "You judge whether two architectural decisions contradict each other. "
     "Answer with a single word: CONTRADICT or COMPATIBLE."
@@ -705,8 +722,7 @@ async def run_update_evolution(
         kind = verdict["verdict"]
         if kind == "superseded":
             if dec.status in ("active", "proposed"):
-                dec.status = "superseded"
-                dec.updated_at = now
+                await _retire(session, dec)
             regen.update(governed)
             result["superseded"] += 1
         elif kind == "amended":
@@ -726,3 +742,38 @@ async def run_update_evolution(
 
     await session.flush()
     return result
+
+
+async def _retire(session, record, *, successor_id: str | None = None) -> None:
+    """Mark a record superseded, recording the withdrawal if it was accepted.
+
+    An accepted decision's authority lives in the acceptance log, so retiring it
+    by writing the status column alone would leave the log still saying it
+    governs — and the tracked manifest would keep exporting it as current.
+    A candidate has no authority to withdraw, so it only moves status.
+    """
+    import contextlib
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.crud.authority import (
+        AcceptanceRefusedError,
+        is_accepted,
+        record_acceptance,
+    )
+
+    if await is_accepted(session, record.id):
+        # A record that lost the evidence its acceptance rested on cannot log
+        # the withdrawal; the retirement itself still applies.
+        with contextlib.suppress(AcceptanceRefusedError):
+            await record_acceptance(
+                session,
+                record,
+                action="superseded",
+                currency="superseded",
+                accepter="evolution",
+                note="a later commit reversed this decision",
+            )
+    record.status = "superseded"
+    if successor_id is not None:
+        record.superseded_by = successor_id
+    record.updated_at = datetime.now(UTC)

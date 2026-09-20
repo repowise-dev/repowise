@@ -18,10 +18,12 @@ from repowise.core.providers.llm.registry import (
     PROVIDER_AUTODETECT_ORDER,
     PROVIDER_BASE_URL_ENVS,
     REPO_PATH_PROVIDERS,
+    provider_available_for_repo,
     provider_credentials_present,
     provider_is_usable,
     provider_kwargs,
     provider_required_envs,
+    repo_env_lookup,
 )
 
 # --- drift guards ----------------------------------------------------------
@@ -105,7 +107,18 @@ def test_every_provider_that_can_be_auto_detected_is_in_the_order():
 
 
 def test_server_provider_catalog_agrees_with_the_registry():
+    from repowise.core.providers.llm.registry import _BUILTIN_PROVIDERS
     from repowise.server.provider_config import PROVIDER_CATALOG
+
+    catalog_ids = {entry["id"] for entry in PROVIDER_CATALOG}
+    # Every provider the CLI can resolve must appear in the server catalog so
+    # the web dashboard's provider picker never silently disagrees with what
+    # the CLI can resolve. `mock` is the one deliberate exception — it is a
+    # test/fallback provider, not something a user should pick in the UI.
+    missing = set(_BUILTIN_PROVIDERS) - catalog_ids - {"mock"}
+    assert not missing, (
+        f"server/provider_config.py is missing catalog entries for: {sorted(missing)}"
+    )
 
     mismatched = {
         entry["id"]: (entry["env_keys"], list(PROVIDER_API_KEY_ENVS[entry["id"]]))
@@ -221,3 +234,56 @@ def test_repo_path_is_not_forwarded_to_providers_that_reject_it():
     """An HTTP provider's constructor has no repo_path parameter."""
     kwargs = provider_kwargs("anthropic", repo_path="/repo", getenv={"ANTHROPIC_API_KEY": "k"}.get)
     assert "repo_path" not in kwargs
+
+
+# --- reporting agrees with the pipeline ------------------------------------
+
+
+def _repo_with_env(tmp_path, body: str | None):
+    (tmp_path / ".repowise").mkdir()
+    if body is not None:
+        (tmp_path / ".repowise" / ".env").write_text(body, encoding="utf-8")
+    return tmp_path
+
+
+def _clear_keys(monkeypatch):
+    for names in PROVIDER_API_KEY_ENVS.values():
+        for name in names:
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+
+
+def test_a_repo_key_counts_as_an_available_provider(tmp_path, monkeypatch):
+    """``repowise init`` writes the key here, so reporting has to read here.
+
+    Asking ``os.environ`` alone told a repo its ``pr``, ``comment`` and
+    ``git_archaeology`` lanes had no provider while the pipeline was running
+    them off this very file.
+    """
+    _clear_keys(monkeypatch)
+    repo = _repo_with_env(tmp_path, "OPENAI_API_KEY=sk-from-the-repo-env\n")
+    assert provider_available_for_repo(repo) is True
+
+
+def test_a_process_key_still_counts(tmp_path, monkeypatch):
+    _clear_keys(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-the-process")
+    assert provider_available_for_repo(_repo_with_env(tmp_path, None)) is True
+
+
+def test_no_key_in_either_place_is_still_unavailable(tmp_path, monkeypatch):
+    _clear_keys(monkeypatch)
+    assert provider_available_for_repo(_repo_with_env(tmp_path, None)) is False
+
+
+def test_the_process_environment_wins_over_the_repo_env(tmp_path, monkeypatch):
+    """One repo's ``.env`` must never answer for a sibling in a workspace."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-the-process")
+    repo = _repo_with_env(tmp_path, "OPENAI_API_KEY=sk-from-the-repo-env\n")
+    assert repo_env_lookup(repo)("OPENAI_API_KEY") == "sk-from-the-process"
+
+
+def test_the_repo_env_fills_a_gap_the_process_leaves(tmp_path, monkeypatch):
+    _clear_keys(monkeypatch)
+    repo = _repo_with_env(tmp_path, "OPENAI_API_KEY=sk-from-the-repo-env\n")
+    assert repo_env_lookup(repo)("OPENAI_API_KEY") == "sk-from-the-repo-env"

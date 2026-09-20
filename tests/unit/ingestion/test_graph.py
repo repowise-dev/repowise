@@ -209,17 +209,16 @@ class TestPythonImports:
         b.build()
         assert b.graph().has_edge("main.py", "src/calculator.py")
 
-    def test_unresolvable_import_no_edge(self) -> None:
-        """Unresolvable import produces no import edge (no crash)."""
+    def test_unresolvable_import_becomes_external(self) -> None:
+        """An absolute import no repo file defines lands on an external node."""
         b = GraphBuilder()
         b.add_file(_parsed("main.py", imports=[_imp("nonexistent_external_lib")]))
         b.build()
-        # Only the defines edge for the synthetic __module__ symbol
         import_edges = [
             (u, v) for u, v, d in b.graph().edges(data=True)
             if d.get("edge_type") == "imports"
         ]
-        assert len(import_edges) == 0
+        assert import_edges == [("main.py", "external:nonexistent_external_lib")]
 
     def test_imported_names_on_edge(self) -> None:
         """Imported names are stored on the edge."""
@@ -339,12 +338,12 @@ class TestStemDisambiguation:
         b.add_file(_parsed("__init__.py"))
         b.add_file(_parsed("main.py", imports=[_imp("anything")]))
         b.build()  # must not raise
-        # No import edge — stem "anything" is unresolvable
+        # The stem "anything" resolves to no file, so it lands on an external node.
         import_edges = [
             (u, v) for u, v, d in b.graph().edges(data=True)
             if d.get("edge_type") == "imports"
         ]
-        assert len(import_edges) == 0
+        assert import_edges == [("main.py", "external:anything")]
 
     def test_go_stem_collision_prefers_parent_match(self) -> None:
         """Go: `import .../calculator` prefers calculator/calculator.go

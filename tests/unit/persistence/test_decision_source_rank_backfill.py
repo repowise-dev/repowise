@@ -18,10 +18,13 @@ from repowise.core.persistence.crud import (
     bulk_upsert_decisions,
     list_decision_evidence,
     purge_proposed_decisions_by_source,
+    reconcile_decision_confidence,
     reconcile_source_ranks,
+    record_completeness,
+    upsert_decision,
 )
 from repowise.core.persistence.models import DecisionEvidence, DecisionRecord
-from tests.unit.persistence.helpers import insert_repo
+from tests.unit.persistence.helpers import accept, insert_repo
 
 _TITLE = "Use PostgreSQL for storage"
 
@@ -100,7 +103,9 @@ async def test_reconcile_restamps_rows_left_on_the_old_ladder(async_session):
         )
     ).scalars().one()
     row.source_rank = 7
-    rec.confidence = compute_confidence(7, 1, "exact")
+    rec.confidence = compute_confidence(
+        7, 1, "exact", filled_fields=record_completeness(rec)
+    )
     await async_session.flush()
     stale_confidence = rec.confidence
 
@@ -110,7 +115,9 @@ async def test_reconcile_restamps_rows_left_on_the_old_ladder(async_session):
     await async_session.refresh(row)
     await async_session.refresh(rec)
     assert row.source_rank == rank_for_source("session") == 8
-    assert rec.confidence == compute_confidence(8, 1, "exact")
+    assert rec.confidence == compute_confidence(
+        8, 1, "exact", filled_fields=record_completeness(rec)
+    )
     assert rec.confidence > stale_confidence
 
 
@@ -205,24 +212,134 @@ def test_persist_wires_both_repairs():
 
 
 async def test_purge_keeps_what_a_human_confirmed(async_session):
-    """Only ``proposed`` rows drain. An active record survives its source's removal."""
+    """Only ``proposed`` rows drain. An accepted record survives its source's removal."""
     repo = await insert_repo(async_session)
-    await bulk_upsert_decisions(
+    ids = await bulk_upsert_decisions(
         async_session,
         repo.id,
         [
             {
                 "title": "Kept because someone confirmed it",
                 "decision": "mined from a changelog, then confirmed by a human",
+                "rationale": "the changelog entry gave the reason",
                 "source": "changelog",
-                "status": "active",
+                "status": "proposed",
+                "affected_files": ["src/changelog.py"],
+                "evidence_file": "CHANGELOG.md",
                 "confidence": 0.6,
                 "verification": "exact",
                 "source_quote": "mined from a changelog, then confirmed by a human",
             }
         ],
     )
+    # Accepting is what makes it survive; the row lands ``proposed`` whatever
+    # the extraction dict claimed.
+    await accept(async_session, ids[0])
 
     assert await purge_proposed_decisions_by_source(async_session, repo.id, "changelog") == 0
     rec = await _record(async_session, repo.id)
     assert rec.status == "active"
+
+
+# --- the formula's own repair path -----------------------------------------
+
+
+async def test_confidence_reconcile_rescores_a_store_left_on_an_old_formula(
+    async_session,
+):
+    """The rank repair cannot find this: every input is still valid.
+
+    A store scored before completeness entered the formula holds records whose
+    ranks all agree with the ladder, so ``reconcile_source_ranks`` scans and
+    returns 0 while every headline is on the previous scale.
+    """
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(async_session, repo.id, [_session_dict()])
+    rec = await _record(async_session, repo.id)
+    scored = rec.confidence
+
+    rec.confidence = compute_confidence(8, 1, "exact")  # the pre-completeness value
+    await async_session.flush()
+
+    assert await reconcile_source_ranks(async_session) == 0
+    assert await reconcile_decision_confidence(async_session) == 1
+    await async_session.refresh(rec)
+    assert rec.confidence == scored
+
+
+async def test_confidence_reconcile_is_idempotent(async_session):
+    """It converges: a second pass over its own output writes nothing.
+
+    Otherwise it churns ``updated_at`` on every persist and every update.
+    """
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(async_session, repo.id, [_session_dict(), _adr_dict()])
+    rec = await _record(async_session, repo.id)
+
+    assert await reconcile_decision_confidence(async_session) == 0
+
+    rec.confidence = 0.123
+    await async_session.flush()
+    assert await reconcile_decision_confidence(async_session) == 1
+    assert await reconcile_decision_confidence(async_session) == 0
+
+
+async def test_confidence_reconcile_leaves_an_evidence_less_record_alone(
+    async_session,
+):
+    """A manual entry has no evidence to re-derive from, so it is not touched."""
+    repo = await insert_repo(async_session)
+    rec = await upsert_decision(
+        async_session,
+        repository_id=repo.id,
+        title="Hand-written",
+        decision="Do the thing",
+        source="cli",
+        verification="exact",
+    )
+    scored_at_creation = rec.confidence
+
+    assert await reconcile_decision_confidence(async_session) == 0
+    await async_session.refresh(rec)
+    assert rec.confidence == scored_at_creation
+
+
+async def test_a_manual_entry_is_scored_on_the_ladder_not_asserted(async_session):
+    """``decision add`` used to write 1.0, above the formula's own ceiling.
+
+    It takes full rank credit and no completeness term: a person wrote it, and
+    how many prompts they answered says nothing about whether it holds.
+    """
+    repo = await insert_repo(async_session)
+    thin = await upsert_decision(
+        async_session,
+        repository_id=repo.id,
+        title="One line",
+        decision="Do the thing",
+        source="cli",
+    )
+    full = await upsert_decision(
+        async_session,
+        repository_id=repo.id,
+        title="Fully stated",
+        context="Here is the situation",
+        decision="Do the thing",
+        rationale="Because of the reason",
+        consequences=["a cost"],
+        alternatives=["the other thing"],
+        source="cli",
+    )
+
+    on_the_ladder = compute_confidence(rank_for_source("cli"), 1, "exact")
+    assert thin.confidence == full.confidence == on_the_ladder
+    assert on_the_ladder < 1.0, "1.0 is above the formula's own ceiling"
+    # An explicit value still wins: the derivation only fills a gap.
+    pinned = await upsert_decision(
+        async_session,
+        repository_id=repo.id,
+        title="Pinned",
+        decision="Do the thing",
+        source="cli",
+        confidence=0.42,
+    )
+    assert pinned.confidence == 0.42

@@ -28,7 +28,33 @@ export function isReaderPersona(value: string | null | undefined): value is Read
 // Heading keywords (lowercased, matched as a prefix of the heading text) that
 // each persona hides. Matching is intentionally generous so it works across
 // the file/module/layer page templates without an exhaustive list.
+
+// Contributor keeps almost everything; only the rawest machine-oriented dumps
+// are hidden so the page stays readable.
+//
+// The last three are retrieval scaffolding rather than reference material. A
+// deterministic page carries them so the index has the words a question is
+// asked in — the vocabulary bag and the question block are the only parts of
+// a file page written in a reader's words rather than in paths, and the third
+// is the importer list a symbol page keeps once its resolved callers have
+// answered the question. They earn their place in `content`, which is one
+// string that FTS indexes, the vector store embeds and `get_context` returns
+// verbatim; they do not earn a reader's scroll. Hidden here rather than
+// dropped upstream so the index keeps them.
+const CONTRIBUTOR_HIDE = [
+  "raw metrics",
+  "parse errors",
+  "source snippet",
+  "in the code",
+  "questions this page answers",
+  "files importing this module",
+];
+
+// Overview is contributor plus the reference dumps. Spread rather than
+// restated: a section the balanced lens hides must never reappear in the
+// narrower one.
 const OVERVIEW_HIDE = [
+  ...CONTRIBUTOR_HIDE,
   "symbols",
   "symbol",
   "public api",
@@ -40,17 +66,10 @@ const OVERVIEW_HIDE = [
   "class hierarchy",
   "community",
   "neighbors",
-  "raw metrics",
   "dead code",
-  "parse errors",
   "source",
-  "source snippet",
   "metrics",
 ];
-
-// Contributor keeps almost everything; only the rawest machine-oriented dumps
-// are hidden so the page stays readable.
-const CONTRIBUTOR_HIDE = ["raw metrics", "parse errors", "source snippet"];
 
 const HIDE_BY_PERSONA: Record<ReaderPersona, string[]> = {
   overview: OVERVIEW_HIDE,

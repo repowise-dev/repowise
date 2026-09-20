@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -64,6 +65,87 @@ class DistillResult:
     @property
     def savings_pct(self) -> float:
         return savings_pct(self.raw_tokens, self.distilled_tokens)
+
+
+def _record_event(
+    store: OmissionStore,
+    *,
+    source: str,
+    filter_name: str,
+    ref: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+) -> None:
+    """Record the canonical savings event beside the legacy ledger row.
+
+    Written through the store already open here rather than by reopening the
+    sidecar, and never raising: this sits inside the block whose failure mode is
+    "fall back to raw output", and a ledger problem must not cost the user their
+    distillation.
+
+    The repository is derived from the store's own path, which is the only
+    source available here: ``distill_output`` is reached from callers that do
+    not all know a repository root.
+
+    That derivation is only valid for a repo-local sidecar.
+    ``OmissionStore.open_default`` falls back to ``~/.repowise`` when there is
+    no repository, and the same arithmetic would then call the user's home
+    directory a repository -- merging every uninitialized directory on the
+    machine into one ledger keyed on ``/home/<user>``, which is precisely what
+    the recorder exists to prevent. So a store that is not
+    ``<root>/.repowise/omissions/omissions.db`` records nothing. An event
+    attributed to the wrong repository is worse than one not recorded.
+
+    Attribution stays ``unknown``. The source distinguishes the CLI from the
+    rewrite hook's shell, which is not the same thing as knowing which agent ran
+    it, and the contract says an unknown field stays unknown rather than being
+    filled with the likeliest answer.
+    """
+    from repowise.core.savings import recorder
+    from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
+    from repowise.core.savings.pricing import resolve_pricing_snapshot
+
+    try:
+        repo_root = store.db_path.parents[2]
+        if store.db_path != recorder.sidecar_path(repo_root) or repo_root == Path.home():
+            return
+        event_id = new_event_id()
+        surface = "hook" if source.startswith("hook") else "distill"
+        # A hook-sourced run is not a CLI command a human typed: the rewrite
+        # hook turns the agent's own Bash call into `repowise distill`, so this
+        # runs synchronously inside that tool call. Detecting the model scans
+        # the local transcripts -- seconds, on a repository with no Codex
+        # history -- so the hook reads the cache and never fills it, exactly as
+        # the PostToolUse hook does. A direct `repowise distill` may scan.
+        pricing = resolve_pricing_snapshot(repo_root, allow_scan=surface != "hook")
+        recorder.record_event_in(
+            store,
+            repo_root,
+            {
+                "event_id": event_id,
+                "idempotency_key": scoped_idempotency_key(str(repo_root), "distill", event_id),
+                "occurred_at": datetime.now(UTC),
+                # The rewrite hook tags its shell; everything else is the CLI.
+                "surface": surface,
+                "integration": "unknown",
+                "agent": "unknown",
+                "operation": filter_name,
+                "evidence_kind": "measured",
+                "estimator": "chars_per_token_floor_v1",
+                "token_unit": "estimated_tokens",
+                "result_state": "success",
+                "is_usable": True,
+                # Host-capped, because bytes past the host's own truncation were
+                # never going to reach the model and cannot be claimed.
+                "baseline_input_tokens": raw_tokens,
+                "pre_budget_input_tokens": raw_tokens,
+                "delivered_input_tokens": distilled_tokens,
+                "omission_refs": (ref,),
+                **(pricing.as_payload() if pricing else {}),
+            },
+        )
+    except Exception:
+        logger.debug("distill savings event failed", exc_info=True)
 
 
 def distill_output(
@@ -138,6 +220,14 @@ def distill_output(
             filter_name=chosen.name,
             source=source,
             command=command or None,
+            raw_tokens=raw_tokens,
+            distilled_tokens=distilled_tokens,
+        )
+        _record_event(
+            store,
+            source=source,
+            filter_name=chosen.name,
+            ref=ref,
             raw_tokens=raw_tokens,
             distilled_tokens=distilled_tokens,
         )

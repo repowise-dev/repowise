@@ -2,6 +2,7 @@ import { apiGet, apiPost } from "./client";
 import type {
   WorkspaceResponse,
   WorkspaceContractsResponse,
+  WorkspaceContractDetail,
   WorkspaceCoChangesResponse,
   WorkspaceGraphResponse,
   WorkspaceSyncResponse,
@@ -10,6 +11,7 @@ import type {
   WorkspaceBreakingChangesResponse,
   WorkspaceConformanceResponse,
   WorkspaceArchitectureResponse,
+  WorkspaceTestImpactResponse,
   ExtractionDiagnostics,
 } from "./types";
 
@@ -33,6 +35,24 @@ export async function getWorkspaceContracts(opts?: {
   if (opts?.limit != null) params.limit = String(opts.limit);
   if (opts?.offset != null) params.offset = String(opts.offset);
   return apiGet<WorkspaceContractsResponse>("/api/workspace/contracts", params);
+}
+
+/**
+ * One contract with its schema, its links, and its unmatched reason.
+ *
+ * Keyed by all three of `repo`, `file` and `id` because `id` alone is not
+ * unique — several repos declare the same `http::GET::/user`. Query params
+ * rather than a path segment because `file` carries slashes.
+ */
+export async function getWorkspaceContractDetail(
+  opts: { repo: string; file: string; id: string },
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceContractDetail> {
+  return apiGet<WorkspaceContractDetail>(
+    "/api/workspace/contracts/detail",
+    { repo: opts.repo, file: opts.file, id: opts.id },
+    fetchOptions,
+  );
 }
 
 export async function getWorkspaceCoChanges(opts?: {
@@ -149,5 +169,29 @@ export async function syncWorkspace(opts?: {
     undefined,
     undefined,
     params,
+  );
+}
+
+/**
+ * Which tests in the consumer repos guard a change to these provider files.
+ *
+ * Rows carry the basis they came from: `measured` when a coverage map recorded
+ * the test against the consumer call site, `inferred` when the consumer call or
+ * import graph reaches it. Links the join could not follow come back in
+ * `unresolved` with a reason, so an empty answer always names its state.
+ */
+export async function getWorkspaceTestImpact(
+  repo: string,
+  files: string[],
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceTestImpactResponse> {
+  // `file` repeats once per changed path, so the query is built here: the
+  // shared param helper sets each key once.
+  const query = new URLSearchParams({ repo });
+  for (const file of files) query.append("file", file);
+  return apiGet<WorkspaceTestImpactResponse>(
+    `/api/workspace/test-impact?${query.toString()}`,
+    undefined,
+    fetchOptions,
   );
 }

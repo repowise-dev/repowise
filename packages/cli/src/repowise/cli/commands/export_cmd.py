@@ -16,6 +16,11 @@ from repowise.cli.helpers import (
     run_async,
 )
 
+# Rows per page of the export walk. Large enough that a big wiki costs few
+# round trips, small enough that one batch is never the whole database in
+# memory at once.
+_EXPORT_PAGE_BATCH = 1000
+
 
 @click.command("export")
 @click.argument("path", required=False, default=None)
@@ -126,9 +131,24 @@ def export_command(
             # A reader-facing export drops tombstones so it does not write a
             # page for a file that no longer exists. --full is the archival
             # mode, so it keeps them for a complete record.
-            pages = await list_pages(
-                session, repo.id, include_tombstones=full_export, limit=10000
-            )
+            # Paged through rather than fetched with a raised cap. `list_pages`
+            # is the paginated listing helper whose limit defaults to 100; the
+            # single `limit=10000` call this replaces silently stopped an export
+            # at 10000 pages, so a larger wiki exported a truncated archive that
+            # looked complete. Export needs whole rows, so this walks the pages
+            # rather than narrowing the columns.
+            pages = []
+            while True:
+                batch = await list_pages(
+                    session,
+                    repo.id,
+                    include_tombstones=full_export,
+                    limit=_EXPORT_PAGE_BATCH,
+                    offset=len(pages),
+                )
+                pages.extend(batch)
+                if len(batch) < _EXPORT_PAGE_BATCH:
+                    break
 
             if full_export and fmt == "json":
                 from sqlalchemy import select

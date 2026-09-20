@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { scoreBand } from "./tokens";
+import { healthInk } from "./tokens";
 
 export interface TrendSlopePoint {
   file_path: string;
@@ -16,13 +16,6 @@ export interface TrendSlopeChartProps {
   /** Cap the number of slopes drawn (largest |delta| first). */
   max?: number;
 }
-
-const BAND_STROKE: Record<string, string> = {
-  critical: "var(--color-error)",
-  poor: "var(--color-warning)",
-  fair: "var(--color-caution)",
-  good: "var(--color-success)",
-};
 
 /**
  * Slope chart for "largest score changes" — each file is a line from its
@@ -77,7 +70,7 @@ export function TrendSlopeChart({ points, height = 320, max = 18 }: TrendSlopeCh
         {data.map((p) => {
           const y1 = yScale(p.before);
           const y2 = yScale(p.after);
-          const stroke = BAND_STROKE[scoreBand(p.after)] ?? "var(--color-caution)";
+          const stroke = healthInk(p.after);
           const isHovered = hovered?.file_path === p.file_path;
           const name = p.file_path.split("/").pop() ?? p.file_path;
           return (

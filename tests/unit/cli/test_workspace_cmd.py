@@ -613,3 +613,432 @@ class TestWorkspaceCheck:
         result = runner.invoke(cli, ["workspace", "check", "--help"])
         assert result.exit_code == 0
         assert "non-zero" in result.output or "CI" in result.output
+
+
+# ---------------------------------------------------------------------------
+# workspace check — breaking contract changes
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceCheckBreaking:
+    """`check` fails on breaking contract changes without any rule declared."""
+
+    def _write_config(self, root: Path) -> None:
+        data = {
+            "version": 1,
+            "default_repo": "frontend",
+            "repos": [
+                {"path": "frontend", "alias": "frontend"},
+                {"path": "api", "alias": "api"},
+            ],
+        }
+        (root / WORKSPACE_CONFIG_FILENAME).write_text(
+            yaml.dump(data, default_flow_style=False), encoding="utf-8"
+        )
+
+    def _save_graph(self, root: Path) -> None:
+        from repowise.core.workspace.system_graph import (
+            SystemGraph,
+            SystemNode,
+            save_system_graph,
+        )
+
+        save_system_graph(
+            SystemGraph(
+                nodes=[
+                    SystemNode(id=n, repo=n, service_path=None, name=n)
+                    for n in ("api", "frontend")
+                ]
+            ),
+            root,
+        )
+
+    def _save_report(
+        self,
+        root: Path,
+        *,
+        consumer_repo: str,
+        severity: str = "breaking",
+        extra_consumers: tuple[str, ...] = (),
+    ) -> None:
+        from repowise.core.workspace.breaking_change import (
+            BreakingChange,
+            BreakingChangeReport,
+            ImpactedConsumer,
+            save_breaking_change_report,
+        )
+
+        save_breaking_change_report(
+            BreakingChangeReport(
+                generated_at="2026-08-23T00:00:00+00:00",
+                changes=[
+                    BreakingChange(
+                        kind="removed_endpoint",
+                        severity=severity,
+                        contract_id="code::@acme/types::Order",
+                        contract_type="code",
+                        provider_repo="api",
+                        provider_file="src/types.ts",
+                        provider_symbol="Order",
+                        provider_service=None,
+                        detail="code::@acme/types::Order was removed",
+                        impacted_consumers=[
+                            ImpactedConsumer(
+                                repo=repo,
+                                service=None,
+                                node_id=repo,
+                                file=f"src/{i}.ts",
+                                symbol="@acme/types:Order",
+                                match_type="exact",
+                                confidence=0.9,
+                            )
+                            for i, repo in enumerate((consumer_repo, *extra_consumers))
+                        ],
+                    )
+                ],
+            ),
+            root,
+        )
+
+    def test_breaking_change_fails_check_by_default(self, runner, tmp_path):
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "code::@acme/types::Order" in result.output
+        assert "1 breaking contract change(s)" in result.output
+
+    def test_no_breaking_flag_restores_the_old_gate(self, runner, tmp_path):
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path), "--no-breaking"])
+        assert result.exit_code == 0, result.output
+        assert "@acme/types::Order" not in result.output
+
+    def test_internal_only_change_does_not_fail(self, runner, tmp_path):
+        """A provider whose only consumer is its own repo is not a cross-repo break."""
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="api")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "No breaking contract changes" in result.output
+
+    def test_json_carries_the_breaking_changes(self, runner, tmp_path):
+        import json
+
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path), "--json"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["violation_count"] == 0
+        assert [c["contract_id"] for c in data["breaking_changes"]] == [
+            "code::@acme/types::Order"
+        ]
+
+    def test_no_report_leaves_check_silent(self, runner, tmp_path):
+        """Nothing said when the workspace has never run a detection pass."""
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "breaking contract" not in result.output
+
+    def test_a_warning_severity_does_not_fail_the_build(self, runner, tmp_path):
+        """A removed request field is source-compat only, not wire-incompatible."""
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend", severity="warning")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "No breaking contract changes" in result.output
+
+    def test_the_consumer_count_is_the_cross_repo_one(self, runner, tmp_path):
+        """Two of the three consumers are in the provider's own repo."""
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(
+            tmp_path, consumer_repo="frontend", extra_consumers=("api", "api")
+        )
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "1 consumer(s) in frontend" in result.output
+
+    def test_the_report_stamp_is_shown_beside_the_finding(self, runner, tmp_path):
+        """The graph is recomputed now; this artifact can be any age."""
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert "2026-08-23T00:00:00+00:00" in result.output
+
+    def test_json_stamps_the_breaking_half_separately(self, runner, tmp_path):
+        import json
+
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path), "--json"])
+        data = json.loads(result.output)
+        assert data["breaking_changes_generated_at"] == "2026-08-23T00:00:00+00:00"
+        assert data["breaking_changes_available"] is True
+
+    def test_json_says_when_nothing_ever_looked(self, runner, tmp_path):
+        """An empty list without this flag reads as a pass in CI."""
+        import json
+
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["breaking_changes"] == []
+        assert data["breaking_changes_available"] is False
+
+    def test_the_failure_line_omits_a_count_nothing_produced(self, runner, tmp_path):
+        """With no report there is no 0 to claim."""
+        self._write_config_with_rule_and_violation(tmp_path)
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "breaking contract change(s)." not in result.output
+        assert "cycle(s)." in result.output
+
+    def _write_config_with_rule_and_violation(self, root: Path) -> None:
+        from repowise.core.workspace.system_graph import (
+            SystemEdge,
+            SystemGraph,
+            SystemNode,
+            save_system_graph,
+        )
+
+        data = {
+            "version": 1,
+            "default_repo": "frontend",
+            "repos": [
+                {"path": "frontend", "alias": "frontend"},
+                {"path": "api", "alias": "api"},
+            ],
+            "conformance": {"rules": [{"source": "frontend", "target": "api"}]},
+        }
+        (root / WORKSPACE_CONFIG_FILENAME).write_text(
+            yaml.dump(data, default_flow_style=False), encoding="utf-8"
+        )
+        save_system_graph(
+            SystemGraph(
+                nodes=[
+                    SystemNode(id=n, repo=n, service_path=None, name=n)
+                    for n in ("api", "frontend")
+                ],
+                edges=[
+                    SystemEdge(
+                        id="frontend->api:http",
+                        source="frontend",
+                        target="api",
+                        kind="http",
+                        match_type="exact",
+                        confidence=1.0,
+                        weight=1,
+                        structural=True,
+                    )
+                ],
+            ),
+            root,
+        )
+
+
+# ---------------------------------------------------------------------------
+# workspace impacted-tests
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceImpactedTests:
+    """The command's own reporting, over a canned result.
+
+    The join itself is covered in tests/unit/workspace/test_test_impact.py;
+    what matters here is that a link the join could not follow reaches the
+    reader instead of vanishing.
+    """
+
+    def _canned(self):
+        from repowise.core.workspace.test_impact import (
+            UnresolvedLink,
+            WorkspaceTestImpactResult,
+            WorkspaceTestRecommendation,
+        )
+
+        rec = WorkspaceTestRecommendation(
+            test_id="tests/api.test.ts::it_getUser",
+            test_file="tests/api.test.ts",
+            consumer_repo="frontend",
+            consumer_files=["src/api.ts"],
+            consumer_symbol_ids=["src/api.ts::getUser"],
+            provider_repo="backend",
+            contract_ids=["http::GET::/users"],
+            contract_types=["http"],
+            basis="inferred",
+            via="call-graph",
+            confidence=0.9,
+            source_files=["app/routers/users.py"],
+            evidence=[
+                {
+                    "basis": "inferred",
+                    "via": "call-graph",
+                    "entry": "symbol",
+                    "contract_id": "http::GET::/users",
+                    "source_file": "app/routers/users.py",
+                }
+            ],
+        )
+        unresolved = UnresolvedLink(
+            consumer_repo="frontend",
+            consumer_file="src/legacy.ts",
+            consumer_symbol_id=None,
+            provider_repo="backend",
+            provider_file="app/routers/users.py",
+            contract_id="http::POST::/users",
+            contract_type="http",
+            reason="unbound",
+            detail=None,
+        )
+        return WorkspaceTestImpactResult(
+            workspace=True,
+            recommendations=[rec],
+            recommendations_total=1,
+            recommendations_emitted=1,
+            recommendations_truncated=False,
+            recommendations_omitted=0,
+            recommendations_by_basis={"measured": 0, "inferred": 1},
+            recommendations_by_repo={"backend": 1},
+            recommendations_by_consumer_repo={"frontend": 1},
+            unresolved=[unresolved],
+            files_analyzed=[],
+            summary={
+                "states": {"measured": 0, "inferred": 1, "none": 0, "unresolved": 1},
+                "passes": {"measured": True, "inferred": True},
+            },
+        )
+
+    def _empty(self):
+        """What the command gets when the workspace has no contract map yet."""
+        from repowise.core.workspace.test_impact import WorkspaceTestImpactResult
+
+        return WorkspaceTestImpactResult(
+            summary={
+                "reason": "no_contract_store",
+                "passes": {"measured": True, "inferred": True},
+            }
+        )
+
+    def _install(self, tmp_path, monkeypatch, canned):
+        from repowise.core.workspace import test_impact
+
+        _make_git_repo(tmp_path / "backend")
+        _make_git_repo(tmp_path / "frontend")
+        _write_workspace_config(
+            tmp_path,
+            repos=[
+                {"path": "backend", "alias": "backend"},
+                {"path": "frontend", "alias": "frontend"},
+            ],
+        )
+
+        async def _fake(root, changed, **options):
+            return canned
+
+        monkeypatch.setattr(test_impact, "workspace_test_impact_from_root", _fake)
+        return tmp_path
+
+    @pytest.fixture
+    def workspace(self, tmp_path, monkeypatch):
+        return self._install(tmp_path, monkeypatch, self._canned())
+
+    @pytest.fixture
+    def empty_workspace(self, tmp_path, monkeypatch):
+        return self._install(tmp_path, monkeypatch, self._empty())
+
+    def test_a_link_that_could_not_be_followed_is_printed(self, runner, workspace):
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "impacted-tests",
+                "backend:app/routers/users.py",
+                "--path",
+                str(workspace),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Could not determine" in result.output
+        assert "contract never bound to a symbol" in result.output
+
+    def test_list_format_prints_the_test_file(self, runner, workspace):
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "impacted-tests",
+                "backend:app/routers/users.py",
+                "--path",
+                str(workspace),
+                "--format",
+                "list",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "frontend:tests/api.test.ts" in result.output
+
+    def test_the_table_names_the_contracts_and_the_provider_files(
+        self, runner, workspace
+    ):
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "impacted-tests",
+                "backend:app/routers/users.py",
+                "--path",
+                str(workspace),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        flattened = " ".join(result.output.split())
+        assert "http::GET::/users" in flattened
+        assert "Provider Files" in flattened
+        assert "app/routers/users.py" in flattened
+
+    def _split_runner(self):
+        """A runner that keeps stderr out of ``stdout``.
+
+        ``mix_stderr`` exists on click 8.1 and was removed in 8.2, where the
+        two streams are already separate.
+        """
+        import inspect
+
+        from click.testing import CliRunner
+
+        if "mix_stderr" in inspect.signature(CliRunner.__init__).parameters:
+            return CliRunner(mix_stderr=False)
+        return CliRunner()
+
+    def test_list_format_explains_an_empty_answer_on_stderr(self, empty_workspace):
+        """A pipeline reading stdout must never get silence with exit 0."""
+        result = self._split_runner().invoke(
+            cli,
+            [
+                "workspace",
+                "impacted-tests",
+                "backend:app/routers/users.py",
+                "--path",
+                str(empty_workspace),
+                "--format",
+                "list",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert result.stdout.strip() == ""
+        assert "No tests found" in result.stderr
+        assert "contract map" in result.stderr

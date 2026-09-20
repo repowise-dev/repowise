@@ -61,6 +61,7 @@ _NODE_FIELDS = (
     "is_entry_point",
     "pagerank",
     "betweenness",
+    "betweenness_commit",
     "community_id",
     "community_meta_json",
     "kind",

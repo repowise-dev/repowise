@@ -171,7 +171,7 @@ repowise/
 │   │
 │   ├── server/                 # Python: FastAPI REST API + MCP server
 │   │   └── src/repowise/server/
-│   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search, claude-md)
+│   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, doc-drift, decisions, search, claude-md)
 │   │       ├── mcp_server/      # MCP server package (11 default tools, split into focused modules)
 │   │       ├── webhooks/        # GitHub + GitLab handlers
 │   │       ├── job_executor.py  # Background pipeline executor: bridges REST to core pipeline
@@ -1081,13 +1081,13 @@ and supports two transports:
 - **stdio**: for Claude Code, Cursor, Cline (add to their MCP config)
 - **SSE**: for web-based MCP clients (served on port 7338)
 
-### Tools (11 default in single-repo mode)
+### Tools (10 default in single-repo mode)
 
 Canonical reference: [`docs/agent/MCP_TOOLS.md`](../agent/MCP_TOOLS.md).
-A single-repo server advertises **11** tools by default (ten flagship +
-`list_repos`). Workspace mode adds `get_architecture` and `get_blast_radius`.
-Four more are registered but opt-in (`get_dependency_path`,
-`get_execution_flows`, `generate_refactoring_code`, `get_conformance`).
+A single-repo server advertises **10** tools by default (the canonical set).
+Workspace mode adds `list_repos`. Six specialists are registered but opt-in:
+`get_architecture`, `get_blast_radius`, `get_dependency_path`,
+`get_execution_flows`, `generate_refactoring_code`, and `get_conformance`.
 
 | Tool | What it answers | When to call |
 |------|----------------|-------------|
@@ -1097,7 +1097,7 @@ Four more are registered but opt-in (`get_dependency_path`,
 | `get_symbol` | Resolve a qualified symbol id to source body, signature, and docstring. | When the question names a specific class, function, or method. |
 | `search_codebase(query)` | Hybrid symbol / path / wiki search. | When you don't know where something lives. |
 | `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary per target. | Before modifying indexed files. |
-| `get_change_risk(revspec?)` | Live commit / range defect score from the diff itself. | Before merging a commit or PR range. |
+| `get_change_risk(revspec?)` | What a commit, range or uncommitted change newly made worse, with attribution. | Before merging a commit or PR range. |
 | `get_why(query?)` | Architectural decisions and git archaeology. | Before making architectural changes. |
 | `get_dead_code` | Dead/unused code findings sorted by confidence. | Before cleanup tasks. |
 | `get_health` | Code-health marker scores (defect / maintainability / performance). | Self-check before a PR or refactor. |
@@ -1136,6 +1136,8 @@ Key routers:
 - `/api/repos/{id}/dead-code`: dead code findings (GET list, POST trigger analysis)
 - `/api/repos/{id}/dead-code/summary`: aggregate dead code stats
 - `/api/dead-code/{finding_id}`: PATCH to resolve/acknowledge findings
+- `/api/repos/{id}/doc-drift`: documents whose assertions the repo no longer satisfies, with a server-computed summary
+- `/api/repos/{id}/doc-drift/references`: which documents name one file (the reverse view)
 - `/api/repos/{id}/claude-md`: GET preview of generated CLAUDE.md section (JSON, no disk write)
 - `/api/repos/{id}/claude-md/generate`: POST to regenerate and write CLAUDE.md to disk
 - `/health`: liveness + readiness (checks DB + provider)

@@ -53,6 +53,10 @@ class SelectedTerm:
     #: — every entry is a module group cut from the dependency graph, so it
     #: points at code rather than at more prose.
     corroborating_names: tuple[str, ...] = ()
+    #: The nearest authoritative prose retained for a later synthesis pass even
+    #: when it is not semantically adequate to publish as the definition.
+    definition_evidence: str | None = None
+    definition_evidence_source: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +96,63 @@ _TRAILS_OFF = (":", ",", ";", "-", "—", "–", "(", "[")
 #: sentence can end. Every definition mined from four repositories that a human
 #: would call a definition ends in one of these.
 _SENTENCE_END = (".", "!", "?")
+_DEFINITION_VERBS = frozenset(
+    {
+        "are",
+        "builds",
+        "captures",
+        "combines",
+        "compresses",
+        "contains",
+        "describes",
+        "enables",
+        "finds",
+        "handles",
+        "holds",
+        "identifies",
+        "is",
+        "means",
+        "manages",
+        "measures",
+        "orchestrates",
+        "proposes",
+        "provides",
+        "records",
+        "refers",
+        "represents",
+        "scores",
+        "stores",
+        "tracks",
+        "uses",
+        "walks",
+    }
+)
+_HEADING_GLOSS_NOUNS = frozenset(
+    {
+        "ability",
+        "analog",
+        "boundary",
+        "collection",
+        "file",
+        "graph",
+        "index",
+        "layer",
+        "measure",
+        "method",
+        "model",
+        "process",
+        "record",
+        "relationship",
+        "representation",
+        "score",
+        "set",
+        "signal",
+        "store",
+        "system",
+        "view",
+        "way",
+    }
+)
 
 
 def is_a_sentence(text: str) -> bool:
@@ -116,6 +177,41 @@ def is_a_sentence(text: str) -> bool:
         return False
     # A statement starts with a word, not with punctuation or a code fence.
     return text[:1].isalpha()
+
+
+def is_definition(term: str, text: str) -> bool:
+    """Whether nearby prose actually defines *term*, not merely mentions it.
+
+    Sentence shape and term corroboration answer different questions. This
+    conservative semantic gate accepts an explicit term-led description or a
+    conventional heading gloss ("The set...", "A process..."). Ambiguous prose
+    stays available as evidence for a later bounded synthesis pass but is not
+    published verbatim as a definition.
+    """
+    if not is_a_sentence(text):
+        return False
+    normalized = " ".join(text.split())
+    words = re.findall(r"[A-Za-z0-9]+", normalized.lower())
+    # Keep the term's literal inflection here. ``term_words`` is intentionally
+    # stemmed for matching/ranking, but a definition headed "Decisions are"
+    # must compare with the plural heading rather than the stem "decision".
+    term_tokens = re.findall(r"[A-Za-z0-9]+", term.lower())
+    if term_tokens and words[: len(term_tokens)] == term_tokens:
+        next_index = len(term_tokens)
+        if next_index >= len(words):
+            return False
+        if words[next_index] in _DEFINITION_VERBS or words[next_index] == "for":
+            return True
+        # Repositories commonly use a terse noun gloss under a term heading,
+        # e.g. "Blast-radius request/response models." Require the phrase to
+        # end in a known definitional noun; length alone admits incidental
+        # claims such as "Dead code fails often."
+        final_word = words[-1]
+        singular_final = final_word[:-1] if final_word.endswith("s") else final_word
+        return singular_final in _HEADING_GLOSS_NOUNS
+    if len(words) >= 2 and words[0] in {"a", "an", "the", "this"}:
+        return words[1] in _HEADING_GLOSS_NOUNS
+    return False
 
 
 def cell(text: str) -> str:
@@ -227,7 +323,8 @@ def select_terms(
         hits = len(matched)
         if not hits:
             continue
-        definition = term.definition
+        definition_evidence = term.definition
+        definition = definition_evidence
         # No "the definition must name the term" test. It was built, measured
         # and dropped: a heading gloss is the commonest definition shape there
         # is, and it does not restate its own heading. "## Blast radius" over
@@ -236,7 +333,7 @@ def select_terms(
         # mined from a bolded lead-in, which captures only the text after the
         # dash. It caught two junk rows here and would have emptied the
         # definition column of any repository that writes that way.
-        if definition and not is_a_sentence(definition):
+        if definition and not is_definition(term.term, definition):
             # Keep the row, drop the claim. The term is real — the structure
             # corroborated it — but the prose nearest it is not a statement
             # about it, and an em dash misinforms nobody.
@@ -265,6 +362,10 @@ def select_terms(
                 corroborating_pages=hits,
                 is_indexed_symbol=term.is_indexed_symbol,
                 corroborating_names=matched,
+                definition_evidence=definition_evidence,
+                definition_evidence_source=(
+                    term.definition_source if definition_evidence else None
+                ),
             )
         )
 

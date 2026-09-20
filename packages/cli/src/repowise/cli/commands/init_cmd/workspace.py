@@ -36,6 +36,7 @@ from repowise.cli.helpers import (
     get_head_commit,
     load_config,
     load_state,
+    resolve_explicit_provider_or_prompt,
     resolve_max_file_pages,
     resolve_provider,
     resolve_reasoning,
@@ -77,7 +78,7 @@ from .generation import (
     run_repo_generation,
     structural_page_summary,
 )
-from .persistence import persist_result
+from .persistence import apply_git_history_coverage_state, persist_result
 from .reporting import show_workspace_completion
 
 
@@ -93,6 +94,7 @@ def _run_workspace_generation(
     skip_tests: bool,
     skip_infra: bool,
     test_run: bool,
+    timings: Any | None = None,
     reasoning: str = "auto",
     onboarding: bool = True,
     wiki_style: str = DEFAULT_STYLE,
@@ -165,6 +167,7 @@ def _run_workspace_generation(
         resume=resume,
         verbose=False,
         test_run=test_run,
+        timings=timings,
     )
 
 
@@ -179,6 +182,7 @@ def _run_workspace_deterministic_generation(
     onboarding: bool,
     wiki_style: str,
     language: str,
+    timings: Any | None = None,
 ) -> tuple[list[Any], str]:
     """Render one workspace repo's wiki from templates (no model, no cost).
 
@@ -201,14 +205,13 @@ def _run_workspace_deterministic_generation(
     # so only the per-repo pin is folded in here — the flag already accounts for
     # the flag and env var, and re-reading them would override a caller that
     # decided otherwise. ``mock`` is not a pin anyone chose, so it does not count.
-    from repowise.cli.providers.embedders import pin_names_an_embedder
+    from repowise.cli.providers.embedders import pin_names_an_embedder, template_run_embedder
     from repowise.core.generation import GenerationConfig
     from repowise.core.providers.llm.template import TemplateProvider
 
     repo_config = load_config(repo_path)
     requested = embedder_was_requested or pin_names_an_embedder(repo_config.get("embedder"))
-    hosted = embedder_name_resolved not in ("mock", "ollama")
-    embedder = "mock" if hosted and not requested else embedder_name_resolved
+    embedder = template_run_embedder(embedder_name_resolved, requested)
 
     gen_config = GenerationConfig.from_repo_config(
         repo_config,
@@ -230,6 +233,7 @@ def _run_workspace_deterministic_generation(
         embedder_name_resolved=embedder,
         resume=resume,
         verbose=False,
+        timings=timings,
     )
     return generated_pages, embedder
 
@@ -309,6 +313,20 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     )
     ensure_repowise_dir(repo.path)
 
+    # The index phase mines decisions with a model too -- pull requests, git
+    # history and code comments all have a model stage -- so it needs the
+    # provider as much as generation does. Leaving it out made every one of
+    # those sources report "No LLM provider is configured" on a workspace run
+    # that had been given a perfectly good one, while the single-repo path
+    # (which passes its client) mined them normally.
+    #
+    # Bound to this repo rather than reused verbatim: a provider that shells
+    # out with a working directory has to point at the repo being indexed, not
+    # at whichever one resolved the provider first.
+    repo_provider = (
+        None if ctx.dry_run else _workspace_generation_provider_for_repo(ctx.provider, repo.path)
+    )
+
     try:
         with Progress(
             SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
@@ -333,6 +351,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                     exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
                     include_submodules=ctx.include_submodules,
                     generate_docs=False,
+                    llm_client=repo_provider,
                     mode=(
                         OrchestratorMode.FAST
                         if ctx.run_mode == "fast"
@@ -343,7 +362,6 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                     derive_environment_facts=True,
                 )
             )
-        repo_phase_timings: dict[str, float] = callback.timings
         console.print(
             f"    [{OK}]✓[/] {result.file_count:,} files, {result.symbol_count:,} symbols"
         )
@@ -372,6 +390,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             result=result,
             embedder_name_resolved=ctx.embedder_name_resolved,
             embedder_was_requested=ctx.embedder_was_requested,
+            timings=callback.table,
             concurrency=ctx.concurrency,
             resume=ctx.resume,
             onboarding=ctx.onboarding,
@@ -382,8 +401,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         pages_generated = len(generated_pages)
         docs_mode = "deterministic"
         console.print(
-            f"    [{OK}]✓[/] Rendered {len(generated_pages)} pages from structure "
-            "(no model)\n"
+            f"    [{OK}]✓[/] Rendered {len(generated_pages)} pages from structure (no model)\n"
         )
 
     if ctx.dry_run:
@@ -399,12 +417,13 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         skip_reason = "fast mode"
     elif not index_only and provider is not None:
         try:
-            repo_provider = _workspace_generation_provider_for_repo(provider, repo.path)
+            # Already bound to this repo above, for the index phase.
             generated_pages = _run_workspace_generation(
                 repo_path=repo.path,
                 result=result,
                 provider=repo_provider,
                 embedder_name_resolved=ctx.embedder_name_resolved,
+                timings=callback.table,
                 concurrency=ctx.concurrency,
                 yes=ctx.yes,
                 resume=ctx.resume,
@@ -462,7 +481,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         )
 
     # Persist to repo-local DB
-    run_async(persist_result(result, repo.path))
+    run_async(persist_result(result, repo.path, timings=callback.table))
 
     # Write state.json so `repowise update` knows the base commit
     head = get_head_commit(repo.path)
@@ -478,8 +497,81 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     if docs_mode == "llm" and provider is not None:
         state["provider"] = provider.provider_name
         state["model"] = provider.model_name
+    # Read after generation and persistence, not straight off the pipeline:
+    # both write into the same table.
+    repo_phase_timings: dict[str, float] = callback.timings
     if repo_phase_timings:
         state["phase_timings"] = repo_phase_timings
+    apply_git_history_coverage_state(state, result)
+    from repowise.core.generation.selection import count_documentable_files
+    from repowise.core.index_scope import file_page_scope, stamp_index_scope
+
+    scope_config = load_config(repo.path)
+    configured_cap = resolve_max_file_pages(config=scope_config)
+    scope_embedder = (
+        det_embedder
+        if docs_mode == "deterministic"
+        else ctx.embedder_name_resolved
+        if docs_mode == "llm"
+        else None
+    )
+    state["run_mode"] = ctx.run_mode
+    state["git_tier"] = "essential" if ctx.run_mode == "fast" else "full"
+    unavailable = [] if getattr(result, "health_report", None) is not None else ["health"]
+    stamp_index_scope(
+        state,
+        {**scope_config, "commit_limit": ctx.resolved_commit_limit},
+        run_mode=ctx.run_mode,
+        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[docs_mode],
+        git_tier=state["git_tier"],
+        git_commit_cap=ctx.resolved_commit_limit,
+        file_pages={
+            "configured_cap": configured_cap,
+            **(
+                result.generation_scope
+                if getattr(result, "generation_scope", None)
+                else (
+                    file_page_scope(
+                        configured_cap=configured_cap,
+                        eligible=count_documentable_files(result.parsed_files),
+                        generated_pages=result.generated_pages,
+                    )
+                    if hasattr(result, "parsed_files")
+                    else {
+                        "effective_cap": None,
+                        "eligible": None,
+                        "generated": None,
+                        "omitted": None,
+                    }
+                )
+            ),
+        },
+        analysis={
+            "unavailable": unavailable,
+            "skipped": ["generation"] if ctx.run_mode == "fast" else [],
+        },
+        provider={
+            "name": repo_provider.provider_name if repo_provider is not None else None,
+            "model": repo_provider.model_name if repo_provider is not None else None,
+            "embedder": scope_embedder,
+            "reused": False,
+            "model_cost_possible": docs_mode == "llm",
+        },
+        search={
+            "full_text": "available" if result.generated_pages else "unavailable",
+            "semantic": (
+                "available"
+                if result.generated_pages and scope_embedder not in {None, "mock"}
+                else "unavailable"
+            ),
+            "next_command": "repowise reindex" if result.generated_pages else None,
+        },
+        upgrade={
+            "status": "pending" if docs_mode != "llm" else "not_applicable",
+            "retryable": docs_mode != "llm",
+            "completed_stages": [],
+        },
+    )
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)
@@ -576,6 +668,7 @@ def _workspace_init(
     agents_md: bool | None,
     codex_setup: bool | None,
     distill_hook: bool | None,
+    hook: bool | None,
     editor_setup: bool,
     save_key: bool,
     include_submodules: bool,
@@ -665,7 +758,11 @@ def _workspace_init(
             index_only = True
         elif mode == "advanced":
             selection = interactive_provider_config_select(
-                console, model, reasoning, repo_path=primary_repo.path
+                console,
+                model,
+                reasoning,
+                repo_path=primary_repo.path,
+                save_key=save_key,
             )
             provider_name = selection.provider_name
             model = selection.model
@@ -694,7 +791,11 @@ def _workspace_init(
         elif not index_only:
             # "full" mode
             selection = interactive_provider_config_select(
-                console, model, reasoning, repo_path=primary_repo.path
+                console,
+                model,
+                reasoning,
+                repo_path=primary_repo.path,
+                save_key=save_key,
             )
             provider_name = selection.provider_name
             model = selection.model
@@ -706,7 +807,13 @@ def _workspace_init(
     provider = None
     if not index_only:
         try:
-            provider = resolve_provider(provider_name, model, primary_repo.path)
+            provider = resolve_explicit_provider_or_prompt(
+                provider_name,
+                model,
+                primary_repo.path,
+                interactive=sys.stdin.isatty() and not yes and not index_only,
+                save_key=save_key,
+            )
             # Re-resolve the embedder now that interactive provider selection
             # may have set the provider's API key in os.environ. Without
             # this, full-mode runs would display "mock" forever because
@@ -720,6 +827,8 @@ def _workspace_init(
             if resolved_reasoning != "auto":
                 console.print(f"  Reasoning: [{VALUE}]{resolved_reasoning}[/]\n")
         except Exception as exc:
+            if provider_name is not None:
+                raise
             console.print(
                 f"  [{WARN}]Provider setup failed ({exc}); falling back to index-only.[/]"
             )
@@ -847,15 +956,17 @@ def _workspace_init(
         docs_outcomes=docs_outcomes,
     )
 
-    # Offer to install post-commit hooks. Skipped on a dry run, which must
-    # not write anything.
+    # Post-commit auto-sync hooks, the same default for every indexed repo.
+    # Skipped on a dry run, which must not write anything.
     indexed_repos = [repo for repo in selected if repo.alias not in [e[0] for e in errors]]
     if indexed_repos and not dry_run:
         offer_hook_install(
             console,
             [r.path for r in indexed_repos],
             aliases=[r.alias for r in indexed_repos],
+            flag=hook,
             yes=yes,
+            no_editor_setup=not editor_setup,
         )
     # Opt-in distill command-rewrite hook for Claude Code: one user-level
     # install, with the verdict recorded per repo. Applied to *all* selected

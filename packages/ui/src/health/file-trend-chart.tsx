@@ -2,6 +2,7 @@
 
 import { TrendingDown } from "lucide-react";
 import type { FileHealthTrend } from "@repowise-dev/types/health";
+import { formatDate } from "../lib/format";
 import { deltaColor, formatDelta, scoreTextColor } from "./tokens";
 
 export interface FileTrendChartProps {
@@ -129,7 +130,7 @@ function Chart({
   // so the end dot's colour matches the file's stated score.
   const endColor = scoreTextColor(last.score);
 
-  const fmtDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : "");
+  const fmtDate = (iso: string | null) => (iso ? formatDate(iso) : "");
 
   return (
     <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-2">

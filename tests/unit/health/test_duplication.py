@@ -70,6 +70,22 @@ def test_tokenize_file_drops_comments_and_normalizes_identifiers():
     assert not any("comment" in k for k in kinds)
 
 
+def test_tokenize_file_reads_tsx_with_the_jsx_grammar():
+    # A .tsx file is tagged ``typescript``, and the grammar that cannot read
+    # JSX recovers from every element into ERROR nodes, so the token stream the
+    # clone detector hashes is partly invented. The path settles it.
+    source = b"export const C = () => <div className=\"x\">{label}</div>;\n"
+    as_tsx = [t.kind for t in tokenize_file("typescript", source, "src/C.tsx")]
+    as_ts = [t.kind for t in tokenize_file("typescript", source, "src/C.ts")]
+    assert as_tsx == [t.kind for t in tokenize_file("tsx", source, "src/C.tsx")]
+    assert as_tsx != as_ts
+    # Nothing else moves: the path only settles the grammar for .tsx.
+    plain = b"export const add = (a: number, b: number): number => a + b;\n"
+    assert [t.kind for t in tokenize_file("typescript", plain, "src/a.ts")] == [
+        t.kind for t in tokenize_file("typescript", plain, "src/a.other")
+    ]
+
+
 def test_tokenize_file_pascal_normalizes_identifiers_and_literals():
     source = (
         b"unit U;\n interface\n implementation\n"
@@ -144,10 +160,10 @@ def test_detect_clones_attaches_co_change_count(tmp_path: Path):
     parsed = [_pf("a.py", str(a)), _pf("b.py", str(b))]
     git_meta_map = {
         "a.py": {
-            "co_change_partners_json": json.dumps([{"file_path": "b.py", "co_change_count": 7}])
+            "co_change_partners_json": json.dumps([{"file_path": "b.py", "co_change_count": 7, "frequency": 7}])
         },
         "b.py": {
-            "co_change_partners_json": json.dumps([{"file_path": "a.py", "co_change_count": 5}])
+            "co_change_partners_json": json.dumps([{"file_path": "a.py", "co_change_count": 5, "frequency": 5}])
         },
     }
     report = detect_clones(parsed, git_meta_map, window_tokens=20, min_lines=4)

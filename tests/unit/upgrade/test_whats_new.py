@@ -86,7 +86,7 @@ def test_render_whats_new_empty_entries_shows_fallback_link():
     assert wn.RELEASES_URL in buf.getvalue()
 
 
-def _check(update_available, latest="9.9.9"):
+def _check(update_available, latest="9.9.9", command="pipx upgrade repowise"):
     return UpdateCheck(
         current_version="0.21.0",
         latest_version=latest,
@@ -94,19 +94,59 @@ def _check(update_available, latest="9.9.9"):
         running_executable="repowise",
         python="python",
         update_available=update_available,
-        suggested_command="pipx upgrade repowise",
+        suggested_command=command,
         install_hint="pipx",
     )
 
 
-def test_advisory_prints_when_update_available():
+def test_advisory_prints_when_update_available(monkeypatch):
     import io
 
+    monkeypatch.setattr("sys.platform", "linux")
     buf = io.StringIO()
     console = Console(file=buf, width=100)
     assert wn.render_update_advisory(console, _check(True)) is True
     assert "9.9.9" in buf.getvalue()
     assert "pipx upgrade repowise" in buf.getvalue()
+
+
+def test_advisory_warns_windows_users_to_stop_locking_processes_first(monkeypatch):
+    import io
+
+    monkeypatch.setattr("sys.platform", "win32")
+    buf = io.StringIO()
+    console = Console(file=buf, width=200)
+
+    assert (
+        wn.render_update_advisory(
+            console,
+            _check(True, command="uv tool upgrade repowise"),
+        )
+        is True
+    )
+
+    out = buf.getvalue()
+    rendered = " ".join(out.split())
+    assert "stop any running Repowise server or MCP process before upgrading" in rendered
+    assert "Repowise: Stop Server" in rendered
+    assert "only stops a server started by the VS Code extension" in rendered
+    assert "stop the server in its terminal" in rendered
+    assert rendered.index("before upgrading") < rendered.index("uv tool upgrade repowise")
+
+
+def test_advisory_preserves_non_windows_output(monkeypatch):
+    import io
+
+    monkeypatch.setattr("sys.platform", "linux")
+    buf = io.StringIO()
+    console = Console(file=buf, width=200)
+
+    assert wn.render_update_advisory(console, _check(True)) is True
+
+    assert (
+        buf.getvalue().strip()
+        == "repowise 9.9.9 is available (you have 0.21.0). Upgrade: pipx upgrade repowise"
+    )
 
 
 def test_advisory_silent_when_up_to_date():

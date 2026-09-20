@@ -66,7 +66,7 @@ class CodeAgeVolatilityDetector:
         since = now - _RECENT_WINDOW_SECS
 
         findings: list[BiomarkerResult] = []
-        for fn_name, fc in ctx.function_metrics.items():
+        for fc in ctx.all_functions:
             median_ts = median_author_time_in_range(idx, fc.start_line, fc.end_line)
             if median_ts is None:
                 continue
@@ -82,7 +82,7 @@ class CodeAgeVolatilityDetector:
                 BiomarkerResult(
                     biomarker_type=self.name,
                     severity=_severity_for(median_age_days, recent_mod),
-                    function_name=fn_name,
+                    function_name=fc.name,
                     line_start=fc.start_line,
                     line_end=fc.end_line,
                     details={
@@ -90,7 +90,7 @@ class CodeAgeVolatilityDetector:
                         "recent_mod_count": int(recent_mod),
                     },
                     reason=(
-                        f"{fn_name} has a median line age of "
+                        f"{fc.name} has a median line age of "
                         f"{int(median_age_days)} days but has been "
                         f"modified by {recent_mod} commits in the last 30 days"
                     ),

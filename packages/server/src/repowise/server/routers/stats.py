@@ -17,7 +17,6 @@ to ``None`` / empty rather than 500-ing the page.
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
@@ -27,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import Integer, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.co_change import parse_partners
 from repowise.core.ingestion.git_indexer import build_identity_resolver
 from repowise.core.ingestion.git_indexer.agent_provenance import agent_from_identity
 from repowise.core.persistence import crud
@@ -41,6 +41,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.services.module_health import top_level_module
 
 router = APIRouter(
     prefix="/api/repos",
@@ -582,8 +583,7 @@ def _people(all_meta: list[Any]) -> dict[str, Any]:
             owners[m.primary_owner_name] = owners.get(m.primary_owner_name, 0) + 1
         if (m.bus_factor or 0) == 1:
             single_owner_files += 1
-        parts = m.file_path.split("/")
-        module = parts[0] if len(parts) > 1 else "root"
+        module = top_level_module(m.file_path)
         module_file_totals[module] = module_file_totals.get(module, 0) + 1
         if m.primary_owner_name:
             bucket = module_owner_files.setdefault(module, {})
@@ -725,18 +725,13 @@ async def _records(
                 "pagerank": round(float(central[1]), 4),
             }
 
-    # Strongest hidden coupling pair (max co-change count across files)
+    # The pair with the most shared commits. Counted, not weighted: the card
+    # renders it as "changed together N times".
     best_pair: dict[str, Any] | None = None
     for m in all_meta:
-        try:
-            partners = json.loads(m.co_change_partners_json or "[]")
-        except Exception:
-            continue
-        for p in partners:
-            count = p.get("co_change_count", 0)
-            other = p.get("file_path") or p.get("partner")
-            if other and (best_pair is None or count > best_pair["count"]):
-                best_pair = {"a": m.file_path, "b": other, "count": count}
+        for p in parse_partners(m.co_change_partners_json):
+            if best_pair is None or p.support > best_pair["count"]:
+                best_pair = {"a": m.file_path, "b": p.file_path, "count": p.support}
     if best_pair and best_pair["count"] > 0:
         out["strongest_coupling"] = best_pair
 

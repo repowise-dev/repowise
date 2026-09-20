@@ -31,7 +31,7 @@ class DuplicatedAssertionBlockDetector:
             return []
         blocks = [
             (start, end)
-            for fn in ctx.function_metrics.values()
+            for fn in ctx.all_functions
             for start, end, _count in fn.assertion_blocks
         ]
         if not blocks:

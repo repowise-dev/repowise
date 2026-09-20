@@ -186,6 +186,21 @@ class TestCartesianJoin:
         assert _smell_kinds("SELECT a.x FROM a JOIN b ON a.id = b.id") == []
         assert _smell_kinds("SELECT a.x FROM a JOIN b USING (id)") == []
 
+    def test_multi_target_select_into_is_silent(self) -> None:
+        """Issue #1502: ``SELECT ... INTO a, b`` parses the trailing target as
+        a comma-join, so it must not be flagged as a cartesian join."""
+        assert _smell_kinds("select a, b into x, y from t where c = 1;") == []
+        assert _smell_kinds("select a, b into x, y from t;") == []
+
+    def test_single_target_select_into_is_silent(self) -> None:
+        assert _smell_kinds("select a into x from t;") == []
+
+    def test_multi_target_into_does_not_mask_real_cartesian(self) -> None:
+        """The INTO escape must not silence a genuine comma-join elsewhere."""
+        assert _smell_kinds(
+            "select a into x from t;\nselect * from orders o, customers c;"
+        ) == ["sql_cartesian_join"]
+
 
 class TestTemplatedFilesSilent:
     def test_dbt_model_yields_no_smells(self) -> None:

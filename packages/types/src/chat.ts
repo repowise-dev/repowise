@@ -1,27 +1,87 @@
 /**
- * Canonical chat types — conversation, messages, and the discriminated-union
- * `ChatArtifact` type that lets the chat UI render tool results as
- * mini-visualizations instead of `<pre>{JSON}</pre>`.
+ * Canonical chat types: conversation, messages, the SSE event union, and the
+ * discriminated-union `ChatArtifact` the transcript renders tool results as.
  *
- * The variants below mirror the artifact shapes actually emitted by the
- * hosted-backend chat router (`backend/app/routers/chat.py:_tool_*`). They are
- * convenience-shaped (denormalised, not strict `DecisionRecord[]` /
- * `DeadCodeFinding[]` / `GraphExport`) because the backend currently passes
- * raw tool result dicts through the SSE wrapper.
- *
- * KNOWN FOLLOWUP — Phase 2D candidate: normalise backend tool results to use
- * strict typed contracts (`DecisionRecord[]`, `DeadCodeFinding[]`, etc.) so
- * renderers stop reaching for ad-hoc fields like `mode` or
- * `high_confidence`/`medium_confidence`. Out of scope for Phase 2B because it
- * would touch all eight `_tool_*` functions in `backend/app/routers/chat.py`,
- * rewrite `tests/unit/server/test_mcp.py`, and risk LLM tool-call quality
- * regressions if information density shrinks.
+ * Artifact `data` shapes are the raw MCP tool results passed through the
+ * server envelope, so they stay convenience-shaped rather than strict engine
+ * records. Mirrored by `packages/server/src/repowise/server/schemas/chat.py`.
  */
 
 import type { GraphExport } from "./graph.js";
 import type { Hotspot } from "./git.js";
 import type { DeadCodeFinding } from "./dead-code.js";
 import type { DecisionRecord } from "./decisions.js";
+
+// ---------------------------------------------------------------------------
+// Product context surrounding a chat composer
+// ---------------------------------------------------------------------------
+
+export type ChatContextKind =
+  | "repository"
+  | "overview"
+  | "documentation"
+  | "architecture"
+  | "graph"
+  | "health"
+  | "refactoring"
+  | "file"
+  | "symbol"
+  | "module"
+  | "commit"
+  | "contributor"
+  | "decision"
+  | "risk"
+  | "dead-code"
+  | "blast-radius"
+  | "security"
+  | "usage"
+  | "settings"
+  | "chat";
+
+export type ChatContextTargetKind =
+  | "path"
+  | "symbol"
+  | "module"
+  | "dependency"
+  | "commit"
+  | "person"
+  | "decision"
+  | "documentation";
+
+/** Portable navigation context supplied by a product host for one chat turn. */
+export interface ChatContext {
+  kind: ChatContextKind;
+  label: string;
+  target?: string;
+  targetKind?: ChatContextTargetKind;
+}
+
+/** A passage the reader highlighted on the page, carried into the composer. */
+export interface ChatSelection {
+  text: string;
+  path?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/** What a page hands to chat when the reader asks about the thing in front of
+ *  them. `autoSend` skips the composer and asks immediately. */
+export interface ChatHandoff {
+  context: ChatContext;
+  question?: string;
+  selection?: ChatSelection;
+  autoSend?: boolean;
+}
+
+/** Where a composer chip came from, so ranking and telemetry can tell the
+ *  static fallback tier apart from one derived from live page data. */
+export type ChatSuggestionSource = "static" | "page" | "followup";
+
+export interface ChatSuggestion {
+  text: string;
+  source: ChatSuggestionSource;
+  toolHint?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Conversations + messages
@@ -32,15 +92,23 @@ export interface Conversation {
   repository_id: string;
   title: string;
   message_count: number;
+  pinned?: boolean;
   created_at: string;
   updated_at: string;
 }
+
+/** Who made a tool call: the model, or the server reading for the page. */
+export type ChatToolCallOrigin = "grounding";
 
 export interface ChatToolCall {
   id: string;
   name: string;
   arguments?: Record<string, unknown>;
   result?: Record<string, unknown>;
+  summary?: string;
+  artifact_type?: string;
+  artifact?: ChatArtifact;
+  origin?: ChatToolCallOrigin;
 }
 
 export interface ChatMessage {
@@ -50,6 +118,12 @@ export interface ChatMessage {
   content: {
     text?: string;
     tool_calls?: ChatToolCall[];
+    provider?: string;
+    model?: string;
+    /** The step ceiling was reached before a final answer. */
+    truncated?: boolean;
+    /** Next steps derived from the artifacts this turn produced. */
+    follow_ups?: ChatSuggestion[];
   };
   created_at: string;
 }
@@ -64,8 +138,9 @@ export interface ChatUIToolCall {
   arguments: Record<string, unknown>;
   result?: Record<string, unknown>;
   summary?: string;
-  artifact?: { type: string; data: Record<string, unknown> };
+  artifact?: ChatArtifact;
   status: "running" | "done" | "error";
+  origin?: ChatToolCallOrigin;
 }
 
 export interface ChatUIMessage {
@@ -75,6 +150,13 @@ export interface ChatUIMessage {
   text: string;
   toolCalls: ChatUIToolCall[];
   isStreaming: boolean;
+  /** Provenance recorded on assistant responses. */
+  provider?: string;
+  model?: string;
+  /** The step ceiling was reached before a final answer. */
+  truncated?: boolean;
+  /** Next steps this turn earned. Absent on a turn that called no tool. */
+  followUps?: ChatSuggestion[];
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +174,26 @@ export interface ChatCitation {
   end_line?: number;
 }
 
+export interface ArtifactEvidence {
+  basis: "measured" | "inferred" | "unknown" | string;
+  confidence?: number | string;
+  coverage?: unknown;
+  limits?: Record<string, unknown>;
+  truncated?: boolean;
+  stale?: string;
+}
+
+export interface ArtifactEnvelopeIdentity {
+  id: string;
+  version: 1;
+  tool_name: string;
+  title?: string;
+  presentation: string;
+  evidence?: ArtifactEvidence;
+  pinned?: boolean;
+  created_at?: string;
+}
+
 /** `get_overview` — repository fact sheet. */
 export interface OverviewArtifactData {
   total_files: number;
@@ -103,7 +205,7 @@ export interface OverviewArtifactData {
   git_summary?: Record<string, unknown> | null;
   is_monorepo: boolean;
 }
-export interface OverviewArtifact {
+export interface OverviewArtifact extends ArtifactEnvelopeIdentity {
   type: "overview";
   data: OverviewArtifactData;
 }
@@ -120,7 +222,7 @@ export interface ContextArtifactData {
     }
   >;
 }
-export interface ContextArtifact {
+export interface ContextArtifact extends ArtifactEnvelopeIdentity {
   type: "context";
   data: ContextArtifactData;
 }
@@ -167,10 +269,116 @@ export interface RiskReportArtifactData {
   classification?: string;
   warning?: string;
   error?: string;
+  /** `get_change_risk` action-first blocks. */
+  directive?: ChangeRiskDirective;
+  health_delta?: ChangeHealthDeltaData;
+  change_shape?: {
+    independent_changes?: {
+      count?: number;
+      summary?: string;
+      basis?: string;
+      ungrouped_files?: string[];
+      groups?: Array<{ files: string[]; bridging_files?: string[] }>;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
+  impacted_tests?: { tests_to_run?: string[]; status?: string; summary?: string };
+  /** Bug-fix record of the touched files: the "historically fragile" signal. */
+  fix_history?: {
+    available?: boolean;
+    files?: Array<{ path: string; churn: number; fix_pressure: number }>;
+  };
+  prior_fixes?: { files_with_fixes?: number; total_fixes?: number };
+  /** Other open branches editing the files this change edits. */
+  branch_overlap?: {
+    base?: string;
+    current?: string;
+    scanned?: number;
+    total?: number;
+    truncated?: boolean;
+    summary?: string;
+    branches?: Array<{
+      branch: string;
+      ahead?: number;
+      behind?: number;
+      last_commit?: string;
+      files?: Array<{ file: string; basis: string; partner?: string }>;
+      [k: string]: unknown;
+    }>;
+    [k: string]: unknown;
+  };
   [k: string]: unknown;
 }
-export interface RiskReportArtifact {
+
+/** What the change did to the codebase's health, and how sure the tool is. */
+export interface ChangeFindingRow {
+  id: string;
+  change: "introduced" | "worsened";
+  dimension: "defect" | "maintainability" | "performance";
+  biomarker: string;
+  severity: "low" | "medium" | "high" | "critical";
+  path: string;
+  reason: string;
+  attribution: { basis: string; confidence: "high" | "medium" | "low"; why: string };
+  symbol?: string;
+  lines?: [number, number];
+  severity_before?: string;
+  suggestion?: string;
+  opportunity_id?: string;
+  opportunity_rank?: number;
+  inspect?: string;
+}
+
+export interface ChangeHealthDeltaData {
+  /** `partial` and `unavailable` must never render as a clean result. */
+  status:
+    | "available"
+    | "partial"
+    | "unavailable"
+    | "unsupported_range"
+    | "too_large"
+    | "timeout"
+    | "analyzer_mismatch"
+    | "rules_mismatch"
+    | "stale_baseline";
+  explanation: string;
+  /**
+   * How the two sides were compared, e.g. `both_sides_analyzed` /
+   * `not_compared`. Open on the wire: the producer types it as a plain string.
+   */
+  basis: string;
+  introduced: number;
+  worsened: number;
+  resolved: number;
+  top_findings: ChangeFindingRow[];
+  findings_total: number;
+  findings_emitted: number;
+  by_dimension?: Record<string, number>;
+  by_severity?: Record<string, number>;
+  scope?: { changed: number; eligible: number; analyzed: number; skipped: number; failed: number };
+  skipped?: { total: number; by_reason: Record<string, number> };
+  base?: { ref: string; sha: string; kind: string };
+  head?: { ref: string; sha: string; kind: string };
+  limits?: string[];
+}
+
+export interface ChangeRiskDirective {
+  status: "review_required" | "review_recommended" | "clear_in_analyzed_scope" | "unknown";
+  headline: string;
+  reasons?: string[];
+  next_actions?: string[];
+}
+export interface RiskReportArtifact extends ArtifactEnvelopeIdentity {
   type: "risk_report";
+  data: RiskReportArtifactData;
+}
+export interface RiskArtifact extends ArtifactEnvelopeIdentity {
+  type: "risk";
+  data: RiskReportArtifactData;
+}
+export interface ChangeRiskArtifact extends ArtifactEnvelopeIdentity {
+  type: "change_risk";
   data: RiskReportArtifactData;
 }
 
@@ -186,7 +394,7 @@ export interface SearchResultsArtifactData {
     relevance_score?: number;
   }>;
 }
-export interface SearchResultsArtifact {
+export interface SearchResultsArtifact extends ArtifactEnvelopeIdentity {
   type: "search_results";
   data: SearchResultsArtifactData;
 }
@@ -201,9 +409,25 @@ export interface GraphPathArtifactData {
   distance: number;
   explanation: string;
 }
-export interface GraphPathArtifact {
+export interface GraphPathArtifact extends ArtifactEnvelopeIdentity {
   type: "graph";
   data: GraphPathArtifactData;
+}
+export interface DependencyPathArtifact extends ArtifactEnvelopeIdentity {
+  type: "dependency_path";
+  data: Record<string, unknown>;
+}
+export interface CallPathArtifact extends ArtifactEnvelopeIdentity {
+  type: "call_path";
+  data: Record<string, unknown>;
+}
+export interface SourceArtifact extends ArtifactEnvelopeIdentity {
+  type: "source";
+  data: Record<string, unknown>;
+}
+export interface HealthArtifact extends ArtifactEnvelopeIdentity {
+  type: "health";
+  data: Record<string, unknown>;
 }
 
 /** `get_why` — decision register search / path lookup / health dashboard. */
@@ -260,7 +484,7 @@ export interface DecisionsArtifactData {
     [k: string]: unknown;
   };
 }
-export interface DecisionsArtifact {
+export interface DecisionsArtifact extends ArtifactEnvelopeIdentity {
   type: "decisions";
   data: DecisionsArtifactData;
 }
@@ -286,7 +510,7 @@ export interface DeadCodeArtifactData {
     reason: string;
   }>;
 }
-export interface DeadCodeArtifact {
+export interface DeadCodeArtifact extends ArtifactEnvelopeIdentity {
   type: "dead_code";
   data: DeadCodeArtifactData;
 }
@@ -300,7 +524,7 @@ export interface DiagramArtifactData {
   mermaid_syntax: string;
   description?: string;
 }
-export interface DiagramArtifact {
+export interface DiagramArtifact extends ArtifactEnvelopeIdentity {
   type: "diagram";
   data: DiagramArtifactData;
 }
@@ -309,17 +533,17 @@ export interface DiagramArtifact {
  * Fallback for tools that haven't yet been promoted to a typed variant.
  * The renderer falls back to JSON pretty-print for this case.
  */
-export interface GenericArtifact {
+export interface GenericArtifact extends ArtifactEnvelopeIdentity {
   type: string;
   data: Record<string, unknown>;
 }
 
 /** Future variants — declared for the type system, not yet emitted on the wire. */
-export interface HotspotArtifact {
+export interface HotspotArtifact extends ArtifactEnvelopeIdentity {
   type: "hotspot";
   data: { hotspots: Hotspot[] };
 }
-export interface AnswerArtifact {
+export interface AnswerArtifact extends ArtifactEnvelopeIdentity {
   type: "answer";
   data: {
     answer: string;
@@ -328,15 +552,15 @@ export interface AnswerArtifact {
   };
 }
 /** Strict-typed future variants — wire-format alternatives mirroring engine canonicals. */
-export interface StrictGraphArtifact {
+export interface StrictGraphArtifact extends ArtifactEnvelopeIdentity {
   type: "graph_export";
   data: GraphExport;
 }
-export interface StrictDeadCodeArtifact {
+export interface StrictDeadCodeArtifact extends ArtifactEnvelopeIdentity {
   type: "dead_code_strict";
   data: { findings: DeadCodeFinding[] };
 }
-export interface StrictDecisionsArtifact {
+export interface StrictDecisionsArtifact extends ArtifactEnvelopeIdentity {
   type: "decisions_strict";
   data: { decisions: DecisionRecord[] };
 }
@@ -349,8 +573,14 @@ export interface StrictDecisionsArtifact {
 export type KnownChatArtifact =
   | OverviewArtifact
   | ContextArtifact
+  | SourceArtifact
+  | RiskArtifact
+  | ChangeRiskArtifact
   | RiskReportArtifact
+  | HealthArtifact
   | SearchResultsArtifact
+  | DependencyPathArtifact
+  | CallPathArtifact
   | GraphPathArtifact
   | DecisionsArtifact
   | DeadCodeArtifact
@@ -366,8 +596,14 @@ export type ChatArtifact = KnownChatArtifact | GenericArtifact;
 const KNOWN_ARTIFACT_TYPES: ReadonlyArray<KnownChatArtifact["type"]> = [
   "overview",
   "context",
+  "source",
+  "risk",
+  "change_risk",
   "risk_report",
+  "health",
   "search_results",
+  "dependency_path",
+  "call_path",
   "graph",
   "decisions",
   "dead_code",
@@ -386,6 +622,15 @@ export function isKnownChatArtifact(
 
 export type ChatSSEEvent =
   | { type: "text_delta"; text: string }
+  /** The server read for the page before the first model turn. */
+  | {
+      type: "grounding";
+      tool_id: string;
+      tool_name: string;
+      input: Record<string, unknown>;
+      summary: string;
+      artifact: ChatArtifact;
+    }
   | {
       type: "tool_start";
       tool_id: string;
@@ -400,5 +645,10 @@ export type ChatSSEEvent =
       artifact: ChatArtifact;
       citations?: ChatCitation[];
     }
-  | { type: "done"; conversation_id: string; message_id: string }
+  /** Every turn ended in a tool call; `done` still follows. */
+  | { type: "truncated"; loops: number }
+  /** Next steps for the turn that just finished, sent just before `done`.
+   *  A turn that failed or called no tool sends none. */
+  | { type: "suggestions"; suggestions: ChatSuggestion[] }
+  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
   | { type: "error"; message: string };

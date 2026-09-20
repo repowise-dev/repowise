@@ -13,19 +13,25 @@
  */
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Loader2, ArrowUpRight } from "lucide-react";
+import { ChevronDown, ChevronRight, ArrowUpRight } from "lucide-react";
 import { cn } from "../lib/cn";
+import { WorkingOrb } from "./working-orb";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 const TOOL_LABELS: Record<string, string> = {
   get_overview: "Getting codebase overview",
   get_context: "Looking up context",
+  get_symbol: "Reading symbol",
   get_risk: "Assessing risk",
   get_change_risk: "Scoring change risk",
+  get_health: "Checking health",
   get_why: "Querying decisions",
   search_codebase: "Searching codebase",
   get_dead_code: "Checking dead code",
 };
+
+/** A step the server took for the page, before the model's first turn. */
+const GROUNDING_LABEL = "Read for this page";
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
@@ -43,11 +49,16 @@ export function ToolCallBlock({
   divided = false,
 }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
-  const label = TOOL_LABELS[toolCall.name] ?? toolCall.name;
+  const label =
+    toolCall.origin === "grounding"
+      ? GROUNDING_LABEL
+      : TOOL_LABELS[toolCall.name] ?? toolCall.name;
   const isRunning = toolCall.status === "running";
+  const isError = toolCall.status === "error";
 
   return (
     <div
+      data-tool-origin={toolCall.origin}
       className={cn(
         "text-xs",
         divided && "border-t border-[var(--color-border-default)]",
@@ -61,15 +72,22 @@ export function ToolCallBlock({
           disabled={isRunning}
           aria-expanded={expanded}
         >
-          {isRunning && (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent-primary)] shrink-0" />
-          )}
+          {isRunning && <WorkingOrb />}
           <span className="font-medium text-[var(--color-text-secondary)]">
             {label}
           </span>
-          {toolCall.summary && !isRunning && (
-            <span className="text-[var(--color-text-tertiary)] truncate ml-1">
-              — {toolCall.summary}
+          {!isRunning && (toolCall.summary || isError) && (
+            // The server already composes a failed summary as "Error: ...", so
+            // a separate Failed badge beside it just says the same thing twice.
+            <span
+              className={cn(
+                "truncate ml-1",
+                isError
+                  ? "text-[var(--color-error)]"
+                  : "text-[var(--color-text-tertiary)]",
+              )}
+            >
+              — {toolCall.summary || "Failed"}
             </span>
           )}
         </button>

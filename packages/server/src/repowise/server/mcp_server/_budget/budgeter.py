@@ -1,43 +1,44 @@
-"""Staged whole-response truncation — the shared budgeter.
+"""Whole-response budget enforcement — the shared ceilings.
 
-Ported from ``tool_context/truncation.py`` (which now re-exports from here)
-so every tool shares one budget strategy instead of ad-hoc caps. The
-keep/drop decisions are byte-identical to the original implementation; the
-only additions are (a) an optional :class:`OmissionCollector` that makes
-every drop recoverable, and (b) a skeleton-stripping stage for the
-``include=["skeleton"]`` blocks that did not exist when the original was
-written.
+Two strategies, for two payload shapes:
 
-The MCP host caps the size of a tool result. Measured on Claude Code
-2026-07-11: a result whose stringified form exceeds ``MAX_MCP_OUTPUT_TOKENS``
-(default **25000 tokens**) is REJECTED with an isError
-(``MCPContentTooLargeError`` — "response (N tokens) exceeds maximum allowed
-tokens (25000)"), not silently truncated and not spilled to a file. That
-isError matters twice over: the agent loses the answer AND — per the Phase 1
-session-survival doctrine — one isError early in a session teaches it to
-abandon the server entirely. So staying under the host cap is not a nicety.
+* :func:`truncate_to_budget` — the staged truncator ported from
+  ``tool_context/truncation.py`` (which now re-exports from here). Every stage
+  walks ``result["targets"][name]["docs"|"skeleton"|"symbols"]``, so it is
+  ``get_context``-shaped and has one caller by design. Keep/drop decisions are
+  byte-identical to the original; the additions are an optional
+  :class:`OmissionCollector` and a skeleton-stripping stage.
+* :func:`fit_to_budget` — sheds whole named blocks in a tool-declared order,
+  for the tools whose payload is a bag of independent blocks.
 
-Our default budget (``TOKEN_BUDGET`` = 8000) sits comfortably under the
-default host cap, so the common case is unchanged. The risk is the inverse of
-the one long assumed here: a user who *lowers* ``MAX_MCP_OUTPUT_TOKENS`` below
-our budget would start tripping the reject path. :func:`effective_char_budget`
-therefore reads the host cap at call time and clamps our ceiling under it.
-(The earlier "~10k token" ceiling in this docstring was a guess; the measured
-number is 25000, and the failure mode is rejection, not file spill.)
+``get_health`` keeps a third strategy (trims the longest ranked list by rows).
 
-The estimator is intentionally dependency-free: 4 chars/token is the
-widely-quoted average for English + code on BPE tokenizers and is within
-~20% of tiktoken for typical wiki content. Dense code can tokenize finer than
-4 chars/token, so the host may count MORE tokens than we estimate — the
-safety fraction below absorbs that gap plus the JSON envelope and ``_meta``
-the host counts on top of our payload.
+The MCP host caps the size of a tool result. An over-cap result is **spilled to
+a sidecar file** the agent must Read back, not rejected: it comes back worded as
+an error but carries no ``isError``. The cap is counted in tokens; the spill
+message reports characters.
+
+Observed bounds: the largest MCP result that did NOT spill was 47,276 chars,
+the smallest that DID was 60,718 — consistent with a 25000-token cap at the
+~2.0-2.4 chars/token dense JSON really costs. ``CHAR_BUDGET`` (32,000) is about
+half that line. The residual risk is a user who *lowers*
+``MAX_MCP_OUTPUT_TOKENS``, which :func:`effective_char_budget` clamps for.
+
+The estimator is dependency-free: it charges each content class of the
+serialised payload at a rate measured against the o200k_base tokenizer. A
+single divisor over the whole response undercounts, worst on the payloads that
+are mostly paths and identifiers. ``HOST_CAP_BUDGET_FRACTION`` absorbs the JSON
+envelope and ``_meta`` the host counts on top of ours.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from repowise.server.mcp_server._budget.collector import OmissionCollector
@@ -45,17 +46,18 @@ from repowise.server.mcp_server._budget.collector import OmissionCollector
 logger = logging.getLogger(__name__)
 
 TOKEN_BUDGET = 8000
+#: The char ceiling the truncation path measures against, not an estimate.
 CHARS_PER_TOKEN = 4
 CHAR_BUDGET = TOKEN_BUDGET * CHARS_PER_TOKEN
 
-# Claude Code's MAX_MCP_OUTPUT_TOKENS default (measured 2026-07-11). A result
-# over this is rejected with an isError, so our ceiling must stay under it.
+# Claude Code's MAX_MCP_OUTPUT_TOKENS default. A result over this is spilled to
+# a sidecar file the agent must Read back, so our ceiling stays under it.
 HOST_MCP_TOKEN_CAP_DEFAULT = 25000
 
 # Fraction of the host cap we allow ourselves. The gap absorbs (a) estimator
-# error — our 4-chars/token figure can undercount real tokens on dense code by
-# up to ~30% — and (b) the JSON envelope + _meta the host tokenizes on top of
-# our payload. 0.6 keeps even an undercounted response clear of the reject line.
+# error — 4 chars/token undercounts compact JSON by roughly 1.7x — and (b) the
+# JSON envelope + _meta the host tokenizes on top of our payload. 0.6 keeps even
+# an undercounted response clear of the spill line.
 HOST_CAP_BUDGET_FRACTION = 0.6
 
 
@@ -81,22 +83,267 @@ def effective_char_budget(configured: int = CHAR_BUDGET) -> int:
     """``configured`` ceiling, lowered under the live host cap when that is tighter.
 
     Default host cap (25000) leaves our 8000-token budget untouched; a narrowed
-    ``MAX_MCP_OUTPUT_TOKENS`` pulls us down with it so we never trip the host's
-    reject-with-isError path (one isError = server abandonment, Phase 1).
+    ``MAX_MCP_OUTPUT_TOKENS`` pulls us down with it so a response can never
+    reach the host's spill-to-file path and cost the agent a Read.
     """
     host_char_ceiling = int(host_token_cap() * HOST_CAP_BUDGET_FRACTION) * CHARS_PER_TOKEN
     return min(configured, host_char_ceiling)
 
 
-def estimate_response_tokens(obj: Any) -> int:
-    """Cheap upper-bound token estimate for an arbitrary JSON-serialisable object.
+# Measured chars/token against the o200k_base tokenizer on recorded tool
+# responses. Paths and identifiers run densest, prose loosest.
+CHARS_PER_TOKEN_JSON_STRUCTURE = 3.7
+CHARS_PER_TOKEN_PATH = 3.4
+CHARS_PER_TOKEN_CODE_BODY = 3.8
+CHARS_PER_TOKEN_PROSE = 4.5
 
-    Serialises to compact JSON (the wire format the MCP layer eventually emits)
-    and divides by ``CHARS_PER_TOKEN``. We use the serialised form — not just
-    raw text fields — because structural JSON overhead (quotes, braces, field
-    names) is non-trivial and is what the downstream tokenizer actually sees.
+_CODE_PUNCTUATION = frozenset("(){}[]<>=;:+-*/%&|!@#$^~`_.")
+
+#: Punctuation share above which a whitespace-bearing string reads as code.
+#: Calibrated so a source body lands on the code side and an English sentence
+#: carrying identifiers does not.
+_CODE_PUNCTUATION_SHARE = 0.05
+
+
+def _content_class(text: str) -> str:
+    """Classify one JSON string leaf by how densely it tokenizes."""
+    if not any(character.isspace() for character in text):
+        return "path"
+    punctuation = sum(1 for character in text if character in _CODE_PUNCTUATION)
+    return "code" if punctuation >= len(text) * _CODE_PUNCTUATION_SHARE else "prose"
+
+
+def _add_leaf_chars(obj: Any, totals: dict[str, int]) -> None:
+    """Accumulate the serialised length of every string leaf, per content class."""
+    if isinstance(obj, str):
+        totals[_content_class(obj)] += len(json.dumps(obj))
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            _add_leaf_chars(value, totals)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            _add_leaf_chars(value, totals)
+
+
+def estimate_response_tokens(obj: Any) -> int:
+    """Token estimate for an arbitrary JSON-serialisable object.
+
+    Measures the compact JSON the MCP layer emits rather than the text fields
+    alone, because field names, quotes, and braces are what the downstream
+    tokenizer sees. Each string leaf is charged at its content class's rate and
+    everything left over (keys, punctuation, numbers, literals) at the
+    structural one.
     """
-    return len(json.dumps(obj, separators=(",", ":"), default=str)) // CHARS_PER_TOKEN
+    leaves = {"path": 0, "code": 0, "prose": 0}
+    _add_leaf_chars(obj, leaves)
+    structure = max(0, response_chars(obj) - sum(leaves.values()))
+    return int(
+        structure / CHARS_PER_TOKEN_JSON_STRUCTURE
+        + leaves["path"] / CHARS_PER_TOKEN_PATH
+        + leaves["code"] / CHARS_PER_TOKEN_CODE_BODY
+        + leaves["prose"] / CHARS_PER_TOKEN_PROSE
+    )
+
+
+# Reserved for what the collector appends after the last fit check: the
+# omission marker and ``_meta.omitted``.
+FIT_HEADROOM_CHARS = 400
+
+
+def response_chars(response: Any) -> int:
+    """Serialised size of *response* in the compact JSON the MCP layer emits."""
+    return len(json.dumps(response, separators=(",", ":"), default=str))
+
+
+def over_budget(
+    response: Any,
+    *,
+    headroom: int = FIT_HEADROOM_CHARS,
+    char_budget: int | None = None,
+) -> bool:
+    """True when *response* would exceed the transport ceiling once markers land."""
+    budget = effective_char_budget() if char_budget is None else char_budget
+    return response_chars(response) > budget - headroom
+
+
+#: A requested collection keeps whichever of these is larger.
+REQUESTED_MIN_ROWS = 3
+REQUESTED_MIN_SHARE = 0.25
+
+
+def entitled_floor(total: int) -> int:
+    """Rows a caller-requested collection keeps before anything else sheds."""
+    if total <= REQUESTED_MIN_ROWS:
+        return total
+    return min(total, max(REQUESTED_MIN_ROWS, math.ceil(total * REQUESTED_MIN_SHARE)))
+
+
+def shed_stem(key: str) -> str:
+    """The response path a shed-order key names, with the ``[]`` form removed."""
+    return key[:-2] if key.endswith("[]") else key
+
+
+def _rows_to_keep(rows: Any, requested: bool) -> int:
+    """Tail-shed floor for one collection: its entitlement, or one row."""
+    if not requested or not isinstance(rows, (list, dict)):
+        return 1
+    return entitled_floor(len(rows))
+
+
+@dataclass(frozen=True)
+class _ShedLimits:
+    """The knobs every key in one :func:`fit_to_budget` pass shares."""
+
+    headroom: int
+    char_budget: int | None
+    record_counts: bool
+
+    def exceeded(self, response: dict[str, Any]) -> bool:
+        return over_budget(
+            response, headroom=self.headroom, char_budget=self.char_budget
+        )
+
+
+def fit_to_budget(
+    response: dict[str, Any],
+    order: Sequence[str],
+    collector: OmissionCollector,
+    *,
+    headroom: int = FIT_HEADROOM_CHARS,
+    char_budget: int | None = None,
+    record_counts: bool = False,
+    entitled: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Shed whole blocks named by *order* until *response* fits the budget.
+
+    *order* is the tool's cheapest-loss-first ranking of the blocks it can live
+    without. ``"parent.child"`` sheds a nested block; ``"key[]"`` drops rows
+    from the tail of a ranked list instead of the list itself, keeping the
+    first. Shedding stops the moment the response fits, so an under-budget
+    response — the common case — is untouched.
+
+    *entitled* names stems the caller asked for; their ``[]`` passes stop at
+    :func:`entitled_floor` instead of one row. The order still decides when a
+    block is reached, and the ceiling still wins.
+
+    Drops go to *collector* as expandable ``[repowise#<ref>]`` markers and set
+    ``truncated``. Call before the caller's :meth:`OmissionCollector.attach`,
+    which is what ``headroom`` reserves for.
+    """
+    limits = _ShedLimits(headroom, char_budget, record_counts)
+    requested = entitled or frozenset()
+    for key in order:
+        if not limits.exceeded(response):
+            break
+        container, _, leaf = key.rpartition(".")
+        target: Any = response
+        for part in container.split(".") if container else ():
+            target = target.get(part) if isinstance(target, dict) else None
+        if not isinstance(target, dict):
+            continue
+        if leaf.endswith("[]"):
+            keep = _rows_to_keep(target.get(leaf[:-2]), shed_stem(key) in requested)
+            _shed_tail(response, target, leaf[:-2], key[:-2], collector, limits, keep)
+        elif target.get(leaf):
+            value = target.pop(leaf)
+            collector.add(key, value)
+            if record_counts:
+                _record_reduction(response, target, key, leaf, value, emitted=0)
+            response["truncated"] = True
+    return response
+
+
+def _shed_tail(
+    response: dict[str, Any],
+    container: dict[str, Any],
+    leaf: str,
+    label: str,
+    collector: OmissionCollector,
+    limits: _ShedLimits,
+    keep: int = 1,
+) -> None:
+    """Drop ranked rows from the tail of ``container[leaf]`` down to *keep*."""
+    rows = container.get(leaf)
+    if not isinstance(rows, (list, dict)):
+        return
+    total = len(rows)
+    dropped: list[Any] = []
+    while len(rows) > keep and limits.exceeded(response):
+        if isinstance(rows, list):
+            dropped.append(rows.pop())
+        else:
+            name = next(reversed(rows))
+            dropped.append({name: rows.pop(name)})
+    if dropped:
+        collector.add(label, list(reversed(dropped)))
+        if limits.record_counts:
+            prior_reason = container.get(f"{leaf}_reduced_reason")
+            collection_total = max(
+                total, int(container.get(f"{leaf}_total") or 0)
+            )
+            container[f"{leaf}_total"] = collection_total
+            container[f"{leaf}_emitted"] = len(rows)
+            container[f"{leaf}_reduced_reason"] = _with_budget_reason(prior_reason)
+            container[f"{leaf}_truncated"] = True
+            # Construction and delivery collectors both advertise their refs
+            # on the final response, so omitted is the complete recoverable
+            # population difference across both passes.
+            container[f"{leaf}_omitted"] = collection_total - len(rows)
+        response["truncated"] = True
+
+
+def _record_reduction(
+    response: dict[str, Any],
+    container: dict[str, Any],
+    path: str,
+    field: str,
+    value: Any,
+    *,
+    emitted: int,
+) -> None:
+    """Keep honest counts for a collection removed as one budget block."""
+    if isinstance(value, list):
+        prior_reason = container.get(f"{field}_reduced_reason")
+        total = max(len(value), int(container.get(f"{field}_total") or 0))
+        container[f"{field}_total"] = total
+        container[f"{field}_emitted"] = emitted
+        container[f"{field}_reduced_reason"] = _with_budget_reason(prior_reason)
+        container[f"{field}_truncated"] = True
+        container[f"{field}_omitted"] = total - emitted
+        return
+    if not isinstance(value, dict):
+        return
+
+    reductions = response.setdefault("_meta", {}).setdefault("reductions", [])
+
+    def visit(node: Any, node_path: str, parent: dict[str, Any], name: str) -> None:
+        if isinstance(node, list):
+            # An earlier tail-shed may already have trimmed this list and left
+            # the population beside it. Reporting len() here would count only
+            # what the trim left, not what the caller lost overall.
+            reductions.append(
+                {
+                    "field": node_path,
+                    "total": max(len(node), int(parent.get(f"{name}_total") or 0)),
+                    "emitted": 0,
+                    "reason": "response_budget",
+                }
+            )
+        elif isinstance(node, dict):
+            for child_name, child in node.items():
+                visit(child, f"{node_path}.{child_name}", node, child_name)
+
+    visit(value, path, container, field)
+
+
+def _with_budget_reason(prior_reason: Any) -> str:
+    """Append final-delivery budgeting to reduction provenance at most once."""
+    if not prior_reason:
+        return "response_budget"
+    reason = str(prior_reason)
+    if reason == "response_budget" or reason.endswith("_and_response_budget"):
+        return reason
+    return f"{reason}_and_response_budget"
 
 
 # Heavy optional fields we can strip from a target's docs block without losing
@@ -156,12 +403,13 @@ def truncate_to_budget(
     char_budget: int | None = None,
     *,
     collector: OmissionCollector | None = None,
+    record_counts: bool = False,
 ) -> dict[str, Any]:
     """Cap a targets-shaped response at roughly ``TOKEN_BUDGET`` tokens.
 
     ``char_budget`` defaults to :func:`effective_char_budget` — our configured
     ceiling, clamped under the live MCP host cap so the response can never trip
-    the host's reject-with-isError path. Pass an explicit value to override
+    the host's spill-to-file path. Pass an explicit value to override
     (tests do; production callers should not).
 
     Strategy (applied in order, stopping as soon as the budget is met):
@@ -185,8 +433,10 @@ def truncate_to_budget(
 
     With a *collector*, every dropped piece of content is also captured and
     persisted, and the response gains ``omission_marker`` + ``_meta.omitted``
-    (see :class:`OmissionCollector`). Without one, behaviour is byte-identical
-    to the original silent-drop implementation.
+    (see :class:`OmissionCollector`). ``record_counts`` adds the shared
+    ``*_total`` / emitted / reason fields for final-delivery accounting. With
+    neither option, behaviour is byte-identical to the original silent-drop
+    implementation.
 
     Edge cases:
       * Empty ``targets`` → returns unchanged with ``truncated=False``.
@@ -199,7 +449,7 @@ def truncate_to_budget(
     if char_budget is None:
         char_budget = effective_char_budget()
     try:
-        result = _run_stages(result, char_budget, collector)
+        result = _run_stages(result, char_budget, collector, record_counts)
     finally:
         if collector is not None:
             collector.attach(result)
@@ -231,12 +481,14 @@ def _run_stages(
     result: dict[str, Any],
     char_budget: int,
     collector: OmissionCollector | None,
+    record_counts: bool,
 ) -> dict[str, Any]:
     result.setdefault("truncated", False)
     result.setdefault("dropped_targets", [])
     result.setdefault("dropped_symbols", {})
 
     targets: dict[str, Any] = result.get("targets") or {}
+    targets_total = len(targets)
     if not targets:
         return result
 
@@ -332,12 +584,14 @@ def _run_stages(
             else:
                 dropped.append(sym.get("name") or "<anonymous>")
                 dropped_syms.append(sym)
+        symbol_content_reduced = False
         if not kept and ordered:
             # Edge case: a single symbol is larger than the budget. Keep one
             # (truncating its docstring) rather than returning zero symbols —
             # the caller at least learns the target resolved.
             head = dict(ordered[0])
             if isinstance(head.get("docstring"), str):
+                symbol_content_reduced = len(head["docstring"]) > 200
                 head["docstring"] = head["docstring"][:200]
             kept = [head]
             dropped = [s.get("name") or "<anonymous>" for s in ordered[1:]]
@@ -345,8 +599,15 @@ def _run_stages(
             # original alongside the genuinely dropped tail.
             dropped_syms = list(ordered)
         docs["symbols"] = kept
-        if dropped:
-            result["dropped_symbols"][tgt_name] = dropped
+        if dropped or symbol_content_reduced:
+            if record_counts:
+                docs["symbols_total"] = max(
+                    len(ordered), int(docs.get("symbols_total") or 0)
+                )
+                docs["symbols_emitted"] = len(kept)
+                docs["symbols_reduced_reason"] = "response_budget"
+            if dropped:
+                result["dropped_symbols"][tgt_name] = dropped
             result["truncated"] = True
             if collector is not None and dropped_syms:
                 collector.add(
@@ -379,6 +640,12 @@ def _run_stages(
             collector.add(f"dropped target {name}", evicted)
         result["dropped_targets"].append(name)
         result["truncated"] = True
+        if record_counts:
+            result["targets_total"] = max(
+                targets_total, int(result.get("targets_total") or 0)
+            )
+            result["targets_emitted"] = len(targets)
+            result["targets_reduced_reason"] = "response_budget"
         if _size() <= char_budget:
             break
 

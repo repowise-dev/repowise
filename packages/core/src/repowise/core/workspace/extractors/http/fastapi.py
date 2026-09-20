@@ -10,8 +10,10 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import PYTHON
 from .dialect import METHODS, build_provider_contract
+from .flask import flask_file
 from .mounts import balanced_args, compose_prefix, router_prefixes
 
 if TYPE_CHECKING:
@@ -50,6 +52,8 @@ class FastApiDialect:
         Keyed by the router variable's final name segment (``pkg.router`` ->
         ``router``); only mounts that carry an explicit ``prefix=`` are recorded.
         """
+        if flask_file(content):
+            return {}
         out: dict[str, str] = {}
         for m in _INCLUDE_ROUTER_RE.finditer(content):
             args = balanced_args(content, m.end() - 1)  # m.end()-1 is the '('
@@ -60,6 +64,11 @@ class FastApiDialect:
         return out
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
+        # `@app.get` is spelled the same in both frameworks and `app` is a
+        # conventional name in both, so a Flask file read here would publish
+        # every one of its routes a second time, labelled FastAPI.
+        if flask_file(ctx.content):
+            return []
         prefixes = router_prefixes(ctx.content, "APIRouter|FastAPI")
         known = set(prefixes) | _DEFAULT_ROUTER_NAMES
 
@@ -72,7 +81,11 @@ class FastApiDialect:
             path = compose_prefix(prefixes.get(var, ""), path_raw)
             path = compose_prefix(ctx.mounts.get(var, ""), path)
             c = build_provider_contract(
-                ctx, method=method.upper(), path_raw=path, framework="fastapi"
+                ctx,
+                method=method.upper(),
+                path_raw=path,
+                framework="fastapi",
+                line=line_at(ctx.content, m.start()),
             )
             if c is not None:
                 out.append(c)

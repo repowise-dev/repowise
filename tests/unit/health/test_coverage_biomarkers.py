@@ -74,7 +74,7 @@ def test_untested_hotspot_silent_when_well_covered() -> None:
 
 def test_untested_hotspot_falls_back_when_no_coverage_data() -> None:
     ctx = _ctx(
-        git_meta={"commit_count_90d": 12},
+        git_meta={"commit_count_90d": 12, "is_hotspot": True},
         dependents=6,
         has_test_file=False,
     )
@@ -83,9 +83,20 @@ def test_untested_hotspot_falls_back_when_no_coverage_data() -> None:
     assert "no coverage data" in results[0].reason
 
 
+def test_untested_hotspot_needs_the_repo_hotspot_verdict() -> None:
+    """A raw commit count is a different bar on a busy repository than on a
+    quiet one, so the gate is is_hotspot, which is already repo-relative."""
+    ctx = _ctx(
+        git_meta={"commit_count_90d": 12, "temporal_hotspot_score": 4.0},
+        dependents=6,
+        has_test_file=False,
+    )
+    assert UntestedHotspotDetector().detect(ctx) == []
+
+
 def test_untested_hotspot_skips_when_paired_test_present() -> None:
     ctx = _ctx(
-        git_meta={"commit_count_90d": 12},
+        git_meta={"commit_count_90d": 12, "is_hotspot": True},
         dependents=6,
         has_test_file=True,
     )

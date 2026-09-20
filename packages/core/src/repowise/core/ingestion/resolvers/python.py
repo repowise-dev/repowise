@@ -71,9 +71,20 @@ def resolve_python_import(module_path: str, importer_path: str, ctx: ResolverCon
         if c in ctx.path_set:
             return c
 
-    # Stem-only fallback
+    # Stem-only fallback, Python files only. The stem map holds every indexed
+    # file, so without the suffix guard ``import httpx`` resolved to a
+    # ``baselines/httpx.json`` fixture; Ruby and PHP guard theirs the same way.
     stem = module_path.split(".")[-1].lower()
-    return ctx.stem_lookup(stem)
+    for candidate in ctx.stem_map.get(stem, ()):
+        if candidate.endswith((".py", ".pyi")):
+            return candidate
+
+    # Nothing in the repo defines this module, so register it the way every
+    # other language resolver does: the packages tab and the import counts can
+    # only see a third-party or stdlib dependency if the miss becomes a node.
+    # Stdlib is included on purpose, as Go and TypeScript already do, and
+    # io_kind.py seeds stdlib names for exactly this consumer.
+    return ctx.add_external_node(module_path)
 
 
 def resolve_python_import_all(

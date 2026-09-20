@@ -12,6 +12,7 @@ const SOURCE_LABEL: Record<string, string> = {
   git_archaeology: "Git archaeology",
   readme_mining: "Docs mining",
   cli: "Manual",
+  conventions: "Convention",
 };
 
 export interface DecisionEvidenceDrawerProps {

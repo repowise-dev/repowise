@@ -45,5 +45,5 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
   guess). Report them as candidates. Only `via: coverage` proves a test
   executed the change.
 - A file none of those can speak to is "unknown, run the full suite".
-- For a whole-change defect-risk score, use `/repowise:risk`. For per-file
+- For a whole-change repo-relative review priority, use `/repowise:risk`. For per-file
   blast radius / `tests_to_run`, use the `get_risk` MCP tool.

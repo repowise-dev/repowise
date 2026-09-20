@@ -53,13 +53,18 @@ def _build_repo_vector_store(repo_path: Path, embedder: Any, *, create: bool) ->
 
 
 async def build_primary_vector_store(
-    session_factory, db_url: str, embedder: Any
+    session_factory,
+    db_url: str,
+    embedder: Any,
+    *,
+    create: bool = False,
 ) -> tuple[Any, str | None]:
     """Build the primary repo's durable vector store when it can be identified.
 
     A repo-local SQLite database normally contains one repository row. For a
     shared registry database, only a row whose ``wiki.db`` matches ``db_url`` is
-    treated as primary. The returned repo id lets startup seed the per-repo
+    treated as primary. Identifies the primary repo by checking ``db_url``,
+    workspace configuration, current working directory, or single-row fallback.
     cache so jobs and searches reuse the same connection.
     """
     from sqlalchemy import select
@@ -83,12 +88,40 @@ async def build_primary_vector_store(
         if local_db in normalized_url:
             selected = (repo_id, local_path)
             break
+
+    if selected is None:
+        try:
+            from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
+
+            ws_root = find_workspace_root()
+            if ws_root is not None:
+                ws_config = WorkspaceConfig.load(ws_root)
+                primary_entry = ws_config.get_primary()
+                if primary_entry is not None:
+                    primary_path = (ws_root / primary_entry.path).resolve()
+                    for repo_id, local_path in rows:
+                        if Path(local_path).resolve() == primary_path:
+                            selected = (repo_id, local_path)
+                            break
+        except Exception:
+            logger.debug("workspace_config_primary_lookup_failed", exc_info=True)
+
+    if selected is None:
+        try:
+            cwd = Path.cwd().resolve()
+            for repo_id, local_path in rows:
+                if Path(local_path).resolve() == cwd:
+                    selected = (repo_id, local_path)
+                    break
+        except Exception:
+            logger.debug("cwd_primary_lookup_failed", exc_info=True)
+
     if selected is None and len(rows) == 1:
         selected = rows[0]
 
     if selected is not None:
         repo_id, local_path = selected
-        store = _build_repo_vector_store(Path(local_path).resolve(), embedder, create=True)
+        store = _build_repo_vector_store(Path(local_path).resolve(), embedder, create=create)
         if store is not None:
             logger.info(
                 "primary_vector_store_loaded",

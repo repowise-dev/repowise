@@ -30,8 +30,8 @@ npm run build
 # Verify the CLI runs
 uv run repowise --version
 
-# Run tests
-uv run pytest tests/unit/
+# Run tests (both suites; CI runs these two on every pull request)
+uv run pytest tests/providers/ tests/unit/
 ```
 
 ## Getting oriented
@@ -65,7 +65,7 @@ uv run repowise serve                # dashboard + MCP server on localhost
 ```
 
 Then point your coding agent at the MCP server (see the
-[Quickstart](../README.md#quickstart-under-5-minutes-no-api-key) for Claude Code, Codex
+[Start in minutes](../README.md#start-in-minutes-no-api-key) for Claude Code, Codex
 and others) and ask it questions directly:
 
 ```
@@ -86,9 +86,16 @@ are the only people who use repowise on repowise with fresh eyes.
 
 ## Looking for something to work on
 
-- **[Good first issues](https://github.com/repowise-dev/repowise/labels/good%20first%20issue)** on the tracker.
-- **[Help wanted](https://github.com/repowise-dev/repowise/labels/help%20wanted)** for
-  issues that are scoped and ready to pick up but need more context than a first issue.
+- **[Good first issues](https://github.com/repowise-dev/repowise/labels/good%20first%20issue)**.
+  **These are reserved for people making their first contributions here.** They are the
+  only route new contributors have into the codebase, and they disappear within hours if
+  everyone takes them, so if you have already had work merged please leave them. It costs
+  you very little and it is the difference between this project having new contributors
+  and not.
+- **[Help wanted](https://github.com/repowise-dev/repowise/labels/help%20wanted)** is the
+  opposite and is where experienced contributors should be. It marks work that is scoped
+  and ready but needs someone who already knows their way around. There is always more of
+  it than there are people, so take as much as you want.
 - **[The refactoring backlog](https://repowise.dev/repo/repowise-dev/repowise/refactoring).**
   Repowise ranks its own concrete refactoring plans (Extract Class, Split File, Break
   Cycle, and so on) with the blast radius attached. Each card has a copy-to-agent
@@ -105,11 +112,20 @@ are the only people who use repowise on repowise with fresh eyes.
 Issues are assigned to one person at a time, so that two contributors do not build the
 same fix in parallel and one of them has to throw the work away.
 
-- Comment on the issue saying you are taking it, and a maintainer will assign it to you.
-- Only the assignee should open a PR for that issue.
+- Comment on the issue saying you are taking it. **That comment is what reserves the
+  issue, from the moment you post it.** A maintainer will assign it to you when they next
+  go through the tracker, which may be a few days later; the issue is yours in the
+  meantime and does not become available again because the assignee field is still empty.
+- **Before you start, read the thread.** If somebody else has already said they are taking
+  it, it is theirs, even if nothing is assigned and no code has appeared yet. Somebody who
+  posted a plan and then watched a finished PR land the same evening does not come back,
+  and that costs this project more than any single fix is worth.
+- Only the person who claimed it should open a PR for that issue. A PR opened over
+  somebody else's claim will be held, not merged, however good it is.
 - If you get pulled away, a one-line comment to unclaim is enough. It carries no
   obligation and no hard feelings, and it frees the issue for someone else.
-- An assigned issue that goes quiet for two weeks goes back to unassigned.
+- A claim expires after two weeks of silence, whether or not it was ever assigned,
+  and the issue goes back to open. Claiming is not a way to park an issue.
 
 Questions about scope before you claim are welcome. Asking is not claiming.
 
@@ -138,13 +154,15 @@ current ones. Changes there are welcome, but expect closer review and bring test
 3. **Make your changes**: keep commits focused and well-described
 4. **Run tests** before pushing:
    ```bash
-   uv run pytest tests/unit/
+   uv run pytest tests/providers/ tests/unit/   # both, CI runs both
    npm run lint
    npm run type-check
    ```
+   `tests/providers/` is easy to forget and CI does not forget it, so a run that
+   skips it is the most common way a green local suite turns red on the PR.
 5. **Check your own change** with the tool you are contributing to:
    ```bash
-   uv run repowise risk main..HEAD        # 0-10 defect score, plus will_break,
+   uv run repowise risk main..HEAD        # 0-10 defect score, plus may_break,
                                           # missing_cochanges and missing_tests
    uv run repowise impacted-tests --staged  # the tests your diff actually exercises
    uv run repowise health --file <path>   # did the file you touched get worse?
@@ -177,19 +195,26 @@ duplication detection`. Keep the subject line in the imperative mood and under
 ```
 repowise/
   packages/
-    core/     # Ingestion pipeline, analysis, generation engine
-    cli/      # CLI commands (click-based)
-    server/   # FastAPI API + MCP server
-    types/    # Shared TypeScript types
-    ui/       # Shared React UI components
-    web/      # Next.js frontend
-  tests/      # Unit and integration tests
-  docs/       # Documentation
+    core/        # Ingestion pipeline, analysis, generation engine
+    cli/         # CLI commands (click-based)
+    server/      # FastAPI API + MCP server
+    types/       # Shared TypeScript types
+    api-client/  # Typed fetch client over the server API
+    ui/          # Shared React UI components
+    web/         # Next.js frontend
+    vscode/      # VS Code extension (has its own CI job)
+  tests/         # providers/, unit/ and integration/
+  docs/          # Documentation
 ```
 
 ## Code Style
 
-- **Python**: Formatted with [ruff](https://docs.astral.sh/ruff/) (`ruff format .`, `ruff check .`)
+- **Python**: Linted with [ruff](https://docs.astral.sh/ruff/). CI runs `ruff check .`
+  and nothing else.
+- **Do not run `ruff format .`** The repository is not kept under the ruff formatter,
+  nothing in CI checks formatting, and the dependency pin is wide enough that a fresh
+  install can pick up a newer ruff whose formatter rewrites hundreds of files. That diff
+  buries the change you actually made.
 - **TypeScript**: Linted with ESLint (`npm run lint`) and type-checked (`npm run type-check`)
 - Keep functions small and focused
 - Write docstrings for public APIs
@@ -203,17 +228,31 @@ repowise/
 
 2. **Register** in `registry.py`: add to `_BUILTIN_PROVIDERS` and the `_missing` package map
 
-3. **Wire up configuration** in these files:
-   - `rate_limiter.py`, add `RateLimitConfig` to `PROVIDER_DEFAULTS`
-   - `provider_config.py`, add entry to `PROVIDER_CATALOG`
-   - `provider_selection.py`, add to `_PROVIDER_DEFAULTS`, `_PROVIDER_ENV`, `_PROVIDER_SIGNUP`, and detection
-   - `helpers.py`, add validation in `validate_provider_config()`
+3. **Wire up configuration.** These live in three different packages, so the full
+   paths matter more than the filenames:
+   - `packages/core/src/repowise/core/rate_limiter.py`, add a `RateLimitConfig` to
+     `PROVIDER_DEFAULTS`
+   - `packages/server/src/repowise/server/provider_config.py`, add an entry to
+     `PROVIDER_CATALOG`
+   - `packages/cli/src/repowise/cli/ui/provider_selection.py`, add to
+     `_PROVIDER_DEFAULTS`, `_PROVIDER_ENV`, `_PROVIDER_SIGNUP`, and detection
+   - `packages/cli/src/repowise/cli/helpers.py`, add validation in
+     `validate_provider_config()`
 
-4. **Update the web UI**: add to `PROVIDERS`, `MODEL_PLACEHOLDERS`, and `PROVIDER_ENV_VARS` in `provider-section.tsx` and `run-config-form.tsx`
+   Check `registry.py` first. Several things that used to be spread across these files
+   now live there in one place (`PROVIDER_API_KEY_ENVS`, `PROVIDER_BASE_URL_ENVS`,
+   `KEYLESS_PROVIDERS`, `REPO_PATH_PROVIDERS`, `PROVIDER_AUTODETECT_ORDER`), because
+   three copies of the same list drifted. Add to the consolidated one, not a fourth copy.
+
+4. **Update the web UI**: `packages/web/src/components/settings/provider-section.tsx`,
+   which holds `FALLBACK_PROVIDERS`, `MODEL_PLACEHOLDERS` and `PROVIDER_ENV_VARS`. The
+   live list comes from the server catalog at runtime; `FALLBACK_PROVIDERS` is only the
+   offline fallback, so keep it in step with `PROVIDER_CATALOG` above.
 
 5. **Add tests** in `tests/unit/test_providers/`: mock the subprocess, test success/error/timeout paths (see `test_codex_cli_provider.py` for the pattern)
 
-6. **Write docs**: `docs/<NAME>.md` and `website/<name>.md`, following `docs/agent/CODEX.md` and `docs/agent/OPENCODE.md`.
+6. **Write docs**: `docs/agent/<NAME>.md` and `website/<name>.md`, following
+   `docs/agent/CODEX.md` and `docs/agent/OPENCODE.md`.
 
 Adding a new language has a dedicated recipe, see
 [docs/architecture/language-support.md](../docs/architecture/language-support.md).

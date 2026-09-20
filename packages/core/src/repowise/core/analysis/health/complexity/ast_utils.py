@@ -1,9 +1,14 @@
 """Shared tree-sitter AST helpers used across the walker passes.
 
 Name/text extraction, function-entry naming (including lambdas assigned to
-a variable or passed as a callback), top-level function-node collection, and
-parameter counting. These are the cross-pass primitives; the metric passes
-(cyclomatic, assertions, error-handling, perf, class-analysis) build on them.
+a variable or passed as a callback), top-level function-node collection,
+parameter counting, and callee-name reading. These are the cross-pass
+primitives; the metric passes (cyclomatic, assertions, error-handling, perf,
+class-analysis) build on them.
+
+``_identifier_chain`` / ``_callee_names`` / ``_receiver_method_verdict`` live
+here because the mock pass and the assertion pass both read callee names and
+both ask the same question of a listed receiver.
 """
 
 from __future__ import annotations
@@ -63,6 +68,31 @@ def _find_name(node: Node) -> str:
             leaf = _pascal_unwrap_name(name)
             if leaf.text is not None:
                 return leaf.text.decode("utf-8", errors="replace")
+    # F#: ``function_or_value_defn`` carries no ``name`` field and no direct
+    # identifier child — the name sits one hop down, under
+    # ``function_declaration_left`` (``let f x = ...`` → ``f``). Without this
+    # every F# row reported ``<anonymous>``, which is not much use in a report.
+    if node.type == "function_or_value_defn":
+        for child in node.children:
+            if child.type == "function_declaration_left":
+                for leaf in child.children:
+                    if leaf.type == "identifier" and leaf.text is not None:
+                        return leaf.text.decode("utf-8", errors="replace")
+    # F# members nest one level deeper again and qualify the name with the
+    # self identifier: ``member_defn → method_or_prop_defn → property_or_ident``
+    # holds ``this`` and ``M`` for ``member this.M(x)``. The method name is the
+    # last identifier, which also reads correctly for an unqualified ``member
+    # M(x)``, where it is the only one.
+    if node.type == "member_defn":
+        for child in node.children:
+            if child.type != "method_or_prop_defn":
+                continue
+            for grandchild in child.children:
+                if grandchild.type != "property_or_ident":
+                    continue
+                names = [c for c in grandchild.children if c.type == "identifier" and c.text]
+                if names:
+                    return names[-1].text.decode("utf-8", errors="replace")
     # C / C++: the function name is not a direct child but nested inside a
     # ``declarator`` chain (``function_definition → function_declarator →
     # field_identifier``). Languages with a ``name`` field never reach here.
@@ -240,7 +270,10 @@ def _count_parameters(fn_node: Node) -> int:
         # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
         # marker) parse as named ``keyword_separator`` / ``positional_separator``
         # nodes but carry no arity, so they must be skipped alongside the
-        # ``*``/``**`` splat tokens and the punctuation.
+        # ``*``/``**`` splat tokens and the punctuation. A ``comment`` node is
+        # also named but carries no arity — an explanatory comment block inside
+        # the parameter list (idiomatic for a validation pattern) must not
+        # count as a parameter (#1775).
         if child.type in (
             "(",
             ")",
@@ -252,6 +285,7 @@ def _count_parameters(fn_node: Node) -> int:
             "**",
             "keyword_separator",
             "positional_separator",
+            "comment",
         ):
             continue
         if child.type == "declArg":
@@ -265,3 +299,72 @@ def _count_parameters(fn_node: Node) -> int:
         if child.is_named:
             count += 1
     return count
+
+
+def _identifier_chain(node: Node) -> list[str]:
+    """Every identifier under *node*, lowercased, in document order.
+
+    Order is load-bearing: the last entry is the name being called, the rest
+    the receiver path. Argument lists are never descended into.
+    """
+    names: list[str] = []
+    stack: list[Node] = [node]
+    while stack:
+        cur = stack.pop()
+        if cur.type in ("argument_list", "arguments"):
+            continue
+        if cur.type.endswith(_IDENTIFIER_SUFFIX) and cur.text is not None:
+            names.append(cur.text.decode("utf-8", "replace").lower())
+        stack.extend(reversed(cur.children))
+    return names
+
+
+def _callee_names(call_node: Node) -> tuple[str, set[str]] | None:
+    """``(called_name, receiver_roots)`` for a call, or ``None``.
+
+    Two grammar shapes: a single callee subtree under ``function`` / ``macro``,
+    read rightmost-last so ``mock.patch(...)`` gives ``("patch", {"mock"})``; or
+    a ``name`` field beside an ``object`` field (Java, C#), where the callee is
+    not one node. Arguments are excluded in both.
+    """
+    name_node = call_node.child_by_field_name("name")
+    if name_node is not None:
+        # Split shape: the name IS the called name, the receiver is ``object``.
+        called = (name_node.text or b"").decode("utf-8", "replace").lower()
+        if not called:
+            return None
+        receiver = call_node.child_by_field_name("object")
+        return called, set(_identifier_chain(receiver)) if receiver is not None else set()
+
+    callee = call_node.child_by_field_name("function") or call_node.child_by_field_name("macro")
+    if callee is None:
+        named = [
+            c
+            for c in call_node.children
+            if c.is_named and c.type not in ("argument_list", "arguments")
+        ]
+        callee = named[0] if named else None
+    if callee is None:
+        return None
+    chain = _identifier_chain(callee)
+    if not chain:
+        return None
+    return chain[-1], set(chain[:-1])
+
+
+def _receiver_method_verdict(
+    called: str, roots: set[str], receiver_methods: dict[str, frozenset[str]]
+) -> bool | None:
+    """Whether a listed receiver licenses *called*, or ``None`` if none is listed.
+
+    A listed receiver is exhaustive about its own methods, so a hit settles the
+    call either way and the caller stops. Roots are read in sorted order: a
+    chain naming two listed receivers must not resolve by set iteration order.
+    """
+    if not receiver_methods:
+        return None
+    for root in sorted(roots):
+        methods = receiver_methods.get(root)
+        if methods is not None:
+            return called in methods
+    return None

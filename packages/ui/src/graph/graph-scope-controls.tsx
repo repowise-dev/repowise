@@ -3,6 +3,7 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { formatNumber } from "../lib/format";
 import type { ModuleGroup } from "./use-module-filter";
+import type { CommunitySummaryItem } from "@repowise-dev/types/graph";
 
 /**
  * How zoomed out the graph is. Exactly one axis, in exactly one control.
@@ -91,13 +92,9 @@ export function GraphScopeSwitcher({
 const PROMINENT_MODULES = 8;
 
 /**
- * Module filter for the Files scope: pick a path prefix, everything else dims.
- *
- * Deliberately absent from the Communities scope. The constellation payload
- * carries a community's label, size and one representative file — not its
- * members' paths — so "does this community contain `packages/ui`?" is a
- * question that view cannot answer. A control that could only guess is worse
- * than no control.
+ * @deprecated Superseded by {@link GraphNarrowingSelect}, which puts the module
+ * and community filters in one control because they are one axis. Kept
+ * exported and working so an out-of-tree host compiles while it ports.
  */
 export function ModuleFilterSelect({
   groups,
@@ -137,6 +134,110 @@ export function ModuleFilterSelect({
           <optgroup label="Smaller">
             {rest.map((g) => (
               <option key={g.id} value={g.id}>
+                {g.id} · {formatNumber(g.fileCount)}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+    </label>
+  );
+}
+
+
+/**
+ * The one narrowing control: "Showing all files / community X / module Y".
+ *
+ * `?module=` and `?community=` are the same axis — both answer "which part of
+ * the repo am I looking at?" — so they get one control and are mutually
+ * exclusive. Two selects side by side would let a reader ask for a community
+ * *and* a module and get an intersection nobody meant.
+ *
+ * Deliberately absent from the Communities scope. The constellation is the
+ * whole repo at one circle per group; narrowing it to one group is the
+ * drill-down, not a filter.
+ */
+export function GraphNarrowingSelect({
+  modules,
+  communities,
+  activeModule,
+  activeCommunity,
+  onChange,
+  className,
+}: {
+  modules: ModuleGroup[];
+  /** Communities offered as narrowing targets. Empty hides that group. */
+  communities?: readonly CommunitySummaryItem[] | undefined;
+  activeModule: string | null;
+  activeCommunity: number | null;
+  /** Exactly one of the two is ever non-null. */
+  onChange: (next: { module: string | null; community: number | null }) => void;
+  className?: string | undefined;
+}) {
+  const hasCommunities = (communities?.length ?? 0) > 0;
+  if (modules.length < 2 && !hasCommunities) return null;
+
+  const prominent = modules.slice(0, PROMINENT_MODULES);
+  const rest = modules.slice(PROMINENT_MODULES);
+  // A `?module=` from an old link can name a prefix this graph no longer has.
+  // The filter removes rather than dims, so the canvas is legitimately empty —
+  // but a controlled <select> whose value matches no option renders *blank*,
+  // which reads as a broken control rather than as a filter that matched
+  // nothing. Give the stale value an option that says so.
+  const staleModule =
+    activeModule && !modules.some((g) => g.id === activeModule) ? activeModule : null;
+
+  // Encoded rather than two parallel values, because a <select> has one value
+  // and the two kinds share a namespace ("external" is a module id, 3 is a
+  // community id).
+  const value =
+    activeCommunity !== null
+      ? `c:${activeCommunity}`
+      : activeModule
+        ? `m:${activeModule}`
+        : "";
+
+  return (
+    <label
+      className={`inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] ${className ?? ""}`}
+    >
+      <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">
+        Showing
+      </span>
+      <select
+        value={value}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v.startsWith("c:")) onChange({ module: null, community: Number(v.slice(2)) });
+          else if (v.startsWith("m:")) onChange({ module: v.slice(2), community: null });
+          else onChange({ module: null, community: null });
+        }}
+        className="max-w-[15rem] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      >
+        <option value="">All files</option>
+        {staleModule && <option value={`m:${staleModule}`}>{staleModule} · 0</option>}
+        {hasCommunities && (
+          <optgroup label="Community">
+            {communities!.map((c) => (
+              <option key={c.community_id} value={`c:${c.community_id}`}>
+                {c.label} · {formatNumber(c.member_count)}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {modules.length > 0 && (
+          <optgroup label="Module">
+            {prominent.map((g) => (
+              <option key={g.id} value={`m:${g.id}`}>
+                {g.id} · {formatNumber(g.fileCount)}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {rest.length > 0 && (
+          <optgroup label="Smaller modules">
+            {rest.map((g) => (
+              <option key={g.id} value={`m:${g.id}`}>
                 {g.id} · {formatNumber(g.fileCount)}
               </option>
             ))}

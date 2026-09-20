@@ -10,6 +10,7 @@ Models:
     - kimi-for-coding-highspeed — faster Kimi Code model
     - kimi-k2.5        — K2.5 with instant and thinking modes
     - kimi-k2.6        — K2.6 with instant and thinking modes
+    - kimi-k3          — K3 with graded reasoning effort
 """
 
 from __future__ import annotations
@@ -50,20 +51,15 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.kimi.com/coding/v1"
-_KIMI_REASONING_MODES: tuple[ReasoningMode, ...] = (
-    "off",
-    "none",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-)
+_KIMI_K2_REASONING_MODES: tuple[ReasoningMode, ...] = ("off",)
+_KIMI_K3_REASONING_MODES: tuple[ReasoningMode, ...] = ("low", "high", "max")
 
 
 def _kimi_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
     if model.startswith(("kimi-k2.5", "kimi-k2.6")):
-        return _KIMI_REASONING_MODES
+        return _KIMI_K2_REASONING_MODES
+    if model.startswith("kimi-k3"):
+        return _KIMI_K3_REASONING_MODES
     return ()
 
 
@@ -79,17 +75,18 @@ def _resolve_kimi_reasoning_mode(
         _kimi_supported_reasoning_modes(model),
         detail=(
             "Kimi /models lists IDs only; reasoning controls are enabled "
-            "for the documented K2 model family."
+            "from the documented K2 and K3 model-family contracts."
         ),
     )
 
 
-def _kimi_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
+def _kimi_reasoning_kwargs(model: str, reasoning: ReasoningMode) -> dict[str, Any]:
     mode = normalize_reasoning(reasoning)
     if mode == "auto":
         return {}
-    thinking_type = "disabled" if mode in ("off", "none") else "enabled"
-    return {"extra_body": {"thinking": {"type": thinking_type}}}
+    if model.startswith("kimi-k3"):
+        return {"reasoning_effort": mode}
+    return {"extra_body": {"thinking": {"type": "disabled"}}}
 
 
 def _kimi_temperature(
@@ -146,7 +143,11 @@ def _kimi_model_options(
                 recommended=model_id == fallback_model,
                 source="api",
                 notes=(
-                    "reasoning controls documented for Kimi K2" if len(reasoning_modes) > 1 else ""
+                    "K3 supports low, high, and max reasoning effort"
+                    if model_id.startswith("kimi-k3")
+                    else (
+                        "thinking can be disabled for Kimi K2" if len(reasoning_modes) > 1 else ""
+                    )
                 ),
             )
         )
@@ -269,7 +270,7 @@ class KimiProvider(BaseProvider):
                     {"role": "user", "content": user_prompt},
                 ],
             }
-            kwargs.update(_kimi_reasoning_kwargs(reasoning))
+            kwargs.update(_kimi_reasoning_kwargs(self._model, reasoning))
             response = await self._client.chat.completions.create(**kwargs)
         except _OpenAIRateLimitError as exc:
             raise RateLimitError(

@@ -66,15 +66,39 @@ def test_render_contains_repo_name(gen):
     assert "test-repo" in result
 
 
+def test_render_contains_machine_readable_index_scope(gen):
+    import dataclasses
+
+    data = dataclasses.replace(
+        _minimal_data(),
+        index_scope={
+            "run_mode": "fast",
+            "content_provenance": "none",
+            "git_tier": "essential",
+            "file_pages": {"eligible": 5, "generated": 0, "omitted": 5},
+            "analysis": {"unavailable": [], "skipped": ["generation"]},
+            "upgrade": {"status": "pending"},
+        },
+    )
+    result = gen.render(data)
+    assert "Scope: fast index · none content · essential Git" in result
+    assert "5 eligible file pages omitted" in result
+    assert '"eligible": 5' in result
+    assert '"generated": 0' in result
+    assert "repowise update --full" in result
+
+
 def _health_block(
     maintainability_average: float | None,
     performance_average: float | None = None,
     performance_findings: int = 0,
     performance_coverage_pct: float | None = None,
+    band: str = "Good",
 ) -> CodeHealthBlock:
     return CodeHealthBlock(
         hotspot_health=5.0,
         average_health=7.5,
+        band=band,
         worst_score=2.0,
         worst_path="src/bad.py",
         maintainability_average=maintainability_average,
@@ -82,6 +106,30 @@ def _health_block(
         performance_findings=performance_findings,
         performance_coverage_pct=performance_coverage_pct,
     )
+
+
+def test_the_headline_reads_the_same_direction_as_every_other_surface(gen):
+    """A score out of ten beside a risk-shaped label reads inverted.
+
+    The CLI prints "Code health: 7.5/10 [Good]". The generated file is the one
+    an agent reads without a page around it, so it carries the same label and
+    the same band word rather than a bare number.
+    """
+    import dataclasses
+
+    data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4))
+    result = gen.render(data)
+    assert "code health 7.5/10 avg (Good)" in result
+    assert "defect risk 7.5" not in result
+
+
+def test_the_headline_drops_the_band_when_it_is_unknown(gen):
+    import dataclasses
+
+    data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4, band=""))
+    result = gen.render(data)
+    assert "code health 7.5/10 avg," in result
+    assert "avg ()" not in result
 
 
 def test_render_surfaces_maintainability_when_present(gen):

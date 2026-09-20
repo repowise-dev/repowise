@@ -42,8 +42,9 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
           <DialogHeader>
             <DialogTitle>Record a decision</DialogTitle>
             <DialogDescription>
-              Something the team has settled on. It is recorded as confirmed,
-              because you are the person confirming it.
+              Something the team has settled on. Name the files it governs and
+              it is recorded as confirmed, because you are the person
+              confirming it.
             </DialogDescription>
           </DialogHeader>
           <DecisionCreateForm

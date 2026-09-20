@@ -102,7 +102,7 @@ _CUTS = [
         "pr_blast._transitive_affected",
         "core/src/repowise/core/analysis/pr_blast.py",
         "key=lambda item: (item[1], item[0])",
-        "depth then path, before will_break takes 15",
+        "depth then path, before may_break takes 15",
         forbids="frontier = list(set(changed_files))",
     ),
     Cut(

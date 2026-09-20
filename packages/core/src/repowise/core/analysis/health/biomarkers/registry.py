@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .array_spread_in_reduce import ArraySpreadInReduceDetector
+from .assertion_free_test import AssertionFreeTestDetector
 from .base import Biomarker, BiomarkerResult, FileContext
 from .blocking_io_under_lock import BlockingIoUnderLockDetector
 from .blocking_sync_in_async import BlockingSyncInAsyncDetector
@@ -44,6 +45,7 @@ from .list_insert_zero_in_loop import ListInsertZeroInLoopDetector
 from .lock_in_loop import LockInLoopDetector
 from .low_cohesion import LowCohesionDetector
 from .membership_test_against_list_in_loop import MembershipTestAgainstListInLoopDetector
+from .mock_saturated_test import MockSaturatedTestDetector
 from .nested_complexity import NestedComplexityDetector
 from .nested_loop_quadratic import NestedLoopQuadraticDetector
 from .nested_loop_with_io import NestedLoopWithIoDetector
@@ -89,6 +91,9 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     LargeAssertionBlockDetector,  # type: ignore[list-item]
     DuplicatedAssertionBlockDetector,  # type: ignore[list-item]
     ErrorHandlingDetector,  # type: ignore[list-item]
+    # Advisory dimension - measured, never deducts (scoring.ADVISORY_DIMENSION).
+    AssertionFreeTestDetector,  # type: ignore[list-item]
+    MockSaturatedTestDetector,  # type: ignore[list-item]
     # Performance dimension (advisory weight; bounded by the perf cap).
     IoInLoopDetector,  # type: ignore[list-item]
     StringConcatInLoopDetector,  # type: ignore[list-item]

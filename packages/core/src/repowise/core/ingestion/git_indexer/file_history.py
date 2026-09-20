@@ -71,7 +71,8 @@ __all__ = ["DECAY_REFRESH_KEYS", "index_file", "new_meta"]
 # incremental update recomputes just these for idle (unchanged) files off the
 # repo-wide walk and persists a decay-only partial row, leaving ownership / age
 # / authorship (which need full history and are only correct from the init
-# walk) untouched. ``co_change_partners_json`` / ``change_entropy`` /
+# walk) untouched. ``co_change_partners_json`` / ``co_change_partner_count`` /
+# ``co_change_mass`` / ``change_entropy`` /
 # ``prior_defect_*`` are merged onto the metadata after the per-file pass, so
 # they refresh together with the window churn fields ``index_file`` computes.
 DECAY_REFRESH_KEYS = (
@@ -85,6 +86,8 @@ DECAY_REFRESH_KEYS = (
     "prior_defect_raw_count",
     "change_entropy",
     "co_change_partners_json",
+    "co_change_partner_count",
+    "co_change_mass",
 )
 
 
@@ -128,6 +131,8 @@ def new_meta(file_path: str) -> dict[str, Any]:
         # variant is the same walk before fix-shape filtering (fix_shape.py).
         "prior_defect_count": 0,
         "prior_defect_raw_count": 0,
+        # Repo-relative rank of prior_defect_count; see enrich.compute_percentiles.
+        "prior_defect_pct": 0.0,
         # Agent provenance rollup: how much of this file's indexed history is
         # agent-attributed (local channels only — see agent_provenance module).
         # agent_authored_pct stays None when the file has no commits at all.
@@ -147,6 +152,12 @@ def new_meta(file_path: str) -> dict[str, Any]:
         # the signal silent on the ESSENTIAL tier / files that never co-changed.
         "change_entropy": 0.0,
         "change_entropy_pct": 0.0,
+        # Co-change breadth over every partner the repo-wide walk found, not
+        # the length of the truncated partner list. Defaults leave
+        # ``co_change_scatter`` silent when the walk did not run.
+        "co_change_partner_count": 0,
+        "co_change_mass": 0.0,
+        "co_change_scatter_pct": 0.0,
     }
 
 
@@ -157,7 +168,9 @@ def _parse_per_file_log(
     commit_limit: int,
     follow_renames: bool,
     provenance_classifier: Any | None = None,
-) -> tuple[list[_CommitRec], str | None]:
+    note_agents: dict[str, str] | None = None,
+    trace_index: Any | None = None,
+) -> tuple[list[_CommitRec] | None, str | None]:
     """Run a per-file ``git log --numstat`` and parse it into commit records.
 
     Returns ``(commits, original_path)``. Only used when no precomputed commit
@@ -166,6 +179,16 @@ def _parse_per_file_log(
     log_args: list[str] = []
     if follow_renames:
         log_args.append("--follow")
+    else:
+        # Match the recent/deep repo-wide lanes. Without one shared non-merge
+        # contract, a file moving between fallback and shared sampling could
+        # lose a retained merge even while ``commit_limit`` increased.
+        log_args.append("--no-merges")
+        # A pathspec normally restricts numstat to this file, which represents
+        # a rename differently from the repo-wide lanes. Full-diff keeps commit
+        # selection per-file but makes churn and changed-path provenance use
+        # the same complete diff as the recent/deep walks.
+        log_args.append("--full-diff")
     log_args += [
         f"-{commit_limit}",
         "--numstat",
@@ -176,7 +199,7 @@ def _parse_per_file_log(
     try:
         raw = repo.git.log(*log_args)
     except Exception:
-        return [], None
+        return None, None
 
     if not raw.strip():
         return [], None
@@ -207,17 +230,8 @@ def _parse_per_file_log(
             subject=header["subject"],
             body=header["body"],
         )
-        if provenance_classifier is not None:
-            prov = provenance_classifier.classify(
-                header["author_name"],
-                header["author_email"],
-                header["committer_name"],
-                header["committer_email"],
-                f"{header['subject']}\n{header['body']}",
-            )
-            current.agent = prov.agent
-            current.agent_tier = prov.autonomy_tier
         commits.append(current)
+        changed_paths: set[str] = set()
         for line in numstat_lines:
             numstat_parts = line.split("\t")
             if len(numstat_parts) < 3:
@@ -227,12 +241,31 @@ def _parse_per_file_log(
             if "=>" in stat_path:
                 _old, _new = _extract_rename_paths(stat_path, known_paths)
                 match_path = _new or stat_path
+            changed_paths.add(match_path)
             if match_path in known_paths or match_path == file_path:
                 try:
                     current.added += int(numstat_parts[0]) if numstat_parts[0] != "-" else 0
                     current.deleted += int(numstat_parts[1]) if numstat_parts[1] != "-" else 0
                 except ValueError:
                     pass
+        if provenance_classifier is not None:
+            trace_hit = (
+                trace_index.resolve(header["sha"], header["parents"], changed_paths)
+                if trace_index
+                else None
+            )
+            prov = provenance_classifier.classify(
+                header["author_name"],
+                header["author_email"],
+                header["committer_name"],
+                header["committer_email"],
+                f"{header['subject']}\n{header['body']}",
+                note_agent=(note_agents or {}).get(header["sha"]),
+                trace_agent=trace_hit[0] if trace_hit else None,
+                trace_confidence=trace_hit[1] if trace_hit else "high",
+            )
+            current.agent = prov.agent
+            current.agent_tier = prov.autonomy_tier
     return commits, orig_path
 
 
@@ -247,6 +280,8 @@ def index_file(
     precomputed_commits: list[_CommitRec] | None = None,
     as_of_ts: float | None = None,
     provenance_classifier: Any | None = None,
+    note_agents: dict[str, str] | None = None,
+    trace_index: Any | None = None,
 ) -> dict:
     """Index a single file's git history. Runs in executor.
 
@@ -282,7 +317,11 @@ def index_file(
             commit_limit=commit_limit,
             follow_renames=follow_renames,
             provenance_classifier=provenance_classifier,
+            note_agents=note_agents,
+            trace_index=trace_index,
         )
+        if commits is None:
+            return {"file_path": file_path}
 
     if not commits:
         return meta

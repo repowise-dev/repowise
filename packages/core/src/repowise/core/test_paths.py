@@ -100,6 +100,7 @@ class _Conventions:
     stem_suffixes: tuple[str, ...]
     infixes: tuple[str, ...]
     camel_res: dict[str, re.Pattern[str]]
+    camel_prefix_res: dict[str, re.Pattern[str]]
     support_stems: frozenset[str]
     support_camel_res: dict[str, re.Pattern[str]]
     dir_paths: tuple[tuple[str, ...], ...]
@@ -126,6 +127,7 @@ def _conventions() -> _Conventions:
         stem_suffixes=REGISTRY.test_stem_suffixes(),
         infixes=REGISTRY.test_infixes(),
         camel_res=REGISTRY.camel_test_res_by_extension(),
+        camel_prefix_res=REGISTRY.camel_test_prefix_res_by_extension(),
         support_stems=REGISTRY.test_fixture_stems(),
         support_camel_res=REGISTRY.camel_fixture_res_by_extension(),
         # Multi-segment test roots (src/test/java, src/it/scala) and the
@@ -168,8 +170,13 @@ def _is_test_name(filename: str) -> bool:
         or any(infix in lowered for infix in rules.infixes)
     ):
         return True
-    camel_re = rules.camel_res.get(PurePosixPath(lowered).suffix)
-    return camel_re is not None and camel_re.search(PurePosixPath(filename).stem) is not None
+    ext = PurePosixPath(lowered).suffix
+    original_stem = PurePosixPath(filename).stem
+    camel_re = rules.camel_res.get(ext)
+    if camel_re is not None and camel_re.search(original_stem) is not None:
+        return True
+    camel_prefix_re = rules.camel_prefix_res.get(ext)
+    return camel_prefix_re is not None and camel_prefix_re.search(original_stem) is not None
 
 
 def _is_support_name(filename: str) -> bool:
@@ -290,3 +297,16 @@ def is_test_related_path(path: str, language: str | None = None) -> bool:
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
     return _classify(path, language) != ""
+
+
+def is_test_to_production_pair(
+    code_path: str, partner_path: str, *, code_language: str | None = None
+) -> bool:
+    """Whether exactly one of the two paths is test material.
+
+    A test and the code it covers are supposed to change together, so a signal
+    derived from history has nothing to say about such a pair. *partner_path*
+    takes no language because callers reach this from a bare path recorded
+    against another file, with no node to read a stored flag from.
+    """
+    return is_test_related_path(code_path, code_language) ^ is_test_related_path(partner_path)

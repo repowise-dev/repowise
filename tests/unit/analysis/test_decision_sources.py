@@ -201,9 +201,11 @@ async def test_extract_all_honors_enabled_sources(tmp_path):
 
 
 def test_enabled_source_names_defaults_and_overrides():
-    # No config → everything on.
-    assert enabled_source_names(None) == SOURCE_NAMES
-    assert enabled_source_names({}) == SOURCE_NAMES
+    # No config → every source that shipped on. Conventions ships off until
+    # it has been validated on external repositories.
+    default_on = tuple(name for name in SOURCE_NAMES if name != "conventions")
+    assert enabled_source_names(None) == default_on
+    assert enabled_source_names({}) == default_on
 
     cfg = {"decisions": {"sources": {"comment": False, "pr": False}}}
     enabled = enabled_source_names(cfg)
@@ -214,7 +216,7 @@ def test_enabled_source_names_defaults_and_overrides():
     # Stale keys naming a retired source are ignored rather than breaking a
     # config written before the removal.
     for retired in RETIRED_SOURCES:
-        assert enabled_source_names({"decisions": {"sources": {retired: False}}}) == SOURCE_NAMES
+        assert enabled_source_names({"decisions": {"sources": {retired: False}}}) == default_on
     # Malformed sections never break extraction.
-    assert enabled_source_names({"decisions": "nope"}) == SOURCE_NAMES
-    assert enabled_source_names({"decisions": {"sources": "nope"}}) == SOURCE_NAMES
+    assert enabled_source_names({"decisions": "nope"}) == default_on
+    assert enabled_source_names({"decisions": {"sources": "nope"}}) == default_on

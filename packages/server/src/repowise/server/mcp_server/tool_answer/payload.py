@@ -19,6 +19,7 @@ from repowise.server.mcp_server._answer_context import (
 from repowise.server.mcp_server._answer_context import (
     is_why_question as _is_why_question,
 )
+from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import hit_file_path
@@ -211,7 +212,7 @@ def _no_answer_payload(note: str, *, repository, t0: float) -> dict:
         "retrieval": [],
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
-            hint=_answer_hint("low", 0),
+            hint=_answer_hint("low"),
             repository=repository,
             targets=[],
         ),
@@ -321,7 +322,7 @@ def _union_answer_payload(
         "note": note,
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
-            hint=_answer_hint(_union_confidence, len(union_bodies)),
+            hint=_answer_hint(_union_confidence),
             repository=repository,
             targets=cited,
         ),
@@ -369,11 +370,7 @@ async def build_abstain_payload(
                 "before answering."
             )
             if best_guesses
-            else (
-                'Retry search_codebase with mode="symbol" or '
-                'mode="path" on the key terms; Grep only if those '
-                "miss too."
-            )
+            else _NO_HITS_RECOVERY_HINT
         ),
         "fallback_targets": fallback_targets,
         "retrieval": [],
@@ -392,7 +389,7 @@ async def build_abstain_payload(
         )
     gated["_meta"] = _build_meta(
         timing_ms=(time.perf_counter() - t0) * 1000,
-        hint=_answer_hint("low", len(hits)),
+        hint=_answer_hint("low"),
         repository=repository,
         targets=fallback_targets,
     )
@@ -430,7 +427,7 @@ def build_value_payload(
         ),
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
-            hint=_answer_hint("high", len(hits)),
+            hint=_answer_hint("high"),
             repository=repository,
             targets=[extraction["file"], *fallback_targets],
         ),
@@ -566,7 +563,14 @@ async def _hedged_payload(
         "confidence": confidence,
         "retrieval_quality": retrieval_quality,
         "fallback_targets": fallback_targets[:5],
-        "retrieval": _serialize_hits(hits, limit=5, lean_symbols=True),
+        # The hedge is the priciest reply we send and the least likely to be
+        # right, so it gets the graded low branch's excerpt budget rather than
+        # one of its own. Safe to cut at build time, unlike most payload cuts:
+        # `_cache_bypass_reason` refuses every hedged row, so a hedged reply is
+        # always freshly built and no stored row can keep the wider shape.
+        "retrieval": _serialize_hits(
+            hits, limit=5, lean_symbols=True, excerpt_rows=_GATED_RETURN_HITS
+        ),
         "note": (
             "Synthesis hedged: the LLM could not ground the question in "
             "the indexed wiki. Read one of fallback_targets to answer."

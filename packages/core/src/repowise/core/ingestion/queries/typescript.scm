@@ -240,7 +240,7 @@
 ; Chained call: obj.method1().method2(args)
 (call_expression
   function: (member_expression
-    object: (call_expression)
+    object: (call_expression) @call.receiver_call
     property: (property_identifier) @call.target
   )
   arguments: (arguments) @call.arguments

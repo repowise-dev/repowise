@@ -462,18 +462,37 @@ async def test_in_memory_embed_batch_caps_text_length():
 
 
 @pytest.mark.asyncio
+async def test_in_memory_single_upsert_caps_text_length():
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.persistence.vector_store._base import EMBED_TEXT_MAX_CHARS
+
+    emb = _RecordingEmbedder()
+    store = InMemoryVectorStore(emb)
+    await store.embed_and_upsert(
+        "p0", "x" * (EMBED_TEXT_MAX_CHARS + 5_000), {"target_path": "f0.py"}
+    )
+    assert len(emb.calls[0][0]) == EMBED_TEXT_MAX_CHARS
+
+
+@pytest.mark.asyncio
 async def test_lancedb_embed_batch_isolates_failed_chunk(tmp_path):
     # One failing chunk must not sink the rest of the level, but the loss
     # must surface as an error (the old code swallowed it entirely).
     pytest.importorskip("lancedb")
-    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.persistence.vector_store import BatchEmbeddingError, LanceDBVectorStore
     from repowise.core.persistence.vector_store._base import EMBED_BATCH_MAX_ITEMS
 
     emb = _RecordingEmbedder(fail_on_call=2)
     store = LanceDBVectorStore(str(tmp_path / "lance"), emb)
     try:
-        with pytest.raises(RuntimeError, match="failed to embed"):
+        with pytest.raises(BatchEmbeddingError, match="failed during embedding") as caught:
             await store.embed_batch(_items(EMBED_BATCH_MAX_ITEMS * 3))
+        assert caught.value.successful_count == EMBED_BATCH_MAX_ITEMS * 2
+        assert [item[0] for item in caught.value.failed_items] == [
+            f"p{i}" for i in range(EMBED_BATCH_MAX_ITEMS, EMBED_BATCH_MAX_ITEMS * 2)
+        ]
+        assert len(caught.value.failures) == 1
+        assert caught.value.failures[0].stage == "embedding"
         ids = await store.list_page_ids()
         # Chunks 1 and 3 persisted; only chunk 2 was lost.
         assert len(ids) == EMBED_BATCH_MAX_ITEMS * 2

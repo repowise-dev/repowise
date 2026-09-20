@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .baseline import baseline_samples_cached, scores_excluding
+from ..risk_semantics import change_risk_authority, change_risk_scales
+from .baseline import BaselineSample, baseline_samples_cached, densities_excluding, scores_excluding
 from .features import (
     GIT_TIMEOUT_SECONDS,
     ChangeFeatures,
@@ -43,8 +45,9 @@ class ChangeRiskResult:
     working_tree: bool = False  # scored the uncommitted change, not a commit
     # Bug-fix history of the ground this change stands on. ``density`` is the
     # churn-weighted mean fix pressure of the touched files, ``percentile`` ranks
-    # it against the repo's own fix-bearing files, and ``hot_files`` names where
-    # the pressure is. Unlike the score, none of these grow with diff size.
+    # it against the same measure over the repo's own recent commits, and
+    # ``hot_files`` names where the pressure is. Unlike the score, none of
+    # these grow with diff size.
     fix_density: float = 0.0
     fix_percentile: float | None = None
     hot_files: tuple[tuple[str, int, float], ...] = ()  # (path, churn, pressure)
@@ -181,17 +184,12 @@ def score_live_change(
         # which is the honest answer for the first commit in a repository.
         history_ref = f"{target}^"
 
-    risk = score_change(features)
     try:
-        pressure = fix_pressure(repo_path, history_ref)
-        fix_history_available = True
+        pressure: dict[str, float] | None = fix_pressure(repo_path, history_ref)
     except FixHistoryUnavailableError:
-        pressure, fix_history_available = {}, False
-    density = change_fix_density(pressure, features.file_churn)
-    fix_bearing = hot_files(pressure, features.file_churn)
-    percentile: float | None = None
-    priority: str | None = None
-    baseline_sample_size = 0
+        pressure = None
+
+    samples: list[BaselineSample] = []
     if baseline:
         samples = baseline_samples_cached(
             repo_path,
@@ -200,40 +198,92 @@ def score_live_change(
             extensions,
             exclude_patterns=effective_excludes,
         )
-        scores = scores_excluding(samples, excluded_ref)
-        baseline_sample_size = len(scores)
-        if len(scores) >= _MIN_BASELINE:
-            normalizer = RiskNormalizer.from_scores(scores)
-            rank_score = score_change(replace(features, exp=None)).score
-            percentile = normalizer.percentile(rank_score)
-            priority = normalizer.priority(rank_score)
+
+    return assess_change(
+        features,
+        fix_pressure=pressure,
+        baseline_scores=scores_excluding(samples, excluded_ref),
+        baseline_fix_densities=densities_excluding(samples, excluded_ref, pressure or {}),
+        working_tree=working_tree,
+        riskignore_excludes=from_riskignore,
+        request_excludes=exclude_patterns,
+    )
+
+
+def assess_change(
+    features: ChangeFeatures,
+    *,
+    fix_pressure: Mapping[str, float] | None = None,
+    baseline_scores: Sequence[float] = (),
+    baseline_fix_densities: Sequence[float] = (),
+    min_baseline: int = _MIN_BASELINE,
+    working_tree: bool = False,
+    riskignore_excludes: tuple[str, ...] = (),
+    request_excludes: tuple[str, ...] = (),
+) -> ChangeRiskResult:
+    """Score an already-extracted change. The whole risk composition, no IO.
+
+    This is the pure tail of :func:`score_live_change`: model scoring, the
+    fix-history load the change stands on, and the repo-relative ranking.
+    Everything upstream of it -- resolving a revspec, walking git for features,
+    walking git for fix pressure, sampling a baseline -- is IO, and stays with
+    the caller. A consumer holding file stats from an API rather than a
+    checkout reaches this directly and gets the same numbers, because they come
+    from the same composition rather than a second copy of it.
+
+    ``fix_pressure`` of ``None`` means the history walk could not run, which is
+    reported as ``fix_history_available=False``. An empty mapping is different:
+    the walk ran and found no fixes.
+
+    ``baseline_scores`` ranks this change against its cohort. Fewer than
+    *min_baseline* of them leaves ``percentile`` and ``priority`` as ``None`` --
+    an honest "no cohort to rank against" rather than a percentile computed from
+    too little to mean anything.
+    """
+    risk = score_change(features)
+    pressure = dict(fix_pressure or {})
+    density = change_fix_density(pressure, features.file_churn)
+
+    percentile: float | None = None
+    priority: str | None = None
+    if len(baseline_scores) >= min_baseline:
+        normalizer = RiskNormalizer.from_scores(list(baseline_scores))
+        # Author experience is a property of the author, not of the change, so
+        # it is excluded from the score this change is *ranked* by.
+        rank_score = score_change(replace(features, exp=None)).score
+        percentile = normalizer.percentile(rank_score)
+        priority = normalizer.priority(rank_score)
 
     return ChangeRiskResult(
         features=features,
         risk=risk,
         percentile=percentile,
         priority=priority,
-        baseline_sample_size=baseline_sample_size,
-        riskignore_excludes=from_riskignore,
-        request_excludes=exclude_patterns,
+        baseline_sample_size=len(baseline_scores),
+        riskignore_excludes=riskignore_excludes,
+        request_excludes=request_excludes,
         working_tree=working_tree,
         fix_density=round(density, 3),
-        fix_percentile=fix_density_percentile(pressure, density),
-        hot_files=fix_bearing,
-        fix_history_available=fix_history_available,
+        fix_percentile=fix_density_percentile(list(baseline_fix_densities), density),
+        hot_files=hot_files(pressure, features.file_churn),
+        fix_history_available=fix_pressure is not None,
     )
 
 
-def change_risk_payload(result: ChangeRiskResult) -> dict:
+def change_risk_payload(result: ChangeRiskResult, *, scales: bool = False) -> dict:
     """Render the machine-readable response shared by the CLI and MCP tool.
 
     ``fix_history`` leads: it is the block that distinguishes a surgical edit to
     a file that keeps breaking from a bulk rename of files that never have.
     ``score`` and ``risk_percentile`` describe the *shape* of the diff and are
     kept for continuity, labelled for what they measure — see ``score_measures``.
-    ``fallback_band`` is the absolute calibrated band, non-null only when there
+    ``fallback_band`` is the absolute model-score band, non-null only when there
     was no baseline to rank against. ``score_unit`` names the unit that band
     assumes.
+
+    ``risk_authority`` always ships: it names the field to act on. The
+    per-field ``risk_scales`` dictionary is identical on every call, so it
+    ships only when ``scales`` is set.
     """
     features, risk = result.features, result.risk
     return {
@@ -248,6 +298,7 @@ def change_risk_payload(result: ChangeRiskResult) -> dict:
                 for path, churn, pressure in result.hot_files
             ],
         },
+        "risk_authority": change_risk_authority(),
         "score": risk.score,
         "score_measures": SCORE_MEASURES,
         "score_unit": SCORE_UNIT,
@@ -257,6 +308,7 @@ def change_risk_payload(result: ChangeRiskResult) -> dict:
         "fallback_band": risk.level if result.priority is None else None,
         "baseline_sample_size": result.baseline_sample_size,
         "exclude_patterns": list(result.riskignore_excludes + result.request_excludes),
+        **({"risk_scales": change_risk_scales()} if scales else {}),
         "is_fix": features.is_fix,
         "features": {
             "la": features.la,

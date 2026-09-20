@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import sys
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, NoReturn
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.persistence.database import (
@@ -20,10 +23,50 @@ from repowise.core.persistence.database import (
 )
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
-from repowise.core.providers.embedding.base import KeylessEmbedder
+from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
+from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
+from repowise.core.providers.embedding.caching import CachingEmbedder
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._transport import (
+    CLIENT_CLOSED,
+    SERVER_FAULT,
+    classify_termination,
+    client_closure_types,
+    guard_stdout,
+    log_outcome,
+)
 
 _log = __import__("logging").getLogger("repowise.mcp")
+
+
+class StoreUnavailableError(RuntimeError):
+    """The repo-local index store cannot be created or opened.
+
+    Raised out of the lifespan so the process exits once with a message that
+    names the path and the fix. Before this the same failure escaped as a
+    bare traceback, and an MCP host treats a server that dies at startup as
+    one to respawn, so an unwritable .repowise became a crash loop. Click-free
+    because the server does not depend on the CLI; the mcp command turns it
+    into a clean non-zero exit.
+    """
+
+
+def _store_unavailable(
+    where: str | None, repo_path: str | None, exc: BaseException
+) -> StoreUnavailableError:
+    """``where`` is the repo-local directory, or None when an env URL is in use;
+    a configured database gets its own remedy, not the directory one."""
+    if where is None:
+        return StoreUnavailableError(
+            f"repowise MCP: cannot open the configured database: {exc}. "
+            "Check REPOWISE_DB_URL and that the database server is reachable."
+        )
+    repo = repo_path or "the repository"
+    return StoreUnavailableError(
+        f"repowise MCP: cannot open the index store at {where}: {exc}. "
+        f"Run 'repowise init' in {repo} to create it, or fix the permissions "
+        "on that directory."
+    )
 
 
 # Per-embedder remediation hints, appended to the ERROR log and the `_meta`
@@ -98,6 +141,16 @@ def _persisted_embedder_key(name: str) -> str | None:
         return None
     canonical = env_vars[0]
 
+    # The process environment is the highest-precedence source, matching the
+    # CLI's resolver (cli/providers/keys.py): an exported key is an explicit
+    # override. The server used to skip this tier entirely, so on a machine
+    # with an exported credential it and the CLI disagreed about the same
+    # repo in the same shell (issue #1711).
+    for var in env_vars:
+        value = os.environ.get(var)
+        if value:
+            return value
+
     if _state._repo_path:
         try:
             # Reuse the reader get_answer already uses for the LLM credential,
@@ -156,8 +209,30 @@ def _embedder_kwargs(name: str) -> dict[str, Any]:
     if model:
         kwargs["model"] = model
     if name == "gemini":
-        dims = os.environ.get("REPOWISE_EMBEDDING_DIMS")
-        kwargs["output_dimensionality"] = int(dims) if dims else 768
+        dims_raw = os.environ.get("REPOWISE_EMBEDDING_DIMS")
+        dims = 768
+        if dims_raw:
+            try:
+                parsed = int(dims_raw)
+            except (ValueError, OverflowError):
+                parsed = 0
+            if parsed > 0:
+                dims = parsed
+            else:
+                _log.warning(
+                    "embedding_dims_invalid",
+                    extra={
+                        "var": "REPOWISE_EMBEDDING_DIMS",
+                        "value": dims_raw,
+                        "using": dims,
+                    },
+                )
+                print(
+                    f"REPOWISE_EMBEDDING_DIMS={dims_raw!r} is not a positive integer;"
+                    f" using {dims}.",
+                    file=sys.stderr,
+                )
+        kwargs["output_dimensionality"] = dims
 
     env_vars = _EMBEDDER_KEY_ENV.get(name, ())
     if env_vars and not any(os.environ.get(var) for var in env_vars):
@@ -223,11 +298,69 @@ def _resolve_embedder():
         return KeylessEmbedder()
 
 
+def _query_embedder():
+    """The embedder this server answers queries with.
+
+    Wrapped so a repeated query does not pay the provider round trip again.
+
+    Only this process wraps: a CLI invocation is one-shot and serves a single
+    query, so a per-process cache could never hit there. The HTTP server
+    (``server/app.py``) is long-lived and would benefit, and is left unwrapped
+    only to keep this change to the surface the cost was measured on.
+
+    Keyless is left bare — :func:`is_semantic_embedder` identifies it by type
+    to switch the vector leg off, and a wrapper would defeat that.
+    """
+    embedder = _resolve_embedder()
+    return CachingEmbedder(embedder) if is_semantic_embedder(embedder) else embedder
+
+
+#: How often the running server re-reads release currency. The PyPI fetch
+#: itself is TTL-cached on disk for a day and shared with the CLI advisory, so
+#: this bounds only the in-process refresh, never the network.
+_RELEASE_RECHECK_S = 6 * 3600
+
+
+async def _poll_release_check() -> None:
+    """Keep ``_state._release_check`` current for the life of the server.
+
+    Runs off the event loop thread because the miss path does a network
+    fetch; a tool call never waits on it. Never raises: a failed check is
+    recorded as unknown and retried on the next pass.
+    """
+    from repowise.core.upgrade.release import check_latest_version_cached
+    from repowise.server import __version__
+
+    while True:
+        try:
+            _state._release_check = await asyncio.to_thread(
+                check_latest_version_cached, __version__
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.debug("repowise MCP: release check failed", exc_info=True)
+        await asyncio.sleep(_RELEASE_RECHECK_S)
+
+
 async def _cancel_task(task: asyncio.Task) -> None:
     """Cancel a lifespan background task and swallow its unwind."""
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await task
+
+
+async def _abort_startup(*tasks: asyncio.Task) -> None:
+    """Undo the startup a lifespan raised out of, before it reached its teardown.
+
+    The success paths cancel the background tasks and clear the warmup event on
+    the way out; a startup failure has to leave the same state behind, or the
+    next lifespan in this process inherits a set-but-never-signalled event bound
+    to a loop that is gone.
+    """
+    for task in tasks:
+        await _cancel_task(task)
+    _state._lancedb_ready = None
 
 
 async def _warm_lancedb() -> None:
@@ -276,7 +409,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
     import asyncio as _asyncio
 
     try:
-        embedder = _resolve_embedder()
+        embedder = _query_embedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
 
         try:
@@ -336,19 +469,32 @@ def _detect_workspace(repo_path: str | None):
         # Determine which repo the given path belongs to
         resolved = _Path(repo_path).resolve()
         repo_alias = None
+        best_match_depth = -1
+        best_match_abs = None
         for entry in ws_config.repos:
             entry_abs = (ws_root / entry.path).resolve()
             try:
                 resolved.relative_to(entry_abs)
-                repo_alias = entry.alias
-                break
             except ValueError:
                 continue
+
+            match_depth = len(entry_abs.parts)
+            if match_depth > best_match_depth:
+                repo_alias = entry.alias
+                best_match_depth = match_depth
+                best_match_abs = entry_abs
 
         if repo_alias is None:
             # Path is inside workspace but doesn't match a repo — use default
             primary = ws_config.get_primary()
             repo_alias = primary.alias if primary else ws_config.repos[0].alias
+        elif resolved != best_match_abs and (resolved / ".repowise" / "state.json").exists():
+            # resolved is its own indexed repo, nested inside a matched
+            # member/primary's directory but not itself a registered member.
+            # Containment made it match the enclosing entry above; that's
+            # wrong for an indexed, non-member repo — drop to single-repo
+            # mode instead of silently serving the enclosing repo.
+            return None, None, None
 
         return ws_root, ws_config, repo_alias
     except Exception:
@@ -370,9 +516,13 @@ async def _lifespan(server: FastMCP):
     # call can otherwise land mid-import and wedge the loop.
     _state._lancedb_ready = asyncio.Event()
     _warm_task = asyncio.create_task(_warm_lancedb(), name="lancedb-warmup")
+    _release_task = asyncio.create_task(_poll_release_check(), name="release-check")
 
     # --- Workspace detection ------------------------------------------------
-    ws_root, ws_config, ws_repo_alias = _detect_workspace(_state._repo_path)
+    if _state._force_single_repo:
+        ws_root, ws_config, ws_repo_alias = None, None, None
+    else:
+        ws_root, ws_config, ws_repo_alias = _detect_workspace(_state._repo_path)
 
     if ws_root is not None and ws_config is not None:
         # Workspace mode — use RepoRegistry for multi-repo serving
@@ -386,11 +536,20 @@ async def _lifespan(server: FastMCP):
         registry = RepoRegistry(
             workspace_root=ws_root,
             ws_config=ws_config,
-            embedder_factory=lambda: _resolve_embedder(),
+            embedder_factory=_query_embedder,
         )
 
-        # Eagerly load the default repo so tools work immediately
-        default_ctx = await registry.get_default()
+        # Eagerly load the default repo so tools work immediately. A failure
+        # here leaves the lifespan before its teardown, so the background
+        # tasks are cancelled by hand or they outlive the loop.
+        try:
+            default_ctx = await registry.get_default()
+        except (OSError, OperationalError) as exc:
+            await _abort_startup(_release_task, _warm_task)
+            raise _store_unavailable(str(ws_root), str(ws_root), exc) from exc
+        except BaseException:
+            await _abort_startup(_release_task, _warm_task)
+            raise
 
         _state._registry = registry
         _state._workspace_root = str(ws_root)
@@ -442,9 +601,14 @@ async def _lifespan(server: FastMCP):
 
         yield
 
+        await _cancel_task(_release_task)
         await _cancel_task(_warm_task)
         _state._lancedb_ready = None
         _state._cross_repo_enricher = None
+        # The test-impact join holds its own session per consumer repo.
+        from repowise.server.mcp_server._test_impact import close_test_impact_indexes
+
+        await close_test_impact_indexes()
         await registry.close()
         _state._registry = None
         _state._workspace_root = None
@@ -454,26 +618,37 @@ async def _lifespan(server: FastMCP):
     configured_db_url = get_configured_db_url()
 
     # When repo path is set and no env override, prefer repo-local DB.
-    if _state._repo_path and configured_db_url is None:
-        db_path = get_repo_db_path(_state._repo_path)
-        repowise_dir = db_path.parent
-        if not repowise_dir.exists():
-            _log.warning(
-                "No .repowise directory at %s — run 'repowise init' first",
-                _state._repo_path,
-            )
-            repowise_dir.mkdir(parents=True, exist_ok=True)
-        elif not db_path.exists():
-            _log.warning(
-                "No wiki.db in %s — run 'repowise init' to generate the wiki",
-                repowise_dir,
-            )
+    store_location: str | None = None
+    try:
+        if _state._repo_path and configured_db_url is None:
+            db_path = get_repo_db_path(_state._repo_path)
+            repowise_dir = db_path.parent
+            store_location = str(repowise_dir)
+            if not repowise_dir.exists():
+                _log.warning(
+                    "No .repowise directory at %s — run 'repowise init' first",
+                    _state._repo_path,
+                )
+                repowise_dir.mkdir(parents=True, exist_ok=True)
+            elif not db_path.exists():
+                _log.warning(
+                    "No wiki.db in %s — run 'repowise init' to generate the wiki",
+                    repowise_dir,
+                )
 
-    db_url = resolve_db_url(_state._repo_path)
+        db_url = resolve_db_url(_state._repo_path)
 
-    _log.info("repowise MCP: initialising database…")
-    engine = create_engine(db_url)
-    await init_db(engine)
+        _log.info("repowise MCP: initialising database…")
+        engine = create_engine(db_url)
+        try:
+            await init_db(engine)
+        except (OSError, OperationalError):
+            await engine.dispose()
+            raise
+    except (OSError, OperationalError) as exc:
+        # A read-only or missing directory, or a .repowise that is a file.
+        await _abort_startup(_release_task, _warm_task)
+        raise _store_unavailable(store_location, _state._repo_path, exc) from exc
 
     _state._session_factory = async_sessionmaker(
         engine, expire_on_commit=False, class_=AsyncSession
@@ -504,6 +679,7 @@ async def _lifespan(server: FastMCP):
 
     yield
 
+    await _cancel_task(_release_task)
     await _cancel_task(_bg_task)
     await _cancel_task(_warm_task)
     _state._lancedb_ready = None
@@ -541,6 +717,7 @@ mcp = FastMCP(
 def create_mcp_server(
     repo_path: str | None = None,
     tools: str | list[str] | None = None,
+    workspace_mode: bool = True,
 ) -> FastMCP:
     """Create and return the MCP server instance, optionally scoped to a repo.
 
@@ -548,6 +725,7 @@ def create_mcp_server(
     deltas, or ``"all"``); when omitted the ``mcp.tools`` config block is used.
     """
     _state._repo_path = repo_path
+    _state._force_single_repo = not workspace_mode
     from repowise.server.mcp_server import ensure_full_surface
     from repowise.server.mcp_server._tool_selection import apply_tool_selection
 
@@ -563,31 +741,169 @@ def create_mcp_server(
 #: two deep in practice; the cap only stops a pathological cycle from hanging.
 _MAX_GROUP_DEPTH = 10
 
+#: Host values FastMCP's own default construction already treats as local.
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
-def _run_transport(transport: str) -> None:
-    """Run the server, raising the cause of a task-group failure rather than the group.
+#: ``allowed_hosts``/``allowed_origins`` patterns for the loopback callers a
+#: non-loopback bind should still accept (e.g. an SSH tunnel or a client
+#: running on the same box as the server).
+_LOOPBACK_ALLOWLIST_PATTERNS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+
+
+def _bracket_if_ipv6(host: str) -> str:
+    """Bracket a bare IPv6 literal to match the ``Host``/``Origin`` header shape a client sends.
+
+    ``TransportSecurityMiddleware`` matches by ``host.startswith(base + ":")``
+    (see ``mcp/server/transport_security.py``), so an allowlist entry has to
+    be shaped exactly like the wire value. A client connecting to an IPv6
+    literal sends a bracketed Host header (``[2001:db8::1]:7338``), which
+    never starts with a bare ``2001:db8::1:`` — hostnames and IPv4 addresses
+    never contain a colon, so any colon in ``host`` here means IPv6.
+    """
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
+def _configure_transport_security(host: str) -> None:
+    """Widen the DNS-rebinding ``Host`` allowlist to match ``--host``.
+
+    ``FastMCP`` builds ``mcp.settings.transport_security`` at import time,
+    before any CLI ``--host`` is known, so it bakes in an allowlist scoped to
+    loopback only. ``run_mcp`` rebinds the socket via ``mcp.settings.host``
+    later, but nothing updated the allowlist to match — so every request to a
+    non-loopback ``--host`` failed ``Host`` header validation with
+    ``421 Misdirected Request`` no matter what host was actually given.
+
+    A loopback host needs no change (FastMCP's default already covers it).
+    Anything else — including a concrete IPv6 literal, bracketed to match the
+    header shape — gets an allowlist scoped to that host plus loopback.
+
+    A wildcard bind (``0.0.0.0``/``::``) can't be matched by any single
+    ``Host`` value, so the check is disabled rather than left permanently
+    failing. That trades DNS-rebinding protection for reachability on a
+    wildcard bind; the startup security warning logged elsewhere in
+    ``run_mcp`` for an unauthenticated wide bind is, until #1400 lands, the
+    only remaining gate on that surface — this fix is what makes it live
+    traffic instead of traffic that already 421'd.
+    """
+    if host in _LOOPBACK_HOSTS:
+        return
+    if host in ("0.0.0.0", "::"):
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
+        return
+    base = _bracket_if_ipv6(host)
+    # allowed_origins inherits the SDK's same startswith(base + ":") prefix
+    # match as allowed_hosts (see _validate_origin), so e.g.
+    # "http://172.21.12.48:*" also technically accepts an Origin like
+    # "http://172.21.12.48:8080.evil.com". Pre-existing SDK behavior — the
+    # loopback defaults FastMCP bakes in have the identical looseness — not
+    # something introduced or worsened here.
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[f"{base}:*", *_LOOPBACK_ALLOWLIST_PATTERNS],
+        allowed_origins=[
+            f"http://{base}:*",
+            *(f"http://{p}" for p in _LOOPBACK_ALLOWLIST_PATTERNS),
+        ],
+    )
+
+
+def group_leaves(exc: BaseException, *, _depth: int = 0) -> list[BaseException]:
+    """Every non-group exception inside *exc*, outermost group flattened.
 
     ``mcp.run`` drives an anyio event loop, and anyio reports a child task's
     failure as an ``ExceptionGroup`` wrapping the real exception. Anything that
-    reads the outermost class then learns only that *a* task failed: the CLI
-    records the wrapper's name as the error type, so a missing dependency, a
-    permission problem and a closed pipe are indistinguishable after the fact.
-    Unwrap to the first leaf and raise that, so the layers above name the real
-    error. A group holding several distinct failures loses the siblings, which
-    is worth it to stop losing the cause entirely.
+    reads the outermost class learns only that *a* task failed: a missing
+    dependency, a permission problem and a closed pipe are indistinguishable
+    after the fact.
+
+    Returns the whole leaf set rather than the first one. The caller still
+    *raises* the first, because an exception can only be one thing, but the
+    siblings are what say whether a crash is one fault or several — a question
+    the single-leaf unwrap could not be asked, since it discarded them before
+    anything could look. A group that is empty, or nested past
+    :data:`_MAX_GROUP_DEPTH`, yields itself: no leaf is a worse answer than an
+    honest wrapper.
     """
-    try:
-        mcp.run(transport=transport)
-    except BaseExceptionGroup as group:
-        leaf: BaseException = group
-        for _ in range(_MAX_GROUP_DEPTH):
-            if not isinstance(leaf, BaseExceptionGroup) or not leaf.exceptions:
-                break
-            leaf = leaf.exceptions[0]
+    if not isinstance(exc, BaseExceptionGroup) or _depth >= _MAX_GROUP_DEPTH:
+        return [exc]
+    if not exc.exceptions:
+        return [exc]
+    return [leaf for child in exc.exceptions for leaf in group_leaves(child, _depth=_depth + 1)]
+
+
+def _raise_group_leaf(
+    group: BaseExceptionGroup, transport: str, leaves: list[BaseException] | None = None
+) -> NoReturn:
+    """Log every leaf of a failed task group and re-raise the first.
+
+    The first carries the class names of all of them in
+    :data:`GROUP_LEAF_TYPES_ATTR`, which is what lets the layer recording the
+    outcome say whether one fault or several killed the server without
+    reaching back in here to re-derive it.
+    """
+    found = leaves if leaves is not None else group_leaves(group)
+    for leaf in found:
         # A cancelled run is how a client-initiated shutdown looks, not a fault.
         if isinstance(leaf, Exception):
             _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
-        raise leaf from group
+    log_outcome(SERVER_FAULT, transport, type(found[0]).__name__)
+    first = found[0]
+    # Best effort: a leaf class with __slots__ refuses the attribute, and the
+    # sibling names are not worth losing the exception over.
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(
+            first,
+            GROUP_LEAF_TYPES_ATTR,
+            tuple(sorted({type(leaf).__name__ for leaf in found})),
+        )
+    raise first from group
+
+
+def _warn_on_open_bind(transport: str, host: str) -> None:
+    """One line when a network transport is reachable and unauthenticated."""
+    if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
+        _log.warning(
+            "SECURITY WARNING: MCP server (%s) is binding to %s without "
+            "REPOWISE_API_KEY. All tools are unauthenticated and "
+            "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
+            transport,
+            host,
+        )
+
+
+def _run_network_transport(transport: str, host: str, port: int) -> None:
+    mcp.settings.host = host
+    mcp.settings.port = port
+    _configure_transport_security(host)
+    _warn_on_open_bind(transport, host)
+    mcp.run(transport=transport)
+
+
+def _run_stdio_transport() -> int:
+    """Run the stdio transport; returns how many stray stdout writes it saw."""
+    # stdout is the JSON-RPC channel on stdio, so every log line written there
+    # arrives at the client as a malformed protocol frame. Move the log sinks
+    # to stderr before anything can log.
+    from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
+
+    route_logging_to_stderr()
+    # stdio servers are spawned per-session by the MCP client; when the client
+    # dies abnormally the stdio loop doesn't exit (and Windows never kills
+    # children), leaking servers that hold wiki.db handles. The watchdog exits
+    # this process once the client is gone.
+    from repowise.server.mcp_server._watchdog import start_parent_watchdog
+
+    start_parent_watchdog()
+    # The SDK writes frames through stdout's buffer, so anything arriving at
+    # the text layer is a stray print. The guard moves it to stderr, counts it,
+    # and the count is what names the session protocol_corrupted.
+    with guard_stdout() as guard:
+        mcp.run(transport="stdio")
+    return guard.writes
 
 
 def run_mcp(
@@ -596,54 +912,61 @@ def run_mcp(
     host: str = "127.0.0.1",
     port: int = 7338,
     tools: str | list[str] | None = None,
-) -> None:
-    """Run the MCP server with the specified transport.
+    workspace_mode: bool = True,
+) -> str:
+    """Run the MCP server with the specified transport, and name how it ended.
 
     ``tools`` overrides which tools are advertised (see
     :func:`repowise.server.mcp_server._tool_selection.apply_tool_selection`);
     when omitted, the ``mcp.tools`` config block is honoured.
+
+    Returns one of the outcomes in :mod:`._transport`. A client closing a
+    transport it owns is one of them and returns normally: it is how a stdio
+    session ends, and raising there made an ordinary hang-up look like the
+    crash a host should respawn on. Only a genuine fault still raises.
+
+    A task-group failure is unwrapped over the whole body, not around ``mcp.run``
+    alone: surface construction and transport security run outside that call, and
+    a group raised by either escaped with its wrapper class intact. See
+    :func:`_raise_group_leaf` for what travels out of one.
     """
-    _state._repo_path = repo_path
-    from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import apply_tool_selection
+    stray_writes = 0
+    # Startup and the transport run are caught separately. Both unwrap a task
+    # group, but only the run may end in a closure: a corrupt index artifact
+    # read during surface construction raises EOFError, which is a hang-up
+    # class, and classifying it as one would have reported a broken index as a
+    # clean session and exited 0.
+    try:
+        _state._repo_path = repo_path
+        _state._force_single_repo = not workspace_mode
+        from repowise.server.mcp_server import ensure_full_surface
+        from repowise.server.mcp_server._tool_selection import apply_tool_selection
 
-    ensure_full_surface()
-    apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+        ensure_full_surface()
+        apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    except BaseExceptionGroup as group:
+        _raise_group_leaf(group, transport)
 
-    if transport == "sse":
-        mcp.settings.host = host
-        mcp.settings.port = port
-        if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
-            _log.warning(
-                "SECURITY WARNING: MCP server (sse) is binding to %s without "
-                "REPOWISE_API_KEY. All tools are unauthenticated and "
-                "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
-                host,
-            )
-        _run_transport("sse")
-    elif transport == "streamable-http":
-        mcp.settings.host = host
-        mcp.settings.port = port
-        if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
-            _log.warning(
-                "SECURITY WARNING: MCP server (streamable-http) is binding to %s without "
-                "REPOWISE_API_KEY. All tools are unauthenticated and "
-                "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
-                host,
-            )
-        _run_transport("streamable-http")
-    else:
-        # stdout is the JSON-RPC channel on stdio, so every log line written
-        # there arrives at the client as a malformed protocol frame. Move the
-        # log sinks to stderr before anything can log.
-        from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
+    try:
+        if transport in ("sse", "streamable-http"):
+            _run_network_transport(transport, host, port)
+        else:
+            stray_writes = _run_stdio_transport()
+    except BaseExceptionGroup as group:
+        leaves = group_leaves(group)
+        if classify_termination(transport, group, leaves=group_leaves) == CLIENT_CLOSED:
+            log_outcome(CLIENT_CLOSED, transport, type(leaves[0]).__name__)
+            return CLIENT_CLOSED
+        _raise_group_leaf(group, transport, leaves=leaves)
+    except client_closure_types() as exc:
+        # An ungrouped hang-up: the pipe broke, or the run was cancelled under
+        # us. The clause names those classes rather than catching broadly, so
+        # an interrupt and a server fault are never swallowed here.
+        if transport != "stdio":
+            raise
+        log_outcome(CLIENT_CLOSED, transport, type(exc).__name__)
+        return CLIENT_CLOSED
 
-        route_logging_to_stderr()
-        # stdio servers are spawned per-session by the MCP client; when the
-        # client dies abnormally the stdio loop doesn't exit (and Windows
-        # never kills children), leaking servers that hold wiki.db handles.
-        # The watchdog exits this process once the client is gone.
-        from repowise.server.mcp_server._watchdog import start_parent_watchdog
-
-        start_parent_watchdog()
-        _run_transport("stdio")
+    outcome = classify_termination(transport, None, stray_writes=stray_writes)
+    log_outcome(outcome, transport)
+    return outcome

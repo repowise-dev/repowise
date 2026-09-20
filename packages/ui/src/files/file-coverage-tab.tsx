@@ -13,6 +13,8 @@ interface FileCoverageTabProps {
    * When absent we fall back to a summary-only view.
    */
   coverageCodeHtml?: string | undefined;
+  /** Names the file a selection inside the source came from. */
+  filePath?: string;
   /**
    * The graph-inferred "which tests reach this file" block, supplied by the host
    * already wrapped. A node rather than a fetcher because the tab bodies are
@@ -24,6 +26,7 @@ interface FileCoverageTabProps {
 export function FileCoverageTab({
   coverage,
   coverageCodeHtml,
+  filePath,
   testsPanel,
 }: FileCoverageTabProps) {
   // Rendered on both bases. Without a report it is the whole answer; with one it
@@ -136,7 +139,11 @@ export function FileCoverageTab({
         }
       >
         {coverageCodeHtml ? (
-          <div className="coverage-code overflow-x-auto border-y border-[var(--color-border-default)] text-xs leading-relaxed">
+          <div
+            data-chat-selection=""
+            {...(filePath ? { "data-chat-selection-path": filePath } : {})}
+            className="coverage-code overflow-x-auto border-y border-[var(--color-border-default)] text-xs leading-relaxed"
+          >
             {/* Highlighted by the host through the shared shiki path; the
                 data-covered line attributes drive the gutter tint below. */}
             <div dangerouslySetInnerHTML={{ __html: coverageCodeHtml }} />

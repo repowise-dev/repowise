@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -39,6 +40,26 @@ class RepoContext:
     _engine: Any = field(default=None, repr=False)  # AsyncEngine, for dispose
 
 
+def repo_db_path(repo_path: Path) -> Path:
+    """Where a repo's index database lives."""
+    return repo_path / ".repowise" / "wiki.db"
+
+
+async def open_repo_db(repo_path: Path) -> tuple[Any, async_sessionmaker[AsyncSession]]:
+    """Open a repo's ``wiki.db``, returning ``(engine, session_factory)``.
+
+    SQLite creates the file if it is absent, so check :func:`repo_db_path`
+    first when "never indexed" needs a different answer than "empty". The
+    caller owns the engine and must dispose it. Shared with :mod:`.repo_index`,
+    which needs the same connection without the search and vector stores.
+    """
+    from repowise.core.persistence.database import create_engine, get_db_url, init_db
+
+    engine = create_engine(get_db_url(f"sqlite:///{repo_db_path(repo_path).as_posix()}"))
+    await init_db(engine)
+    return engine, async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+
 # ---------------------------------------------------------------------------
 # RepoRegistry — lazy loading + LRU eviction
 # ---------------------------------------------------------------------------
@@ -66,6 +87,45 @@ class RepoRegistry:
         self._contexts: dict[str, RepoContext] = {}
         self._access_order: dict[str, float] = {}
         self._vs_tasks: dict[str, asyncio.Task[None]] = {}
+        self._validate_public_identities()
+
+    def _identity_key(self, value: str | Path) -> str:
+        return os.path.normcase(Path(value).as_posix().rstrip("/") or ".").replace(
+            "\\", "/"
+        )
+
+    @staticmethod
+    def _alias_key(value: str) -> str:
+        return value.strip().casefold()
+
+    def _validate_public_identities(self) -> None:
+        owners: dict[str, str] = {}
+        alias_owners = {
+            self._alias_key(entry.alias): entry.alias for entry in self._ws_config.repos
+        }
+        for entry in self._ws_config.repos:
+            if self._alias_key(entry.alias) == "all" or self._identity_key(entry.path) == "all":
+                raise ValueError("Workspace repository identity 'all' is reserved")
+            identities = {
+                self._alias_key(entry.alias),
+                self._identity_key(entry.path),
+                self._identity_key((self._workspace_root / entry.path).resolve()),
+            }
+            for path_identity in identities - {self._alias_key(entry.alias)}:
+                alias_owner = alias_owners.get(self._alias_key(path_identity))
+                if alias_owner is not None and alias_owner != entry.alias:
+                    raise ValueError(
+                        "Workspace repository identities collide: "
+                        f"alias {alias_owner!r} shadows path {path_identity!r} "
+                        f"from {entry.alias!r}"
+                    )
+            for identity in identities:
+                owner = owners.setdefault(identity, entry.alias)
+                if owner != entry.alias:
+                    raise ValueError(
+                        "Workspace repository identities collide: "
+                        f"{owner!r} and {entry.alias!r} both expose {identity!r}"
+                    )
 
     # -- Public API --------------------------------------------------------
 
@@ -105,11 +165,24 @@ class RepoRegistry:
             return self.get_default_alias()
         if repo == "all":
             return self.get_all_aliases()
-        # Validate alias exists
-        if self._ws_config.get_repo(repo) is None:
-            available = self.get_all_aliases()
-            raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
-        return repo
+        # Alias is canonical, but ``list_repos`` also emits each repository's
+        # config-relative and absolute path. Accept those identities directly
+        # so a discovery result never needs caller-side translation.
+        aliases = {self._alias_key(entry.alias): entry.alias for entry in self._ws_config.repos}
+        alias = aliases.get(self._alias_key(repo))
+        if alias is not None:
+            return alias
+        candidate = Path(repo)
+        candidate_text = self._identity_key(candidate)
+        for entry in self._ws_config.repos:
+            relative = self._identity_key(entry.path)
+            absolute = (self._workspace_root / entry.path).resolve()
+            if candidate_text == relative:
+                return entry.alias
+            if candidate.is_absolute() and candidate.resolve() == absolute:
+                return entry.alias
+        available = self.get_all_aliases()
+        raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
 
     async def get(self, alias: str) -> RepoContext:
         """Get the ``RepoContext`` for *alias*, loading lazily if needed."""
@@ -150,37 +223,15 @@ class RepoRegistry:
             raise ValueError(f"No repo with alias '{alias}' in workspace config")
 
         repo_path = (self._workspace_root / entry.path).resolve()
-        db_path = repo_path / ".repowise" / "wiki.db"
 
-        if not db_path.exists():
-            _log.warning("No wiki.db for repo '%s' at %s", alias, db_path)
-
-        from sqlalchemy.ext.asyncio import (
-            AsyncSession as _AsyncSession,
-        )
-        from sqlalchemy.ext.asyncio import (
-            async_sessionmaker as _async_sessionmaker,
-        )
-
-        from repowise.core.persistence.database import (
-            create_engine,
-            get_db_url,
-            init_db,
-        )
         from repowise.core.persistence.search import FullTextSearch
         from repowise.core.persistence.vector_store import InMemoryVectorStore
         from repowise.core.providers.embedding.base import KeylessEmbedder
 
-        db_url = get_db_url(f"sqlite:///{db_path.as_posix()}")
-
-        engine = create_engine(db_url)
-        await init_db(engine)
-
-        session_factory = _async_sessionmaker(
-            engine,
-            expire_on_commit=False,
-            class_=_AsyncSession,
-        )
+        db_path = repo_db_path(repo_path)
+        if not db_path.exists():
+            _log.warning("No wiki.db for repo '%s' at %s", alias, db_path)
+        engine, session_factory = await open_repo_db(repo_path)
 
         fts = FullTextSearch(engine)
         await fts.ensure_index()

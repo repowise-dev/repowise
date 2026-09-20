@@ -10,7 +10,7 @@ import { BiomarkerDetails, type BiomarkerDetailsRecord } from "../health/biomark
 import {
   biomarkerInfo,
   biomarkerLabel,
-  biomarkerDimension,
+  asBiomarkerDimension,
   CATEGORY_LABEL,
   DIMENSION_LABEL,
   type BiomarkerDimension,
@@ -18,10 +18,12 @@ import {
 import { healthBandTextColor, type Severity } from "../health/tokens";
 import { FileTrendChart } from "../health/file-trend-chart";
 import { FileSignalsPanel } from "../health/file-signals-panel";
+import { FindingOpportunityLink } from "../health/file-opportunity";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { SeverityMark } from "../health/severity-mark";
 import { formatNumber } from "../lib/format";
 import type { FileDetailHealth, FunctionBlameRow } from "@repowise-dev/types/files";
+import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { FileSection, Fig } from "./file-section";
 
 export type FindingStatus = "open" | "acknowledged" | "resolved" | "false_positive";
@@ -44,6 +46,15 @@ interface FileHealthTabProps {
   partnerHref?: ((path: string) => string) | undefined;
   /** Build a symbol-page href for a function row. */
   symbolHref?: ((symbolId: string) => string) | undefined;
+  /**
+   * The file's composed refactoring opportunity. This is the surface a reader is
+   * on once they have decided which file they care about, so it is the most
+   * natural place to hand them the plan - and it was the one with no link at
+   * all. Findings whose cause the opportunity does not address get none, so the
+   * page never offers a plan for a problem the plan does not answer.
+   */
+  opportunity?: RefactoringOpportunity | null | undefined;
+  refactoringOpportunityHref?: ((opportunityId: string) => string) | undefined;
 }
 
 /** Collapsed finding-card height guess; cards expand and are measured live. */
@@ -68,6 +79,8 @@ export function FileHealthTab({
   onFindingStatusChange,
   partnerHref,
   symbolHref,
+  opportunity,
+  refactoringOpportunityHref,
 }: FileHealthTabProps) {
   const [statusOverride, setStatusOverride] = useState<Record<string, FindingStatus>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -124,7 +137,7 @@ export function FileHealthTab({
 
   const pillars: RibbonStat[] = [];
   if (metric) {
-    // Defect risk is deliberately absent: the header's lede carries it at 44px
+    // Code health is deliberately absent: the header's lede carries it at 44px
     // with its band, on screen from whichever tab you arrive on. Repeating it
     // here at a quarter the size is the same number twice.
     if (metric.maintainability_score != null) {
@@ -158,9 +171,9 @@ export function FileHealthTab({
           title="The three signals"
           description={
             <>
-              Defect risk is the calibrated number in the header. Maintainability and performance
+              Code health is the calibrated number in the header. Maintainability and performance
               are co-equal signals rather than a blend of it, and they are banded the same way —
-              healthy at 8 and above, alert below 4.{" "}
+              Good from 7.0, at risk below 4.0.{" "}
               {metric.has_test_file
                 ? "This file has a paired test file."
                 : "No paired test file was found for it."}
@@ -255,6 +268,11 @@ export function FileHealthTab({
                     biomarkerType={f.biomarker_type}
                     details={f.details as BiomarkerDetailsRecord | null}
                     onPartnerHref={partnerHref}
+                  />
+                  <FindingOpportunityLink
+                    opportunity={opportunity}
+                    biomarkerType={f.biomarker_type}
+                    href={refactoringOpportunityHref}
                   />
                   {onFindingStatusChange && (
                     // One control, four states — a segmented selector for a
@@ -357,12 +375,5 @@ export function FileHealthTab({
 
 /** A finding's home pillar, preferring the server value over the glossary. */
 function findingDimension(f: { dimension?: string; biomarker_type: string }): BiomarkerDimension {
-  if (
-    f.dimension === "defect" ||
-    f.dimension === "maintainability" ||
-    f.dimension === "performance"
-  ) {
-    return f.dimension;
-  }
-  return biomarkerDimension(f.biomarker_type);
+  return asBiomarkerDimension(f.dimension, f.biomarker_type);
 }

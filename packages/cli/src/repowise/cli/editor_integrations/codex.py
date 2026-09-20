@@ -37,15 +37,16 @@ class CodexSetup:
         setup_override = options.integration_overrides.get(self.integration_id)
         agents_override = options.project_file_overrides.get(self.project_file_id)
         agents_override_present = self.project_file_id in options.project_file_overrides
+        agents_disabled = self.project_file_id in options.disabled_project_files
         # Codex is opt-in, and stays that way. It is the one integration that
         # already got this right — nothing is written unless --codex or the
         # checklist asked for it — which is why #1499 names the other two.
         if setup_override is None or setup_override is False:
-            if agents_override_present:
-                written = maybe_generate_agents_md(
+            if agents_override_present and not agents_disabled:
+                agents_path = maybe_generate_agents_md(
                     console_obj, repo_path, agents_md=agents_override
                 )
-                return [written] if written is not None else []
+                return [agents_path] if agents_path is not None else []
             return []
 
         installed = is_codex_cli_installed()
@@ -56,13 +57,14 @@ class CodexSetup:
         hooks_path = save_codex_hooks_config(repo_path)
         console_obj.print(f"  [{OK}]✓[/] Codex hooks registered ({hooks_path})")
         written = [Path(config_path), Path(hooks_path)]
-        agents_path = maybe_generate_agents_md(
-            console_obj,
-            repo_path,
-            agents_md=True if agents_override is None else agents_override,
-        )
-        if agents_path is not None:
-            written.append(agents_path)
+        if not agents_disabled:
+            agents_path = maybe_generate_agents_md(
+                console_obj,
+                repo_path,
+                agents_md=True if agents_override is None else agents_override,
+            )
+            if agents_path is not None:
+                written.append(agents_path)
 
         if not installed:
             console_obj.print(

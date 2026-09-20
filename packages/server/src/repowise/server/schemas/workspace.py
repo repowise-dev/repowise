@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class WorkspaceRepoEntry(BaseModel):
@@ -41,6 +41,9 @@ class WorkspaceRepoEntry(BaseModel):
 class WorkspaceCrossRepoSummary(BaseModel):
     co_change_count: int = 0
     package_dep_count: int = 0
+    package_diagnostic_count: int = 0
+    package_diagnostics_emitted: int = 0
+    package_diagnostic_codes: list[str] = []
     top_connections: list[dict] = []
 
 
@@ -84,6 +87,16 @@ class WorkspaceContractEntry(BaseModel):
     symbol_name: str
     confidence: float
     service: str | None = None
+    #: 1-indexed line of the declaration or call. None when the contract never
+    #: bound to a line.
+    line: int | None = None
+    #: Ingestion symbol id (``"<rel_path>::<name>"``). None when the repo has no
+    #: index or nothing is declared at ``line`` — the contract still matches, it
+    #: just cannot be traversed into the call graph.
+    symbol_id: str | None = None
+    #: Extractor-supplied detail (``extraction_layer``, ``framework``, ``method``,
+    #: ``path``, ``table``, ``package``...). Keys vary by contract type.
+    meta: dict = {}
 
 
 class WorkspaceContractLinkEntry(BaseModel):
@@ -97,6 +110,17 @@ class WorkspaceContractLinkEntry(BaseModel):
     consumer_repo: str
     consumer_file: str
     consumer_symbol: str
+    #: Service boundary the provider sits behind, when the workspace declares
+    #: one. Matching skips a pair only when the repo *and* the service are the
+    #: same, so this is what explains a link between two services inside one
+    #: repo.
+    provider_service: str | None = None
+    #: The same, for the calling side.
+    consumer_service: str | None = None
+    #: The linked contracts' symbol ids, so a caller can name the code rather
+    #: than a display label. None when that side never bound to one.
+    provider_symbol_id: str | None = None
+    consumer_symbol_id: str | None = None
 
 
 class WorkspaceContractsResponse(BaseModel):
@@ -105,6 +129,27 @@ class WorkspaceContractsResponse(BaseModel):
     total_contracts: int
     total_links: int
     by_type: dict[str, int] = {}
+
+
+class WorkspaceContractDetail(BaseModel):
+    """One contract, keyed by ``(repo, file_path, contract_id)``.
+
+    Carries the request/response shape that the list endpoint deliberately
+    withholds: ``schema`` is present on roughly a third of contracts and single
+    rows run to full inline type declarations, so it is affordable one at a time
+    and not 200 at a time.
+    """
+
+    contract: WorkspaceContractEntry
+    #: The artifact's ``schema`` block, named around Pydantic — a field literally
+    #: called ``schema`` shadows an attribute of ``BaseModel``.
+    contract_schema: dict | None = None
+    #: Links this contract participates in, on whichever side it plays.
+    links: list[WorkspaceContractLinkEntry] = []
+    #: Why this consumer matched no provider (``external_host``,
+    #: ``internal_only``, ``no_provider``), from the system graph's diagnostics.
+    #: None for providers, for linked consumers, and when no graph is built.
+    unmatched_reason: str | None = None
 
 
 class WorkspaceCoChangeEntry(BaseModel):
@@ -274,7 +319,8 @@ class WorkspaceImpactedConsumer(BaseModel):
     service: str | None = None
     node_id: str
     file: str
-    symbol: str
+    symbol: str  # display label; symbol_id is the one a tool can look up
+    symbol_id: str | None = None
     match_type: str = "exact"
     confidence: float = 0.0
 
@@ -287,9 +333,15 @@ class WorkspaceBreakingChange(BaseModel):
     provider_repo: str
     provider_file: str
     provider_symbol: str
+    #: Looked-up id for the changed provider symbol; ``None`` when the
+    #: contract did not resolve to one.
+    provider_symbol_id: str | None = None
     provider_service: str | None = None
     provider_node_id: str = ""
     detail: str
+    side: str | None = None
+    comparison_source: str | None = None
+    comparison_key: str | None = None
     field_name: str | None = None
     old_value: str | None = None
     new_value: str | None = None
@@ -377,3 +429,80 @@ class WorkspaceArchitectureResponse(BaseModel):
     role_breakdown: dict[str, int] = {}
     roles: list[WorkspaceNodeArchitectureRole] = []
     generated_at: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo test impact: which consumer tests guard a provider change.
+# Mirrors repowise.core.workspace.test_impact.workspace_test_impact_to_dict.
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceTestRecommendation(BaseModel):
+    """A test in a consumer repo that guards a changed provider file."""
+
+    test_id: str = ""
+    test_file: str = ""
+    consumer_repo: str = ""
+    #: Every consumer file that reached this test. One test can guard several
+    #: call sites, and merging rows on the test would otherwise drop all but
+    #: one of the files that led to it.
+    consumer_files: list[str] = []
+    #: The symbols the contracts bound to in the consumer. Carried through the
+    #: boundary so a caller can look the call sites up instead of guessing them
+    #: from the files.
+    consumer_symbol_ids: list[str] = []
+    provider_repo: str = ""
+    contract_ids: list[str] = []
+    contract_types: list[str] = []
+    basis: str = "inferred"  # measured | inferred
+    via: str = ""  # coverage-map | call-graph | import-graph
+    confidence: float = 0.0
+    source_files: list[str] = []
+    evidence: list[dict] = []
+
+
+class WorkspaceUnresolvedLink(BaseModel):
+    """A contract link the join could not follow, and why."""
+
+    consumer_repo: str = ""
+    consumer_file: str = ""
+    consumer_symbol_id: str | None = None
+    provider_repo: str = ""
+    provider_file: str = ""
+    contract_id: str = ""
+    contract_type: str = ""
+    reason: str = ""  # no_index | unbound | symbol_missing | lookup_failed
+    detail: str | None = None
+
+
+class WorkspaceTestImpactFile(BaseModel):
+    """One consumer file the join looked at, and the state it ended in."""
+
+    consumer_repo: str = ""
+    consumer_file: str = ""
+    state: str = "none"  # measured | inferred | none | unresolved
+    measured_tests_count: int = 0
+    inferred_tests_count: int = 0
+    via: str | None = None
+    provider_repos: list[str] = []
+    contract_ids: list[str] = []
+    consumer_symbol_ids: list[str] = []
+
+
+class WorkspaceTestImpactResponse(BaseModel):
+    """``GET /api/workspace/test-impact``: consumer tests for a provider change."""
+
+    workspace: bool = True
+    recommendations: list[WorkspaceTestRecommendation] = []
+    recommendations_total: int = 0
+    recommendations_emitted: int = 0
+    recommendations_truncated: bool = False
+    recommendations_omitted: int = 0
+    recommendations_by_basis: dict[str, int] = {}
+    recommendations_by_repo: dict[str, int] = {}
+    recommendations_by_consumer_repo: dict[str, int] = {}
+    unresolved: list[WorkspaceUnresolvedLink] = []
+    files_analyzed: list[WorkspaceTestImpactFile] = []
+    #: Free-form counters and the state that produced an empty answer, so an
+    #: empty response always names its reason.
+    summary: dict = Field(default_factory=dict)

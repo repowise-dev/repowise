@@ -29,7 +29,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
-import click
+from repowise.cli.errors import reasoned_error
 
 from ..types import FileAction
 
@@ -44,19 +44,22 @@ def load_json_object(config_path: Path) -> dict:
     try:
         existing = json.loads(config_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise click.ClickException(
+        raise reasoned_error(
             f"Cannot update {config_path}: existing file is not valid JSON. "
-            "Fix or remove it and retry; no changes were written."
+            "Fix or remove it and retry; no changes were written.",
+            reason="editor_config_malformed",
         ) from exc
     except OSError as exc:
-        raise click.ClickException(
+        raise reasoned_error(
             f"Cannot update {config_path}: existing file could not be read. "
-            "Fix the file permissions and retry; no changes were written."
+            "Fix the file permissions and retry; no changes were written.",
+            reason="editor_config_unreadable",
         ) from exc
     if not isinstance(existing, dict):
-        raise click.ClickException(
+        raise reasoned_error(
             f"Cannot update {config_path}: existing file must contain a JSON object. "
-            "Fix or remove it and retry; no changes were written."
+            "Fix or remove it and retry; no changes were written.",
+            reason="editor_config_malformed",
         )
     return existing
 

@@ -28,6 +28,9 @@ async def _seed_decision(session_factory, repo_id: str) -> str:
             affected_files=["packages/core/src/repowise/core/persistence/database.py"],
             source="cli",
         )
+        # ``active`` is a projection of an acceptance, so the seed has to
+        # perform one; extraction and a bare upsert both land a candidate.
+        await crud.accept_decision(session, rec, accepter="tester")
         return rec.id
 
 

@@ -7,7 +7,7 @@ import {
 } from "../../src/zoom/geometry";
 import type { ZoomNode } from "../../src/zoom/types";
 
-function node(id: string, parent: string | null, children: string[], layout: ZoomNode["layout"]): ZoomNode {
+function node(id: string, parent: string | null, children: string[]): ZoomNode {
   return {
     id,
     parent_id: parent,
@@ -26,7 +26,7 @@ function node(id: string, parent: string | null, children: string[], layout: Zoo
       entry_point_count: 0,
       on_flow_count: 0,
     },
-    layout,
+    page_id: "",
     summary: "",
     language: null,
     is_entry_point: false,
@@ -49,10 +49,10 @@ describe("composeRect", () => {
 describe("computeWorldRects", () => {
   it("lays children out within their parent's rect, recursively", () => {
     const nodes = new Map<string, ZoomNode>([
-      ["root", node("root", null, ["a", "b"], null)],
-      ["a", node("a", "root", ["a1"], null)],
-      ["b", node("b", "root", [], null)],
-      ["a1", node("a1", "a", [], null)],
+      ["root", node("root", null, ["a", "b"])],
+      ["a", node("a", "root", ["a1"])],
+      ["b", node("b", "root", [])],
+      ["a1", node("a1", "a", [])],
     ]);
     const rects = computeWorldRects(nodes, "root");
     expect(rects.get("root")).toEqual({ x: 0, y: 0, w: 1, h: 1 });
@@ -69,17 +69,17 @@ describe("computeWorldRects", () => {
     };
     within("a", "root");
     within("b", "root");
-    within("a1", "a"); // grid layout composes through every depth
+    within("a1", "a"); // the pack composes through every depth
   });
 
-  it("lays out a node even when the backend gave it no layout rect", () => {
+  it("places only the children it can reach from the root", () => {
     const nodes = new Map<string, ZoomNode>([
-      ["root", node("root", null, ["a", "ghost"], null)],
-      ["a", node("a", "root", [], null)], // null backend layout -> still placed
-      ["orphan", node("orphan", "nope", [], null)],
+      ["root", node("root", null, ["a", "ghost"])],
+      ["a", node("a", "root", [])],
+      ["orphan", node("orphan", "nope", [])],
     ]);
     const rects = computeWorldRects(nodes, "root");
-    expect(rects.has("a")).toBe(true); // layout is computed client-side now
+    expect(rects.has("a")).toBe(true);
     expect(rects.has("ghost")).toBe(false); // referenced but absent
     expect(rects.has("orphan")).toBe(false); // not reachable from root
   });

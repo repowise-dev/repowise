@@ -15,6 +15,7 @@ never raise on malformed input.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import suppress
 from pathlib import Path
 from types import ModuleType
 
@@ -77,14 +78,21 @@ def extract_external_systems(
     candidates = list(manifest_paths) if manifest_paths is not None else _discover(repo_root)
 
     records: list[ExternalSystemRecord] = []
+    maven_paths: list[Path] = []
     for path in candidates:
         parser = _parser_for(path)
         if parser is None:
+            continue
+        if parser is maven:
+            maven_paths.append(path)
             continue
         try:
             records.extend(parser.parse(path, repo_root))
         except Exception:  # parser bugs must not break ingestion
             continue
+    if maven_paths:
+        with suppress(Exception):  # parser bugs must not break ingestion
+            records.extend(maven.parse_many(maven_paths, repo_root))
     return _deduplicate(records)
 
 

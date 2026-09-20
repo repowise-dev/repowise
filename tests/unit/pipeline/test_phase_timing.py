@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 
-from repowise.core.pipeline import PhaseTimingRecorder
+from repowise.core.pipeline import PhaseTimingRecorder, PhaseTimings, timed
 
 
 class _CollectingCallback:
@@ -85,3 +86,59 @@ def test_unstarted_phase_is_ignored() -> None:
     rec = PhaseTimingRecorder()
     rec.on_phase_done("never-started")
     assert rec.timings == {}
+
+
+def test_rebound_recorder_shares_one_table() -> None:
+    """Generation and persistence build their own callbacks mid-run."""
+    recorder = PhaseTimingRecorder(_CollectingCallback())
+    recorder.on_phase_start("ingest", None)
+    recorder.on_phase_done("ingest")
+
+    later = recorder.rebind(_CollectingCallback())
+    later.on_phase_start("persist", None)
+    later.on_phase_done("persist")
+
+    assert set(recorder.timings) == {"ingest", "persist"}
+    assert recorder.timings == later.timings
+
+
+def test_rebound_recorder_forwards_to_its_own_inner() -> None:
+    first, second = _CollectingCallback(), _CollectingCallback()
+    recorder = PhaseTimingRecorder(first)
+    later = recorder.rebind(second)
+
+    later.on_phase_start("persist", 3)
+    later.on_item_done("persist")
+    later.on_phase_done("persist")
+
+    assert second.events == [("start", "persist", 3), ("item", "persist", None), ("done", "persist", None)]
+    assert first.events == []
+
+
+def test_reannounced_phase_keeps_the_first_start() -> None:
+    """A phase is announced again once its real item total is known."""
+    recorder = PhaseTimingRecorder()
+    recorder.on_phase_start("persist", None)
+    time.sleep(0.05)
+    recorder.on_phase_start("persist", 42)
+    recorder.on_phase_done("persist")
+
+    assert recorder.timings["persist"] >= 0.05
+
+
+def test_timed_records_a_block_and_tolerates_no_table() -> None:
+    timings = PhaseTimings()
+    with timed(timings, "kg"):
+        time.sleep(0.02)
+    with timed(None, "kg"):
+        pass
+
+    assert timings.totals["kg"] >= 0.02
+
+
+def test_timed_records_even_when_the_block_raises() -> None:
+    timings = PhaseTimings()
+    with contextlib.suppress(RuntimeError), timed(timings, "kg"):
+        raise RuntimeError("boom")
+
+    assert "kg" in timings.totals

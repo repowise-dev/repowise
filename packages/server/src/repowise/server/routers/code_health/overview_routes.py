@@ -7,17 +7,24 @@ from datetime import datetime
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.aggregation import (
+    biomarker_breakdown,
+    module_rollups,
+    severity_breakdown,
+)
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
-from repowise.core.analysis.health.scoring import hotspot_health
+from repowise.core.analysis.health.ranking import deduction_by_path
+from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS, hotspot_health
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._meta import resolve_indexed_commit
 
 from ._router import router
-from .aggregation import _biomarker_breakdown, _module_rollups, _severity_breakdown
+from .counts import CountsQuery, project
 from .loaders import _attach_symbol_ids
+from .scope import ScopeQuery, narrow
 from .serializers import _finding_to_dict, _leads_by_file, _metric_to_dict
 
 
@@ -44,6 +51,8 @@ def _resolve_last_indexed_at(
 async def health_overview(
     repo_id: str,
     limit: int = Query(20, ge=1, le=200),
+    scope: str = ScopeQuery,
+    counts: str = CountsQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """KPIs + lowest-scoring files + per-module rollup + meta."""
@@ -57,22 +66,21 @@ async def health_overview(
     # two — so the route was paying for each of them twice per request.
     metrics = await crud.get_health_metrics(session, repo_id)
     findings = await crud.get_health_findings(session, repo_id)
+    metrics, findings = narrow(scope, metrics, findings)
+    # Every figure below is computed from these two lists, so projecting here
+    # is what keeps the headline, the distribution, the hotspot figure and the
+    # work the page lists all describing the same thing.
+    metrics, findings, unscored = project(counts, metrics, findings)
     summary = await crud.get_health_summary(
         session, repo_id, metrics=metrics, findings=findings
     )
 
-    # Hotspot health is recomputed from the metrics already loaded above rather
-    # than read off the latest snapshot. The snapshot was described here as
-    # authoritative, and it is not: ``repowise update`` re-scores health and
-    # calls ``save_health_metrics`` without ``save_health_snapshot``
-    # (``update_cmd/persistence.py``), so after any update this route served a
-    # figure from the previous full index while every other number on the page
-    # came from the fresh rows. Measured stale on 3 of 42 local indexes, this
-    # repo among them (4.62 against 5.08 live) — a lower bound, since a corpus
-    # of frozen clones mostly has nothing to have gone stale against.
-    #
-    # It costs no query: ``metrics`` is already in hand, and the hotspot path
-    # set is one scalar column. The snapshot is still read, for ``taken_at``.
+    # Recomputed from the metrics already loaded rather than read off the latest
+    # snapshot: a snapshot is a point in time, and this page's other numbers all
+    # come from the live rows, so reading it here would make one figure older
+    # than its neighbours. It costs no query — ``metrics`` is in hand and the
+    # hotspot path set is one scalar column. The snapshot is still read, for
+    # ``taken_at``, and for ``scope`` it would be the wrong population anyway.
     snapshot = await crud.get_health_snapshot_headline(session, repo_id)
     hotspot_paths = await crud.get_hotspot_file_paths(session, repo_id)
     hotspot_health_value = hotspot_health(metrics, hotspot_paths)
@@ -88,7 +96,11 @@ async def health_overview(
     summary = {
         **summary,
         "hotspot_health": hotspot_health_value,
-        "severity_breakdown": _severity_breakdown(findings),
+        "severity_breakdown": severity_breakdown(findings),
+        # Echoed so a surface labels what it was sent rather than what it
+        # asked for; the two differ while a request is in flight.
+        "counts": counts,
+        "unscored_files": unscored,
         "band": band_for(float(avg)) if avg is not None else None,
     }
     distribution = health_distribution(metric_dicts)
@@ -101,13 +113,27 @@ async def health_overview(
     # metrics — so ``metric_dicts`` above serves, no second conversion — and
     # only the ``prior_defect`` findings, so converting the other ~90% (which
     # means a ``json.loads`` of every ``details_json``) was pure waste.
+    # Summed over every open finding, not the ``prior_defect`` slice below: a
+    # ranking needs each file's whole depth, or the floor-tied band comes out in
+    # a different order than the worst-files list beside it. Folded once and
+    # shared with the module rollup.
+    deductions = deduction_by_path(findings)
     defect_accuracy = compute_defect_accuracy(
         metric_dicts,
         [_finding_to_dict(f) for f in findings if f.biomarker_type == "prior_defect"],
+        deductions=deductions,
     )
 
+    # Ranked by health impact, so the zero-impact dimensions are out: they
+    # would fill the tail with rows a reader cannot compare against the ones
+    # above. The counts above still see every dimension.
+    ranked = [
+        f
+        for f in findings
+        if (getattr(f, "dimension", None) or "defect") not in ZERO_IMPACT_DIMENSIONS
+    ]
     top_findings = await _attach_symbol_ids(
-        session, repo_id, [_finding_to_dict(f) for f in findings[:limit]]
+        session, repo_id, [_finding_to_dict(f) for f in ranked[:limit]]
     )
 
     return {
@@ -116,8 +142,8 @@ async def health_overview(
         "defect_accuracy": defect_accuracy,
         "files": metric_dicts[:limit],
         "top_findings": top_findings,
-        "modules": _module_rollups(metrics),
-        "biomarkers": _biomarker_breakdown(findings),
+        "modules": module_rollups(metrics, deductions),
+        "biomarkers": biomarker_breakdown(findings),
         "meta": {
             "last_indexed_at": last_indexed_at,
             # Prefer state.json's last_sync_commit over a possibly-stale DB row
@@ -139,4 +165,8 @@ async def health_modules(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
     metrics = await crud.get_health_metrics(session, repo_id)
-    return {"modules": _module_rollups(metrics)}
+    # One grouped aggregate, the same one the ranking above it runs. Without it
+    # a module whose files all sit at the score floor would name its worst
+    # performer by path rather than by how deep each file actually is.
+    deductions = await crud.get_deduction_by_path(session, repo_id)
+    return {"modules": module_rollups(metrics, deductions)}

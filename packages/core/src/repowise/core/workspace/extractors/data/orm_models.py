@@ -15,9 +15,10 @@ property) are emitted at lower confidence: a wrong guess costs a missed link
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from ..base import ScanContext
+from ..base import ScanContext, line_at
 from ..langs import CSHARP, JAVA, KOTLIN, PHP, PYTHON, RUBY
 from .dialect import build_table_provider
 
@@ -46,19 +47,42 @@ def _pluralize(name: str) -> str:
     return name + "s"
 
 
+#: One table declaration: ``(raw_name, confidence, line)``.
+_Found = tuple[str, float, int]
+
+
+def _found(
+    pattern: re.Pattern[str],
+    content: str,
+    confidence: float,
+    transform: Callable[[str], str] = str,
+) -> list[_Found]:
+    r"""Every match of *pattern*'s first group, with the line it sits on.
+
+    The line comes from the group, not the match: three of these patterns open
+    with ``^\s*`` under ``MULTILINE``, where ``^`` matches at a preceding blank
+    line and ``\s*`` eats the newlines, putting ``m.start()`` above the
+    declaration.
+    """
+    return [
+        (transform(m.group(1)), confidence, line_at(content, m.start(1)))
+        for m in pattern.finditer(content)
+    ]
+
+
 def _dedup_emit(
     ctx: ScanContext,
     framework: str,
-    found: list[tuple[str, float]],
+    found: list[_Found],
 ) -> list[Contract]:
     out: list[Contract] = []
     seen: set[str] = set()
-    for raw, confidence in found:
+    for raw, confidence, line in found:
         if raw in seen:
             continue
         seen.add(raw)
         contract = build_table_provider(
-            ctx, table_raw=raw, framework=framework, confidence=confidence
+            ctx, table_raw=raw, framework=framework, line=line, confidence=confidence
         )
         if contract is not None:
             out.append(contract)
@@ -79,12 +103,10 @@ class SqlAlchemyDjangoDialect:
     _SQLMODEL_RE = re.compile(r"\bclass\s+(\w+)\([^)]*\btable\s*=\s*True[^)]*\)")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = [(m, _EXPLICIT_CONFIDENCE) for m in self._TABLENAME_RE.findall(ctx.content)]
-        found += [(m, _EXPLICIT_CONFIDENCE) for m in self._DB_TABLE_RE.findall(ctx.content)]
-        found += [(m, _EXPLICIT_CONFIDENCE) for m in self._CREATE_TABLE_RE.findall(ctx.content)]
-        found += [
-            (m.lower(), _CONVENTION_CONFIDENCE) for m in self._SQLMODEL_RE.findall(ctx.content)
-        ]
+        found = _found(self._TABLENAME_RE, ctx.content, _EXPLICIT_CONFIDENCE)
+        found += _found(self._DB_TABLE_RE, ctx.content, _EXPLICIT_CONFIDENCE)
+        found += _found(self._CREATE_TABLE_RE, ctx.content, _EXPLICIT_CONFIDENCE)
+        found += _found(self._SQLMODEL_RE, ctx.content, _CONVENTION_CONFIDENCE, str.lower)
         return _dedup_emit(ctx, self.name, found)
 
 
@@ -101,14 +123,13 @@ class JpaDialect:
     )
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = [(m, _EXPLICIT_CONFIDENCE) for m in self._TABLE_RE.findall(ctx.content)]
+        found = _found(self._TABLE_RE, ctx.content, _EXPLICIT_CONFIDENCE)
         if not found:
             # Only fall back to the class-name convention when no explicit
             # @Table names the table (one entity per file is the JPA norm).
-            found = [
-                (_snake_case(m), _CONVENTION_CONFIDENCE)
-                for m in self._ENTITY_CLASS_RE.findall(ctx.content)
-            ]
+            found = _found(
+                self._ENTITY_CLASS_RE, ctx.content, _CONVENTION_CONFIDENCE, _snake_case
+            )
         return _dedup_emit(ctx, self.name, found)
 
 
@@ -122,8 +143,8 @@ class EfCoreDialect:
     _DBSET_RE = re.compile(r"\bDbSet<\s*\w+\s*>\s+(\w+)")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = [(m, _EXPLICIT_CONFIDENCE) for m in self._TABLE_ATTR_RE.findall(ctx.content)]
-        found += [(m, _CONVENTION_CONFIDENCE) for m in self._DBSET_RE.findall(ctx.content)]
+        found = _found(self._TABLE_ATTR_RE, ctx.content, _EXPLICIT_CONFIDENCE)
+        found += _found(self._DBSET_RE, ctx.content, _CONVENTION_CONFIDENCE)
         return _dedup_emit(ctx, self.name, found)
 
 
@@ -139,12 +160,14 @@ class ActiveRecordDialect:
     )
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = [(m, _EXPLICIT_CONFIDENCE) for m in self._TABLE_NAME_RE.findall(ctx.content)]
+        found = _found(self._TABLE_NAME_RE, ctx.content, _EXPLICIT_CONFIDENCE)
         if not found:
-            found = [
-                (_pluralize(_snake_case(m)), _CONVENTION_CONFIDENCE)
-                for m in self._MODEL_CLASS_RE.findall(ctx.content)
-            ]
+            found = _found(
+                self._MODEL_CLASS_RE,
+                ctx.content,
+                _CONVENTION_CONFIDENCE,
+                lambda m: _pluralize(_snake_case(m)),
+            )
         return _dedup_emit(ctx, self.name, found)
 
 
@@ -157,5 +180,5 @@ class EloquentDialect:
     _TABLE_RE = re.compile(r"protected\s+\$table\s*=\s*['\"](\w+)['\"]")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = [(m, _EXPLICIT_CONFIDENCE) for m in self._TABLE_RE.findall(ctx.content)]
+        found = _found(self._TABLE_RE, ctx.content, _EXPLICIT_CONFIDENCE)
         return _dedup_emit(ctx, self.name, found)

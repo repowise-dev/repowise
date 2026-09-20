@@ -46,6 +46,7 @@ from repowise.cli.helpers import (
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
+from repowise.core.index_scope import file_page_scope, stamp_index_scope
 from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 
 
@@ -69,6 +70,7 @@ def _gate_cost(
             COST_GATE_USD,
             cost_gate_declined,
             format_cost,
+            structural_page_summary,
         )
         from repowise.core.cost_estimator import build_generation_plan, estimate_cost
 
@@ -80,6 +82,9 @@ def _gate_cost(
 
     pages = sum(p.count for p in plans)
     console.print(f"Estimated: [bold]{pages}[/bold] pages, [bold]{format_cost(est)}[/bold].")
+    structural = structural_page_summary(plans)
+    if structural:
+        console.print(f"  [dim]{structural}[/dim]")
 
     # Nothing to ask on a run that cannot be asked. Without this the confirm
     # reads EOF, raises, and the caller reports a successful run that generated
@@ -124,7 +129,7 @@ async def _backfill_git(
     *,
     commit_limit: int | None,
     follow_renames: bool,
-) -> dict[str, dict]:
+) -> tuple[dict[str, dict], dict[str, Any] | None]:
     """Promote the git tier to FULL via the resumable backfill worker.
 
     Returns the ``file_path → git-metadata`` map for the freshly-indexed FULL
@@ -171,7 +176,69 @@ async def _backfill_git(
         f"Git tier upgraded to FULL: [cyan]{summary.files_indexed}[/cyan] files "
         "(per-file blame + co-change)."
     )
-    return {m["file_path"]: m for m in git_results if m.get("file_path")}
+    coverage = getattr(summary, "history_coverage", None)
+    return (
+        {m["file_path"]: m for m in git_results if m.get("file_path")},
+        coverage.to_dict() if coverage is not None else None,
+    )
+
+
+async def _persist_authoritative_pages(
+    *,
+    session: Any,
+    repository_id: str,
+    generated_pages: list[Any],
+    vector_store: Any,
+) -> list[str]:
+    """Persist a full selection and retire every page outside it."""
+    from repowise.core.persistence import upsert_pages_from_generated
+    from repowise.core.pipeline.persist import tombstone_pages_outside_generation
+
+    await upsert_pages_from_generated(session, generated_pages, repository_id)
+    retired_page_ids = await tombstone_pages_outside_generation(
+        session,
+        repository_id,
+        {page.page_id for page in generated_pages},
+    )
+    if retired_page_ids and vector_store is not None:
+        await vector_store.delete_many(retired_page_ids)
+    return retired_page_ids
+
+
+async def _sync_authoritative_fts(
+    *,
+    engine: Any,
+    repo_path: Path,
+    generated_pages: list[Any],
+    retired_page_ids: list[str],
+) -> None:
+    """Replace full-run FTS content and durably retry retired-id cleanup."""
+    from repowise.core.persistence.search import FullTextSearch
+    from repowise.core.pipeline.cleanup_debt import (
+        clear_cleanup_debt,
+        load_cleanup_debt,
+        record_cleanup_debt,
+    )
+
+    cleanup_ids = set(retired_page_ids) | load_cleanup_debt(repo_path)["fts"]
+    try:
+        fts = FullTextSearch(engine)
+        await fts.ensure_index()
+        if cleanup_ids:
+            await fts.delete_many(sorted(cleanup_ids))
+        for page in generated_pages:
+            await fts.index(
+                page.page_id,
+                page.title,
+                page.content,
+                summary=page.summary,
+                target_path=page.target_path,
+            )
+    except BaseException:
+        record_cleanup_debt(repo_path, "fts", cleanup_ids)
+        raise
+    else:
+        clear_cleanup_debt(repo_path, "fts", cleanup_ids)
 
 
 async def _run_upgrade(
@@ -184,20 +251,19 @@ async def _run_upgrade(
     follow_renames: bool,
     embedder_name: str | None,
     yes: bool,
-) -> list[Any]:
+    checkpoint: Any | None = None,
+) -> tuple[list[Any], int, dict[str, Any]]:
     """Drive the full upgrade and return the generated pages."""
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.generation.cost_tracker import CostTracker
     from repowise.core.persistence import (
-        FullTextSearch,
         create_engine,
         create_session_factory,
         get_session,
         init_db,
-        upsert_pages_from_generated,
         upsert_repository,
     )
-    from repowise.core.pipeline import rehydrate_graph_builder, run_generation
+    from repowise.core.pipeline import rehydrate_graph_builder
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
@@ -212,13 +278,15 @@ async def _run_upgrade(
         repo_id = repo.id
 
     # 2. Backfill the git tier ESSENTIAL -> FULL (resumable via JobStore).
-    git_meta_map = await _backfill_git(
+    git_meta_map, history_coverage = await _backfill_git(
         sf,
         repo_id,
         repo_path,
         commit_limit=commit_limit,
         follow_renames=follow_renames,
     )
+    if checkpoint:
+        checkpoint("git_backfill", git_history_coverage=history_coverage)
 
     # 3. Rehydrate the graph from SQL — no parse, no resolution, no recompute.
     async with get_session(sf) as session:
@@ -260,34 +328,91 @@ async def _run_upgrade(
 
     embedder = None
     vector_store = None
+    embedding_error: str | None = None
     try:
         embedder = build_embedder(resolve_embedder(embedder_name), repo_path)
         vector_store = build_vector_store(repo_path, embedder)
     except Exception as exc:
+        embedding_error = str(exc)
         console.print(f"[yellow]Embedding skipped: {exc}[/yellow]")
 
-    generated_pages = await run_generation(
-        repo_path=repo_path,
-        parsed_files=parsed_files,
-        source_map=source_map,
-        graph_builder=graph_builder,
-        repo_structure=repo_structure,
-        git_meta_map=git_meta_map,
-        llm_client=provider,
-        embedder=embedder,
-        vector_store=vector_store,
-        concurrency=config.max_concurrency,
-        progress=None,
-        cost_tracker=cost_tracker,
-        generation_config=config,
+    # Generate with init's persistence wrapper: pages are written to the DB the
+    # instant each one completes (so a Ctrl-C loses at most the in-flight page,
+    # not the whole run), prior pages are reused from the store, and the
+    # progress bar the user expected to see actually advances. The old path
+    # passed ``progress=None`` and buffered every page in memory until the end —
+    # hour eight of a long run showed a dead screen and an interrupt cost the
+    # entire run (issue #1709).
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
+    from repowise.cli.commands.init_cmd._generation_persist import (
+        run_generation_with_persistence,
     )
+    from repowise.cli.ui import (
+        BRAND_STYLE,
+        OK,
+        OWL_SPINNER,
+        MaybeCountColumn,
+        RichProgressCallback,
+    )
+
+    with Progress(
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MaybeCountColumn(),
+        TimeElapsedColumn(),
+        TextColumn(f"[{OK}]${{task.fields[cost]:.3f}}[/]"),
+        console=console,
+    ) as upgrade_progress:
+        gen_callback = RichProgressCallback(upgrade_progress, console)
+        generation_scope: dict[str, int | None] = {}
+        generated_pages = await run_generation_with_persistence(
+            repo_path=repo_path,
+            repo_name=repo_path.name,
+            parsed_files=parsed_files,
+            source_map=source_map,
+            graph_builder=graph_builder,
+            repo_structure=repo_structure,
+            git_meta_map=git_meta_map,
+            llm_client=provider,
+            embedder=embedder,
+            vector_store=vector_store,
+            concurrency=config.max_concurrency,
+            progress=gen_callback,
+            cost_tracker=cost_tracker,
+            generation_config=config,
+            selection_out=generation_scope,
+        )
+    from repowise.core.generation.models import count_stub_fallbacks
+
+    stub_fallbacks = count_stub_fallbacks(generated_pages)
+    if stub_fallbacks:
+        await engine.dispose()
+        raise RuntimeError(
+            f"Model generation returned {stub_fallbacks} fallback page(s); "
+            "the prior index remains active and the upgrade can be retried"
+        )
+    if checkpoint:
+        checkpoint("generation")
 
     # Flush buffered cost rows now generation is done (best-effort).
     await cost_tracker.flush()
 
     # 6. Persist pages + a GenerationJob marker, then build the FTS index.
     async with get_session(sf) as session:
-        await upsert_pages_from_generated(session, generated_pages, repo_id)
+        # A successful full generation is authoritative for every generated
+        # page type. Retire rows that are absent from its selection even when
+        # their backing file still exists (for example, a once-nontrivial file
+        # that no longer qualifies for a file page). Without this sweep,
+        # `update --full` can report success while doctor keeps reporting those
+        # old rows stale forever.
+        retired_page_ids = await _persist_authoritative_pages(
+            session=session,
+            repository_id=repo_id,
+            generated_pages=generated_pages,
+            vector_store=vector_store,
+        )
         try:
             from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
 
@@ -299,13 +424,11 @@ async def _run_upgrade(
         try:
             from datetime import UTC, datetime
 
-            from repowise.core.generation.models import count_stub_fallbacks
             from repowise.core.persistence.crud import upsert_generation_job
 
             now = datetime.now(UTC)
             # See init_cmd/persistence.py: a stub the provider failure put up
             # has a row but no prose, so it is not a completed page.
-            stub_fallbacks = count_stub_fallbacks(generated_pages)
             job = await upsert_generation_job(
                 session,
                 repository_id=repo_id,
@@ -321,18 +444,17 @@ async def _run_upgrade(
             pass  # job recording is best-effort
 
     try:
-        fts = FullTextSearch(engine)
-        await fts.ensure_index()
-        for page in generated_pages:
-            await fts.index(
-                page.page_id,
-                page.title,
-                page.content,
-                summary=page.summary,
-                target_path=page.target_path,
-            )
-    except Exception:
-        pass  # FTS indexing is best-effort
+        await _sync_authoritative_fts(
+            engine=engine,
+            repo_path=repo_path,
+            generated_pages=generated_pages,
+            retired_page_ids=retired_page_ids,
+        )
+    except BaseException:
+        await engine.dispose()
+        raise
+    if checkpoint:
+        checkpoint("search")
 
     # 7. Recompute + persist code health against the now-FULL git tier.
     # The fast index persisted ESSENTIAL-tier findings only, so the blame /
@@ -349,6 +471,7 @@ async def _run_upgrade(
             save_health_snapshot,
         )
         from repowise.core.pipeline.orchestrator import _run_health_analysis
+        from repowise.core.workspace.update import get_head_commit
 
         health_report = await _run_health_analysis(
             graph_builder,
@@ -359,7 +482,12 @@ async def _run_upgrade(
         )
         if health_report is not None:
             async with get_session(sf) as session:
-                await save_health_metrics(session, repo_id, health_report.metrics or [])
+                await save_health_metrics(
+                    session,
+                    repo_id,
+                    health_report.metrics or [],
+                    analyzed_commit=get_head_commit(repo_path),
+                )
                 if health_report.findings:
                     await save_health_findings(session, repo_id, health_report.findings)
                 kpis = health_report.kpis or {}
@@ -376,13 +504,23 @@ async def _run_upgrade(
                         worst_performer_score=kpis.get("worst_performer_score"),
                         per_file_scores=scores_map,
                         per_file_deductions=deductions_map,
+                        structure_average=kpis.get("structure_average"),
+                        history_average=kpis.get("history_average"),
+                        production_average=kpis.get("production_average"),
+                        maintainability_average=kpis.get("maintainability_average"),
                     )
             console.print(
                 f"Code health recomputed at FULL tier: "
                 f"[cyan]{len(health_report.findings)}[/cyan] findings."
             )
     except Exception as exc:
-        console.print(f"[yellow]Health recompute skipped: {exc}[/yellow]")
+        await engine.dispose()
+        raise RuntimeError(f"FULL-tier health recompute failed: {exc}") from exc
+    if health_report is None:
+        await engine.dispose()
+        raise RuntimeError("FULL-tier health recompute returned no report")
+    if checkpoint:
+        checkpoint("health")
 
     # The repo's real page count, not this run's. An upgrade regenerates rather
     # than appends, and it does not necessarily cover every page the repo
@@ -408,7 +546,32 @@ async def _run_upgrade(
         total_pages = len(generated_pages)
 
     await engine.dispose()
-    return generated_pages, total_pages
+    from repowise.core.generation.selection import count_documentable_files
+
+    return (
+        generated_pages,
+        total_pages,
+        {
+            "git_history_coverage": history_coverage,
+            "file_pages": {
+                "configured_cap": getattr(config, "max_file_pages", None),
+                **(
+                    generation_scope
+                    or file_page_scope(
+                        configured_cap=getattr(config, "max_file_pages", None),
+                        eligible=count_documentable_files(parsed_files),
+                        generated_pages=generated_pages,
+                    )
+                ),
+            },
+            "search": {
+                "full_text": "available",
+                "semantic": "available" if vector_store is not None else "unavailable",
+                "next_command": "repowise reindex" if vector_store is None else None,
+            },
+            "embedding_error": embedding_error,
+        },
+    )
 
 
 def upgrade_to_full(
@@ -444,6 +607,14 @@ def upgrade_to_full(
     # Provider is required — the fast index made no LLM calls, so the repo may
     # not have one configured yet. resolve_provider surfaces a clear error.
     provider = resolve_provider(provider_name, model, repo_path=repo_path)
+    persisted_provider = state.get("provider") or cfg.get("provider")
+    persisted_model = state.get("model") or cfg.get("model")
+    provider_reused = (
+        provider_name is None
+        and model is None
+        and persisted_provider == provider.provider_name
+        and persisted_model == provider.model_name
+    )
 
     from repowise.core.repo_config import resolve_language
     config = GenerationConfig.from_repo_config(
@@ -502,8 +673,71 @@ def upgrade_to_full(
     # (success, cost-gate Abort, or unexpected failure) rather than at process
     # exit — atexit would leave the lock held for the rest of the CLI process.
     try:
+        completed_stages = list(
+            state.get("full_upgrade", {}).get("completed_stages", [])
+            if isinstance(state.get("full_upgrade"), dict)
+            else []
+        )
+
+        def _checkpoint(stage: str, **fields: Any) -> None:
+            current = load_state(repo_path)
+            stages = list(
+                current.get("full_upgrade", {}).get("completed_stages", [])
+                if isinstance(current.get("full_upgrade"), dict)
+                else []
+            )
+            if stage not in stages:
+                stages.append(stage)
+            order = ["git_backfill", "generation", "search", "health"]
+            next_stage = next((item for item in order if item not in stages), "finalize")
+            current["full_upgrade"] = {
+                "status": "running",
+                "retryable": True,
+                "completed_stages": stages,
+                "next_stage": next_stage,
+                "provider": provider.provider_name,
+                "model": provider.model_name,
+                "embedder": embedder_name,
+            }
+            if fields.get("git_history_coverage") is not None:
+                current["git_history_coverage"] = fields["git_history_coverage"]
+            stamp_index_scope(current, cfg, upgrade=current["full_upgrade"])
+            save_state(repo_path, current)
+
+        # Durable before any backfill or model work. A killed process therefore
+        # leaves an honest resumable transition while the prior index_scope
+        # continues to describe the usable index.
+        state["full_upgrade"] = {
+            "status": "running",
+            "retryable": True,
+            "completed_stages": completed_stages,
+            "next_stage": next(
+                (
+                    item
+                    for item in ["git_backfill", "generation", "search", "health"]
+                    if item not in completed_stages
+                ),
+                "finalize",
+            ),
+            "provider": provider.provider_name,
+            "model": provider.model_name,
+            "embedder": embedder_name,
+        }
+        stamp_index_scope(
+            state,
+            cfg,
+            upgrade=state["full_upgrade"],
+            provider={
+                "name": provider.provider_name,
+                "model": provider.model_name,
+                "embedder": embedder_name,
+                "reused": provider_reused,
+                "model_cost_possible": True,
+            },
+        )
+        save_state(repo_path, state)
         try:
-            generated_pages, total_pages = run_async(
+            upgrade_result = run_async(
                 _run_upgrade(
                     repo_path,
                     provider,
@@ -513,21 +747,65 @@ def upgrade_to_full(
                     follow_renames=follow_renames,
                     embedder_name=embedder_name,
                     yes=yes,
+                    checkpoint=_checkpoint,
                 )
             )
+            if len(upgrade_result) == 2:  # compatibility for third-party/test wrappers
+                generated_pages, total_pages = upgrade_result
+                outcome = {
+                    "git_history_coverage": None,
+                    "file_pages": {
+                        "configured_cap": resolve_max_file_pages(config=cfg),
+                        "effective_cap": None,
+                        "eligible": None,
+                        "generated": None,
+                        "omitted": None,
+                    },
+                    "search": {
+                        "full_text": "unknown",
+                        "semantic": "unknown",
+                        "next_command": None,
+                    },
+                    "embedding_error": None,
+                }
+            else:
+                generated_pages, total_pages, outcome = upgrade_result
         except click.Abort:
             # Declined at the cost gate. The git backfill that ran before it is
             # kept (it costs nothing to keep and everything to redo), and the
             # persisted docs mode is left alone so the repo keeps whatever wiki it
             # already had.
-            console.print("[yellow]Nothing generated.[/yellow] The index is unchanged.")
+            current = load_state(repo_path)
+            transition = current.get("full_upgrade", {})
+            transition.update(status="resumable", retryable=True)
+            current["full_upgrade"] = transition
+            stamp_index_scope(current, cfg, upgrade=transition)
+            save_state(repo_path, current)
+            console.print("[yellow]Nothing generated.[/yellow] The prior index remains usable.")
             return
+        except BaseException as exc:
+            current = load_state(repo_path)
+            transition = current.get("full_upgrade", {})
+            transition.update(
+                status="resumable"
+                if isinstance(exc, (KeyboardInterrupt, SystemExit))
+                else "failed",
+                retryable=True,
+                error=type(exc).__name__,
+            )
+            current["full_upgrade"] = transition
+            stamp_index_scope(current, cfg, upgrade=transition)
+            save_state(repo_path, current)
+            raise
 
         # Flip persisted state to full so subsequent `repowise update` runs the
         # normal incremental LLM path rather than offering upgrade.
         state["last_sync_commit"] = head
         state.update(docs_mode_state_fields("llm"))
         state["git_tier"] = "full"
+        state["run_mode"] = "standard"
+        if outcome["git_history_coverage"] is not None:
+            state["git_history_coverage"] = outcome["git_history_coverage"]
         state["total_pages"] = total_pages
         # Record who wrote the pages. Without this, `repowise status` on a repo
         # upgraded this way reports its provider and model as unknown, which reads
@@ -546,6 +824,32 @@ def upgrade_to_full(
         # from the current analyzer. Without the stamp the next plain `update`
         # would read a stale version and pay a redundant full re-score.
         state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+        state["full_upgrade"] = {
+            "status": "complete",
+            "retryable": False,
+            "completed_stages": ["git_backfill", "generation", "search", "health", "finalize"],
+            "next_stage": None,
+        }
+        stamp_index_scope(
+            state,
+            cfg,
+            run_mode="standard",
+            content_provenance="model",
+            git_tier="full",
+            git_commit_cap=commit_limit if isinstance(commit_limit, int) else 500,
+            git_history_coverage=outcome["git_history_coverage"],
+            file_pages=outcome["file_pages"],
+            analysis={"unavailable": [], "skipped": []},
+            upgrade=state["full_upgrade"],
+            provider={
+                "name": provider.provider_name,
+                "model": provider.model_name,
+                "embedder": embedder_name,
+                "reused": provider_reused,
+                "model_cost_possible": True,
+            },
+            search=outcome["search"],
+        )
         save_state(repo_path, state, full_index=True)
         if embedder_name and embedder_name != cfg.get("embedder"):
             from repowise.cli.helpers import save_config_partial
@@ -557,5 +861,10 @@ def upgrade_to_full(
             f"[bold green]Upgrade complete[/bold green] in {elapsed:.1f}s — "
             f"{len(generated_pages)} pages generated, git tier now FULL."
         )
+        if outcome["search"]["semantic"] != "available":
+            console.print(
+                "[yellow]Semantic search is unavailable.[/yellow] Set an embedder key and run "
+                "[bold]repowise reindex[/bold] (embedding calls only; no model calls)."
+            )
     finally:
         release_update_lock(repo_path)

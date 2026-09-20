@@ -6,6 +6,7 @@ import { InfoTip } from "../shared/info-tip";
 import {
   biomarkerLabel,
   biomarkerInfo,
+  asBiomarkerDimension,
   biomarkerDimension,
   CATEGORY_LABEL,
   DIMENSION_CHIP,
@@ -15,6 +16,7 @@ import {
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { SEVERITY_CHIP, SEVERITY_LABEL, SEVERITY_ORDER, type Severity } from "./tokens";
 import { SeverityMark } from "./severity-mark";
+import { ImpactFigure } from "./impact-figure";
 
 /** Severity → dot color, same ramp as every score pill on the surface. */
 const SEVERITY_DOT: Record<Severity, string> = {
@@ -40,14 +42,7 @@ export interface BiomarkerFinding {
 
 /** A finding's home pillar, preferring the server value over the glossary. */
 function findingDimension(f: BiomarkerFinding): BiomarkerDimension {
-  if (
-    f.dimension === "defect" ||
-    f.dimension === "maintainability" ||
-    f.dimension === "performance"
-  ) {
-    return f.dimension;
-  }
-  return biomarkerDimension(f.biomarker_type);
+  return asBiomarkerDimension(f.dimension, f.biomarker_type);
 }
 
 export interface BiomarkerListProps {
@@ -288,9 +283,7 @@ function CompactFindingRow({
       <span className="shrink-0 text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
         {biomarkerLabel(f.biomarker_type)}
       </span>
-      <span className="shrink-0 tabular-nums text-[var(--color-error)]">
-        −{f.health_impact.toFixed(2)}
-      </span>
+      <ImpactFigure impact={f.health_impact} />
     </li>
   );
 }
@@ -340,9 +333,7 @@ function FindingRow({
             <DimensionChip dimension={findingDimension(f)} />
           </span>
         ) : null}
-        <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">
-          −{f.health_impact.toFixed(2)}
-        </span>
+        <ImpactFigure impact={f.health_impact} className="ml-auto text-xs" />
       </div>
       <p className="text-xs text-[var(--color-text-secondary)] truncate font-mono">
         {f.file_path}

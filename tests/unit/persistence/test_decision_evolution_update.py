@@ -20,7 +20,7 @@ from repowise.core.analysis.decision_evolution import (
     supersession_confidence,
 )
 from repowise.core.persistence.crud import bulk_upsert_decisions, get_decision
-from tests.unit.persistence.helpers import insert_repo
+from tests.unit.persistence.helpers import accept, insert_repo
 
 # ---------------------------------------------------------------------------
 # Pure heuristics
@@ -100,9 +100,9 @@ async def _seed_decision(session, repo_id: str) -> str:
             {
                 "title": "Use MySQL for storage",
                 "decision": "use MySQL as the primary datastore",
-                "rationale": "",
+                "rationale": "the team already ran MySQL in production",
                 "source": "inline_marker",
-                "status": "active",
+                "status": "proposed",
                 "affected_files": ["src/db.py"],
                 "evidence_file": "src/db.py",
                 "confidence": 0.6,
@@ -111,6 +111,7 @@ async def _seed_decision(session, repo_id: str) -> str:
             }
         ],
     )
+    await accept(session, ids[0])
     return ids[0]
 
 

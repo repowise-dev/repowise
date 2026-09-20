@@ -5,7 +5,8 @@ text alone (the ``visibility_fn`` shape). Some cannot, because the answer
 depends on surrounding AST context — C/C++ ``public:`` / ``private:``
 access specifier siblings, ``static`` storage class at file scope and
 ``__declspec(dllexport)`` attributes; C#'s no-modifier default, which
-differs by enclosing declaration; TS/JS export position. Each has a
+differs by enclosing declaration; TS/JS export position; Rust's
+trait items, which may not write a modifier of their own. Each has a
 ``refine_*_visibility`` the parser calls after the generic
 ``visibility_fn``.
 """
@@ -15,6 +16,8 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
+
+from .helpers import node_text
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -67,6 +70,18 @@ def public_by_default(_name: str, _mods: list[str]) -> str:
     return "public"
 
 
+# Elixir spells privacy in the definition keyword rather than in a modifier:
+# `defp` / `defmacrop` / `defguardp` are module-private, their unsuffixed
+# forms are public. elixir.scm captures the keyword as @symbol.modifiers.
+_ELIXIR_PRIVATE_KEYWORDS = frozenset({"defp", "defmacrop", "defguardp"})
+
+
+def elixir_visibility(_name: str, modifier_texts: list[str]) -> str:
+    if any(text.strip() in _ELIXIR_PRIVATE_KEYWORDS for text in modifier_texts):
+        return "private"
+    return "public"
+
+
 def kotlin_visibility(_name: str, modifier_texts: list[str]) -> str:
     combined = " ".join(modifier_texts).lower()
     if "private" in combined:
@@ -92,6 +107,27 @@ def csharp_visibility(_name: str, modifier_texts: list[str]) -> str:
     if "protected" in combined:
         return "protected"
     if "internal" in combined:
+        return "internal"
+    if "public" in combined:
+        return "public"
+    return "internal"
+
+
+def vbnet_visibility(_name: str, modifier_texts: list[str]) -> str:
+    """VB.NET visibility: Public/Private/Protected/Friend (internal).
+
+    VB.NET's default access for a top-level type is ``Friend`` (assembly
+    scope), which maps to C#'s ``internal``; nested types under a parent
+    default to the parent's scope. ``Protected Friend`` is reported as
+    protected, the narrower of the two halves, matching how
+    ``csharp_visibility`` above reports ``protected internal``.
+    """
+    combined = " ".join(modifier_texts).lower()
+    if "private" in combined:
+        return "private"
+    if "protected" in combined:
+        return "protected"
+    if "friend" in combined:
         return "internal"
     if "public" in combined:
         return "public"
@@ -340,6 +376,36 @@ def refine_csharp_visibility(def_node: Node, current_visibility: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Rust node-aware visibility refinement
+# ---------------------------------------------------------------------------
+
+
+def refine_rust_visibility(def_node: Node, current_visibility: str, src: str) -> str:
+    """Give a trait's items the visibility the trait itself declares.
+
+    Rust forbids a visibility modifier on a trait item, so ``rust_visibility``
+    reads empty modifier text and calls every method of a ``pub trait``
+    private. The trait's own modifier is the reachable answer: a ``pub trait``
+    is downstream-callable API, and a private trait's methods are not.
+    """
+    if any(c.type == "visibility_modifier" for c in def_node.children):
+        return current_visibility
+    # Trait items sit directly in the trait's ``declaration_list``. Matching
+    # that exact shape rather than walking ancestors keeps an item nested
+    # inside a defaulted method's body out of the trait's bucket.
+    decls = def_node.parent
+    if decls is None or decls.type != "declaration_list":
+        return current_visibility
+    trait = decls.parent
+    if trait is None or trait.type != "trait_item":
+        return current_visibility
+    modifier = next((c for c in trait.children if c.type == "visibility_modifier"), None)
+    if modifier is None:
+        return current_visibility
+    return rust_visibility("", [node_text(modifier, src)])
+
+
+# ---------------------------------------------------------------------------
 # C / C++ node-aware visibility refinement
 # ---------------------------------------------------------------------------
 
@@ -412,7 +478,7 @@ def _has_export_marker(def_node: Node, src: str) -> bool:
     sibling = def_node.prev_sibling
     seen = 0
     while sibling is not None and seen < 4:
-        text = src[sibling.start_byte : sibling.end_byte]
+        text = node_text(sibling, src)
         if any(marker in text for marker in _CPP_EXPORT_MARKERS):
             return True
         sibling = sibling.prev_sibling
@@ -420,7 +486,7 @@ def _has_export_marker(def_node: Node, src: str) -> bool:
     # Also check the def_node's own leading children — some grammars
     # nest the declspec inside the function_definition.
     for child in def_node.children[:3]:
-        text = src[child.start_byte : child.end_byte]
+        text = node_text(child, src)
         if any(marker in text for marker in _CPP_EXPORT_MARKERS):
             return True
     return False
@@ -430,7 +496,7 @@ def _has_file_scope_static(def_node: Node, src: str) -> bool:
     """Return True if a ``static`` storage-class specifier appears in the leading declarators."""
     for child in def_node.children[:4]:
         if child.type == "storage_class_specifier":
-            text = src[child.start_byte : child.end_byte]
+            text = node_text(child, src)
             if "static" in text:
                 return True
     return False
@@ -492,4 +558,8 @@ VISIBILITY_FNS: dict[str, Callable[[str, list[str]], str]] = {
     "swift": swift_visibility,
     "scala": scala_visibility,
     "php": php_visibility,
+    "elixir": elixir_visibility,
+    # F# has no `protected` binding form and spells assembly scope
+    # `internal`, which is exactly what kotlin_visibility answers.
+    "fsharp": kotlin_visibility,
 }

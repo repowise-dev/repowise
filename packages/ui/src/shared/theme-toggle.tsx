@@ -15,9 +15,12 @@
  * The migration only fires for non light/dark values, so an explicit Light or
  * Dark choice is never rewritten.
  *
- * Renders nothing theme-dependent until mounted so the control doesn't flash
- * the wrong selection during hydration (next-themes returns `undefined` on
- * the server).
+ * The selected option is expressed in CSS off the `dark` class that
+ * next-themes writes on `<html>` before first paint, NOT off React state.
+ * `useTheme()` returns `undefined` on the server, so a state-driven control
+ * renders one frame with neither option selected. Reading the class instead
+ * means the first painted frame is already correct. `aria-checked` still
+ * waits for mount, because markup cannot be derived from an ancestor class.
  */
 
 import { useEffect, useState } from "react";
@@ -29,6 +32,15 @@ const OPTIONS = [
   { value: "light" as const, label: "Light", icon: Sun },
   { value: "dark" as const, label: "Dark", icon: Moon },
 ];
+
+const SELECTED =
+  "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-[var(--shadow-sm)]";
+const UNSELECTED =
+  "bg-transparent text-[var(--color-text-secondary)] shadow-none hover:text-[var(--color-text-primary)]";
+const DARK_SELECTED =
+  "dark:bg-[var(--color-bg-surface)] dark:text-[var(--color-text-primary)] dark:shadow-[var(--shadow-sm)]";
+const DARK_UNSELECTED =
+  "dark:bg-transparent dark:text-[var(--color-text-secondary)] dark:shadow-none dark:hover:text-[var(--color-text-primary)]";
 
 export interface ThemeToggleProps {
   /** Hide the text labels and render an icon-only compact control. */
@@ -55,29 +67,31 @@ export function ThemeToggle({ compact = false, className }: ThemeToggleProps) {
     <div
       role="radiogroup"
       aria-label="Theme preference"
-      className={cn(
-        "inline-flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-1",
-        className,
-      )}
+      // No resting border, fill, or shadow: this is a once-per-session
+      // control and the permanent track was carrying more weight than the
+      // navigation above it. The selected pill is the only ground.
+      className={cn("inline-flex items-center gap-1 rounded-lg p-0.5", className)}
     >
       {OPTIONS.map((opt) => {
         const Icon = opt.icon;
-        const selected = mounted && theme === opt.value;
         return (
           <button
             key={opt.value}
             type="button"
             role="radio"
-            aria-checked={selected}
+            aria-checked={mounted && theme === opt.value}
             aria-label={opt.label}
             title={opt.label}
             onClick={() => setTheme(opt.value)}
             className={cn(
               "inline-flex items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-colors",
-              compact ? "px-2 py-1.5" : "px-3 py-1.5",
-              selected
-                ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-[var(--shadow-sm)]"
-                : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
+              compact ? "px-1.5 py-1" : "px-3 py-1.5",
+              // Selected-ness comes from the ancestor `dark` class, so it is
+              // right on the first painted frame. Each option is styled
+              // selected in its own theme and quiet in the other.
+              opt.value === "light"
+                ? [SELECTED, DARK_UNSELECTED]
+                : [UNSELECTED, DARK_SELECTED],
             )}
           >
             <Icon className="h-3.5 w-3.5 shrink-0" />

@@ -4,24 +4,39 @@
  * These are the TypeScript half of the cross-language parity guard: the same
  * cutoffs are asserted in core (`tests/unit/health/test_grading.py`). If a
  * silent retune changes one side without the other, one of the two snapshots
- * fails CI. The 3 buckets are defect-backed (Alert ~17x the defect rate of
- * Healthy) so the boundaries are intentionally frozen.
+ * fails CI. The bands are absolute, so a score means the same thing behind a
+ * firewall as it does against a public corpus.
  */
 
 import { describe, expect, it } from "vitest";
 import {
-  ALERT_MAX,
-  HEALTHY_MIN,
+  EXCELLENT_MIN,
+  FAIR_MIN,
+  GOOD_MIN,
+  HEALTH_BAND_LABEL,
+  HEALTH_BAND_ORDER,
+  HEALTH_BAND_RANGE_LABEL,
   HEALTH_DIMENSIONS,
+  NEEDS_WORK_MIN,
   PERF_BOUNDARY_LABEL,
   bandForScore,
 } from "../src/health.js";
 import { C4_IO_KINDS } from "../src/external-systems.js";
 
 describe("health band cutoffs", () => {
-  it("are the frozen defect-backed values", () => {
-    expect(ALERT_MAX).toBe(4.0);
-    expect(HEALTHY_MIN).toBe(8.0);
+  it("are the frozen values core mirrors", () => {
+    expect(EXCELLENT_MIN).toBe(8.5);
+    expect(GOOD_MIN).toBe(7.0);
+    expect(FAIR_MIN).toBe(5.5);
+    expect(NEEDS_WORK_MIN).toBe(4.0);
+  });
+
+  it("give every band a label and a range, worst-first", () => {
+    expect(HEALTH_BAND_ORDER).toEqual(["at_risk", "needs_work", "fair", "good", "excellent"]);
+    for (const band of HEALTH_BAND_ORDER) {
+      expect(HEALTH_BAND_LABEL[band]).toBeTruthy();
+      expect(HEALTH_BAND_RANGE_LABEL[band]).toBeTruthy();
+    }
   });
 });
 
@@ -44,12 +59,15 @@ describe("health dimensions", () => {
 
 describe("bandForScore", () => {
   it("maps each band including boundaries", () => {
-    expect(bandForScore(1.0)).toBe("alert");
-    expect(bandForScore(3.99)).toBe("alert");
-    expect(bandForScore(4.0)).toBe("warning"); // ALERT_MAX is inclusive of warning
-    expect(bandForScore(6.0)).toBe("warning");
-    expect(bandForScore(7.99)).toBe("warning");
-    expect(bandForScore(8.0)).toBe("healthy"); // HEALTHY_MIN is inclusive of healthy
-    expect(bandForScore(10.0)).toBe("healthy");
+    expect(bandForScore(10.0)).toBe("excellent");
+    expect(bandForScore(8.5)).toBe("excellent"); // each cutoff belongs to the band above
+    expect(bandForScore(8.49)).toBe("good");
+    expect(bandForScore(7.0)).toBe("good");
+    expect(bandForScore(6.99)).toBe("fair");
+    expect(bandForScore(5.5)).toBe("fair");
+    expect(bandForScore(5.49)).toBe("needs_work");
+    expect(bandForScore(4.0)).toBe("needs_work");
+    expect(bandForScore(3.99)).toBe("at_risk");
+    expect(bandForScore(1.0)).toBe("at_risk");
   });
 });

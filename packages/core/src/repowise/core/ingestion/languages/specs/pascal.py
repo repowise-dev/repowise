@@ -69,5 +69,32 @@ SPEC = LanguageSpec(
         "TObject", "TInterfacedObject", "TPersistent", "TComponent",
         "IUnknown", "IInterface", "IDispatch",
     }),
+    # Ordinal/scalar built-ins plus the universal VCL/RTL root types (the
+    # latter overlap with builtin_parents above) -- none of these ever have
+    # an in-repo declaration, so resolving them as a type reference is a
+    # guaranteed miss. Read back via get_builtin_types("pascal") in
+    # parser_helpers.py's head-identifier extractor.
+    builtin_types=frozenset({
+        "Integer", "Cardinal", "Boolean", "ByteBool", "WordBool", "LongBool",
+        "String", "AnsiString", "WideString", "UnicodeString", "ShortString",
+        "Char", "AnsiChar", "WideChar", "Byte", "ShortInt", "SmallInt", "Word",
+        "LongWord", "LongInt", "Int64", "UInt64", "NativeInt", "NativeUInt",
+        "Single", "Double", "Extended", "Real", "Real48", "Currency", "Comp",
+        "Variant", "OleVariant", "Pointer", "PChar", "PAnsiChar", "PWideChar",
+        "TDateTime", "TDate", "TTime", "TGUID", "TClass", "HRESULT", "TBytes",
+        "TObject", "TInterfacedObject", "TPersistent", "TComponent",
+        "IUnknown", "IInterface", "IDispatch",
+    }),
+    # Delphi/FPC has no same-directory same-stem test-file convention (no
+    # ``uFoo.pas`` <-> ``uFoo_test.pas``): a unit is exercised by a
+    # standalone console test *program* named ``Test<Unit>.dpr`` -- one
+    # test project per unit, or sometimes one project exercising several
+    # related units together -- typically living in its own directory
+    # (this repo's own validation corpus keeps them under ``src/tools/``,
+    # separate from ``src/Core/``). ``Test`` is a prefix, not a suffix, so
+    # this is the mirror of the suffix-shaped ``FooTest.java`` convention:
+    # ``TestKeymap.dpr`` matches, ``Testing.dpr`` and bare ``Test.dpr``
+    # don't (see ``test_camel_prefixes`` on ``LanguageSpec``).
+    test_camel_prefixes=("Test",),
     color_hex="#E3352E",
 )

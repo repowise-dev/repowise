@@ -130,31 +130,14 @@ def resolve_csharp_import(
     importer_csproj = index.file_to_project.get(importer_abs)
     importer_proj = index.projects.get(importer_csproj) if importer_csproj else None
 
-    candidates = index.files_for_namespace(module_path)
+    # Rank: same project, then referenced projects, then anywhere.
+    ordered = index.rank_namespace_candidates(
+        module_path, importer_proj.path if importer_proj is not None else None
+    )
     repo_root_resolved = _repo_root_resolved(index, ctx.repo_path)
 
-    if candidates:
-        # Rank: same project, then referenced projects, then anywhere.
-        same_project: list[Path] = []
-        referenced: list[Path] = []
-        other: list[Path] = []
-
-        if importer_proj is not None:
-            ref_csprojs = index.referenced_projects(importer_proj.path)
-            for cand in candidates:
-                cand_proj_path = index.file_to_project.get(cand)
-                if cand_proj_path == importer_proj.path:
-                    same_project.append(cand)
-                elif cand_proj_path in ref_csprojs:
-                    referenced.append(cand)
-                else:
-                    other.append(cand)
-            ordered = same_project or referenced or other
-        else:
-            ordered = candidates
-
-        chosen = ordered[0]
-        rel = _to_repo_relative(chosen, repo_root_resolved)
+    if ordered:
+        rel = _to_repo_relative(ordered[0], repo_root_resolved)
         if rel and rel in ctx.path_set:
             return rel
 

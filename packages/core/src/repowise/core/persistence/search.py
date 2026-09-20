@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.sql import text
@@ -67,6 +68,31 @@ PAGE_FTS_DDL = (
     "USING fts5(page_id UNINDEXED, title, content, summary, target_path)"
 )
 
+_PAGE_FTS_INSERT_SQL = (
+    "INSERT INTO page_fts(page_id, title, content, summary, target_path) "
+    "VALUES (:pid, :title, :content, :summary, :target_path)"
+)
+
+# SQLite allows 999 host parameters per statement by default.
+_ID_CHUNK = 500
+
+
+async def _delete_page_ids(conn: Any, page_ids: Sequence[str]) -> None:
+    """Delete the rows for *page_ids* on an already-open connection.
+
+    Takes the connection rather than opening one so a caller that also
+    inserts can put both halves in the same transaction.
+    """
+    for start in range(0, len(page_ids), _ID_CHUNK):
+        chunk = page_ids[start : start + _ID_CHUNK]
+        placeholders = ", ".join(f":p{i}" for i in range(len(chunk)))
+        params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+        await conn.execute(
+            text(f"DELETE FROM page_fts WHERE page_id IN ({placeholders})"),
+            params,
+        )
+
+
 # An indexed row whose page is gone from ``wiki_pages``. Counting and deleting
 # share the predicate so the number reported is exactly the number removed.
 # ``NOT EXISTS`` rather than ``NOT IN``: the subquery's column is a primary key
@@ -96,6 +122,15 @@ _DF_CACHE_MAX = 2048
 # Keeps scores strictly decreasing when two MATCH expressions' results are
 # concatenated. Small enough not to disturb any threshold downstream.
 _SCORE_EPSILON = 1e-6
+
+# Per-column bm25 weights, in ``PAGE_FTS_COLUMNS`` order: title and
+# target_path name the file a page is about, content and summary only mention
+# it. ``page_id`` is UNINDEXED and contributes nothing, but bm25() takes one
+# weight per column, so it still needs one. bm25() ignores a weight past the
+# last column and defaults a missing one to 1.0, so the arity is checked by
+# test_search_fts_columns rather than by anything raising here.
+_BM25_COLUMN_WEIGHTS = (0.0, 4.0, 1.0, 1.0, 3.0)
+_BM25_SCORE = "bm25(page_fts, " + ", ".join(str(w) for w in _BM25_COLUMN_WEIGHTS) + ")"
 
 _log = logging.getLogger(__name__)
 
@@ -368,47 +403,68 @@ class FullTextSearch:
 
         A page below the information floor is not indexed, and any row it
         already had is deleted. Ten places write this index, so the decision
-        lives here rather than at each of them — one that skipped the check
-        would keep re-admitting the pages the others exclude, and nothing
-        would report the disagreement. The page itself is untouched: it stays
-        in ``wiki_pages`` and stays a valid link target.
+        lives in :meth:`index_many` rather than at each of them — one that
+        skipped the check would keep re-admitting the pages the others
+        exclude, and nothing would report the disagreement. The page itself is
+        untouched: it stays in ``wiki_pages`` and stays a valid link target.
         """
-        if summary is None or target_path is None:
-            self._warn_missing_index_fields(page_id, summary, target_path)
-            summary = summary if summary is not None else ""
-            target_path = target_path if target_path is not None else ""
+        await self.index_many([(page_id, title, content, summary, target_path)])
 
-        indexable = meets_information_floor(content)
-        if not indexable:
-            self._count_skipped_below_floor(page_id, content)
+    async def index_many(
+        self,
+        pages: Sequence[tuple[str, str, str, str | None, str | None]],
+    ) -> None:
+        """Add or replace many pages in a single transaction.
 
-        if self._dialect == "sqlite":
-            async with self._engine.begin() as conn:
-                # FTS5 does not support UPDATE; use DELETE + INSERT. The delete
-                # runs either way: a page that has fallen below the floor since
-                # its last index must lose the row it had, or the exclusion
-                # only ever applies to pages that never existed.
-                await conn.execute(
-                    text("DELETE FROM page_fts WHERE page_id = :pid"),
-                    {"pid": page_id},
-                )
-                if not indexable:
-                    return
-                await conn.execute(
-                    text(
-                        "INSERT INTO page_fts(page_id, title, content, summary, target_path) "
-                        "VALUES (:pid, :title, :content, :summary, :target_path)"
-                    ),
-                    {
-                        "pid": page_id,
-                        "title": title,
-                        "content": content,
-                        "summary": summary,
-                        "target_path": target_path,
-                    },
-                )
-        # PostgreSQL: the GIN index on wiki_pages is maintained automatically
-        # by the database as rows are inserted/updated via the CRUD layer.
+        Each entry is ``(page_id, title, content, summary, target_path)`` and
+        gets exactly the semantics :meth:`index` documents, floor exclusion
+        included — this is the one implementation and :meth:`index` is the
+        single-page call into it. What changes is the transaction count:
+        indexing a wiki a page at a time costs one commit per page, which on a
+        few thousand pages is most of what persisting the index takes.
+
+        A page id repeated inside *pages* keeps its last entry, which is what
+        the per-page loop this replaces would have left on disk.
+        """
+        if not pages:
+            return
+
+        # The accounting runs on every dialect, because a call site that
+        # forgets a field or writes a page too thin to index is wrong wherever
+        # it runs, and only these counters say so.
+        #
+        # FTS5 has no UPDATE, so a write is DELETE + INSERT. Every id is
+        # deleted and only the qualifying ones are re-inserted: a page that
+        # has fallen below the floor since its last index has to lose the row
+        # it had, or the exclusion only ever applies to pages that never
+        # existed.
+        deletions: dict[str, None] = {}
+        insertions: dict[str, dict[str, str]] = {}
+        for page_id, title, content, summary, target_path in pages:
+            deletions[page_id] = None
+            if summary is None or target_path is None:
+                self._warn_missing_index_fields(page_id, summary, target_path)
+            if meets_information_floor(content):
+                insertions[page_id] = {
+                    "pid": page_id,
+                    "title": title,
+                    "content": content,
+                    "summary": summary or "",
+                    "target_path": target_path or "",
+                }
+            else:
+                self._count_skipped_below_floor(page_id, content)
+                insertions.pop(page_id, None)
+
+        if self._dialect != "sqlite":
+            # PostgreSQL: the GIN index on wiki_pages is maintained
+            # automatically as rows are written through the CRUD layer.
+            return
+
+        async with self._engine.begin() as conn:
+            await _delete_page_ids(conn, list(deletions))
+            if insertions:
+                await conn.execute(text(_PAGE_FTS_INSERT_SQL), list(insertions.values()))
 
     def _count_skipped_below_floor(self, page_id: str, content: str) -> None:
         """Record a page held out of the index, and name the first few."""
@@ -475,17 +531,8 @@ class FullTextSearch:
         if not page_ids:
             return
         if self._dialect == "sqlite":
-            # Chunk to stay under SQLite's default 999-parameter limit per statement.
-            chunk_size = 500
             async with self._engine.begin() as conn:
-                for start in range(0, len(page_ids), chunk_size):
-                    chunk = page_ids[start : start + chunk_size]
-                    placeholders = ", ".join(f":p{i}" for i in range(len(chunk)))
-                    params = {f"p{i}": pid for i, pid in enumerate(chunk)}
-                    await conn.execute(
-                        text(f"DELETE FROM page_fts WHERE page_id IN ({placeholders})"),
-                        params,
-                    )
+                await _delete_page_ids(conn, page_ids)
         # PostgreSQL: rows deleted via CASCADE automatically remove from GIN index.
 
     async def list_indexed_ids(self) -> set[str]:
@@ -504,12 +551,15 @@ class FullTextSearch:
             rows = await conn.execute(text("SELECT id FROM wiki_pages"))
             return {r[0] for r in rows.fetchall()}
 
-    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+    async def search(
+        self, query: str, limit: int = 10, repository_id: str | None = None
+    ) -> list[SearchResult]:
         """Search for pages matching *query*.
 
         Args:
             query: Natural-language search query.
             limit: Maximum number of results to return.
+            repository_id: Optional repository ID to narrow the search scope.
 
         Returns:
             List of SearchResult objects sorted by relevance (descending).
@@ -518,8 +568,8 @@ class FullTextSearch:
             return []
 
         if self._dialect == "sqlite":
-            return await self._search_sqlite(query, limit)
-        return await self._search_postgresql(query, limit)
+            return await self._search_sqlite(query, limit, repository_id=repository_id)
+        return await self._search_postgresql(query, limit, repository_id=repository_id)
 
     async def _document_frequency(self, conn, term: str) -> int:
         """How many indexed pages *term* matches. ``""`` is the corpus size.
@@ -569,28 +619,45 @@ class FullTextSearch:
                 counts[term] = await df(term)
         return _build_fts5_query(query, counts.__getitem__)
 
-    async def _matching_rows(self, conn, fts_query: str, limit: int) -> list:
-        rows = await conn.execute(
-            text(
-                "SELECT f.page_id, f.title, f.content, f.rank "
-                "FROM page_fts f "
-                "WHERE page_fts MATCH :q "
-                "ORDER BY rank "
-                "LIMIT :lim"
-            ),
-            {"q": fts_query, "lim": limit},
-        )
+    async def _matching_rows(
+        self, conn, fts_query: str, limit: int, repository_id: str | None = None
+    ) -> list:
+        if repository_id is not None:
+            rows = await conn.execute(
+                text(
+                    f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
+                    "FROM page_fts f "
+                    "JOIN wiki_pages p ON p.id = f.page_id "
+                    "WHERE page_fts MATCH :q AND p.repository_id = :repo_id "
+                    f"ORDER BY {_BM25_SCORE} "
+                    "LIMIT :lim"
+                ),
+                {"q": fts_query, "lim": limit, "repo_id": repository_id},
+            )
+        else:
+            rows = await conn.execute(
+                text(
+                    f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
+                    "FROM page_fts f "
+                    "WHERE page_fts MATCH :q "
+                    f"ORDER BY {_BM25_SCORE} "
+                    "LIMIT :lim"
+                ),
+                {"q": fts_query, "lim": limit},
+            )
         return list(rows.fetchall())
 
-    async def _search_sqlite(self, query: str, limit: int) -> list[SearchResult]:
-        """FTS5 search.  ``rank`` is negative; we negate it to get a positive score."""
+    async def _search_sqlite(
+        self, query: str, limit: int, repository_id: str | None = None
+    ) -> list[SearchResult]:
+        """FTS5 search.  bm25 is negative; we negate it to get a positive score."""
         async with self._engine.connect() as conn:
 
             async def df(term: str) -> int:
                 return await self._document_frequency(conn, term)
 
             fts_query = await self._build_selective_query(query, df)
-            raw = await self._matching_rows(conn, fts_query, limit)
+            raw = await self._matching_rows(conn, fts_query, limit, repository_id=repository_id)
 
             # The frequency ceiling can cut a question down to terms that
             # nothing carries together. Retrying with every term is the prior
@@ -602,7 +669,9 @@ class FullTextSearch:
                     seen = {r[0] for r in raw}
                     extra = [
                         r
-                        for r in await self._matching_rows(conn, widened, limit)
+                        for r in await self._matching_rows(
+                            conn, widened, limit, repository_id=repository_id
+                        )
                         if r[0] not in seen
                     ]
                     if extra:
@@ -710,7 +779,9 @@ class FullTextSearch:
             kept = selective
         return " | ".join(_pg_term(t) for t in kept)
 
-    async def _search_postgresql(self, query: str, limit: int) -> list[SearchResult]:
+    async def _search_postgresql(
+        self, query: str, limit: int, repository_id: str | None = None
+    ) -> list[SearchResult]:
         """PostgreSQL tsvector search with ts_rank scoring.
 
         The query used to be handed to ``plainto_tsquery`` whole, which strips
@@ -730,17 +801,31 @@ class FullTextSearch:
             ts_query = await self._build_ts_query(conn, query)
             if not ts_query:
                 return []
-            rows = await conn.execute(
-                text(
-                    f"SELECT id, title, content, page_type, target_path, "
-                    f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
-                    f"FROM wiki_pages "
-                    f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
-                    f"ORDER BY rank DESC "
-                    f"LIMIT :lim",
-                ),
-                {"q": ts_query, "lim": limit},
-            )
+            if repository_id is not None:
+                rows = await conn.execute(
+                    text(
+                        f"SELECT id, title, content, page_type, target_path, "
+                        f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
+                        f"FROM wiki_pages "
+                        f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
+                        f"  AND repository_id = :repo_id "
+                        f"ORDER BY rank DESC "
+                        f"LIMIT :lim",
+                    ),
+                    {"q": ts_query, "lim": limit, "repo_id": repository_id},
+                )
+            else:
+                rows = await conn.execute(
+                    text(
+                        f"SELECT id, title, content, page_type, target_path, "
+                        f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
+                        f"FROM wiki_pages "
+                        f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
+                        f"ORDER BY rank DESC "
+                        f"LIMIT :lim",
+                    ),
+                    {"q": ts_query, "lim": limit},
+                )
             raw = rows.fetchall()
 
         return [

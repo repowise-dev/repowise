@@ -47,6 +47,8 @@ import contextlib
 import json
 from pathlib import Path
 
+from repowise.core.agents import identity
+
 from ..types import (
     Capability,
     DoctorReport,
@@ -59,8 +61,9 @@ from ..types import (
     WriteResult,
 )
 
-ID = "cursor"
-DISPLAY_NAME = "Cursor"
+IDENTITY = identity.CURSOR
+ID = IDENTITY.cli_target_id
+DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://cursor.com/docs/context/mcp"
 
 #: Config key gating this agent's managed rules file.
@@ -360,8 +363,8 @@ class CursorTarget:
     id = ID
     display_name = DISPLAY_NAME
     docs_url = DOCS_URL
-    hook_adapter = None
-    session_adapter = None
+    hook_adapter = IDENTITY.hook_adapter
+    session_adapter = IDENTITY.session_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 

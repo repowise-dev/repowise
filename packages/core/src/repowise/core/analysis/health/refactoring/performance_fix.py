@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 from repowise.core.analysis.execution_graph import file_of_symbol
 
 from ..perf.opportunities import PerformanceOpportunity
 from .models import RefactoringSuggestion
 from .registry import effort_bucket
+
+
+@dataclass(frozen=True, slots=True)
+class PerformancePlanPolicy:
+    """Whether authoritative plans are generated, and at what confidence floor.
+
+    Read from analyzer configuration and carried to the writer that persists
+    them, because that writer sees the merged stored findings and this module
+    has no view of configuration.
+    """
+
+    enabled: bool = True
+    min_confidence: str | None = None
 
 
 def performance_fix_suggestions(
@@ -101,4 +115,4 @@ def performance_fix_suggestions(
     return out
 
 
-__all__ = ["performance_fix_suggestions"]
+__all__ = ["PerformancePlanPolicy", "performance_fix_suggestions"]

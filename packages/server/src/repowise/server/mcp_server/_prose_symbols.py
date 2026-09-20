@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
@@ -81,9 +81,14 @@ _TERM_MATCH_SCORE = 10.0
 # as opposed to being one token inside it (``persist`` -> ``_persist_symbols``).
 _LEAF_NAME_BONUS = 15.0
 
+# These names are common because they describe an operation, not a domain.
+# They remain valid evidence when the owner, module, or path also agrees with
+# the question; the bare member name alone is deliberately insufficient.
+_GENERIC_MEMBER_NAMES = frozenset({"get", "run", "main"})
+
 
 async def _candidates_for_term(session, repo_id: str, term: str) -> tuple[list[WikiSymbol], bool]:
-    """Up to :data:`_PER_TERM_CANDIDATES` symbols whose name mentions *term*.
+    """Up to :data:`_PER_TERM_CANDIDATES` symbols whose identity mentions *term*.
 
     Returns ``(rows, saturated)``. Shorter names first: a term is a larger
     share of a short name, so ``persist`` identifies ``persist_pages`` far
@@ -95,7 +100,11 @@ async def _candidates_for_term(session, repo_id: str, term: str) -> tuple[list[W
         select(WikiSymbol)
         .where(
             WikiSymbol.repository_id == repo_id,
-            WikiSymbol.name.ilike(f"%{esc}%", escape=LIKE_ESCAPE),
+            or_(
+                WikiSymbol.name.ilike(f"%{esc}%", escape=LIKE_ESCAPE),
+                WikiSymbol.qualified_name.ilike(f"%{esc}%", escape=LIKE_ESCAPE),
+                WikiSymbol.file_path.ilike(f"%{esc}%", escape=LIKE_ESCAPE),
+            ),
         )
         .order_by(func.length(WikiSymbol.name))
         .limit(_PER_TERM_CANDIDATES)
@@ -132,21 +141,22 @@ def _score(
 def _corroborated(row: WikiSymbol, covered: dict[str, float], saturated: set[str]) -> bool:
     """Whether *row* has enough independent evidence to enter the pool.
 
-    One term is enough when it is the symbol's whole name and it is not a
-    saturated one: that is a caller naming the thing, just without the
-    underscores. Otherwise **two informative terms** must land. Saturated terms
-    do not count toward that pair: two common words agreeing is not corroboration,
-    it is the same non-signal twice, and letting them through is what put
-    ``ui/lib/cn.ts`` in the top five for a question about building skeletons.
-    Directly mirrors the guard lexical code-search engines apply to bare English
-    query words.
+    One term is enough when it is the symbol's whole specific name and it is not
+    saturated: that is a caller naming the thing, just without the underscores.
+    Generic members such as ``get`` remain valid only when an owner/module/path
+    term also agrees. Otherwise **two informative terms** must land. Saturated
+    terms do not count toward that pair: two common words agreeing is not
+    corroboration, it is the same non-signal twice.
     """
     if not covered:
         return False
     name = (row.name or "").lower()
-    if name in covered and name not in saturated:
+    informative = {term for term in covered if term not in saturated}
+    if name in _GENERIC_MEMBER_NAMES:
+        return any(term != name for term in informative)
+    if name in informative:
         return True
-    return sum(1 for t in covered if t not in saturated) >= 2
+    return len(informative) >= 2
 
 
 async def search_symbols_by_terms(
@@ -207,7 +217,7 @@ async def search_symbols_by_terms(
         # A term counts as covered when it survives tokenisation of the symbol
         # name, not merely as a substring: ``update`` should match
         # ``update_index``, not ``groupdater``.
-        stoks = _tokens(row.name) | _tokens(row.qualified_name)
+        stoks = _tokens(row.name) | _tokens(row.qualified_name) | _tokens(row.file_path)
         covered = {
             t: (_SATURATED_TERM_WEIGHT if t in saturated else 1.0)
             for t in matched.get(symbol_id, ())

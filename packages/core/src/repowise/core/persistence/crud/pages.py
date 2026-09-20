@@ -7,7 +7,7 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -308,11 +308,21 @@ async def load_prior_pages(
     """
     # Import lazily — keeps persistence independent of generation models at
     # module-load time.
+    from repowise.core.generation.models import STUB_FALLBACK_ERROR
     from repowise.core.generation.page_generator import PriorPage
 
     result = await session.execute(select(Page).where(Page.repository_id == repository_id))
     prior: dict[str, Any] = {}
     for row in result.scalars():
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        # A failed provider response is unfinished paid work, not a cache hit.
+        # Reusing it drops the failure marker when GeneratedPage is rebuilt and
+        # can let a resumed upgrade stamp placeholder prose as model-written.
+        if STUB_FALLBACK_ERROR in metadata:
+            continue
         prior[row.id] = PriorPage(
             source_hash=row.source_hash,
             model_name=row.model_name,
@@ -659,3 +669,233 @@ async def get_stale_pages(
         )
     )
     return list(result.scalars().all())
+
+
+#: Page types a scoped ``update`` can re-render for one file. Every other
+#: Page types the changed-file renderer can refresh from one file path. Whole-
+#: repository deterministic targets are handled separately below by exact id.
+_FILE_SCOPED_PAGE_TYPES = frozenset({"file_page", "symbol_spotlight"})
+
+# Deterministic pages that describe the complete repository rather than one
+# file.  A scoped file render cannot refresh these, but update already rebuilds
+# the complete graph and can render an exact id from that view without a model.
+# Keep this deliberately narrow: module/overview/onboarding pages are
+# model-written and belong to ``repowise generate --stale``; layer pages are
+# retired and swept independently.
+_UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES = frozenset({"scc_page"})
+
+
+async def get_stale_update_targets(
+    session: AsyncSession,
+    repository_id: str,
+) -> tuple[list[str], set[str]]:
+    """Return the stale pages an ordinary update can heal without a model.
+
+    The first item contains file paths for the existing file-scoped renderer.
+    The second contains exact ids for deterministic whole-repository pages,
+    which must be rendered from the complete parsed/graph view.  Returning both
+    from one query keeps the up-to-date fast path to a single store read.
+    """
+    result = await session.execute(
+        select(Page.id, Page.page_type, Page.target_path).where(
+            Page.repository_id == repository_id,
+            Page.page_type.in_(
+                sorted(_FILE_SCOPED_PAGE_TYPES | _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES)
+            ),
+            Page.freshness_status.in_(["stale", "expired"]),
+        )
+    )
+    stale_paths: list[str] = []
+    deterministic_ids: set[str] = set()
+    for page_id, page_type, target_path in result:
+        if page_type in _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES:
+            deterministic_ids.add(page_id)
+            continue
+        file_path = (target_path or "").split("::", 1)[0]
+        if file_path:
+            stale_paths.append(file_path)
+    return list(dict.fromkeys(stale_paths)), deterministic_ids
+
+
+async def get_stale_structural_file_paths(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[str]:
+    """File paths whose file-scoped pages are marked ``stale`` or ``expired``.
+
+    Covers ``file_page`` rows (``target_path`` is the file) and
+    ``symbol_spotlight`` rows (``target_path`` is ``<file>::<symbol>``), which
+    are the two page kinds a scoped ``update`` re-renders for a file. The
+    caller feeds these paths into the same regeneration list the renderer
+    staleness path uses, so an already-stale page is reconciled even when HEAD
+    has not moved.
+    """
+    stale_paths, _ = await get_stale_update_targets(session, repository_id)
+    return stale_paths
+
+
+def load_stale_structural_file_paths(repo_path: Any) -> list[str]:
+    """Sync entry point for :func:`_load_stale_structural_file_paths_async`.
+
+    Called from synchronous CLI code and from ``check_repo_staleness``, which
+    the async workspace update calls from inside a running loop. ``asyncio.run``
+    refuses to nest, so that one caller gets its own loop on a worker thread.
+    """
+    import asyncio
+    import concurrent.futures
+    from pathlib import Path
+
+    path_obj = Path(repo_path)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                lambda: asyncio.run(_load_stale_structural_file_paths_async(path_obj))
+            ).result()
+    return asyncio.run(_load_stale_structural_file_paths_async(path_obj))
+
+
+def load_stale_update_targets(repo_path: Any) -> tuple[list[str], set[str]]:
+    """Sync entry point returning both file paths and whole-repo page ids."""
+    import asyncio
+    import concurrent.futures
+    from pathlib import Path
+
+    path_obj = Path(repo_path)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                lambda: asyncio.run(_load_stale_update_targets_async(path_obj))
+            ).result()
+    return asyncio.run(_load_stale_update_targets_async(path_obj))
+
+
+async def _load_stale_structural_file_paths_async(repo_path: Any) -> list[str]:
+    """Load the stale file-scoped page paths for *repo_path* from its store.
+
+    Returns ``[]`` when no store is reachable: no configured database URL and
+    no local ``wiki.db``. A store that is reachable but fails to answer raises,
+    because reading that as "nothing is stale" would silently retire the
+    reconciliation this exists for.
+    """
+    from pathlib import Path
+
+    import structlog
+
+    from ..database import (
+        create_engine,
+        create_session_factory,
+        get_configured_db_url,
+        get_repo_db_path,
+        get_session,
+        resolve_db_url,
+    )
+    from .repository import get_repository_by_path
+
+    logger = structlog.get_logger(__name__)
+    path_obj = Path(repo_path)
+
+    if get_configured_db_url() is None and not get_repo_db_path(path_obj).exists():
+        return []
+
+    url = resolve_db_url(path_obj)
+    engine = create_engine(url)
+    try:
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(path_obj))
+            if repo is None:
+                return []
+            return await get_stale_structural_file_paths(session, repo.id)
+    except Exception as exc:
+        logger.warning("load_stale_structural_file_paths_failed", error=str(exc))
+        raise
+    finally:
+        await engine.dispose()
+
+
+async def _load_stale_update_targets_async(repo_path: Any) -> tuple[list[str], set[str]]:
+    """Load all no-model stale targets for an ordinary update."""
+    from pathlib import Path
+
+    import structlog
+
+    from ..database import (
+        create_engine,
+        create_session_factory,
+        get_configured_db_url,
+        get_repo_db_path,
+        get_session,
+        resolve_db_url,
+    )
+    from .repository import get_repository_by_path
+
+    logger = structlog.get_logger(__name__)
+    path_obj = Path(repo_path)
+
+    if get_configured_db_url() is None and not get_repo_db_path(path_obj).exists():
+        return [], set()
+
+    engine = create_engine(resolve_db_url(path_obj))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(path_obj))
+            if repo is None:
+                return [], set()
+            return await get_stale_update_targets(session, repo.id)
+    except Exception as exc:
+        logger.warning("load_stale_update_targets_failed", error=str(exc))
+        raise
+    finally:
+        await engine.dispose()
+
+
+async def get_stale_file_page_ages(
+    session: AsyncSession,
+    repository_id: str,
+) -> dict[str, float]:
+    """``{file_path: staleness_age_seconds}`` for stale/expired file pages.
+
+    The cascade-budget ordering in
+    :meth:`~repowise.core.ingestion.change_detector.ChangeDetector.get_affected_pages`
+    consumes this so a constrained regeneration run bubbles the *oldest* stale
+    pages to the top rather than reordering purely by importance (issues #847 /
+    #851). Staleness age is measured from ``updated_at`` — the last time the
+    page was regenerated — so the page whose prose lagged the code longest
+    carries the largest value.
+
+    Only ``file_page`` rows are returned: the cascade reaches file paths, and
+    the module / SCC / repo-wide containers are derived from the selected files
+    rather than selected themselves. Returns an empty dict when nothing is
+    stale (or the repository has no file pages), which keeps the pure-importance
+    ordering.
+    """
+    result = await session.execute(
+        select(Page.id, Page.target_path, Page.updated_at).where(
+            Page.repository_id == repository_id,
+            Page.page_type == "file_page",
+            Page.freshness_status.in_(["stale", "expired"]),
+        )
+    )
+    now = datetime.now(UTC)
+    ages: dict[str, float] = {}
+    for _pid, target_path, updated_at in result:
+        if not target_path:
+            continue
+        if updated_at is None:
+            ages[target_path] = float("inf")
+            continue
+        dt = updated_at
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        ages[target_path] = max(0.0, (now - dt).total_seconds())
+    return ages

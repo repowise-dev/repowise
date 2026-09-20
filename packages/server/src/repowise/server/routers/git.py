@@ -6,7 +6,6 @@ import json
 import os
 import subprocess
 from collections import Counter
-from dataclasses import replace
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,18 +17,19 @@ from repowise.core.analysis.change_risk import (
     SCORE_UNIT,
     FixHistoryUnavailableError,
     RiskNormalizer,
+    assess_change,
     baseline_samples,
     change_features_from_stored,
-    change_fix_density,
+    densities_excluding,
     extract_range_features,
-    fix_density_percentile,
     fix_pressure,
-    hot_files,
     range_anchor,
     review_priority_classification,
     score_change,
     scores_excluding,
 )
+from repowise.core.analysis.risk_semantics import change_risk_authority
+from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT, parse_partners
 from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
     classify_commit_category,
@@ -43,6 +43,7 @@ from repowise.server.schemas import (
     AgentTrendBucket,
     AgentTrendResponse,
     ChangeFeaturesResponse,
+    CoChangeResponse,
     CommitDetailResponse,
     CommitEvolutionBucket,
     CommitEvolutionResponse,
@@ -60,11 +61,8 @@ from repowise.server.schemas import (
     RiskHistogramBucket,
     RiskRangeResponse,
 )
+from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
-
-# Below this many sampled commits a percentile isn't worth showing; mirrors
-# the CLI's ``repowise risk`` threshold so the two surfaces agree.
-_MIN_BASELINE = 8
 
 router = APIRouter(
     prefix="/api/repos",
@@ -233,7 +231,7 @@ async def get_commits(
 ) -> Paginated[CommitResponse]:
     """Per-commit change-risk feed — the review-priority queue.
 
-    ``sort=risk`` (default) orders by raw change-risk score descending (the
+    ``sort=risk`` (default) orders by supporting diff-shape score descending (the
     review-priority order); ``sort=date`` orders by recency. ``authorship``
     narrows the feed to agent-attributed or human commits. Each commit also
     carries a **repo-relative** ``risk_percentile`` + ``review_priority`` so the
@@ -355,11 +353,11 @@ async def get_commit_stats(
     )
 
 
-_HISTOGRAM_BINS = 20  # 0.5-wide bins across the 0-10 raw change-risk score
+_HISTOGRAM_BINS = 20  # 0.5-wide bins across the 0-10 supporting diff-shape score
 
 
 def _risk_histogram(sorted_scores: list[float]) -> list[RiskHistogramBucket]:
-    """Bin the repo's raw change-risk scores for the distribution chart.
+    """Bin the repo's supporting diff-shape scores for the distribution chart.
 
     Reuses the score list already fetched for the normalizer, so this costs no
     extra query. The top bin is closed on the right so a perfect 10.0 lands
@@ -556,9 +554,7 @@ async def get_ownership(
     else:
         modules: dict[str, list] = {}
         for m in all_meta:
-            parts = m.file_path.split("/")
-            module = parts[0] if len(parts) > 1 else "root"
-            modules.setdefault(module, []).append(m)
+            modules.setdefault(top_level_module(m.file_path), []).append(m)
 
         entries = []
         for module_path, files in sorted(modules.items()):
@@ -594,20 +590,24 @@ async def get_ownership(
     )
 
 
-@router.get("/{repo_id}/co-changes")
+@router.get("/{repo_id}/co-changes", response_model=CoChangeResponse)
 async def get_co_changes(
     repo_id: str,
     file_path: str = Query(..., description="Relative file path"),
-    min_count: int = Query(3, ge=1),
+    min_count: int = Query(MIN_CO_CHANGE_SUPPORT, ge=1),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    """Get files that frequently change together with the given file."""
+    """Get files that frequently change together with the given file.
+
+    ``min_count`` is a number of shared commits, not the decayed weight.
+    """
     meta = await crud.get_git_metadata(session, repo_id, file_path)
     if meta is None:
         raise HTTPException(status_code=404, detail="Git metadata not found")
 
-    partners = json.loads(meta.co_change_partners_json)
-    filtered = [p for p in partners if p.get("co_change_count", 0) >= min_count]
+    filtered = [
+        p.record for p in parse_partners(meta.co_change_partners_json) if p.support >= min_count
+    ]
 
     return {
         "file_path": file_path,
@@ -674,7 +674,7 @@ def get_risk_range(
     ),
     repo: Repository = Depends(_resolve_local_repo),
 ) -> RiskRangeResponse:
-    """Score a ``base..head`` git range's defect risk from its live diff shape.
+    """Assess a ``base..head`` range from its live diff shape and history.
 
     Mirrors ``repowise risk <base>..<head> --format json``: same Kamei
     change-risk model, scored on demand against the working tree instead of
@@ -693,44 +693,37 @@ def get_risk_range(
             status_code=400, detail=f"Could not read range {base!r}..{head!r}: {exc}"
         ) from exc
 
-    risk = score_change(features)
-
-    percentile: float | None = None
-    priority: str | None = None
-    if baseline:
-        # Same anchor rule as the CLI/MCP scorer, so both surfaces rank a range
-        # against the history it forked from rather than against its own commits.
-        samples = baseline_samples(local_path, range_anchor(local_path, base, head), baseline, ())
-        scores = scores_excluding(samples, "")
-        if len(scores) >= _MIN_BASELINE:
-            normalizer = RiskNormalizer.from_scores(scores)
-            # Rank with experience unknown, matching the baseline (diff-shape
-            # percentile within the repo), keeping the comparison like-with-like.
-            rank_score = score_change(replace(features, exp=None)).score
-            percentile = normalizer.percentile(rank_score)
-            priority = normalizer.priority(rank_score)
-
-    # Read at the fork point, matching the CLI/MCP scorer: the record predates
-    # the change rather than counting fixes the range itself brought in.
+    # The fork point anchors both the baseline cohort and the fix record, so a
+    # range is ranked against the history it forked from and is never credited
+    # with fixes it brought in itself.
+    anchor = range_anchor(local_path, base, head)
+    samples = baseline_samples(local_path, anchor, baseline, ()) if baseline else []
     try:
-        pressure = fix_pressure(local_path, range_anchor(local_path, base, head))
-        fix_available = True
+        pressure: dict[str, float] | None = fix_pressure(local_path, anchor)
     except FixHistoryUnavailableError:
-        pressure, fix_available = {}, False
-    density = change_fix_density(pressure, features.file_churn)
+        pressure = None
+
+    assessed = assess_change(
+        features,
+        fix_pressure=pressure,
+        baseline_scores=scores_excluding(samples, ""),
+        baseline_fix_densities=densities_excluding(samples, "", pressure or {}),
+    )
+    risk, percentile, priority = assessed.risk, assessed.percentile, assessed.priority
 
     return RiskRangeResponse(
         base=base,
         head=head,
         fix_history=FixHistoryResponse(
-            available=fix_available,
-            density=round(density, 3),
-            percentile=fix_density_percentile(pressure, density),
+            available=assessed.fix_history_available,
+            density=assessed.fix_density,
+            percentile=assessed.fix_percentile,
             files=[
                 FixHistoryFileResponse(path=path, churn=churn, fix_pressure=p)
-                for path, churn, p in hot_files(pressure, features.file_churn)
+                for path, churn, p in assessed.hot_files
             ],
         ),
+        risk_authority=change_risk_authority(),
         score=risk.score,
         score_measures=SCORE_MEASURES,
         score_unit=SCORE_UNIT,

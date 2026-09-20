@@ -34,9 +34,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from repowise.core.distill.budget import estimate_tokens
-
-from . import counterfactual
+from . import counterfactual, interaction
 from .recorder import record_mcp_dead_end, record_mcp_saving
 
 logger = logging.getLogger(__name__)
@@ -44,8 +42,45 @@ logger = logging.getLogger(__name__)
 #: Coarse, non-identifying result fields worth reporting per tool call. All are
 #: enums or booleans (confidence tier, retrieval quality, staleness) — never
 #: query text, paths, or repo/symbol names. See the telemetry privacy contract.
+#:
+#: ``degraded`` names WHY a get_answer reply carries no synthesised prose (no
+#: provider, versus a provider that failed), which is the difference between an
+#: install working as designed and one that broke.
+#:
+#: ``response_chars`` / ``response_tokens`` size the delivered payload; plain
+#: counts, never content, so a field before/after of payload size exists.
 _META_FLAGS = ("index_behind", "embedder_degraded")
-_RESULT_ENUMS = ("confidence", "retrieval_quality", "grounding")
+_RESULT_ENUMS = ("confidence", "retrieval_quality", "grounding", "degraded")
+
+
+def _response_size(result: Any) -> tuple[int, int] | None:
+    """Serialised size of *result* as ``(chars, tokens)``, or ``None`` if unknown.
+
+    The response budget already stamps the compact serialised size on the way
+    in, so read that and serialise only when no stamp is present.
+    """
+    try:
+        from repowise.server.mcp_server._budget.budgeter import CHARS_PER_TOKEN
+
+        stamped = None
+        if isinstance(result, dict):
+            meta = result.get("_meta")
+            budget = meta.get("response_budget") if isinstance(meta, dict) else None
+            stamped = budget.get("serialized_chars") if isinstance(budget, dict) else None
+        if isinstance(stamped, int) and stamped > 0:
+            chars = stamped
+        else:
+            chars = len(json.dumps(result, separators=(",", ":"), default=str))
+    except Exception:
+        return None
+    return chars, chars // CHARS_PER_TOKEN
+
+
+def _semantic_search_state() -> bool | None:
+    """The install's vector-leg state, or ``None`` when it was never evaluated."""
+    from repowise.server.mcp_server._meta import semantic_search_state
+
+    return semantic_search_state()
 
 
 def _results_count_bucket(result: Any) -> str | None:
@@ -68,7 +103,7 @@ def _results_count_bucket(result: Any) -> str | None:
 def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str, Any]:
     """Build the anonymous ``mcp_tool_call`` properties for *result*.
 
-    Only coarse enums / booleans / bucketed counts — no user-identifying data.
+    Only coarse enums / booleans / bucketed counts / response size, never user-identifying data.
     """
     is_error = isinstance(result, dict) and bool(result.get("error"))
     props: dict[str, Any] = {
@@ -89,6 +124,18 @@ def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str,
         bucket = _results_count_bucket(result)
         if bucket is not None:
             props["results_bucket"] = bucket
+        size = _response_size(result)
+        if size is not None:
+            props["response_chars"], props["response_tokens"] = size
+    # Read from server state rather than from the response. `embedder_degraded`
+    # is False on a keyless install by design, so it only ever catches
+    # misconfiguration and the larger keyless population - retrieval genuinely
+    # full-text-only - was invisible. Taking it here keeps the caller's response
+    # exactly as it was: this is a fact about the install, and the agent already
+    # has everything it needs to see it.
+    semantic_search = _semantic_search_state()
+    if semantic_search is not None:
+        props["semantic_search"] = semantic_search
     return props
 
 
@@ -136,42 +183,72 @@ def _declared_tokens(result: Any) -> int | None:
     return value if isinstance(value, int) and value > 0 else None
 
 
-def _delivered_tokens(result: Any) -> int:
-    """Estimate tokens the agent actually received for *result*."""
-    try:
-        text = json.dumps(result, default=str)
-    except Exception:
-        return 0
-    return estimate_tokens(text)
+def response_tokens(result: Any) -> int:
+    """Tokens the agent actually received for *result*.
+
+    Reads the budgeter's own compact serialization, which is the measurement
+    the budget decisions were made against. The old helper here serialized with
+    default separators instead, so the ledger's delivered size and the
+    telemetry's response size disagreed for the same call, and the ledger's was
+    systematically the larger of the two.
+    """
+    size = _response_size(result)
+    return size[1] if size is not None else 0
 
 
-def _record(tool: str, result: Any) -> None:
-    """Measure, derive the counterfactual, and record — all best-effort."""
+def _observe_baseline(tool: str, result: Any) -> None:
+    """Derive the counterfactual here, and write the legacy row as before.
+
+    The counterfactual must be derived at this depth: the estimators read fields
+    a later budget pass is free to drop — a search reply's
+    ``results[].target_path``, a context reply's ``targets[].skeleton.full_tokens``
+    — so computing it further out would silently fall to zero on exactly the
+    large responses where it matters most. The number is carried on the
+    interaction, and the canonical event is written outside every layer, once
+    the delivered size is final.
+
+    The legacy ``savings`` row is still written, and still measured here rather
+    than at the end, because the costs endpoint, the overview headline and
+    ``repowise saved`` all still read that table and move to the canonical
+    report as their own change.
+
+    One thing about it did change: delivered size now comes from
+    :func:`response_tokens`, which reads the budgeter's compact serialization,
+    where this used to serialize with default separators. Compact JSON is
+    smaller, so the legacy row's ``distilled_tokens`` drops and its saving
+    rises. That is a one-time step up in the published MCP figure. It is the
+    right number -- the old one disagreed with the telemetry's size for the
+    same call -- but it is a change, not a no-op.
+    """
     declared = _declared_tokens(result)
     replaced = (
         declared if declared is not None else counterfactual.replaced_tokens_for(tool, result)
     )
+    live = interaction.current()
+    if live is not None:
+        live.observe_pre_budget(response_tokens(result))
+        if replaced > 0:
+            live.baseline_input_tokens = replaced
+
     if replaced <= 0:
-        # Dead-end debit: an error response delivered tokens and replaced
-        # nothing — net negative for the session, and the ledger must say so.
         if isinstance(result, dict) and result.get("error"):
             from repowise.server.mcp_server import _state
 
             record_mcp_dead_end(
-                getattr(_state, "_repo_path", None), tool, _delivered_tokens(result)
+                getattr(_state, "_repo_path", None), tool, response_tokens(result)
             )
         return
 
-    delivered = _delivered_tokens(result)
-
-    # Resolve the repo the MCP server is scoped to. Lazy import keeps this
-    # module free of package import-ordering coupling.
+    delivered = response_tokens(result)
     from repowise.server.mcp_server import _state
 
     repo_root = getattr(_state, "_repo_path", None)
     if record_mcp_saving(repo_root, tool, replaced, delivered) and isinstance(result, dict):
         meta = result.setdefault("_meta", {})
         if isinstance(meta, dict):
+            # Stamped before the outer budget runs, so these bytes are budgeted
+            # and counted. An agent-facing hint, not the ledger: the canonical
+            # event's delivered size is measured after this.
             meta["replaced_tokens"] = replaced
             meta["tokens_saved"] = max(0, replaced - delivered)
 
@@ -195,7 +272,7 @@ def instrument(fn: Callable[..., Any]) -> Callable[..., Any]:
         result = await fn(*args, **kwargs)
         duration_ms = int((time.perf_counter() - _t0) * 1000)
         try:
-            _record(tool, result)
+            _observe_baseline(tool, result)
         except Exception:  # pragma: no cover - defensive; savings never break a tool
             logger.debug("mcp savings instrumentation failed for %s", tool, exc_info=True)
         try:

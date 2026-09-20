@@ -3,6 +3,39 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { GenerationProgress } from "../../src/jobs/generation-progress.js";
 
 describe("GenerationProgress", () => {
+  it.each([
+    { completed: 241, total: 5, percentage: 100 },
+    { completed: -1, total: 5, percentage: 0 },
+    { completed: 3, total: 10, percentage: 30 },
+    { completed: 5, total: 5, percentage: 100 },
+    { completed: 241, total: 0, percentage: 0 },
+  ])("shows $percentage% for $completed / $total pages", ({ completed, total, percentage }) => {
+    render(
+      <GenerationProgress
+        job={{
+          id: "j1",
+          status: "running",
+          total_pages: total,
+          completed_pages: completed,
+        }}
+        log={[]}
+        elapsed={1000}
+        actualCost={null}
+        stuckPending={false}
+        cancelling={false}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(`${percentage}%`)).toBeInTheDocument();
+    expect(screen.getByText(`${completed} / ${total} pages`)).toBeInTheDocument();
+    const bar = screen.getByRole("progressbar");
+    expect(bar).toHaveAttribute("aria-valuenow", String(percentage));
+    expect(bar.firstElementChild).toHaveStyle({
+      transform: `translateX(${percentage - 100}%)`,
+    });
+  });
+
   it("renders the queued state for pending jobs", () => {
     render(
       <GenerationProgress

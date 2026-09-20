@@ -116,6 +116,29 @@ class TestJvmCodegen:
         )
         assert "ImmutablePerson" in names, names
 
+    def test_bare_immutable_is_not_immutables(self, tmp_path: Path) -> None:
+        """``javax.annotation.concurrent.@Immutable`` generates nothing."""
+        names = _names(
+            tmp_path, "CacheStats.java", "java",
+            "import javax.annotation.concurrent.Immutable;\n"
+            "@Immutable public final class CacheStats {}\n",
+        )
+        assert "ImmutableCacheStats" not in names, names
+
+    def test_qualified_immutable_still_emits(self, tmp_path: Path) -> None:
+        names = _names(
+            tmp_path, "Order.java", "java",
+            "import org.immutables.value.Value;\n"
+            "import org.mapstruct.Mapper;\n"
+            "import com.google.auto.value.AutoValue;\n"
+            "@Value.Immutable public abstract class Order {}\n"
+            "@Mapper interface OrderMapper { String map(String s); }\n"
+            "@AutoValue abstract class OrderBox {}\n",
+        )
+        assert "ImmutableOrder" in names, names
+        assert "OrderMapperImpl" in names, names
+        assert "AutoValue_OrderBox" in names, names
+
     def test_no_annotation_no_synthesis(self, tmp_path: Path) -> None:
         names = _names(
             tmp_path, "Plain.java", "java",

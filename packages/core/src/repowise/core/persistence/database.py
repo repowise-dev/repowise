@@ -12,12 +12,13 @@ Call init_db() once at startup to create all tables and the FTS index.
 from __future__ import annotations
 
 import os
+import sqlite3
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import structlog
-from sqlalchemy import event, inspect
+from sqlalchemy import event, inspect, literal
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -45,11 +46,16 @@ _SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
-    """Return the pragma list to apply to a SQLite connection."""
+    """Return the pragma list to apply to a SQLite connection.
+
+    ``busy_timeout`` leads so that every pragma and statement after it on this
+    connection inherits the retry window, rather than the window arriving only
+    once the connection is most of the way set up.
+    """
     return (
+        ("busy_timeout", str(busy_timeout_ms)),
         ("journal_mode", "WAL"),
         ("synchronous", "NORMAL"),
-        ("busy_timeout", str(busy_timeout_ms)),
         ("foreign_keys", "ON"),
     )
 
@@ -65,8 +71,59 @@ def _make_pragma_listener(busy_timeout_ms: int):
     (issue #326).
     """
 
+    # Log the first failed switch per engine, not every connection: this engine
+    # uses NullPool, so it reconnects per checkout and a store that cannot take
+    # WAL would otherwise emit a warning per query. Behaviour does not depend on
+    # this flag - every connection still attempts the switch.
+    warned = False
+
+    def _set_journal_mode_wal(cursor: object) -> None:
+        """Re-issue the WAL switch, but never let it fail the connection.
+
+        The re-issue is defensive: WAL persists in the file, so a store this
+        repowise created is already in WAL and the pragma is a no-op that
+        cannot contend. It exists only for a store written by an older
+        repowise, by ``alembic``, or on a filesystem that refused the first
+        switch - and there it can legitimately fail:
+
+        * a concurrent writer holds the brief exclusive lock the transition
+          needs, and SQLite does NOT route that lock through the busy handler,
+          so it returns SQLITE_BUSY immediately however large ``busy_timeout``
+          is;
+        * the store or its directory is read-only, giving "attempt to write a
+          readonly database".
+
+        None of those stop the connection being useful. The store keeps the
+        journal mode it already has and every query still runs, so the failure
+        is swallowed here and left to surface on a statement that actually
+        needs the write. What shipped before raised out of the ``connect``
+        event and took out the whole connection at open time, including reads
+        that would have succeeded.
+
+        Deliberately not retried. The listener runs on the event-loop thread
+        under SQLAlchemy's greenlet bridge, so sleeping here blocks the loop -
+        and when the writer is another task in this same process, that stops it
+        reaching the COMMIT the retry is waiting on. The next connection tries
+        again at no cost instead.
+        """
+        nonlocal warned
+        try:
+            # journal_mode returns the new mode and must be queried, not
+            # assigned, because in :memory: databases it silently
+            # downgrades to MEMORY.
+            cursor.execute("PRAGMA journal_mode=WAL")  # type: ignore[attr-defined]
+        except sqlite3.OperationalError as exc:
+            if not warned:
+                warned = True
+                log.warning(
+                    "sqlite: could not switch the store to WAL (%s). Continuing "
+                    "in its current journal mode; concurrent reads may block on "
+                    "writes until a later connection switches it.",
+                    exc,
+                )
+
     def _apply_sqlite_pragmas(dbapi_connection: object, _connection_record: object) -> None:
-        """Apply WAL, busy_timeout, and FK pragmas on every new SQLite connection.
+        """Apply busy_timeout, WAL, and FK pragmas on every new SQLite connection.
 
         Registered as a ``connect`` event listener so it runs once per physical
         connection, including the first one opened after the engine is created and
@@ -78,8 +135,9 @@ def _make_pragma_listener(busy_timeout_ms: int):
         cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
         try:
             for name, value in _sqlite_pragmas(busy_timeout_ms):
-                # journal_mode returns the new mode and must be queried, not assigned,
-                # because in :memory: databases it silently downgrades to MEMORY.
+                if name == "journal_mode":
+                    _set_journal_mode_wal(cursor)
+                    continue
                 cursor.execute(f"PRAGMA {name}={value}")
         finally:
             cursor.close()
@@ -242,7 +300,7 @@ async def get_session(
             raise
 
 
-def _column_default_sql(column: object) -> str | None:
+def _column_default_sql(column: object, dialect: object) -> str | None:
     """Return a SQL literal/expression suitable for an ADD COLUMN DEFAULT.
 
     Prefers ``server_default`` (the DDL-level default that the migration
@@ -266,7 +324,15 @@ def _column_default_sql(column: object) -> str | None:
         arg = getattr(py_default, "arg", None)
         if arg is not None and not callable(arg):
             if isinstance(arg, bool):
-                return "1" if arg else "0"
+                # Boolean literals are dialect-specific: SQLite accepts 0/1,
+                # while PostgreSQL requires false/true for BOOLEAN columns.
+                # Compile the typed value instead of treating bool as int.
+                return str(
+                    literal(arg, type_=column.type).compile(  # type: ignore[attr-defined]
+                        dialect=dialect,
+                        compile_kwargs={"literal_binds": True},
+                    )
+                )
             if isinstance(arg, (int, float)):
                 return str(arg)
             if isinstance(arg, str):
@@ -289,7 +355,7 @@ def _add_column_ddl(column: object, dialect: object) -> str:
         f'"{column.name}"',  # type: ignore[attr-defined]
         column.type.compile(dialect=dialect),  # type: ignore[attr-defined]
     ]
-    default_sql = _column_default_sql(column)
+    default_sql = _column_default_sql(column, dialect)
     if default_sql is not None:
         parts.append(f"DEFAULT {default_sql}")
     if not column.nullable:  # type: ignore[attr-defined]
@@ -390,8 +456,7 @@ def _reconcile_schema(connection: object) -> None:
             _run(
                 f"{table.name}.{column.name}",
                 lambda table=table, column=column: text(
-                    f'ALTER TABLE "{table.name}" ADD COLUMN '
-                    f"{_add_column_ddl(column, dialect)}"
+                    f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
                 ),
             )
 

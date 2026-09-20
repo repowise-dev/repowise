@@ -348,6 +348,7 @@ def test_unchanged_token_cache_entries_survive_splice(tmp_path: Path):
     from repowise.core.analysis.health.duplication.token_cache import (
         DuplicationTokenCache,
     )
+    from repowise.core.analysis.health.engine import HEALTH_ANALYZER_VERSION
 
     cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER})
     (tmp_path / "a.py").write_text(_BODY.replace("doit", "edited"))
@@ -355,7 +356,7 @@ def test_unchanged_token_cache_entries_survive_splice(tmp_path: Path):
     report = _incremental(parsed, cache_dir, {"a.py"})
     assert report.diagnostics.get("incremental") is True
 
-    cache = DuplicationTokenCache(cache_dir, WINDOW)
+    cache = DuplicationTokenCache(cache_dir, WINDOW, HEALTH_ANALYZER_VERSION)
     cache.load()
     for rel in ("a.py", "b.py", "c.py"):
         digest = hashlib.sha256((tmp_path / rel).read_bytes()).hexdigest()
@@ -371,7 +372,7 @@ def test_co_change_weight_applied_live_on_splice(tmp_path: Path):
     parsed = _parsed(tmp_path)
     meta = {
         "a.py": {
-            "co_change_partners_json": json.dumps([{"file_path": "b.py", "co_change_count": 7}])
+            "co_change_partners_json": json.dumps([{"file_path": "b.py", "co_change_count": 7, "frequency": 7}])
         }
     }
     report = detect_clones(

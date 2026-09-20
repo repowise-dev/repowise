@@ -24,6 +24,13 @@ from tests.unit.ingestion.parser._helpers import _make_file_info
             "Get(K key) -> V",
         ),
         (
+            "example.cpp",
+            "cpp",
+            b"Widget make(int key) { return Widget(); }",
+            "make",
+            "make(int key) -> Widget",
+        ),
+        (
             "example.go",
             "go",
             b'package example\ntype Example struct{}\nfunc (e *Example) Get(key string) (string, error) { return "", nil }',

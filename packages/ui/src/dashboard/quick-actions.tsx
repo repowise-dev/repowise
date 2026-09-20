@@ -286,7 +286,7 @@ export function QuickActions({
             onClick={() => handleClick(primary)}
           >
             <PrimaryIcon
-              className={`h-3.5 w-3.5 ${loading === primary.key ? "animate-spin" : ""}`}
+              className={`h-3.5 w-3.5 ${loading === primary.key ? "motion-safe:animate-spin" : ""}`}
             />
             {primary.label}
           </Button>
@@ -325,7 +325,7 @@ export function QuickActions({
                           action.destructive
                             ? "text-[var(--color-warning)]"
                             : "text-[var(--color-text-tertiary)]"
-                        } ${loading === action.key ? "animate-spin" : ""}`}
+                        } ${loading === action.key ? "motion-safe:animate-spin" : ""}`}
                       />
                       <span className="min-w-0">
                         <span className="block text-xs font-medium text-[var(--color-text-primary)]">
@@ -363,7 +363,7 @@ export function QuickActions({
                 disabled={loading !== null}
                 onClick={() => handleClick(action)}
               >
-                <Icon className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+                <Icon className={`h-3.5 w-3.5 ${isLoading ? "motion-safe:animate-spin" : ""}`} />
                 {action.label}
               </Button>
             );

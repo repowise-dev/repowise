@@ -8,7 +8,9 @@
  * (health / maintainability / performance / churn) so the cross-tab redundancy
  * collapses.
  *
- * Six tabs, down from seven. Hotspots is gone: it rendered a *second* galaxy map
+ * Performance has its own causal-opportunity tab; raw observations remain its
+ * evidence rather than competing with the ranked finding queue. Hotspots is
+ * gone: it rendered a *second* galaxy map
  * on the churn lens directly under this page's, so churn became a lens here and
  * what the lens cannot say — bus factor, the ranked table — became a section
  * under the map. Blast radius keeps its `impact` tab id (existing file-card and
@@ -24,45 +26,105 @@
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { HeartPulse, RotateCw } from "lucide-react";
+import {
+  Bug,
+  FlaskConical,
+  Gauge,
+  HeartPulse,
+  LayoutDashboard,
+  RotateCw,
+  Scissors,
+  BookText,
+  Shield,
+  Waypoints,
+  type LucideIcon,
+} from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
+import { ReleaseNotice } from "@repowise-dev/ui/shared/release-notice";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Button } from "@repowise-dev/ui/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@repowise-dev/ui/ui/select";
+import { formatDateTime } from "@repowise-dev/ui/lib/format";
 import type { CodeHealthOverlay } from "@repowise-dev/ui/health";
 import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
+import {
+  HEALTH_COUNTS,
+  HEALTH_SCOPES,
+  type HealthCounts,
+  type HealthScope,
+} from "@repowise-dev/types/health";
+import type { DocDriftResponse } from "@repowise-dev/types/doc-drift";
 import { TriageTab } from "@/components/code-health/triage-tab";
 import { HotspotsSection } from "@/components/code-health/hotspots-section";
 import { FindingsTab } from "@/components/code-health/findings-tab";
+import { PerformanceTab } from "@/components/code-health/performance-tab";
 import { CoverageTab } from "@/components/code-health/coverage-tab";
 import { TrendSection } from "@/components/code-health/trend-tab";
 import { DeadCodeTab } from "@/components/risk/dead-code-tab";
+import { DocDriftTab } from "@/components/risk/doc-drift-tab";
 import { ImpactTab } from "@/components/risk/impact-tab";
 import { SecurityTab } from "@/components/risk/security-tab";
 import { getDeadCodeSummary } from "@/lib/api/dead-code";
+import { getDocDrift } from "@/lib/api/doc-drift";
 import {
   getChurnComplexity,
   getHealthCoverage,
+  getHealthMap,
   getHealthOverview,
   getHealthTrend,
-  listHealthFiles,
+  getPerformanceOpportunity,
   type ChurnComplexityResponse,
   type HealthCoverageResponse,
+  type HealthMapFeed,
   type HealthOverviewResponse,
   type HealthTrendResponse,
-  type HealthFilesResponse,
 } from "@/lib/api/code-health";
 
-const TABS = ["triage", "findings", "coverage", "dead-code", "security", "impact"] as const;
+const TABS = [
+  "triage",
+  "performance",
+  "findings",
+  "coverage",
+  "dead-code",
+  "doc-drift",
+  "security",
+  "impact",
+] as const;
 type TabId = (typeof TABS)[number];
 
 const TAB_LABELS: Record<TabId, string> = {
   triage: "Overview",
+  performance: "Performance",
   findings: "Findings",
   coverage: "Tests",
   "dead-code": "Dead code",
+  "doc-drift": "Doc drift",
   security: "Security",
   impact: "Blast radius",
+};
+
+/**
+ * One mark per tab, to make the row scannable without reading every word.
+ * They are identity, not status: monochrome, inheriting the tab's own color, so
+ * no icon can imply a health band. The label still carries the accessible name,
+ * which is why `ViewTabs` renders them `aria-hidden`.
+ */
+const TAB_ICONS: Record<TabId, LucideIcon> = {
+  triage: LayoutDashboard,
+  performance: Gauge,
+  findings: Bug,
+  coverage: FlaskConical,
+  "dead-code": Scissors,
+  "doc-drift": BookText,
+  security: Shield,
+  impact: Waypoints,
 };
 
 /**
@@ -85,8 +147,78 @@ const TAB_ALIASES: Record<string, TabId> = {
  */
 const OVERLAYS: CodeHealthOverlay[] = ["health", "maintainability", "performance", "churn"];
 
-/** Files pulled for the map: biggest first, capped so the galaxy stays legible. */
-const MAP_FILE_LIMIT = 2000;
+/**
+ * Tabs whose data honours `scope`. The routes behind the others — coverage,
+ * dead code, security, blast radius — have no production/test split, and
+ * performance carries its own execution-context control, so the toggle is
+ * offered where it does something rather than sitting inert on five tabs.
+ */
+const SCOPED_TABS: TabId[] = ["triage", "findings"];
+
+const SCOPE_LABEL: Record<HealthScope, string> = {
+  all: "All code",
+  production: "Production",
+};
+
+/**
+ * Tabs whose data honours `counts`. The trend is deliberately absent even
+ * though it sits on the Overview: snapshots recorded the full score, so there
+ * is no code-shape series to draw and inventing one from mean deductions would
+ * disagree with the headline wherever a file sits at the score floor.
+ */
+const COUNTED_TABS: TabId[] = ["triage", "findings"];
+
+/**
+ * A named dropdown for a view control in the page header.
+ *
+ * These are filters over everything on the page, not navigation, so they read
+ * as a question and its current answer rather than as a second row of tabs
+ * competing with the real one.
+ */
+function ViewSelect({
+  label,
+  value,
+  onValueChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onValueChange: (next: string) => void;
+  options: { id: string; label: string }[];
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+        {label}
+      </span>
+      <Select value={value} onValueChange={onValueChange}>
+        <SelectTrigger aria-label={label} className="h-8 w-auto gap-1.5 px-2.5 text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((o) => (
+            <SelectItem key={o.id} value={o.id}>
+              {o.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+const COUNTS_LABEL: Record<HealthCounts, string> = {
+  everything: "Everything",
+  code_shape: "Code shape only",
+};
+
+/**
+ * Nodes the map draws. The server chooses which ones: the selected file first,
+ * then every file carrying an open performance cause in rank order, then the
+ * biggest files fill the rest. Ranking by size alone used to push tens of
+ * files with open causes off the field entirely.
+ */
+const MAP_CAP = 2000;
 /**
  * Churn points pulled for the churn lens. Deliberately larger than
  * `MAP_FILE_LIMIT`: the map ranks by NLOC and churn-complexity ranks by
@@ -110,22 +242,57 @@ export default function CodeHealthPage() {
   const searchParams = useSearchParams();
   const repoId = params.id;
 
+  // `?pillar=` predates the lens and the performance tab: the Overview health
+  // card still links with it. Performance now has a tab of its own and the
+  // other two are lenses, so the parameter resolves onto whichever surface
+  // actually answers it rather than onto a control that no longer exists.
+  const rawPillar = searchParams.get("pillar");
+
   const rawTab = searchParams.get("tab");
   const aliased = rawTab ? TAB_ALIASES[rawTab] : undefined;
   const activeTab: TabId =
     aliased ??
-    (rawTab && (TABS as readonly string[]).includes(rawTab) ? (rawTab as TabId) : "triage");
+    (rawTab && (TABS as readonly string[]).includes(rawTab)
+      ? (rawTab as TabId)
+      : rawPillar === "performance"
+        ? "performance"
+        : "triage");
+
+  const rawScope = searchParams.get("scope");
+  const scope: HealthScope = (HEALTH_SCOPES as readonly string[]).includes(rawScope ?? "")
+    ? (rawScope as HealthScope)
+    : "all";
+  // Only the default population needs no key suffix, so an existing cache entry
+  // stays valid and the narrowed one gets its own.
+  const scopeKey = scope === "all" ? "" : `:${scope}`;
+
+  const rawCounts = searchParams.get("counts");
+  const counts: HealthCounts = (HEALTH_COUNTS as readonly string[]).includes(rawCounts ?? "")
+    ? (rawCounts as HealthCounts)
+    : "everything";
+  // Same convention as scope, and appended after it: the two suffixes have to
+  // compose in one fixed order or the page-level key and the view-level key
+  // stop matching and the overview is fetched twice.
+  const countsKey = counts === "everything" ? "" : `:${counts}`;
+  const viewKey = `${scopeKey}${countsKey}`;
 
   const rawLens = searchParams.get("lens");
   const overlay: CodeHealthOverlay = (OVERLAYS as readonly string[]).includes(rawLens ?? "")
     ? (rawLens as CodeHealthOverlay)
-    : "health";
+    : rawPillar === "maintainability"
+      ? "maintainability"
+      : "health";
+
+  // The map's selection and its opportunity highlight live in the URL, so a
+  // link from the performance queue opens this field on the file it is about.
+  const selectedPath = searchParams.get("file");
+  const opportunityId = searchParams.get("opportunity");
 
   // Shares the SWR key with TriageView — the meta line and the findings count
   // cost no extra request.
   const { data: overview } = useSWR<HealthOverviewResponse>(
-    `code-health-overview:${repoId}`,
-    () => getHealthOverview(repoId, 25),
+    `code-health-overview:${repoId}${viewKey}`,
+    () => getHealthOverview(repoId, 25, scope, counts),
     { revalidateOnFocus: false },
   );
   const meta = overview?.meta;
@@ -137,38 +304,60 @@ export default function CodeHealthPage() {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await mutateAll(
-        (key) => typeof key === "string" && key.includes(repoId),
-        undefined,
-        { revalidate: true },
-      );
+      await mutateAll((key) => typeof key === "string" && key.includes(repoId), undefined, {
+        revalidate: true,
+      });
     } finally {
       setRefreshing(false);
     }
   }, [mutateAll, repoId]);
 
   // Trend fetched ONCE here, fed to the folded Trend section — no second fetch.
-  const { data: trend, isLoading: trendLoading, error: trendError } =
-    useSWR<HealthTrendResponse>(
-      `code-health-trend:${repoId}`,
-      () => getHealthTrend(repoId, 20),
-      { revalidateOnFocus: false },
-    );
-
-  // Every file (NLOC-first) for the map — one big pull, shared across overlays
-  // so switching the lens never refetches. `fields: "summary"` because the map
-  // and the spotlight read none of the lead/detail keys: at 2,000 rows the full
-  // shape was 1.06 MB, about 432 KB of it keys nobody here touches.
-  const { data: mapFiles } = useSWR<HealthFilesResponse>(
-    `code-health-map-files:${repoId}`,
-    () =>
-      listHealthFiles(repoId, {
-        limit: MAP_FILE_LIMIT,
-        sort: "nloc",
-        order: "desc",
-        fields: "summary",
-      }),
+  const {
+    data: trend,
+    isLoading: trendLoading,
+    error: trendError,
+  } = useSWR<HealthTrendResponse>(
+    `code-health-trend:${repoId}${scopeKey}`,
+    () => getHealthTrend(repoId, 20, scope),
     { revalidateOnFocus: false },
+  );
+
+  // The opportunity a link arrived with, so its files can be guaranteed a node
+  // and marked. One bounded request, and only when the link carries an id.
+  const { data: opportunity } = useSWR(
+    opportunityId ? `code-health-map-opportunity:${repoId}:${opportunityId}` : null,
+    () => getPerformanceOpportunity(repoId, opportunityId as string, { evidenceLimit: 25 }),
+    { revalidateOnFocus: false },
+  );
+
+  // The intervention file plus the files its evidence sits in. An id from a
+  // retired model resolves to a state rather than to a row, and that shape
+  // carries no paths, so it simply marks nothing.
+  const highlightPaths = useMemo(() => {
+    if (!opportunity || !("file_path" in opportunity)) return undefined;
+    const paths = [opportunity.file_path, ...opportunity.evidence.map((e) => e.file_path)];
+    return [...new Set(paths.filter(Boolean))];
+  }, [opportunity]);
+
+  // The bounded field: one pull, shared across lenses so switching never
+  // refetches. The paths the page needs on screen ride along as `active`, which
+  // is what makes the guarantee a server-side one rather than a hope that the
+  // size ranking happened to include them.
+  const activePaths = useMemo(
+    () => [...new Set([...(selectedPath ? [selectedPath] : []), ...(highlightPaths ?? [])])],
+    [selectedPath, highlightPaths],
+  );
+  const { data: mapFeed } = useSWR<HealthMapFeed>(
+    `code-health-map:${repoId}${viewKey}:${activePaths.join(",")}`,
+    () =>
+      getHealthMap(repoId, {
+        cap: MAP_CAP,
+        ...(activePaths.length ? { active: activePaths } : {}),
+        scope,
+        counts,
+      }),
+    { revalidateOnFocus: false, keepPreviousData: true },
   );
 
   // Churn percentiles for the churn lens. Fetched only once that lens is
@@ -184,17 +373,17 @@ export default function CodeHealthPage() {
   // Join churn onto the map rows by path. Until it lands every node would be
   // neutral, so the legend is told it is loading rather than letting an
   // all-grey field read as "no churn anywhere".
-  const mapFilesWithChurn: HealthFilesResponse | undefined = useMemo(() => {
-    if (!mapFiles || !churn) return mapFiles;
+  const mapFeedWithChurn: HealthMapFeed | undefined = useMemo(() => {
+    if (!mapFeed || !churn) return mapFeed;
     const byPath = new Map(churn.points.map((p) => [p.file_path, p.churn_percentile]));
     return {
-      ...mapFiles,
-      files: mapFiles.files.map((file) => ({
+      ...mapFeed,
+      files: mapFeed.files.map((file) => ({
         ...file,
         churn_percentile: byPath.get(file.file_path) ?? null,
       })),
     };
-  }, [mapFiles, churn]);
+  }, [mapFeed, churn]);
 
   // ---- Tab counts ----
   // Dead code uses the same key + fetcher as its own tab, so this is a prefetch
@@ -223,10 +412,27 @@ export default function CodeHealthPage() {
     { revalidateOnFocus: false },
   );
   const coveragePct = coverage?.summary.line_coverage_pct;
+  // `limit: 1` rather than the tab's own key: the summary is computed over the
+  // whole query and `findings_total` counts before any cap, so one row of
+  // payload carries the badge. Sharing the tab's key would dedupe but pull
+  // every finding on page load for a number.
+  const { data: docDrift } = useSWR<DocDriftResponse>(
+    `doc-drift-badge:${repoId}`,
+    () => getDocDrift(repoId, { limit: 1 }),
+    { revalidateOnFocus: false },
+  );
 
   const badges: Partial<Record<TabId, number | string>> = {};
-  if (overview) badges.findings = overview.summary.open_findings;
+  // Performance has its own tab and is out of the findings list, so counting
+  // it here would put a bigger number on the tab than the tab can show.
+  if (overview) {
+    badges.findings =
+      overview.summary.open_findings - (overview.summary.performance_findings ?? 0);
+  }
   if (deadCode) badges["dead-code"] = deadCode.total_findings;
+  // No badge when the drift pass has not run: the response carries a cause
+  // rather than a summary, and a 0 there would read as clean documentation.
+  if (docDrift?.summary) badges["doc-drift"] = docDrift.summary.findings_total;
   if (coveragePct != null) badges.coverage = `${Math.round(coveragePct)}%`;
 
   const setTab = useCallback(
@@ -234,6 +440,39 @@ export default function CodeHealthPage() {
       const sp = new URLSearchParams(searchParams.toString());
       if (next === "triage") sp.delete("tab");
       else sp.set("tab", next);
+      const qs = sp.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+
+  const setSelectedPath = useCallback(
+    (next: string | null) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (next) sp.set("file", next);
+      else sp.delete("file");
+      const qs = sp.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+
+  const setScope = useCallback(
+    (next: string) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (next === "all") sp.delete("scope");
+      else sp.set("scope", next);
+      const qs = sp.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+
+  const setCounts = useCallback(
+    (next: string) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (next === "everything") sp.delete("counts");
+      else sp.set("counts", next);
       const qs = sp.toString();
       router.replace(qs ? `?${qs}` : "?", { scroll: false });
     },
@@ -263,16 +502,51 @@ export default function CodeHealthPage() {
       // goes entirely to the field, which is this page's whole subject.
       maxWidth="wide"
       actions={
-        <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing}>
-          <RotateCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />{" "}
-          {refreshing ? "Refreshing…" : "Refresh"}
-        </Button>
+        // Two named dropdowns rather than two tab rows. Four choices spelled
+        // out in full overflowed the header on a phone and set the whole page
+        // scrolling sideways; a trigger shows the current answer and spends no
+        // width on the alternative.
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+          {SCOPED_TABS.includes(activeTab) && (
+            <ViewSelect
+              label="Files"
+              value={scope}
+              onValueChange={setScope}
+              options={HEALTH_SCOPES.map((id) => ({ id, label: SCOPE_LABEL[id] }))}
+            />
+          )}
+          {COUNTED_TABS.includes(activeTab) && (
+            <ViewSelect
+              label="Counts"
+              value={counts}
+              onValueChange={setCounts}
+              options={HEALTH_COUNTS.map((id) => ({ id, label: COUNTS_LABEL[id] }))}
+            />
+          )}
+          <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing}>
+            <RotateCw
+              className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? "motion-safe:animate-spin" : ""}`}
+            />{" "}
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+        </div>
       }
     >
+      {/* Keyed by id alone: this notice is about one scoring change, so it is
+          dismissible for good and a later change introduces its own. */}
+      <ReleaseNotice id="health-cochange-scoring">
+        <span className="font-medium text-[var(--color-text-primary)]">
+          Health scores changed in this release.
+        </span>{" "}
+        Co-change coupling is now measured relative to your repository and decays with
+        commit history rather than calendar time, so roughly one file in ten moves a
+        band. Scores are not comparable to snapshots taken before this release.
+      </ReleaseNotice>
+
       {meta ? (
         <p className="-mt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           {meta.last_indexed_at
-            ? `Indexed ${new Date(meta.last_indexed_at).toLocaleString()}`
+            ? `Indexed ${formatDateTime(meta.last_indexed_at)}`
             : "Not indexed yet"}
           {meta.head_commit ? ` · ${meta.head_commit.slice(0, 8)}` : ""}
           {` · ${meta.snapshot_count} snapshot${meta.snapshot_count === 1 ? "" : "s"}`}
@@ -280,37 +554,53 @@ export default function CodeHealthPage() {
       ) : null}
 
       <ViewTabs
-        tabs={TABS.map((id) => ({
-          id,
-          label: TAB_LABELS[id],
-          ...(badges[id] !== undefined ? { badge: badges[id] } : {}),
-        }))}
+        tabs={TABS.map((id) => {
+          const Icon = TAB_ICONS[id];
+          return {
+            id,
+            label: TAB_LABELS[id],
+            icon: <Icon className="h-3.5 w-3.5" />,
+            ...(badges[id] !== undefined ? { badge: badges[id] } : {}),
+          };
+        })}
         value={activeTab}
         onValueChange={setTab}
       >
         {activeTab === "triage" && (
           <TriageTab
+              counts={counts}
             repoId={repoId}
             trend={trend}
             overlay={overlay}
             onOverlayChange={setOverlay}
             lenses={OVERLAYS}
-            mapFiles={mapFilesWithChurn}
+            mapFeed={mapFeedWithChurn}
             overlayLoading={churnWanted && churnLoading && !churn}
+            selectedPath={selectedPath}
+            onSelectPath={setSelectedPath}
+            highlightPaths={highlightPaths}
+            scope={scope}
             hotspotsSlot={<HotspotsSection repoId={repoId} />}
             trendSlot={
               <OverviewSection
                 title="Health trend"
                 description="How the scores have moved across indexed snapshots."
               >
-                <TrendSection data={trend} isLoading={trendLoading} error={trendError} />
+                <TrendSection
+                  data={trend}
+                  isLoading={trendLoading}
+                  error={trendError}
+                  counts={counts}
+                />
               </OverviewSection>
             }
           />
         )}
-        {activeTab === "findings" && <FindingsTab repoId={repoId} />}
+        {activeTab === "findings" && <FindingsTab repoId={repoId} scope={scope} counts={counts} />}
+        {activeTab === "performance" && <PerformanceTab repoId={repoId} />}
         {activeTab === "coverage" && <CoverageTab repoId={repoId} />}
         {activeTab === "dead-code" && <DeadCodeTab repoId={repoId} />}
+        {activeTab === "doc-drift" && <DocDriftTab repoId={repoId} />}
         {activeTab === "security" && <SecurityTab repoId={repoId} />}
         {activeTab === "impact" && <ImpactTab repoId={repoId} />}
       </ViewTabs>

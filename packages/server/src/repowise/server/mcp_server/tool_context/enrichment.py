@@ -9,26 +9,42 @@ dispatch rather than one long body.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import asdict
 from typing import Any
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.doc_drift.constants import (
+    REFERENCE_BASIS,
+    UNAVAILABLE_NO_TABLE,
+    UNAVAILABLE_NOT_COMPUTED,
+    UNAVAILABLE_READ_FAILED,
+)
+from repowise.core.analysis.doc_drift.serialize import (
+    collapse_reference_sites,
+    documents_with_drift,
+)
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
 from repowise.core.persistence.crud import (
+    doc_drift_references_stored,
     get_all_file_metrics,
     get_community_members,
     get_cross_community_edges,
+    get_doc_drift_findings,
+    get_doc_drift_references,
     get_git_metadata,
     get_graph_edges_for_node,
     get_graph_node,
     get_graph_nodes_by_ids,
     get_node_degree_counts,
+    serialize_doc_drift_reference_row,
 )
 from repowise.core.persistence.models import (
     CoverageFile,
@@ -38,10 +54,32 @@ from repowise.core.persistence.models import (
     HealthFinding,
     Repository,
 )
-from repowise.server.mcp_server._helpers import filter_dicts_by_key, filter_path_list
+from repowise.server.mcp_server._basis import basis_cache_key, call_resolution_basis
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
+from repowise.server.mcp_server._helpers import (
+    filter_dicts_by_key,
+    filter_path_list,
+    filter_rows_by_attr,
+    is_missing_table,
+)
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
 
-# Minimum confidence for call edges to filter false positives
+#: Where a resolved target path waits between its card being built and the
+#: batched doc-drift read. Popped by that pass, so it never reaches a response.
+_DOC_DRIFT_PATH = "_doc_drift_path"
+
+#: Reference rows per target before the cap takes over. The same figure as
+#: ``targets._MAX_USED_BY``, for the same "who points at this" question.
+_MAX_DOC_REFERENCES = 20
+
+# Minimum confidence for call edges to filter false positives.
+#
+# Symbol-level only. The file-level rollup below defers to the shared
+# ``_graph_files`` floor (0.5) that every other file-pair surface uses; this
+# one stays at 0.7 because the two sites that read it -- the totals query and
+# the symbol rows -- have to be cut by the same rule as each other, and that
+# rule is documented at ``_count_neighbors_by_edge_type``.
 _MIN_CALL_CONFIDENCE = 0.7
 
 # Every edge type meaning "something reaches this symbol". Sorted so the
@@ -76,6 +114,11 @@ _SYMBOL_USE_EDGE_TYPES = sorted(SYMBOL_USE_EDGE_TYPES)
 #: callees for three hops. Keep it meaning what it is named.
 _CALL_EDGE_TYPES = ["calls"]
 
+#: Maximum caller/callee rows returned for one symbol. Kept as a named seam so
+#: contract tests can force an omission without depending on response size or
+#: platform-specific serialization details.
+_SYMBOL_NEIGHBOR_LIMIT = 50
+
 #: Rows carried per relation kind. Deliberately far below the call cap: the
 #: agent question these answer is "what else reaches this, and how", which the
 #: kind and the honest total answer. Naming them costs less than the
@@ -108,24 +151,15 @@ def _unique_by_symbol(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def _count_neighbors_by_edge_type(
     session: AsyncSession, repo_id: str, node_id: str, *, inbound: bool
 ) -> dict[str, int]:
-    """Count distinct inbound (or outbound) symbols per edge type, above the
-    confidence floor — the TRUE totals, independent of the display limit.
+    """Count qualifying edge rows per type to size each directional fetch.
 
-    Without this the callers list capped silently at the limit and reported
-    ``truncated: false``, which misled an agent doing a find-all-callers sweep
-    on a high-fan-in symbol into thinking 20 was the whole set (S2 dogfood).
-
-    `crud.get_node_degree_by_edge_type` answers the same shape for the REST
-    symbol page and is deliberately **not** reused: it counts edges with no
-    confidence floor, while this surface counts distinct symbols above 0.7. Two
-    symbols can be joined by more than one edge, so borrowing it would make the
-    total exceed what the rows can ever show and re-arm the bug above. The
-    rows and the totals have to be cut by the same rule.
+    The emitted true total is computed after policy filtering and symbol
+    deduplication. These raw counts only ensure each ranked fetch is large
+    enough to contain that complete post-policy population.
     """
     matched = GraphEdge.target_node_id if inbound else GraphEdge.source_node_id
-    other = GraphEdge.source_node_id if inbound else GraphEdge.target_node_id
     stmt = (
-        select(GraphEdge.edge_type, func.count(distinct(other)))
+        select(GraphEdge.edge_type, func.count(GraphEdge.id))
         .where(
             GraphEdge.repository_id == repo_id,
             matched == node_id,
@@ -147,12 +181,13 @@ async def _resolve_call_graph(
     want_callers: bool = False,
     want_callees: bool = False,
     exclude_spec: Any = None,
+    collector: OmissionCollector | None = None,
 ) -> None:
     """Resolve callers/callees for a symbol and attach to result_data."""
     repo_id = repository.id
     # 99.56% of symbols have <=50 callers (p99=31); the rare hub gets an
     # explicit `*_truncated` + `*_total` signal below rather than a silent cut.
-    limit = 50
+    limit = _SYMBOL_NEIGHBOR_LIMIT
 
     # Resolve to a graph node (symbol)
     node = await get_graph_node(session, repo_id, target)
@@ -176,9 +211,14 @@ async def _resolve_call_graph(
         # an empty callers list forced a second round-trip per orientation
         # pass for no reason; the graph has the answer at file granularity.
         if node is not None and node.node_type == "file" and want_callers:
-            await _resolve_file_level_callers(session, repo_id, node, result_data, exclude_spec)
+            await _resolve_file_level_callers(
+                session, repo_id, node, result_data, exclude_spec, collector, repository=repository
+            )
             if want_callees:
                 result_data["callees"] = []
+                result_data["callees_basis"] = await call_resolution_basis(
+                    session, repo_id, node.language, cache_key=basis_cache_key(repository)
+                )
             return
         if want_callers:
             result_data["callers"] = []
@@ -194,12 +234,12 @@ async def _resolve_call_graph(
     # Totals per edge type, per direction, before any rows. They say which
     # relation kinds exist at all, so nothing is fetched speculatively, and
     # they are the numbers reported — the rows are cut from the same rule.
-    totals_in = (
+    row_counts_in = (
         await _count_neighbors_by_edge_type(session, repo_id, node.node_id, inbound=True)
         if want_callers
         else {}
     )
-    totals_out = (
+    row_counts_out = (
         await _count_neighbors_by_edge_type(session, repo_id, node.node_id, inbound=False)
         if want_callees
         else {}
@@ -239,11 +279,11 @@ async def _resolve_call_graph(
     # django, where `Model` served 39 subclasses and 1 of its 8 callers. It is
     # mild on this repo (6 rows lost, all where `extends` ties `calls` at 0.9)
     # but it is the same mechanism and it is repo-dependent.
-    present = sorted(set(totals_in) | set(totals_out))
+    present = sorted(set(row_counts_in) | set(row_counts_out))
     edges_by_type: dict[str, list[GraphEdge]] = {}
     for edge_type in present:
-        want_in = want_callers and edge_type in totals_in
-        want_out = want_callees and edge_type in totals_out
+        want_in = want_callers and edge_type in row_counts_in
+        want_out = want_callees and edge_type in row_counts_out
         if not (want_in or want_out):
             continue
         edges_by_type[edge_type] = await get_graph_edges_for_node(
@@ -252,7 +292,7 @@ async def _resolve_call_graph(
             node.node_id,
             direction=("both" if want_in and want_out else ("callers" if want_in else "callees")),
             edge_types=[edge_type],
-            limit=limit if edge_type == "calls" else _RELATION_ROW_CAP,
+            limit=max(row_counts_in.get(edge_type, 0), row_counts_out.get(edge_type, 0), 1),
         )
 
     # Hydrated once for every edge type at once: the neighbour lookup is the
@@ -288,18 +328,16 @@ async def _resolve_call_graph(
             if e.source_node_id == node.node_id:
                 outbound.append(_entry(e, e.target_node_id, with_edge_type=is_call))
 
-        for direction, rows, totals in (
-            ("in", inbound, totals_in),
-            ("out", outbound, totals_out),
+        for direction, rows in (
+            ("in", inbound),
+            ("out", outbound),
         ):
             rows = filter_dicts_by_key(rows, "file", exclude_spec)
             rows.sort(key=lambda x: -(x.get("confidence") or 0))
-            # One entry per neighbouring symbol, highest-confidence edge kept.
-            # The truncation check compares this length against a
-            # COUNT(DISTINCT), so counting edges here would report "not
-            # truncated" while real callers are missing (the S2 dogfood).
+            # One entry per neighbouring symbol, highest-confidence edge kept;
+            # this post-policy list is the source of the public true total.
             rows = _unique_by_symbol(rows)
-            total = totals.get(edge_type, 0)
+            total = len(rows)
 
             if edge_type == "calls":
                 key = "callers" if direction == "in" else "callees"
@@ -307,16 +345,21 @@ async def _resolve_call_graph(
                     direction == "out" and not want_callees
                 ):
                     continue
-                result_data[key] = rows
-                if total > len(rows):
-                    result_data[f"{key}_total"] = total
-                    result_data[f"{key}_truncated"] = True
-                    if direction == "in":
-                        result_data["_callers_note"] = (
-                            f"Showing top {len(rows)} of {total} callers by confidence. "
-                            f"The graph view caps here; for the complete set (e.g. a "
-                            f"signature change) grep '{node.name}('."
-                        )
+                visible = cap_collection(
+                    result_data,
+                    key,
+                    rows,
+                    limit,
+                    collector,
+                    label=f"{target} :: {key} beyond cap={limit}",
+                )
+                if total > len(visible) and direction == "in":
+                    result_data["_callers_note"] = (
+                        f"Showing top {len(visible)} of {total} callers by confidence. "
+                        "Recover the omitted rows with get_symbol on the response's "
+                        "repowise omission reference; grep remains useful when graph "
+                        "coverage itself may be incomplete."
+                    )
                 continue
 
             if not total:
@@ -325,15 +368,24 @@ async def _resolve_call_graph(
             # are different sentences and an agent needs to know which it is
             # in. `group` is the shared vocabulary #1660 pinned, imported
             # rather than re-listed so a new edge type cannot land unnamed.
-            relations.append(
-                {
-                    "edge_type": edge_type,
-                    "group": SYMBOL_RELATION_GROUP_OF[edge_type],
-                    "direction": direction,
-                    "total": total,
-                    "rows": rows,
-                }
+            relation = {
+                "edge_type": edge_type,
+                "group": SYMBOL_RELATION_GROUP_OF[edge_type],
+                "direction": direction,
+                "total": total,
+            }
+            cap_collection(
+                relation,
+                "rows",
+                rows,
+                _RELATION_ROW_CAP,
+                collector,
+                label=(
+                    f"{target} :: relations.{edge_type}.{direction} "
+                    f"beyond cap={_RELATION_ROW_CAP}"
+                ),
             )
+            relations.append(relation)
 
     # `calls` may be absent entirely, and an omitted key reads as "not asked
     # for" rather than "none" — the distinction an agent needs before deciding
@@ -342,6 +394,13 @@ async def _resolve_call_graph(
         result_data.setdefault("callers", [])
     if want_callees:
         result_data.setdefault("callees", [])
+    # A zero only earns a basis. A populated list is already its own evidence,
+    # and the basis would just repeat what the rows show.
+    for key in ("callers", "callees"):
+        if key in result_data and not result_data[key]:
+            result_data[f"{key}_basis"] = await call_resolution_basis(
+                session, repo_id, node.language, cache_key=basis_cache_key(repository)
+            )
 
     if relations:
         relations.sort(key=lambda r: (r["direction"], -r["total"], r["edge_type"]))
@@ -356,7 +415,7 @@ async def _resolve_call_graph(
         # calls X" would contradict the `_callers_note` telling the agent to go
         # and grep for them.
         inbound_kinds = [r for r in relations if r["direction"] == "in"]
-        if want_callers and not totals_in.get("calls") and inbound_kinds:
+        if want_callers and not row_counts_in.get("calls") and inbound_kinds:
             reached = ", ".join(f"{r['total']} {r['edge_type']}" for r in inbound_kinds)
             result_data["_call_graph_note"] = (
                 f"Nothing calls '{node.name}'; it is reached by {reached}. See `relations`."
@@ -369,6 +428,9 @@ async def _resolve_file_level_callers(
     node: GraphNode,
     result_data: dict[str, Any],
     exclude_spec: Any = None,
+    collector: OmissionCollector | None = None,
+    *,
+    repository: Repository | None = None,
 ) -> None:
     """File-target callers: importing files + inbound symbol-call rollup.
 
@@ -379,9 +441,14 @@ async def _resolve_file_level_callers(
     from repowise.core.persistence.models import GraphEdge
 
     # Who imports this file (file-node inbound import edges).
-    import_edges = await get_graph_edges_for_node(
-        session, repo_id, node.node_id, direction="callers", edge_types=["imports"], limit=50
+    import_res = await session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.target_node_id == node.node_id,
+            GraphEdge.edge_type == "imports",
+        )
     )
+    import_edges = list(import_res.scalars().all())
     importer_ids = [e.source_node_id for e in import_edges if e.target_node_id == node.node_id]
     importer_nodes = await get_graph_nodes_by_ids(session, repo_id, importer_ids)
     # For file nodes the node_id IS the path; file_path may be unset.
@@ -411,12 +478,18 @@ async def _resolve_file_level_callers(
                 GraphEdge.edge_type == "calls",
             )
         )
+        # One rule for every calls-projected-onto-files surface. This rollup
+        # used to hand-roll a 0.7 floor and the self-loop drop and had no
+        # cross-extension guard at all, so the same edge was kept by the zoom
+        # map and dropped here (1,436 of 45,755 reliable execution edges, 3.1%,
+        # across 8 indexed repos; 24.8% on eShopOnWeb). The shared helper
+        # replaces all three checks. Its same-extension guard does drop genuine
+        # cross-language calls -- that is the known ceiling on the shared
+        # helper, not debt introduced here.
         for src_id, confidence in edge_res.all():
-            if (confidence or 0) < _MIN_CALL_CONFIDENCE:
+            src_file = node_to_file(src_id)
+            if not keep_projected_edge(src_file, target_file, "calls", confidence):
                 continue
-            src_file = src_id.split("::")[0] if "::" in src_id else src_id
-            if src_file == target_file:
-                continue  # intra-file calls are not "callers" of the file
             calls_by_file[src_file] = calls_by_file.get(src_file, 0) + 1
 
     entries: list[dict[str, Any]] = []
@@ -430,11 +503,22 @@ async def _resolve_file_level_callers(
     entries = filter_dicts_by_key(entries, "file", exclude_spec)
     entries.sort(key=lambda x: -(x.get("inbound_calls") or 0))
 
-    result_data["callers"] = entries[:20]
+    cap_collection(
+        result_data,
+        "callers",
+        entries,
+        20,
+        collector,
+        label=f"{node.node_id} :: file callers beyond cap=20",
+    )
     result_data["_call_graph_note"] = (
         "File-level rollup: importing files plus inbound cross-file call "
         "counts. For symbol-precise callers pass 'file.py::Symbol'."
     )
+    if repository is not None and not result_data.get("callers"):
+        result_data["callers_basis"] = await call_resolution_basis(
+            session, repo_id, node.language, cache_key=basis_cache_key(repository)
+        )
 
 
 async def _resolve_metrics(
@@ -484,16 +568,25 @@ async def _resolve_metrics(
             return 0
         return round(100 * sum(1 for v in all_vals if v < value) / len(all_vals))
 
-    result_data["metrics"] = {
+    metrics: dict[str, Any] = {
         "pagerank": round(node.pagerank or 0.0, 6),
         "pagerank_percentile": _pct(node.pagerank or 0.0, pr_values),
-        "betweenness": round(node.betweenness or 0.0, 6),
-        "betweenness_percentile": _pct(node.betweenness or 0.0, bt_values),
         "in_degree": degrees["in_degree"],
         "out_degree": degrees["out_degree"],
         "community_id": node.community_id,
         "community_label": meta.get("label") or None,
     }
+    # A node added since the last scoring holds the column default and has
+    # never been measured. Reporting that 0.0 would read as "on no shortest
+    # path" — the opposite claim for a symbol just spliced into a hot call
+    # chain.
+    if node.betweenness_commit is None:
+        metrics["betweenness"] = None
+        metrics["betweenness_note"] = "not scored yet: added since the last centrality run"
+    else:
+        metrics["betweenness"] = round(node.betweenness or 0.0, 6)
+        metrics["betweenness_percentile"] = _pct(node.betweenness or 0.0, bt_values)
+    result_data["metrics"] = metrics
 
 
 async def _resolve_community(
@@ -668,6 +761,140 @@ async def _resolve_health(
         health["signals"] = signals
 
     result_data["health"] = health
+
+
+async def attach_doc_references(
+    session: AsyncSession,
+    repository: Repository,
+    cards: dict[str, dict[str, Any]],
+    *,
+    exclude_spec: Any = None,
+    collector: OmissionCollector | None = None,
+) -> None:
+    """Attach, to every card, the documents that name its file.
+
+    The drift pass files a finding against the document, so these stored rows
+    are the only thing that can answer a question asked about a code file.
+    Served rather than recomputed: see :class:`DocDriftReference`.
+
+    Runs once for the whole call, after the targets resolve. Savepoints opened
+    per target nest on the session they share, and the first to exit closes
+    the others.
+
+    Two claims, kept apart: ``references`` says a document names this file,
+    ``documents_with_drift`` says a listed document has some assertion that no
+    longer holds -- anywhere in it, not necessarily about this file.
+    """
+    wanted = {
+        name: card.pop(_DOC_DRIFT_PATH, None)
+        for name, card in cards.items()
+        if _DOC_DRIFT_PATH in card
+    }
+    if not wanted:
+        return
+
+    paths = {path for path in wanted.values() if path}
+    rows: list[Any] = []
+    finding_rows: list[Any] = []
+    stored = True
+    if paths:
+        try:
+            # Not decoration: this read raises on an index older than the
+            # table, and on Postgres a failed statement poisons the whole
+            # transaction.
+            async with session.begin_nested():
+                rows = await get_doc_drift_references(
+                    session, repository.id, target_paths=sorted(paths)
+                )
+                # An empty answer is the strong claim "no document
+                # mentions this file", and an empty store cannot support it.
+                # Asked only when the answer would otherwise be empty.
+                stored = bool(rows) or await doc_drift_references_stored(
+                    session, repository.id
+                )
+                # Read whole: the findings table is the defect list and is
+                # bounded by design. Ceiling for a repo with thousands of
+                # them: a plural filter on ``get_doc_drift_findings``.
+                if rows:
+                    finding_rows = await get_doc_drift_findings(session, repository.id)
+        except (SQLAlchemyError, OSError, LookupError) as exc:
+            # Refuse rather than serve an empty list, which reads as a
+            # clean bill that was never taken -- and name which failure, since
+            # "your index is old" is wrong advice for a transient one.
+            reason = (
+                UNAVAILABLE_NO_TABLE
+                if is_missing_table(exc)
+                else UNAVAILABLE_READ_FAILED
+            )
+            for name in wanted:
+                cards[name]["doc_drift"] = {"unavailable": reason}
+            return
+
+    kept = filter_rows_by_attr(rows, "document_path", exclude_spec)
+    excluded_by_target = Counter(r.target_path for r in rows) - Counter(
+        r.target_path for r in kept
+    )
+    by_target: dict[str, list[Any]] = {}
+    for row in kept:
+        by_target.setdefault(row.target_path, []).append(row)
+
+    drift_by_document = Counter(f.file_path for f in finding_rows)
+
+    for name, path in wanted.items():
+        if not path:
+            # A module target resolves to a directory, and a reference does
+            # not resolve to one.
+            cards[name]["doc_drift"] = None
+        elif not stored:
+            cards[name]["doc_drift"] = {"unavailable": UNAVAILABLE_NOT_COMPUTED}
+        else:
+            cards[name]["doc_drift"] = _doc_reference_block(
+                by_target.get(path, []),
+                drift_by_document,
+                excluded=excluded_by_target.get(path, 0),
+                target=path,
+                collector=collector,
+            )
+
+
+def _doc_reference_block(
+    rows: list[Any],
+    drift_by_document: Counter[str],
+    *,
+    excluded: int,
+    target: str,
+    collector: OmissionCollector | None,
+) -> dict[str, Any]:
+    """One target's reverse-view block, built from its own rows."""
+    block: dict[str, Any] = {}
+    emitted = collapse_reference_sites(
+        [serialize_doc_drift_reference_row(row) for row in rows]
+    )
+    cap_collection(
+        block,
+        "references",
+        emitted,
+        _MAX_DOC_REFERENCES,
+        collector,
+        label=f"documents naming {target}",
+    )
+    block["documents"] = len({r.document_path for r in rows})
+    if excluded:
+        # Otherwise a tree whose naming documents are all excluded reads as a
+        # file nothing mentions.
+        block["references_excluded"] = excluded
+
+    # Only the documents this answer matched; the repo-wide total is what
+    # ``get_health(include=["doc_drift"])`` is for. Read off the uncapped list,
+    # or a document past the display cap reports as clean.
+    drifted = documents_with_drift(emitted, drift_by_document)
+    if drifted:
+        block["documents_with_drift"] = drifted
+
+    # Emitted on an empty answer too: that is the one most likely to be
+    # read as proof that nothing documents this file.
+    block["references_basis"] = REFERENCE_BASIS
+    return block
 
 
 async def _resolve_skeleton(

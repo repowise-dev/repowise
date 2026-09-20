@@ -83,13 +83,100 @@ def test_upsert_structured_merges_sessions_and_kind(store):
     assert sorted(row["files"]) == ["a.py", "b.py"]
 
 
-def test_single_choice_observation_does_not_promote(store):
+def test_a_single_choice_promotes_when_it_states_a_reason(store):
+    """The recurrence bar rejected every one of these and never fired.
+
+    No staged row in the dogfood store has been observed twice, so waiting
+    for a second sighting rejected 256 rows on a condition nothing could
+    satisfy. A stated reason measures the record instead of the corpus.
+    """
     _raw(store, hash_="r1")
     store.upsert_structured(
         "r1",
         kind="explicit_choice",
         title=STRUCTURED["title"],
         structured=STRUCTURED,
+        quotes=["q"],
+        files=[],
+        session_id="s1",
+    )
+    assert [row["key"] for row in store.promotable()] == [title_key(STRUCTURED["title"])]
+
+
+def test_a_choice_with_no_reason_does_not_promote(store):
+    _raw(store, hash_="r1")
+    store.upsert_structured(
+        "r1",
+        kind="explicit_choice",
+        title=STRUCTURED["title"],
+        structured={**STRUCTURED, "rationale": ""},
+        quotes=["q"],
+        files=[],
+        session_id="s1",
+    )
+    assert store.promotable() == []
+
+
+def test_a_reason_of_only_whitespace_is_no_reason(store):
+    _raw(store, hash_="r1")
+    store.upsert_structured(
+        "r1",
+        kind="explicit_choice",
+        title=STRUCTURED["title"],
+        structured={**STRUCTURED, "rationale": "   \n  "},
+        quotes=["q"],
+        files=[],
+        session_id="s1",
+    )
+    assert store.promotable() == []
+
+
+def test_a_row_already_promoted_keeps_accreting_without_a_reason(store):
+    """The bar admits a record; it does not retract one already admitted.
+
+    124 of the 150 rows the old bar promoted are corrections carrying no
+    rationale. They are in the store either way, so refusing their later
+    evidence would only make an existing record worse informed.
+    """
+    _raw(store, hash_="r1", kind="user_correction")
+    key = store.upsert_structured(
+        "r1",
+        kind="user_correction",
+        title=STRUCTURED["title"],
+        structured={**STRUCTURED, "rationale": ""},
+        quotes=["q"],
+        files=[],
+        session_id="s1",
+    )
+    assert store.promotable() == []
+
+    # Promoted once, under whatever bar was in force at the time.
+    store.mark_emitted(key, observations=1, now=1.0)
+    store.upsert_structured(
+        "r1",
+        kind="user_correction",
+        title=STRUCTURED["title"],
+        structured={**STRUCTURED, "rationale": ""},
+        quotes=["q"],
+        files=[],
+        session_id="s2",
+    )
+
+    assert [row["key"] for row in store.promotable()] == [key]
+
+
+def test_a_correction_with_no_reason_does_not_promote_either(store):
+    """The bar is the record, not the lane that raised it.
+
+    ``user_correction`` used to be the entire promotion path, on the strength
+    of its kind alone. A correction nobody explained is still unexplained.
+    """
+    _raw(store, hash_="r1", kind="user_correction")
+    store.upsert_structured(
+        "r1",
+        kind="user_correction",
+        title=STRUCTURED["title"],
+        structured={**STRUCTURED, "rationale": None},
         quotes=["q"],
         files=[],
         session_id="s1",

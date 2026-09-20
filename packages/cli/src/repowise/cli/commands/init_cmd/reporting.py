@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from repowise.cli.helpers import console
+from repowise.cli.helpers import console, load_config, load_state
 from repowise.cli.ui import (
     ERR,
     OK,
@@ -90,8 +90,13 @@ def _render_defect_accuracy(result: Any) -> None:
         return
     try:
         from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+        from repowise.core.analysis.health.ranking import deduction_by_path
 
-        stat = compute_defect_accuracy(report.metrics, report.findings)
+        stat = compute_defect_accuracy(
+            report.metrics,
+            report.findings,
+            deductions=deduction_by_path(report.findings),
+        )
     except Exception:
         return
     if not stat:
@@ -135,6 +140,9 @@ def show_completion(
     result is the panel above it.
     """
     elapsed = time.monotonic() - start
+    from repowise.core.index_scope import resolve_index_scope
+
+    _scope = resolve_index_scope(load_state(Path(repo_path)), load_config(Path(repo_path)))
 
     _graph_final = result.graph_builder.graph()
     _dc_unreachable = sum(
@@ -183,10 +191,22 @@ def show_completion(
     # languages and graph size appeared once in the "Analysis Complete"
     # interstitial, minutes and one cost prompt earlier.
     _index_rows: list[tuple[str, str]] = [
+        (
+            "Scope",
+            f"{_scope['run_mode']} · {_scope['content_provenance']} · git {_scope['git_tier']}",
+        ),
         ("Files indexed", f"{result.file_count:,}"),
         ("Symbols", f"{result.symbol_count:,}"),
         ("Languages", _lang_summary_final),
     ]
+    if _scope["file_pages"]["eligible"] is not None:
+        _fp = _scope["file_pages"]
+        _index_rows.append(
+            (
+                "File pages",
+                f"{_fp['generated']}/{_fp['eligible']} generated · {_fp['omitted']} omitted",
+            )
+        )
     _structure_rows: list[tuple[str, str]] = [
         (
             "Graph",
@@ -330,9 +350,7 @@ def _show_generation_checks(result: Any) -> None:
     except Exception as exc:
         # A first index that could not check itself must not read like one that
         # checked itself clean. The run still exits 0; the wiki is written.
-        console.print(
-            f"[{ERR}]Generation checks did not run:[/] {type(exc).__name__}: {exc}"
-        )
+        console.print(f"[{ERR}]Generation checks did not run:[/] {type(exc).__name__}: {exc}")
 
 
 def show_workspace_completion(

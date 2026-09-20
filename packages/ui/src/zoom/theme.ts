@@ -47,10 +47,11 @@ export interface ZoomPalette {
   dead: string;
   entry: string;
   flow: string;
-  /** Code-health traffic-light inks, matching the /files treemap bands. */
-  healthAlert: string;
-  healthWarning: string;
-  healthHealthy: string;
+  /** Code-health band inks. Excellent and Good share the one green. */
+  healthAtRisk: string;
+  healthNeedsWork: string;
+  healthFair: string;
+  healthGood: string;
   /** Neutral ink for an unscored file/subtree (health is sparse). */
   healthNeutral: string;
 }
@@ -78,11 +79,12 @@ const TOKEN_SPEC: Record<keyof ZoomPalette, string> = {
   dead: "--color-stale",
   entry: "--color-success",
   flow: "--color-accent-secondary",
-  // Same tokens the health tokens.ts `healthInk` maps to, so a zoom card and the
-  // /files treemap tile agree on what counts as red/amber/green.
-  healthAlert: "--color-error",
-  healthWarning: "--color-warning",
-  healthHealthy: "--color-success",
+  // Same tokens `healthInk` maps to, so a zoom card, the detail panel beside
+  // it and a /files treemap tile agree on the colour of one band.
+  healthAtRisk: "--color-error",
+  healthNeedsWork: "--color-warning",
+  healthFair: "--color-caution",
+  healthGood: "--color-success",
   healthNeutral: "--color-text-tertiary",
 };
 
@@ -107,9 +109,10 @@ const FALLBACK: ZoomPalette = {
   dead: "gray",
   entry: "green",
   flow: "teal",
-  healthAlert: "crimson",
-  healthWarning: "orange",
-  healthHealthy: "green",
+  healthAtRisk: "crimson",
+  healthNeedsWork: "orange",
+  healthFair: "goldenrod",
+  healthGood: "green",
   healthNeutral: "gray",
 };
 

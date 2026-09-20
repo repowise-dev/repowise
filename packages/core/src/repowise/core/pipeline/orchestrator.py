@@ -37,10 +37,15 @@ from .phases._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pager
 from .phases.analysis import (
     _run_dead_code_analysis,
     _run_decision_extraction,
+    _run_doc_drift_analysis,
     _run_health_analysis,
 )
 from .phases.generation import run_generation
-from .phases.git import _run_git_indexing, drop_transient_git_signals
+from .phases.git import (
+    _run_git_indexing,
+    drop_transient_git_signals,
+    label_co_change_structure,
+)
 from .phases.ingestion import _run_ingestion, reparse_for_resume
 from .resume import ResumePhase
 from .resume.controller import ResumeController
@@ -110,6 +115,9 @@ class PipelineResult:
 
     health_report: Any | None = None
     """``HealthReport`` or None — populated by ``_run_health_analysis``."""
+
+    doc_drift_report: Any | None = None
+    """``DocDriftReport`` or None — populated by ``_run_doc_drift_analysis``."""
 
     # Traversal stats
     traversal_stats: Any | None = None
@@ -345,6 +353,9 @@ async def run_pipeline(
                 derive_environment_facts=derive_environment_facts,
             )
             traversal_stats = None
+            # Rehydrated rows can predate the structural label, and nothing
+            # else on this path recomputes it.
+            label_co_change_structure(graph_builder, git_meta_map)
             git_metadata_list = list(git_meta_map.values())
         except Exception as exc:
             logger.warning("resume_rehydrate_failed_recomputing", error=str(exc))
@@ -370,6 +381,7 @@ async def run_pipeline(
 
         # Add co-change edges to the graph (rehydrated graphs already carry them)
         if git_meta_map:
+            label_co_change_structure(graph_builder, git_meta_map)
             graph_builder.add_co_change_edges(git_meta_map)
 
     # ---- External systems (C4 L1) ------------------------------------------
@@ -472,6 +484,7 @@ async def run_pipeline(
     dead_code_report = None
     health_report = None
     decision_report = None
+    doc_drift_report = None
     # Reports actually fed to generation + KG — rehydrated on the skip path,
     # the freshly computed ones otherwise.
     gen_dead_code_report = None
@@ -489,12 +502,17 @@ async def run_pipeline(
             skip_analysis = False
 
     if not skip_analysis:
-        # The three analyses share read-only inputs (graph, git_meta_map,
+        # The four analyses share read-only inputs (graph, git_meta_map,
         # parsed_files; the lazy metric caches were warmed during ingestion)
         # and have no data dependency on each other, so run them concurrently:
         # decision extraction is I/O/LLM-bound and its wall clock hides
         # entirely behind the CPU-bound dead-code + health work.
-        dead_code_report, health_report, decision_report = await asyncio.gather(
+        (
+            dead_code_report,
+            health_report,
+            decision_report,
+            doc_drift_report,
+        ) = await asyncio.gather(
             _run_dead_code_analysis(
                 graph_builder,
                 git_meta_map,
@@ -518,6 +536,11 @@ async def run_pipeline(
                 git_meta_map=git_meta_map,
                 parsed_files=parsed_files,
                 source_map=source_map,
+                progress=progress,
+            ),
+            _run_doc_drift_analysis(
+                source_map,
+                file_infos=file_infos,
                 progress=progress,
             ),
         )
@@ -639,12 +662,19 @@ async def run_pipeline(
     # complete, so an interrupt during the long generation phase below can
     # resume past analysis instead of recomputing it. Skipped when we already
     # rehydrated analysis (it's by definition persisted) — best-effort.
+    #
+    # The store goes with them: this is where a decision record is first
+    # written, so it is the only pass that can fold a paraphrase into an
+    # existing one. By the end-of-run persist every group matches on title.
     if resume_controller is not None and not skip_analysis:
         await resume_controller.checkpoint_analysis(
+            parsed_files=parsed_files,
             dead_code_report=dead_code_report,
             health_report=health_report,
             decision_report=decision_report,
+            doc_drift_report=doc_drift_report,
             git_metadata_list=git_metadata_list,
+            vector_store=vector_store,
             progress=progress,
         )
 
@@ -908,6 +938,7 @@ async def run_pipeline(
         dead_code_report=dead_code_report,
         decision_report=decision_report,
         health_report=health_report,
+        doc_drift_report=doc_drift_report,
         execution_flow_report=execution_flow_report,
         knowledge_graph_result=knowledge_graph_result,
         generated_pages=generated_pages,

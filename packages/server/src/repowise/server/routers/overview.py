@@ -9,10 +9,10 @@ decisions slice, savings headline, and health KPIs.
 
 from __future__ import annotations
 
+import asyncio
 import configparser
 import contextlib
 import json
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.aggregation import (
+    severity_breakdown as health_severity_breakdown,
+)
 from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
@@ -31,7 +34,12 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
-from repowise.server.services.knowledge_map import compute_knowledge_map
+from repowise.server.services.attention import build_attention
+from repowise.server.services.knowledge_map import (
+    compute_knowledge_silos,
+    compute_onboarding_targets,
+)
+from repowise.server.services.module_health import top_level_module
 
 router = APIRouter(
     prefix="/api/repos",
@@ -44,7 +52,7 @@ router = APIRouter(
 HEALTH_HISTORY_POINTS = 12
 
 
-def _index_storage_bytes(repowise_dir: Path) -> int:
+def _walk_index_storage_bytes(repowise_dir: Path) -> int:
     """Total on-disk size of a repo's ``.repowise/`` directory."""
     if not repowise_dir.is_dir():
         return 0
@@ -54,6 +62,22 @@ def _index_storage_bytes(repowise_dir: Path) -> int:
             with contextlib.suppress(OSError):
                 total += path.stat().st_size
     return total
+
+
+async def _index_storage_bytes(repowise_dir: Path) -> int:
+    """``_walk_index_storage_bytes`` off the event loop.
+
+    The walk is a full recursive stat of a directory that holds the vectors,
+    the wiki and the symbol store, so it is routinely hundreds of megabytes and
+    tens of thousands of files. Run inline in an ``async def`` it does not just
+    make this request slow: it blocks the worker's event loop for its whole
+    duration, stalling every other request in flight.
+
+    Ceiling: a thread is the cheap fix, and the walk still happens once per
+    page load. The real fix is to stamp the size when the index is written and
+    read the number back; do that if this ever shows up in a profile again.
+    """
+    return await asyncio.to_thread(_walk_index_storage_bytes, repowise_dir)
 
 
 def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
@@ -130,114 +154,37 @@ def _decision_slim(d: Any) -> dict:
 
 
 async def _savings_headline(repo_local_path: str | None) -> dict:
-    """Distill + MCP savings totals from the omission-store sidecar.
+    """Savings headline for the overview, from the one core report service.
 
-    Headline numbers only — no per-day rollups, no transcript scan (the
-    missed-savings scan reads agent transcripts and is too slow for an
-    overview payload). Mirrors /distill-savings semantics otherwise.
+    Headline figures only -- no breakdowns and no transcript scan, which reads
+    agent transcripts and is far too slow for an overview payload. Every field
+    here comes from the same report the savings endpoint and ``repowise saved``
+    read, so the three cannot drift. They previously did, in four separate
+    ways, because each aggregated and priced the ledger for itself.
+
+    The measured/inferred and priced/unpriced splits travel beside the total on
+    purpose. A lone headline reads as one confident number, and the evidence
+    behind it is not uniform.
     """
     if not repo_local_path:
         return {"available": False}
-    db_path = Path(repo_local_path) / ".repowise" / "omissions" / "omissions.db"
-    if not db_path.is_file():
-        return {"available": False}
 
-    from repowise.core.distill import tracking
-    from repowise.core.distill.session_model import resolve_session_model
-    from repowise.core.generation.cost_tracker import get_model_pricing
+    from repowise.core.savings.service import load_report
 
-    try:
-        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=1)
-    except sqlite3.Error:
+    report = load_report(repo_local_path)
+    if report is None:
         return {"available": False}
-    try:
-        summary = tracking.distill_summary(conn, since=None)
-        mcp = tracking.mcp_savings_summary(conn, since=None)
-    except sqlite3.Error:
-        return {"available": False}
-    finally:
-        conn.close()
-
-    resolved = resolve_session_model(Path(repo_local_path))
-    rate = get_model_pricing(resolved.model)["input"]
-    total_saved = summary["saved_tokens"] + mcp["tokens"]
     return {
         "available": True,
-        "saved_tokens": summary["saved_tokens"],
-        "mcp_tokens": mcp["tokens"],
-        "total_saved_tokens": total_saved,
-        "estimated_usd_saved": total_saved * rate / 1_000_000,
-        "pricing_model": resolved.model,
+        "saved_input_tokens": report.saved_input_tokens,
+        "measured_saved_input_tokens": report.measured_saved_input_tokens,
+        "inferred_saved_input_tokens": report.inferred_saved_input_tokens,
+        "priced_saved_input_tokens": report.priced_saved_input_tokens,
+        "unpriced_saved_input_tokens": report.unpriced_saved_input_tokens,
+        "estimated_usd_saved": report.priced_input_savings_usd,
+        "mcp_queries_answered": report.mcp_queries_answered,
+        "last_event_at": report.last_event_at,
     }
-
-
-def _build_attention_items(
-    decision_health: dict,
-    knowledge_silos: list[dict],
-    dead_safe: list[Any],
-) -> list[dict]:
-    """Flat, severity-tagged attention list — the server-side twin of the
-    AttentionPanel item builder that used to live in the overview page."""
-    items: list[dict] = []
-    for d in decision_health.get("stale_decisions", []):
-        items.append(
-            {
-                "id": f"stale-{d.id}",
-                "type": "stale_decision",
-                "title": d.title,
-                "description": "Active decision drifting from the code it governs",
-                "severity": "high",
-                "target_id": d.id,
-            }
-        )
-    for d in decision_health.get("proposed_awaiting_review", []):
-        items.append(
-            {
-                "id": f"proposed-{d.id}",
-                "type": "proposed_decision",
-                "title": d.title,
-                "description": "Auto-proposed decision awaiting review",
-                "severity": "medium",
-                "target_id": d.id,
-            }
-        )
-    for fp in decision_health.get("ungoverned_hotspots", [])[:10]:
-        items.append(
-            {
-                "id": f"ungoverned-{fp}",
-                "type": "ungoverned_hotspot",
-                "title": fp,
-                "description": "High-churn file with no governing decision",
-                "severity": "medium",
-                "target_id": fp,
-            }
-        )
-    for s in knowledge_silos[:10]:
-        items.append(
-            {
-                "id": f"silo-{s['file_path']}",
-                "type": "knowledge_silo",
-                "title": s["file_path"],
-                "description": (f"{round(s['owner_pct'] * 100)}% single-owner concentration"),
-                "severity": "medium",
-                "target_id": s["file_path"],
-            }
-        )
-    for f in dead_safe[:10]:
-        label = f.symbol_name or f.file_path
-        items.append(
-            {
-                "id": f"dead-{f.id}",
-                "type": "dead_code",
-                "title": label,
-                "description": f"Safe to delete ({f.lines} lines)",
-                "severity": "low",
-                "target_id": f.file_path,
-            }
-        )
-    severity_rank = {"high": 0, "medium": 1, "low": 2}
-    items.sort(key=lambda i: severity_rank.get(i["severity"], 3))
-    return items
 
 
 @router.get("/{repo_id}/overview-summary")
@@ -345,8 +292,7 @@ async def overview_summary(
     module_owner_files: dict[str, dict[str, int]] = {}
     module_file_totals: dict[str, int] = {}
     for fp, owner in owner_rows:
-        parts = fp.split("/")
-        module = parts[0] if len(parts) > 1 else "root"
+        module = top_level_module(fp)
         module_file_totals[module] = module_file_totals.get(module, 0) + 1
         if owner:
             bucket = module_owner_files.setdefault(module, {})
@@ -415,11 +361,7 @@ async def overview_summary(
         if len(file_counts) == 2 and all(file_counts):
             deltas["file_count"] = file_counts[1] - file_counts[0]
 
-    severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    for f in findings:
-        s = (f.severity or "").lower()
-        if s in severity_breakdown:
-            severity_breakdown[s] += 1
+    severity_breakdown = health_severity_breakdown(findings)
 
     # "Can you trust this score?" — the backtested precision of the defect
     # ranking, shown on the health card. Sourced here rather than from the stats
@@ -453,6 +395,7 @@ async def overview_summary(
     defect_accuracy = None
     try:
         from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+        from repowise.core.analysis.health.ranking import deduction_by_path
 
         defect_accuracy = compute_defect_accuracy(
             [
@@ -466,6 +409,7 @@ async def overview_summary(
                 for m in health_metrics
             ],
             prior_defect_rows,
+            deductions=deduction_by_path(findings),
         )
     except Exception:
         # Best-effort: the card omits the panel rather than failing the page.
@@ -473,15 +417,24 @@ async def overview_summary(
 
     # --- Attention items + onboarding targets -----------------------------
     decision_health = await crud.get_decision_health_summary(session, repo_id)
-    knowledge = await compute_knowledge_map(session, repo_id)
-    dead_safe = [
-        f
-        for f in await crud.get_dead_code_findings(session, repo_id, status="open")
-        if f.safe_to_delete
-    ]
-    attention = _build_attention_items(
-        decision_health, knowledge.get("knowledge_silos", []), dead_safe
+    # Silos only. The full knowledge map also computes top owners and
+    # onboarding targets, and paying for those here meant loading the content
+    # of every generated page to count its words for a list this page does not
+    # render.
+    knowledge_silos = await compute_knowledge_silos(session, repo_id)
+    # Read by the first-index experience. Its own call rather than the full
+    # knowledge map, which would also aggregate owners this payload never uses.
+    onboarding_targets = await compute_onboarding_targets(session, repo_id)
+    # Every finding store, merged and ranked worst-first. This used to read
+    # three stores and rank them by which store they came from; see
+    # `services/attention.py` for what changed and why.
+    attention_result = await build_attention(
+        session,
+        repo_id,
+        decision_health=decision_health,
+        knowledge_silos=knowledge_silos,
     )
+    attention = attention_result["items"]
 
     # --- Top hotspots + recent decisions slices ---------------------------
     hotspot_rows = (
@@ -585,6 +538,13 @@ async def overview_summary(
             "hotspot_count": hotspot_count,
             "silo_count": silo_count,
             "module_count": module_count,
+            # Summed from the health metrics already loaded above, so it costs
+            # nothing. It is here because Overview's only use for the whole
+            # Stats "By the Numbers" endpoint was this one figure, and that
+            # endpoint runs its own commit-history pass; its docstring says it
+            # is scoped for its own page. Matches the field hosted's backend
+            # already serves.
+            "total_nloc": sum(int(m.nloc or 0) for m in health_metrics),
             "deltas": deltas,
         },
         "health": {
@@ -615,7 +575,15 @@ async def overview_summary(
         },
         "languages": languages,
         "attention": attention,
-        "onboarding_targets": knowledge.get("onboarding_targets", []),
+        # Counts for everything the sources hold, beside the capped list. The
+        # page shows five rows out of these, and "5 open" would be a lie that
+        # gets worse the more findings a repository has.
+        "attention_summary": {
+            "total": attention_result["total"],
+            "by_source": attention_result["by_source"],
+            "areas": attention_result["areas"],
+        },
+        "onboarding_targets": onboarding_targets,
         "top_hotspots": top_hotspots,
         "recent_decisions": recent_decisions,
         "savings": savings,
@@ -625,6 +593,6 @@ async def overview_summary(
             "last_sync_model": last_sync_model,
             "active_job_id": active_job_id,
             "page_count": total_pages,
-            "index_storage_bytes": _index_storage_bytes(repowise_dir),
+            "index_storage_bytes": await _index_storage_bytes(repowise_dir),
         },
     }

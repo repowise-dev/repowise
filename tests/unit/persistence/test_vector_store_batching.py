@@ -7,6 +7,8 @@ import pytest
 
 from repowise.core.persistence.vector_store.in_memory import InMemoryVectorStore
 from repowise.core.persistence.vector_store.lancedb_store import (
+    _SUMMARY_PATH_BATCH_SIZE,
+    LanceDBVectorStore,
     _page_ids_in_filter,
     _paths_in_filter,
 )
@@ -161,6 +163,44 @@ async def test_lancedb_batch_summaries_roundtrip(tmp_path) -> None:
             assert batch[p]["summary"] == singles[p]["summary"]
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_lancedb_batch_summaries_bounds_in_filter_size(tmp_path) -> None:
+    class Query:
+        def __init__(self, filters: list[str]) -> None:
+            self.filters = filters
+
+        def where(self, expression: str):
+            self.filters.append(expression)
+            return self
+
+        def select(self, _columns: list[str]):
+            return self
+
+        async def to_list(self):
+            return []
+
+    class Table:
+        def __init__(self) -> None:
+            self.filters: list[str] = []
+
+        def query(self):
+            return Query(self.filters)
+
+    store = LanceDBVectorStore(str(tmp_path / "lance"), MockEmbedder())
+    table = Table()
+    store._table = table
+
+    async def connected() -> None:
+        return None
+
+    store._ensure_connected = connected  # type: ignore[method-assign]
+    count = _SUMMARY_PATH_BATCH_SIZE * 2 + 7
+    await store.get_page_summaries_by_paths([f"src/{index}.py" for index in range(count)])
+
+    assert len(table.filters) == 3
+    assert all(expression.count("'src/") <= _SUMMARY_PATH_BATCH_SIZE for expression in table.filters)
 
 
 # ---------------------------------------------------------------------------

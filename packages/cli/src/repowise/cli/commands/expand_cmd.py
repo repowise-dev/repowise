@@ -28,17 +28,14 @@ def expand_command(ref: str, query: str | None) -> None:
     ``repowise distill``. Looks in the current repo's store first, then the
     user-level fallback store.
     """
-    from repowise.core.distill.markers import MARKER_RE, is_valid_ref
+    from repowise.core.distill.markers import normalize_ref
     from repowise.core.distill.store import OmissionStore
 
-    # Accept a pasted whole marker, not just the bare ref.
-    if not is_valid_ref(ref):
-        match = MARKER_RE.search(ref)
-        if match:
-            ref = match.group("ref")
-    if not is_valid_ref(ref):
+    normalized = normalize_ref(ref)
+    if normalized is None:
         click.echo(f"Not a valid omission ref: {ref!r} (expected 12 hex chars)", err=True)
         sys.exit(2)
+    ref = normalized
 
     for db_path in _candidate_stores():
         if not db_path.exists():

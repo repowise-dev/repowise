@@ -14,6 +14,7 @@ from typing import Any
 
 import click
 
+from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import console
 
 # The LLM-cost confirmation threshold. A run whose estimate exceeds this asks
@@ -120,10 +121,11 @@ def cost_gate_blocks(est: Any, *, yes: bool, message: str) -> bool:
     if est.estimated_cost_usd <= COST_GATE_USD or yes:
         return False
     if not sys.stdin.isatty():
-        raise click.ClickException(
+        raise reasoned_error(
             f"This would spend about {format_cost(est)} and there is no terminal "
             "to confirm on. Re-run with --yes to accept the cost, or with "
-            "--no-prose to build the wiki from structure for free."
+            "--no-prose to build the wiki from structure for free.",
+            reason="cost_gate_no_tty",
         )
     return not confirm_cost_gate(message, estimated_usd=est.estimated_cost_usd)
 

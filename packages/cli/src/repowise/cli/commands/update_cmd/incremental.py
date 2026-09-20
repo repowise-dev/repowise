@@ -7,12 +7,20 @@ routing core log output through the CLI ``console``.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, run_async
+from repowise.core.pipeline import PhaseTimings, timed
 
 
-def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
+def _build_update_vector_store(
+    repo_path: Any,
+    cfg: dict,
+    degraded: list[str] | None = None,
+    *,
+    required: bool = False,
+) -> Any | None:
     """Build the shared page/decision vector store for the update path.
 
     Phase-2 follow-up + Phase-3 requirement: ``repowise update`` historically
@@ -21,14 +29,26 @@ def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
     runs. We mirror ``init``'s store construction (LanceDB at
     ``.repowise/lancedb`` so previously-embedded decisions are matchable; the
     in-memory store is a degraded fallback that only sees this run's vectors).
-    Returns ``None`` on any failure — the decision upsert still works without it.
+    Returns ``None`` on any failure — the decision upsert still works without
+    it. A failure is recorded in *degraded* (when given) so the run's degraded
+    panel says why semantic dedup is off instead of silently skipping it
+    (issue #1370).
     """
     try:
         from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
         embedder = build_embedder(resolve_embedder(cfg.get("embedder")), repo_path)
-        return build_vector_store(repo_path, embedder)
-    except Exception:
+        store = build_vector_store(repo_path, embedder)
+        if required and store is None and (Path(repo_path) / ".repowise" / "lancedb").exists():
+            raise RuntimeError(
+                "the configured embedder cannot safely refresh the existing vector index"
+            )
+        return store
+    except Exception as exc:
+        if degraded is not None:
+            degraded.append(f"Decision vector store: {type(exc).__name__}: {exc}")
+        if required:
+            raise
         return None
 
 
@@ -75,6 +95,9 @@ def _rebuild_graph_and_git(
     include_submodules: bool = False,
     include_nested_repos: bool = False,
     idle_decay_sink: dict[str, dict] | None = None,
+    force_full_git: bool = False,
+    git_summary_sink: list[Any] | None = None,
+    timings: PhaseTimings | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
@@ -111,7 +134,10 @@ def _rebuild_graph_and_git(
             include_submodules=include_submodules,
             include_nested_repos=include_nested_repos,
             idle_decay_sink=idle_decay_sink,
+            force_full_git=force_full_git,
+            git_summary_sink=git_summary_sink,
             log=console.print,
+            timings=timings,
         )
     )
 
@@ -191,6 +217,7 @@ def _run_partial_analysis(
     stored_git_meta: dict[str, dict] | None = None,
     stored_performance_callers: set[str] | None = None,
     repo_function_mod_p80: int | None = None,
+    timings: PhaseTimings | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -200,8 +227,14 @@ def _run_partial_analysis(
     Returns ``(partial_health_report, dead_code_report)`` — either may be
     ``None`` if its analysis failed (both are best-effort).
     """
-    from repowise.core.pipeline.incremental import run_partial_analysis
+    from repowise.core.pipeline.incremental import (
+        load_stored_coverage_map,
+        run_partial_analysis,
+    )
 
+    # Same row as the caller's stored reads: the table accumulates repeats.
+    with timed(timings, "analysis.stored_reads"):
+        coverage_map = run_async(load_stored_coverage_map(repo_path, log=console.print))
     return run_partial_analysis(
         repo_path,
         graph_builder,
@@ -212,5 +245,21 @@ def _run_partial_analysis(
         stored_git_meta=stored_git_meta,
         stored_performance_callers=stored_performance_callers,
         repo_function_mod_p80=repo_function_mod_p80,
+        coverage_map=coverage_map,
         log=console.print,
+        timings=timings,
+    )
+
+
+def _run_doc_drift_partial(
+    graph_builder: Any,
+    source_map: dict[str, bytes] | None,
+    *,
+    timings: PhaseTimings | None = None,
+) -> Any | None:
+    """Re-check the repo's markdown against the tree. Delegates to core."""
+    from repowise.core.pipeline.incremental import run_doc_drift_partial
+
+    return run_doc_drift_partial(
+        graph_builder, source_map, log=console.print, timings=timings
     )

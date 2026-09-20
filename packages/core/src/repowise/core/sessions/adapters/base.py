@@ -4,7 +4,9 @@ An adapter knows two things about its agent: where transcripts for a given
 repo live (:meth:`HarnessAdapter.discover`) and how one raw transcript line
 becomes a normalized :class:`~repowise.core.sessions.events.Event`
 (:meth:`HarnessAdapter.normalize`). Iteration, cursoring, and mining are
-shared code built on those two primitives.
+shared code built on those two primitives. Three optional hooks scope the
+rest: :meth:`HarnessAdapter.prefilter` and the per-file
+:meth:`HarnessAdapter.begin_file` / :meth:`HarnessAdapter.end_file`.
 
 Best-effort contract, matching the distill miners this layer was extracted
 from: ``normalize`` returns None for anything it cannot parse rather than
@@ -46,6 +48,29 @@ class HarnessAdapter(ABC):
     #: Stable identifier, e.g. ``"claude_code"``.
     name: ClassVar[str]
 
+    #: Tool names, in this harness's own vocabulary, whose calls change a file
+    #: rather than only look at one. A consumer ranking what a session did to a
+    #: path reads it from the adapter, never from a shared list: one harness
+    #: normalizes every edit to a single token and has no read tool at all, so
+    #: a flat set would be wrong rather than merely duplicated. Empty means the
+    #: adapter has not declared one, and nothing is treated as an edit.
+    #:
+    #: Namesake, not sibling: ``cli.agent_adapters.AgentAdapter`` declares the
+    #: same attribute for the editor hooks, and answers it for the live tool
+    #: call rather than for a recorded transcript. The two deliberately hold
+    #: different names for the same harness, and core cannot import cli, so
+    #: neither is the other's source of truth.
+    edit_tool_names: ClassVar[frozenset[str]] = frozenset()
+
+    #: Tool names whose result is a shell command's output, in this harness's
+    #: vocabulary. Per adapter for the same reason ``edit_tool_names`` is: one
+    #: harness spells it ``Bash``, another splits one interactive shell across
+    #: ``exec_command``, ``write_stdin`` and ``wait``. Consumers use it to tell
+    #: command output from a tool call's structured response. Empty means the
+    #: adapter declared none, and such a consumer sees no shell results rather
+    #: than guessing.
+    shell_tool_names: ClassVar[frozenset[str]] = frozenset()
+
     @abstractmethod
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
         """Transcript files for sessions rooted at *repo_root*, sorted.
@@ -70,6 +95,12 @@ class HarnessAdapter(ABC):
         None means "no cheap gate for this intent", so every line is parsed.
         Correct but slow, which is the right default for an intent an
         adapter has not thought about.
+
+        Not purely a speed knob for a harness that states its ``cwd`` once
+        per file rather than once per line: dropping that line leaves every
+        event unscoped, and the miners read a blank ``cwd`` as "no opinion"
+        rather than as a miss. A gate for such a harness admits the line
+        carrying it, however narrow the rest of the gate is.
         """
         return None
 

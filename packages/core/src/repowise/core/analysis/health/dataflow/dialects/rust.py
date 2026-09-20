@@ -98,6 +98,9 @@ class RustDefUseDialect(BaseDefUseDialect):
     # Python receivers are plain identifiers, so only Rust needs the addition).
     identifier_kinds = frozenset({"identifier", "self"})
 
+    # A nested ``fn`` item is visible in the enclosing block, like Python.
+    enclosing_binder_kinds = frozenset({"function_item"})
+
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
 
@@ -210,6 +213,7 @@ class RustDefUseDialect(BaseDefUseDialect):
             uses.append(self._occ(node))
             return
         if self._is_scope_boundary(node):
+            self.boundary_def(node, defs)
             return
         for child in node.named_children:
             self._process(child, defs, uses)

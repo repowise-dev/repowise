@@ -27,6 +27,7 @@ from repowise.core.precedent.currency import (
     free_currency as _free_currency,
 )
 from repowise.core.precedent.store import (
+    DEFAULT_MAX_ROWS,
     SHAREABLE_TIERS,
     EpisodeStore,
     default_store_path,
@@ -124,6 +125,7 @@ def episode_evidence(
     query: str | None = None,
     limit: int = _MAX_EVIDENCE_EPISODES,
     max_body_chars: int = _MAX_EVIDENCE_BODY_CHARS,
+    full_population: list[dict] | None = None,
 ) -> tuple[list[dict], list[tuple[dict, str, str]]]:
     """Episodes as an evidence block, bounded. Never raises.
 
@@ -165,10 +167,11 @@ def episode_evidence(
 
     try:
         with EpisodeStore(store_path) as store:
+            query_limit = DEFAULT_MAX_ROWS if full_population is not None else limit
             rows = (
-                store.list_by_node(list(paths), tiers=SERVED_TIERS, limit=limit)
+                store.list_by_node(list(paths), tiers=SERVED_TIERS, limit=query_limit)
                 if paths
-                else store.search(query or "", tiers=SERVED_TIERS, limit=limit)
+                else store.search(query or "", tiers=SERVED_TIERS, limit=query_limit)
             )
     except Exception:
         _log.warning("episode store read failed", exc_info=True)
@@ -178,7 +181,7 @@ def episode_evidence(
 
     entries: list[dict] = []
     pending: list[tuple[dict, str, str]] = []
-    for rank, row in enumerate(rows[:limit]):
+    for rank, row in enumerate(rows):
         body = row.get("body") or ""
         entry: dict = {
             "tier": row.get("tier"),
@@ -195,11 +198,17 @@ def episode_evidence(
         if verdict:
             entry["still_true"] = verdict
         entries.append(entry)
-    return entries, pending
+    if full_population is not None:
+        full_population.extend(entries)
+    return entries[:limit], pending
 
 
 def bank_overflow(
-    pending: Sequence[tuple[dict, str, str]], *, tool: str, repo_root: Path
+    pending: Sequence[tuple[dict, str, str]],
+    *,
+    tool: str,
+    repo_root: Path,
+    collector: OmissionCollector | None = None,
 ) -> OmissionCollector | None:
     """Persist capped bodies and stamp each entry with its recovery marker.
 
@@ -212,8 +221,9 @@ def bank_overflow(
     and counted its tokens three times over.
     """
     if not pending:
-        return None
-    collector = OmissionCollector(tool, repo_root)
+        return collector
+    if collector is None:
+        collector = OmissionCollector(tool, repo_root)
     markers: dict[str, str | None] = {}
     for entry, label, body in pending:
         if body not in markers:
@@ -236,8 +246,6 @@ def _scope_field(row: dict) -> list[str] | str:
     if len(nodes) <= _MAX_SCOPE_NODES:
         return nodes
     return [*nodes[:_MAX_SCOPE_NODES], f"… and {len(nodes) - _MAX_SCOPE_NODES} more"]
-
-
 def episode_counts(root: Path, paths: Sequence[str]) -> dict[str, int]:
     """How many episodes each of *paths* carries. Never raises.
 

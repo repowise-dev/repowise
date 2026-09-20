@@ -25,6 +25,7 @@ from repowise.core.analysis.health.biomarkers.ownership_risk import (
 from repowise.core.analysis.health.biomarkers.prior_defect import (
     PriorDefectDetector,
 )
+from repowise.core.analysis.health.complexity import FunctionComplexity
 
 
 def _authors(*pairs: tuple[str, int]) -> str:
@@ -38,7 +39,6 @@ def _ctx(meta: dict, *, active_contributors: int | None = None) -> FileContext:
         nloc=120,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta=meta,
         dependents_count=4,
         pagerank_score=0.0,
@@ -53,6 +53,7 @@ def test_developer_congestion_fires_on_crowded_hotspot():
     meta = {
         "contributor_count": 12,
         "commit_count_90d": 25,
+        "churn_percentile": 0.9,
         "primary_owner_commit_pct": 0.25,
         "primary_owner_name": "Alice",
     }
@@ -66,6 +67,7 @@ def test_developer_congestion_normalizes_percent_form():
     meta = {
         "contributor_count": 6,
         "commit_count_90d": 8,
+        "churn_percentile": 0.8,
         "primary_owner_commit_pct": 30.0,  # percent form
     }
     out = DeveloperCongestionDetector().detect(_ctx(meta))
@@ -77,15 +79,19 @@ def test_developer_congestion_skips_with_clear_owner():
     meta = {
         "contributor_count": 8,
         "commit_count_90d": 15,
+        "churn_percentile": 0.9,
         "primary_owner_commit_pct": 0.65,
     }
     assert DeveloperCongestionDetector().detect(_ctx(meta)) == []
 
 
-def test_developer_congestion_skips_low_activity():
+def test_developer_congestion_skips_quiet_files_for_this_repo():
+    """The activity gate is the repository's own churn ranking. A busy file by
+    absolute count is not busy if most of the repository is busier."""
     meta = {
         "contributor_count": 8,
-        "commit_count_90d": 2,
+        "commit_count_90d": 15,
+        "churn_percentile": 0.4,
         "primary_owner_commit_pct": 0.2,
     }
     assert DeveloperCongestionDetector().detect(_ctx(meta)) == []
@@ -386,57 +392,122 @@ def test_change_entropy_silent_without_signal():
 
 
 def _partners(*pairs: tuple[str, float]) -> str:
-    return json.dumps([{"file_path": p, "co_change_count": c} for p, c in pairs])
+    return json.dumps(
+        [{"file_path": p, "co_change_count": c, "frequency": int(c)} for p, c in pairs]
+    )
 
 
-def test_co_change_scatter_fires_on_broad_coupling():
+def _scatter_meta(**over) -> dict:
     meta = {
-        "co_change_partners_json": _partners(*[(f"m{i}.py", 3.0) for i in range(9)]),
+        "co_change_scatter_pct": 0.85,
+        "co_change_partner_count": 41,
+        "co_change_mass": 12.5,
+        "co_change_partners_json": _partners(*[(f"m{i}.py", 3.0) for i in range(25)]),
         "commit_count_90d": 5,
     }
-    out = CoChangeScatterDetector().detect(_ctx(meta))
-    assert len(out) == 1
-    assert out[0].severity == "medium"  # 8 <= scatter < 15
-    assert out[0].details["scatter"] == 9
+    meta.update(over)
+    return meta
 
 
-def test_co_change_scatter_high_severity_on_heavy_coupling():
-    meta = {
-        "co_change_partners_json": _partners(*[(f"m{i}.py", 2.5) for i in range(16)]),
-        "commit_count_90d": 7,
-    }
-    out = CoChangeScatterDetector().detect(_ctx(meta))
-    assert out
-    assert out[0].severity == "high"  # scatter >= 15
+def test_co_change_scatter_fires_in_the_top_fifth():
+    (finding,) = CoChangeScatterDetector().detect(_ctx(_scatter_meta()))
+    assert finding.severity == "medium"  # 0.80 <= pct < 0.95
+    assert finding.details["co_change_scatter_pct"] == 85.0
 
 
-def test_co_change_scatter_ignores_weak_partners():
-    # Many partners, but all below the 2.0 weight floor → scatter == 0.
-    meta = {
-        "co_change_partners_json": _partners(*[(f"m{i}.py", 1.0) for i in range(12)]),
-        "commit_count_90d": 5,
-    }
-    assert CoChangeScatterDetector().detect(_ctx(meta)) == []
+def test_co_change_scatter_high_severity_in_the_top_twentieth():
+    out = CoChangeScatterDetector().detect(_ctx(_scatter_meta(co_change_scatter_pct=0.97)))
+    assert out[0].severity == "high"
+
+
+def test_co_change_scatter_reports_the_true_partner_count_not_the_stored_list():
+    """The stored list is capped, so counting it saturates. The finding quotes
+    the count measured before truncation and carries the capped one beside it,
+    so a reader can see the stored list is a truncation."""
+    (finding,) = CoChangeScatterDetector().detect(_ctx(_scatter_meta()))
+    assert finding.details["scatter"] == 41
+    assert finding.details["recorded_partners"] == 25
+    assert "41 distinct files" in finding.reason
+
+
+def test_co_change_scatter_falls_below_the_gate():
+    assert CoChangeScatterDetector().detect(_ctx(_scatter_meta(co_change_scatter_pct=0.79))) == []
 
 
 def test_co_change_scatter_skips_low_activity():
-    meta = {
-        "co_change_partners_json": _partners(*[(f"m{i}.py", 3.0) for i in range(10)]),
-        "commit_count_90d": 1,
-    }
-    assert CoChangeScatterDetector().detect(_ctx(meta)) == []
+    assert CoChangeScatterDetector().detect(_ctx(_scatter_meta(commit_count_90d=1))) == []
 
 
 def test_co_change_scatter_silent_on_essential_tier():
-    # Empty partner list (ESSENTIAL git tier) → no signal.
+    # No breadth columns (ESSENTIAL git tier, or an index written before they
+    # existed) -> no signal, rather than a guess off the truncated list.
     assert CoChangeScatterDetector().detect(_ctx({"commit_count_90d": 8})) == []
+
+
+def test_co_change_scatter_exempts_test_files():
+    """A test co-changes with its subject by definition, so breadth says
+    nothing about it -- the same exemption hidden_coupling makes."""
+    ctx = FileContext(
+        file_path="tests/unit/test_payments.py",
+        language="python",
+        nloc=120,
+        has_test_file=False,
+        module=None,
+        git_meta=_scatter_meta(co_change_scatter_pct=0.99),
+    )
+    assert CoChangeScatterDetector().detect(ctx) == []
+
+
+def test_co_change_scatter_exempts_a_barrel_that_defines_nothing():
+    ctx = FileContext(
+        file_path="packages/ui/src/zoom/index.ts",
+        language="typescript",
+        nloc=20,
+        has_test_file=False,
+        module=None,
+        git_meta=_scatter_meta(co_change_scatter_pct=0.99),
+    )
+    assert CoChangeScatterDetector().detect(ctx) == []
+
+
+def test_co_change_scatter_exempts_a_barrel_named_file_even_with_logic():
+    """The exemption is the filename alone, on purpose: history_refresh
+    re-scores from git metadata without a parse, so a structural corroboration
+    would answer differently depending on which pass ran."""
+    ctx = FileContext(
+        file_path="packages/ui/src/zoom/index.ts",
+        language="typescript",
+        nloc=400,
+        has_test_file=False,
+        module=None,
+        git_meta=_scatter_meta(co_change_scatter_pct=0.99),
+        all_functions=(
+            FunctionComplexity(
+                name="render",
+                start_line=1,
+                end_line=40,
+                ccn=6,
+                max_nesting=2,
+                cognitive=8,
+                nloc=35,
+            ),
+        ),
+    )
+    assert CoChangeScatterDetector().detect(ctx) == []
 
 
 # ---- prior_defect --------------------------------------------------------
 
 
+def _pd(count: int, **over) -> dict:
+    """Fix history for a file in the top fifth of this repository."""
+    meta = {"prior_defect_count": count, "prior_defect_pct": 0.9}
+    meta.update(over)
+    return meta
+
+
 def test_prior_defect_fires_low_on_single_fix():
-    out = PriorDefectDetector().detect(_ctx({"prior_defect_count": 1}))
+    out = PriorDefectDetector().detect(_ctx(_pd(1)))
     assert len(out) == 1
     assert out[0].severity == "low"
     assert out[0].details["prior_defect_count"] == 1
@@ -444,19 +515,33 @@ def test_prior_defect_fires_low_on_single_fix():
 
 
 def test_prior_defect_scales_severity_with_count():
-    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 2}))[0].severity == "medium"
-    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 3}))[0].severity == "high"
-    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 6}))[0].severity == "critical"
+    assert PriorDefectDetector().detect(_ctx(_pd(2)))[0].severity == "medium"
+    assert PriorDefectDetector().detect(_ctx(_pd(3)))[0].severity == "high"
+    assert PriorDefectDetector().detect(_ctx(_pd(6)))[0].severity == "critical"
 
 
 def test_prior_defect_escalates_to_critical_on_hotspot():
     # A mid-band count (3) on a churn hotspot compounds to CRITICAL.
-    meta = {"prior_defect_count": 3, "is_hotspot": True}
-    out = PriorDefectDetector().detect(_ctx(meta))
+    out = PriorDefectDetector().detect(_ctx(_pd(3, is_hotspot=True)))
     assert out[0].severity == "critical"
 
 
 def test_prior_defect_silent_without_prior_fixes():
     # No defect history (or ESSENTIAL tier where the field is absent) → silent.
-    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 0})) == []
+    assert PriorDefectDetector().detect(_ctx(_pd(0))) == []
     assert PriorDefectDetector().detect(_ctx({"commit_count_90d": 9})) == []
+
+
+def test_prior_defect_silent_below_the_repo_percentile():
+    """Six months is a fixed window, so on a repository landing many commits a
+    day most files carry a fix or two. The entry is a share of the repository,
+    which is what stops the signal firing on half the tree."""
+    assert PriorDefectDetector().detect(_ctx(_pd(2, prior_defect_pct=0.5))) == []
+
+
+def test_prior_defect_keeps_the_calibrated_ladder_above_the_gate():
+    """Only the entry moved. Above it the count still decides the band, so a
+    file reports the severity the benchmark calibrated for its fix count."""
+    out = PriorDefectDetector().detect(_ctx(_pd(6, prior_defect_pct=0.81)))
+    assert out[0].severity == "critical"
+    assert out[0].details["prior_defect_pct"] == 81.0

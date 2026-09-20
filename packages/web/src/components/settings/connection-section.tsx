@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Loader2 } from "lucide-react";
+import { Spinner } from "@repowise-dev/ui/ui/spinner";
 import { config } from "@/lib/config";
 import { getHealth } from "@/lib/api/health";
 import { OverviewSection } from "@repowise-dev/ui/overview";
@@ -21,7 +21,7 @@ import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
  * Server connection, and the page's only connection test.
  *
  * `ProviderSection` used to ship a second "Server Connection" card with its own
- * Test button hitting the same `/api/health`, reporting the result in a
+ * Test button hitting the same `/health`, reporting the result in a
  * different vocabulary through a hand-rolled `<button>` whose border token did
  * not exist. This one reports more (version and DB), so that one went.
  */
@@ -132,7 +132,7 @@ export function ConnectionSection() {
             >
               {testing ? (
                 <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <Spinner size="sm" />
                   Testing
                 </>
               ) : (

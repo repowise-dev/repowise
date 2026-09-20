@@ -26,7 +26,7 @@ export function isOnScreen(screenRect: Rect, vp: Viewport, margin = CULL_MARGIN_
  * Choose which children to draw: the top `cap` by `sibling_rank` (1 = most
  * important). Pure and deterministic; ties break by id so the selection is
  * stable frame-to-frame. Returns the ids in their original child order so the
- * treemap layout (which the renderer reads from each node) still lines up.
+ * pack layout, which places children in that order, still lines up.
  */
 export function selectChildren(
   children: readonly ZoomNode[],

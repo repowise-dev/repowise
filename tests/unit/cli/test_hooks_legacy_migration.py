@@ -185,6 +185,38 @@ class TestInstallUpgradesMarkerBlock:
         assert result == "already installed"
 
 
+    class TestInstallInWorktree:
+        """Issue #1609: a git worktree stores ``.git`` as a *file*, not a
+        directory, so the naive ``root / \".git\" / \"hooks\"`` path crashed
+        ``install``/``status`` with ``NotADirectoryError`` and took down ``init``.
+        ``_hooks_dir`` resolves the real hooks path via git instead."""
+
+        @pytest.fixture
+        def worktree(self, tmp_path):
+            main = tmp_path / "main"
+            main.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=main, check=True)
+            (main / "f.txt").write_text("hi\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=main, check=True)
+            subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+                cwd=main,
+                check=True,
+            )
+            wt = tmp_path / "wt"
+            subprocess.run(["git", "worktree", "add", "-q", str(wt)], cwd=main, check=True)
+            assert (wt / ".git").is_file(), "expected .git to be a file in a worktree"
+            return wt
+
+        def test_install_does_not_crash_in_worktree(self, worktree):
+            result = install(worktree)
+            assert result == "installed"
+            assert status(worktree) == "installed"
+
+        def test_status_in_worktree_is_not_an_error(self, worktree):
+            assert status(worktree) == "not installed"
+
+
 class TestInstalledHookScript:
     """Sanity checks on the shipped hook script so platform-specific
     regressions (e.g. accidentally introducing bash-only syntax) get caught

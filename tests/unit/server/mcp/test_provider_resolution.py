@@ -13,6 +13,7 @@ import json as _json
 
 import pytest
 
+from repowise.server.mcp_server.tool_answer import synthesis as synthesis_module
 from repowise.server.mcp_server.tool_answer.synthesis import (
     _load_repo_provider_config,
     _resolve_provider_for_answer,
@@ -25,6 +26,7 @@ def _clean_env(monkeypatch):
         "REPOWISE_PROVIDER",
         "REPOWISE_DOC_MODEL",
         "REPOWISE_MODEL",
+        "REPOWISE_REASONING",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
         "GEMINI_API_KEY",
@@ -70,6 +72,12 @@ def test_state_json_still_used_when_config_lacks_provider(tmp_path):
     name, model, _ = _load_repo_provider_config(repo)
     assert name == "openai"
     assert model == "gpt-5.4-nano"
+
+
+def test_reasoning_is_loaded_from_repo_config(tmp_path):
+    repo = _write_repo(tmp_path, config={"reasoning": "low"})
+
+    assert synthesis_module._resolve_reasoning_for_answer(repo) == "low"
 
 
 def test_keyless_persisted_provider_falls_back_to_available_key(tmp_path, monkeypatch):

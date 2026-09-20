@@ -11,6 +11,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analysis.external_systems.links import (
+    EXTERNAL_NODE_PREFIX,
+    declaration_name_candidates,
+)
 from ..models import (
     ExternalSystem,
     GraphNode,
@@ -103,19 +107,19 @@ async def replace_external_systems(
 async def link_graph_nodes_to_external_systems(
     session: AsyncSession,
     repository_id: str,
-    name_to_id: dict[str, int],
+    name_to_id: dict[str, int | None],
 ) -> int:
     """Resolve ``external:{name}`` graph nodes to their ExternalSystem row.
 
-    ``name_to_id`` should be a flat map of dep name → ExternalSystem id
-    (collapse multi-manifest entries by picking any id — the C4 renderer
-    only needs ``name``/``category`` which are the same across rows).
+    Bare names shared by multiple ecosystems map to ``None`` so ambiguous
+    targets remain unlinked; ecosystem-qualified keys remain resolvable.
 
     Returns the number of graph_nodes updated.
     """
     if not name_to_id:
         return 0
-    prefix = "external:"
+
+    prefix = EXTERNAL_NODE_PREFIX
     result = await session.execute(
         select(GraphNode).where(
             GraphNode.repository_id == repository_id,
@@ -125,18 +129,53 @@ async def link_graph_nodes_to_external_systems(
     updated = 0
     for node in result.scalars():
         suffix = node.node_id[len(prefix) :]
-        # Try the full suffix first, then the first segment (handles e.g.
-        # ``external:fastapi.responses`` → ``fastapi``).
-        sys_id = name_to_id.get(suffix)
-        if sys_id is None and "." in suffix:
-            sys_id = name_to_id.get(suffix.split(".", 1)[0])
-        if sys_id is None and "/" in suffix:
-            sys_id = name_to_id.get(suffix.split("/", 1)[0])
-        if sys_id is not None and node.external_system_id != sys_id:
+        sys_id = next(
+            (
+                name_to_id[name]
+                for name in declaration_name_candidates(suffix)
+                if name in name_to_id
+            ),
+            None,
+        )
+        if node.external_system_id != sys_id:
             node.external_system_id = sys_id
             updated += 1
     await session.flush()
     return updated
+
+
+def build_external_system_link_map(
+    systems: list[dict],
+    id_map: dict[tuple[str, str], int],
+) -> dict[str, int | None]:
+    """Build exact/prefixed link keys while preserving name ambiguity.
+
+    The ambiguity rule itself lives in ``analysis.external_systems.links`` and
+    is shared with the plain-record path, so the stored ``external_system_id``
+    and a link built without a database cannot disagree about what resolves.
+    Declarations whose row was not persisted are dropped before indexing: they
+    have no id to resolve to, and letting one poison a bare name would refuse a
+    target the old map linked.
+    """
+    from repowise.core.analysis.external_systems.links import build_declaration_index
+
+    persisted = [
+        system
+        for system in systems
+        if system.get("name")
+        and id_map.get((system.get("name", ""), system.get("declared_in", ""))) is not None
+    ]
+    # First row wins per identity, matching the insertion order the map is built in.
+    first_id: dict[tuple[str, str], int] = {}
+    for system in persisted:
+        identity = (system.get("ecosystem", ""), system.get("name", ""))
+        first_id.setdefault(
+            identity, id_map[(system.get("name", ""), system.get("declared_in", ""))]
+        )
+    return {
+        key: (None if identity is None else first_id.get(identity))
+        for key, identity in build_declaration_index(persisted).items()
+    }
 
 
 async def list_external_systems(session: AsyncSession, repository_id: str) -> list[ExternalSystem]:

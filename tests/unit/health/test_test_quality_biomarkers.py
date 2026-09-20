@@ -16,8 +16,9 @@ from repowise.core.analysis.health.biomarkers.large_assertion_block import (
     LargeAssertionBlockDetector,
 )
 from repowise.core.analysis.health.biomarkers.large_method import LargeMethodDetector
-from repowise.core.analysis.health.complexity import FunctionComplexity
+from repowise.core.analysis.health.complexity import FunctionComplexity, walk_file
 from repowise.core.analysis.health.duplication import ClonePair
+from repowise.core.analysis.health.engine import walked_functions
 from repowise.core.analysis.health.models import Severity
 
 
@@ -52,7 +53,7 @@ def _ctx(
         nloc=200,
         has_test_file=False,
         module=None,
-        function_metrics={fn.name: fn for fn in functions},
+        all_functions=tuple(functions),
         clones=clones or [],
     )
 
@@ -156,3 +157,68 @@ def test_large_method_fires_with_real_branching():
     out = LargeMethodDetector().detect(_ctx(file_path="src/x.py", functions=[branchy]))
     assert len(out) == 1
     assert out[0].details["nloc"] == 150
+
+
+# ---- the name key the markers used to read through ------------------------
+
+
+def test_two_callbacks_sharing_a_name_are_both_seen():
+    """A spec file's ``it`` callbacks all walk under one name.
+
+    The markers used to read a map keyed by that name, which kept one row
+    per distinct name. They read the walked list now, so both are reported.
+    """
+    asserts = "\n".join(f"\t\texpect(v).toBe({i})" for i in range(18))
+    source = (
+        "describe('s', () => {\n"
+        f"\tit('a', () => {{\n{asserts}\n\t}})\n"
+        f"\tit('b', () => {{\n{asserts}\n\t}})\n"
+        "})\n"
+    ).encode()
+
+    walked = walk_file("thing.spec.ts", "typescript", source).functions
+    callbacks = [fn for fn in walked if fn.assertion_blocks]
+    assert len(callbacks) == 2
+    # The premise: one name, two functions. Without it this test proves nothing.
+    assert len({fn.name for fn in callbacks}) == 1
+
+    out = LargeAssertionBlockDetector().detect(
+        _ctx(
+            file_path="src/__tests__/thing.spec.ts",
+            functions=list(walked_functions(walked, "typescript")),
+        )
+    )
+    assert len(out) == 2
+
+
+def test_a_python_method_shadowed_by_its_namesake_is_seen():
+    """Two classes in one module, each with a ``run``.
+
+    The name key kept the first and dropped the second, which is most of what
+    it cost Python.
+    """
+    source = (
+        b"class A:\n"
+        b"    def run(self):\n"
+        b"        assert 1\n"
+        b"class B:\n"
+        b"    def run(self):\n"
+        b"        assert 2\n"
+    )
+    walked = walk_file("test_m.py", "python", source).functions
+    assert [fn.name for fn in walked] == ["run", "run"]
+
+    seen = walked_functions(walked, "python")
+    assert [fn.start_line for fn in seen] == [2, 5]
+
+
+def test_the_walked_list_is_document_order_and_empty_for_sql():
+    """The walker returns siblings last-first; markers report top-down."""
+    source = b"def a():\n    pass\ndef b():\n    pass\ndef c():\n    pass\n"
+    walked = walk_file("m.py", "python", source).functions
+    # The premise: unsorted, the walker hands these back reversed.
+    assert [fn.start_line for fn in walked] == [5, 3, 1]
+
+    assert [fn.start_line for fn in walked_functions(walked, "python")] == [1, 3, 5]
+    # SQL routines are text-counted; they never reach a method biomarker.
+    assert walked_functions(walked, "sql") == ()

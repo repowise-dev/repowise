@@ -14,6 +14,7 @@ from repowise.core.ingestion.languages.receiver_types import (
     scan_declarations,
     types_by_class,
     types_in_span,
+    unwrapped_names_in_span,
 )
 
 
@@ -625,7 +626,15 @@ class TestClassScope:
 
 def test_the_language_set_is_what_the_patterns_declare() -> None:
     """Excluding a language means removing its shapes, not gating a caller."""
-    assert set(RECEIVER_TYPE_LANGUAGES) == {"csharp", "go", "java", "kotlin", "python", "swift"}
+    assert set(RECEIVER_TYPE_LANGUAGES) == {
+        "cpp",
+        "csharp",
+        "go",
+        "java",
+        "kotlin",
+        "python",
+        "swift",
+    }
 
 
 def test_go_is_not_a_field_language() -> None:
@@ -641,3 +650,102 @@ def test_go_is_not_a_field_language() -> None:
 @pytest.mark.parametrize("language", ["java", "csharp", "python", "go"])
 def test_an_empty_body_is_not_an_error(language: str) -> None:
     assert declared_types("", language) == {}
+
+
+def unwrapped(body: str) -> frozenset[str]:
+    """The names in *body* whose type came from inside a wrapper."""
+    return unwrapped_names_in_span(scan_declarations(body, "cpp"), 1, 10_000)
+
+
+class TestCppDeclarations:
+    """The C family's shape with ``::``, a pointer star, and lowercase heads."""
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ("Slice key = x;", {"key": "Slice"}),
+            ("Status s;", {"s": "Status"}),
+            ("DB* db;", {"db": "DB"}),
+            ("DB *db;", {"db": "DB"}),
+            ("Options& opt = o;", {"opt": "Options"}),
+            ("const Options& opt = o;", {"opt": "Options"}),
+            ("leveldb::Slice key;", {"key": "Slice"}),
+            ("void f(Slice key, DB* db);", {"key": "Slice", "db": "DB"}),
+            ("Row scratch{1};", {"scratch": "Row"}),
+        ],
+    )
+    def test_the_shapes_it_reads(self, body: str, expected: dict[str, str]) -> None:
+        assert declared_types(body, "cpp") == expected
+
+    def test_a_method_declaration_is_not_a_variable(self) -> None:
+        """The commonest line in a C++ header, and the reason ``(`` cannot close.
+
+        ``Status doIt(int x);`` reads as a ``doIt`` of type ``Status`` under any
+        closer set that admits the bracket, and a header is mostly these.
+        """
+        assert declared_types("Status doIt(int x);", "cpp") == {}
+
+    def test_a_constructed_local_is_given_up_rather_than_guessed(self) -> None:
+        """Same exclusion seen from the other side: a real declaration, dropped."""
+        assert declared_types("BtRequestMessage msg(0, 16);", "cpp") == {}
+
+    def test_auto_names_no_type(self) -> None:
+        assert declared_types("auto it = m.begin();", "cpp") == {}
+
+    @pytest.mark.parametrize("keyword", ["struct", "class", "namespace", "union", "enum"])
+    def test_a_keyword_head_is_not_a_type(self, keyword: str) -> None:
+        assert declared_types(f"{keyword} foo {{", "cpp") == {}
+
+    def test_a_builtin_is_refused(self) -> None:
+        assert declared_types("int count = 0;", "cpp") == {}
+
+    def test_a_comment_declares_nothing(self) -> None:
+        source = "// Slice key is the thing;\n/* Status s; */\nDB* db;"
+        assert declared_types(source, "cpp") == {"db": "DB"}
+
+
+class TestCppWrapperUnwrapping:
+    """``shared_ptr<Foo> p`` is a ``Foo`` at every call its arrow can reach."""
+
+    def test_a_smart_pointer_yields_what_it_holds(self) -> None:
+        assert declared_types("std::shared_ptr<Request> req;", "cpp") == {"req": "Request"}
+        assert unwrapped("std::shared_ptr<Request> req;") == {"req"}
+
+    def test_a_deleter_is_not_what_the_arrow_reaches(self) -> None:
+        assert declared_types("std::unique_ptr<Peer, D> peer;", "cpp") == {"peer": "Peer"}
+
+    def test_a_container_keeps_its_head(self) -> None:
+        """The control the unwrap has to fail: ``v.size()`` is not ``Entry::size``."""
+        assert declared_types("std::vector<Entry> items;", "cpp") == {"items": "vector"}
+        assert unwrapped("std::vector<Entry> items;") == frozenset()
+
+    def test_a_repo_wrapper_is_not_assumed_to_forward(self) -> None:
+        """Whether ``SharedHandle``'s arrow forwards is not written here."""
+        assert declared_types("SharedHandle<Thing> h;", "cpp") == {"h": "SharedHandle"}
+        assert unwrapped("SharedHandle<Thing> h;") == frozenset()
+
+    def test_weak_ptr_forwards_nowhere(self) -> None:
+        assert unwrapped("std::weak_ptr<Thing> w;") == frozenset()
+
+    def test_another_language_keeps_the_generic_head(self) -> None:
+        """The unwrap is C++ only: a Kotlin ``Column<T>`` really is a ``Column``."""
+        assert declared_types("val c: Column<Thing> = x", "kotlin") == {"c": "Column"}
+
+
+def test_cpp_is_not_a_field_language() -> None:
+    """C++ declares its fields in a header, away from the call that reads them.
+
+    Registering it would promise a scope the scan cannot answer from, which is
+    the condition that disqualified python on the same constant.
+    """
+    assert "cpp" not in IMPLICIT_FIELD_LANGUAGES
+
+
+def test_c_has_no_shapes_of_its_own() -> None:
+    """``c`` shares the C++ call strategies and is excluded here instead.
+
+    A struct declares no method, so the pair index the fallback ends in can
+    hold nothing for it.
+    """
+    assert "c" not in RECEIVER_TYPE_LANGUAGES
+    assert scan_declarations("Widget* w;", "c") == ()
