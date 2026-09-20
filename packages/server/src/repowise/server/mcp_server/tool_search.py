@@ -1151,6 +1151,7 @@ async def search_codebase(
     # An unknown kind or mode used to take the same ``return False`` / fallback as
     # simply inapplicable, so a typo and a real empty result looked identical.
     ignored: list[dict[str, Any]] = []
+    mode = mode.lower() if mode is not None else None
     mode = resolve_enum_argument(mode, _VALID_MODES, argument="mode", ignored=ignored)
     resolved_mode = _resolve_mode(query, mode)
     kind = resolve_enum_argument(kind, _VALID_KINDS, argument="kind", ignored=ignored)

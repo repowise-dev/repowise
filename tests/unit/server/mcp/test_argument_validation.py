@@ -240,3 +240,11 @@ class TestSearchMode:
 
         assert "ignored_arguments" not in result
 
+    @pytest.mark.asyncio
+    async def test_mode_is_case_insensitive(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthenticationService", mode="Symbol")
+
+        assert "ignored_arguments" not in result
+
