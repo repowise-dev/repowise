@@ -118,10 +118,26 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
     else:
         console.print("  [dim]Agent acceptance: off. Agents withdraw authority, never grant it.[/dim]")
     if policy.capture_prompt:
+        from repowise.cli.editor_integrations.claude_config import (
+            claude_code_capture_hook_installed,
+        )
+
         console.print(
             "  [dim]Capture prompt: on. After a commit that states a choice, the "
             "agent is asked once a session to record it.[/dim]"
         )
+        if not policy.enabled:
+            console.print(
+                "  [yellow]  ...but decision capture is off for this repository, "
+                "so it stays silent. `decision config enable` to use it.[/yellow]"
+            )
+        elif not claude_code_capture_hook_installed():
+            # The flag is per repository and the hook is per install, so the
+            # two drift: another repository's --off removes the shared entry.
+            console.print(
+                "  [yellow]  ...but no shell hook is installed to fire it. "
+                "Re-run `decision config capture-prompt --on`.[/yellow]"
+            )
     else:
         console.print("  [dim]Capture prompt: off. Nothing asks an agent to record a decision.[/dim]")
     console.print("")
@@ -369,11 +385,31 @@ def config_capture_prompt(
     # matcher, and the shared one deliberately excludes the shell tools.
     # Writing the flag without this would store a switch nothing reads.
     from repowise.cli.editor_integrations.claude_config import (
+        claude_code_capture_hook_installed,
         set_claude_code_capture_hook,
     )
 
     settings = set_claude_code_capture_hook(bool(enabled))
-    if fmt == "json" or settings is None:
+    if fmt == "json":
+        emit_json(
+            {
+                "repo": str(repo_path),
+                "capture_prompt": bool(enabled),
+                "hook_settings_file": str(settings) if settings else None,
+                "hook_installed": claude_code_capture_hook_installed(),
+            }
+        )
+        return
+    if enabled and not claude_code_capture_hook_installed():
+        # The flag alone is a switch nothing reads. Silence here is the defect
+        # this command was changed to fix, one level down.
+        console.print(
+            "[yellow]Flag written, but no Claude Code settings file was found to "
+            "install the shell hook into, so nothing will fire it. Run "
+            "`repowise init` or install the editor integration first.[/yellow]"
+        )
+        return
+    if settings is None:
         return
     if enabled:
         console.print(

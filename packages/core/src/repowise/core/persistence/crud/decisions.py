@@ -334,7 +334,12 @@ async def upsert_decision(
             scope_modules(affected_files or [], affected_modules)
         )
         rec.tags_json = json.dumps(tags or [])
-        rec.evidence_commits_json = json.dumps(evidence_commits or [])
+        # ``None`` leaves the commits alone, like ``kind`` above: a caller
+        # restating a record without naming them has not disowned them, and
+        # the capture hook's suppression reads this column — wiping it asks
+        # the agent again for a decision it has already recorded.
+        if evidence_commits is not None:
+            rec.evidence_commits_json = json.dumps(evidence_commits)
         rec.evidence_line = evidence_line
         rec.confidence = confidence
         rec.verification = verification

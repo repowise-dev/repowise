@@ -345,3 +345,51 @@ async def test_upsert_derives_modules_when_none_are_given(async_session):
     rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
 
     assert await _links(async_session, rec.id) == {("a/one.py", "file"), ("a", "module")}
+
+
+async def test_restating_a_record_keeps_the_commit_it_cites(async_session):
+    """Otherwise the capture prompt re-arms for a decision already recorded."""
+    repo = await insert_repo(async_session)
+    first = await upsert_decision(
+        async_session,
+        repository_id=repo.id,
+        title="Use one queue",
+        decision="One queue.",
+        source="cli",
+        evidence_commits=["abc12345"],
+    )
+    assert json.loads(first.evidence_commits_json) == ["abc12345"]
+
+    again = await upsert_decision(
+        async_session,
+        repository_id=repo.id,
+        title="Use one queue",
+        decision="One queue, refined.",
+        source="cli",
+    )
+
+    assert again.id == first.id
+    assert json.loads(again.evidence_commits_json) == ["abc12345"]
+
+
+async def test_an_explicit_empty_list_still_disowns_them(async_session):
+    repo = await insert_repo(async_session)
+    await upsert_decision(
+        async_session,
+        repository_id=repo.id,
+        title="Use one queue",
+        decision="One queue.",
+        source="cli",
+        evidence_commits=["abc12345"],
+    )
+
+    again = await upsert_decision(
+        async_session,
+        repository_id=repo.id,
+        title="Use one queue",
+        decision="One queue.",
+        source="cli",
+        evidence_commits=[],
+    )
+
+    assert json.loads(again.evidence_commits_json) == []

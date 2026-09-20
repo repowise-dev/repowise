@@ -1029,6 +1029,8 @@ repowise decision config show [PATH]              # the resolved capture policy
 repowise decision config preset NAME [PATH]       # default | off | local_only | balanced | full
 repowise decision config discovery [PATH]         # budget for the one broad discovery call
 repowise decision config agent-acceptance --on|--off  # may an agent grant authority? off by default
+repowise decision config capture-prompt --on|--off    # ask the agent to record what it just committed;
+                                                      # off by default, and --on installs the shell hook it needs
 repowise decision source list [PATH]              # the source registry and its state
 repowise decision source set SRC --on|--off       # switch one source
 repowise decision source set SRC --llm|--no-llm   # switch only its model stage

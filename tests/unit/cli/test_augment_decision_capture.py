@@ -447,3 +447,25 @@ def test_a_users_own_shell_hook_survives_the_removal(settings: Path) -> None:
     assert any(
         h.get("command") == "mytool" for e in remaining for h in e.get("hooks", [])
     )
+
+
+def test_the_master_capture_switch_silences_it(repo: Path) -> None:
+    """`preset off` must not leave one part of the layer nobody can turn off."""
+    (repo / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  enabled: false\n  capture_prompt: true\n", encoding="utf-8"
+    )
+
+    assert _fire(repo) is None
+
+
+def test_the_hook_entry_is_not_installed_without_a_settings_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A flag nothing reads is the defect the switch was changed to fix."""
+    from repowise.cli.editor_integrations import claude_config
+
+    missing = tmp_path / "nope" / "settings.json"
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: missing)
+
+    assert claude_config.set_claude_code_capture_hook(True) is None
+    assert claude_config.claude_code_capture_hook_installed() is False

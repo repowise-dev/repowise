@@ -678,6 +678,7 @@ the scope that decision governs.
 | `repowise decision add` | Guided interactive capture: kind, title, context, decision, rationale, rejected alternatives, tradeoffs, affected files, tags. Answering the prompts is an acceptance, recorded as one. An architectural record that names no files is kept as a candidate instead, because a decision that names nothing cannot be checked against the code. `--kind agreement` records the other noun — a rule about how the work is conducted — which is accepted without naming files, because it governs the repository rather than part of it, and reaches an agent at session start rather than when a file is edited. |
 | `repowise decision list` | Table of id, title, status, source, confidence, staleness, created date. |
 | `repowise decision show ID` | Full record including alternatives, consequences, affected files, and the evidence file and line. |
+| `repowise decision add --evidence-commit SHA` | Record which commit a decision was made in. Repeatable. The capture prompt passes it, and it is what stops the prompt asking again for a commit already recorded. |
 | `repowise decision confirm ID...` | Accept candidates. Refuses, naming the gap, when one has no reason, scope or evidence; `--reason`, `--scope` and `--evidence` supply them. A refused id does not stop the others. `--preview` writes nothing. `--agent SLUG` signs as an agent rather than as you, and needs `decision config agent-acceptance --on`. |
 | `repowise decision dismiss ID...` | Tombstone them. Never re-proposed on reindex. `--preview` writes nothing. |
 | `repowise decision deprecate ID` | Retire it, optionally `--superseded-by <ID>`, which writes the lineage edge. |
@@ -691,6 +692,7 @@ the scope that decision governs.
 | `repowise decision config show` | The resolved capture policy: every source, its status, and why. |
 | `repowise decision config preset NAME` | Apply `off`, `local_only`, `balanced`, or `full`. |
 | `repowise decision config agent-acceptance --on/--off` | Whether an agent may grant a decision authority. Off by default; no preset changes it. |
+| `repowise decision config capture-prompt --on/--off` | After a commit whose message states a choice, ask the agent once a session to record it. Off by default; no preset turns it on. `--on` also installs the `Bash\|PowerShell` PostToolUse entry it fires from, because the shared matcher deliberately excludes the shell tools; `--off` removes it, for every repository on the machine. Silent while `decisions.enabled` is off. |
 | `repowise decision source list` | The source registry with capabilities and current state. |
 | `repowise decision source set SRC --on/--off` | Switch one source. `--llm/--no-llm` switches only its model stage. |
 | `repowise decision llm --on/--off` | Master switch for decision-extraction model calls. |

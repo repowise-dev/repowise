@@ -152,10 +152,17 @@ def _failed(tool_output: object) -> bool:
 
 
 def _capture_enabled(repo_path: Path) -> bool:
-    """Whether this repository switched the prompt on. Off is the default."""
+    """Whether this repository switched the prompt on. Off is the default.
+
+    ``decisions.enabled`` gates it too. That flag is the master switch for
+    capture and ``preset off`` is how a repository says it wants none, so a
+    prompt that survived it would be the one part of the layer nobody could
+    turn off without knowing this switch by name.
+    """
     from repowise.core.analysis.decisions.policy_store import load_policy
 
-    return bool(load_policy(repo_path).policy.capture_prompt)
+    policy = load_policy(repo_path).policy
+    return bool(policy.enabled and policy.capture_prompt)
 
 
 def _git_root(path: str) -> str | None:
