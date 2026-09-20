@@ -296,3 +296,41 @@ def test_change_risk_falls_back_to_the_floor_without_a_file_count() -> None:
     assert cf.replaced_tokens_for("get_change_risk", {"features": {"nf": "three"}}) == (
         cf.CHANGE_RISK_FLOOR
     )
+
+
+def test_health_scales_with_the_files_it_judged() -> None:
+    """A flat 400 credited less than a third of one median source file, on a
+    tool whose whole job is telling you about several of them."""
+    result = {"targets": [{"path": "a.py"}, {"path": "b.py"}, {"path": "c.py"}]}
+    assert cf.replaced_tokens_for("get_health", result) == (
+        cf.HEALTH_FLOOR + 3 * cf.HEALTH_PER_FILE
+    )
+
+
+def test_health_reads_repository_mode_metrics_too() -> None:
+    """Targets mode names ``targets``; repository mode names ``metrics``."""
+    result = {"metrics": [{"path": "a.py"}, {"path": "b.py"}]}
+    assert cf.replaced_tokens_for("get_health", result) == (
+        cf.HEALTH_FLOOR + 2 * cf.HEALTH_PER_FILE
+    )
+
+
+def test_health_is_capped_and_falls_back_to_its_floor() -> None:
+    assert cf.replaced_tokens_for("get_health", {"targets": [{}] * 500}) == cf.HEALTH_MAX
+    assert cf.replaced_tokens_for("get_health", {"summary": "x"}) == cf.HEALTH_FLOOR
+    assert cf.replaced_tokens_for("get_health", {"error": "no index"}) == 0
+
+
+def test_the_raised_floors_stay_under_the_artifact_they_stand_for() -> None:
+    """The bar these floors are set against, asserted so a later bump has to
+    argue with a measurement rather than with a feeling.
+
+    Measured on this repository: the README is 15,941 estimated tokens; a
+    ``git log -p -5`` on one hot file is 4,834-7,108; the median source file
+    across 4,115 of them is 1,296 and a capped grep is 1,584.
+    """
+    assert cf.OVERVIEW_FLOOR < 15_941, "get_overview must undersell one README"
+    assert cf.WHY_FLOOR < 4_834, "get_why must undersell one git log -p"
+    assert cf.RISK_PER_TARGET < 1_296 + 1_584, "a target is a read plus a grep"
+    assert cf.HEALTH_PER_FILE < 1_296, "a judged file must undersell reading it"
+    assert cf.CONTEXT_FILE_FLOOR < 620, "the file floor must sit under the p25"
