@@ -459,19 +459,21 @@ def _project_recommendation(row: dict[str, Any]) -> dict[str, Any]:
     untouched; this is the projection get_risk emits.
     """
     out = {k: v for k, v in row.items() if k not in {"repository", "repository_id"}}
-    out.pop("source_files", None)
-    if out.get("bases") == [out.get("basis")]:
-        out.pop("bases", None)
-    if out.get("test_file") == out.get("test_id"):
-        out.pop("test_file", None)
     evidence = out.get("evidence")
     if isinstance(evidence, list):
+        sources = sorted({e["source_file"] for e in evidence if isinstance(e, dict)})
+        if out.get("source_files") == sources:
+            out.pop("source_files", None)
         out["evidence"] = [
             {k: v for k, v in e.items() if not (k == "source_format" and v is None)}
             if isinstance(e, dict)
             else e
             for e in evidence
         ]
+    if out.get("bases") == [out.get("basis")]:
+        out.pop("bases", None)
+    if out.get("test_file") in (out.get("test_id"), None):
+        out.pop("test_file", None)
     return out
 
 
@@ -746,6 +748,23 @@ def _build_pr_directive(
         directive["test_recommendations"] = [
             _project_recommendation(row) for row in emitted_recommendations
         ]
+
+    # The same rows also ride under ``pr_blast_radius.test_impact`` as the full
+    # population the directive's cap trimmed. Two copies of one row in one
+    # payload must not disagree about their shape, so the projection applies to
+    # both. ``trimmed_blast`` is a shallow copy of the analyzer's dict, so the
+    # nested block is copied before it is rewritten.
+    blast = response.get("pr_blast_radius")
+    if isinstance(blast, dict):
+        blast_impact = blast.get("test_impact")
+        if isinstance(blast_impact, dict) and blast_impact.get("recommendations"):
+            rows = blast_impact["recommendations"]
+            blast["test_impact"] = {
+                **blast_impact,
+                "recommendations_repository": rows[0].get("repository"),
+                "recommendations_repository_id": rows[0].get("repository_id"),
+                "recommendations": [_project_recommendation(row) for row in rows],
+            }
 
     for key, total in (
         ("will_break_consumers", will_break_total),

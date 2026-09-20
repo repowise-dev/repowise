@@ -45,6 +45,20 @@ def test_a_derivable_field_is_dropped():
     assert "source_format" not in out["evidence"][0]
 
 
+def test_source_files_that_is_not_the_fold_of_evidence_survives():
+    """The drop is conditional: a list that does not match what ``evidence``
+    folds to is a fact of its own and stays."""
+    out = _project_recommendation(_row(source_files=["src/a.py", "src/extra.py"]))
+    assert out["source_files"] == ["src/a.py", "src/extra.py"]
+
+
+def test_a_null_test_file_is_absent_rather_than_null():
+    """A measured row whose coverage row named no file: same rule as the
+    health findings, absent says what null said."""
+    out = _project_recommendation(_row(test_id="tests/test_a.py::one", test_file=None))
+    assert "test_file" not in out
+
+
 def test_a_test_file_that_is_not_the_test_id_survives():
     """A measured row's id carries a ``::`` selector; its file does not."""
     out = _project_recommendation(
