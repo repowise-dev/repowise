@@ -334,8 +334,7 @@ async def import_manifest(
             evidence=sorted(entry.evidence) or [artifact],
             accepter=entry.accepted_by,
             artifact=entry.accepted_artifact or artifact,
-            # The named accepter signed the manifest, not this store. Recording
-            # the import is what keeps the two distinguishable.
+            # The named accepter signed the manifest, not this store.
             kind="import",
             note="imported from the tracked manifest",
         )

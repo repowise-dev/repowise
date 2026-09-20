@@ -59,10 +59,8 @@ def _resolve_decision_repo(path: str | None, fmt: str = "table"):
 def _describe_signature(acceptance) -> dict[str, str] | None:
     """Who signed *acceptance*, as a label and its parts. ``None`` for a candidate.
 
-    A row with no stored kind reads as ``unrecorded`` rather than as a
-    person's: those are the two things the field exists to keep apart. The
-    verb comes from the action, because the same log records withdrawals and
-    "accepted by" would present one as a grant.
+    No stored kind reads as ``unrecorded``, never as a person's. The verb
+    comes from the action: the same log records withdrawals.
     """
     if acceptance is None:
         return None
@@ -85,9 +83,7 @@ def _signer(agent: str, agent_session: str, *, accepter: str = "") -> tuple[str,
     """Validate the signing flags and return ``(kind, accepter_session)``.
 
     Shared by every verb that appends to the acceptance log, so an agent can
-    say it is one wherever it can act. Without ``--agent`` the kind is
-    ``person``, because the identity would resolve to the repository's git
-    name and a person's is what it would be.
+    say it is one wherever it can act.
     """
     if agent and accepter:
         raise click.ClickException("Pass --agent or --as, not both: they name different signers.")
@@ -102,9 +98,8 @@ def _signer(agent: str, agent_session: str, *, accepter: str = "") -> tuple[str,
     return ("agent" if agent else "person"), agent_session
 
 
-#: The two flags an agent signs with. Added to every verb that writes an
-#: authority row, not only the one the policy gates: withdrawing needs no
-#: switch, so it is the action an agent is most likely to take unsigned.
+#: The two flags an agent signs with, on every verb that writes an authority
+#: row: withdrawing needs no switch, so it is the likeliest to go unsigned.
 def _signing_options(command):
     command = click.option(
         "--session", "agent_session", default="", help="The agent session signing."
@@ -672,8 +667,7 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
                     "confidence": rec.confidence,
                     "staleness_score": rec.staleness_score,
                     "created_at": rec.created_at.isoformat() if rec.created_at else None,
-                    # Not "accepted_by": the same log records withdrawals, and
-                    # a consumer keying on that name would read one as a grant.
+                    # Not "accepted_by": the same log records withdrawals.
                     "signature": signed,
                     "currency": describe_decision_currency(
                         repo_path,
@@ -713,8 +707,7 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     )
     if currency:
         lines.append(f"[dim]{currency}[/dim]")
-    # A candidate has no line here at all: "not accepted" is what the absence
-    # of an acceptance row says, and status already carries it.
+    # A candidate has no line at all; status already says so.
     if signed:
         lines.append(f"{signed['verb']} by: {signed['label']}")
     lines.append("")
@@ -896,8 +889,7 @@ def _emit_batch(
                 "results": results,
                 "succeeded": len(results) - len(failed),
                 "failed": len(failed),
-                # Named once for the run rather than per row: every refusal
-                # here is the same verb refusing for one of the same reasons.
+                # Once for the run: every refusal here is the same verb.
                 **({"remedy": remedy} if failed and remedy else {}),
             }
         )
@@ -1023,9 +1015,8 @@ def decision_confirm(
             repo_path, ids, action="accepted", verb="accept", preview=preview, apply_one=_accept
         )
     )
-    # An agent refused for want of the switch cannot fix that with --scope, so
-    # it is told about the switch as well. Both, not either: the same run can
-    # refuse one id for the policy and another for a missing scope.
+    # Both, not either: one run can refuse one id for the policy and another
+    # for a missing scope.
     remedy = _ACCEPT_REMEDY
     if agent and not granted:
         remedy = f"{AGENT_ACCEPTANCE_REMEDY} {remedy}"
@@ -1181,8 +1172,7 @@ def decision_deprecate(
                 else:
                     # A candidate has no authority to retire, so this stays the
                     # plain status change it always was. An accepted record
-                    # reached without a named successor does still log a
-                    # withdrawal, so the kind has to travel here too.
+                    # reaching it still logs a withdrawal, so the kind travels.
                     await update_decision_status(
                         session,
                         rec.id,

@@ -180,8 +180,7 @@ export function DecisionCaptureSettings({
           onChange={(v) => void write("llm", { llm: v })}
         />
         {/* Not a capture switch: capture proposes, this grants. Kept beside
-            them because this is the page a person comes to to see what the
-            layer is allowed to do on its own. */}
+            them because this is the page for what the layer may do alone. */}
         <Toggle
           label="Let agents accept decisions"
           description="Off, an agent can propose and withdraw but never grant authority. On, its acceptances are recorded as an agent's, with the session that signed."

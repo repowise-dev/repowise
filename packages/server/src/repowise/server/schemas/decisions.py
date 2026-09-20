@@ -65,10 +65,9 @@ class DecisionRecordResponse(BaseModel):
     # readers that predate the split. A record can be stored ``active`` and
     # carry no currency at all, which is precisely what a candidate is.
     currency: str | None = None
-    # Who signed the current acceptance, and what they were: person | agent |
-    # import, or "" on a row written before provenance was recorded. Null on a
-    # candidate, alongside ``currency``. ``accepter`` alone cannot answer it —
-    # it is a free string that resolves to the repository's git identity.
+    # Who signed the current authority record: person | agent | import, or ""
+    # on a row written before provenance. Null on a candidate, with
+    # ``currency``.
     accepter: str | None = None
     accepter_kind: str | None = None
     accepter_session: str | None = None
@@ -150,10 +149,9 @@ class DecisionLaneCountsResponse(BaseModel):
 
 class DecisionCreate(BaseModel):
     title: str
-    # An agreement governs the repository and names no file, so without this
-    # field the route could only ever create the checkable noun. ``None``
-    # states no opinion and leaves an existing record's noun alone; a client
-    # that predates the split must not silently un-agree a stored agreement.
+    # Without this the route could only create the checkable noun, and an
+    # agreement names no file. ``None`` states no opinion, so a client that
+    # predates the split cannot un-agree a stored agreement.
     kind: Literal[DECISION_KINDS] | None = None
     context: str = ""
     decision: str = ""

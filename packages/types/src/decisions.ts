@@ -198,21 +198,17 @@ export const DECISION_CURRENCY_DESCRIPTIONS: Record<DecisionCurrency, string> =
 
 /**
  * What signed an acceptance, as against who. `accepter` is a free string that
- * resolves to the repository's git identity, so without this an agent that
- * accepted a decision was indistinguishable from the maintainer.
- *
- * A stored `""` is a row written before the column existed. It is not
- * `person`: "unrecorded" and "a human signed" are the two things this
- * distinction exists to keep apart.
+ * resolves to the repository's git identity, so a machine signing read as a
+ * person. A stored `""` is a row written before the column and is not
+ * `person`: "unrecorded" and "a human signed" are what this keeps apart.
  */
 export const ACCEPTER_KINDS = ["person", "agent", "import"] as const;
 
 export type AccepterKind = (typeof ACCEPTER_KINDS)[number];
 
 /**
- * Worded for the signature, not for the action. The same row records a
- * withdrawal — the evolution stage retires records as `agent` — so a label
- * saying "accepted" would present a revocation as a grant.
+ * Worded for the signature, not the action: the same row records withdrawals,
+ * so "accepted" would present a revocation as a grant.
  */
 export const ACCEPTER_KIND_LABELS: Record<AccepterKind, string> = {
   person: "Signed by a person",
@@ -293,9 +289,8 @@ export interface DecisionRecord {
    */
   currency?: DecisionCurrency | null;
   /**
-   * Who signed the current acceptance, and what they were. Null on a
-   * candidate, beside `currency`. `accepter_kind` is `""` on a row written
-   * before provenance was recorded, which is not a claim that a person signed.
+   * Who signed the current authority record. Null on a candidate, beside
+   * `currency`. `""` means written before provenance, not that a person did.
    */
   accepter?: string | null;
   accepter_kind?: AccepterKind | "" | null;

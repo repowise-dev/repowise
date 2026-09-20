@@ -344,10 +344,9 @@ class DecisionPolicy:
     sources: dict[str, SourceSetting]
     discovery: DiscoveryBudget = _DEFAULT_DISCOVERY
     harnesses: tuple[str, ...] = DEFAULT_HARNESSES
-    #: Whether an agent may grant authority, not merely withdraw it. Off is the
-    #: shipped posture and the one every other switch here leaves alone: this
-    #: is the only setting that lets something other than a person create a
-    #: constraint the repository then enforces.
+    #: Whether an agent may grant authority, not merely withdraw it. The only
+    #: setting here that lets something other than a person create a
+    #: constraint, so it ships off and no preset turns it on.
     agent_acceptance: bool = False
 
     # -- queries ---------------------------------------------------------
@@ -401,10 +400,9 @@ class DecisionPolicy:
     def preset_name(self) -> str:
         """The preset this policy's *capture* equals, or ``custom``.
 
-        ``agent_acceptance`` is deliberately not read: it is authority, not
-        source membership, so counting it would make one switch drop the
-        stored ``preset:`` key and with it the pinning that keeps a source
-        added in a later release switched off.
+        ``agent_acceptance`` is not read: it is authority, not membership, and
+        counting it would drop the stored ``preset:`` key and with it the
+        pinning that keeps a later release's new source switched off.
         """
         for name, spec in PRESETS.items():
             if (
@@ -613,9 +611,8 @@ def _resolve_harnesses(raw: Any, warnings: list[str]) -> tuple[str, ...]:
 
 
 #: Every key under ``decisions:`` this module owns, live and legacy. A write
-#: replaces all of them rather than merging over them: ``to_config_block``
-#: omits a setting that equals its default, so merging leaves a stale ``true``
-#: behind and switching one back off does nothing.
+#: replaces all of them: ``to_config_block`` omits a setting that equals its
+#: default, so merging leaves a stale value and switching one off does nothing.
 POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
     {
         "preset",
@@ -775,8 +772,8 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     discovery = _resolve_discovery(raw.get("discovery"), warnings)
     harnesses = _resolve_harnesses(raw.get("harnesses"), warnings)
 
-    # Off unless the config says the word. A non-boolean is a warning and not a
-    # grant: the failure mode this setting must not have is reading as on.
+    # A non-boolean warns rather than grants: the failure this must not have
+    # is reading as on.
     agent_acceptance = _as_bool(raw.get("agent_acceptance"))
     if agent_acceptance is None:
         if "agent_acceptance" in raw:

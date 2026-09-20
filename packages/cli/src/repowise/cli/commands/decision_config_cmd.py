@@ -238,9 +238,8 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
     from repowise.core.analysis.decisions.policy import preset_policy
 
     repo_path = _resolve_decision_repo(path, fmt)
-    # A preset names source membership. The harness list and the agent-grant
-    # switch are not membership, so applying one leaves both as the caller set
-    # them rather than silently revoking an authority grant.
+    # A preset names source membership; the harness list and the agent-grant
+    # switch are not, so applying one leaves both as the caller set them.
     current = _load(repo_path).policy
     _apply(
         repo_path,
@@ -314,10 +313,9 @@ def config_agent_acceptance(
 ) -> None:
     """Allow, or forbid, an agent granting a decision authority.
 
-    Off by default, and off is the complete posture: an agent still withdraws
-    authority, proposes candidates and reads what governs. Turning it on does
-    not make an agent's acceptance look like yours — it is recorded as an
-    agent's, with the session that signed it, on every surface.
+    Off by default, and off is complete: an agent still withdraws authority,
+    proposes candidates and reads what governs. On, its acceptances are
+    recorded as an agent's, with the session that signed, on every surface.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 

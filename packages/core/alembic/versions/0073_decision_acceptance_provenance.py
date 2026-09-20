@@ -1,17 +1,14 @@
 """decision_acceptances: record what signed, not only who.
 
-``accepter`` is a free string resolved from ``git config user.name``, so an
-agent accepting through the CLI stamped the maintainer's name and nothing
-downstream could tell the two apart. ``accepter_kind`` is the distinction;
+``accepter`` is a free string resolved from ``git config user.name``, so a
+machine signing read as a person. ``accepter_kind`` is the distinction;
 ``accepter_session`` is the transcript behind an agent that signed.
 
-Added nullable-false with an empty server default, which is the
-"written before provenance existed" value and stays legible as one. Nothing
-is backfilled to ``person``: that is the claim this column exists to stop a
-machine making. Local SQLite stores never run Alembic -- ``init_db``'s
-reconciler issues additive DDL -- so this is for managed Postgres, and the
-CHECK the model declares is a backstop under
-``crud.authority.record_acceptance``, which is where the rule is enforced.
+The empty server default is the "written before provenance" value and stays
+legible as one; nothing is backfilled to ``person``. Local SQLite stores never
+run Alembic -- ``init_db``'s reconciler issues additive DDL -- so this is for
+managed Postgres, and the rule itself is enforced in
+``crud.authority.record_acceptance``.
 
 Revision ID: 0073
 Revises: 0072
@@ -41,10 +38,8 @@ def upgrade() -> None:
         "decision_acceptances",
         sa.Column("accepter_session", sa.String(length=64), nullable=False, server_default=""),
     )
-    # SQLite cannot ALTER a constraint onto an existing table, and does not
-    # need to: a local store is built by ``init_db`` from the model, which
-    # declares this CHECK at CREATE TABLE. The rule itself lives in
-    # ``record_acceptance`` either way.
+    # SQLite cannot ALTER a constraint on, and does not need to: a local store
+    # is built from the model, which declares this CHECK at CREATE TABLE.
     if op.get_bind().dialect.name != "sqlite":
         op.create_check_constraint(
             "ck_acceptance_accepter_kind",

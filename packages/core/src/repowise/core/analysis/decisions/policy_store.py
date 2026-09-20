@@ -73,10 +73,9 @@ def write_policy(
 
     merged: dict[str, Any] = dict(config)
     existing = merged.get("decisions")
-    # Every key the policy owns is replaced, not merged over. `to_config_block`
-    # omits a setting that equals its default, so a merge left the stored value
-    # behind and switching one back off wrote nothing at all. Unrelated keys
-    # under `decisions:` survive, which is what this merge is for.
+    # Every key the policy owns is replaced, not merged over, or a setting
+    # `to_config_block` omitted at its default keeps its stored value forever.
+    # Unrelated keys under `decisions:` survive, which is what the merge is for.
     decisions = {
         k: v
         for k, v in (existing.items() if isinstance(existing, dict) else ())

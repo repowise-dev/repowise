@@ -166,24 +166,23 @@ ACCEPTANCE_ACTIONS: tuple[str, ...] = (
 #: Actions that create or renew authority, against the three that withdraw it.
 GRANTING_ACTIONS: frozenset[str] = frozenset({"accepted", "reaffirmed", "merged"})
 
-#: Who signed an acceptance. ``person`` is a human identity, ``agent`` is a
-#: coding agent or a pipeline stage, ``import`` is a tracked artifact or a
-#: manifest speaking for whoever committed it.
+#: Who signed an acceptance. ``person`` is a human, ``agent`` a coding agent
+#: or a pipeline stage, ``import`` a tracked artifact or manifest speaking for
+#: whoever committed it. ``accepter`` alone cannot answer this: it is a free
+#: string resolved from the repository's git identity, so a machine signing
+#: reads as a person.
 #:
-#: Stored ``""`` is none of these: it is a row written before this column
-#: existed. Never backfilled to ``person`` — "unrecorded" and "a human signed"
-#: are the two things this distinction exists to keep apart.
+#: Stored ``""`` is a row written before this column, never backfilled to
+#: ``person``: "unrecorded" and "a human signed" are what this keeps apart.
 ACCEPTER_KINDS: tuple[str, ...] = ("person", "agent", "import")
 UNRECORDED_ACCEPTER_KIND = ""
 
-#: Width of ``decision_acceptances.accepter_session``. Stated here so a caller
-#: can refuse a longer id rather than hand Postgres a truncation error.
+#: Width of ``decision_acceptances.accepter_session``, so a caller can refuse
+#: a longer id rather than hand Postgres a truncation error.
 ACCEPTER_SESSION_MAX = 64
 
-#: What fixes a :func:`machine_grant_blocker` refusal, kept beside the blocker
-#: the way every other refusal here separates the two. Addressed to a person,
-#: because the party reading it is the one that was just refused: a remedy
-#: phrased as its own next step hands an agent the command that grants it.
+#: What fixes a :func:`machine_grant_blocker` refusal. Addressed to a person,
+#: because the party reading it is the agent that was just refused.
 AGENT_ACCEPTANCE_REMEDY = (
     "Someone who owns this repository can allow it with "
     "`repowise decision config agent-acceptance --on`, or accept it themselves."
@@ -202,10 +201,9 @@ def accepter_kind_blocker(kind: str) -> str | None:
 def machine_grant_blocker(kind: str, action: str, *, granted: bool) -> str | None:
     """Why an agent may not take *action*, or ``None``.
 
-    A machine revokes but does not grant. Withdrawing authority narrows what a
-    record claims and re-accepting undoes it; granting mints a constraint
-    nobody agreed to, under a signature that reads as an acceptance. Stated
-    here rather than left true by omission.
+    A machine revokes but does not grant: withdrawing narrows what a record
+    claims and re-accepting undoes it, while granting mints a constraint
+    nobody agreed to. Stated rather than left true by omission.
     """
     if kind != "agent" or action not in GRANTING_ACTIONS or granted:
         return None

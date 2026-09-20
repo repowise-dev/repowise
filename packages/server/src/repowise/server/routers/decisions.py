@@ -47,12 +47,7 @@ router = APIRouter(
 
 
 def _attach_signature(item: DecisionRecordResponse, signature) -> None:
-    """Copy who signed onto a response row. A candidate is left null.
-
-    Split out because the three read paths that carry ``currency`` have to
-    carry this beside it: a surface that shows one and not the other cannot say
-    whether the authority it is displaying was granted by a person.
-    """
+    """Copy who signed onto a response row. A candidate is left null."""
     if signature is None:
         return
     item.accepter = signature.accepter or signature.artifact
@@ -61,11 +56,10 @@ def _attach_signature(item: DecisionRecordResponse, signature) -> None:
 
 
 async def _one_with_signature(session, repo_id: str, rec) -> DecisionRecordResponse:
-    """One record, carrying its authority and who granted it.
+    """One record, carrying its authority and who signed it.
 
-    Both, never one: a consumer told that a null ``currency`` means candidate
-    would otherwise read an accepted decision off these routes as one and then
-    find a signature on it.
+    Both, never one: a consumer reading a null ``currency`` as "candidate"
+    would otherwise call an accepted decision one and find a signature on it.
     """
     item = DecisionRecordResponse.from_orm(rec)
     item.currency = await crud.current_currency(session, rec)
@@ -597,15 +591,14 @@ async def create_decision(
         session, repo_id, body.title, source="cli"
     )
     named = bool(body.affected_files or body.affected_modules)
-    # The noun to record: what this body says, or what the record already is.
-    # A body that names no kind must not un-agree a stored agreement.
+    # What this body says, or what the record already is: a body naming no
+    # kind must not un-agree a stored agreement.
     kind = body.kind or (existing.kind if existing is not None else ARCHITECTURAL_KIND)
-    # An agreement's scope is the repository, which is why it names no file.
-    # Requiring one of it would leave the noun permanently unacceptable.
+    # An agreement names no file because its scope is the repository.
+    # Requiring one would leave the noun permanently unacceptable.
     scoped = named or kind == AGREEMENT_KIND
-    # The guard asks what the stored record would lose, not what either side
-    # calls it: an agreement can be given a real scope, so its noun does not
-    # mean it has nothing to clear.
+    # What the stored record would lose, not what either side calls it: an
+    # agreement can be given a real scope.
     if (
         existing is not None
         and not named
@@ -635,8 +628,8 @@ async def create_decision(
         affected_files=body.affected_files,
         affected_modules=body.affected_modules,
         tags=body.tags,
-        # None on purpose when the body named none: ``upsert_decision`` leaves
-        # an existing record's noun alone rather than defaulting it back.
+        # None when the body named none: ``upsert_decision`` then leaves an
+        # existing record's noun alone.
         kind=body.kind,
         source="cli",
         # No confidence: upsert_decision scores a manual entry.

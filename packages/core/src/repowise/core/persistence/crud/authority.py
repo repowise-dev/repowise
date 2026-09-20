@@ -10,11 +10,10 @@ not cover. Every review action goes through it, so no caller can invent a
 shortcut past the reason/scope/evidence/identity/kind requirement.
 
 The six review verbs below default ``kind`` to ``person`` because that is what
-they are: the verbs a human review surface calls. ``record_acceptance`` itself
-has no default, so no caller reaches the log without naming a kind. The
-default is a convention for the human surfaces and not a check on them: what
-stops an agent signing as a person is that it says ``--agent``, not anything
-enforceable here.
+they are: the verbs a human review surface calls. ``record_acceptance`` has no
+default, so no caller reaches the log without naming one. The default is a
+convention, not a check — what stops an agent signing as a person is that it
+says ``--agent``.
 """
 
 from __future__ import annotations
@@ -239,11 +238,10 @@ def _latest_acceptance_join(repository_id: str) -> tuple[Any, Any]:
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceSignature:
-    """Who signed a decision's current acceptance, and what they were.
+    """Who signed a decision's current authority record, and what they were.
 
-    ``kind`` empty means the row predates the provenance columns, which is not
-    the same claim as a person having signed — see
-    :data:`~repowise.core.analysis.decisions.lifecycle.ACCEPTER_KINDS`.
+    Empty ``kind`` means the row predates the columns, which is not a claim
+    that a person signed. See :data:`~...decisions.lifecycle.ACCEPTER_KINDS`.
     """
 
     kind: str
@@ -259,10 +257,11 @@ async def decision_signatures(
 ) -> dict[str, AcceptanceSignature]:
     """Current signature per decision id. A candidate is absent from the map.
 
-    The companion of :func:`decision_currencies`: that answers what a decision's
-    authority amounts to, this answers who granted it. Both read the same
-    highest-``seq`` row, so a surface showing one can show the other without a
-    second opinion about which acceptance is current.
+    The companion of :func:`decision_currencies`: that says what a decision's
+    authority amounts to, this says who signed it. Both read the same
+    highest-``seq`` row, so no surface needs a second opinion about which one
+    is current. The row may record a withdrawal, so a caller wording this must
+    read ``action`` rather than assume an acceptance.
     """
     q = select(
         DecisionAcceptance.decision_id,
@@ -428,8 +427,8 @@ def _non_blank(values: list[str]) -> list[str]:
 
 
 def names_a_scope(record: DecisionRecord) -> list[str]:
-    """The files or modules *record* actually names. Public alias of the
-    internal helper, for callers asking what a re-statement would clear."""
+    """The files or modules *record* names, for a caller asking what a
+    re-statement would clear."""
     return _named_scope(record)
 
 
@@ -558,11 +557,10 @@ async def record_acceptance(
     missing any of them is refused with the specific gap named rather than
     accepted with a blank.
 
-    *kind* has no default. Every caller states whether a person, an agent or an
-    import is signing, because the one value nobody should be able to fall into
-    is the one a reader will take for a human signature. *agent_acceptance* is
-    the repository's policy switch, which only a caller that resolved it
-    passes; without it an agent may withdraw authority but not grant it.
+    *kind* has no default: the one value nobody should fall into is the one a
+    reader takes for a human signature. *agent_acceptance* is the repository's
+    policy switch, passed only by a caller that resolved it; without it an
+    agent may withdraw authority but not grant it.
     """
     if action not in ACCEPTANCE_ACTIONS:
         raise ValueError(f"Unknown acceptance action {action!r}.")
@@ -581,8 +579,8 @@ async def record_acceptance(
     for check in (
         accepter_kind_blocker(kind),
         machine_grant_blocker(kind, action, granted=agent_acceptance),
-        # Bounded here rather than left to the column, which SQLite ignores and
-        # Postgres turns into a truncation error instead of a refusal.
+        # SQLite ignores the column width and Postgres truncates; both are
+        # worse than a refusal.
         f"accepter session is longer than {ACCEPTER_SESSION_MAX} characters"
         if len(accepter_session) > ACCEPTER_SESSION_MAX
         else None,
