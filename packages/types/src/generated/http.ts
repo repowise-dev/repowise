@@ -2581,6 +2581,7 @@ export interface SavingsResponse {
   unpriced_saved_output_tokens?: number;
   priced_output_savings_usd?: number;
   baseline_events?: number;
+  reducing_events?: number;
   baseline_input_tokens?: number;
   baseline_saved_input_tokens?: number;
   input_reduction_ratio?: number | null;

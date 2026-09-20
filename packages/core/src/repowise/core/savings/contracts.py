@@ -340,21 +340,29 @@ class SavingsReport:
     priced_output_savings_usd: float
     opportunity_count: int
     opportunity_tokens_excluded: int
-    #: How much smaller the input got, over the events that carry a baseline.
-    #: The headline total answers "how many tokens"; this answers "out of how
-    #: many", which is the only form in which one repository's savings can be
-    #: compared with another's. Events with no baseline are excluded from both
-    #: the numerator and the denominator rather than counted as a zero -- an
-    #: event with nothing to compare against is not a reduction of nought.
+    #: How much smaller the input got. The headline total answers "how many
+    #: tokens"; this answers "out of how many", which is the only form in which
+    #: one repository's savings compare with another's.
+    #:
+    #: Two populations, and both ship because either alone misleads.
+    #: ``baseline_events`` counts every interaction that had something to
+    #: compare against; ``reducing_events`` counts the subset where the input
+    #: actually got smaller. The ratio below is over the subset -- "when it
+    #: fires, by how much" -- and is only honest while the surface states the
+    #: coverage beside it, which is what the two counts are for. An event with
+    #: no baseline at all is in neither: it is not a reduction of nought.
     baseline_events: int = 0
+    reducing_events: int = 0
+    #: Both sides of the ratio, over ``reducing_events``, so the percentage is
+    #: checkable rather than asserted.
     baseline_input_tokens: int = 0
     baseline_saved_input_tokens: int = 0
     #: ``baseline_saved_input_tokens / baseline_input_tokens``, and the
     #: nearest-rank 90th percentile of the same ratio taken per event. Both
-    #: null when no event in the window carried a baseline. The aggregate is
-    #: what the repository did overall; the percentile says how far the
-    #: reduction goes on the outputs where it matters, and one without the
-    #: other is a half-truth in whichever direction flatters.
+    #: null when nothing in the window reduced anything. The aggregate is what
+    #: a reduction is typically worth; the percentile says how far it goes on
+    #: the outputs where it matters, and one without the other is a half-truth
+    #: in whichever direction flatters.
     input_reduction_ratio: float | None = None
     input_reduction_ratio_p90: float | None = None
     per_operation: tuple[Mapping[str, Any], ...] = ()

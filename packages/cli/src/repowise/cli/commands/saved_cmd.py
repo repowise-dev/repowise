@@ -159,6 +159,7 @@ def saved_command(
                     "mcp_queries_answered": report.mcp_queries_answered,
                     "dead_ends": report.dead_ends,
                     "baseline_events": report.baseline_events,
+                    "reducing_events": report.reducing_events,
                     "baseline_input_tokens": report.baseline_input_tokens,
                     "baseline_saved_input_tokens": report.baseline_saved_input_tokens,
                     "input_reduction_ratio": report.input_reduction_ratio,
@@ -296,7 +297,8 @@ def _print_evidence_and_pricing(report: SavingsReport) -> None:
     if report.input_reduction_ratio is not None and report.input_reduction_ratio_p90 is not None:
         console.print(
             f"  Input reduction: [bold]{report.input_reduction_ratio:.0%}[/bold] "
-            f"[dim]across {report.baseline_events:,} interactions carrying a baseline; "
+            f"[dim]on {report.reducing_events:,} of {report.baseline_events:,} "
+            f"comparable interactions; "
             f"{report.input_reduction_ratio_p90:.0%} at the 90th percentile[/dim]"
         )
     if report.priced_saved_input_tokens:

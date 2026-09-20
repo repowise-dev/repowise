@@ -186,7 +186,7 @@ class SavingsRepository:
     def _reduction_p90(
         self, where: str, params: list[Any], population: int
     ) -> float | None:
-        """The per-event reduction ratio at the published quantile.
+        """The reduction ratio at the published quantile, over reducing events.
 
         One bounded row, not the population: a percentile is the value at a
         rank, so the database seeks to that rank rather than handing every
@@ -200,6 +200,7 @@ class SavingsRepository:
         hit = self._conn.execute(
             f"SELECT CAST(saved_input_tokens AS REAL) / {den} "
             f"FROM savings_events WHERE {where} AND {den} > 0 "
+            "AND saved_input_tokens > 0 "
             "ORDER BY 1 ASC LIMIT 1 OFFSET ?",
             [*params, reduction_quantile_offset(population)],
         ).fetchone()
@@ -260,8 +261,11 @@ class SavingsRepository:
                 MIN(occurred_at),
                 MAX(occurred_at),
                 COALESCE(SUM(CASE WHEN {den} > 0 THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN {den} > 0 THEN {den} ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN {den} > 0
+                COALESCE(SUM(CASE WHEN {den} > 0 AND saved_input_tokens > 0
+                    THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN {den} > 0 AND saved_input_tokens > 0
+                    THEN {den} ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN {den} > 0 AND saved_input_tokens > 0
                     THEN saved_input_tokens ELSE 0 END), 0)
             FROM savings_events WHERE {where}
             """,
@@ -293,9 +297,10 @@ class SavingsRepository:
             [*params, limit],
         ).fetchall()
         baseline_events = int(row[16])
-        baseline_input = int(row[17])
-        baseline_saved = int(row[18])
-        p90 = self._reduction_p90(where, params, baseline_events)
+        reducing_events = int(row[17])
+        baseline_input = int(row[18])
+        baseline_saved = int(row[19])
+        p90 = self._reduction_p90(where, params, reducing_events)
         saved_input = int(row[5])
         priced_input = int(row[8])
         saved_output = int(row[11])
@@ -319,6 +324,7 @@ class SavingsRepository:
             opportunity_count=int(opportunity_count),
             opportunity_tokens_excluded=int(opportunity_tokens),
             baseline_events=baseline_events,
+            reducing_events=reducing_events,
             baseline_input_tokens=baseline_input,
             baseline_saved_input_tokens=baseline_saved,
             input_reduction_ratio=reduction_ratio(baseline_saved, baseline_input),

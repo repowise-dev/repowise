@@ -281,6 +281,7 @@ async def test_the_endpoint_and_the_core_report_agree(
         # A named allowlist, so a field added to the report and forgotten at
         # the endpoint would pass this test silently. Added here on purpose.
         "baseline_events",
+        "reducing_events",
         "baseline_input_tokens",
         "baseline_saved_input_tokens",
         "input_reduction_ratio",

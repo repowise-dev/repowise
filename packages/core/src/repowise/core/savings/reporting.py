@@ -61,13 +61,19 @@ def _included(occurred_at: str, cutoff: datetime | None, as_of: datetime) -> boo
     return timestamp <= as_of and (cutoff is None or timestamp >= cutoff)
 
 
-def _reduction(scoped: list[SavingsEvent]) -> tuple[int, int, int, float | None]:
-    """Population, both sides of the aggregate ratio, and its percentile.
+def _reduction(scoped: list[SavingsEvent]) -> tuple[int, int, int, int, float | None]:
+    """Coverage, both sides of the aggregate ratio, and its percentile.
 
-    Only events carrying a baseline: an event with nothing to compare against
-    is not a reduction of nought, so it leaves both sides alone. The
-    denominator is what each event's saving was computed against, which is not
-    always its ``baseline_input_tokens`` -- see :func:`reduction_denominator`.
+    Two populations. ``pairs`` is every event with something to compare
+    against -- an event with no baseline is not a reduction of nought, so it is
+    in neither. ``reducing`` is the subset where the input actually got
+    smaller, and the ratio is over that: "when it fires, by how much". Both
+    counts are returned because the ratio only stays honest while the surface
+    states its coverage.
+
+    The denominator is what each event's saving was computed against, which is
+    not always its ``baseline_input_tokens`` -- see
+    :func:`reduction_denominator`.
     """
     pairs = [
         (event, denominator)
@@ -82,11 +88,13 @@ def _reduction(scoped: list[SavingsEvent]) -> tuple[int, int, int, float | None]
         )
         is not None
     ]
-    ratios = sorted(event.saved_input_tokens / denominator for event, denominator in pairs)
+    reducing = [(event, den) for event, den in pairs if event.saved_input_tokens > 0]
+    ratios = sorted(event.saved_input_tokens / den for event, den in reducing)
     return (
         len(pairs),
-        sum(denominator for _event, denominator in pairs),
-        sum(event.saved_input_tokens for event, _denominator in pairs),
+        len(reducing),
+        sum(den for _event, den in reducing),
+        sum(event.saved_input_tokens for event, _den in reducing),
         ratios[reduction_quantile_offset(len(ratios))] if ratios else None,
     )
 
@@ -143,7 +151,9 @@ def build_report(
                 output_usd += output_price
     saved_input = sum(event.saved_input_tokens for event in scoped)
     saved_output = sum(event.saved_output_tokens or 0 for event in scoped)
-    baseline_events, baseline_input, baseline_saved, p90 = _reduction(scoped)
+    baseline_events, reducing_events, baseline_input, baseline_saved, p90 = _reduction(
+        scoped
+    )
     limit = max(0, min(max_breakdowns, 100))
 
     def ranked(name: str) -> list[tuple[Any, ...]]:
@@ -199,6 +209,7 @@ def build_report(
         unpriced_saved_output_tokens=saved_output - priced_output,
         priced_output_savings_usd=output_usd,
         baseline_events=baseline_events,
+        reducing_events=reducing_events,
         baseline_input_tokens=baseline_input,
         baseline_saved_input_tokens=baseline_saved,
         input_reduction_ratio=reduction_ratio(baseline_saved, baseline_input),

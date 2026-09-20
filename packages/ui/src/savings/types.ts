@@ -71,6 +71,7 @@ export interface SavingsView {
    *  The ratios are null when nothing in the window had a baseline to compare
    *  against, which is distinct from a measured zero. */
   baseline_events: number;
+  reducing_events: number;
   baseline_input_tokens: number;
   baseline_saved_input_tokens: number;
   input_reduction_ratio: number | null;

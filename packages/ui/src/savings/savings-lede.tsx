@@ -70,10 +70,11 @@ export function SavingsLede({ data, methodologyHref, LinkComponent }: SavingsLed
           {ratio === null || peak === null ? null : (
             <>
               {" "}
-              Across {data.baseline_events.toLocaleString()} interactions the input was{" "}
-              {Math.round(ratio * 100)}% smaller than the work it replaced, and on the
-              largest {Math.round(100 - REDUCTION_QUANTILE * 100)}% of them it was{" "}
-              {Math.round(peak * 100)}% smaller.
+              On the {data.reducing_events.toLocaleString()} of{" "}
+              {data.baseline_events.toLocaleString()} interactions that produced a saving,
+              the input was {Math.round(ratio * 100)}% smaller than the work it replaced,
+              and {Math.round(peak * 100)}% smaller at the{" "}
+              {Math.round(REDUCTION_QUANTILE * 100)}th percentile.
             </>
           )}
         </p>
@@ -173,8 +174,8 @@ function ribbonStats(data: SavingsView): RibbonStat[] {
           {
             label: "Input reduction",
             value: `${Math.round(ratio * 100)}%`,
-            hint: "Across every interaction that carried a baseline: how much smaller the input was than what it stood in for. Interactions with nothing to compare against are excluded from both sides rather than counted as a zero.",
-            sub: `on ${formatTokens(data.baseline_input_tokens)} of baseline`,
+            hint: "When Repowise replaces something, how much smaller the input is than what it stood in for. Measured over the interactions that produced a saving; the ones that produced none are counted beside it rather than folded in, and interactions with nothing to compare against are in neither.",
+            sub: `on ${data.reducing_events.toLocaleString()} of ${data.baseline_events.toLocaleString()} comparable`,
           } satisfies RibbonStat,
         ]),
     {

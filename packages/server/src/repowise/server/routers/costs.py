@@ -186,6 +186,7 @@ async def get_savings(
         unpriced_saved_output_tokens=report.unpriced_saved_output_tokens,
         priced_output_savings_usd=report.priced_output_savings_usd,
         baseline_events=report.baseline_events,
+        reducing_events=report.reducing_events,
         baseline_input_tokens=report.baseline_input_tokens,
         baseline_saved_input_tokens=report.baseline_saved_input_tokens,
         input_reduction_ratio=report.input_reduction_ratio,

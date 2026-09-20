@@ -227,6 +227,7 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
     # carries baselines. The percentile in particular is a rank, so a builder
     # that was off by one would agree on a one-event population by accident.
     assert from_sql.baseline_events == 5
+    assert from_sql.reducing_events == 5
     assert from_sql.input_reduction_ratio is not None
     assert from_sql.input_reduction_ratio_p90 is not None
 
@@ -329,3 +330,35 @@ def _record_raw(
             "delivered_input_tokens": delivered_input_tokens,
         },
     )
+
+
+def test_an_interaction_that_saved_nothing_is_counted_but_not_averaged_in(
+    tmp_path: Path,
+) -> None:
+    """The ratio answers "when it fires, by how much", so a zero-saving
+    interaction must not drag it down -- and must still be visible, or the
+    ratio is a selection with the selection hidden."""
+    _sidecar(tmp_path)
+    _record_raw(
+        tmp_path,
+        surface="distill",
+        evidence_kind="measured",
+        baseline_input_tokens=1_000,
+        pre_budget_input_tokens=1_000,
+        delivered_input_tokens=200,
+    )
+    _record_raw(
+        tmp_path,
+        surface="distill",
+        evidence_kind="measured",
+        baseline_input_tokens=1_000,
+        pre_budget_input_tokens=1_000,
+        delivered_input_tokens=1_000,
+    )
+    report = load_report(tmp_path)
+    assert report is not None
+    assert report.baseline_events == 2
+    assert report.reducing_events == 1
+    # 800/1000, not 800/2000: the second interaction is coverage, not a zero.
+    assert report.input_reduction_ratio == pytest.approx(0.8)
+    assert report.baseline_input_tokens == 1_000

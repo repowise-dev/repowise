@@ -164,6 +164,7 @@ class SavingsResponse(BaseModel):
     #: How much smaller the input got, over the events that carry a baseline.
     #: Null ratios mean no event in the window had anything to compare against.
     baseline_events: int = 0
+    reducing_events: int = 0
     baseline_input_tokens: int = 0
     baseline_saved_input_tokens: int = 0
     input_reduction_ratio: float | None = None
