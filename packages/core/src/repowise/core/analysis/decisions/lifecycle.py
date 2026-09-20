@@ -181,10 +181,12 @@ UNRECORDED_ACCEPTER_KIND = ""
 ACCEPTER_SESSION_MAX = 64
 
 #: What fixes a :func:`machine_grant_blocker` refusal, kept beside the blocker
-#: the way every other refusal here separates the two.
+#: the way every other refusal here separates the two. Addressed to a person,
+#: because the party reading it is the one that was just refused: a remedy
+#: phrased as its own next step hands an agent the command that grants it.
 AGENT_ACCEPTANCE_REMEDY = (
-    "Allow it with `repowise decision config agent-acceptance --on`, "
-    "or accept it yourself."
+    "Someone who owns this repository can allow it with "
+    "`repowise decision config agent-acceptance --on`, or accept it themselves."
 )
 
 

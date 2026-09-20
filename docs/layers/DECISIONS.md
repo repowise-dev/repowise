@@ -501,7 +501,7 @@ repowise decision confirm ID --agent claude_code --session $SESSION_ID
 is likeliest to take, and the one it would otherwise take under your name. On
 `confirm` it is refused without the switch. What it
 records is visibly an agent's: `decision show --format json` returns
-`accepted_by` with the kind and the session, the API carries `accepter_kind`
+`signature` with the kind and the session, the API carries `accepter_kind`
 on every decision row, and the dashboard badges any authority record a person
 did not sign. A row written before these columns existed reads as
 `unrecorded`, not as a person's — those are the two things the field exists to

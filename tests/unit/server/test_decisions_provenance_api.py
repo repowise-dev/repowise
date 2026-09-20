@@ -216,6 +216,61 @@ async def test_an_agreement_body_cannot_clear_a_governed_decision(
 
 
 @pytest.mark.asyncio
+async def test_an_agreement_that_names_files_keeps_them(client: AsyncClient) -> None:
+    """The noun does not say whether there is a scope to lose.
+
+    An agreement can be given a real one, and then the ordinary rules apply to
+    it. Exempting the guard by kind let a re-post silently clear it.
+    """
+    repo = await create_test_repo(client)
+    created = await client.post(
+        f"/api/repos/{repo['id']}/decisions",
+        json={
+            "title": "Release checklist",
+            "kind": "agreement",
+            "decision": "follow it",
+            "rationale": "releases went out unchecked",
+            "affected_files": ["docs/RELEASING.md"],
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    clash = await client.post(
+        f"/api/repos/{repo['id']}/decisions",
+        json={"title": "Release checklist", "decision": "follow it", "rationale": "typo"},
+    )
+
+    assert clash.status_code == 409, clash.text
+    still = (
+        await client.get(f"/api/repos/{repo['id']}/decisions/{created.json()['id']}")
+    ).json()
+    assert still["affected_files"] == ["docs/RELEASING.md"]
+
+
+@pytest.mark.asyncio
+async def test_an_agreement_naming_nothing_is_still_restatable(client: AsyncClient) -> None:
+    """The guard must not fire where there is genuinely nothing to clear."""
+    repo = await create_test_repo(client)
+    await client.post(
+        f"/api/repos/{repo['id']}/decisions",
+        json={
+            "title": "Commit on a branch",
+            "kind": "agreement",
+            "decision": "branch first",
+            "rationale": "main is protected",
+        },
+    )
+
+    again = await client.post(
+        f"/api/repos/{repo['id']}/decisions",
+        json={"title": "Commit on a branch", "decision": "branch first", "rationale": "clearer"},
+    )
+
+    assert again.status_code == 201, again.text
+    assert again.json()["rationale"] == "clearer"
+
+
+@pytest.mark.asyncio
 async def test_a_body_naming_no_kind_leaves_a_stored_agreement_alone(
     client: AsyncClient,
 ) -> None:

@@ -61,7 +61,7 @@ def test_the_refusal_leads_with_the_switch_it_was_refused_by(repo: Path) -> None
     result = _run(repo, "confirm", "aaaa", "--agent", "claude_code")
 
     remedy = json.loads(result.output)["remedy"]
-    assert remedy.startswith("Allow it with")
+    assert remedy.startswith("Someone who owns this repository")
 
 
 def test_an_allowed_agent_signs_as_itself(repo: Path) -> None:
@@ -70,7 +70,7 @@ def test_an_allowed_agent_signs_as_itself(repo: Path) -> None:
     result = _run(repo, "confirm", "aaaa", "--agent", "claude_code", "--session", "s-1")
     assert result.exit_code == 0, result.output
 
-    shown = json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"]
+    shown = json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"]
     assert (shown["kind"], shown["accepter"], shown["session"]) == (
         "agent",
         "claude_code",
@@ -84,12 +84,12 @@ def test_confirming_without_the_flag_still_signs_as_a_person(repo: Path) -> None
 
     assert _run(repo, "confirm", "aaaa").exit_code == 0
 
-    shown = json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"]
+    shown = json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"]
     assert shown["kind"] == "person"
 
 
 def test_a_candidate_reports_no_signer(repo: Path) -> None:
-    assert json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"] is None
+    assert json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"] is None
 
 
 def test_a_batch_refusal_still_names_the_switch(repo: Path) -> None:
@@ -101,13 +101,22 @@ def test_a_batch_refusal_still_names_the_switch(repo: Path) -> None:
     assert "agent-acceptance --on" in json.loads(result.output)["remedy"]
 
 
+def test_the_remedy_is_addressed_to_a_person(repo: Path) -> None:
+    """The party reading it is the one that was just refused. Worded as its
+    own next step, it would hand an agent the command that grants it."""
+    remedy = json.loads(_run(repo, "confirm", "aaaa", "--agent", "claude_code").output)["remedy"]
+
+    assert "yourself" not in remedy
+    assert "owns this repository" in remedy
+
+
 def test_a_withdrawal_is_not_reported_as_an_acceptance(repo: Path) -> None:
     """The same log records both, so the verb comes from the action."""
     _allow_agents(repo)
     assert _run(repo, "confirm", "aaaa").exit_code == 0
     assert _run(repo, "dismiss", "aaaa", "--yes").exit_code == 0
 
-    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"]
+    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"]
     assert signed["verb"] == "Dismissed"
     assert signed["action"] == "dismissed"
 
@@ -120,7 +129,7 @@ def test_an_agent_signs_its_withdrawals_without_the_switch(repo: Path) -> None:
     result = _run(repo, "dismiss", "aaaa", "--yes", "--agent", "claude_code", "--session", "s-9")
     assert result.exit_code == 0, result.output
 
-    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"]
+    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"]
     assert (signed["kind"], signed["accepter"], signed["session"]) == (
         "agent",
         "claude_code",
@@ -138,7 +147,7 @@ def test_an_agent_signs_a_supersession(repo: Path) -> None:
     )
     assert result.exit_code == 0, result.output
 
-    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"]
+    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"]
     assert (signed["kind"], signed["verb"]) == ("agent", "Superseded")
 
 
@@ -149,7 +158,7 @@ def test_an_agent_signs_a_retirement_with_no_named_successor(repo: Path) -> None
 
     assert _run(repo, "deprecate", "aaaa", "--agent", "claude_code").exit_code == 0
 
-    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"]
+    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"]
     assert signed["kind"] == "agent"
     assert signed["verb"] == "Dismissed"
 
@@ -169,4 +178,4 @@ def test_the_flag_is_checked_before_anything_is_written(
 
     assert result.exit_code != 0
     assert expected in result.output
-    assert json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"] is None
+    assert json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"] is None

@@ -72,6 +72,7 @@ __all__ = [
     "latest_acceptance",
     "list_candidates",
     "merge_candidate",
+    "names_a_scope",
     "reaffirm_decision",
     "record_acceptance",
     "record_blockers",
@@ -424,6 +425,12 @@ def _json_list(value: Any) -> list[str]:
 
 def _non_blank(values: list[str]) -> list[str]:
     return [v for v in values if v and v.strip()]
+
+
+def names_a_scope(record: DecisionRecord) -> list[str]:
+    """The files or modules *record* actually names. Public alias of the
+    internal helper, for callers asking what a re-statement would clear."""
+    return _named_scope(record)
 
 
 def _named_scope(record: DecisionRecord) -> list[str]:

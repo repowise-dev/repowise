@@ -68,7 +68,7 @@ async def _one_with_signature(session, repo_id: str, rec) -> DecisionRecordRespo
     find a signature on it.
     """
     item = DecisionRecordResponse.from_orm(rec)
-    item.currency = (await crud.decision_currencies(session, repo_id, [rec])).get(rec.id)
+    item.currency = await crud.current_currency(session, rec)
     signatures = await crud.decision_signatures(session, repo_id, [rec])
     _attach_signature(item, signatures.get(rec.id))
     return item
@@ -603,13 +603,13 @@ async def create_decision(
     # An agreement's scope is the repository, which is why it names no file.
     # Requiring one of it would leave the noun permanently unacceptable.
     scoped = named or kind == AGREEMENT_KIND
-    # The guard asks what the stored record would lose, not what this body
-    # claims: an agreement in the body must not disarm it over a decision that
-    # does govern files.
+    # The guard asks what the stored record would lose, not what either side
+    # calls it: an agreement can be given a real scope, so its noun does not
+    # mean it has nothing to clear.
     if (
         existing is not None
         and not named
-        and existing.kind != AGREEMENT_KIND
+        and crud.names_a_scope(existing)
         and await crud.is_accepted(session, existing.id)
     ):
         raise HTTPException(

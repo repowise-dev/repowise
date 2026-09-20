@@ -672,7 +672,9 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
                     "confidence": rec.confidence,
                     "staleness_score": rec.staleness_score,
                     "created_at": rec.created_at.isoformat() if rec.created_at else None,
-                    "accepted_by": signed,
+                    # Not "accepted_by": the same log records withdrawals, and
+                    # a consumer keying on that name would read one as a grant.
+                    "signature": signed,
                     "currency": describe_decision_currency(
                         repo_path,
                         created_at=rec.created_at,
@@ -1186,7 +1188,7 @@ def decision_deprecate(
                         rec.id,
                         "deprecated",
                         superseded_by=successor,
-                        accepter=agent,
+                        accepter=agent or resolve_accepter(repo_path),
                         kind=kind,
                     )
                 return rec
