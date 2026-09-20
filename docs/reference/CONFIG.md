@@ -428,6 +428,14 @@ never as anything but a proposal. An agent cannot decline a hook, so this also
 ships off and no preset turns it on:
 `repowise decision config capture-prompt --on`.
 
+That command also installs what it needs. The shared PostToolUse matcher
+deliberately excludes the shell tools — measured at 51% of hook invocations
+for 0.7% of emissions — so switching the prompt on adds a separate
+`Bash|PowerShell` PostToolUse entry, and switching it off removes it. The
+entry is per install rather than per repository: other repositories on the
+machine pay a process start on shell calls and emit nothing unless they
+switch it on too, and switching it off here turns it off for all of them.
+
 Every key is optional. **A config with no `decisions:` block behaves exactly as
 it did before these switches existed**: every source that shipped on is on,
 model stages on. That resolved policy is named `default`. A source added after

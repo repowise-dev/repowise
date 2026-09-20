@@ -333,3 +333,117 @@ def test_the_loser_of_the_claim_keeps_its_ask(repo: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(command, "_claim_emission", lambda event, context: True)
     assert _fire(repo) is not None
+
+
+# --- the switch installs its own prerequisite --------------------------------
+
+
+@pytest.fixture
+def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A Claude Code settings.json carrying the narrowed augment entry."""
+    from repowise.cli.editor_integrations import claude_config
+
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": claude_config._AUGMENT_MATCHER,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: path)
+    return path
+
+
+def _post_matchers(path: Path) -> list[str]:
+    hooks = json.loads(path.read_text(encoding="utf-8")).get("hooks", {})
+    return [e.get("matcher") for e in hooks.get("PostToolUse", [])]
+
+
+def test_switching_on_adds_the_shell_entry(settings: Path) -> None:
+    """Without it the policy is a flag no hook ever reads."""
+    from repowise.cli.editor_integrations.claude_config import set_claude_code_capture_hook
+
+    assert set_claude_code_capture_hook(True) == settings
+
+    assert "Bash|PowerShell" in _post_matchers(settings)
+
+
+def test_switching_off_removes_it(settings: Path) -> None:
+    from repowise.cli.editor_integrations.claude_config import set_claude_code_capture_hook
+
+    set_claude_code_capture_hook(True)
+    assert set_claude_code_capture_hook(False) == settings
+
+    assert "Bash|PowerShell" not in _post_matchers(settings)
+
+
+def test_both_directions_are_idempotent(settings: Path) -> None:
+    from repowise.cli.editor_integrations.claude_config import set_claude_code_capture_hook
+
+    set_claude_code_capture_hook(True)
+    assert set_claude_code_capture_hook(True) is None
+    set_claude_code_capture_hook(False)
+    assert set_claude_code_capture_hook(False) is None
+
+
+def test_it_leaves_the_narrowed_augment_entry_alone(settings: Path) -> None:
+    """The shared matcher's narrowing is a measured decision, not ours to undo."""
+    from repowise.cli.editor_integrations import claude_config
+
+    claude_config.set_claude_code_capture_hook(True)
+
+    assert claude_config._AUGMENT_MATCHER in _post_matchers(settings)
+
+
+def test_the_self_heal_does_not_strip_it(settings: Path) -> None:
+    """It survives the migration that rewrites every legacy wide matcher."""
+    from repowise.cli.editor_integrations import claude_config
+
+    assert "Bash|PowerShell" not in claude_config._LEGACY_AUGMENT_MATCHERS
+    claude_config.set_claude_code_capture_hook(True)
+
+    claude_config.migrate_claude_code_hooks()
+
+    assert "Bash|PowerShell" in _post_matchers(settings)
+
+
+def test_the_augment_uninstall_takes_it_too(settings: Path) -> None:
+    from repowise.cli.editor_integrations import claude_config
+
+    claude_config.set_claude_code_capture_hook(True)
+
+    claude_config.uninstall_claude_code_augment_hooks()
+
+    assert "Bash|PowerShell" not in _post_matchers(settings)
+
+
+def test_a_users_own_shell_hook_survives_the_removal(settings: Path) -> None:
+    from repowise.cli.editor_integrations import claude_config
+
+    payload = json.loads(settings.read_text(encoding="utf-8"))
+    payload["hooks"]["PostToolUse"].append(
+        {"matcher": "Bash|PowerShell", "hooks": [{"type": "command", "command": "mytool"}]}
+    )
+    settings.write_text(json.dumps(payload), encoding="utf-8")
+    claude_config.set_claude_code_capture_hook(True)
+
+    claude_config.set_claude_code_capture_hook(False)
+
+    remaining = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["PostToolUse"]
+    assert any(
+        h.get("command") == "mytool" for e in remaining for h in e.get("hooks", [])
+    )

@@ -363,6 +363,30 @@ def config_capture_prompt(
     repo_path = _resolve_decision_repo(path, fmt)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_capture_prompt(bool(enabled)), fmt, dry_run)
+    if dry_run:
+        return
+    # The flag is per repository; the hook it fires from is a per-install
+    # matcher, and the shared one deliberately excludes the shell tools.
+    # Writing the flag without this would store a switch nothing reads.
+    from repowise.cli.editor_integrations.claude_config import (
+        set_claude_code_capture_hook,
+    )
+
+    settings = set_claude_code_capture_hook(bool(enabled))
+    if fmt == "json" or settings is None:
+        return
+    if enabled:
+        console.print(
+            f"[dim]Added a shell PostToolUse hook to {settings}. Other "
+            "repositories on this machine pay a process start on shell calls "
+            "and emit nothing unless they switch this on too.[/dim]"
+        )
+    else:
+        console.print(
+            f"[dim]Removed the shell PostToolUse hook from {settings}. Any "
+            "other repository using the capture prompt needs "
+            "`capture-prompt --on` again.[/dim]"
+        )
 
 
 @click.group("source")
