@@ -33,6 +33,7 @@ __all__ = [
     "analyze_pipeline",
     "is_plain_stdin_filter",
     "is_read_only_segment",
+    "parse_redirect",
     "render",
     "tokenize",
 ]
@@ -207,6 +208,35 @@ class Pipeline:
 def _basename(word: str) -> str:
     """Bare tool name from an argument, ignoring quoting and any path."""
     return word.strip("\"'").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+
+def parse_redirect(text: str) -> tuple[str, bool]:
+    """A redirect token as ``(file_descriptor, takes_a_following_word)``.
+
+    ``tokenize`` keeps a redirect whole -- the leading descriptor, the
+    operator, and a duplication target if one is attached -- so the two facts
+    a caller needs about it have to be read back out rather than guessed at
+    from the text.
+
+    Both were previously guessed at, and both were wrong:
+
+    - ``text.startswith("2")`` reads ``21>`` and ``20>`` as "the stderr
+      redirect", so ``git diff 21>f`` looked like a stderr merge while
+      actually truncating ``f`` on file descriptor 21. The descriptor is
+      ``"21"``, and only ``""`` or ``"2"`` are what that test meant.
+    - Assuming every redirect consumes the next word is false for the
+      duplication and close forms (``2>&1``, ``2>&-``), which carry their
+      target inside the token. A caller that skipped the next word anyway
+      swallowed a real argument -- and if the redirect ended a segment, it
+      swallowed the first word of the *next* one.
+
+    ``(descriptor, True)`` for ``2>``; ``("2", False)`` for ``2>&-``.
+    """
+    index = 0
+    while index < len(text) and text[index].isdigit():
+        index += 1
+    descriptor = text[:index]
+    return descriptor, "&" not in text[index:]
 
 
 def _short_cluster(arg: str) -> str:

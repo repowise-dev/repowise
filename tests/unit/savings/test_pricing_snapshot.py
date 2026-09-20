@@ -379,8 +379,10 @@ def test_the_unknown_rate_refused_is_the_fallback_that_used_to_be_stamped(
 
     model = "totally-made-up-model-xyz"
     assert cost_tracker.resolve_model_pricing(model) is None
-    # The lenient lookup still answers, and answers with the fabrication.
-    assert cost_tracker.get_model_pricing(model) == cost_tracker._FALLBACK_PRICING
+    # The literals, not the module constant against itself: the point is that
+    # the fabrication is specifically $3/$15, a number plausible enough that
+    # nobody noticed it was invented.
+    assert cost_tracker.get_model_pricing(model) == {"input": 3.0, "output": 15.0}
 
     _resolving_to(monkeypatch, model)
     assert resolve_pricing_snapshot(repo) is None
@@ -432,3 +434,35 @@ def test_a_local_model_is_priced_at_zero_rather_than_refused(
     snapshot = resolve_pricing_snapshot(repo)
     assert snapshot is not None
     assert snapshot.input_rate_usd_per_million == 0.0
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "us.anthropic.claude-sonnet-4-5-v1:0",
+    ],
+)
+def test_a_bedrock_model_is_not_mistaken_for_a_free_local_one(model: str) -> None:
+    """The same defect as the fabricated rate, pointed the other way.
+
+    Bedrock addresses hosted Anthropic models as ``vendor.name-v1:0``, and the
+    bare-Ollama-tag heuristic read the trailing ``:0`` as a local tag -- so a
+    Bedrock user's whole backfill would be stamped $0.00 and marked measured.
+    A fabricated zero is worse than ``None``: it is indistinguishable from a
+    genuine local-model zero, and it silently zeroes the priced population
+    instead of moving it to the unpriced one.
+    """
+    from repowise.core.generation import cost_tracker
+
+    assert cost_tracker.is_local_model(model) is False
+    assert cost_tracker.resolve_model_pricing(model) is None
+
+
+@pytest.mark.parametrize("model", ["llama3:8b", "qwen3.5:4b", "mistral:latest", "ollama/llama3"])
+def test_a_real_local_model_is_still_free(model: str) -> None:
+    """The confinement. Ollama size tags are never purely numeric."""
+    from repowise.core.generation import cost_tracker
+
+    assert cost_tracker.is_local_model(model) is True
+    assert cost_tracker.resolve_model_pricing(model) == {"input": 0.0, "output": 0.0}

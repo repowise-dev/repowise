@@ -350,6 +350,10 @@ class TestSafeTails:
             ("git log -3 && sort -u names.txt", "git_log"),
             ("ls a && sed -n 'p' f.txt", "file_listing"),
             ("ls a && cat -n f.txt", "file_listing"),
+            # The confinement for the redirect fix: a real stderr redirect
+            # still works, with and without an inline target.
+            ("git diff 2>/dev/null && ls a", "git_diff"),
+            ("pytest 2>&1|sed -n '1,5p'", "test_output"),
             ("ls a && wc -lw f.txt", "file_listing"),
         ],
     )
@@ -376,6 +380,17 @@ class TestSafeTails:
             "git diff && cat --help-me f.py",  # unknown long flag
             "git diff && wc --files0-from=list f",  # reads a file list
             "git diff && cat f.py > out.txt",  # stdout redirect
+            # A redirect that carries its own target consumes no following
+            # word. Skipping one anyway swallowed the next argument -- and
+            # across the `&&`, the next segment's first word. Both of these
+            # were rewritten and auto-allowed, and `sort -o` writes the file.
+            "pytest && sort 2>&- -o evil.txt in.txt",
+            "pytest && sort 2>&2 -o evil.txt in.txt",
+            "pytest 2>&- && sudo npm test",
+            # `startswith("2")` read these as "the stderr redirect". They
+            # truncate evil.txt on file descriptor 21 / 20.
+            "git diff 21>evil.txt && ls",
+            "git diff 20>evil.txt && ls",
             # `$` is a valid sed address, but the chain gate bails on `$`
             # before any segment is looked at, because expansion timing
             # differs inside the wrapped shell. Recorded so the interaction

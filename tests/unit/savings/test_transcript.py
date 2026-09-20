@@ -767,7 +767,10 @@ def test_claude_codes_cap_is_still_charged_to_claude_code(repo: Path) -> None:
     characters to the byte, and none exceeds it."""
     baseline, _ = _accounting_for("claude_code", delivered=100, omitted=5_000_000)
 
-    assert baseline == HOST_OUTPUT_CAP_TOKENS
+    # The literal, not the constant: comparing the module's own value to
+    # itself passes whatever the value is, including a wrong one.
+    assert baseline == 7_500
+    assert HOST_OUTPUT_CAP_TOKENS == 7_500
 
 
 def test_claude_codes_cap_is_not_charged_to_codex(repo: Path) -> None:
@@ -784,12 +787,26 @@ def test_claude_codes_cap_is_not_charged_to_codex(repo: Path) -> None:
     )
 
 
+def test_codex_is_capped_at_its_own_measured_plateau(repo: Path) -> None:
+    """Pins the central claim of the per-agent cap, which nothing else did.
+
+    The sibling test above deliberately stays *under* Codex's cap, so it
+    passes whether Codex is capped at 10,000 or not capped at all. This one
+    clips: set the Codex entry to ``None`` and it fails.
+    """
+    baseline, _ = _accounting_for("codex", delivered=100, omitted=5_000_000)
+
+    assert baseline == 10_000  # 40,000 characters, its measured plateau
+
+
 def test_a_harness_nobody_measured_is_not_charged_someone_elses_cap(repo: Path) -> None:
     """Asserting a truncation we have not observed is how this bug happened,
     so an unlisted harness gets no cap rather than the nearest one."""
-    baseline, _ = _accounting_for("some_future_agent", delivered=100, omitted=40_000)
+    baseline, _ = _accounting_for("some_future_agent", delivered=100, omitted=5_000_000)
 
-    assert baseline > HOST_OUTPUT_CAP_TOKENS
+    # Larger than any cap in the table, so this pins "no cap" rather than
+    # "some other cap" -- giving the unlisted harness Codex's 10,000 fails.
+    assert baseline > 1_000_000
 
 
 def test_a_cap_never_clips_below_what_the_host_actually_delivered(repo: Path) -> None:
@@ -804,3 +821,57 @@ def test_a_cap_never_clips_below_what_the_host_actually_delivered(repo: Path) ->
 
     assert reported == delivered
     assert baseline >= delivered
+
+
+def _assistant(cwd: str, model: str, *, sidechain: bool = False, ts: float = NOW) -> dict:
+    """An assistant line that states a model and runs no tool."""
+    entry = {
+        "type": "assistant",
+        "cwd": cwd,
+        "timestamp": _iso(ts),
+        "message": {"role": "assistant", "model": model, "content": []},
+    }
+    if sidechain:
+        entry["isSidechain"] = True
+    return entry
+
+
+def test_a_sub_agents_model_is_not_charged_to_the_main_thread(
+    repo: Path, projects: Path
+) -> None:
+    """Claude Code interleaves Task sub-agent lines into the same transcript,
+    and a sub-agent can run a different model. Carrying one forward prices the
+    main thread's next command at the sub-agent's rate -- 5x out when a Haiku
+    sub-agent lands between an Opus tool call and its result."""
+    entries = [
+        _assistant(str(repo), "claude-opus-5", ts=NOW - 20),
+        _assistant(str(repo), "claude-haiku-4-5", sidechain=True, ts=NOW - 10),
+        *_pair(_distilled("aabbccddeeff", 500), cwd=str(repo)),
+    ]
+    _write(projects, repo, entries)
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["model"] == "claude-opus-5"
+    assert event["input_rate_usd_per_million"] == 5.0
+
+
+def test_a_sentinel_label_does_not_overwrite_a_known_model(
+    repo: Path, projects: Path
+) -> None:
+    """Claude Code writes ``<synthetic>`` for an API error or an interrupted
+    message. It resolves to no rate, which is right -- but if it is allowed to
+    overwrite the carried model it leaves every later marker in the file
+    unpriced, which is a silent loss rather than a refusal."""
+    entries = [
+        _assistant(str(repo), "claude-opus-5", ts=NOW - 20),
+        _assistant(str(repo), "<synthetic>", ts=NOW - 10),
+        *_pair(_distilled("ffeeddccbbaa", 500), cwd=str(repo)),
+    ]
+    _write(projects, repo, entries)
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["model"] == "claude-opus-5"

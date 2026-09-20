@@ -307,9 +307,16 @@ def _collect(
     # Scoped to this call, which is one transcript, so a model never leaks
     # across sessions. A read resuming mid-file starts with None and leaves
     # its first markers unpriced, which is the right way to be wrong here.
+    #
+    # Sidechains are skipped for the same reason every other miner here skips
+    # them (``sessions/miners/decisions.py``, ``precedent``, ``decisions``):
+    # Claude Code interleaves Task sub-agent lines into the main transcript,
+    # and a sub-agent can run a different model. Carrying one would price the
+    # main thread's next command at the sub-agent's rate -- a 5x error where
+    # a Haiku sub-agent lands between an Opus tool call and its result.
     model: str | None = None
     for event in events:
-        if event.model:
+        if event.model and _is_model_id(event.model) and not event.sidechain:
             model = event.model
         for use in event.tool_uses:
             if use.name in shell_tools:
@@ -404,6 +411,18 @@ def _strings_in(blob: Any) -> Iterable[str]:
             yield from (value for value in blob.values() if isinstance(value, str))
 
 
+def _is_model_id(value: str) -> bool:
+    """False for a harness's sentinel labels, which are not models.
+
+    Claude Code writes ``<synthetic>`` for an API error or an interrupted
+    message. Those resolve to no rate, which is correct -- but the carry
+    forward has to reject them *before* that, or a sentinel overwrites a
+    known-good model and leaves every later marker in the file unpriced.
+    Angle brackets are the shape harnesses use for "not a real value".
+    """
+    return not value.startswith("<")
+
+
 def _accounting(candidate: _Candidate) -> tuple[int, int]:
     """``(baseline, delivered)`` input tokens for one recovered marker.
 
@@ -427,9 +446,13 @@ def _accounting(candidate: _Candidate) -> tuple[int, int]:
     kept = max(delivered - estimate_tokens(candidate.marker.text), 0)
     stored = kept + candidate.marker.tokens_omitted
     cap = _HARNESS_OUTPUT_CAP_TOKENS.get(candidate.harness)
-    if cap is None:
-        return stored, delivered
-    return max(min(stored, cap), delivered), delivered
+    capped = stored if cap is None else min(stored, cap)
+    # The floor applies on both branches. An uncapped harness can still land
+    # under ``delivered`` when the marker's own text costs more than what it
+    # says was omitted, and that would store a baseline smaller than the
+    # delivery it describes -- the very incoherence this function now exists
+    # to rule out.
+    return max(capped, delivered), delivered
 
 
 def _payload(

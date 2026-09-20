@@ -45,9 +45,23 @@ MIN_SAVED_TOKENS = 40
 #: How much of one command's output an agent host actually delivers. Claude
 #: Code truncates a Bash/PowerShell tool result at 30,000 characters, so
 #: everything past this was never going to reach the model and distilling it
-#: away saves nothing. Applied to every source, including ``cli``: a human at
-#: a real terminal has no such cap, so this undersells for them, and the
-#: ledger is meant to be a floor rather than a best case.
+#: away saves nothing.
+#:
+#: Applied to every source here, which is the *smallest* known host cap and
+#: so an undersell for the others rather than an overclaim: a human at a real
+#: terminal has no cap at all, and Codex's own measured cap is 40,000
+#: characters. This path cannot do better, deliberately -- it records
+#: ``agent: "unknown"`` because knowing the rewrite hook's shell is not
+#: knowing which agent ran it, and the contract says an unknown field stays
+#: unknown rather than being filled with the likeliest answer. Choosing a cap
+#: per agent here would be exactly that guess.
+#:
+#: The transcript backfill *does* know the harness, having read that
+#: harness's own file, so it applies a per-agent cap
+#: (``savings/transcript.py:_HARNESS_OUTPUT_CAP_TOKENS``). The two therefore
+#: disagree by at most 2,500 tokens for one Codex result distilled live
+#: versus recovered from a transcript. Recorded rather than hidden; closing
+#: it needs an agent identity this path has decided not to invent.
 HOST_OUTPUT_CAP_CHARS = 30_000
 
 

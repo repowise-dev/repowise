@@ -104,9 +104,15 @@ def is_local_model(model: str) -> bool:
         model == "mock"
         or model.startswith(_LOCAL_MODEL_PREFIXES)
         or model.startswith(("codex_cli/", "claude_cli/", "opencode/"))
-        # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`,
-        # and a `family:size` tag is not a shape any hosted vendor uses.
-        or (":" in model and "/" not in model)
+        # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`.
+        # The trailing tag must not be a bare number: Bedrock addresses hosted
+        # Anthropic models as `anthropic.claude-sonnet-4-5-20250929-v1:0`, and
+        # reading that as local priced a Bedrock user's whole history at $0.00
+        # while stamping it as measured — a fabricated rate, just a zero one,
+        # and worse than `None` because it is indistinguishable from a real
+        # local-model zero. Ollama size tags (`:8b`, `:latest`, `:q4_K_M`) are
+        # never purely numeric, so the two shapes separate cleanly.
+        or (":" in model and "/" not in model and not model.rsplit(":", 1)[1].isdigit())
     )
 
 

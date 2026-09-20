@@ -77,6 +77,7 @@ from repowise.cli.shell_lexer import (
     analyze_pipeline,
     is_plain_stdin_filter,
     is_read_only_segment,
+    parse_redirect,
     tokenize,
 )
 
@@ -396,9 +397,17 @@ def _chain_families(command: str) -> tuple[str, ...] | None:
             # see. A stderr redirect only decides whether distill's
             # errors-first rendering has errors to lead with, which is the
             # caller's business either way.
-            if not token.text.startswith("2"):
+            #
+            # Both halves are asked of the parsed token rather than its text.
+            # `startswith("2")` called `21>` a stderr redirect, so
+            # `git diff 21>f` truncated `f` inside a command classified as a
+            # git diff; and skipping the next word unconditionally swallowed
+            # a real argument whenever the redirect carried its own target,
+            # which reached across the `&&` into the following segment.
+            descriptor, takes_target = parse_redirect(token.text)
+            if descriptor != "2":
                 return None
-            skip_next_arg = True
+            skip_next_arg = takes_target
     if skip_next_arg:
         return None  # trailing redirect with no target: malformed, bail
 
