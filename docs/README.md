@@ -51,7 +51,7 @@ your agent in under five minutes, with no API key.
 | Doc | What it covers |
 |-----|----------------|
 | [layers/INTELLIGENCE_LAYERS.md](layers/INTELLIGENCE_LAYERS.md) | Overview of the five layers: graph, git, docs, decisions, code health |
-| [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability, and performance from 49 deterministic detectors |
+| [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability, and performance from 51 deterministic detectors |
 | [layers/REFACTORING.md](layers/REFACTORING.md) | Concrete, graph-aware refactoring plans (Extract Class, Move Method, Break Cycle) |
 | [layers/CHANGE_RISK.md](layers/CHANGE_RISK.md) | Score any commit or `base..HEAD` range 0-10 for defect risk |
 | [layers/BUG_HISTORY.md](layers/BUG_HISTORY.md) | Which files and symbols actually get bug-fixed, and how recently |
@@ -111,6 +111,7 @@ How repowise is built, for contributors and the curious.
 | [architecture/chat.md](architecture/chat.md) | Codebase chat: agent loop, streaming, artifact panel |
 | [architecture/structurizr-export.md](architecture/structurizr-export.md) | Export the architecture as Structurizr DSL and render it anywhere |
 | [architecture/editor-files.md](architecture/editor-files.md) | How `CLAUDE.md` and `AGENTS.md` get generated |
+| [architecture/savings-accounting.md](architecture/savings-accounting.md) | The agent savings ledger: one canonical event per interaction, priced from its own evidence |
 | [architecture/deep-dives.md](architecture/deep-dives.md) | Systems not covered elsewhere |
 | [architecture/pluggable-storage.md](architecture/pluggable-storage.md) | The capability seams: storage, graph, vector, CLI, MCP |
 | [design/theme-tokens.md](design/theme-tokens.md) | Resolved design tokens and the WCAG contrast matrix |

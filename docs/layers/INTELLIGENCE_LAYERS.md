@@ -194,7 +194,7 @@ your own repo six months later. This keeps it in the codebase.
 ## Code Health Intelligence
 
 repowise scores **every file 1–10** on three co-equal signals (defect risk,
-maintainability, and performance risk) from a roster of **49 deterministic
+maintainability, and performance risk) from a roster of **51 deterministic
 detectors**, of which only **26 are permitted to move the defect number**. Pure
 static analysis over tree-sitter and git data, budgeted (and CI-tested) to
 finish in **under 30 seconds on a 3,000-file repo**.

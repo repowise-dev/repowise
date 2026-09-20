@@ -555,7 +555,7 @@ one that reaches significance and the one to cite.
 Marker weights are **calibrated against a real defect corpus, not hand-tuned**:
 every file scored at a commit preceding the bug window so nothing leaks backward,
 and an L2-logistic fit with file size as an explicit control, so a marker only
-earns weight for defect lift *beyond* being big. Only **26** of the 49 detectors
+earns weight for defect lift *beyond* being big. Only **26** of the 51 detectors
 are permitted to move the defect number, because that is the number carrying these
 accuracy claims.
 

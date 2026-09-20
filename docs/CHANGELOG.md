@@ -45,6 +45,7 @@ Code health can see test quality for the first time — a test that checks nothi
 - **`timing_ms` is reported for every tool** (#2271), rather than for the ones someone had remembered to thread it through.
 - **History-based health gates are ranked against the repository** (#2437, #2438). Six months is a fixed window, so a repository landing many commits a day accumulates more fix commits per file inside it than a quiet one; with an entry gate of one fix, `prior_defect` fired on 43.5% of the files here, and a signal that flags nearly half a tree is not locating anything. Co-change breadth is measured before truncation rather than by counting a list capped at 25 partners, where above the cap every file looks identical.
 - **An agent is defined once** (#2394). The same agent was spelled four ways across four hand-maintained namespaces, and the savings domain had added a fifth and a sixth that agreed with the target registry only by hand.
+- Plugin: the `decision` command says that acceptance now requires a stated reason, documents `--kind agreement` and `--evidence-commit`, and stops claiming a fixed capture-source count.
 
 ### Fixed
 
