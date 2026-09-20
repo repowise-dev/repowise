@@ -310,3 +310,38 @@ async def test_dismissing_a_candidate_unlinks_it(async_session):
     await dismiss_candidate(async_session, rec, reason="wrong", accepter="dev")
 
     assert await _links(async_session, rec.id) == set()
+
+
+async def test_a_superseded_record_keeps_its_links(async_session):
+    """`get_risk`'s superseded_decision directive finds the record through them.
+
+    A withdrawal leaves nothing in the decision's place; a supersession leaves
+    a successor, and telling a reviewer their change is governed by a decision
+    that has been replaced is the whole point of that directive.
+    """
+    repo = await insert_repo(async_session)
+    rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
+
+    await update_decision_status(async_session, rec.id, "superseded")
+
+    assert ("a/one.py", "file") in await _links(async_session, rec.id)
+    assert [r.id for r in await get_governing_decisions(async_session, repo.id, "a/one.py")] == [
+        rec.id
+    ]
+
+
+async def test_upsert_honours_an_explicit_empty_module_list(async_session):
+    """`[]` clears in every writer, or the same input means two things."""
+    repo = await insert_repo(async_session)
+    rec = await _add(
+        async_session, repo.id, affected_files=["a/one.py"], affected_modules=[]
+    )
+
+    assert await _links(async_session, rec.id) == {("a/one.py", "file")}
+
+
+async def test_upsert_derives_modules_when_none_are_given(async_session):
+    repo = await insert_repo(async_session)
+    rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
+
+    assert await _links(async_session, rec.id) == {("a/one.py", "file"), ("a", "module")}

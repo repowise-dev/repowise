@@ -360,7 +360,8 @@ def decision_add(
                 alternatives=alternatives_list,
                 consequences=consequences_list,
                 affected_files=affected_files,
-                affected_modules=[],
+                # None derives them from the files; [] would clear them.
+                affected_modules=None,
                 tags=tags_list,
                 kind=kind,
                 source="cli",

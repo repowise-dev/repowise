@@ -331,7 +331,7 @@ async def upsert_decision(
         # any footprint the row carried.
         rec.scope_basis = SCOPE_BASIS_STATED if affected_files else ""
         rec.affected_modules_json = json.dumps(
-            scope_modules(affected_files or [], affected_modules or None)
+            scope_modules(affected_files or [], affected_modules)
         )
         rec.tags_json = json.dumps(tags or [])
         rec.evidence_commits_json = json.dumps(evidence_commits or [])
@@ -400,7 +400,7 @@ async def upsert_decision(
         # Same claim as the restate arm: files the caller supplied are stated.
         scope_basis=SCOPE_BASIS_STATED if affected_files else "",
         affected_modules_json=json.dumps(
-            scope_modules(affected_files or [], affected_modules or None)
+            scope_modules(affected_files or [], affected_modules)
         ),
         tags_json=json.dumps(tags or []),
         evidence_commits_json=json.dumps(evidence_commits or []),
@@ -584,8 +584,11 @@ async def update_decision_metadata(
 ) -> DecisionRecord | None:
     """Patch the module/file linkage on a decision record.
 
-    Each argument left as ``None`` is preserved. Pass an empty list to clear.
-    Returns the updated record, or ``None`` if the id was not found.
+    Each argument left as ``None`` is preserved, except that supplying files
+    without modules re-derives the modules from those files: a scope whose two
+    halves describe different code links the record to a module its files are
+    not in. Pass an empty list to clear either. Returns the updated record, or
+    ``None`` if the id was not found.
     """
     rec = await session.get(DecisionRecord, decision_id)
     if rec is None:

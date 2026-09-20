@@ -222,18 +222,32 @@ NEEDS_REVIEW_STALENESS: float = 0.5
 #: a decision whose code moved is a decision to re-read, not one to ignore.
 _GOVERNING: frozenset[str] = frozenset({"active", "needs_review"})
 
-#: Statuses that record a retirement somebody performed. A record at one of
-#: them keeps its files and its place in a lookup by id, and governs no path,
-#: because the graph is what "what governs this path" is answered from.
-#:
-#: ``proposed`` is deliberately absent: a candidate is not retired, and the
-#: candidate lane delivers on its links.
+#: Statuses that record a retirement somebody performed. The migration keeps
+#: them: reclassifying one as an open candidate would undo the retirement.
 RETIRED_STATUSES: frozenset[str] = frozenset({"dismissed", "deprecated", "superseded"})
+
+#: Retirements that leave nothing in the decision's place, and so govern no
+#: path. A record at one of these keeps its files and its place in a lookup by
+#: id and links no code, because the graph is what "what governs this path" is
+#: answered from.
+#:
+#: ``superseded`` is deliberately *not* here even though it is retired: it has
+#: a successor, it still governs the path, and ``get_risk``'s
+#: ``superseded_decision`` directive finds it through those very links to tell
+#: a reviewer their change is governed by a decision that has been replaced.
+#: ``proposed`` is absent because a candidate is not retired at all, and the
+#: candidate lane delivers on its links.
+WITHDRAWN_STATUSES: frozenset[str] = frozenset({"dismissed", "deprecated"})
 
 
 def is_retired(status: str) -> bool:
-    """Whether *status* records a retirement, and so governs no path."""
+    """Whether *status* records a retirement somebody performed."""
     return status in RETIRED_STATUSES
+
+
+def is_withdrawn(status: str) -> bool:
+    """Whether *status* leaves nothing in the decision's place, so governs no path."""
+    return status in WITHDRAWN_STATUSES
 
 
 def is_governing(currency: str) -> bool:

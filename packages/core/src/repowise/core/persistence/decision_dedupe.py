@@ -85,7 +85,7 @@ from .crud.decisions import (
     list_decision_evidence,
     record_completeness,
 )
-from .decision_graph import sync_decision_node_links
+from .decision_graph import sync_links_from_record
 from .models import (
     DecisionCandidateMeta,
     DecisionEdge,
@@ -387,15 +387,10 @@ async def apply_dedupe(
             canonical.scope_basis = SCOPE_BASIS_FOOTPRINT
         else:
             canonical.scope_basis = commit_scope_basis(sorted(union["files"]))
-        # Sync replaces rather than accretes, so it must see the union.
-        binds = binds_to_paths(canonical.scope_basis)
-        await sync_decision_node_links(
-            session,
-            repository_id,
-            canonical.id,
-            files=sorted(union["files"]) if binds else [],
-            modules=sorted(union["modules"]) if binds else [],
-        )
+        # Through the shared writer, which reads the union just written to the
+        # record: the last path that judged links by its own rule, and so the
+        # last one that could re-create links a withdrawal had removed.
+        await sync_links_from_record(session, canonical)
         _rederive_headline(canonical, await list_decision_evidence(session, canonical.id))
         applied.clusters.append(done)
 

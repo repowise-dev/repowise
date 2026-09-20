@@ -23,7 +23,7 @@ import json
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import is_retired
+from repowise.core.analysis.decisions.lifecycle import is_withdrawn
 from repowise.core.analysis.decisions.scope import binds_to_paths, resolve_module_nodes
 
 from .models import DecisionEdge, DecisionNodeLink, DecisionRecord
@@ -213,12 +213,14 @@ def expected_node_links(record: DecisionRecord) -> tuple[list[str], list[str]]:
     One answer for both the writer and the backfill that checks it, so a
     record can never be judged against a rule other than the one that wrote
     it. A basis that does not bind to paths links nothing, and neither does a
-    retired record: the graph is what "what governs this path" is answered
-    from, and a withdrawn decision answers nothing. Keyed on the retirement
-    vocabulary rather than the one literal ``dismiss`` writes — a withdrawal
-    through the acceptance log lands on ``deprecated``.
+    withdrawn record: the graph is what "what governs this path" is answered
+    from, and a decision with nothing in its place answers nothing. Keyed on
+    the vocabulary rather than the one literal ``dismiss`` writes — a
+    withdrawal through the acceptance log lands on ``deprecated``, and a
+    ``superseded`` record keeps its links because its successor's directive
+    is found through them.
     """
-    if is_retired(record.status) or not binds_to_paths(record.scope_basis):
+    if is_withdrawn(record.status) or not binds_to_paths(record.scope_basis):
         return [], []
     return (
         _json_list(record.affected_files_json),

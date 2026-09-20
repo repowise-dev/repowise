@@ -659,7 +659,9 @@ async def patch_decision(
 
     Accepts status transitions (confirm / deprecate / supersede) and / or
     governance edits (``affected_modules``, ``affected_files``). Any field
-    left as ``None`` in the body is preserved.
+    left as ``None`` in the body is preserved, except that sending
+    ``affected_files`` without ``affected_modules`` re-derives the modules
+    from those files so the two halves of the scope cannot disagree.
     """
     decision_id = await _live_decision_id(session, decision_id)
     rec = await crud.get_decision(session, decision_id)
