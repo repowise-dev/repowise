@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from repowise.core.generation.editor_files.fetcher import (
     _extract_sentences,
+    _signed_by,
     _truncate_at_word,
 )
 
@@ -93,3 +94,45 @@ class TestTruncateAtWord:
     def test_exact_limit_unchanged(self) -> None:
         text = "x" * 80
         assert _truncate_at_word(text, 80) == text
+
+
+class TestSignedBy:
+    """A line a person did not sign says so, and costs nothing when they did.
+
+    These files are read into every session, so the mark has to be absent in
+    the ordinary case rather than merely short.
+    """
+
+    @staticmethod
+    def _sig(kind: str, accepter: str = ""):
+        from repowise.core.persistence.crud.authority import AcceptanceSignature
+
+        return AcceptanceSignature(kind=kind, accepter=accepter, artifact="", session="")
+
+    def test_a_person_costs_no_tokens(self) -> None:
+        assert _signed_by(self._sig("person", "Raghav")) == ""
+
+    def test_a_candidate_costs_no_tokens(self) -> None:
+        # Belt and braces: the fetcher only selects accepted records.
+        assert _signed_by(None) == ""
+
+    def test_an_agent_is_named_as_one(self) -> None:
+        """The block reads as standing rules, so an agent must not find its
+        own acceptance there presented as the team's."""
+        mark = _signed_by(self._sig("agent", "claude_code"))
+
+        assert "claude_code" in mark
+        assert "not a person" in mark
+
+    def test_an_agent_with_no_name_still_says_it_was_one(self) -> None:
+        assert "an agent" in _signed_by(self._sig("agent"))
+
+    def test_an_import_is_marked_but_not_called_an_agent(self) -> None:
+        mark = _signed_by(self._sig("import", "adr/0001.md"))
+
+        assert mark and "agent" not in mark
+
+    def test_an_unrecorded_kind_is_not_silently_a_person(self) -> None:
+        # A row written before provenance existed. Rendering nothing would
+        # claim a human signed it.
+        assert _signed_by(self._sig("")) == " [signer not recorded]"
