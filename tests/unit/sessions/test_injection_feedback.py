@@ -322,3 +322,167 @@ def test_hook_written_injections_table_is_schema_compatible(tmp_path):
     conn = sqlite3.connect(default_store_path(repo2))
     assert conn.execute("SELECT COUNT(*) FROM injections").fetchone()[0] == 1
     conn.close()
+
+
+async def test_a_contradiction_in_one_session_does_not_settle_another(session, tmp_path):
+    """The verdict is per row, like judgeability already was.
+
+    It used to be computed per decision and stored per row, so one session's
+    match settled every row for that decision. The totals count rows, so the
+    reported rate was that one match multiplied by however many sessions had
+    been shown the decision. On this repository's store that was 20 rows from
+    a single match, and it is the whole of the published 10.0%.
+    """
+    session.add(Repository(id=_REPO_ID, name="r", local_path=str(tmp_path)))
+    await _add_decision(session, "d1")
+    _record_injection(tmp_path, "sess-a", "d1", _OLD_ENOUGH)
+    _record_injection(tmp_path, "sess-b", "d1", _OLD_ENOUGH)
+    _stage_correction(
+        tmp_path, "sess-a", "no, stop using JWT tokens for service auth, revert to sessions"
+    )
+    # sess-b mined a correction too, so it is judgeable — and it said nothing
+    # about JWT. Its row must read followed, not sess-a's contradiction.
+    _stage_correction(tmp_path, "sess-b", "no, put the changelog in reverse order")
+
+    summary = await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
+
+    assert summary == {"followed": 1, "contradicted": 1, "unjudgeable": 0}
+    with SessionStagingStore(default_store_path(tmp_path)) as store:
+        verdicts = dict(
+            store._conn.execute(
+                "SELECT session_id, verdict FROM injections WHERE decision_id = 'd1'"
+            ).fetchall()
+        )
+    assert verdicts == {"sess-a": "contradicted", "sess-b": "followed"}
+
+
+async def test_smeared_contradictions_from_an_older_ledger_are_reopened(session, tmp_path):
+    """Rows the old rule marked contradicted are already evaluated.
+
+    Nothing re-reads them, so without a repair reaching backwards the rate
+    stays at whatever the smear produced. Re-opened rather than cleared, so a
+    row is given the chance to earn its verdict again — which it keeps only
+    while the correction that earned it is still there.
+    """
+    session.add(Repository(id=_REPO_ID, name="r", local_path=str(tmp_path)))
+    await _add_decision(session, "d1")
+    _record_injection(tmp_path, "sess-a", "d1", _OLD_ENOUGH)
+    _record_injection(tmp_path, "sess-b", "d1", _OLD_ENOUGH)
+    _stage_correction(
+        tmp_path, "sess-a", "no, stop using JWT tokens for service auth, revert to sessions"
+    )
+    _stage_correction(tmp_path, "sess-b", "no, put the changelog in reverse order")
+    # The smear, as the old version left it: both rows contradicted.
+    with SessionStagingStore(default_store_path(tmp_path)) as store:
+        for sid in ("sess-a", "sess-b"):
+            store.mark_injection_evaluated(sid, "d1", verdict="contradicted")
+        store.commit()
+        assert store.decision_feedback_totals()["contradicted"] == 2
+
+    await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
+
+    with SessionStagingStore(default_store_path(tmp_path)) as store:
+        assert store.decision_feedback_totals() == {
+            "followed": 1,  # sess-b, re-judged on its own correction
+            "contradicted": 1,  # sess-a keeps the verdict it earned
+            "pending": 0,
+            "no_verdict": 0,
+        }
+
+
+async def test_the_smear_repair_does_not_run_twice(session, tmp_path):
+    """Once is a repair; every pass would churn verdicts and lose some.
+
+    The correction is left in place here on purpose. Deleting it first would
+    make the pass return 0 through the evidence guard instead of the one-shot
+    gate, and the test would pass whether or not the gate existed.
+
+    The loss the gate prevents once the guard is in: a contradicted row whose
+    session still holds its correction, but whose decision record has since
+    been deleted with no alias. Re-opening that row re-judges it against a
+    record that is not there, and it is drained with no verdict.
+    """
+    from repowise.core.persistence.models import DecisionRecord as _Rec
+
+    session.add(Repository(id=_REPO_ID, name="r", local_path=str(tmp_path)))
+    await _add_decision(session, "d1")
+    _record_injection(tmp_path, "sess-a", "d1", _OLD_ENOUGH)
+    _stage_correction(
+        tmp_path, "sess-a", "no, stop using JWT tokens for service auth, revert to sessions"
+    )
+
+    await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
+
+    with SessionStagingStore(default_store_path(tmp_path)) as store:
+        assert store.decision_feedback_totals()["contradicted"] == 1
+        # Eligible on every count except the gate: the row is contradicted and
+        # its correction is still there.
+        assert store.reopen_smeared_contradictions() == 0
+
+    # The record goes away, as a purge or an unaliased re-key would take it.
+    await session.delete(await session.get(_Rec, "d1"))
+    await session.flush()
+
+    await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
+    with SessionStagingStore(default_store_path(tmp_path)) as store:
+        assert store.decision_feedback_totals()["contradicted"] == 1
+
+
+async def test_a_rekeyed_decision_id_still_resolves_through_its_alias(session, tmp_path):
+    """A record's id moves when its scope does, and nothing rewrites the sidecar.
+
+    Without the aliases the row reads as "the decision is gone" and is drained
+    with no verdict, so an ordinary scope edit discards feedback already
+    earned. Measured on this repository's store: 372 of 421 settled rows
+    resolve only this way.
+    """
+    from repowise.core.persistence.models import DecisionAlias
+
+    session.add(Repository(id=_REPO_ID, name="r", local_path=str(tmp_path)))
+    await _add_decision(session, "new-id")
+    session.add(
+        DecisionAlias(
+            alias_id="old-id",
+            repository_id=_REPO_ID,
+            decision_id="new-id",
+            reason="rekeyed",
+        )
+    )
+    await session.flush()
+    # The sidecar still holds the id that was live when the hook wrote it.
+    _record_injection(tmp_path, "sess-1", "old-id", _OLD_ENOUGH)
+    _stage_correction(
+        tmp_path, "sess-1", "no, stop using JWT tokens for service auth, revert to sessions"
+    )
+
+    summary = await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
+
+    assert summary == {"followed": 0, "contradicted": 1, "unjudgeable": 0}
+
+
+async def test_a_contradiction_whose_evidence_has_aged_out_is_not_reopened(
+    session, tmp_path
+):
+    """Re-opening a row nothing can re-judge is a deletion, not a re-judgement.
+
+    `prune` drops an unstructured `raw_candidates` row at RAW_TTL_DAYS while
+    `correction_quotes` reads those rows regardless of `structured_key`, and
+    `prune` runs earlier in the same update. So a genuinely earned
+    contradiction can reach the repair with its evidence already gone, and
+    re-opening it would settle it as no-verdict, which is unrecoverable.
+    """
+    session.add(Repository(id=_REPO_ID, name="r", local_path=str(tmp_path)))
+    await _add_decision(session, "d1")
+    _record_injection(tmp_path, "sess-a", "d1", _OLD_ENOUGH)
+    # Earned under the old rule, and its correction has since been pruned.
+    with SessionStagingStore(default_store_path(tmp_path)) as store:
+        store.mark_injection_evaluated("sess-a", "d1", verdict="contradicted")
+        store.commit()
+        assert store.reopen_smeared_contradictions() == 0
+
+    await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
+
+    with SessionStagingStore(default_store_path(tmp_path)) as store:
+        totals = store.decision_feedback_totals()
+    assert totals["contradicted"] == 1
+    assert totals["no_verdict"] == 0

@@ -877,6 +877,41 @@ def promotion_decisions(
 INJECTION_EVAL_MIN_AGE_SECONDS = 3600.0
 
 
+async def _records_by_alias(
+    db_session: Any, repository_id: str, alias_ids: list[str]
+) -> dict[str, Any]:
+    """Live records for retired ids, keyed by the **retired** id.
+
+    Keyed by the alias so the caller can look a sidecar row up under the id it
+    stored.
+
+    One hop, because re-keying does not chain: ``decision_aliases.decision_id``
+    is in ``_DEPENDENT_COLUMNS``, so re-keying a record that is already some
+    id's target repoints the existing alias rather than writing a hop beside
+    it. A merge *can* chain, since a merged candidate keeps its record, so
+    ``A -> B -> C`` is reachable with ``B`` live. One hop is still the right
+    answer there: ``A`` has no record, ``B`` has a real one, and ``B``'s text
+    is what was shown.
+    """
+    if not alias_ids:
+        return {}
+
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import DecisionAlias, DecisionRecord
+
+    rows = await db_session.execute(
+        select(DecisionAlias.alias_id, DecisionRecord)
+        .join(DecisionRecord, DecisionRecord.id == DecisionAlias.decision_id)
+        .where(
+            DecisionAlias.alias_id.in_(alias_ids),
+            DecisionAlias.repository_id == repository_id,
+            DecisionRecord.repository_id == repository_id,
+        )
+    )
+    return {alias_id: rec for alias_id, rec in rows.all()}
+
+
 async def apply_injection_feedback(
     db_session: Any,
     repository_id: str,
@@ -932,6 +967,11 @@ async def apply_injection_feedback(
         # would never reach them otherwise and the reported rate would stay
         # pinned at whatever the else branch produced.
         retired = store.retire_unjudgeable_verdicts()
+        # Beside it: rows another session's match settled, handed back to the
+        # judge below. **This order is load-bearing** -- both repairs ride one
+        # `PRAGMA user_version` and this one writes the higher number, so
+        # reversing them skips the retirement for good.
+        reopened = store.reopen_smeared_contradictions()
         # Commit even when nothing matched, because what is being persisted is
         # the "already repaired" mark, not the rows. Without this the mark is
         # rolled back by the early return below on any store with nothing to
@@ -939,8 +979,12 @@ async def apply_injection_feedback(
         # RAW_TTL_DAYS has pruned the corrections, it would fire on verdicts
         # that were earned. That is the exact decay the one-shot prevents.
         store.commit()
-        if retired:
-            logger.info("session_mining.injection_verdicts_retired", rows=retired)
+        if retired or reopened:
+            logger.info(
+                "session_mining.injection_verdicts_repaired",
+                retired=retired,
+                reopened=reopened,
+            )
 
         injections = store.unevaluated_injections(before=ts - INJECTION_EVAL_MIN_AGE_SECONDS)
         if not injections:
@@ -954,16 +998,20 @@ async def apply_injection_feedback(
             )
         )
         records = {rec.id: rec for rec in rows.scalars().all()}
+        # A record's id moves when its scope does and nothing rewrites the
+        # sidecar, so without the aliases those rows read as "the decision is
+        # gone" and are drained, discarding feedback already earned -- 372 of
+        # 421 settled rows on this store.
+        records |= await _records_by_alias(
+            db_session, repository_id, [d for d in decision_ids if d not in records]
+        )
 
         quotes_by_session: dict[str, list[str]] = {}
-        verdicts: dict[str, bool] = {}  # decision_id -> contradicted anywhere
-        #: (session_id, decision_id, this session had a correction to test it
-        #: against) for every row settled here. Judgeability is per *row*, not
-        #: per decision, because the totals count rows: one session that
-        #: happened to hold a correction would otherwise hand a free verdict
-        #: to every other session the same decision was shown to, which is the
-        #: bug this whole change is about, one level up.
-        judged: list[tuple[str, str, bool]] = []
+        #: (session_id, decision_id, judgeable, this session's own verdict).
+        #: **Both flags are per row**, because the totals count rows: a verdict
+        #: shared across every session a decision was shown to is multiplied by
+        #: however many that was.
+        judged: list[tuple[str, str, bool, bool]] = []
         for inj in injections:
             rec = records.get(inj["decision_id"])
             if rec is None:
@@ -977,18 +1025,12 @@ async def apply_injection_feedback(
             quotes = quotes_by_session[session_id]
             decision_text = f"{rec.title}. {rec.decision}"
             contradicted = any(contradicts(decision_text, quote)[0] for quote in quotes)
-            verdicts[rec.id] = verdicts.get(rec.id, False) or contradicted
-            judged.append((session_id, inj["decision_id"], bool(quotes)))
+            judged.append((session_id, inj["decision_id"], bool(quotes), contradicted))
 
-        # Settle the ledger after the aggregation, not during it: the verdict
-        # *value* is per decision across every session that saw it, so a row's
-        # own judgement is not final until the last of them has been read.
-        # Whether a row gets that value at all is per row, and the two are
-        # different questions — a decision contradicted in one session says
-        # nothing about a session that mined no correction at all. Storing it
-        # is what lets `repowise hook stats` report the split — until now the
-        # numbers existed only in one update run's console output.
-        for session_id, decision_id, judgeable in judged:
+        # Each row settles on its own session's corrections: a decision
+        # contradicted in one session says nothing about a session that mined
+        # different corrections, or none. Stored so `hook stats` can report it.
+        for session_id, decision_id, judgeable, contradicted in judged:
             if not judgeable:
                 # Settled, so it is not re-read every update, but with no
                 # verdict: this session mined nothing that could have
@@ -996,7 +1038,6 @@ async def apply_injection_feedback(
                 store.mark_injection_evaluated(session_id, decision_id)
                 summary["unjudgeable"] += 1
                 continue
-            contradicted = bool(verdicts.get(decision_id))
             store.mark_injection_evaluated(
                 session_id,
                 decision_id,

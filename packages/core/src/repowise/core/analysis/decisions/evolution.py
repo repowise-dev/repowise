@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import re
+from functools import lru_cache
 from typing import Any
 
 import structlog
@@ -185,18 +186,35 @@ _REVERSAL_SIGNALS: tuple[str, ...] = (
 _OPPOSING_VERB_PAIRS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
-            {"adopt", "adopted", "use", "using", "add", "added", "introduce", "enable", "enabled"}
+            {
+                "adopt",
+                "adopted",
+                "adopting",
+                "use",
+                "using",
+                "add",
+                "added",
+                "introduce",
+                "introducing",
+                "enable",
+                "enabled",
+                "enabling",
+            }
         ),
         frozenset(
             {
                 "drop",
                 "dropped",
+                "dropping",
                 "remove",
                 "removed",
+                "removing",
                 "deprecate",
                 "deprecated",
+                "deprecating",
                 "disable",
                 "disabled",
+                "disabling",
                 "revert",
                 "reverted",
                 "abandon",
@@ -280,13 +298,58 @@ def is_reversal(text: str) -> tuple[bool, str]:
     return False, ""
 
 
-def contradicts(text_a: str, text_b: str) -> tuple[bool, str]:
+#: A verb as a word, plus the ``-s``/``-ed`` inflections corrections are
+#: written in -- :data:`_OPPOSING_VERB_PAIRS` lists ``removed`` but not
+#: *removes*. It cannot build a silent-e or doubled ``-ing`` (*removing*,
+#: *dropping*), so those are listed there instead. The left edge excludes
+#: ``-`` too, so ``blocking`` does not match inside *non-blocking*, which sits
+#: on the other side of its own pair.
+_VERB_RE = r"(?<![\w-]){verb}(?:s|es|d|ed|ing)?\b"
+
+
+@lru_cache(maxsize=512)
+def _verb_pattern(verb: str) -> re.Pattern[str]:
+    return re.compile(_VERB_RE.format(verb=re.escape(verb)))
+
+
+def _mentions(low: str, verbs: frozenset[str]) -> bool:
+    """Does *low* use any of *verbs* as a word, rather than inside one?
+
+    Substring matching put ``use`` inside *user*, ``add`` inside *address* and
+    ``sync`` inside *asynchronous*, each scoring an agreeing correction as a
+    contradiction. The straddle is the only test the default path has left.
+    """
+    return any(_verb_pattern(v).search(low) for v in verbs)
+
+
+def contradicts(
+    text_a: str, text_b: str, *, lone_reversal_counts: bool = False
+) -> tuple[bool, str]:
     """Heuristic: do two decision texts push in opposite directions?
 
-    True when (a) an opposing verb pair straddles the two texts, or (b) either
-    text carries a directional reversal signal — *and* the two share enough
-    content tokens to be about the same topic (so "deprecate X" and "adopt Y"
-    for unrelated X/Y don't false-positive). Returns ``(bool, signal)``.
+    True when an opposing verb pair straddles the two texts *and* they share
+    enough content tokens to be about the same topic (so "deprecate X" and
+    "adopt Y" for unrelated X/Y don't false-positive) — or, for a caller that
+    passes ``lone_reversal_counts``, when one text carries a directional
+    reversal signal. Returns ``(bool, signal)``.
+
+    A directional reversal signal in **one** text is not, on its own, evidence
+    that the two contradict: it says that text changes something, never that
+    it changes *this*. Token overlap is far too weak to supply the missing
+    half. Measured over this repository's whole injection corpus — 426
+    (decision, quote) pairs behind 201 judged rows — 96% of pairs share zero or
+    one token, the opposing-verb straddle fires on none of them, and the lone
+    reversal branch fires exactly once: the word *migration*, in a quote about
+    not mutating production, against a record reading "Never run Ruff format",
+    on the two tokens *run* and *not*. That single firing is the whole of the
+    10.0% contradiction rate this layer has published.
+
+    ``lone_reversal_counts`` restores the old branch for a caller that has
+    already established the two texts are about the same thing by a stronger
+    test than token overlap. Supersession detection is that caller: it only
+    reaches here for pairs a vector store scored between ``RELATED_TAU`` and
+    ``DEFAULT_DEDUP_TAU``, where "the newer one says it replaces something" is
+    genuine evidence. Injection feedback has no such gate and must not pass it.
     """
     if not _shared_topic(text_a, text_b):
         return False, ""
@@ -294,13 +357,15 @@ def contradicts(text_a: str, text_b: str) -> tuple[bool, str]:
     low_b = normalize_text(text_b)
 
     for left, right in _OPPOSING_VERB_PAIRS:
-        a_left = any(v in low_a for v in left)
-        b_right = any(v in low_b for v in right)
-        a_right = any(v in low_a for v in right)
-        b_left = any(v in low_b for v in left)
+        a_left = _mentions(low_a, left)
+        b_right = _mentions(low_b, right)
+        a_right = _mentions(low_a, right)
+        b_left = _mentions(low_b, left)
         if (a_left and b_right) or (a_right and b_left):
             return True, "opposing-verbs"
 
+    if not lone_reversal_counts:
+        return False, ""
     rev_a, sig_a = is_reversal(text_a)
     if rev_a:
         return True, sig_a
@@ -409,7 +474,9 @@ async def detect_supersessions_and_conflicts(
 
             text_new = f"{rec.title}. {rec.decision}"
             text_old = f"{other.title}. {other.decision}"
-            contra, signal = contradicts(text_new, text_old)
+            # Vector similarity already put these two on the same topic, which
+            # is the gate a lone reversal signal needs to mean anything.
+            contra, signal = contradicts(text_new, text_old, lone_reversal_counts=True)
             if not contra and provider is not None:
                 contra, signal = await _llm_contradiction_judge(
                     provider, text_a=text_new, text_b=text_old
