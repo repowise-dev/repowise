@@ -42,54 +42,7 @@ export function SavingsLede({ data, methodologyHref, LinkComponent }: SavingsLed
   // headline starts overclaiming.
   const label = inferred > 0 ? "Estimated agent savings" : "Agent savings";
 
-  const stats: RibbonStat[] = [
-    // First, because it is the figure a reader is trying to arrive at when
-    // they divide the headline by something in their head.
-    ...(ratio === null
-      ? []
-      : [
-          {
-            label: "Input reduction",
-            value: `${Math.round(ratio * 100)}%`,
-            hint: "Across every interaction that carried a baseline: how much smaller the input was than what it stood in for. Interactions with nothing to compare against are excluded from both sides rather than counted as a zero.",
-            sub: `on ${formatTokens(data.baseline_input_tokens)} of baseline`,
-          } satisfies RibbonStat,
-        ]),
-    {
-      label: "Measured",
-      value: formatTokens(measured),
-      hint: "A known before and after: the tokens an operation that actually ran removed.",
-      sub: pctOf(measured, total),
-    },
-    {
-      label: "Inferred",
-      value: formatTokens(inferred),
-      hint: "A documented counterfactual: the exploration a Repowise answer replaced.",
-      sub: pctOf(inferred, total),
-    },
-    {
-      label: "Valued",
-      value: formatCost(data.priced_input_savings_usd),
-      hint: "Each event is priced at the rate recorded when it happened, so this covers only events that carried one.",
-      sub:
-        unpriced > 0
-          ? `on ${formatTokens(data.priced_saved_input_tokens)} of ${formatTokens(total)}`
-          : "on all savings",
-    },
-    {
-      label: "Interactions",
-      value: data.unique_events.toLocaleString(),
-      hint: "Logical agent interactions recorded. One interaction contributes to the total once.",
-      // "9 saved tokens" reads as nine tokens. It is nine interactions.
-      sub: `${data.saving_interactions.toLocaleString()} produced a saving`,
-    },
-    {
-      label: "MCP answered",
-      value: data.mcp_queries_answered.toLocaleString(),
-      hint: "MCP calls that returned an answer. Dead ends are counted separately and save nothing.",
-      ...(data.dead_ends > 0 ? { sub: `${data.dead_ends.toLocaleString()} dead ends` } : {}),
-    },
-  ];
+  const stats = ribbonStats(data);
 
   return (
     <div className="flex flex-col gap-6">
@@ -198,6 +151,69 @@ function Coverage({
 
 /** A share, or nothing. A denominator of zero has no percentage, and "0%"
  *  would be a claim rather than an absence. */
+/**
+ * The figures that qualify the headline, in the order they qualify it.
+ *
+ * Lifted out of the component because it is a list of data, not markup,
+ * and because the component had grown past the point where the JSX it
+ * returns was visible on one screen.
+ */
+function ribbonStats(data: SavingsView): RibbonStat[] {
+  const total = data.saved_input_tokens;
+  const measured = data.measured_saved_input_tokens;
+  const inferred = data.inferred_saved_input_tokens;
+  const unpriced = data.unpriced_saved_input_tokens;
+  const ratio = data.input_reduction_ratio;
+  return [
+    // First, because it is the figure a reader is trying to arrive at when
+    // they divide the headline by something in their head.
+    ...(ratio === null
+      ? []
+      : [
+          {
+            label: "Input reduction",
+            value: `${Math.round(ratio * 100)}%`,
+            hint: "Across every interaction that carried a baseline: how much smaller the input was than what it stood in for. Interactions with nothing to compare against are excluded from both sides rather than counted as a zero.",
+            sub: `on ${formatTokens(data.baseline_input_tokens)} of baseline`,
+          } satisfies RibbonStat,
+        ]),
+    {
+      label: "Measured",
+      value: formatTokens(measured),
+      hint: "A known before and after: the tokens an operation that actually ran removed.",
+      sub: pctOf(measured, total),
+    },
+    {
+      label: "Inferred",
+      value: formatTokens(inferred),
+      hint: "A documented counterfactual: the exploration a Repowise answer replaced.",
+      sub: pctOf(inferred, total),
+    },
+    {
+      label: "Valued",
+      value: formatCost(data.priced_input_savings_usd),
+      hint: "Each event is priced at the rate recorded when it happened, so this covers only events that carried one.",
+      sub:
+        unpriced > 0
+          ? `on ${formatTokens(data.priced_saved_input_tokens)} of ${formatTokens(total)}`
+          : "on all savings",
+    },
+    {
+      label: "Interactions",
+      value: data.unique_events.toLocaleString(),
+      hint: "Logical agent interactions recorded. One interaction contributes to the total once.",
+      // "9 saved tokens" reads as nine tokens. It is nine interactions.
+      sub: `${data.saving_interactions.toLocaleString()} produced a saving`,
+    },
+    {
+      label: "MCP answered",
+      value: data.mcp_queries_answered.toLocaleString(),
+      hint: "MCP calls that returned an answer. Dead ends are counted separately and save nothing.",
+      ...(data.dead_ends > 0 ? { sub: `${data.dead_ends.toLocaleString()} dead ends` } : {}),
+    },
+  ];
+}
+
 /** The quantile the report publishes beside the aggregate. Mirrors
  *  `REDUCTION_QUANTILE` in `core/savings/formulas.py`; the server computes the
  *  value, this only needs to say which one it is. */

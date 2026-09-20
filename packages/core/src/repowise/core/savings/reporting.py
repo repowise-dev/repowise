@@ -61,6 +61,36 @@ def _included(occurred_at: str, cutoff: datetime | None, as_of: datetime) -> boo
     return timestamp <= as_of and (cutoff is None or timestamp >= cutoff)
 
 
+def _reduction(scoped: list[SavingsEvent]) -> tuple[int, int, int, float | None]:
+    """Population, both sides of the aggregate ratio, and its percentile.
+
+    Only events carrying a baseline: an event with nothing to compare against
+    is not a reduction of nought, so it leaves both sides alone. The
+    denominator is what each event's saving was computed against, which is not
+    always its ``baseline_input_tokens`` -- see :func:`reduction_denominator`.
+    """
+    pairs = [
+        (event, denominator)
+        for event in scoped
+        if (
+            denominator := reduction_denominator(
+                surface=event.surface,
+                evidence_kind=event.evidence_kind,
+                baseline_input_tokens=event.baseline_input_tokens,
+                pre_budget_input_tokens=event.pre_budget_input_tokens,
+            )
+        )
+        is not None
+    ]
+    ratios = sorted(event.saved_input_tokens / denominator for event, denominator in pairs)
+    return (
+        len(pairs),
+        sum(denominator for _event, denominator in pairs),
+        sum(event.saved_input_tokens for event, _denominator in pairs),
+        ratios[reduction_quantile_offset(len(ratios))] if ratios else None,
+    )
+
+
 def build_report(
     events: Iterable[SavingsEvent],
     opportunities: Iterable[OpportunityObservation] = (),
@@ -113,27 +143,7 @@ def build_report(
                 output_usd += output_price
     saved_input = sum(event.saved_input_tokens for event in scoped)
     saved_output = sum(event.saved_output_tokens or 0 for event in scoped)
-    # Only events carrying a baseline: an event with nothing to compare against
-    # is not a reduction of nought, so it leaves both sides of the ratio alone.
-    with_baseline = [
-        (event, denominator)
-        for event in scoped
-        if (
-            denominator := reduction_denominator(
-                surface=event.surface,
-                evidence_kind=event.evidence_kind,
-                baseline_input_tokens=event.baseline_input_tokens,
-                pre_budget_input_tokens=event.pre_budget_input_tokens,
-            )
-        )
-        is not None
-    ]
-    baseline_input = sum(denominator for _event, denominator in with_baseline)
-    baseline_saved = sum(event.saved_input_tokens for event, _d in with_baseline)
-    ratios = sorted(
-        event.saved_input_tokens / denominator for event, denominator in with_baseline
-    )
-    p90 = ratios[reduction_quantile_offset(len(ratios))] if ratios else None
+    baseline_events, baseline_input, baseline_saved, p90 = _reduction(scoped)
     limit = max(0, min(max_breakdowns, 100))
 
     def ranked(name: str) -> list[tuple[Any, ...]]:
@@ -188,7 +198,7 @@ def build_report(
         priced_saved_output_tokens=priced_output,
         unpriced_saved_output_tokens=saved_output - priced_output,
         priced_output_savings_usd=output_usd,
-        baseline_events=len(with_baseline),
+        baseline_events=baseline_events,
         baseline_input_tokens=baseline_input,
         baseline_saved_input_tokens=baseline_saved,
         input_reduction_ratio=reduction_ratio(baseline_saved, baseline_input),

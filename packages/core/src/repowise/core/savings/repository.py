@@ -183,6 +183,28 @@ class SavingsRepository:
         )
         return cursor.rowcount == 1
 
+    def _reduction_p90(
+        self, where: str, params: list[Any], population: int
+    ) -> float | None:
+        """The per-event reduction ratio at the published quantile.
+
+        One bounded row, not the population: a percentile is the value at a
+        rank, so the database seeks to that rank rather than handing every
+        ratio over to be sorted here, and the method stays as cheap as the
+        aggregates beside it. ``reduction_quantile_offset`` is shared with the
+        pure builder so the two land on the same row.
+        """
+        if not population:
+            return None
+        den = REDUCTION_DENOMINATOR_SQL
+        hit = self._conn.execute(
+            f"SELECT CAST(saved_input_tokens AS REAL) / {den} "
+            f"FROM savings_events WHERE {where} AND {den} > 0 "
+            "ORDER BY 1 ASC LIMIT 1 OFFSET ?",
+            [*params, reduction_quantile_offset(population)],
+        ).fetchone()
+        return float(hit[0]) if hit is not None else None
+
     def report(
         self,
         repository_id: str,
@@ -273,21 +295,7 @@ class SavingsRepository:
         baseline_events = int(row[16])
         baseline_input = int(row[17])
         baseline_saved = int(row[18])
-        # One bounded row, not the population: the percentile is the value at a
-        # rank, so the database seeks to that rank instead of handing over every
-        # ratio to be sorted here. ``reduction_quantile_offset`` is shared with
-        # the pure builder so both land on the same row.
-        p90: float | None = None
-        if baseline_events:
-            offset = reduction_quantile_offset(baseline_events)
-            hit = self._conn.execute(
-                f"SELECT CAST(saved_input_tokens AS REAL) / {den} "
-                f"FROM savings_events WHERE {where} AND {den} > 0 "
-                "ORDER BY 1 ASC LIMIT 1 OFFSET ?",
-                [*params, offset],
-            ).fetchone()
-            if hit is not None:
-                p90 = float(hit[0])
+        p90 = self._reduction_p90(where, params, baseline_events)
         saved_input = int(row[5])
         priced_input = int(row[8])
         saved_output = int(row[11])
