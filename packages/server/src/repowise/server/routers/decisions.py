@@ -444,6 +444,7 @@ async def update_decision_settings(
                 discovery=policy.discovery,
                 harnesses=policy.harnesses,
                 agent_acceptance=policy.agent_acceptance,
+                capture_prompt=policy.capture_prompt,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

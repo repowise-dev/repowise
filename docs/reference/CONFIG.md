@@ -412,6 +412,7 @@ decisions:
   harnesses:                # whose transcripts the session lane reads
     - claude_code           # the default; add codex to read that store too
   agent_acceptance: false   # may an agent grant a decision authority?
+  capture_prompt: false     # ask the agent to record what it just committed
 ```
 
 `agent_acceptance` is the one key here that is not about capture. Off, an agent
@@ -419,6 +420,13 @@ can propose candidates and withdraw authority but never grant it; on, it may
 accept, and the acceptance is recorded as an agent's — with the session that
 signed it — on every surface, never as yours. It ships off and no preset turns
 it on.
+
+`capture_prompt` is the other. On, a successful `git commit` whose message
+carries two or more decision signals prompts the agent, once per session, to
+run `repowise decision add` — never for a commit a record already cites, and
+never as anything but a proposal. An agent cannot decline a hook, so this also
+ships off and no preset turns it on:
+`repowise decision config capture-prompt --on`.
 
 Every key is optional. **A config with no `decisions:` block behaves exactly as
 it did before these switches existed**: every source that shipped on is on,
