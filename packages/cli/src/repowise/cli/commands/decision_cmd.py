@@ -277,7 +277,7 @@ def decision_add(
     non_interactive = bool(title and decision_text)
     if not non_interactive:
         flagged = any((title, context, decision_text, rationale)) or any(
-            (alternatives, consequences, affected, tags)
+            (alternatives, consequences, affected, tags, evidence_commits)
         )
         if flagged or fmt == "json":
             _ta.emit_error(

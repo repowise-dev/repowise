@@ -37,7 +37,11 @@ _MIN_SIGNALS = 2
 #: a commit subject saying "remove the old fatal handler" reads as a failure
 #: while `nothing to commit` reads as a success. Freshness answers the question
 #: the exit code was standing in for: did this call produce a new commit.
-_MAX_COMMIT_AGE_SECONDS = 120.0
+#:
+#: Generous, because the hook fires when the whole shell call returns and not
+#: when ``git commit`` does — ``git commit && npm test`` is one call. It only
+#: has to separate this call's commit from yesterday's.
+_MAX_COMMIT_AGE_SECONDS = 900.0
 
 #: Only a commit. A merge or a rebase replays choices somebody already had the
 #: chance to record. ``--dry-run`` writes nothing, so it must not consume the
@@ -93,11 +97,15 @@ def _notice(tool_input: dict, tool_output: object, cwd: str, session_id: str) ->
     # ``.repowise`` marks the indexed repository, not the git one. This tree
     # nests other repositories inside it, and a commit made in one of those
     # must not be read as a commit here.
-    if _git_root(cwd) != _git_root(str(repo_path)):
+    here = _git_root(cwd)
+    if here is None or here != _git_root(str(repo_path)):
         return None
 
     sha, committed_at, message = _head_commit(repo_path)
-    if not sha or time.time() - committed_at > _MAX_COMMIT_AGE_SECONDS:
+    # Both sides: a committer date ahead of this clock — a pulled commit, a
+    # machine whose clock jumped — otherwise passes an age test for free, and
+    # the age test is the only thing standing in for "did this call commit".
+    if not sha or abs(time.time() - committed_at) > _MAX_COMMIT_AGE_SECONDS:
         return None
 
     from repowise.core.analysis.decisions.commit_signals import count_decision_signals
@@ -112,18 +120,19 @@ def _notice(tool_input: dict, tool_output: object, cwd: str, session_id: str) ->
     state = _load_session_state(repo_path, session_id)
     if state.get("capture_prompted"):
         return None
-    # Claimed before the prompt is returned: a session that saw it and did
-    # nothing has still spent its one ask, and re-asking is the tax.
-    state["capture_prompted"] = True
-    if not _save_session_state(repo_path, state):
-        return None
 
     from .command import _claim_emission
 
-    # Both hooks fire on one tool event. Keyed on the session and the commit
-    # rather than on the rendered text, which differs between them whenever
-    # one also carries the staleness notice.
-    if not _claim_emission("decision-capture", f"{session_id}\x00{sha}"):
+    # Both hooks fire on one tool event, and the session state is a
+    # read-modify-write of a file the Read surfaces also own. Claiming first
+    # means the loser writes nothing: it neither clobbers that file nor spends
+    # the session's one ask on a prompt it will not return.
+    if not _claim_emission("decision-capture", f"{session_id}{chr(0)}{sha}"):
+        return None
+    # Claimed rather than confirmed: a session that saw the prompt and ignored
+    # it has still had its ask, and re-asking is the tax.
+    state["capture_prompted"] = True
+    if not _save_session_state(repo_path, state):
         return None
     return _PROMPT.format(sha=sha[:8])
 

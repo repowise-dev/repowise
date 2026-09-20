@@ -295,3 +295,41 @@ def test_the_prompt_carries_no_console_markup(repo: Path) -> None:
     notice = _fire(repo)
 
     assert "[dim]" not in notice and "[/dim]" not in notice
+
+
+def test_a_commit_dated_ahead_of_this_clock_is_not_fresh(repo: Path, monkeypatch) -> None:
+    """A one-sided age test passes a future stamp for free."""
+    _fake_git(monkeypatch, repo, _SHA, _MESSAGE, age=-3600)
+
+    assert _fire(repo) is None
+
+
+def test_a_commit_and_a_slow_follow_up_still_fires(repo: Path, monkeypatch) -> None:
+    """The hook fires when the whole shell call returns, not when git does."""
+    _fake_git(monkeypatch, repo, _SHA, _MESSAGE, age=300)
+
+    assert _fire(repo, tool_input={"command": "git commit -am wip && npm test"}) is not None
+
+
+def test_two_unknown_git_roots_are_not_a_match(repo: Path, monkeypatch) -> None:
+    """`None == None` read as "the roots match"."""
+
+    def _run(args, **kwargs):
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="not a git repo")
+        return subprocess.CompletedProcess(args, 0, stdout=f"{_SHA}\n{int(time.time())}\n{_MESSAGE}")
+
+    monkeypatch.setattr(decision_capture.subprocess, "run", _run)
+
+    assert _fire(repo) is None
+
+
+def test_the_loser_of_the_claim_keeps_its_ask(repo: Path, monkeypatch) -> None:
+    """Claiming after the state write burns the session on a prompt never shown."""
+    from repowise.cli.commands.augment_cmd import command
+
+    monkeypatch.setattr(command, "_claim_emission", lambda event, context: False)
+    assert _fire(repo) is None
+
+    monkeypatch.setattr(command, "_claim_emission", lambda event, context: True)
+    assert _fire(repo) is not None
