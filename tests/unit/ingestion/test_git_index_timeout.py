@@ -1,9 +1,8 @@
 """Unit tests for the git-index file timeout resolver.
 
-The per-file git indexing timeout must not fire early on legitimately
-long first-time indexes of large repositories (the same premature-timeout
-failure mode as long build/compile commands — issue #1781). It is therefore
-configurable via ``REPOWISE_GIT_INDEX_TIMEOUT_S`` and defaults generously.
+The per-file git indexing timeout must not fire early on a legitimately
+long first-time index of a large repository. It is therefore configurable
+via ``REPOWISE_GIT_INDEX_TIMEOUT_S`` and defaults generously.
 """
 
 from __future__ import annotations
