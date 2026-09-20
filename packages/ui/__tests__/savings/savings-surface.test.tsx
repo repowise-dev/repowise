@@ -46,6 +46,11 @@ function makeSavings(overrides: Partial<SavingsView> = {}): SavingsView {
     priced_saved_output_tokens: 0,
     unpriced_saved_output_tokens: 0,
     priced_output_savings_usd: 0,
+    baseline_events: 110,
+    baseline_input_tokens: 2_000_000,
+    baseline_saved_input_tokens: 1_000_000,
+    input_reduction_ratio: 0.5,
+    input_reduction_ratio_p90: 0.88,
     per_operation: [
       { group: "get_answer", events: 40, saved_input_tokens: 600_000 },
       { group: "get_context", events: 20, saved_input_tokens: 400_000 },

@@ -340,6 +340,23 @@ class SavingsReport:
     priced_output_savings_usd: float
     opportunity_count: int
     opportunity_tokens_excluded: int
+    #: How much smaller the input got, over the events that carry a baseline.
+    #: The headline total answers "how many tokens"; this answers "out of how
+    #: many", which is the only form in which one repository's savings can be
+    #: compared with another's. Events with no baseline are excluded from both
+    #: the numerator and the denominator rather than counted as a zero -- an
+    #: event with nothing to compare against is not a reduction of nought.
+    baseline_events: int = 0
+    baseline_input_tokens: int = 0
+    baseline_saved_input_tokens: int = 0
+    #: ``baseline_saved_input_tokens / baseline_input_tokens``, and the
+    #: nearest-rank 90th percentile of the same ratio taken per event. Both
+    #: null when no event in the window carried a baseline. The aggregate is
+    #: what the repository did overall; the percentile says how far the
+    #: reduction goes on the outputs where it matters, and one without the
+    #: other is a half-truth in whichever direction flatters.
+    input_reduction_ratio: float | None = None
+    input_reduction_ratio_p90: float | None = None
     per_operation: tuple[Mapping[str, Any], ...] = ()
     per_surface: tuple[Mapping[str, Any], ...] = ()
     #: Rows carry ``agent_display_name`` beside the slug, resolved from the

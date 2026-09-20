@@ -158,6 +158,11 @@ def saved_command(
                     "estimated_usd": report.priced_input_savings_usd,
                     "mcp_queries_answered": report.mcp_queries_answered,
                     "dead_ends": report.dead_ends,
+                    "baseline_events": report.baseline_events,
+                    "baseline_input_tokens": report.baseline_input_tokens,
+                    "baseline_saved_input_tokens": report.baseline_saved_input_tokens,
+                    "input_reduction_ratio": report.input_reduction_ratio,
+                    "input_reduction_ratio_p90": report.input_reduction_ratio_p90,
                     "first_event_at": report.first_event_at,
                     "last_event_at": report.last_event_at,
                 },
@@ -286,6 +291,14 @@ def _print_evidence_and_pricing(report: SavingsReport) -> None:
         f"  Measured: [bold]{report.measured_saved_input_tokens:,}[/bold]  "
         f"Inferred: [bold]{report.inferred_saved_input_tokens:,}[/bold]"
     )
+    # Out of how much, not just how much. Both the aggregate and the peak,
+    # because either alone misreads in whichever direction flatters.
+    if report.input_reduction_ratio is not None and report.input_reduction_ratio_p90 is not None:
+        console.print(
+            f"  Input reduction: [bold]{report.input_reduction_ratio:.0%}[/bold] "
+            f"[dim]across {report.baseline_events:,} interactions carrying a baseline; "
+            f"{report.input_reduction_ratio_p90:.0%} at the 90th percentile[/dim]"
+        )
     if report.priced_saved_input_tokens:
         console.print(
             f"  Estimated saved: [bold green]${report.priced_input_savings_usd:.4f}[/bold green] "

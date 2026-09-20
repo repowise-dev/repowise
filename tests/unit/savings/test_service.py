@@ -175,6 +175,18 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
         occurred_at="2026-09-11T08:00:00.000000Z",
         priced=True,
     )
+    # A measured MCP event whose pre-budget and baseline differ. The reduction
+    # denominator is the one case where the two builders express the same rule
+    # in two languages -- a Python branch and a SQL CASE -- and without this
+    # event they would agree by accident on every fixture here.
+    _record_raw(
+        tmp_path,
+        surface="mcp",
+        evidence_kind="measured",
+        baseline_input_tokens=400,
+        pre_budget_input_tokens=30_000,
+        delivered_input_tokens=2_000,
+    )
 
     as_of = datetime.now(UTC)
     from_sql = load_report(tmp_path, as_of=as_of)
@@ -211,3 +223,109 @@ def test_the_sql_report_and_the_pure_report_agree(tmp_path: Path) -> None:
     assert len(from_sql.per_day) == 3
     assert any(row["model"] is None for row in from_sql.per_model)
     assert from_sql.inferred_saved_input_tokens > 0
+    # The reduction fields are only compared above while the fixture actually
+    # carries baselines. The percentile in particular is a rank, so a builder
+    # that was off by one would agree on a one-event population by accident.
+    assert from_sql.baseline_events == 5
+    assert from_sql.input_reduction_ratio is not None
+    assert from_sql.input_reduction_ratio_p90 is not None
+
+
+def test_a_measured_mcp_event_divides_by_what_its_saving_was_computed_against(
+    tmp_path: Path,
+) -> None:
+    """The decision table gives a measured MCP event its pre-budget size as the
+    formula baseline, not ``baseline_input_tokens``. Dividing by the wrong one
+    reports a reduction over 100%: a real ledger read 424% before this.
+    """
+    _sidecar(tmp_path)
+    _record_raw(
+        tmp_path,
+        surface="mcp",
+        evidence_kind="measured",
+        # An estimator floor, an order of magnitude under what was really shed.
+        baseline_input_tokens=400,
+        pre_budget_input_tokens=10_000,
+        delivered_input_tokens=1_000,
+    )
+    report = load_report(tmp_path)
+    assert report is not None
+    assert report.saved_input_tokens == 9_000
+    assert report.baseline_input_tokens == 10_000
+    assert report.input_reduction_ratio == pytest.approx(0.9)
+
+
+def test_no_window_can_report_a_reduction_over_one(tmp_path: Path) -> None:
+    """``saved`` is ``clamp(denominator - delivered)``, so the ratio it forms
+    is in [0, 1] on every event whatever the surface. Asserted rather than
+    reasoned about, across the mix of surfaces that made it false once.
+    """
+    _sidecar(tmp_path)
+    _record_raw(
+        tmp_path,
+        surface="mcp",
+        evidence_kind="measured",
+        baseline_input_tokens=400,
+        pre_budget_input_tokens=50_000,
+        delivered_input_tokens=500,
+    )
+    _record_raw(
+        tmp_path,
+        surface="mcp",
+        evidence_kind="inferred",
+        baseline_input_tokens=8_000,
+        pre_budget_input_tokens=2_000,
+        delivered_input_tokens=1_500,
+    )
+    _record_raw(
+        tmp_path,
+        surface="distill",
+        evidence_kind="measured",
+        baseline_input_tokens=6_000,
+        pre_budget_input_tokens=6_000,
+        delivered_input_tokens=600,
+    )
+    report = load_report(tmp_path)
+    assert report is not None
+    assert report.input_reduction_ratio is not None
+    assert 0.0 <= report.input_reduction_ratio <= 1.0
+    assert report.input_reduction_ratio_p90 is not None
+    assert 0.0 <= report.input_reduction_ratio_p90 <= 1.0
+    assert report.baseline_saved_input_tokens <= report.baseline_input_tokens
+
+
+def _record_raw(
+    repo: Path,
+    *,
+    surface: str,
+    evidence_kind: str,
+    baseline_input_tokens: int,
+    pre_budget_input_tokens: int,
+    delivered_input_tokens: int,
+) -> None:
+    """Record one event with every token dimension set independently.
+
+    ``_record`` ties baseline and pre-budget together, which is exactly the
+    case these two tests must not use.
+    """
+    event_id = new_event_id()
+    recorder.record_event(
+        repo,
+        {
+            "event_id": event_id,
+            "idempotency_key": scoped_idempotency_key(str(repo), surface, event_id),
+            "occurred_at": datetime.now(UTC),
+            "surface": surface,
+            "integration": "codex",
+            "agent": "codex",
+            "operation": "get_answer",
+            "evidence_kind": evidence_kind,
+            "estimator": "chars_per_token_floor_v1",
+            "token_unit": "estimated_tokens",
+            "result_state": "success",
+            "is_usable": True,
+            "baseline_input_tokens": baseline_input_tokens,
+            "pre_budget_input_tokens": pre_budget_input_tokens,
+            "delivered_input_tokens": delivered_input_tokens,
+        },
+    )

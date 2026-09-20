@@ -78,6 +78,15 @@ export interface Savings {
   unpriced_saved_output_tokens: number;
   priced_output_savings_usd: number;
 
+  /** How much smaller the input got, over the events that carry a baseline.
+   *  The ratios are null when nothing in the window had a baseline to compare
+   *  against, which is distinct from a measured zero. */
+  baseline_events: number;
+  baseline_input_tokens: number;
+  baseline_saved_input_tokens: number;
+  input_reduction_ratio: number | null;
+  input_reduction_ratio_p90: number | null;
+
   per_operation: SavingsBreakdownRow[];
   per_surface: SavingsBreakdownRow[];
   per_agent: SavingsAgentRow[];

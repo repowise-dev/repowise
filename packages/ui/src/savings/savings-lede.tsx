@@ -31,6 +31,10 @@ export function SavingsLede({ data, methodologyHref, LinkComponent }: SavingsLed
   const measured = data.measured_saved_input_tokens;
   const inferred = data.inferred_saved_input_tokens;
   const unpriced = data.unpriced_saved_input_tokens;
+  // The total answers "how many tokens". This answers "out of how many", which
+  // is the only form in which one repository's savings compare with another's.
+  const ratio = data.input_reduction_ratio;
+  const peak = data.input_reduction_ratio_p90;
 
   // "Estimated" for as long as any part of the total rests on a counterfactual
   // rather than a known before and after. The word is the honest one and it
@@ -39,6 +43,18 @@ export function SavingsLede({ data, methodologyHref, LinkComponent }: SavingsLed
   const label = inferred > 0 ? "Estimated agent savings" : "Agent savings";
 
   const stats: RibbonStat[] = [
+    // First, because it is the figure a reader is trying to arrive at when
+    // they divide the headline by something in their head.
+    ...(ratio === null
+      ? []
+      : [
+          {
+            label: "Input reduction",
+            value: `${Math.round(ratio * 100)}%`,
+            hint: "Across every interaction that carried a baseline: how much smaller the input was than what it stood in for. Interactions with nothing to compare against are excluded from both sides rather than counted as a zero.",
+            sub: `on ${formatTokens(data.baseline_input_tokens)} of baseline`,
+          } satisfies RibbonStat,
+        ]),
     {
       label: "Measured",
       value: formatTokens(measured),
@@ -96,6 +112,17 @@ export function SavingsLede({ data, methodologyHref, LinkComponent }: SavingsLed
             : inferred > 0
               ? "Part of the total is inferred, so the figure is an estimate rather than a measurement."
               : "Every part of the total is a measured before and after."}
+          {/* The aggregate alone reads as a modest average and the peak alone
+              reads as a cherry-pick. Both, or neither. */}
+          {ratio === null || peak === null ? null : (
+            <>
+              {" "}
+              Across {data.baseline_events.toLocaleString()} interactions the input was{" "}
+              {Math.round(ratio * 100)}% smaller than the work it replaced, and on the
+              largest {Math.round(100 - REDUCTION_QUANTILE * 100)}% of them it was{" "}
+              {Math.round(peak * 100)}% smaller.
+            </>
+          )}
         </p>
         <p>
           {total <= 0 ? null : unpriced > 0 ? (
@@ -171,6 +198,11 @@ function Coverage({
 
 /** A share, or nothing. A denominator of zero has no percentage, and "0%"
  *  would be a claim rather than an absence. */
+/** The quantile the report publishes beside the aggregate. Mirrors
+ *  `REDUCTION_QUANTILE` in `core/savings/formulas.py`; the server computes the
+ *  value, this only needs to say which one it is. */
+const REDUCTION_QUANTILE = 0.9;
+
 function pctOf(part: number, whole: number): string | undefined {
   if (whole <= 0) return undefined;
   return `${Math.round((part / whole) * 100)}% of total`;

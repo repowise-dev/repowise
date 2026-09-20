@@ -161,6 +161,14 @@ class SavingsResponse(BaseModel):
     unpriced_saved_output_tokens: int = 0
     priced_output_savings_usd: float = 0.0
 
+    #: How much smaller the input got, over the events that carry a baseline.
+    #: Null ratios mean no event in the window had anything to compare against.
+    baseline_events: int = 0
+    baseline_input_tokens: int = 0
+    baseline_saved_input_tokens: int = 0
+    input_reduction_ratio: float | None = None
+    input_reduction_ratio_p90: float | None = None
+
     per_operation: list[SavingsBreakdownRow] = []
     per_surface: list[SavingsBreakdownRow] = []
     per_agent: list[SavingsAgentRow] = []
