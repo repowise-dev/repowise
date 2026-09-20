@@ -66,7 +66,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         "get_context(targets=[...])",
         "Triage card for files/modules/symbols: docs, signatures, hotspot, fix "
         'history. No source bytes — `include=["skeleton"]` for the whole file '
-        'verified, `["callers"|"decisions"|"doc_drift"]` for depth. Batch targets.',
+        'verified, `["callers"|"decisions"]` for depth. Batch targets.',
     ),
     "get_symbol": (
         "get_symbol(id, depth?)",
