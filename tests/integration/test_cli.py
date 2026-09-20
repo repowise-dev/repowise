@@ -693,8 +693,6 @@ class TestDeleteWithConfiguredDb:
                 await upsert_repository(session, name="repo", local_path=str(dest.resolve()))
             await engine.dispose()
 
-        import asyncio
-
         asyncio.run(seed())
 
         result = runner.invoke(
