@@ -257,10 +257,17 @@ These are the cases where a finding is most likely wrong:
   unused-export pass: a symbol defined in a barrel that nobody imports should
   still be reported. A symbol re-exported through a barrel to external callers
   can therefore surface as an unused export.
-- **Python `__all__` is not read.** The dead-code layer never consults `__all__`,
-  so declaring a public API there does not by itself rescue a symbol. The
-  rescues that do apply are the `__init__.py` exemption, the dunder-name skip,
-  and intra-module reference tracking.
+- **Python `__all__` is read for visibility, never as a rescue.** A literal
+  module-level `__all__` (list, tuple or set of string constants) raises the
+  names it lists to `public`, even underscore-prefixed ones; a name it omits
+  keeps its name-based visibility, because the list is often stale and
+  demoting on absence would hide a genuinely dead export. Membership is capped
+  at the visibility label: it sets no export marker, mints no edge, and
+  suppresses no finding, so declaring a public API there does not by itself
+  rescue a symbol. Lists built at runtime (comprehensions, `+=`,
+  concatenation) are treated as absent. The rescues that do apply are the
+  `__init__.py` exemption, the dunder-name skip, and intra-module reference
+  tracking.
 - **Test-only usage reads as usage.** A test file's import produces a real graph
   edge, so a symbol only its tests touch is not flagged. That is deliberate, but
   it also means repowise will not tell you a symbol is *exclusively* exercised by

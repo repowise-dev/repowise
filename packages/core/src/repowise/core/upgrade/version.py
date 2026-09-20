@@ -54,7 +54,12 @@ STORE_FORMAT_VERSION: int = 2
 #: change makes ``persist_incremental_edges`` reconcile every file's edges once
 #: on the next update, so an existing index does not keep half its Python files
 #: without external edges.
-PARSER_SCHEMA_VERSION: int = 3
+#:
+#: v4: a literal module-level ``__all__`` now raises the names it lists to
+#: ``public``, so a cached ``ParsedFile`` from an earlier build carries the
+#: old name-based visibility for every underscore-prefixed name a module
+#: explicitly exports.
+PARSER_SCHEMA_VERSION: int = 4
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"
