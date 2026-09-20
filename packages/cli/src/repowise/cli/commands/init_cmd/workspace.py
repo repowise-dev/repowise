@@ -99,6 +99,7 @@ def _run_workspace_generation(
     onboarding: bool = True,
     wiki_style: str = DEFAULT_STYLE,
     language: str = "en",
+    warnings: list[str] | None = None,
 ) -> list[Any]:
     """Run LLM generation for a single repo in the workspace init flow.
 
@@ -168,6 +169,7 @@ def _run_workspace_generation(
         verbose=False,
         test_run=test_run,
         timings=timings,
+        warnings=warnings,
     )
 
 
@@ -183,6 +185,7 @@ def _run_workspace_deterministic_generation(
     wiki_style: str,
     language: str,
     timings: Any | None = None,
+    warnings: list[str] | None = None,
 ) -> tuple[list[Any], str]:
     """Render one workspace repo's wiki from templates (no model, no cost).
 
@@ -234,6 +237,7 @@ def _run_workspace_deterministic_generation(
         resume=resume,
         verbose=False,
         timings=timings,
+        warnings=warnings,
     )
     return generated_pages, embedder
 
@@ -296,6 +300,23 @@ class _RepoOutcome:
     symbol_count: int = 0
     pages_generated: int = 0
     docs_outcome: tuple[int, str | None] = (0, None)
+
+
+def _fold_generation_warnings(state: dict[str, Any], gen_warnings: list[str]) -> None:
+    """Record what a workspace repo's generation phase degraded on.
+
+    Generation builds its own embedder and its own progress bar, so its warnings
+    arrive on a list of our own rather than on the pipeline ``callback``. A silent
+    downgrade to keyless vectors would otherwise write a clean ``state.json`` with
+    semantic search off, which is the failure #1369 was about, on the path #2108
+    did not reach.
+
+    Extended rather than assigned: ``state`` may already carry entries from an
+    earlier phase, and the single-repo path builds one list for the whole run for
+    the same reason.
+    """
+    if gen_warnings:
+        state.setdefault("degraded", []).extend(gen_warnings)
 
 
 def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCtx) -> _RepoOutcome:
@@ -382,12 +403,19 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     pages_generated = 0
     det_embedder: str | None = None
 
+    # Generation owns a progress bar built after the pipeline callback is gone, so
+    # its warnings are not collected by ``callback``. Thread a list of our own and
+    # fold it into state.json below, the way single-repo init folds the generation
+    # and persist callbacks into ``run_warnings`` (issue #1369).
+    gen_warnings: list[str] = []
+
     def _render_from_templates() -> None:
         """Render the whole wiki from templates and mark this repo deterministic."""
         nonlocal pages_generated, docs_mode, det_embedder
         generated_pages, det_embedder = _run_workspace_deterministic_generation(
             repo_path=repo.path,
             result=result,
+            warnings=gen_warnings,
             embedder_name_resolved=ctx.embedder_name_resolved,
             embedder_was_requested=ctx.embedder_was_requested,
             timings=callback.table,
@@ -424,6 +452,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                 provider=repo_provider,
                 embedder_name_resolved=ctx.embedder_name_resolved,
                 timings=callback.table,
+                warnings=gen_warnings,
                 concurrency=ctx.concurrency,
                 yes=ctx.yes,
                 resume=ctx.resume,
@@ -502,6 +531,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     repo_phase_timings: dict[str, float] = callback.timings
     if repo_phase_timings:
         state["phase_timings"] = repo_phase_timings
+    _fold_generation_warnings(state, gen_warnings)
     apply_git_history_coverage_state(state, result)
     from repowise.core.generation.selection import count_documentable_files
     from repowise.core.index_scope import file_page_scope, stamp_index_scope
