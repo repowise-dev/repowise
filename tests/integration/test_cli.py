@@ -1005,8 +1005,6 @@ class TestWorkspaceListWithConfiguredDb:
 
         import asyncio
 
-        import asyncio
-
         asyncio.run(seed())
 
         result = runner.invoke(cli, ["workspace", "list", str(ws_root)])
