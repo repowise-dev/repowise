@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.support_paths import is_example_path, is_support_path
+from repowise.core.support_paths import (
+    file_population,
+    is_doc_or_config_path,
+    is_example_path,
+    is_support_path,
+)
 
 
 @pytest.mark.parametrize(
@@ -60,3 +65,37 @@ def test_doc_dirs_are_support_but_not_examples(path: str):
 def test_matching_is_case_insensitive():
     assert is_example_path("Examples/Demo.cs")
     assert is_support_path("Docs/Guide.md")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".env",
+        "proj/.env",
+        "packages/core/.env",
+        "foo.env",
+        "config.yaml",
+        "docs/guide.md",
+    ],
+)
+def test_config_and_doc_paths(path: str):
+    assert is_doc_or_config_path(path)
+
+
+@pytest.mark.parametrize("path", ["src/parser.rs", "src/env.py", ".gitignore", "Makefile"])
+def test_production_paths_are_not_doc_or_config(path: str):
+    assert not is_doc_or_config_path(path)
+
+
+def test_dotenv_dotfile_is_not_production():
+    """#2379: `.env` is the file `CONFIG_EXTENSIONS` names by name.
+
+    `PurePosixPath('.env').suffix` is empty, so the suffix-only check never
+    matched the `".env"` entry, and every surface that hides non-production
+    code treated a checked-in `.env` as production source.
+    """
+    assert file_population(".env", is_test=False) == "doc"
+    assert file_population("proj/.env", is_test=False) == "doc"
+    # The fallback matches the dotfile name against the sets; it does not
+    # promote every dotfile, so an unnamed one stays production.
+    assert file_population(".gitignore", is_test=False) == "production"
