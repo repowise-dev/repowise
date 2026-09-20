@@ -222,6 +222,19 @@ NEEDS_REVIEW_STALENESS: float = 0.5
 #: a decision whose code moved is a decision to re-read, not one to ignore.
 _GOVERNING: frozenset[str] = frozenset({"active", "needs_review"})
 
+#: Statuses that record a retirement somebody performed. A record at one of
+#: them keeps its files and its place in a lookup by id, and governs no path,
+#: because the graph is what "what governs this path" is answered from.
+#:
+#: ``proposed`` is deliberately absent: a candidate is not retired, and the
+#: candidate lane delivers on its links.
+RETIRED_STATUSES: frozenset[str] = frozenset({"dismissed", "deprecated", "superseded"})
+
+
+def is_retired(status: str) -> bool:
+    """Whether *status* records a retirement, and so governs no path."""
+    return status in RETIRED_STATUSES
+
 
 def is_governing(currency: str) -> bool:
     """Whether a decision at *currency* still constrains new work."""

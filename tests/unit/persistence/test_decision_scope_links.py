@@ -20,9 +20,14 @@ from repowise.core.persistence.crud import (
     recompute_decision_staleness,
     update_decision_by_id,
     update_decision_metadata,
+    update_decision_status,
     upsert_decision,
 )
-from repowise.core.persistence.crud.authority import accept_decision
+from repowise.core.persistence.crud.authority import (
+    accept_decision,
+    dismiss_candidate,
+    record_acceptance,
+)
 from repowise.core.persistence.decision_graph import (
     expected_node_links,
     get_governed_nodes,
@@ -78,14 +83,14 @@ async def test_restating_a_record_replaces_its_links(async_session):
     again = await _add(async_session, repo.id, affected_files=["b/two.py"])
 
     assert again.id == first.id
-    assert await _links(async_session, first.id) == {("b/two.py", "file")}
+    assert await _links(async_session, first.id) == {("b/two.py", "file"), ("b", "module")}
 
 
 async def test_a_non_binding_basis_links_nothing_despite_its_files(async_session):
     """The gate, not the empty case: files present, basis that does not bind."""
     repo = await insert_repo(async_session)
     rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
-    assert await _links(async_session, rec.id) == {("a/one.py", "file")}
+    assert await _links(async_session, rec.id) == {("a/one.py", "file"), ("a", "module")}
 
     rec.scope_basis = SCOPE_BASIS_REPOSITORY
     await sync_links_from_record(async_session, rec)
@@ -175,9 +180,8 @@ async def test_metadata_and_by_id_patches_move_the_links(async_session):
     assert await _links(async_session, rec.id) == {("d/four.py", "file"), ("d", "module")}
 
     await update_decision_by_id(async_session, rec.id, affected_files=["e/five.py"])
-    nodes = await get_governed_nodes(async_session, rec.id)
-    assert any(n.node_id == "e/five.py" for n in nodes)
-    assert not any(n.node_id == "d/four.py" for n in nodes)
+    nodes = {(n.node_id, n.link_type) for n in await get_governed_nodes(async_session, rec.id)}
+    assert nodes == {("e/five.py", "file"), ("e", "module")}
 
 
 async def test_clearing_a_scope_clears_the_links(async_session):
@@ -190,10 +194,14 @@ async def test_clearing_a_scope_clears_the_links(async_session):
 
 
 async def test_expected_links_ignore_a_malformed_array(async_session):
+    """Each half is guarded on its own; a broken one contributes nothing."""
     repo = await insert_repo(async_session)
     rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
-    rec.affected_files_json = "{not json"
 
+    rec.affected_files_json = "{not json"
+    assert expected_node_links(rec) == ([], ["a"])
+
+    rec.affected_modules_json = "[1, null]"
     assert expected_node_links(rec) == ([], [])
 
 
@@ -209,7 +217,7 @@ async def test_backfill_relinks_a_record_written_before_the_writer(async_session
 
     assert await backfill_decision_node_links(async_session, repo.id) == 1
 
-    assert await _links(async_session, rec.id) == {("a/one.py", "file")}
+    assert await _links(async_session, rec.id) == {("a/one.py", "file"), ("a", "module")}
 
 
 async def test_backfill_is_idempotent(async_session):
@@ -217,3 +225,88 @@ async def test_backfill_is_idempotent(async_session):
     await _add(async_session, repo.id, affected_files=["a/one.py"])
 
     assert await backfill_decision_node_links(async_session, repo.id) == 0
+
+
+async def test_a_patch_that_moves_files_moves_the_modules(async_session):
+    """The PATCH route sends files and no modules; the old module must not stay."""
+    repo = await insert_repo(async_session)
+    rec = await _add(
+        async_session, repo.id, affected_files=["packages/cli/q.py"], affected_modules=["packages/cli"]
+    )
+
+    await update_decision_metadata(async_session, rec.id, affected_files=["packages/core/q.py"])
+
+    assert await _links(async_session, rec.id) == {
+        ("packages/core/q.py", "file"),
+        ("packages/core", "module"),
+    }
+
+
+async def test_an_explicit_empty_module_list_still_clears(async_session):
+    repo = await insert_repo(async_session)
+    rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
+
+    await update_decision_metadata(
+        async_session, rec.id, affected_files=["b/two.py"], affected_modules=[]
+    )
+
+    assert await _links(async_session, rec.id) == {("b/two.py", "file")}
+
+
+async def test_a_deprecated_record_governs_nothing(async_session):
+    """The literal ``dismiss`` writes is not the only withdrawal."""
+    repo = await insert_repo(async_session)
+    rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
+
+    await update_decision_status(async_session, rec.id, "deprecated")
+
+    assert await _links(async_session, rec.id) == set()
+
+
+async def test_a_dismissal_unlinks_without_waiting_for_an_index(async_session):
+    repo = await insert_repo(async_session)
+    rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
+
+    await update_decision_status(async_session, rec.id, "dismissed")
+
+    assert await get_governing_decisions(async_session, repo.id, "a/one.py") == []
+
+
+async def test_a_revival_relinks_without_waiting_for_an_index(async_session):
+    repo = await insert_repo(async_session)
+    rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
+    await update_decision_status(async_session, rec.id, "dismissed")
+    assert await _links(async_session, rec.id) == set()
+
+    await update_decision_status(async_session, rec.id, "proposed")
+
+    assert ("a/one.py", "file") in await _links(async_session, rec.id)
+
+
+async def test_a_withdrawal_through_the_acceptance_log_unlinks(async_session):
+    """``record_acceptance`` is the sole writer of the status projection."""
+    repo = await insert_repo(async_session)
+    rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
+    await accept_decision(async_session, rec, accepter="dev", reason="keep one queue")
+    assert await _links(async_session, rec.id)
+
+    await record_acceptance(
+        async_session,
+        rec,
+        action="dismissed",
+        currency="dismissed",
+        accepter="dev",
+        kind="person",
+    )
+
+    assert await _links(async_session, rec.id) == set()
+
+
+async def test_dismissing_a_candidate_unlinks_it(async_session):
+    repo = await insert_repo(async_session)
+    rec = await _add(async_session, repo.id, affected_files=["a/one.py"])
+    assert await _links(async_session, rec.id)
+
+    await dismiss_candidate(async_session, rec, reason="wrong", accepter="dev")
+
+    assert await _links(async_session, rec.id) == set()

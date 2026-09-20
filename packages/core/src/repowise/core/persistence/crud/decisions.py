@@ -21,6 +21,7 @@ from repowise.core.analysis.decisions.lifecycle import (
     ARCHITECTURAL_KIND,
     DECISION_KINDS,
     DECISION_STATUS_ORDER,
+    RETIRED_STATUSES,
     status_rank,
 )
 from repowise.core.analysis.decisions.provenance import (
@@ -32,7 +33,7 @@ from repowise.core.analysis.decisions.provenance import (
 )
 from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED, binds_to_paths
 
-from ..decision_graph import sync_links_from_record
+from ..decision_graph import scope_modules, sync_links_from_record
 from ..models import (
     DecisionCandidateMeta,
     DecisionEdge,
@@ -329,7 +330,9 @@ async def upsert_decision(
         # The caller supplied these files, so they are its claim and not
         # any footprint the row carried.
         rec.scope_basis = SCOPE_BASIS_STATED if affected_files else ""
-        rec.affected_modules_json = json.dumps(affected_modules or [])
+        rec.affected_modules_json = json.dumps(
+            scope_modules(affected_files or [], affected_modules or None)
+        )
         rec.tags_json = json.dumps(tags or [])
         rec.evidence_commits_json = json.dumps(evidence_commits or [])
         rec.evidence_line = evidence_line
@@ -396,7 +399,9 @@ async def upsert_decision(
         affected_files_json=json.dumps(affected_files or []),
         # Same claim as the restate arm: files the caller supplied are stated.
         scope_basis=SCOPE_BASIS_STATED if affected_files else "",
-        affected_modules_json=json.dumps(affected_modules or []),
+        affected_modules_json=json.dumps(
+            scope_modules(affected_files or [], affected_modules or None)
+        ),
         tags_json=json.dumps(tags or []),
         evidence_commits_json=json.dumps(evidence_commits or []),
         source=source,
@@ -585,13 +590,16 @@ async def update_decision_metadata(
     rec = await session.get(DecisionRecord, decision_id)
     if rec is None:
         return None
-    if affected_modules is not None:
-        rec.affected_modules_json = json.dumps(affected_modules)
     if affected_files is not None:
         rec.affected_files_json = json.dumps(affected_files)
         # A scope set by hand is stated, whatever the row held before:
         # otherwise the new files are stored and then ignored everywhere.
         rec.scope_basis = SCOPE_BASIS_STATED
+        # Modules follow the files they describe. Replacing one and keeping
+        # the other links the record to a module its files are not in.
+        affected_modules = scope_modules(affected_files, affected_modules)
+    if affected_modules is not None:
+        rec.affected_modules_json = json.dumps(affected_modules)
     rec.updated_at = _now_utc()
     await session.flush()
     await sync_links_from_record(session, rec)
@@ -640,7 +648,7 @@ async def update_decision_status(
                 await accept_decision(
                     session, rec, accepter=accepter or "unrecorded", kind=kind
                 )
-        elif accepted and status in ("dismissed", "deprecated", "superseded"):
+        elif accepted and status in RETIRED_STATUSES:
             await record_acceptance(
                 session,
                 rec,
@@ -656,6 +664,9 @@ async def update_decision_status(
     if superseded_by is not None:
         rec.superseded_by = superseded_by
     rec.updated_at = _now_utc()
+    # Both directions: a retirement drops the links and a revival rebuilds
+    # them, rather than either waiting for the next index.
+    await sync_links_from_record(session, rec)
     await session.flush()
     return rec
 
@@ -690,8 +701,11 @@ async def update_decision_by_id(
     }
     if "affected_files" in fields:
         # Same rule as every other path that takes a scope from its caller:
-        # the basis has to move with the files it describes.
+        # the basis and the modules have to move with the files they describe.
         rec.scope_basis = SCOPE_BASIS_STATED if fields["affected_files"] else ""
+        fields["affected_modules"] = scope_modules(
+            fields["affected_files"], fields.get("affected_modules")
+        )
     _scalar_fields = {
         "title",
         "context",

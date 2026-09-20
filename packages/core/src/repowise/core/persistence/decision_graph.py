@@ -23,6 +23,7 @@ import json
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.lifecycle import is_retired
 from repowise.core.analysis.decisions.scope import binds_to_paths, resolve_module_nodes
 
 from .models import DecisionEdge, DecisionNodeLink, DecisionRecord
@@ -37,6 +38,7 @@ __all__ = [
     "list_all_decision_edges",
     "list_conflict_edges",
     "list_decision_node_links",
+    "scope_modules",
     "set_record_scope",
     "sync_decision_node_links",
     "sync_links_from_record",
@@ -211,15 +213,28 @@ def expected_node_links(record: DecisionRecord) -> tuple[list[str], list[str]]:
     One answer for both the writer and the backfill that checks it, so a
     record can never be judged against a rule other than the one that wrote
     it. A basis that does not bind to paths links nothing, and neither does a
-    dismissed record: the graph is what "governs this file" is read from, and
-    a withdrawn decision governs nothing.
+    retired record: the graph is what "what governs this path" is answered
+    from, and a withdrawn decision answers nothing. Keyed on the retirement
+    vocabulary rather than the one literal ``dismiss`` writes — a withdrawal
+    through the acceptance log lands on ``deprecated``.
     """
-    if record.status == "dismissed" or not binds_to_paths(record.scope_basis):
+    if is_retired(record.status) or not binds_to_paths(record.scope_basis):
         return [], []
     return (
         _json_list(record.affected_files_json),
         _json_list(record.affected_modules_json),
     )
+
+
+def scope_modules(files: list[str], modules: list[str] | None) -> list[str]:
+    """The module array for a scope: what the caller gave, or derived from it.
+
+    ``None`` means the caller supplied files and said nothing about modules,
+    which is not the same as saying there are none. Deriving is what keeps the
+    two halves of a scope describing the same code; an empty list still
+    clears.
+    """
+    return resolve_module_nodes(files) if modules is None else list(modules)
 
 
 async def set_record_scope(
@@ -238,7 +253,7 @@ async def set_record_scope(
     disagreement rather than a repair for it.
     """
     record.affected_files_json = json.dumps(files)
-    record.affected_modules_json = json.dumps(resolve_module_nodes(files))
+    record.affected_modules_json = json.dumps(scope_modules(files, None))
     if basis is not None:
         record.scope_basis = basis
     await sync_links_from_record(session, record)

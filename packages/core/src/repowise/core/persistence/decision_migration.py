@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.decisions.kinds import classify_kind
 from repowise.core.analysis.decisions.lifecycle import (
     AGREEMENT_KIND,
+    RETIRED_STATUSES,
     currency_for_legacy_status,
 )
 from repowise.core.analysis.decisions.scope import (
@@ -73,9 +74,6 @@ __all__ = [
 #: purpose.
 _SELF_ACCEPTING_SOURCES: frozenset[str] = frozenset({"cli", "adr"})
 
-#: Statuses that record a retirement somebody performed. The migration keeps
-#: them: reclassifying one as an open candidate would undo the retirement.
-_RETIRED_STATUSES: frozenset[str] = frozenset({"dismissed", "deprecated", "superseded"})
 
 
 @dataclass(slots=True)
@@ -226,7 +224,7 @@ async def plan_migration(
         # it as an unreviewed candidate would put a decision the user retired
         # back in front of them asking to be accepted, so all three retired
         # statuses keep their status and carry a tombstone.
-        if rec.status in _RETIRED_STATUSES:
+        if rec.status in RETIRED_STATUSES:
             plan.rows.append(
                 RowPlan(
                     rec.id,
@@ -369,7 +367,7 @@ async def apply_migration(
             continue
         if row.kind:
             rec.kind = row.kind
-        if rec.status in _RETIRED_STATUSES and row.outcome != "decision":
+        if rec.status in RETIRED_STATUSES and row.outcome != "decision":
             # Record the tombstone without touching the status that carries the
             # retirement.
             existed = await session.get(DecisionCandidateMeta, rec.id) is not None

@@ -44,7 +44,11 @@ from repowise.core.analysis.decisions.lifecycle import (
 )
 from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED
 
-from ..decision_graph import set_record_scope, upsert_decision_edge
+from ..decision_graph import (
+    set_record_scope,
+    sync_links_from_record,
+    upsert_decision_edge,
+)
 from ..models import (
     DecisionAcceptance,
     DecisionAlias,
@@ -609,6 +613,10 @@ async def record_acceptance(
     record.status = legacy_status_for_currency(currency)
     record.updated_at = _now_utc()
     await session.flush()
+    # Retirement decides what the graph holds, so a status write moves the
+    # links with it. Leaving them to the next index is what made the
+    # withdrawal visible in one surface and not another.
+    await sync_links_from_record(session, record)
     return acceptance
 
 
@@ -954,6 +962,7 @@ async def dismiss_candidate(
     record.status = "dismissed"
     record.updated_at = _now_utc()
     await session.flush()
+    await sync_links_from_record(session, record)
     return meta
 
 
