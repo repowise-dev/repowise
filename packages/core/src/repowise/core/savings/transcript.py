@@ -22,8 +22,10 @@ Three rules it does not get to relax:
 - **One event per omission ref.** The ref is content-addressed, so the same
   ref twice is the same distilled output. Counting it once undersells a
   genuine repeat, which is the floor this ledger is meant to be.
-- **Never repriced.** These happened at rates nobody recorded, so they are
-  counted in tokens and left unvalued rather than valued at today's rate.
+- **Never repriced.** A past saving is never revalued at today's model. That
+  is not the same as leaving it unvalued: the transcript names the model that
+  was in the chair, so each event is priced from *its own* evidence, and one
+  whose model the rate table does not know stays unpriced rather than guessed.
 """
 
 from __future__ import annotations
@@ -111,6 +113,13 @@ class _Candidate:
     occurred_at: datetime
     delivered_tokens: int
     session_id: str | None
+    #: The model in the chair when this output was read back, or ``None``.
+    #: Not read off the event carrying the marker: a tool *result* is a user
+    #: line in every harness here and names no model. It is the most recent
+    #: assistant line before it in the same transcript -- the turn that ran
+    #: the command and then read the answer. Evidence that existed when the
+    #: saving happened, which is the whole basis for pricing this population.
+    model: str | None = None
 
 
 def sync_transcript_savings(
@@ -213,20 +222,34 @@ def _sweep(
 
 
 def _gate(adapter: HarnessAdapter) -> RawPrefilter | None:
-    """The adapter's tool-call gate, widened to keep every marker line.
+    """The adapter's tool-call gate, widened to keep marker and model lines.
 
     The tool call and the result carrying its marker are separate lines, and
     only the pair says a marker came from a shell command, so a marker-only
     gate sees results it can no longer attribute. Widening rather than
     narrowing matters because the cursor advances per line read: a line this
     gate drops is consumed, not revisited.
+
+    The model is the same shape of problem one line further out, and it cost
+    93% of the ledger's price. Codex states its model on a ``turn_context``
+    line that carries no tool call, so the unwidened gate consumed it and
+    every Codex event was written unpriced -- measured at 0 of 1,219
+    candidates here, against 25 of 27 for Claude Code, which happens to state
+    its model on the same assistant line as the tool call.
+
+    A substring rather than an adapter method: both harnesses spell it
+    ``"model"`` in the JSON, one extra line normalized is free, and a method
+    with two implementations and one caller is a worse answer than the test
+    it would wrap. Costs ~4.8% more lines on Codex and ~1.1% on Claude Code,
+    on a surface that runs at ``init`` and on demand under a 20-second
+    budget -- never inside an agent's tool call.
     """
     tool_gate = adapter.prefilter(INTENT_TOOL_CALLS)
     if tool_gate is None:
         return None
 
     def gate(raw_line: str) -> bool:
-        return tool_gate(raw_line) or "repowise#" in raw_line
+        return tool_gate(raw_line) or "repowise#" in raw_line or '"model"' in raw_line
 
     return gate
 
@@ -240,7 +263,14 @@ def _collect(
 ) -> set[str]:
     """Collect markers from shell results; return shell calls left unanswered."""
     shell_calls: set[str] = set()
+    # Carried forward rather than read per event: see ``_Candidate.model``.
+    # Scoped to this call, which is one transcript, so a model never leaks
+    # across sessions. A read resuming mid-file starts with None and leaves
+    # its first markers unpriced, which is the right way to be wrong here.
+    model: str | None = None
     for event in events:
+        if event.model:
+            model = event.model
         for use in event.tool_uses:
             if use.name in shell_tools:
                 shell_calls.add(use.id)
@@ -250,7 +280,7 @@ def _collect(
             shell_calls.discard(block.tool_use_id)
             if not _in_repo(event, repo_root):
                 continue
-            _harvest(block, event, harness, candidates)
+            _harvest(block, event, harness, candidates, model)
     return shell_calls
 
 
@@ -259,6 +289,7 @@ def _harvest(
     event: Event,
     harness: str,
     candidates: dict[str, _Candidate],
+    model: str | None = None,
 ) -> None:
     for text in _result_texts(block):
         for marker in parse_markers(text):
@@ -270,6 +301,7 @@ def _harvest(
                     occurred_at=_occurred_at(event),
                     delivered_tokens=estimate_tokens(text),
                     session_id=event.session_id,
+                    model=model,
                 ),
             )
 
@@ -375,7 +407,28 @@ def _payload(
         "delivered_input_tokens": delivered,
         "omission_refs": (candidate.marker.ref,),
         "session_id": candidate.session_id,
+        **_pricing_payload(candidate),
     }
+
+
+def _pricing_payload(candidate: _Candidate) -> dict[str, Any]:
+    """The rate fields for one recovered marker, empty when it cannot be priced.
+
+    Not a departure from "never repriced" but the point of it. The rule exists
+    so a past saving is never revalued at *today's* model; this prices each
+    event at the model that was in the chair when it happened, read out of the
+    same transcript line that proves the saving. The evidence was always there
+    and the first version of this module simply dropped it, which left 93% of
+    the ledger's tokens carrying no rate at all.
+
+    Empty when the model is unknown to the rate table. An unpriced event is
+    the honest outcome and the report already counts the two populations
+    apart; a guessed rate would be worse than the silence it replaced.
+    """
+    from repowise.core.savings.pricing import snapshot_for_model
+
+    snapshot = snapshot_for_model(candidate.model, f"transcript_model:{candidate.harness}")
+    return snapshot.as_payload() if snapshot is not None else {}
 
 
 def _apply(

@@ -330,3 +330,105 @@ def test_a_scan_whose_cache_write_fails_is_still_used(
     # And the process does not scan again for the same repository.
     assert resolve_pricing_snapshot(repo) is not None
     assert len(calls) == 1
+
+
+# -- a rate the table did not know ------------------------------------------
+#
+# The defect these cover was live, and it was invisible precisely because it
+# succeeded: ``get_model_pricing`` answers a model it does not know with the
+# default tier and a warning into a log no caller reads, so a session on an
+# unrecognised model was stamped $3/$15 with a real-looking
+# ``session_model:<agent>`` provenance. Nothing downstream could tell that
+# from a measurement.
+
+
+def _resolving_to(monkeypatch: pytest.MonkeyPatch, model: str) -> None:
+    """Make the session detector report *model*, whatever is on this machine."""
+    from repowise.core.distill import session_model
+
+    monkeypatch.setattr(
+        session_model,
+        "resolve_session_model",
+        lambda *a, **k: session_model.ResolvedModel(
+            model=model, raw=model, agent="claude_code", source="detected"
+        ),
+    )
+
+
+def test_a_model_the_rate_table_does_not_know_is_left_unpriced(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _resolving_to(monkeypatch, "totally-made-up-model-xyz")
+
+    assert resolve_pricing_snapshot(repo) is None
+    # And nothing was cached, so the next caller does not read a rate back.
+    assert resolve_pricing_snapshot(repo, allow_scan=False) is None
+
+
+def test_the_unknown_rate_refused_is_the_fallback_that_used_to_be_stamped(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins *what* was being fabricated, not merely that something was.
+
+    Without this the test above would still pass if the fallback tier happened
+    to equal a real rate, which is exactly why the bug survived: $3/$15 is a
+    plausible number, and a plausible number is indistinguishable from a
+    measured one once it has been written down.
+    """
+    from repowise.core.generation import cost_tracker
+
+    model = "totally-made-up-model-xyz"
+    assert cost_tracker.resolve_model_pricing(model) is None
+    # The lenient lookup still answers, and answers with the fabrication.
+    assert cost_tracker.get_model_pricing(model) == cost_tracker._FALLBACK_PRICING
+
+    _resolving_to(monkeypatch, model)
+    assert resolve_pricing_snapshot(repo) is None
+
+
+@pytest.mark.parametrize("label", ["codex-auto-review", "<synthetic>", "auto"])
+def test_a_label_that_is_not_a_model_at_all_is_left_unpriced(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, label: str
+) -> None:
+    """These need no rule of their own: they are unknown to the table, so the
+    unknown-model refusal already covers them."""
+    _resolving_to(monkeypatch, label)
+
+    assert resolve_pricing_snapshot(repo) is None
+
+
+def test_a_model_the_table_does_know_is_still_priced(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The confinement. Refusing the unknown must not refuse everything."""
+    _resolving_to(monkeypatch, "claude-opus-5")
+
+    snapshot = resolve_pricing_snapshot(repo)
+    assert snapshot is not None
+    assert snapshot.model == "claude-opus-5"
+    assert snapshot.input_rate_usd_per_million == 5.0
+    assert snapshot.pricing_source == "session_model:claude_code"
+
+
+def test_a_family_prefix_is_a_real_rate_rather_than_a_miss(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``gpt-5.6-sol`` is in no exact row but resolves by family, and the
+    family tier is a measurement. Refusing it would throw away 93% of this
+    machine's ledger for nothing."""
+    _resolving_to(monkeypatch, "gpt-5.6-sol")
+
+    snapshot = resolve_pricing_snapshot(repo)
+    assert snapshot is not None
+    assert snapshot.input_rate_usd_per_million == 2.5
+
+
+def test_a_local_model_is_priced_at_zero_rather_than_refused(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero is an answer, not an absence."""
+    _resolving_to(monkeypatch, "ollama/llama3")
+
+    snapshot = resolve_pricing_snapshot(repo)
+    assert snapshot is not None
+    assert snapshot.input_rate_usd_per_million == 0.0

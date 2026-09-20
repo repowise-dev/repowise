@@ -45,6 +45,7 @@ def _pair(
     tool: str = "Bash",
     block_id: str = "toolu_01",
     ts: float = NOW,
+    model: str | None = None,
 ) -> list[dict]:
     return [
         {
@@ -53,6 +54,7 @@ def _pair(
             "timestamp": _iso(ts),
             "message": {
                 "role": "assistant",
+                **({"model": model} if model else {}),
                 "content": [
                     {
                         "type": "tool_use",
@@ -593,3 +595,109 @@ def test_every_marker_in_one_result_is_counted(repo: Path, projects: Path) -> No
     _write(projects, repo, _pair(output, cwd=str(repo)))
 
     assert _sync(repo, projects).recorded == 2
+
+
+# -- what it was worth ------------------------------------------------------
+#
+# 93% of this ledger's tokens carried no rate at all, because the backfill
+# dropped a model the transcript was stating plainly. Recovering it is not
+# repricing: "never repriced" forbids valuing a past saving at *today's*
+# model, and each event here is priced from the model that was in the chair
+# when it happened, read out of the same file that proves the saving.
+
+
+def test_an_event_is_priced_from_the_model_that_was_in_the_chair(
+    repo: Path, projects: Path
+) -> None:
+    _write(
+        projects,
+        repo,
+        _pair(_distilled("aaaabbbbcccc", 500), cwd=str(repo), model="claude-opus-5"),
+    )
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["model"] == "claude-opus-5"
+    assert event["input_rate_usd_per_million"] == 5.0
+    assert event["output_rate_usd_per_million"] == 25.0
+    # Provenance names the method, so this population stays separable from a
+    # live event priced off the session-model cache.
+    assert event["pricing_source"] == "transcript_model:claude_code"
+    assert event["pricing_version"]
+
+
+def test_a_model_the_rate_table_does_not_know_leaves_the_event_unpriced(
+    repo: Path, projects: Path
+) -> None:
+    """A guessed rate is worse than the silence it replaced. The lenient
+    lookup would have answered $3/$15 here and stamped it as measured."""
+    _write(
+        projects,
+        repo,
+        _pair(_distilled("ddddeeeeffff", 500), cwd=str(repo), model="totally-made-up-xyz"),
+    )
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["model"] is None
+    assert event["input_rate_usd_per_million"] is None
+    assert event["pricing_source"] is None
+    # The saving itself is unaffected: unpriced, never unrecorded.
+    assert event["baseline_input_tokens"] > event["delivered_input_tokens"]
+
+
+def test_a_model_stated_only_on_a_line_carrying_no_tool_call_still_reaches_the_event(
+    repo: Path, projects: Path
+) -> None:
+    """The gate's widening, pinned by the case that motivated it.
+
+    Codex states its model on a ``turn_context`` line with no tool call on it,
+    so the tool-call prefilter consumed it and *every* Codex event was written
+    unpriced -- measured at 0 of 1,219 candidates against 25 of 27 for Claude
+    Code, which happens to state its model on the same line as the tool call.
+    Codex is 93% of this machine's ledger, so the gate was the whole fix.
+
+    Written in the Claude Code shape because that is what this module's
+    fixtures speak; what it pins is the gate, which is harness-agnostic.
+    Remove ``'"model"' in raw_line`` from ``_gate`` and this fails.
+    """
+    entries = _pair(_distilled("111122223333", 500), cwd=str(repo))
+    standalone = {
+        "type": "assistant",
+        "cwd": str(repo),
+        "timestamp": _iso(NOW - 10),
+        "message": {"role": "assistant", "model": "claude-opus-5", "content": []},
+    }
+    _write(projects, repo, [standalone, *entries])
+
+    _sync(repo, projects)
+
+    (event,) = _events(repo)
+    assert event["model"] == "claude-opus-5"
+
+
+def test_a_models_reach_stops_at_the_transcript_it_was_stated_in(
+    repo: Path, projects: Path
+) -> None:
+    """Carrying the model forward must not carry it across sessions. A second
+    transcript that names no model is unpriced, not priced at the first's."""
+    _write(
+        projects,
+        repo,
+        _pair(_distilled("444455556666", 500), cwd=str(repo), model="claude-opus-5"),
+        name="s1",
+    )
+    _write(
+        projects,
+        repo,
+        _pair(_distilled("777788889999", 500), cwd=str(repo), block_id="toolu_02"),
+        name="s2",
+    )
+
+    _sync(repo, projects)
+
+    events = _events(repo)
+    assert len(events) == 2
+    assert sorted(row["model"] or "" for row in events) == ["", "claude-opus-5"]
