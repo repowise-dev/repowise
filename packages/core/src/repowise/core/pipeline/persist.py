@@ -2081,6 +2081,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     try:
         from repowise.core.persistence.decision_migration import (
             apply_migration,
+            backfill_decision_node_links,
             backfill_scope_basis,
             backfill_session_scope_basis,
             prune_unindexed_scope_files,
@@ -2093,6 +2094,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         await prune_unindexed_scope_files(session, repo_id)
         await backfill_scope_basis(session, repo_id)
         await backfill_session_scope_basis(session, repo_id)
+        await backfill_decision_node_links(session, repo_id)
     except Exception as _migrate_err:
         logger.debug("decision_entity_migration_skipped", error=str(_migrate_err))
 

@@ -44,7 +44,7 @@ from repowise.core.analysis.decisions.lifecycle import (
 )
 from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED
 
-from ..decision_graph import upsert_decision_edge
+from ..decision_graph import sync_links_from_record, upsert_decision_edge
 from ..models import (
     DecisionAcceptance,
     DecisionAlias,
@@ -703,6 +703,7 @@ async def accept_decision(
         # The accepter chose these files, so the record binds to them
         # rather than keeping the basis it was mined with.
         record.scope_basis = SCOPE_BASIS_STATED
+        await sync_links_from_record(session, record)
     acceptance = await record_acceptance(
         session,
         record,

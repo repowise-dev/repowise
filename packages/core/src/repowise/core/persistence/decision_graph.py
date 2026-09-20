@@ -18,14 +18,19 @@ Two graphs live here:
 
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from repowise.core.analysis.decisions.scope import binds_to_paths
 
 from .models import DecisionEdge, DecisionNodeLink, DecisionRecord
 
 __all__ = [
     "VALID_EDGE_KINDS",
     "build_lineage_chain",
+    "expected_node_links",
     "get_decision_edges",
     "get_governed_nodes",
     "get_governing_decisions",
@@ -33,6 +38,7 @@ __all__ = [
     "list_conflict_edges",
     "list_decision_node_links",
     "sync_decision_node_links",
+    "sync_links_from_record",
     "upsert_decision_edge",
 ]
 
@@ -196,6 +202,46 @@ async def sync_decision_node_links(
             )
         )
     await session.flush()
+
+
+def expected_node_links(record: DecisionRecord) -> tuple[list[str], list[str]]:
+    """The (files, modules) *record*'s links should hold, given its basis.
+
+    One answer for both the writer and the backfill that checks it, so a
+    record can never be judged against a rule other than the one that wrote
+    it. A basis that does not bind to paths links nothing.
+    """
+    if not binds_to_paths(record.scope_basis):
+        return [], []
+    return (
+        _json_list(record.affected_files_json),
+        _json_list(record.affected_modules_json),
+    )
+
+
+async def sync_links_from_record(session: AsyncSession, record: DecisionRecord) -> None:
+    """Mirror *record*'s current scope arrays into its traversable links.
+
+    Call this from every writer that moves ``affected_files_json`` or
+    ``affected_modules_json``. The arrays are a read cache; these rows are what
+    every path-scoped surface queries, so a scope written to one and not the
+    other is stored and then ignored.
+    """
+    files, modules = expected_node_links(record)
+    await sync_decision_node_links(
+        session, record.repository_id, record.id, files=files, modules=modules
+    )
+
+
+def _json_list(raw: str | None) -> list[str]:
+    """A stored JSON array as a list of non-empty strings; empty on anything else."""
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if isinstance(v, str) and v]
 
 
 async def get_governing_decisions(

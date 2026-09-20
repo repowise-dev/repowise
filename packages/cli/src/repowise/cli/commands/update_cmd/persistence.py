@@ -1037,6 +1037,7 @@ async def _persist_full_update_async(
                 # classified.
                 from repowise.core.persistence.decision_migration import (
                     apply_migration,
+                    backfill_decision_node_links,
                     backfill_scope_basis,
                     backfill_session_scope_basis,
                     prune_unindexed_scope_files,
@@ -1052,6 +1053,7 @@ async def _persist_full_update_async(
                 await prune_unindexed_scope_files(session, repo_id)
                 await backfill_scope_basis(session, repo_id)
                 await backfill_session_scope_basis(session, repo_id)
+                await backfill_decision_node_links(session, repo_id)
 
                 if require_decision_persist_success:
                     from repowise.core.persistence.crud import (

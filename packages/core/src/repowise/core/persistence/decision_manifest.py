@@ -37,6 +37,7 @@ from .crud.authority import (
     resolve_decision_id,
 )
 from .crud.decisions import _rederive_headline, list_decision_evidence
+from .decision_graph import sync_links_from_record
 from .models import DecisionAlias, DecisionRecord
 
 __all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
@@ -232,6 +233,7 @@ async def _apply_entry(
     # The file is hand-authored and version controlled, so its scope is
     # stated: a record narrowed here binds to what the file says.
     record.scope_basis = SCOPE_BASIS_STATED
+    await sync_links_from_record(session, record)
     # The successor is an id the file wrote down, and the file can be older
     # than the store it is being read into. Storing it unresolved would put a
     # retired id back into the column.
@@ -319,6 +321,7 @@ async def import_manifest(
             )
             session.add(record)
             await session.flush()
+            await sync_links_from_record(session, record)
         elif entry.id not in outcome.reaffirmed:
             outcome.accepted.append(entry.id)
             if dry_run:

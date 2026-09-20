@@ -32,7 +32,7 @@ from repowise.core.analysis.decisions.provenance import (
 )
 from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED, binds_to_paths
 
-from ..decision_graph import sync_decision_node_links
+from ..decision_graph import sync_links_from_record
 from ..models import (
     DecisionCandidateMeta,
     DecisionEdge,
@@ -340,6 +340,7 @@ async def upsert_decision(
         rec.superseded_by = superseded_by
         rec.updated_at = _now_utc()
         await session.flush()
+        await sync_links_from_record(session, rec)
         await _write_candidate_meta(session, repository_id, {}, only={rec.id})
         return rec
 
@@ -407,6 +408,7 @@ async def upsert_decision(
     )
     session.add(rec)
     await session.flush()
+    await sync_links_from_record(session, rec)
     await _write_candidate_meta(session, repository_id, {}, only={rec.id})
     return rec
 
@@ -590,6 +592,7 @@ async def update_decision_metadata(
         rec.scope_basis = SCOPE_BASIS_STATED
     rec.updated_at = _now_utc()
     await session.flush()
+    await sync_links_from_record(session, rec)
     return rec
 
 
@@ -705,6 +708,7 @@ async def update_decision_by_id(
 
     rec.updated_at = _now_utc()
     await session.flush()
+    await sync_links_from_record(session, rec)
     return rec
 
 
@@ -1448,20 +1452,7 @@ async def bulk_upsert_decisions(
             prior_split or any(bool(d.get("needs_split")) for d in members),
         )
 
-        # Mirror the JSON file/module arrays into first-class decision→code
-        # links so the graph is traversable both directions (Phase 3A). The
-        # JSON stays the cheap read cache; these rows are the queryable truth.
-        # A footprint contributes no links. The graph is what session
-        # injection and the ``get_risk`` directives ask "which decisions touch
-        # this node", so gating this one write path covers both readers.
-        binds = binds_to_paths(rec.scope_basis)
-        await sync_decision_node_links(
-            session,
-            repository_id,
-            rec.id,
-            files=json.loads(rec.affected_files_json or "[]") if binds else [],
-            modules=json.loads(rec.affected_modules_json or "[]") if binds else [],
-        )
+        await sync_links_from_record(session, rec)
 
         # (Re-)embed the record into the shared store so it's matchable by
         # later groups in this batch + future runs, and discoverable via
