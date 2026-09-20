@@ -132,17 +132,27 @@ def write_project_mcp_config(repo_path: Path) -> FileWrite:
     new_entry = generate_mcp_config(repo_path)["mcpServers"]["repowise"]
 
     if config_path.exists():
-        # Surgical, minimal-edit write. Returns KEPT when the file's shape is
-        # one we cannot edit safely (e.g. ``mcpServers`` is not an object), in
-        # which case we fall back to the full re-render rather than silently
-        # dropping the registration.
+        # Surgical, minimal-edit write. ``KEPT`` means the file's shape is one we
+        # cannot edit safely (``mcpServers`` present but not an object, or the
+        # insertion point unresolvable), and it is not a licence to re-render.
+        # Re-rendering from a dict would replace the whole document, dropping
+        # every other server the user configured: a ``.mcp.json`` holding
+        # ``"mcpServers": null`` or ``[]`` is exactly the case ``KEPT`` exists
+        # for, and the old fallback here destroyed it instead of reporting it.
         action = merge_json_object_member(config_path, "mcpServers", "repowise", new_entry)
-        if action is FileAction.KEPT:
-            action = write_json_config(
-                config_path, {"mcpServers": {"repowise": new_entry}}
-            )
     else:
         action = write_json_config(config_path, {"mcpServers": {"repowise": new_entry}})
+
+    if action is FileAction.KEPT:
+        return FileWrite(
+            path=config_path,
+            action=FileAction.KEPT,
+            reason=(
+                "the existing mcpServers entry is not an object, so adding "
+                "repowise would rewrite the file and drop the other servers in "
+                "it; make mcpServers an object or add the repowise entry by hand"
+            ),
+        )
 
     return FileWrite(path=config_path, action=action)
 
@@ -398,7 +408,7 @@ class ClaudeCodeTarget:
             if repo_path is None:
                 raise ValueError("project-scope install needs a repo_path")
             written = write_project_mcp_config(repo_path)
-            result.record(written.path, written.action)
+            result.record(written.path, written.action, written.reason)
             return result
 
         if repo_path is None:

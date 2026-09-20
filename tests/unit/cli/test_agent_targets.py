@@ -1738,6 +1738,52 @@ def test_merge_member_creates_missing_file(tmp_path: Path) -> None:
     assert saved["mcpServers"]["repowise"]["command"] == "repowise"
 
 
+def test_project_install_keeps_a_non_object_mcp_servers_entry(tmp_path: Path) -> None:
+    """``KEPT`` must be reported, not answered with a destructive re-render.
+
+    ``.mcp.json`` is repo-shared, so a full re-render drops every other server in
+    it. A file holding ``"mcpServers": null`` is exactly what ``KEPT`` exists for,
+    and the caller here used to treat that refusal as a licence to rewrite the
+    document from a dict. The other server is the thing that proves it.
+    """
+    from repowise.cli.agent_targets.targets import claude_code as claude_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / ".mcp.json"
+    original = '{\n  "mcpServers": null,\n  "otherTopLevel": {"kept": true}\n}\n'
+    config.write_text(original, encoding="utf-8")
+
+    result = claude_target.TARGET.install(Scope.PROJECT, repo_path=repo)  # type: ignore[attr-defined]
+
+    # The file is byte-identical: we refused rather than reformatting it.
+    assert config.read_text(encoding="utf-8") == original
+    kept = [f for f in result.files if f.path == config]
+    assert kept and kept[0].action is FileAction.KEPT
+    assert kept[0].reason, "a KEPT row with no reason reads as a silent failure"
+
+
+def test_project_install_does_not_drop_other_servers(tmp_path: Path) -> None:
+    """The destructive case: a sibling server must survive an array-shaped container.
+
+    ``"mcpServers": []`` is the partially-migrated shape the review named. The old
+    fallback wrote ``{"mcpServers": {"repowise": ...}}`` over the file, so any
+    server a user had configured elsewhere in the document was gone.
+    """
+    from repowise.cli.agent_targets.targets import claude_code as claude_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / ".mcp.json"
+    original = '{\n  "mcpServers": [],\n  "sibling": "must survive"\n}\n'
+    config.write_text(original, encoding="utf-8")
+
+    claude_target.TARGET.install(Scope.PROJECT, repo_path=repo)  # type: ignore[attr-defined]
+
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert saved.get("sibling") == "must survive"
+
+
 def test_codex_reinstall_reports_unchanged_and_leaves_config_alone(tmp_path: Path) -> None:
     """The ``.codex/config.toml`` non-idempotency, closed.
 
