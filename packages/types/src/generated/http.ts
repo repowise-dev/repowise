@@ -756,7 +756,7 @@ export interface DecisionCountsResponse {
 
 export interface DecisionCreate {
   title: string;
-  kind?: "architectural" | "agreement";
+  kind?: "architectural" | "agreement" | null;
   context?: string;
   decision?: string;
   rationale?: string;

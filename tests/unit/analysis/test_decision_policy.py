@@ -649,3 +649,21 @@ def test_a_policy_write_keeps_unrelated_keys_under_decisions(tmp_path):
     write_policy(tmp_path, preset_policy("full"))
 
     assert load_repo_config(tmp_path)["decisions"]["something_else"] == 7
+
+
+def test_the_agent_switch_does_not_rewrite_the_stored_preset(tmp_path):
+    """It is authority, not source membership, so it must not read as `custom`.
+
+    Dropping `preset:` also drops the pinning that keeps a source added in a
+    later release switched off, which is a capture change from a switch that
+    has nothing to do with capture.
+    """
+    from repowise.core.repo_config import load_repo_config
+
+    write_policy(tmp_path, preset_policy("balanced"))
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(True))
+
+    resolved = load_policy(tmp_path).policy
+    assert resolved.agent_acceptance is True
+    assert resolved.preset_name() == "balanced"
+    assert load_repo_config(tmp_path)["decisions"]["preset"] == "balanced"

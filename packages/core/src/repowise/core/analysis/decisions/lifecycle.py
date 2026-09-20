@@ -17,6 +17,7 @@ from dataclasses import dataclass
 __all__ = [
     "ACCEPTANCE_ACTIONS",
     "ACCEPTER_KINDS",
+    "ACCEPTER_SESSION_MAX",
     "AGENT_ACCEPTANCE_REMEDY",
     "AGREEMENT_KIND",
     "AGREEMENT_SCOPE",
@@ -174,6 +175,10 @@ GRANTING_ACTIONS: frozenset[str] = frozenset({"accepted", "reaffirmed", "merged"
 #: are the two things this distinction exists to keep apart.
 ACCEPTER_KINDS: tuple[str, ...] = ("person", "agent", "import")
 UNRECORDED_ACCEPTER_KIND = ""
+
+#: Width of ``decision_acceptances.accepter_session``. Stated here so a caller
+#: can refuse a longer id rather than hand Postgres a truncation error.
+ACCEPTER_SESSION_MAX = 64
 
 #: What fixes a :func:`machine_grant_blocker` refusal, kept beside the blocker
 #: the way every other refusal here separates the two.

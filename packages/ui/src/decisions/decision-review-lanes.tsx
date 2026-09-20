@@ -410,13 +410,13 @@ function DecisionLaneRow({
 }
 
 /**
- * Who signed, marked only where it is not a person.
+ * Who signed the row's current authority record, marked only where it is not
+ * a person.
  *
- * A person accepting is the case this surface was built for and carries no
- * badge. An agent's acceptance and an import both need one, because the
- * `accepter` string alone reads as a name and a reader would take it for a
- * colleague's. An unrecorded kind is marked too: it is a row from before the
- * column, and letting it render as nothing would read as "a person did this".
+ * A person is the case this surface was built for and carries no badge. An
+ * agent and an import both need one: the `accepter` string alone reads as a
+ * name and a reader would take it for a colleague's. An unrecorded kind is
+ * marked too, because rendering nothing would read as "a person did this".
  */
 function SignatureMark({ decision }: { decision: DecisionRecord }) {
   const kind = decision.accepter_kind;

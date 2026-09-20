@@ -10,9 +10,11 @@ not cover. Every review action goes through it, so no caller can invent a
 shortcut past the reason/scope/evidence/identity/kind requirement.
 
 The six review verbs below default ``kind`` to ``person`` because that is what
-they are: the verbs a human review surface calls. A machine surface names its
-own kind, and ``record_acceptance`` itself has no default at all, so no path
-into the log reaches ``person`` without someone writing the word.
+they are: the verbs a human review surface calls. ``record_acceptance`` itself
+has no default, so no caller reaches the log without naming a kind. The
+default is a convention for the human surfaces and not a check on them: what
+stops an agent signing as a person is that it says ``--agent``, not anything
+enforceable here.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import (
     ACCEPTANCE_ACTIONS,
+    ACCEPTER_SESSION_MAX,
     AGREEMENT_KIND,
     AGREEMENT_SCOPE,
     NO_SCOPE_BLOCKER,
@@ -571,6 +574,11 @@ async def record_acceptance(
     for check in (
         accepter_kind_blocker(kind),
         machine_grant_blocker(kind, action, granted=agent_acceptance),
+        # Bounded here rather than left to the column, which SQLite ignores and
+        # Postgres turns into a truncation error instead of a refusal.
+        f"accepter session is longer than {ACCEPTER_SESSION_MAX} characters"
+        if len(accepter_session) > ACCEPTER_SESSION_MAX
+        else None,
     ):
         if check:
             blockers.append(check)

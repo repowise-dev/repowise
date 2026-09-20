@@ -140,7 +140,7 @@ review as though they were the team's.
 |---------|-----------------|
 | `decision confirm ID...` | Accept, optionally editing the reason and scope on the way. Takes many ids. |
 | `decision confirm ID` on a decision | Reaffirm it after review. |
-| `decision confirm ID --agent SLUG` | An agent accepting as itself. Refused unless the repository allows it. |
+| `decision confirm\|dismiss\|deprecate ID --agent SLUG` | A machine signing as itself. Only `confirm` needs the repository's permission. |
 | `decision merge ID INTO_ID` | Fold a candidate into an existing decision. The old id resolves to the target. |
 | `decision dedupe` | Fold candidates that duplicate another candidate, in one sweep. Dry run until `--apply`. |
 | `decision split ID` | Flag a candidate as bundling two choices. Never splits it for you. |
@@ -496,12 +496,20 @@ repowise decision config agent-acceptance --on   # off by default
 repowise decision confirm ID --agent claude_code --session $SESSION_ID
 ```
 
-`--agent` takes the agent's slug and is refused without the switch. What it
+`--agent` takes the agent's slug and is accepted by `confirm`, `dismiss` and
+`deprecate` alike — withdrawing needs no switch, so it is the action an agent
+is likeliest to take, and the one it would otherwise take under your name. On
+`confirm` it is refused without the switch. What it
 records is visibly an agent's: `decision show --format json` returns
 `accepted_by` with the kind and the session, the API carries `accepter_kind`
-on every decision row, and the dashboard badges any acceptance a person did
-not sign. A row written before these columns existed reads as `unrecorded`,
-not as a person's — those are the two things the field exists to keep apart.
+on every decision row, and the dashboard badges any authority record a person
+did not sign. A row written before these columns existed reads as
+`unrecorded`, not as a person's — those are the two things the field exists to
+keep apart.
+
+The same log records withdrawals, so what is shown is who *signed*, never that
+they accepted. A record the evolution stage retired reads "Signed by an agent"
+beside a superseded status, not "accepted by" anything.
 
 ## Session-mined decisions
 

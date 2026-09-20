@@ -1128,8 +1128,10 @@ async def _why_path(query: str, repo: str | None) -> dict:
             result_data["candidates_note"] = (
                 f"{len(candidates)} candidate(s) mention this path and none of them "
                 "govern it. Nobody has accepted them, so they are a review "
-                "request, not a rule. Accept one with "
-                "`repowise decision confirm <id> --scope <path>`."
+                "request, not a rule. A person accepts one with "
+                "`repowise decision confirm <id> --scope <path>`; if you are "
+                "an agent, add `--agent <your slug>` so the acceptance is not "
+                "recorded under their name."
             )
 
         if retired:

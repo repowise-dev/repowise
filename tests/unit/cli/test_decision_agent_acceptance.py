@@ -27,7 +27,11 @@ def repo(tmp_path: Path) -> Path:
     path.mkdir()
     (path / ".repowise").mkdir()
     _seed_wiki_db(
-        path, [{"id": _ID, "title": "Use JWT", "status": "proposed", "source": "pr"}]
+        path,
+        [
+            {"id": _ID, "title": "Use JWT", "status": "proposed", "source": "pr"},
+            {"id": "b" * 32, "title": "Use Postgres", "status": "proposed", "source": "pr"},
+        ],
     )
     return path
 
@@ -50,13 +54,14 @@ def test_an_agent_is_refused_on_a_repository_that_did_not_allow_it(repo: Path) -
     assert "agent-acceptance --on" in payload["remedy"]
 
 
-def test_the_refusal_does_not_send_an_agent_looking_for_a_missing_field(
-    repo: Path,
-) -> None:
-    """The record is complete. Naming --scope here sends it hunting for a gap."""
+def test_the_refusal_leads_with_the_switch_it_was_refused_by(repo: Path) -> None:
+    """The flags remedy stays, because one run can refuse two ids for two
+    reasons, but it must not be the first thing an agent reads: nothing is
+    missing from this record."""
     result = _run(repo, "confirm", "aaaa", "--agent", "claude_code")
 
-    assert "--scope" not in json.loads(result.output)["remedy"]
+    remedy = json.loads(result.output)["remedy"]
+    assert remedy.startswith("Allow it with")
 
 
 def test_an_allowed_agent_signs_as_itself(repo: Path) -> None:
@@ -85,6 +90,56 @@ def test_confirming_without_the_flag_still_signs_as_a_person(repo: Path) -> None
 
 def test_a_candidate_reports_no_signer(repo: Path) -> None:
     assert json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"] is None
+
+
+def test_a_batch_refusal_still_names_the_switch(repo: Path) -> None:
+    """The remedy reached only the one-id path, so a scripted confirm of two
+    ids was refused without ever being told which switch to turn on."""
+    result = _run(repo, "confirm", "aaaa", "bbbb", "--agent", "claude_code")
+
+    assert result.exit_code == 1, result.output
+    assert "agent-acceptance --on" in json.loads(result.output)["remedy"]
+
+
+def test_a_withdrawal_is_not_reported_as_an_acceptance(repo: Path) -> None:
+    """The same log records both, so the verb comes from the action."""
+    _allow_agents(repo)
+    assert _run(repo, "confirm", "aaaa").exit_code == 0
+    assert _run(repo, "dismiss", "aaaa", "--yes").exit_code == 0
+
+    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"]
+    assert signed["verb"] == "Dismissed"
+    assert signed["action"] == "dismissed"
+
+
+def test_an_agent_signs_its_withdrawals_without_the_switch(repo: Path) -> None:
+    """Withdrawing needs no policy, so it is the action an agent is most
+    likely to take — and the one it would otherwise take under your name."""
+    assert _run(repo, "confirm", "aaaa").exit_code == 0
+
+    result = _run(repo, "dismiss", "aaaa", "--yes", "--agent", "claude_code", "--session", "s-9")
+    assert result.exit_code == 0, result.output
+
+    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"]
+    assert (signed["kind"], signed["accepter"], signed["session"]) == (
+        "agent",
+        "claude_code",
+        "s-9",
+    )
+    assert signed["verb"] == "Dismissed"
+
+
+def test_an_agent_signs_a_supersession(repo: Path) -> None:
+    assert _run(repo, "confirm", "aaaa").exit_code == 0
+    assert _run(repo, "confirm", "bbbb").exit_code == 0
+
+    result = _run(
+        repo, "deprecate", "aaaa", "--superseded-by", "bbbb", "--agent", "claude_code"
+    )
+    assert result.exit_code == 0, result.output
+
+    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"]
+    assert (signed["kind"], signed["verb"]) == ("agent", "Superseded")
 
 
 @pytest.mark.parametrize(

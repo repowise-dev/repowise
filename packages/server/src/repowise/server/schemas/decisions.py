@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from repowise.core.analysis.decisions.lifecycle import ARCHITECTURAL_KIND, DECISION_KINDS
+from repowise.core.analysis.decisions.lifecycle import DECISION_KINDS
 from repowise.core.analysis.decisions.policy import DISCOVERY_BOUNDS
 from repowise.core.analysis.decisions.scope import derive_decision_scope
 
@@ -151,9 +151,10 @@ class DecisionLaneCountsResponse(BaseModel):
 class DecisionCreate(BaseModel):
     title: str
     # An agreement governs the repository and names no file, so without this
-    # field the route could only ever create the checkable noun and an
-    # agreement posted here was stored unacceptable.
-    kind: Literal[DECISION_KINDS] = ARCHITECTURAL_KIND
+    # field the route could only ever create the checkable noun. ``None``
+    # states no opinion and leaves an existing record's noun alone; a client
+    # that predates the split must not silently un-agree a stored agreement.
+    kind: Literal[DECISION_KINDS] | None = None
     context: str = ""
     decision: str = ""
     rationale: str = ""

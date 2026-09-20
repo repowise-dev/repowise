@@ -1012,6 +1012,7 @@ repowise decision add --kind agreement  # a rule about how the work is done
 repowise decision candidates [PATH]     # what is awaiting review; these govern nothing
 repowise decision confirm ID... [PATH]  # accept candidates: this is what makes them govern
 repowise decision confirm ID --agent SLUG  # an agent signing as itself, not as you
+                                        #   (also on dismiss and deprecate)
 repowise decision dismiss ID... [PATH]  # tombstone them (sticky; never re-proposed)
 repowise decision merge ID INTO_ID      # fold a candidate into an existing decision
 repowise decision dedupe [PATH]         # fold candidates that duplicate another candidate (dry run by default)

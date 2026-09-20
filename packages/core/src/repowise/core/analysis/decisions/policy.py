@@ -399,7 +399,13 @@ class DecisionPolicy:
     # -- projections -----------------------------------------------------
 
     def preset_name(self) -> str:
-        """The preset this policy equals, or ``custom``."""
+        """The preset this policy's *capture* equals, or ``custom``.
+
+        ``agent_acceptance`` is deliberately not read: it is authority, not
+        source membership, so counting it would make one switch drop the
+        stored ``preset:`` key and with it the pinning that keeps a source
+        added in a later release switched off.
+        """
         for name, spec in PRESETS.items():
             if (
                 self.enabled == spec["enabled"]
@@ -407,7 +413,6 @@ class DecisionPolicy:
                 and self.sources == spec["sources"]
                 and self.discovery == _DEFAULT_DISCOVERY
                 and self.harnesses == DEFAULT_HARNESSES
-                and not self.agent_acceptance
             ):
                 return name
         return "custom"

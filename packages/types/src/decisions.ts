@@ -209,10 +209,15 @@ export const ACCEPTER_KINDS = ["person", "agent", "import"] as const;
 
 export type AccepterKind = (typeof ACCEPTER_KINDS)[number];
 
+/**
+ * Worded for the signature, not for the action. The same row records a
+ * withdrawal — the evolution stage retires records as `agent` — so a label
+ * saying "accepted" would present a revocation as a grant.
+ */
 export const ACCEPTER_KIND_LABELS: Record<AccepterKind, string> = {
-  person: "Accepted by a person",
-  agent: "Accepted by an agent",
-  import: "Imported from a tracked artifact",
+  person: "Signed by a person",
+  agent: "Signed by an agent",
+  import: "Signed by a tracked artifact",
 };
 
 /** Currencies that still bind future work. A moved decision is one to re-read. */
@@ -312,6 +317,11 @@ export interface EvidencePreview {
 
 export interface DecisionCreateInput {
   title: string;
+  /**
+   * Omit to state no opinion: the engine then leaves an existing record's
+   * noun alone rather than defaulting it back to `architectural`.
+   */
+  kind?: DecisionKind;
   context?: string;
   decision?: string;
   rationale?: string;

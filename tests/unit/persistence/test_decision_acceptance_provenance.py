@@ -14,6 +14,7 @@ from sqlalchemy import delete, select
 
 from repowise.core.analysis.decisions.lifecycle import (
     ACCEPTER_KINDS,
+    ACCEPTER_SESSION_MAX,
     GRANTING_ACTIONS,
     accepter_kind_blocker,
     machine_grant_blocker,
@@ -178,6 +179,30 @@ async def test_the_switch_does_not_loosen_a_person_or_an_import(async_session):
             assert granted is None
             if kind != "agent":
                 assert ungranted is None
+
+
+async def test_an_oversized_session_is_refused_not_truncated(async_session):
+    """SQLite ignores the width and Postgres raises; both are worse than a refusal."""
+    repo = await insert_repo(async_session)
+    rec = await _seed(async_session, repo.id, "Use Redis")
+
+    with pytest.raises(AcceptanceRefusedError, match="accepter session is longer"):
+        await accept_decision(
+            async_session,
+            rec,
+            accepter="claude_code",
+            kind="agent",
+            accepter_session="x" * (ACCEPTER_SESSION_MAX + 1),
+            agent_acceptance=True,
+        )
+    assert await latest_acceptance(async_session, rec.id) is None
+
+
+def test_the_session_bound_matches_the_column_it_protects():
+    from repowise.core.persistence.models import DecisionAcceptance
+
+    width = DecisionAcceptance.__table__.c.accepter_session.type.length
+    assert width == ACCEPTER_SESSION_MAX
 
 
 def test_every_named_kind_is_storable_and_the_empty_one_is_not():

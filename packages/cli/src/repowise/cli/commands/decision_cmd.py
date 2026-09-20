@@ -22,6 +22,7 @@ from repowise.cli.helpers import (
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
 from repowise.core.agents.identity import is_agent_slug
 from repowise.core.analysis.decisions.lifecycle import (
+    ACCEPTER_SESSION_MAX,
     AGENT_ACCEPTANCE_REMEDY,
     AGREEMENT_KIND,
     ARCHITECTURAL_KIND,
@@ -59,7 +60,9 @@ def _describe_signature(acceptance) -> dict[str, str] | None:
     """Who signed *acceptance*, as a label and its parts. ``None`` for a candidate.
 
     A row with no stored kind reads as ``unrecorded`` rather than as a
-    person's: those are the two things the field exists to keep apart.
+    person's: those are the two things the field exists to keep apart. The
+    verb comes from the action, because the same log records withdrawals and
+    "accepted by" would present one as a grant.
     """
     if acceptance is None:
         return None
@@ -70,11 +73,47 @@ def _describe_signature(acceptance) -> dict[str, str] | None:
         label += f", session {acceptance.accepter_session}"
     return {
         "label": label,
+        "verb": acceptance.action.replace("_", " ").capitalize(),
         "accepter": who,
         "kind": kind,
         "session": acceptance.accepter_session,
         "action": acceptance.action,
     }
+
+
+def _signer(agent: str, agent_session: str, *, accepter: str = "") -> tuple[str, str]:
+    """Validate the signing flags and return ``(kind, accepter_session)``.
+
+    Shared by every verb that appends to the acceptance log, so an agent can
+    say it is one wherever it can act. Without ``--agent`` the kind is
+    ``person``, because the identity would resolve to the repository's git
+    name and a person's is what it would be.
+    """
+    if agent and accepter:
+        raise click.ClickException("Pass --agent or --as, not both: they name different signers.")
+    if agent and not is_agent_slug(agent):
+        raise click.ClickException(
+            f"{agent!r} is not a well-formed agent slug (lowercase, digits and underscores)."
+        )
+    if agent_session and not agent:
+        raise click.ClickException("--session names the agent signing; pass --agent too.")
+    if len(agent_session) > ACCEPTER_SESSION_MAX:
+        raise click.ClickException(f"--session is at most {ACCEPTER_SESSION_MAX} characters.")
+    return ("agent" if agent else "person"), agent_session
+
+
+#: The two flags an agent signs with. Added to every verb that writes an
+#: authority row, not only the one the policy gates: withdrawing needs no
+#: switch, so it is the action an agent is most likely to take unsigned.
+def _signing_options(command):
+    command = click.option(
+        "--session", "agent_session", default="", help="The agent session signing."
+    )(command)
+    return click.option(
+        "--agent",
+        default="",
+        help="Sign as this agent (e.g. claude_code) rather than as a person.",
+    )(command)
 
 
 def _load_policy(repo_path: Path):
@@ -675,7 +714,7 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     # A candidate has no line here at all: "not accepted" is what the absence
     # of an acceptance row says, and status already carries it.
     if signed:
-        lines.append(f"Accepted by: {signed['label']}")
+        lines.append(f"{signed['verb']} by: {signed['label']}")
     lines.append("")
     if rec.context:
         lines.append(f"[cyan]Context:[/cyan] {rec.context}")
@@ -842,7 +881,9 @@ async def _review_batch(repo_path, tokens, *, action: str, verb: str, preview: b
     return results
 
 
-def _emit_batch(results: list[dict], action: str, verb: str, preview: bool, fmt: str) -> None:
+def _emit_batch(
+    results: list[dict], action: str, verb: str, preview: bool, fmt: str, remedy: str = ""
+) -> None:
     """Report a multi-id run, exiting non-zero when any id was refused."""
     failed = [r for r in results if not r["ok"]]
     if fmt == "json":
@@ -853,6 +894,9 @@ def _emit_batch(results: list[dict], action: str, verb: str, preview: bool, fmt:
                 "results": results,
                 "succeeded": len(results) - len(failed),
                 "failed": len(failed),
+                # Named once for the run rather than per row: every refusal
+                # here is the same verb refusing for one of the same reasons.
+                **({"remedy": remedy} if failed and remedy else {}),
             }
         )
         if failed:
@@ -870,6 +914,8 @@ def _emit_batch(results: list[dict], action: str, verb: str, preview: bool, fmt:
     if preview:
         console.print("[dim]Nothing was written. Re-run without --preview.[/dim]")
     if failed:
+        if remedy:
+            console.print(f"[dim]{remedy}[/dim]")
         raise click.exceptions.Exit(1)
 
 
@@ -916,12 +962,7 @@ def _emit_single(result: dict, token: str, verb: str, fmt: str, note: str, remed
     help="Commit, file or link the decision rests on. Repeatable.",
 )
 @click.option("--as", "accepter", default="", help="Record a different accepter identity.")
-@click.option(
-    "--agent",
-    default="",
-    help="Sign as this agent (e.g. claude_code) rather than as a person.",
-)
-@click.option("--session", "agent_session", default="", help="The agent session signing.")
+@_signing_options
 @click.option(
     "--preview", is_flag=True, default=False, help="Report what each id would do, and write nothing."
 )
@@ -956,15 +997,7 @@ def decision_confirm(
     ids, path = _split_ids_and_path(decision_ids)
     repo_path = _resolve_decision_repo(path, fmt)
 
-    if agent and accepter:
-        raise click.ClickException("Pass --agent or --as, not both: they name different signers.")
-    if agent and not is_agent_slug(agent):
-        raise click.ClickException(
-            f"{agent!r} is not a well-formed agent slug (lowercase, digits and underscores)."
-        )
-    if agent_session and not agent:
-        raise click.ClickException("--session names the agent signing; pass --agent too.")
-
+    kind, signing_session = _signer(agent, agent_session, accepter=accepter)
     granted = _load_policy(repo_path).agent_acceptance if agent else False
 
     async def _accept(session, rec) -> None:
@@ -975,8 +1008,8 @@ def decision_confirm(
             session,
             rec,
             accepter=agent or resolve_accepter(repo_path, override=accepter),
-            kind="agent" if agent else "person",
-            accepter_session=agent_session,
+            kind=kind,
+            accepter_session=signing_session,
             agent_acceptance=granted,
             reason=reason,
             scope=list(scope) or None,
@@ -988,12 +1021,15 @@ def decision_confirm(
             repo_path, ids, action="accepted", verb="accept", preview=preview, apply_one=_accept
         )
     )
+    # An agent refused for want of the switch cannot fix that with --scope, so
+    # it is told about the switch as well. Both, not either: the same run can
+    # refuse one id for the policy and another for a missing scope.
+    remedy = _ACCEPT_REMEDY
+    if agent and not granted:
+        remedy = f"{AGENT_ACCEPTANCE_REMEDY} {remedy}"
     if len(ids) > 1 or preview:
-        _emit_batch(results, "accepted", "accept", preview, fmt)
+        _emit_batch(results, "accepted", "accept", preview, fmt, remedy)
         return
-    # An agent refused for want of the switch cannot fix it with --scope, and
-    # the flags remedy sends it looking for a gap in the record that is not there.
-    remedy = AGENT_ACCEPTANCE_REMEDY if (agent and not granted) else _ACCEPT_REMEDY
     _emit_single(results[0], ids[0], "accept", fmt, "(governing)", remedy)
 
 
@@ -1001,12 +1037,19 @@ def decision_confirm(
 @click.argument("decision_ids", nargs=-1, required=True)
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip the confirmation prompt.")
 @click.option("--reason", default="", help="Why it was tombstoned.")
+@_signing_options
 @click.option(
     "--preview", is_flag=True, default=False, help="Report what each id would do, and write nothing."
 )
 @format_option()
 def decision_dismiss(
-    decision_ids: tuple[str, ...], yes: bool, reason: str, preview: bool, fmt: str
+    decision_ids: tuple[str, ...],
+    yes: bool,
+    reason: str,
+    agent: str,
+    agent_session: str,
+    preview: bool,
+    fmt: str,
 ) -> None:
     """Dismiss proposed decisions (kept as tombstones; never re-proposed).
 
@@ -1014,6 +1057,7 @@ def decision_dismiss(
     """
     ids, path = _split_ids_and_path(decision_ids)
     repo_path = _resolve_decision_repo(path, fmt)
+    kind, signing_session = _signer(agent, agent_session)
 
     # A machine-readable invocation is non-interactive by construction: the
     # prompt read EOF and aborted every scripted dismissal.
@@ -1026,7 +1070,14 @@ def decision_dismiss(
         from repowise.core.analysis.decisions.accepter import resolve_accepter
         from repowise.core.persistence.crud.authority import dismiss_candidate
 
-        await dismiss_candidate(session, rec, reason=reason, accepter=resolve_accepter(repo_path))
+        await dismiss_candidate(
+            session,
+            rec,
+            reason=reason,
+            accepter=agent or resolve_accepter(repo_path),
+            kind=kind,
+            accepter_session=signing_session,
+        )
 
     results = run_async(
         _review_batch(
@@ -1055,9 +1106,15 @@ def decision_dismiss(
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
 @click.option("--superseded-by", default=None, help="ID of the decision that replaces this one.")
+@_signing_options
 @format_option()
 def decision_deprecate(
-    decision_id: str, path: str | None, superseded_by: str | None, fmt: str
+    decision_id: str,
+    path: str | None,
+    superseded_by: str | None,
+    agent: str,
+    agent_session: str,
+    fmt: str,
 ) -> None:
     """Retire a decision, optionally naming the one that replaces it.
 
@@ -1066,6 +1123,7 @@ def decision_deprecate(
     exists because somebody named the successor.
     """
     repo_path = _resolve_decision_repo(path, fmt)
+    kind, signing_session = _signer(agent, agent_session)
 
     async def _update():
         from repowise.core.analysis.decisions.accepter import resolve_accepter
@@ -1112,7 +1170,9 @@ def decision_deprecate(
                             session,
                             rec,
                             successor_id=successor,
-                            accepter=resolve_accepter(repo_path),
+                            accepter=agent or resolve_accepter(repo_path),
+                            kind=kind,
+                            accepter_session=signing_session,
                         )
                     except (AcceptanceRefusedError, ValueError) as exc:
                         emit_refusal("supersede_refused", str(exc), fmt, decision_id=rec.id)

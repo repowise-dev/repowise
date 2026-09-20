@@ -177,3 +177,82 @@ async def test_a_capture_preset_does_not_revoke_the_agent_grant(
 
     assert after.status_code == 200, after.text
     assert after.json()["agent_acceptance"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_agreement_body_cannot_clear_a_governed_decision(
+    client: AsyncClient,
+) -> None:
+    """The 409 asks what the record would lose, not what the body claims.
+
+    ``kind: agreement`` says "this names no file because it governs the
+    repository". Letting that satisfy the guard would let it be said *about a
+    record that does govern files*, whose scope the restate then clears while
+    its acceptance row survives.
+    """
+    repo = await create_test_repo(client)
+    first = await client.post(
+        f"/api/repos/{repo['id']}/decisions",
+        json={
+            "title": "Use Postgres",
+            "decision": "postgres",
+            "rationale": "because",
+            "affected_files": ["db/engine.py"],
+        },
+    )
+    assert first.json()["accepter_kind"] == "person"
+
+    clash = await client.post(
+        f"/api/repos/{repo['id']}/decisions",
+        json={"title": "Use Postgres", "kind": "agreement", "decision": "x", "rationale": "y"},
+    )
+
+    assert clash.status_code == 409, clash.text
+    still = (
+        await client.get(f"/api/repos/{repo['id']}/decisions/{first.json()['id']}")
+    ).json()
+    assert still["affected_files"] == ["db/engine.py"]
+    assert still["kind"] == "architectural"
+
+
+@pytest.mark.asyncio
+async def test_a_body_naming_no_kind_leaves_a_stored_agreement_alone(
+    client: AsyncClient,
+) -> None:
+    """A client that predates the split must not silently un-agree one."""
+    repo = await create_test_repo(client)
+    created = await client.post(
+        f"/api/repos/{repo['id']}/decisions",
+        json={
+            "title": "Commit on a branch",
+            "kind": "agreement",
+            "decision": "branch first",
+            "rationale": "main is protected",
+        },
+    )
+    assert created.json()["kind"] == "agreement"
+
+    restated = await client.post(
+        f"/api/repos/{repo['id']}/decisions",
+        json={"title": "Commit on a branch", "decision": "branch first", "rationale": "fixed typo"},
+    )
+
+    assert restated.status_code == 201, restated.text
+    assert restated.json()["kind"] == "agreement"
+
+
+@pytest.mark.asyncio
+async def test_a_detail_row_carries_its_currency_beside_its_signature(
+    client: AsyncClient, app
+) -> None:
+    """Both or neither: a consumer reading a null currency as "candidate" would
+    otherwise call an accepted decision one and then find a signature on it."""
+    repo = await create_test_repo(client)
+    decision_id = await _accepted(
+        app.state.session_factory, repo["id"], title="A rule", accepter="Raghav", kind="person"
+    )
+
+    row = (await client.get(f"/api/repos/{repo['id']}/decisions/{decision_id}")).json()
+
+    assert row["currency"] == "active"
+    assert row["accepter_kind"] == "person"

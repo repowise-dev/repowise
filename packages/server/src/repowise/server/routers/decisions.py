@@ -10,7 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import AGREEMENT_KIND, is_governing
+from repowise.core.analysis.decisions.lifecycle import (
+    AGREEMENT_KIND,
+    ARCHITECTURAL_KIND,
+    is_governing,
+)
 from repowise.core.persistence import crud, decision_graph
 from repowise.core.persistence.models import DecisionEvidence
 from repowise.server.deps import get_db_session, verify_api_key
@@ -57,8 +61,14 @@ def _attach_signature(item: DecisionRecordResponse, signature) -> None:
 
 
 async def _one_with_signature(session, repo_id: str, rec) -> DecisionRecordResponse:
-    """One record, carrying who signed its current acceptance."""
+    """One record, carrying its authority and who granted it.
+
+    Both, never one: a consumer told that a null ``currency`` means candidate
+    would otherwise read an accepted decision off these routes as one and then
+    find a signature on it.
+    """
     item = DecisionRecordResponse.from_orm(rec)
+    item.currency = (await crud.decision_currencies(session, repo_id, [rec])).get(rec.id)
     signatures = await crud.decision_signatures(session, repo_id, [rec])
     _attach_signature(item, signatures.get(rec.id))
     return item
@@ -586,11 +596,21 @@ async def create_decision(
     existing = await crud.find_decision_by_title(
         session, repo_id, body.title, source="cli"
     )
+    named = bool(body.affected_files or body.affected_modules)
+    # The noun to record: what this body says, or what the record already is.
+    # A body that names no kind must not un-agree a stored agreement.
+    kind = body.kind or (existing.kind if existing is not None else ARCHITECTURAL_KIND)
     # An agreement's scope is the repository, which is why it names no file.
     # Requiring one of it would leave the noun permanently unacceptable.
-    scoped = bool(body.affected_files or body.affected_modules) or body.kind == AGREEMENT_KIND
-    if existing is not None and not scoped and await crud.is_accepted(
-        session, existing.id
+    scoped = named or kind == AGREEMENT_KIND
+    # The guard asks what the stored record would lose, not what this body
+    # claims: an agreement in the body must not disarm it over a decision that
+    # does govern files.
+    if (
+        existing is not None
+        and not named
+        and existing.kind != AGREEMENT_KIND
+        and await crud.is_accepted(session, existing.id)
     ):
         raise HTTPException(
             status_code=409,
@@ -615,6 +635,8 @@ async def create_decision(
         affected_files=body.affected_files,
         affected_modules=body.affected_modules,
         tags=body.tags,
+        # None on purpose when the body named none: ``upsert_decision`` leaves
+        # an existing record's noun alone rather than defaulting it back.
         kind=body.kind,
         source="cli",
         # No confidence: upsert_decision scores a manual entry.

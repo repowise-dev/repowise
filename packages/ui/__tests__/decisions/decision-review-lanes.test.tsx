@@ -272,7 +272,7 @@ describe("who signed is marked where it is not a person", () => {
       ],
     });
 
-    expect(rows().queryByText(/Accepted by/)).not.toBeInTheDocument();
+    expect(rows().queryByText(/Signed by/)).not.toBeInTheDocument();
   });
 
   it("names an agent, and the session behind it", () => {
@@ -287,12 +287,29 @@ describe("who signed is marked where it is not a person", () => {
       ],
     });
 
-    const mark = rows().getByText("Accepted by an agent");
+    const mark = rows().getByText("Signed by an agent");
     expect(mark).toBeInTheDocument();
     expect(mark).toHaveAttribute(
       "title",
-      "Accepted by an agent: claude_code, session sess-42",
+      "Signed by an agent: claude_code, session sess-42",
     );
+  });
+
+  it("does not call a machine withdrawal an acceptance", () => {
+    // The evolution stage retires records as `agent`, so the badge on a
+    // history row is over a revocation, not a grant.
+    renderLanes("history", {
+      decisions: [
+        record({
+          currency: "superseded",
+          accepter: "evolution",
+          accepter_kind: "agent",
+        }),
+      ],
+    });
+
+    expect(rows().queryByText(/Accepted by/)).not.toBeInTheDocument();
+    expect(rows().getByText("Signed by an agent")).toBeInTheDocument();
   });
 
   it("marks a row written before the kind was recorded", () => {
@@ -309,7 +326,7 @@ describe("who signed is marked where it is not a person", () => {
   it("says nothing about a candidate, which nobody signed", () => {
     renderLanes("candidates", { decisions: [record({ currency: null })] });
 
-    expect(rows().queryByText(/Accepted by/)).not.toBeInTheDocument();
+    expect(rows().queryByText(/Signed by/)).not.toBeInTheDocument();
     expect(rows().queryByText("Signer not recorded")).not.toBeInTheDocument();
   });
 });
