@@ -693,6 +693,8 @@ class TestDeleteWithConfiguredDb:
                 await upsert_repository(session, name="repo", local_path=str(dest.resolve()))
             await engine.dispose()
 
+        import asyncio
+
         asyncio.run(seed())
 
         result = runner.invoke(
@@ -843,6 +845,97 @@ class TestWorkspaceListWithConfiguredDb:
         assert "0/2 repos indexed" in result.output
         assert result.output.count("not indexed") == 2
 
+    def test_a_shared_db_row_still_gets_its_staleness_evaluated(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """A row that used to short-circuit to "not indexed" now reaches the
+        staleness check, so ``N new commit(s)`` has to render for it.
+
+        ``check_repo_staleness`` is called only on the indexed branch. Before
+        this fix a shared-database member never got there, so its staleness was
+        never evaluated and the column could not report it. Recorded commit
+        behind HEAD is the ordinary case: a member indexed, then moved on.
+        """
+        import yaml as _yaml
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+        from repowise.core.persistence.models import GraphNode, _new_uuid
+
+        ws_root = tmp_path / "workspace"
+        ws_root.mkdir()
+        repo = ws_root / "service-a"
+        repo.mkdir()
+        _git(["init"], repo)
+        (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+        _git(["add", "-A"], repo)
+        _git(["commit", "-m", "first"], repo)
+        import subprocess as _sp
+
+        first = _sp.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
+        ).stdout.strip()
+        # Move HEAD on, so the recorded commit is now behind it.
+        (repo / "a.py").write_text("x = 2\n", encoding="utf-8")
+        _git(["add", "-A"], repo)
+        _git(["commit", "-m", "second"], repo)
+
+        (ws_root / ".repowise-workspace.yaml").write_text(
+            _yaml.dump(
+                {
+                    "version": 1,
+                    "default_repo": "service-a",
+                    "repos": [
+                        {
+                            "path": "service-a",
+                            "alias": "service-a",
+                            "last_commit_at_index": first,
+                        }
+                    ],
+                },
+                default_flow_style=False,
+            ),
+            encoding="utf-8",
+        )
+
+        db_path = tmp_path / "shared" / "wiki.db"
+        db_path.parent.mkdir()
+        url = f"sqlite+aiosqlite:///{db_path}"
+        monkeypatch.setenv("REPOWISE_DB_URL", url)
+
+        async def seed() -> None:
+            engine = create_engine(url)
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                row = await upsert_repository(
+                    session, name="service-a", local_path=str(repo.resolve())
+                )
+                session.add(
+                    GraphNode(
+                        id=_new_uuid(),
+                        repository_id=row.id,
+                        node_id="a.py",
+                        node_type="file",
+                    )
+                )
+            await engine.dispose()
+
+        import asyncio
+
+        asyncio.run(seed())
+
+        result = runner.invoke(cli, ["workspace", "list", str(ws_root)])
+        assert result.exit_code == 0, result.output
+        assert "not indexed" not in result.output
+        assert "1/1 repos indexed" in result.output
+        assert "new commit" in result.output
+
     def test_a_local_directory_is_not_the_verdict_when_a_db_is_configured(self, runner, shared_ws):
         """A leftover ``.repowise/`` is not an index: with a shared database
         configured, the store answers and a repo with no row stays unindexed."""
@@ -909,6 +1002,8 @@ class TestWorkspaceListWithConfiguredDb:
             async with get_session(sf) as session:
                 await upsert_repository(session, name="service-a", local_path=str(repo_a))
             await engine.dispose()
+
+        import asyncio
 
         import asyncio
 
