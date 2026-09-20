@@ -23,7 +23,7 @@ import json
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.analysis.decisions.scope import binds_to_paths, resolve_module_nodes
 
 from .models import DecisionEdge, DecisionNodeLink, DecisionRecord
 
@@ -37,6 +37,7 @@ __all__ = [
     "list_all_decision_edges",
     "list_conflict_edges",
     "list_decision_node_links",
+    "set_record_scope",
     "sync_decision_node_links",
     "sync_links_from_record",
     "upsert_decision_edge",
@@ -205,18 +206,42 @@ async def sync_decision_node_links(
 
 
 def expected_node_links(record: DecisionRecord) -> tuple[list[str], list[str]]:
-    """The (files, modules) *record*'s links should hold, given its basis.
+    """The (files, modules) *record*'s links should hold, given its state.
 
     One answer for both the writer and the backfill that checks it, so a
     record can never be judged against a rule other than the one that wrote
-    it. A basis that does not bind to paths links nothing.
+    it. A basis that does not bind to paths links nothing, and neither does a
+    dismissed record: the graph is what "governs this file" is read from, and
+    a withdrawn decision governs nothing.
     """
-    if not binds_to_paths(record.scope_basis):
+    if record.status == "dismissed" or not binds_to_paths(record.scope_basis):
         return [], []
     return (
         _json_list(record.affected_files_json),
         _json_list(record.affected_modules_json),
     )
+
+
+async def set_record_scope(
+    session: AsyncSession,
+    record: DecisionRecord,
+    files: list[str],
+    *,
+    basis: str | None = None,
+) -> None:
+    """Point *record* at *files*, deriving its modules, and relink the graph.
+
+    For every caller that takes a file list from outside — an accepter, a
+    manifest, a prune. The module array is derived here rather than left as
+    the caller found it, because a scope whose halves disagree links a record
+    to modules its files are no longer in, and mirroring is faithful to that
+    disagreement rather than a repair for it.
+    """
+    record.affected_files_json = json.dumps(files)
+    record.affected_modules_json = json.dumps(resolve_module_nodes(files))
+    if basis is not None:
+        record.scope_basis = basis
+    await sync_links_from_record(session, record)
 
 
 async def sync_links_from_record(session: AsyncSession, record: DecisionRecord) -> None:

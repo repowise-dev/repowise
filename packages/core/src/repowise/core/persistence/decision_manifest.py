@@ -37,7 +37,7 @@ from .crud.authority import (
     resolve_decision_id,
 )
 from .crud.decisions import _rederive_headline, list_decision_evidence
-from .decision_graph import sync_links_from_record
+from .decision_graph import set_record_scope
 from .models import DecisionAlias, DecisionRecord
 
 __all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
@@ -229,11 +229,11 @@ async def _apply_entry(
     else:
         record.confidence = _entry_confidence(entry)
     record.kind = entry.kind or ARCHITECTURAL_KIND
-    record.affected_files_json = json.dumps(sorted(_scope_files(entry.scope)))
     # The file is hand-authored and version controlled, so its scope is
     # stated: a record narrowed here binds to what the file says.
-    record.scope_basis = SCOPE_BASIS_STATED
-    await sync_links_from_record(session, record)
+    await set_record_scope(
+        session, record, sorted(_scope_files(entry.scope)), basis=SCOPE_BASIS_STATED
+    )
     # The successor is an id the file wrote down, and the file can be older
     # than the store it is being read into. Storing it unresolved would put a
     # retired id back into the column.
@@ -312,8 +312,6 @@ async def import_manifest(
                 rationale=entry.reason,
                 source=entry.source or "cli",
                 kind=entry.kind or ARCHITECTURAL_KIND,
-                affected_files_json=json.dumps(sorted(_scope_files(entry.scope))),
-                scope_basis=SCOPE_BASIS_STATED,
                 evidence_commits_json=json.dumps(sorted(entry.evidence)),
                 superseded_by=entry.superseded_by or None,
                 confidence=_entry_confidence(entry),
@@ -321,7 +319,9 @@ async def import_manifest(
             )
             session.add(record)
             await session.flush()
-            await sync_links_from_record(session, record)
+            await set_record_scope(
+                session, record, sorted(_scope_files(entry.scope)), basis=SCOPE_BASIS_STATED
+            )
         elif entry.id not in outcome.reaffirmed:
             outcome.accepted.append(entry.id)
             if dry_run:

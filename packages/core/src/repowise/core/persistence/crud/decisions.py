@@ -394,6 +394,8 @@ async def upsert_decision(
         alternatives_json=json.dumps(alternatives or []),
         consequences_json=json.dumps(consequences or []),
         affected_files_json=json.dumps(affected_files or []),
+        # Same claim as the restate arm: files the caller supplied are stated.
+        scope_basis=SCOPE_BASIS_STATED if affected_files else "",
         affected_modules_json=json.dumps(affected_modules or []),
         tags_json=json.dumps(tags or []),
         evidence_commits_json=json.dumps(evidence_commits or []),
@@ -1723,7 +1725,13 @@ async def recompute_decision_staleness(
         if affected:
             affected_by_id[dec.id] = affected
 
-    modules_updated = _backfill_module_nodes(decisions, affected_by_id)
+    remodelled = _backfill_module_nodes(decisions, affected_by_id)
+    modules_updated = len(remodelled)
+    # This repair runs after ``backfill_decision_node_links`` on both index
+    # paths, so a module array it rewrites here would otherwise keep the link
+    # the backfill had already judged correct.
+    for dec in remodelled:
+        await sync_links_from_record(session, dec)
     if not affected_by_id:
         if modules_updated:
             await session.flush()
@@ -1789,15 +1797,19 @@ async def recompute_decision_staleness(
 def _backfill_module_nodes(
     decisions: list[DecisionRecord],
     affected_by_id: dict[str, list[str]],
-) -> int:
-    """Re-derive each record's module linkage from its files. Returns rows moved.
+) -> list[DecisionRecord]:
+    """Re-derive each record's module linkage from its files.
+
+    Returns the records whose array moved, because the caller has to relink
+    each one: this rewrites half a record's scope and the graph holds the
+    other half.
 
     Records naming no file are left alone: there is nothing to derive from, and
     an invented scope is worse than an absent one.
     """
     from repowise.core.analysis.decisions.scope import resolve_module_nodes
 
-    moved = 0
+    moved = []
     for dec in decisions:
         affected = affected_by_id.get(dec.id)
         if not affected:
@@ -1805,7 +1817,7 @@ def _backfill_module_nodes(
         derived = resolve_module_nodes(affected)
         if derived != json.loads(dec.affected_modules_json or "[]"):
             dec.affected_modules_json = json.dumps(derived)
-            moved += 1
+            moved.append(dec)
     return moved
 
 

@@ -30,7 +30,6 @@ from repowise.core.analysis.decisions.lifecycle import (
 )
 from repowise.core.analysis.decisions.scope import (
     SCOPE_BASIS_FOOTPRINT,
-    resolve_module_nodes,
     session_scope_basis,
 )
 
@@ -44,6 +43,7 @@ from .crud.authority import (
 from .decision_graph import (
     DecisionNodeLink,
     expected_node_links,
+    set_record_scope,
     sync_links_from_record,
 )
 from .models import (
@@ -549,9 +549,6 @@ async def backfill_session_scope_basis(
     return changed
 
 
-#: Below this many indexed file nodes, the graph is treated as unbuilt rather
-#: than as evidence that a scope is wrong. Pruning against a graph that failed
-#: to build would empty every scope in the store, which is the one outcome
 async def backfill_decision_node_links(
     session: AsyncSession, repository_id: str
 ) -> int:
@@ -596,6 +593,9 @@ async def backfill_decision_node_links(
     return changed
 
 
+#: Below this many indexed file nodes, the graph is treated as unbuilt rather
+#: than as evidence that a scope is wrong. Pruning against a graph that failed
+#: to build would empty every scope in the store, which is the one outcome
 #: worse than the stale entries this removes.
 _MIN_GRAPH_NODES_TO_PRUNE = 50
 
@@ -652,12 +652,7 @@ async def prune_unindexed_scope_files(
         kept = [f for f in files if f in indexed]
         if len(kept) == len(files):
             continue
-        rec.affected_files_json = json.dumps(kept)
-        rec.affected_modules_json = json.dumps(resolve_module_nodes(kept))
-        # Replaces the links wholesale rather than deleting the dropped file
-        # rows: the recomputed module list moves with the files, and deleting
-        # by file id left it behind.
-        await sync_links_from_record(session, rec)
+        await set_record_scope(session, rec, kept)
         changed += 1
     if changed:
         await session.flush()
