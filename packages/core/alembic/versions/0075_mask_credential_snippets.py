@@ -14,8 +14,8 @@ line, and the line is still present in the repository.  The clearing is
 irreversible in this migration intentionally — the downgrade path would
 re-expose plaintext secrets, which is exactly the problem being fixed.
 
-Revision ID: 0067
-Revises: 0066
+Revision ID: 0075
+Revises: 0074
 Create Date: 2026-09-18
 """
 
@@ -27,8 +27,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
-revision: str = "0067"
-down_revision: str | None = "0066"
+revision: str = "0075"
+down_revision: str | None = "0074"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
