@@ -53,6 +53,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
     attach_ignored_arguments,
+    drop_echoed_target,
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
@@ -312,6 +313,7 @@ async def get_context(
             if cross_repo:
                 target_data["cross_repo"] = cross_repo
 
+    drop_echoed_target(response.get("targets"))
     attach_ignored_arguments(response, ignored)
     collector.attach(response)
     return response

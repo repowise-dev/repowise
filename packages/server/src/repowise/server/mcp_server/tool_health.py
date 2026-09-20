@@ -592,9 +592,12 @@ def _serialize_finding(f: HealthFinding, repository: str = "default") -> dict[st
         "biomarker_type": f.biomarker_type,
         "severity": f.severity,
         "file_path": f.file_path,
-        "function_name": f.function_name,
-        "line_start": f.line_start,
-        "line_end": f.line_end,
+        # A file-level finding has no symbol and no line span. Absent rather
+        # than null, on the same rule as ``rank`` below: three null keys on
+        # every such row is a bill, not a disclosure.
+        **({"function_name": f.function_name} if f.function_name else {}),
+        **({"line_start": f.line_start} if f.line_start is not None else {}),
+        **({"line_end": f.line_end} if f.line_end is not None else {}),
         "health_impact": round(f.health_impact, 3),
         "reason": f.reason,
         "details": details,

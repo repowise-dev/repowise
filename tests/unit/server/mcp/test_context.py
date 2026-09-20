@@ -459,7 +459,8 @@ async def test_batch_isolation_one_target_errors(setup_mcp, monkeypatch):
     # Failing target carries a per-target error entry (keyed on its target).
     assert "boom" in targets
     assert "error" in targets["boom"]
-    assert targets["boom"]["target"] == "boom"
+    # The map key is the target. The card no longer echoes it back as a field.
+    assert "target" not in targets["boom"]
 
 
 @pytest.mark.asyncio

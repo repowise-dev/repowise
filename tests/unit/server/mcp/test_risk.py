@@ -357,8 +357,12 @@ async def test_get_risk_test_compatibility_projection_cannot_contradict_typed_ro
     assert directive["tests_to_run_emitted"] == len(recommendations)
     assert directive["test_recommendations_emitted"] == len(recommendations)
     assert all(row["basis"] in {"measured", "inferred"} for row in recommendations)
-    assert all(row["basis"] in row["bases"] for row in recommendations)
-    assert all(row["repository_id"] == "repo1" for row in recommendations)
+    # ``bases`` rides only when it says something ``basis`` does not; absent
+    # means ``[basis]``. The repository is named once for the whole list rather
+    # than on every row.
+    assert all(row["basis"] in row.get("bases", [row["basis"]]) for row in recommendations)
+    assert all("repository_id" not in row for row in recommendations)
+    assert directive["test_recommendations_repository_id"] == "repo1"
 
 
 # ---- _classify_risk_type small-team calibration (issue #361) ---------------

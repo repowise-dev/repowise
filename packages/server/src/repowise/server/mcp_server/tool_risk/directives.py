@@ -448,6 +448,33 @@ def _governance_reason(dr: Any, currency: str, conflict_decision_ids: set[str]) 
     return None
 
 
+def _project_recommendation(row: dict[str, Any]) -> dict[str, Any]:
+    """Drop what a reader can rebuild from the row it ships beside.
+
+    ``analyze_test_impact`` builds ``source_files`` and ``bases`` by folding
+    ``evidence`` (``core/analysis/test_impact.py:256-270``), so on the wire they
+    are the same fact twice. ``test_file`` differs from ``test_id`` only for a
+    measured row whose id carries a ``::`` selector, and ``source_format`` is
+    None on every inferred row. The typed row core hands its own callers is
+    untouched; this is the projection get_risk emits.
+    """
+    out = {k: v for k, v in row.items() if k not in {"repository", "repository_id"}}
+    out.pop("source_files", None)
+    if out.get("bases") == [out.get("basis")]:
+        out.pop("bases", None)
+    if out.get("test_file") == out.get("test_id"):
+        out.pop("test_file", None)
+    evidence = out.get("evidence")
+    if isinstance(evidence, list):
+        out["evidence"] = [
+            {k: v for k, v in e.items() if not (k == "source_format" and v is None)}
+            if isinstance(e, dict)
+            else e
+            for e in evidence
+        ]
+    return out
+
+
 def _build_pr_directive(
     response: dict,
     pr_blast_radius: dict,
@@ -707,6 +734,18 @@ def _build_pr_directive(
             label=f"directive.{key} beyond cap={cap}",
             preserve_counts=(key in {"missing_tests", "tests_to_run", "test_recommendations"}),
         )
+
+    # Name the repository once instead of on every recommendation: both values
+    # are single arguments to ``analyze_test_impact``, so every row it builds
+    # carries the same pair by construction, not by coincidence.
+    emitted_recommendations = directive.get("test_recommendations") or []
+    if emitted_recommendations:
+        first = emitted_recommendations[0]
+        directive["test_recommendations_repository"] = first.get("repository")
+        directive["test_recommendations_repository_id"] = first.get("repository_id")
+        directive["test_recommendations"] = [
+            _project_recommendation(row) for row in emitted_recommendations
+        ]
 
     for key, total in (
         ("will_break_consumers", will_break_total),

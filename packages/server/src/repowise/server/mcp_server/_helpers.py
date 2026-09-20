@@ -775,3 +775,19 @@ def filter_embedded_path_ids(ids: list, spec: Any) -> list:
     if not spec:
         return ids
     return [i for i in ids if not is_excluded(i.split("::", 1)[0], spec)]
+
+
+def drop_echoed_target(targets: Any) -> None:
+    """Stop paying for a map key a second time inside its own value.
+
+    ``get_risk`` and ``get_context`` both build ``{r["target"]: r for r in
+    results}``, so the inner ``target`` is the key by construction. Every
+    internal consumer reads it off the card while the response is still being
+    assembled; this runs last, and the equality guard means a card that somehow
+    disagrees with its key keeps the field rather than losing it silently.
+    """
+    if not isinstance(targets, dict):
+        return
+    for key, card in targets.items():
+        if isinstance(card, dict) and card.get("target") == key:
+            card.pop("target", None)

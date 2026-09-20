@@ -24,6 +24,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
     attach_ignored_arguments,
+    drop_echoed_target,
     filter_path_list,
     filter_rows_by_attr,
     resolve_enum_argument,
@@ -337,6 +338,7 @@ async def get_risk(
         targets=[*targets, *(changed_files or [])] if targets or changed_files else None,
     )
     _drop_opt_in_blocks(response, include_set)
+    drop_echoed_target(response.get("targets"))
     attach_ignored_arguments(response, ignored)
     collector.attach(response)
     return response
