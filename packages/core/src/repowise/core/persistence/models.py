@@ -766,6 +766,39 @@ class GitCommit(Base):
     )
 
 
+class GitCommitFile(Base):
+    """One file a commit touched, and the lines it changed there.
+
+    The per-file detail ``GitCommit`` aggregates away. No change type:
+    ``--numstat`` gives paths and counts only.
+    """
+
+    __tablename__ = "git_commit_files"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "sha", "file_path", name="uq_git_commit_file"),
+        Index("ix_git_commit_files_repo_sha", "repository_id", "sha"),
+        Index("ix_git_commit_files_repo_path", "repository_id", "file_path"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # 0/0 is a real answer for a binary file, not missing data.
+    lines_added: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lines_deleted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
 class FixEvent(Base):
     """One bug-fix commit's effect on one file, with its bug-introducing candidates.
 

@@ -3,7 +3,7 @@ import { AskAboutThis } from "../chat/ask-about-this";
 import { AgentBadge, NewContributorBadge, isNewContributor } from "./agent-badge";
 import { PriorityBadge } from "./priority-badge";
 import { RiskDriverBreakdown, describeDriver } from "./risk-driver-breakdown";
-import { FixHistoryTable, type FixHistoryRow } from "./fix-history-table";
+import { CommitFilesTable } from "./commit-files-table";
 import { PageLede } from "../shared/page-lede";
 import { OverviewSection } from "../overview/section";
 import { formatDateTime } from "../lib/format";
@@ -11,12 +11,9 @@ import type { CommitDetail } from "@repowise-dev/types/git";
 
 export interface CommitDetailCardProps {
   commit: CommitDetail;
-  /**
-   * Bug-fix record of the files this commit touched, scored live from git.
-   * Absent on a server with no checkout, where the sheet falls back to the
-   * diff-shape reading alone.
-   */
-  fixHistory?: { files: FixHistoryRow[]; percentile: number | null } | null | undefined;
+  /** Rank of this change's fix density against recent commits, when a live
+   *  scorer supplied one. Drives only the reconciliation sentence. */
+  fixPercentile?: number | null | undefined;
   className?: string;
 }
 
@@ -29,11 +26,11 @@ export interface CommitDetailCardProps {
  */
 export function CommitDetailCard({
   commit,
-  fixHistory,
+  fixPercentile,
   className,
 }: CommitDetailCardProps) {
   const c = commit;
-  const fixFiles = fixHistory?.files ?? [];
+  const files = c.files ?? [];
 
   return (
     <div className={className}>
@@ -96,19 +93,19 @@ export function CommitDetailCard({
           badge={<PriorityBadge priority={c.review_priority} />}
         >
           <p>{riskSentence(c)}</p>
-          {reconcile(c, fixHistory?.percentile ?? null) && (
-            <p>{reconcile(c, fixHistory?.percentile ?? null)}</p>
+          {reconcile(c, fixPercentile ?? null) && (
+            <p>{reconcile(c, fixPercentile ?? null)}</p>
           )}
         </PageLede>
       </div>
 
-      {fixFiles.length > 0 && (
+      {files.length > 0 && (
         <OverviewSection
           className="mt-7"
           title="Where this change lands"
           description="The files this commit touched, and how much bug-fix history each one carries. Unlike the percentile above, this does not grow with the size of the diff."
         >
-          <FixHistoryTable files={fixFiles} />
+          <CommitFilesTable files={files} />
         </OverviewSection>
       )}
 

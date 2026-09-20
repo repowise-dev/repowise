@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _VALID_JOB_STATUSES = frozenset(
@@ -230,3 +230,29 @@ async def _batch_upsert_keyed(
                 session.add(obj)
                 by_key[key] = obj
         await session.flush()
+
+
+async def _batch_delete_in(
+    session: AsyncSession,
+    model: Any,
+    column: Any,
+    values: Iterable[str],
+    *,
+    prefilter: tuple = (),
+) -> int:
+    """Delete rows whose *column* is in *values*, chunked past SQLite's limit.
+
+    Returns how many were removed.
+    """
+    items = list(values)
+    removed = 0
+    for start in range(0, len(items), _BATCH_SIZE):
+        chunk = items[start : start + _BATCH_SIZE]
+        if not chunk:
+            continue
+        result = await session.execute(
+            delete(model).where(*prefilter, column.in_(chunk))
+        )
+        removed += int(result.rowcount or 0)
+    await session.flush()
+    return removed

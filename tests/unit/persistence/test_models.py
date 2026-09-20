@@ -301,6 +301,7 @@ def test_base_includes_all_models():
         "webhook_events",
         "wiki_symbols",
         "git_metadata",
+        "git_commit_files",
         "git_commits",
         "git_function_blame",
         "fix_events",

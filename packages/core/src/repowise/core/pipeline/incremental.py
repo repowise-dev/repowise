@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -1352,6 +1353,7 @@ async def persist_incremental_commits(
         get_latest_commit_committed_at,
         get_repository,
         update_repo_git_totals,
+        upsert_git_commit_files_bulk,
         upsert_git_commits_bulk,
     )
     from repowise.core.repo_config import load_repo_config
@@ -1378,9 +1380,19 @@ async def persist_incremental_commits(
         dt = newest if newest.tzinfo is not None else newest.replace(tzinfo=UTC)
         since_ts = int(dt.timestamp())
     with timed(timings, "persist.commits.capture"):
-        rows = await asyncio.to_thread(indexer.capture_new_commit_rows, since_ts=since_ts)
+        # One walk fills both, so they describe the same commit set.
+        file_rows: list[dict] = []
+        rows = await asyncio.to_thread(
+            partial(
+                indexer.capture_new_commit_rows,
+                since_ts=since_ts,
+                file_rows_sink=file_rows,
+            )
+        )
         if rows:
             await upsert_git_commits_bulk(session, repo_id, rows)
+        if file_rows:
+            await upsert_git_commit_files_bulk(session, repo_id, file_rows)
 
     with timed(timings, "persist.commits.experience"):
         await reconcile_commit_experience(session, repo_id, indexer)
@@ -1466,6 +1478,7 @@ async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) 
     failure-isolated like the rest of the git-phase refreshes.
     """
     from repowise.core.persistence.crud import (
+        delete_git_commit_files_by_sha,
         delete_git_commits_by_sha,
         get_commit_experience_inputs,
         upsert_git_commits_bulk,
@@ -1481,6 +1494,8 @@ async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) 
             orphans = [r["sha"] for r in stored if r["sha"] not in reachable]
             if orphans:
                 await delete_git_commits_by_sha(session, repo_id, orphans)
+                # File rows leave with their commit; nothing cascades them.
+                await delete_git_commit_files_by_sha(session, repo_id, orphans)
                 stored = [r for r in stored if r["sha"] in reachable]
                 logger.info("commit_orphans_pruned", repo_id=repo_id, count=len(orphans))
 

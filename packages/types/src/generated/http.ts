@@ -431,6 +431,7 @@ export interface CommitDetailResponse {
   agent_confidence?: string | null;
   drivers?: RiskDriverResponse[];
   agent_channel?: string | null;
+  files?: CommitFileResponse[];
 }
 
 /**
@@ -462,6 +463,14 @@ export interface CommitEvolutionResponse {
   granularity: string;
   first_commit_at?: string | null;
   last_commit_at?: string | null;
+}
+
+/** One file a commit touched, with what it cost and what it carries. */
+export interface CommitFileResponse {
+  path: string;
+  lines_added: number;
+  lines_deleted: number;
+  prior_fixes?: number | null;
 }
 
 /**

@@ -27,13 +27,10 @@ const commit: CommitDetail = {
   ],
 };
 
-const fixHistory = {
-  percentile: 89.4,
-  files: [
-    { path: "cli/commands/update_cmd/command.py", churn: 19, fix_pressure: 28.71 },
-    { path: "core/workspace/update.py", churn: 4, fix_pressure: 16.2 },
-  ],
-};
+const files = [
+  { path: "cli/commands/update_cmd/command.py", lines_added: 15, lines_deleted: 4, prior_fixes: 35 },
+  { path: "core/workspace/update.py", lines_added: 3, lines_deleted: 0, prior_fixes: null },
+];
 
 describe("commit detail card", () => {
   it("leads with the repo-relative percentile, not a raw score", () => {
@@ -44,33 +41,35 @@ describe("commit detail card", () => {
     expect(screen.queryByText(/Supporting diff-size score/)).toBeNull();
   });
 
-  it("names the files and their bug-fix record when git could score them", () => {
-    render(<CommitDetailCard commit={commit} fixHistory={fixHistory} />);
+  it("names the files and their bug-fix record from the stored index", () => {
+    render(<CommitDetailCard commit={{ ...commit, files }} />);
 
-    expect(screen.getByText("cli/commands/update_cmd/command.py")).toBeInTheDocument();
-    expect(screen.getByText("28.7")).toBeInTheDocument();
+    // The shared table keeps a table and a stacked-card tree in the DOM.
+    expect(screen.getAllByText("cli/commands/update_cmd/command.py").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("35").length).toBeGreaterThan(0);
+  });
+
+  it("marks an untracked file as unknown rather than as never fixed", () => {
+    render(<CommitDetailCard commit={{ ...commit, files }} />);
+
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
   it("says so when diff shape and fix history disagree", () => {
-    render(<CommitDetailCard commit={commit} fixHistory={fixHistory} />);
+    render(<CommitDetailCard commit={commit} fixPercentile={89.4} />);
 
     expect(screen.getByText(/heavy fix record/)).toBeInTheDocument();
     expect(screen.getByText(/89th percentile/)).toBeInTheDocument();
   });
 
   it("stays silent about the disagreement when the two rankings agree", () => {
-    render(
-      <CommitDetailCard
-        commit={commit}
-        fixHistory={{ ...fixHistory, percentile: 40 }}
-      />,
-    );
+    render(<CommitDetailCard commit={commit} fixPercentile={40} />);
 
     expect(screen.queryByText(/heavy fix record/)).toBeNull();
   });
 
-  it("renders without the fix block on a server with no checkout", () => {
-    render(<CommitDetailCard commit={commit} fixHistory={null} />);
+  it("renders without the file block on an index that predates it", () => {
+    render(<CommitDetailCard commit={commit} />);
 
     expect(screen.getByText("36th")).toBeInTheDocument();
     expect(screen.queryByText(/Where this change lands/)).toBeNull();

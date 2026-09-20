@@ -170,11 +170,23 @@ export interface RiskDriver {
   label: string;
 }
 
+/** One file a commit touched, with what it cost and what it carries. */
+export interface CommitFile {
+  path: string;
+  lines_added: number;
+  lines_deleted: number;
+  /** Bug-fix commits recorded against this path; null when untracked. */
+  prior_fixes?: number | null;
+}
+
 export interface CommitDetail extends Commit {
   /** Per-feature breakdown, strongest contribution first. */
   drivers: RiskDriver[];
   /** Which attribution channel identified the agent (e.g. git footer). */
   agent_channel?: string | null;
+  /** Files this commit touched, biggest churn first. Empty on an index written
+   *  before per-commit files were captured — re-index to fill it. */
+  files?: CommitFile[];
 }
 
 /** One month of agent-vs-human commit volume. */

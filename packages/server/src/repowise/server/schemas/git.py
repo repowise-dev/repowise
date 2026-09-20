@@ -232,6 +232,9 @@ class CommitDetailResponse(CommitResponse):
 
     drivers: list[RiskDriverResponse] = []
     agent_channel: str | None = None
+    #: Files this commit touched, biggest churn first. Empty on an index
+    #: written before per-commit files were captured — re-index to fill it.
+    files: list[CommitFileResponse] = []
 
 
 class AgentTrendBucket(BaseModel):
@@ -295,6 +298,17 @@ class ChangeFeaturesResponse(BaseModel):
     ns: int
     entropy: float
     exp: int | None
+
+
+class CommitFileResponse(BaseModel):
+    """One file a commit touched, with what it cost and what it carries."""
+
+    path: str
+    lines_added: int
+    lines_deleted: int
+    #: Bug-fix commits recorded against this path. ``None`` when the file is no
+    #: longer tracked, which is not the same claim as "never fixed".
+    prior_fixes: int | None = None
 
 
 class FixHistoryFileResponse(BaseModel):

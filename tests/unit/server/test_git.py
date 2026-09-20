@@ -369,6 +369,60 @@ async def test_get_commit_detail_has_drivers(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_commit_detail_names_the_files_without_a_checkout(
+    client: AsyncClient, app
+) -> None:
+    """Stored at index time, so hosted answers this too."""
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    await _insert_git_metadata(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_git_commit_files_bulk(
+            session,
+            repo["id"],
+            [
+                {
+                    "sha": "bbbbbbbb22",
+                    "file_path": "src/main.py",
+                    "lines_added": 30,
+                    "lines_deleted": 4,
+                },
+                {
+                    "sha": "bbbbbbbb22",
+                    "file_path": "gone.py",
+                    "lines_added": 1,
+                    "lines_deleted": 1,
+                },
+            ],
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")
+
+    assert resp.status_code == 200
+    files = resp.json()["files"]
+    # Biggest churn first.
+    assert [f["path"] for f in files] == ["src/main.py", "gone.py"]
+    assert files[0]["lines_added"] == 30
+    # Joined from the per-file git rollup.
+    assert files[0]["prior_fixes"] == 4
+    # An untracked path reports unknown, which is not zero.
+    assert files[1]["prior_fixes"] is None
+
+
+@pytest.mark.asyncio
+async def test_commit_detail_is_empty_of_files_on_an_older_index(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")
+
+    assert resp.status_code == 200
+    assert resp.json()["files"] == []
+
+
+@pytest.mark.asyncio
 async def test_get_commit_not_found(client: AsyncClient) -> None:
     repo = await create_test_repo(client)
     resp = await client.get(f"/api/repos/{repo['id']}/commits/deadbeef")

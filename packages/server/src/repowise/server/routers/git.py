@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_risk import (
@@ -37,6 +38,7 @@ from repowise.core.ingestion.git_indexer._constants import (
 from repowise.core.ingestion.git_indexer.identity import author_identity_key
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GitCommit, GitMetadata, Repository
+from repowise.core.persistence.sql import is_missing_table
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server.tool_risk import _check_test_gap
 from repowise.server.schemas import (
@@ -47,6 +49,7 @@ from repowise.server.schemas import (
     CommitDetailResponse,
     CommitEvolutionBucket,
     CommitEvolutionResponse,
+    CommitFileResponse,
     CommitResponse,
     CommitStatsResponse,
     FixHistoryFileResponse,
@@ -193,8 +196,35 @@ def _commit_from_row(
     return CommitResponse(**_commit_fields(r, normalizer, author_counts))
 
 
+async def _commit_files(session: AsyncSession, repo_id: str, sha: str) -> list[CommitFileResponse]:
+    """The files a commit touched. Stored, so it answers without a checkout."""
+    try:
+        rows = await crud.get_commit_files(session, repo_id, sha)
+    except (OperationalError, ProgrammingError) as exc:
+        # An index older than the table: serve the commit without its files
+        # rather than failing the whole detail view.
+        if not is_missing_table(exc):
+            raise
+        return []
+    if not rows:
+        return []
+    meta = await crud.get_git_metadata_bulk(session, repo_id, [r.file_path for r in rows])
+    return [
+        CommitFileResponse(
+            path=r.file_path,
+            lines_added=r.lines_added,
+            lines_deleted=r.lines_deleted,
+            prior_fixes=getattr(meta.get(r.file_path), "prior_defect_count", None),
+        )
+        for r in rows
+    ]
+
+
 def _commit_detail_from_row(
-    r: GitCommit, normalizer: RiskNormalizer, author_counts: dict[str, int] | None = None
+    r: GitCommit,
+    normalizer: RiskNormalizer,
+    author_counts: dict[str, int] | None = None,
+    files: list[CommitFileResponse] | None = None,
 ) -> CommitDetailResponse:
     """Map a commit row to its detail view, recomputing the risk-driver
     breakdown from the persisted Kamei features + author experience.
@@ -217,6 +247,7 @@ def _commit_detail_from_row(
         **_commit_fields(r, normalizer, author_counts),
         drivers=drivers,
         agent_channel=r.agent_channel,
+        files=files or [],
     )
 
 
@@ -479,7 +510,8 @@ async def get_commit(
         raise HTTPException(status_code=404, detail="Commit not found")
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
     author_counts = await _author_commit_counts(session, repo_id)
-    return _commit_detail_from_row(row, normalizer, author_counts)
+    files = await _commit_files(session, repo_id, row.sha)
+    return _commit_detail_from_row(row, normalizer, author_counts, files)
 
 
 @router.get("/{repo_id}/git-metadata", response_model=GitMetadataResponse)

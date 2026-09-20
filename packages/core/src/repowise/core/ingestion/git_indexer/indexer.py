@@ -425,13 +425,19 @@ class GitIndexer:
         # in rename-tracking mode (no batched commit index) and failure-isolated
         # so a change_risk hiccup never breaks file-level git metadata.
         commit_rows: list[dict] = []
+        commit_file_rows: list[dict] = []
         if commit_sink:
             try:
-                from .commit_rows import build_commit_rows
+                from .commit_rows import build_commit_file_rows, build_commit_rows
 
-                commit_rows = build_commit_rows(commit_sink)
+                built = build_commit_rows(commit_sink)
+                built_files = build_commit_file_rows(commit_sink)
             except Exception as exc:
                 logger.debug("commit_rows_build_failed", error=str(exc))
+            else:
+                # Assigned together: a half-built pair would write commits
+                # whose file detail describes a different set.
+                commit_rows, commit_file_rows = built, built_files
 
         duration = time.monotonic() - start
         hotspots = sum(1 for m in results if m.get("is_hotspot", False))
@@ -443,6 +449,7 @@ class GitIndexer:
             stable_files=stable,
             duration_seconds=duration,
             commit_rows=commit_rows,
+            commit_file_rows=commit_file_rows,
             fix_event_rows=fix_event_rows,
             fix_oldest_ts=fix_walk.oldest_fix_ts,
             fix_events_built=built_ok,
@@ -817,8 +824,13 @@ class GitIndexer:
             out[fp] = {"file_path": fp, **{k: meta[k] for k in DECAY_REFRESH_KEYS}}
         return out
 
-    def capture_new_commit_rows(self, *, since_ts: int | None = None) -> list[dict]:
+    def capture_new_commit_rows(
+        self, *, since_ts: int | None = None, file_rows_sink: list[dict] | None = None
+    ) -> list[dict]:
         """Build ``git_commits`` rows for commits newer than *since_ts*.
+
+        *file_rows_sink*, when given, is extended with the matching
+        ``git_commit_files`` rows from the same walk.
 
         The incremental counterpart to the ``commit_sink`` capture on
         ``index_repo``: walks the repo-wide commit index (one ``git log`` pass,
@@ -837,7 +849,7 @@ class GitIndexer:
                 return []
 
             from ..git_commit_index import load_commit_index
-            from .commit_rows import build_commit_rows
+            from .commit_rows import build_commit_file_rows, build_commit_rows
 
             sink: list[dict] = []
             # Empty indexable set: we only want the full-footprint sink, not the
@@ -850,7 +862,13 @@ class GitIndexer:
                 since_ts=since_ts,
                 provenance_classifier=self._provenance_classifier(),
             )
-            return build_commit_rows(sink)
+            rows = build_commit_rows(sink)
+            files = build_commit_file_rows(sink)
+            # Only after both succeed: the sink is the caller's list, and a
+            # partial extend would outlive the failure that caused it.
+            if file_rows_sink is not None:
+                file_rows_sink.extend(files)
+            return rows
         except Exception as exc:
             logger.debug("incremental_commit_rows_failed", error=str(exc))
             return []

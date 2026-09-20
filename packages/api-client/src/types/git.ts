@@ -141,9 +141,19 @@ export interface RiskDriverResponse {
   label: string;
 }
 
+/** One file a commit touched, with what it cost and what it carries. */
+export interface CommitFileResponse {
+  path: string;
+  lines_added: number;
+  lines_deleted: number;
+  /** Bug-fix commits recorded against this path; null when untracked. */
+  prior_fixes?: number | null;
+}
+
 export interface CommitDetailResponse extends CommitResponse {
   drivers: RiskDriverResponse[];
   agent_channel?: string | null;
+  files?: CommitFileResponse[];
 }
 
 export interface AgentTrendBucket {

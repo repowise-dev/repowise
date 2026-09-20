@@ -33,9 +33,8 @@ export function CommitDetailSheet({ repoId }: { repoId: string }) {
     { revalidateOnFocus: false },
   );
 
-  // Scored live from git, because the indexed commit row carries Kamei
-  // aggregates and no file list. A server with no checkout 404s here and the
-  // sheet renders without the block rather than failing.
+  // Only for the fix-density percentile, which needs live scoring. The file
+  // list itself is stored, so a server with no checkout still renders it.
   const { data: range } = useSWR(
     selectedSha ? `commit-fixes:${repoId}:${selectedSha}` : null,
     () =>
@@ -72,8 +71,10 @@ export function CommitDetailSheet({ repoId }: { repoId: string }) {
                 </div>
                 <CommitDetailCard
                   commit={detail}
-                  fixHistory={
-                    range?.fix_history?.available ? range.fix_history : null
+                  fixPercentile={
+                    range?.fix_history?.available
+                      ? range.fix_history.percentile
+                      : null
                   }
                 />
               </>

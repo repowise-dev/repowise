@@ -215,6 +215,8 @@ class GitIndexSummary:
     # for ``upsert_git_commits_bulk``. Empty in rename-tracking mode (which uses
     # the per-file walk instead of the batched commit index).
     commit_rows: list[dict] = field(default_factory=list)
+    # One row per (commit, file), from the same walk as ``commit_rows``.
+    commit_file_rows: list[dict] = field(default_factory=list)
     # Per fix-commit x file rows for ``upsert_fix_events_bulk``, plus the
     # committer time of the oldest fix the walk saw (unix seconds). The cutoff
     # rides along so the persist step can prune events that have aged out and

@@ -15,13 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import (
     FixEvent,
     GitCommit,
+    GitCommitFile,
     GitFunctionBlame,
     GitMetadata,
     _new_uuid,
     _now_utc,
 )
 from ..sql import LIKE_ESCAPE, escape_like
-from ._shared import _BATCH_SIZE, _batch_upsert_keyed
+from ._shared import _BATCH_SIZE, _batch_delete_in, _batch_upsert_keyed
 
 # ---------------------------------------------------------------------------
 # GitMetadata CRUD
@@ -385,6 +386,76 @@ async def upsert_git_commits_bulk(
     )
 
 
+def _update_git_commit_file(existing: GitCommitFile, row: dict) -> None:
+    for key, val in row.items():
+        if key not in ("id", "repository_id", "sha", "file_path") and hasattr(existing, key):
+            setattr(existing, key, val)
+    existing.updated_at = _now_utc()
+
+
+async def upsert_git_commit_files_bulk(
+    session: AsyncSession,
+    repository_id: str,
+    rows: list[dict],
+) -> None:
+    """Bulk upsert per-commit file rows (keyed on ``repository_id`` + sha + path)."""
+    await _batch_upsert_keyed(
+        session,
+        GitCommitFile,
+        rows,
+        prefilter=(GitCommitFile.repository_id == repository_id,),
+        item_key_fn=lambda row: (row.get("sha", ""), row.get("file_path", "")),
+        row_key_fn=lambda row: (row.sha, row.file_path),
+        update_fn=_update_git_commit_file,
+        insert_fn=lambda row: GitCommitFile(
+            id=_new_uuid(),
+            repository_id=repository_id,
+            **{
+                k: v
+                for k, v in row.items()
+                if k not in ("id", "repository_id") and hasattr(GitCommitFile, k)
+            },
+        ),
+        batch_size=_BATCH_SIZE,
+    )
+
+
+async def get_commit_files(
+    session: AsyncSession, repository_id: str, sha: str
+) -> list[GitCommitFile]:
+    """The files one commit touched, largest churn first."""
+    result = await session.execute(
+        select(GitCommitFile)
+        .where(GitCommitFile.repository_id == repository_id, GitCommitFile.sha == sha)
+        .order_by(
+            (GitCommitFile.lines_added + GitCommitFile.lines_deleted).desc(),
+            GitCommitFile.file_path,
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def delete_git_commit_files(session: AsyncSession, repository_id: str) -> None:
+    """Remove all per-commit file rows for a repository (before a clean reindex)."""
+    await session.execute(
+        delete(GitCommitFile).where(GitCommitFile.repository_id == repository_id)
+    )
+    await session.flush()
+
+
+async def delete_git_commit_files_by_sha(
+    session: AsyncSession, repository_id: str, shas: Sequence[str]
+) -> int:
+    """Drop file rows for specific commits, so they leave with their commit."""
+    return await _batch_delete_in(
+        session,
+        GitCommitFile,
+        GitCommitFile.sha,
+        shas,
+        prefilter=(GitCommitFile.repository_id == repository_id,),
+    )
+
+
 async def get_commits_missing_offset(
     session: AsyncSession, repository_id: str, *, limit: int = 20_000
 ) -> list[str]:
@@ -417,19 +488,13 @@ async def delete_git_commits_by_sha(
     session: AsyncSession, repository_id: str, shas: Sequence[str]
 ) -> int:
     """Drop specific per-commit rows. Returns how many were removed."""
-    removed = 0
-    for start in range(0, len(shas), _BATCH_SIZE):
-        chunk = shas[start : start + _BATCH_SIZE]
-        if not chunk:
-            continue
-        result = await session.execute(
-            delete(GitCommit).where(
-                GitCommit.repository_id == repository_id, GitCommit.sha.in_(chunk)
-            )
-        )
-        removed += int(result.rowcount or 0)
-    await session.flush()
-    return removed
+    return await _batch_delete_in(
+        session,
+        GitCommit,
+        GitCommit.sha,
+        shas,
+        prefilter=(GitCommit.repository_id == repository_id,),
+    )
 
 
 async def get_commit_experience_inputs(session: AsyncSession, repository_id: str) -> list[dict]:
