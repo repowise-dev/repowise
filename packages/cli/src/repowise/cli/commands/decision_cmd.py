@@ -1178,9 +1178,16 @@ def decision_deprecate(
                         emit_refusal("supersede_refused", str(exc), fmt, decision_id=rec.id)
                 else:
                     # A candidate has no authority to retire, so this stays the
-                    # plain status change it always was.
+                    # plain status change it always was. An accepted record
+                    # reached without a named successor does still log a
+                    # withdrawal, so the kind has to travel here too.
                     await update_decision_status(
-                        session, rec.id, "deprecated", superseded_by=successor
+                        session,
+                        rec.id,
+                        "deprecated",
+                        superseded_by=successor,
+                        accepter=agent,
+                        kind=kind,
                     )
                 return rec
         finally:

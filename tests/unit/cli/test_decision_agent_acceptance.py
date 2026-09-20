@@ -142,6 +142,18 @@ def test_an_agent_signs_a_supersession(repo: Path) -> None:
     assert (signed["kind"], signed["verb"]) == ("agent", "Superseded")
 
 
+def test_an_agent_signs_a_retirement_with_no_named_successor(repo: Path) -> None:
+    """That path goes through ``update_decision_status``, not
+    ``supersede_decision``, and it still appends a withdrawal."""
+    assert _run(repo, "confirm", "aaaa").exit_code == 0
+
+    assert _run(repo, "deprecate", "aaaa", "--agent", "claude_code").exit_code == 0
+
+    signed = json.loads(_run(repo, "show", "aaaa").output)["decision"]["accepted_by"]
+    assert signed["kind"] == "agent"
+    assert signed["verb"] == "Dismissed"
+
+
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
