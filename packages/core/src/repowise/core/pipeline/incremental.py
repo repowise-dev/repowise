@@ -1394,6 +1394,15 @@ async def persist_incremental_commits(
         if file_rows:
             await upsert_git_commit_files_bulk(session, repo_id, file_rows)
 
+    # What the new commits did to health. An update is a handful of commits, so
+    # this is seconds; the same budget still applies if a long gap made it many.
+    with timed(timings, "persist.commits.health"):
+        from .commit_health import recent_shas, refresh_commit_health
+
+        await refresh_commit_health(
+            session, repo_id, str(repo_path), recent_shas(rows)
+        )
+
     with timed(timings, "persist.commits.experience"):
         await reconcile_commit_experience(session, repo_id, indexer)
     # Fills the commit-offset column on indexes written before it existed, so a
@@ -1478,6 +1487,7 @@ async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) 
     failure-isolated like the rest of the git-phase refreshes.
     """
     from repowise.core.persistence.crud import (
+        delete_commit_health_by_sha,
         delete_git_commit_files_by_sha,
         delete_git_commits_by_sha,
         get_commit_experience_inputs,
@@ -1494,8 +1504,9 @@ async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) 
             orphans = [r["sha"] for r in stored if r["sha"] not in reachable]
             if orphans:
                 await delete_git_commits_by_sha(session, repo_id, orphans)
-                # File rows leave with their commit; nothing cascades them.
+                # Per-commit rows leave with their commit; nothing cascades them.
                 await delete_git_commit_files_by_sha(session, repo_id, orphans)
+                await delete_commit_health_by_sha(session, repo_id, orphans)
                 stored = [r for r in stored if r["sha"] in reachable]
                 logger.info("commit_orphans_pruned", repo_id=repo_id, count=len(orphans))
 

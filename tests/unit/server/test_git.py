@@ -423,6 +423,74 @@ async def test_commit_detail_is_empty_of_files_on_an_older_index(
 
 
 @pytest.mark.asyncio
+async def test_commit_detail_reports_what_the_commit_did_to_health(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_commit_health_bulk(
+            session,
+            repo["id"],
+            [
+                {
+                    "sha": "bbbbbbbb22",
+                    "status": "partial",
+                    "introduced_count": 2,
+                    "worsened_count": 1,
+                    "resolved_count": 4,
+                    "files_analyzed": 3,
+                    "files_skipped": 1,
+                    "findings_stored": 1,
+                }
+            ],
+            [
+                {
+                    "sha": "bbbbbbbb22",
+                    "change_finding_id": "f0",
+                    "position": 0,
+                    "change_kind": "worsened",
+                    "dimension": "defect",
+                    "biomarker_type": "complex_method",
+                    "severity": "critical",
+                    "severity_before": "high",
+                    "file_path": "src/main.py",
+                    "symbol": "run",
+                    "line_start": 12,
+                    "line_end": 60,
+                    "attribution_basis": "added_lines",
+                    "reason": "run has cyclomatic complexity 26",
+                }
+            ],
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")
+
+    assert resp.status_code == 200
+    health = resp.json()["health"]
+    assert health["status"] == "partial"
+    assert (health["introduced_count"], health["worsened_count"]) == (2, 1)
+    assert health["resolved_count"] == 4
+    # One finding stored against three counted: the cap, reported honestly.
+    (finding,) = health["findings"]
+    assert finding["severity_before"] == "high"
+    assert finding["path"] == "src/main.py"
+    assert finding["attribution_basis"] == "added_lines"
+
+
+@pytest.mark.asyncio
+async def test_an_unscanned_commit_has_no_health_block(client: AsyncClient, app) -> None:
+    """Absent, not empty — "not analysed" is not "changed nothing"."""
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")
+
+    assert resp.status_code == 200
+    assert resp.json()["health"] is None
+
+
+@pytest.mark.asyncio
 async def test_get_commit_not_found(client: AsyncClient) -> None:
     repo = await create_test_repo(client)
     resp = await client.get(f"/api/repos/{repo['id']}/commits/deadbeef")

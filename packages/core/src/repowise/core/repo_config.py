@@ -153,6 +153,19 @@ def config_fingerprint(repo_path: Path | str) -> str:
     return h.hexdigest()
 
 
+def health_rules_fingerprint(repo_path: Path | str) -> str:
+    """:func:`config_fingerprint`, degraded to an empty string when unreadable.
+
+    What a change-health comparison pins its findings to. An empty string is a
+    real answer there: it means "rules unknown", which never matches a stored
+    fingerprint, so the rows are recomputed rather than trusted.
+    """
+    try:
+        return config_fingerprint(repo_path)
+    except Exception:
+        return ""
+
+
 def config_dependency_fingerprints(
     repo_path: Path | str, *, config: dict[str, Any] | None = None
 ) -> dict[str, str]:

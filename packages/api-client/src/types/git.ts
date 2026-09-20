@@ -150,10 +150,49 @@ export interface CommitFileResponse {
   prior_fixes?: number | null;
 }
 
+/** One thing a commit introduced or worsened. */
+export interface CommitHealthFindingResponse {
+  change_kind: string;
+  dimension: string;
+  biomarker_type: string;
+  severity: string;
+  /** Only set on `worsened`: what the severity was before the commit. */
+  severity_before?: string | null;
+  path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  /** How directly the commit is responsible, from `added_lines` down to
+   *  `unknown`. Separates what a change wrote from what it merely touched. */
+  attribution_basis: string;
+  reason: string;
+}
+
+/** What a commit did to code health, computed at index time.
+ *
+ *  Absent rather than empty when the commit was never scanned: the scan is
+ *  bounded, so older commits routinely have none, and that is not the same
+ *  claim as "changed nothing". */
+export interface CommitHealthResponse {
+  /** `available` when every changed file was compared, `partial` when some
+   *  were skipped (unsupported language, binary, unreadable). */
+  status: string;
+  introduced_count: number;
+  worsened_count: number;
+  resolved_count: number;
+  files_analyzed: number;
+  files_skipped: number;
+  /** Worst first, capped. `introduced_count + worsened_count` is the true
+   *  total, so a shorter list means the rest was not stored. */
+  findings: CommitHealthFindingResponse[];
+}
+
 export interface CommitDetailResponse extends CommitResponse {
   drivers: RiskDriverResponse[];
   agent_channel?: string | null;
   files?: CommitFileResponse[];
+  /** What the commit did to health; null when it was never scanned. */
+  health?: CommitHealthResponse | null;
 }
 
 export interface AgentTrendBucket {

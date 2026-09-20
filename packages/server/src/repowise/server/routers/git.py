@@ -50,6 +50,8 @@ from repowise.server.schemas import (
     CommitEvolutionBucket,
     CommitEvolutionResponse,
     CommitFileResponse,
+    CommitHealthFindingResponse,
+    CommitHealthResponse,
     CommitResponse,
     CommitStatsResponse,
     FixHistoryFileResponse,
@@ -220,11 +222,53 @@ async def _commit_files(session: AsyncSession, repo_id: str, sha: str) -> list[C
     ]
 
 
+async def _commit_health(
+    session: AsyncSession, repo_id: str, sha: str
+) -> CommitHealthResponse | None:
+    """What the commit did to health. None when it was never scanned."""
+    try:
+        delta = await crud.get_commit_health(session, repo_id, sha)
+        rows = await crud.get_commit_health_findings(session, repo_id, sha) if delta else []
+    except (OperationalError, ProgrammingError) as exc:
+        # An index older than the tables: serve the commit without its health
+        # block rather than failing the whole detail view.
+        if not is_missing_table(exc):
+            raise
+        return None
+    if delta is None:
+        return None
+    return CommitHealthResponse(
+        status=delta.status,
+        introduced_count=delta.introduced_count,
+        worsened_count=delta.worsened_count,
+        resolved_count=delta.resolved_count,
+        files_analyzed=delta.files_analyzed,
+        files_skipped=delta.files_skipped,
+        findings=[
+            CommitHealthFindingResponse(
+                change_kind=f.change_kind,
+                dimension=f.dimension,
+                biomarker_type=f.biomarker_type,
+                severity=f.severity,
+                severity_before=f.severity_before,
+                path=f.file_path,
+                symbol=f.symbol,
+                line_start=f.line_start,
+                line_end=f.line_end,
+                attribution_basis=f.attribution_basis,
+                reason=f.reason,
+            )
+            for f in rows
+        ],
+    )
+
+
 def _commit_detail_from_row(
     r: GitCommit,
     normalizer: RiskNormalizer,
     author_counts: dict[str, int] | None = None,
     files: list[CommitFileResponse] | None = None,
+    health: CommitHealthResponse | None = None,
 ) -> CommitDetailResponse:
     """Map a commit row to its detail view, recomputing the risk-driver
     breakdown from the persisted Kamei features + author experience.
@@ -248,6 +292,7 @@ def _commit_detail_from_row(
         drivers=drivers,
         agent_channel=r.agent_channel,
         files=files or [],
+        health=health,
     )
 
 
@@ -511,7 +556,8 @@ async def get_commit(
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
     author_counts = await _author_commit_counts(session, repo_id)
     files = await _commit_files(session, repo_id, row.sha)
-    return _commit_detail_from_row(row, normalizer, author_counts, files)
+    health = await _commit_health(session, repo_id, row.sha)
+    return _commit_detail_from_row(row, normalizer, author_counts, files, health)
 
 
 @router.get("/{repo_id}/git-metadata", response_model=GitMetadataResponse)

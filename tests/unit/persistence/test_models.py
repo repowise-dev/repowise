@@ -302,6 +302,8 @@ def test_base_includes_all_models():
         "wiki_symbols",
         "git_metadata",
         "git_commit_files",
+        "git_commit_health_deltas",
+        "git_commit_health_findings",
         "git_commits",
         "git_function_blame",
         "fix_events",

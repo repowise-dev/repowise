@@ -432,6 +432,7 @@ export interface CommitDetailResponse {
   drivers?: RiskDriverResponse[];
   agent_channel?: string | null;
   files?: CommitFileResponse[];
+  health?: CommitHealthResponse | null;
 }
 
 /**
@@ -471,6 +472,38 @@ export interface CommitFileResponse {
   lines_added: number;
   lines_deleted: number;
   prior_fixes?: number | null;
+}
+
+/** One thing a commit introduced or worsened. */
+export interface CommitHealthFindingResponse {
+  change_kind: string;
+  dimension: string;
+  biomarker_type: string;
+  severity: string;
+  severity_before?: string | null;
+  path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  attribution_basis: string;
+  reason: string;
+}
+
+/**
+ * What a commit did to code health, as computed at index time.
+ *
+ * Absent on the commit, rather than empty, when the commit was never
+ * scanned — the scan is bounded, so older commits routinely have no row and
+ * that is not the same claim as "changed nothing".
+ */
+export interface CommitHealthResponse {
+  status: string;
+  introduced_count: number;
+  worsened_count: number;
+  resolved_count: number;
+  files_analyzed: number;
+  files_skipped: number;
+  findings?: CommitHealthFindingResponse[];
 }
 
 /**

@@ -292,8 +292,10 @@ def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
             _DELTA_SERVICES.move_to_end(repo_path)
             return service
     # Built outside the lock: the fingerprint reads config off disk.
+    from repowise.core.repo_config import health_rules_fingerprint
+
     service = ChangeHealthDeltaService(
-        repo_path=repo_path, rules_fingerprint=_rules_fingerprint(repo_path)
+        repo_path=repo_path, rules_fingerprint=health_rules_fingerprint(repo_path)
     )
     with _DELTA_SERVICES_LOCK:
         existing = _DELTA_SERVICES.get(repo_path)
@@ -304,16 +306,6 @@ def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
         while len(_DELTA_SERVICES) > _DELTA_SERVICE_CAPACITY:
             _DELTA_SERVICES.popitem(last=False)
     return service
-
-
-def _rules_fingerprint(repo_path: str) -> str:
-    """Identity of the effective health rules; empty when they cannot be read."""
-    try:
-        from repowise.core.repo_config import config_fingerprint
-
-        return config_fingerprint(repo_path)
-    except Exception:
-        return ""
 
 
 def _compare_health(

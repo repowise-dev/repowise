@@ -16,13 +16,21 @@ from ..models import (
     FixEvent,
     GitCommit,
     GitCommitFile,
+    GitCommitHealthDelta,
+    GitCommitHealthFinding,
     GitFunctionBlame,
     GitMetadata,
     _new_uuid,
     _now_utc,
 )
 from ..sql import LIKE_ESCAPE, escape_like
-from ._shared import _BATCH_SIZE, _batch_delete_in, _batch_upsert_keyed
+from ._shared import (
+    _BATCH_SIZE,
+    _batch_delete_in,
+    _batch_upsert_keyed,
+    _row_inserter,
+    _row_updater,
+)
 
 # ---------------------------------------------------------------------------
 # GitMetadata CRUD
@@ -351,12 +359,7 @@ WHERE repository_id = :repo_id;
 # ---------------------------------------------------------------------------
 
 
-def _update_git_commit(existing: GitCommit, row: dict) -> None:
-    for key, val in row.items():
-        # ``sha`` is the natural key — never reassign it on update.
-        if key not in ("id", "repository_id", "sha") and hasattr(existing, key):
-            setattr(existing, key, val)
-    existing.updated_at = _now_utc()
+_update_git_commit = _row_updater("sha")
 
 
 async def upsert_git_commits_bulk(
@@ -373,24 +376,12 @@ async def upsert_git_commits_bulk(
         item_key_fn=lambda row: row.get("sha", ""),
         row_key_fn=lambda row: row.sha,
         update_fn=_update_git_commit,
-        insert_fn=lambda row: GitCommit(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in row.items()
-                if k not in ("id", "repository_id") and hasattr(GitCommit, k)
-            },
-        ),
+        insert_fn=_row_inserter(GitCommit, repository_id),
         batch_size=_BATCH_SIZE,
     )
 
 
-def _update_git_commit_file(existing: GitCommitFile, row: dict) -> None:
-    for key, val in row.items():
-        if key not in ("id", "repository_id", "sha", "file_path") and hasattr(existing, key):
-            setattr(existing, key, val)
-    existing.updated_at = _now_utc()
+_update_git_commit_file = _row_updater("sha", "file_path")
 
 
 async def upsert_git_commit_files_bulk(
@@ -407,15 +398,7 @@ async def upsert_git_commit_files_bulk(
         item_key_fn=lambda row: (row.get("sha", ""), row.get("file_path", "")),
         row_key_fn=lambda row: (row.sha, row.file_path),
         update_fn=_update_git_commit_file,
-        insert_fn=lambda row: GitCommitFile(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in row.items()
-                if k not in ("id", "repository_id") and hasattr(GitCommitFile, k)
-            },
-        ),
+        insert_fn=_row_inserter(GitCommitFile, repository_id),
         batch_size=_BATCH_SIZE,
     )
 
@@ -453,6 +436,140 @@ async def delete_git_commit_files_by_sha(
         GitCommitFile.sha,
         shas,
         prefilter=(GitCommitFile.repository_id == repository_id,),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-commit health delta (what a commit introduced, worsened or resolved)
+# ---------------------------------------------------------------------------
+
+
+_update_git_commit_health_delta = _row_updater("sha")
+_update_git_commit_health_finding = _row_updater("sha", "change_finding_id")
+
+
+async def upsert_commit_health_bulk(
+    session: AsyncSession,
+    repository_id: str,
+    delta_rows: list[dict],
+    finding_rows: list[dict],
+) -> None:
+    """Store a scan's rows, replacing the findings of every commit it covers.
+
+    The findings are deleted first rather than upserted in place: a rescan can
+    return fewer findings than the row it replaces, and a plain upsert would
+    leave the surplus behind as findings no commit ever produced.
+    """
+    shas = [row["sha"] for row in delta_rows if row.get("sha")]
+    if shas:
+        await delete_commit_health_findings_by_sha(session, repository_id, shas)
+    await _batch_upsert_keyed(
+        session,
+        GitCommitHealthDelta,
+        delta_rows,
+        prefilter=(GitCommitHealthDelta.repository_id == repository_id,),
+        item_key_fn=lambda row: row.get("sha", ""),
+        row_key_fn=lambda row: row.sha,
+        update_fn=_update_git_commit_health_delta,
+        insert_fn=_row_inserter(GitCommitHealthDelta, repository_id),
+        batch_size=_BATCH_SIZE,
+    )
+    await _batch_upsert_keyed(
+        session,
+        GitCommitHealthFinding,
+        finding_rows,
+        prefilter=(GitCommitHealthFinding.repository_id == repository_id,),
+        item_key_fn=lambda row: (row.get("sha", ""), row.get("change_finding_id", "")),
+        row_key_fn=lambda row: (row.sha, row.change_finding_id),
+        update_fn=_update_git_commit_health_finding,
+        insert_fn=_row_inserter(GitCommitHealthFinding, repository_id),
+        batch_size=_BATCH_SIZE,
+    )
+
+
+async def get_commit_health(
+    session: AsyncSession, repository_id: str, sha: str
+) -> GitCommitHealthDelta | None:
+    """The stored delta for one commit, or None when it was never scanned."""
+    result = await session.execute(
+        select(GitCommitHealthDelta).where(
+            GitCommitHealthDelta.repository_id == repository_id,
+            GitCommitHealthDelta.sha == sha,
+        )
+    )
+    return result.scalars().first()
+
+
+async def get_commit_health_findings(
+    session: AsyncSession, repository_id: str, sha: str
+) -> list[GitCommitHealthFinding]:
+    """One commit's stored findings, in the worst-first order the scan set."""
+    result = await session.execute(
+        select(GitCommitHealthFinding)
+        .where(
+            GitCommitHealthFinding.repository_id == repository_id,
+            GitCommitHealthFinding.sha == sha,
+        )
+        .order_by(GitCommitHealthFinding.position)
+    )
+    return list(result.scalars().all())
+
+
+async def get_scanned_commit_shas(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    analyzer_version: int,
+    rules_fingerprint: str,
+    performance_model_version: int,
+) -> set[str]:
+    """Shas already scanned by *this* analyzer, so a scan can skip them.
+
+    A row from an older analyzer is deliberately absent from this set: it will
+    be rescanned and overwritten, which is the whole invalidation story.
+    """
+    rows = await session.execute(
+        select(GitCommitHealthDelta.sha).where(
+            GitCommitHealthDelta.repository_id == repository_id,
+            GitCommitHealthDelta.analyzer_version == analyzer_version,
+            GitCommitHealthDelta.rules_fingerprint == rules_fingerprint,
+            GitCommitHealthDelta.performance_model_version == performance_model_version,
+        )
+    )
+    return {sha for (sha,) in rows}
+
+
+async def delete_commit_health(session: AsyncSession, repository_id: str) -> None:
+    """Remove every stored delta and finding (before a clean reindex)."""
+    for model in (GitCommitHealthFinding, GitCommitHealthDelta):
+        await session.execute(delete(model).where(model.repository_id == repository_id))
+    await session.flush()
+
+
+async def delete_commit_health_findings_by_sha(
+    session: AsyncSession, repository_id: str, shas: Sequence[str]
+) -> int:
+    """Drop the findings of specific commits, leaving their delta rows alone."""
+    return await _batch_delete_in(
+        session,
+        GitCommitHealthFinding,
+        GitCommitHealthFinding.sha,
+        shas,
+        prefilter=(GitCommitHealthFinding.repository_id == repository_id,),
+    )
+
+
+async def delete_commit_health_by_sha(
+    session: AsyncSession, repository_id: str, shas: Sequence[str]
+) -> int:
+    """Drop both rows for specific commits, so they leave with their commit."""
+    await delete_commit_health_findings_by_sha(session, repository_id, shas)
+    return await _batch_delete_in(
+        session,
+        GitCommitHealthDelta,
+        GitCommitHealthDelta.sha,
+        shas,
+        prefilter=(GitCommitHealthDelta.repository_id == repository_id,),
     )
 
 
@@ -671,12 +788,7 @@ async def get_git_commits(
 # ---------------------------------------------------------------------------
 
 
-def _update_git_function_blame(existing: GitFunctionBlame, row: dict) -> None:
-    for key, val in row.items():
-        # ``symbol_id`` is the natural key — never reassign it on update.
-        if key not in ("id", "repository_id", "symbol_id") and hasattr(existing, key):
-            setattr(existing, key, val)
-    existing.updated_at = _now_utc()
+_update_git_function_blame = _row_updater("symbol_id")
 
 
 async def upsert_git_function_blame_bulk(
@@ -693,15 +805,7 @@ async def upsert_git_function_blame_bulk(
         item_key_fn=lambda row: row.get("symbol_id", ""),
         row_key_fn=lambda row: row.symbol_id,
         update_fn=_update_git_function_blame,
-        insert_fn=lambda row: GitFunctionBlame(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in row.items()
-                if k not in ("id", "repository_id") and hasattr(GitFunctionBlame, k)
-            },
-        ),
+        insert_fn=_row_inserter(GitFunctionBlame, repository_id),
         batch_size=_BATCH_SIZE,
     )
 
@@ -781,12 +885,7 @@ async def get_git_function_blames(
 # ---------------------------------------------------------------------------
 
 
-def _update_fix_event(existing: FixEvent, row: dict) -> None:
-    for key, val in row.items():
-        # ``fix_sha`` + ``file_path`` are the natural key — never reassigned.
-        if key not in ("id", "repository_id", "fix_sha", "file_path") and hasattr(existing, key):
-            setattr(existing, key, val)
-    existing.updated_at = _now_utc()
+_update_fix_event = _row_updater("fix_sha", "file_path")
 
 
 async def upsert_fix_events_bulk(
@@ -807,15 +906,7 @@ async def upsert_fix_events_bulk(
         item_key_fn=lambda row: (row.get("fix_sha", ""), row.get("file_path", "")),
         row_key_fn=lambda row: (row.fix_sha, row.file_path),
         update_fn=_update_fix_event,
-        insert_fn=lambda row: FixEvent(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            **{
-                k: v
-                for k, v in row.items()
-                if k not in ("id", "repository_id") and hasattr(FixEvent, k)
-            },
-        ),
+        insert_fn=_row_inserter(FixEvent, repository_id),
         batch_size=_BATCH_SIZE,
     )
 

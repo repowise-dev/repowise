@@ -16,6 +16,8 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence.models import _new_uuid, _now_utc
+
 _VALID_JOB_STATUSES = frozenset(
     {"pending", "running", "completed", "failed", "cancelled", "paused"}
 )
@@ -256,3 +258,38 @@ async def _batch_delete_in(
         removed += int(result.rowcount or 0)
     await session.flush()
     return removed
+
+
+def _row_updater(*natural_key: str) -> Callable[[Any, dict], None]:
+    """Build the ``update_fn`` for a table whose rows come in as plain dicts.
+
+    Copies every column the model actually has, never the surrogate id, the
+    repository, or *natural_key* — reassigning the key an upsert matched on
+    would silently retarget the row.
+    """
+    held = {"id", "repository_id", *natural_key}
+
+    def update(existing: Any, row: dict) -> None:
+        for key, val in row.items():
+            if key not in held and hasattr(existing, key):
+                setattr(existing, key, val)
+        existing.updated_at = _now_utc()
+
+    return update
+
+
+def _row_inserter(model: type[Any], repository_id: str) -> Callable[[dict], Any]:
+    """Build the matching ``insert_fn``: the same columns, on a fresh row."""
+
+    def insert(row: dict) -> Any:
+        return model(
+            id=_new_uuid(),
+            repository_id=repository_id,
+            **{
+                k: v
+                for k, v in row.items()
+                if k not in ("id", "repository_id") and hasattr(model, k)
+            },
+        )
+
+    return insert

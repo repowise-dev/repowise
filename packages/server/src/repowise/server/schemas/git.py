@@ -227,6 +227,47 @@ class RiskDriverResponse(BaseModel):
     label: str
 
 
+class CommitHealthFindingResponse(BaseModel):
+    """One thing a commit introduced or worsened."""
+
+    change_kind: str
+    dimension: str
+    biomarker_type: str
+    severity: str
+    #: Only set on ``worsened``: what the severity was before the commit.
+    severity_before: str | None = None
+    path: str
+    symbol: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    #: How directly the commit is responsible, from ``added_lines`` down to
+    #: ``unknown``. Lets a reader separate what a change wrote from what it
+    #: merely touched.
+    attribution_basis: str
+    reason: str
+
+
+class CommitHealthResponse(BaseModel):
+    """What a commit did to code health, as computed at index time.
+
+    Absent on the commit, rather than empty, when the commit was never
+    scanned — the scan is bounded, so older commits routinely have no row and
+    that is not the same claim as "changed nothing".
+    """
+
+    #: ``available`` when every changed file was compared, ``partial`` when
+    #: some were skipped (unsupported language, binary, unreadable).
+    status: str
+    introduced_count: int
+    worsened_count: int
+    resolved_count: int
+    files_analyzed: int
+    files_skipped: int
+    #: Worst first, capped. ``introduced_count + worsened_count`` is the true
+    #: total, so a shorter list means the rest was not stored.
+    findings: list[CommitHealthFindingResponse] = []
+
+
 class CommitDetailResponse(CommitResponse):
     """A single commit with its full, attributable risk-driver breakdown."""
 
@@ -235,6 +276,8 @@ class CommitDetailResponse(CommitResponse):
     #: Files this commit touched, biggest churn first. Empty on an index
     #: written before per-commit files were captured — re-index to fill it.
     files: list[CommitFileResponse] = []
+    #: What the commit did to health. ``None`` when it was never scanned.
+    health: CommitHealthResponse | None = None
 
 
 class AgentTrendBucket(BaseModel):
