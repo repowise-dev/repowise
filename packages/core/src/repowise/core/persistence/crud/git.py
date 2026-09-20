@@ -491,16 +491,40 @@ def _commit_authorship_clause(authorship: str | None):
     return None
 
 
+def _commit_kind_clause(kind: str | None, high_cut: float | None):
+    """Optional predicate for the review-priority band or bug-fix commits.
+
+    ``high`` compares against the repo's own moderate/high boundary on the
+    score axis, which is where the tercile actually falls; deriving it per row
+    would mean ranking every commit before paging any of them.
+    """
+    if kind == "fixes":
+        return GitCommit.is_fix.is_(True)
+    if kind == "high":
+        if high_cut is None:
+            return None
+        return GitCommit.change_risk_score >= high_cut
+    return None
+
+
 async def count_git_commits(
-    session: AsyncSession, repository_id: str, *, authorship: str | None = None
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    authorship: str | None = None,
+    kind: str | None = None,
+    high_cut: float | None = None,
 ) -> int:
-    """Count persisted commits for a repository."""
+    """Count persisted commits for a repository, under the same filters."""
     stmt = (
         select(func.count()).select_from(GitCommit).where(GitCommit.repository_id == repository_id)
     )
-    clause = _commit_authorship_clause(authorship)
-    if clause is not None:
-        stmt = stmt.where(clause)
+    for clause in (
+        _commit_authorship_clause(authorship),
+        _commit_kind_clause(kind, high_cut),
+    ):
+        if clause is not None:
+            stmt = stmt.where(clause)
     result = await session.execute(stmt)
     return int(result.scalar_one() or 0)
 
@@ -553,18 +577,26 @@ async def get_git_commits(
     offset: int = 0,
     sort: str = "risk",
     authorship: str | None = None,
+    kind: str | None = None,
+    high_cut: float | None = None,
 ) -> list[GitCommit]:
     """Return a page of commits, sorted by change-risk (default) or recency.
 
     ``sort="risk"`` ranks by ``change_risk_score`` descending (the review-
     priority order); ``sort="date"`` ranks by ``committed_at`` descending.
-    ``authorship`` optionally narrows to ``agent`` / ``human`` commits.
+    ``authorship`` narrows to ``agent`` / ``human``; ``kind`` narrows to the
+    ``high`` review-priority band or to ``fixes``. Both filter the repository
+    rather than the page, so a filter still answers when the page it would
+    have filtered is uniform.
     """
     order = GitCommit.committed_at.desc() if sort == "date" else GitCommit.change_risk_score.desc()
     stmt = select(GitCommit).where(GitCommit.repository_id == repository_id)
-    clause = _commit_authorship_clause(authorship)
-    if clause is not None:
-        stmt = stmt.where(clause)
+    for clause in (
+        _commit_authorship_clause(authorship),
+        _commit_kind_clause(kind, high_cut),
+    ):
+        if clause is not None:
+            stmt = stmt.where(clause)
     result = await session.execute(stmt.order_by(order).limit(limit).offset(offset))
     return list(result.scalars().all())
 

@@ -61,7 +61,7 @@ export default async function CommitsPage({
     safeFetch(() => getCommitEvolution(id)),
     safeFetch(() => getAgentTrend(id)),
     safeFetch(() =>
-      getCommitsPage(id, { sort: "risk", authorship: "all", limit: PAGE_SIZE }),
+      getCommitsPage(id, { sort: "date", authorship: "all", limit: PAGE_SIZE }),
     ),
     safeFetch(() => getCommitsPage(id, { sort: "date", limit: SCATTER_SAMPLE })),
   ]);
@@ -103,11 +103,24 @@ export default async function CommitsPage({
       {trend && trend.agent_commits > 0 && <AgentTrendStrip trend={trend} />}
 
       <OverviewSection
-        title="Review-priority queue"
-        description="Ranked by change-risk, highest first. Priority is a tercile of this repo's own distribution, so a quiet repo still fills its top band."
+        title="Review queue"
+        description="Newest first by default. Priority is a tercile of this repo's own distribution, so sorting by it shows only the top third — the filters narrow the whole repository, not the page."
         action={<CredibilityInfoButton />}
       >
-        <CommitQueue repoId={id} initial={firstPage} total={total} />
+        <CommitQueue
+          repoId={id}
+          initial={firstPage}
+          total={total}
+          counts={
+            stats
+              ? {
+                  all: stats.total_commits,
+                  high: stats.high_priority_count,
+                  fixes: stats.fix_commit_count,
+                }
+              : undefined
+          }
+        />
       </OverviewSection>
 
       <OverviewSection

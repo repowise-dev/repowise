@@ -223,25 +223,39 @@ def _commit_detail_from_row(
 @router.get("/{repo_id}/commits", response_model=Paginated[CommitResponse])
 async def get_commits(
     repo_id: str,
-    sort: str = Query("risk", pattern="^(risk|date)$"),
+    sort: str = Query("date", pattern="^(risk|date)$"),
     authorship: str = Query("all", pattern="^(all|agent|human)$"),
+    kind: str = Query("all", pattern="^(all|high|fixes)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[CommitResponse]:
     """Per-commit change-risk feed — the review-priority queue.
 
-    ``sort=risk`` (default) orders by supporting diff-shape score descending (the
-    review-priority order); ``sort=date`` orders by recency. ``authorship``
-    narrows the feed to agent-attributed or human commits. Each commit also
-    carries a **repo-relative** ``risk_percentile`` + ``review_priority`` so the
-    ranking is portable across repos (the absolute calibration band is not).
+    ``sort=date`` (default) orders by recency; ``sort=risk`` orders by the
+    supporting diff-shape score descending. ``authorship`` narrows to
+    agent-attributed or human commits, and ``kind`` to the ``high``
+    review-priority band or to ``fixes``. Each commit carries a
+    **repo-relative** ``risk_percentile`` + ``review_priority`` so the ranking
+    is portable across repos (the absolute calibration band is not).
     """
-    total = await crud.count_git_commits(session, repo_id, authorship=authorship)
-    rows = await crud.get_git_commits(
-        session, repo_id, limit=limit, offset=offset, sort=sort, authorship=authorship
-    )
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
+    # The high band is a tercile of the repo's own scores, so the boundary has
+    # to be resolved before the page is cut rather than derived per row.
+    high_cut = normalizer.high_cut
+    total = await crud.count_git_commits(
+        session, repo_id, authorship=authorship, kind=kind, high_cut=high_cut
+    )
+    rows = await crud.get_git_commits(
+        session,
+        repo_id,
+        limit=limit,
+        offset=offset,
+        sort=sort,
+        authorship=authorship,
+        kind=kind,
+        high_cut=high_cut,
+    )
     author_counts = await _author_commit_counts(session, repo_id)
     items = [_commit_from_row(r, normalizer, author_counts) for r in rows]
     next_offset = offset + limit if offset + limit < total else None

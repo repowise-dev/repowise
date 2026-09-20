@@ -262,6 +262,84 @@ async def test_get_commits_sorted_by_risk(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_high_band_filters_the_repository_not_the_page(
+    client: AsyncClient, app
+) -> None:
+    """A risk-sorted page is entirely top-tercile, so a page-scoped filter is a no-op."""
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"kind": "high"})
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["total"] == 1
+    assert [c["short_sha"] for c in payload["items"]] == ["bbbbbbbb"]
+    assert all(c["review_priority"] == "high" for c in payload["items"])
+
+
+@pytest.mark.asyncio
+async def test_the_fixes_filter_counts_the_whole_repository(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_git_commits_bulk(
+            session,
+            repo["id"],
+            [
+                {
+                    "sha": "ffffffff44",
+                    "author_name": "Ann",
+                    "author_email": "ann@example.com",
+                    "committed_at": datetime.fromtimestamp(4000, tz=UTC),
+                    "subject": "fix: a real one",
+                    "lines_added": 3,
+                    "lines_deleted": 1,
+                    "files_changed": 1,
+                    "dirs_changed": 1,
+                    "subsystems_changed": 1,
+                    "entropy": 0.1,
+                    "is_fix": True,
+                    "author_experience": 3,
+                    "change_risk_score": 1.0,
+                    "change_risk_level": "low",
+                }
+            ],
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"kind": "fixes"})
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["total"] == 1
+    assert [c["short_sha"] for c in payload["items"]] == ["ffffffff"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_kind_is_rejected_rather_than_ignored(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"kind": "spicy"})
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_the_feed_defaults_to_recency(client: AsyncClient, app) -> None:
+    """Risk order shows only the top tercile, so it is no longer the default."""
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits")
+
+    assert [c["short_sha"] for c in resp.json()["items"]] == [
+        "aaaaaaaa",
+        "cccccccc",
+        "bbbbbbbb",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_commits_sorted_by_date(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
