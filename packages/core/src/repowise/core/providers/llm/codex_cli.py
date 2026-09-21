@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.providers.llm._concurrency import resolve_concurrency
 from repowise.core.providers.llm.base import (
     BaseProvider,
     CacheHint,
@@ -45,7 +45,6 @@ _CATALOG_TIMEOUT_SECONDS = 5
 # above 4 as well as lower it. Deliberate -- a higher-tier plan can take more
 # than a lower one, and only the operator knows which they have -- but it does
 # mean 4 is a default rather than an enforced cap.
-_DEFAULT_CONCURRENCY = 4
 _CONCURRENCY_ENV = "REPOWISE_CODEX_CLI_CONCURRENCY"
 
 
@@ -95,15 +94,7 @@ def _model_label(model: str | None) -> str:
 
 
 def _resolve_concurrency() -> int:
-    raw = os.environ.get(_CONCURRENCY_ENV, "").strip()
-    if not raw:
-        return _DEFAULT_CONCURRENCY
-    try:
-        value = int(raw)
-    except ValueError:
-        log.warning("codex_cli.concurrency.invalid", value=raw, using=_DEFAULT_CONCURRENCY)
-        return _DEFAULT_CONCURRENCY
-    return max(1, value)
+    return resolve_concurrency(_CONCURRENCY_ENV, "codex_cli")
 
 
 def _extract_codex_model_catalog(raw: object) -> dict[str, CodexModelReasoning]:

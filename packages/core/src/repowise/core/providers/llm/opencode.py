@@ -26,6 +26,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.providers.llm._concurrency import resolve_concurrency
 from repowise.core.providers.llm.base import (
     BaseProvider,
     CacheHint,
@@ -37,6 +38,8 @@ from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
 
 log = structlog.get_logger(__name__)
+
+_CONCURRENCY_ENV = "REPOWISE_OPENCODE_CONCURRENCY"
 
 _DEFAULT_MODEL_LABEL = "opencode/default"
 _EXEC_TIMEOUT_SECONDS = 600
@@ -317,7 +320,9 @@ class OpenCodeProvider(BaseProvider):
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
         if self._semaphore_loop is not loop:
-            self._subprocess_semaphore = asyncio.Semaphore(1)
+            self._subprocess_semaphore = asyncio.Semaphore(
+                resolve_concurrency(_CONCURRENCY_ENV, "opencode")
+            )
             self._semaphore_loop = loop
         return self._subprocess_semaphore  # type: ignore[return-value]
 
