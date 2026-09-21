@@ -60,6 +60,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("spec/support/helper.rb", None, "support"),
     # e2e suites
     ("e2e/login.ts", None, "test"),
+    ("apps/console/e2e/helpers/hydration.ts", "typescript", "support"),
+    ("apps/console/e2e/fixtures.ts", "typescript", "support"),
+    ("apps/console/e2e/specs/login.spec.ts", "typescript", "test"),
     # production code that merely contains the word: the unanchored
     # `test[s_/]` substring rule classified the first three as tests
     ("src/latest/api.py", None, ""),  # #1103 finding 1
@@ -90,6 +93,11 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # still needs a test tree around it
     ("fixtures/data.yml", None, ""),
     ("app/fixtures/premier_league.py", None, ""),
+    ("src/fixtures.ts", None, ""),
+    ("src/fixtures.ts", "typescript", ""),
+    ("src/fixtures.py", None, ""),
+    ("src/fixtures.py", "python", ""),
+    ("lib/fixtures.go", None, ""),
     ("src/testdata_loader.py", None, ""),
     ("tests/testdata/golden.json", None, "support"),
 )
