@@ -147,6 +147,30 @@ def _hooks_dir(repo_path: Path) -> Path | None:
     return root / ".git" / "hooks"
 
 
+def hook_path(repo_path: Path) -> Path | None:
+    """Where the post-commit hook lives for *repo_path*, or ``None``.
+
+    The same resolution :func:`install` and :func:`uninstall` use, exposed so
+    the uninstall inventory can name the path without reimplementing the
+    worktree / ``core.hooksPath`` / husky logic.
+    """
+    hooks_dir = _hooks_dir(repo_path)
+    if hooks_dir is None:
+        return None
+    return hooks_dir / "post-commit"
+
+
+def marker_present(path: Path) -> bool:
+    """Whether *path* exists and holds our marker block."""
+    try:
+        return path.is_file() and _HOOK_MARKER in path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        # An unreadable hook is not ours to claim. The inventory must keep
+        # printing when a file cannot be read; ``uninstall`` will say so when
+        # its turn comes.
+        return False
+
+
 def _is_shell_hook(content: str) -> bool:
     """Whether an existing hook file can take an appended POSIX sh block.
 
