@@ -213,3 +213,45 @@ class TestTheStoreRootStaysOutOfHome:
         assert (global_store_dir(repo) / "wiki.db").is_file()
         assert global_store_dir(repo).is_relative_to(store_root)
         assert not (fake_home / ".repowise" / "repos").exists()
+
+
+class TestTheSavingsSidecarFollowsTheStore:
+    """The sidecar modules spell their path through the resolver, not ``.repowise``.
+
+    ``init`` is not the only writer. The savings ledger, its transcript cursors
+    and the pricing cache each resolve their own directory, and they were the
+    reason a global ``init`` still left ``.repowise/omissions/`` in the checkout
+    after the index itself had moved. Every one of them asks
+    ``resolve_store_dir`` now, so the promise above holds for the whole set
+    rather than for the index alone.
+    """
+
+    def test_the_sidecar_path_follows_the_store(self, repo: Path, store_root: Path) -> None:
+        from repowise.core.savings import recorder
+
+        # No mode yet: the repo-local default, unchanged from before #1551.
+        assert recorder.sidecar_path(repo) == repo / ".repowise" / "omissions" / "omissions.db"
+
+        _run(["init", str(repo), "--no-prose", "--yes", "--global-store"])
+
+        # After a global init the same call answers from the store entry.
+        resolved = recorder.sidecar_path(repo)
+        assert resolved == global_store_dir(repo) / "omissions" / "omissions.db"
+        assert resolved.is_relative_to(store_root)
+        assert not (repo / ".repowise").exists()
+
+    def test_the_transcript_cursors_follow_the_store(self, repo: Path, store_root: Path) -> None:
+        from repowise.core.savings.transcript import _sidecar_dir
+
+        _run(["init", str(repo), "--no-prose", "--yes", "--global-store"])
+
+        assert _sidecar_dir(repo) == global_store_dir(repo) / "omissions"
+        assert not (repo / ".repowise").exists()
+
+    def test_an_indexed_but_untouched_checkout_gains_no_sidecar(
+        self, repo: Path, store_root: Path
+    ) -> None:
+        """The end-to-end promise: a global init leaves the tree exactly as found."""
+        before = _snapshot(repo)
+        _run(["init", str(repo), "--no-prose", "--yes", "--global-store"])
+        assert _snapshot(repo) == before
