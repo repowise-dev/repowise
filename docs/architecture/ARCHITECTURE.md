@@ -1119,6 +1119,8 @@ which client was wired up and how Cursor or Codex connect (`repowise mcp .`).
 
 Served on port `7337` alongside the web UI. All endpoints are prefixed with `/api/`.
 
+**Full endpoint reference:** [`docs/reference/API_REFERENCE.md`](../reference/API_REFERENCE.md)
+
 Key routers:
 - `/api/repos`: register repos, trigger sync, full-resync (now launches background pipeline jobs with concurrent-run prevention)
 - `/api/pages`: read pages, version history, force-regenerate single page
