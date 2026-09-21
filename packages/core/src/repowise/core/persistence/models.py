@@ -2195,7 +2195,10 @@ class CoverageFile(Base):
     )
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     source_format: Mapped[str] = mapped_column(String(32), nullable=False)
-    line_coverage_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # NULL is "nothing to cover" — a report record with no coverable lines,
+    # which is not the same fact as 0% of them being hit (issue #2193). Same
+    # meaning ``branch_coverage_pct`` has always carried for "no branches".
+    line_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     covered_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     total_coverable_lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -14,10 +14,19 @@ from dataclasses import dataclass, field
 
 @dataclass
 class FileCoverage:
-    """Per-file coverage extracted from a single report."""
+    """Per-file coverage extracted from a single report.
+
+    ``line_coverage_pct`` is ``None`` when the file has **nothing to cover**
+    — a report record with ``LF:0`` / no coverable lines, which a type-only
+    module or a barrel of re-exports produces. That is not the same fact as
+    "0% of this file's lines were hit", and collapsing the two makes the
+    coverage biomarkers fire on a file that contains no executable code
+    (issue #2193). ``branch_coverage_pct`` has always said ``None`` for the
+    analogous "no branches" case; lines now answer the same way.
+    """
 
     file_path: str
-    line_coverage_pct: float
+    line_coverage_pct: float | None
     branch_coverage_pct: float | None
     covered_lines: list[int] = field(default_factory=list)
     total_coverable_lines: int = 0

@@ -1291,6 +1291,10 @@ class HealthAnalyzer:
             branch_coverage_pct=branch_cov,
             covered_lines=covered_lines,
             total_coverable_lines=total_coverable_lines,
+            # A row in the coverage map, whatever it says. Separates "nothing
+            # to cover" from "never measured", which ``line_coverage_pct``
+            # alone cannot (issue #2193).
+            coverage_measured=cov is not None,
             clones=list(clones),
             duplication_pct=dup_pct,
             graph_view=graph_view,

@@ -216,3 +216,67 @@ def test_paired_test_file_finds_partner() -> None:
     all_paths = {"src/foo.py", "tests/test_foo.py", "src/bar.py"}
     assert paired_test_file("src/foo.py", all_paths) == "tests/test_foo.py"
     assert paired_test_file("src/bar.py", all_paths) is None
+
+
+# ---------------------------------------------------------------------------
+# Nothing to cover is not zero coverage (issue #2193)
+#
+# A record with no coverable lines — a type-only module, a barrel of
+# re-exports — used to parse to 0.0, which is the same value a file whose
+# lines were all missed gets. The coverage biomarkers then deducted from a
+# file with no executable code in it. Every parser answers ``None`` now, and
+# every one of them is checked: the expression is copied into each, so a fix
+# in one alone is the kind that gets rediscovered later.
+# ---------------------------------------------------------------------------
+
+_NOTHING_COVERABLE = {
+    "lcov": (
+        "TN:\nSF:src/types.ts\nFNF:0\nFNH:0\nLF:0\nLH:0\nBRF:0\nBRH:0\nend_of_record\n"
+        "TN:\nSF:src/real.ts\nFNF:2\nFNH:0\nDA:1,0\nDA:2,0\nLF:2\nLH:0\nBRF:0\nBRH:0\n"
+        "end_of_record\n"
+    ),
+    "cobertura": (
+        '<?xml version="1.0"?><coverage><packages><package><classes>'
+        '<class filename="src/types.ts"><lines/></class>'
+        '<class filename="src/real.ts"><lines>'
+        '<line number="1" hits="0"/><line number="2" hits="0"/>'
+        "</lines></class></classes></package></packages></coverage>"
+    ),
+    "clover": (
+        '<?xml version="1.0"?><coverage><project>'
+        '<file path="src/types.ts"></file>'
+        '<file path="src/real.ts"><line num="1" type="stmt" count="0"/></file>'
+        "</project></coverage>"
+    ),
+}
+
+
+@pytest.mark.parametrize("fmt", sorted(_NOTHING_COVERABLE))
+def test_no_coverable_lines_parses_as_not_applicable(fmt: str) -> None:
+    parser = {"lcov": parse_lcov, "cobertura": parse_cobertura, "clover": parse_clover}[fmt]
+    paths = {f.file_path: f for f in parser(_NOTHING_COVERABLE[fmt]).files}
+
+    nothing = paths["src/types.ts"]
+    assert nothing.total_coverable_lines == 0
+    assert nothing.line_coverage_pct is None
+
+    # The other half of the distinction: a file that really is uncovered still
+    # reports 0.0, so the two records stay different facts.
+    assert paths["src/real.ts"].line_coverage_pct == 0.0
+
+
+def test_repowise_json_no_coverable_lines_parses_as_not_applicable() -> None:
+    payload = json.dumps(
+        {
+            "format": "repowise-coverage-v1",
+            "files": {
+                # An explicit 0% alongside an explicit zero total is still the
+                # 0/0 record, not a measurement.
+                "src/types.ts": {"line_coverage_pct": 0.0, "total_coverable_lines": 0},
+                "src/real.ts": {"line_coverage_pct": 0.0, "total_coverable_lines": 2},
+            },
+        }
+    )
+    paths = {f.file_path: f for f in parse_repowise_json(payload).files}
+    assert paths["src/types.ts"].line_coverage_pct is None
+    assert paths["src/real.ts"].line_coverage_pct == 0.0

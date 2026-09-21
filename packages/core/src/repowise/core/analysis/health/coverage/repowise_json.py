@@ -29,7 +29,9 @@ Tolerant by design: a file entry needs only enough to pin down a line
 percentage. When ``line_coverage_pct`` is absent it is derived from
 ``covered_lines`` / ``total_coverable_lines``; when ``total_coverable_lines``
 is absent it is derived from the percentage and the covered set. An entry
-that pins down neither is skipped (absent, *not* zero — see Phase-7 §5).
+that pins down neither is skipped (absent, *not* zero — see Phase-7 §5), and
+one that declares nothing coverable parses to ``line_coverage_pct = None``
+for the same reason.
 """
 
 from __future__ import annotations
@@ -103,12 +105,19 @@ def _parse_entry(key: str | None, entry: dict[str, Any]) -> FileCoverage | None:
         else:
             total = len(covered_lines)
 
+    # An entry that declares nothing coverable is "not applicable", whatever
+    # percentage it carries alongside — a 0/0 record is not 0% covered
+    # (issue #2193). Every other branch above has already established
+    # ``total > 0``, so this only catches an explicit ``0``.
+    if not total:
+        pct = None
+
     branch = entry.get("branch_coverage_pct")
     branch_pct = float(branch) if isinstance(branch, (int, float)) else None
 
     return FileCoverage(
         file_path=path,
-        line_coverage_pct=round(max(0.0, min(100.0, pct)), 2),
+        line_coverage_pct=round(max(0.0, min(100.0, pct)), 2) if pct is not None else None,
         branch_coverage_pct=round(branch_pct, 2) if branch_pct is not None else None,
         covered_lines=covered_lines,
         total_coverable_lines=int(total or 0),

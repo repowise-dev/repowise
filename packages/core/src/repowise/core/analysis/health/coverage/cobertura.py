@@ -93,7 +93,8 @@ def parse_cobertura(text: str) -> CoverageReport:
         assert isinstance(total_set, set)
         total = len(total_set)
         hit = len(covered)
-        line_pct = (hit / total * 100.0) if total else 0.0
+        # No coverable lines is "not applicable", not "nothing was hit".
+        line_pct = (hit / total * 100.0) if total else None
         branch_pct: float | None
         bf = int(bucket["branches_found"])
         bh = int(bucket["branches_hit"])
@@ -101,7 +102,7 @@ def parse_cobertura(text: str) -> CoverageReport:
         files.append(
             FileCoverage(
                 file_path=path,
-                line_coverage_pct=round(line_pct, 2),
+                line_coverage_pct=round(line_pct, 2) if line_pct is not None else None,
                 branch_coverage_pct=round(branch_pct, 2) if branch_pct is not None else None,
                 covered_lines=sorted(covered),
                 total_coverable_lines=total,
