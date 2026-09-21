@@ -122,7 +122,7 @@ def workspace_group() -> None:
 @click.argument("path", required=False, default=None)
 def workspace_list(path: str | None) -> None:
     """Show all repos in the workspace with their status."""
-    from repowise.cli.helpers import get_repowise_dir
+    from repowise.cli.helpers import db_configured, get_repowise_dir
     from repowise.core.workspace import check_repo_staleness
 
     start = resolve_repo_path(path)
@@ -138,6 +138,14 @@ def workspace_list(path: str | None) -> None:
 
     indexed_count = 0
 
+    # The repo-local `.repowise/` directory is a proxy for "indexed" only for the
+    # SQLite default. A shared store (REPOWISE_DB_URL pointing at PostgreSQL)
+    # holds the index somewhere the repo keeps no file for, so testing the
+    # directory alone reported every member as "not indexed" with zero counts,
+    # and the summary line beneath the table said 0/N for a workspace that was
+    # fully indexed. Reading that output suggests a reindex that is not needed.
+    shared_db = db_configured()
+
     for entry in ws_config.repos:
         abs_path = (ws_root / entry.path).resolve()
         repowise_dir = get_repowise_dir(abs_path)
@@ -148,7 +156,7 @@ def workspace_list(path: str | None) -> None:
 
         rel_path = entry.path
 
-        if not repowise_dir.exists():
+        if not shared_db and not repowise_dir.exists():
             table.add_row(label, rel_path, "-", "-", "-", "[yellow]not indexed[/yellow]")
             continue
 
@@ -191,11 +199,19 @@ def workspace_list(path: str | None) -> None:
 
 
 def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
-    """Return ``(file_count, symbol_count)`` from a repo's DB, or ``(0, 0)``."""
-    from repowise.cli.helpers import get_db_url_for_repo, get_repowise_dir
+    """Return ``(file_count, symbol_count)`` from a repo's DB, or ``(0, 0)``.
+
+    The repo-local ``wiki.db`` existence check describes the SQLite default and
+    only it. A shared store (``REPOWISE_DB_URL``) already holds the counts, so
+    demanding the local file returned ``(0, 0)`` for a repository the database
+    knows about, and every row printed zero. The engine is built from
+    ``get_db_url_for_repo`` either way, so the guard only has to stop skipping
+    that query when the configured URL is the reason the file is absent.
+    """
+    from repowise.cli.helpers import db_configured, get_db_url_for_repo, get_repowise_dir
 
     db_path = get_repowise_dir(repo_path) / "wiki.db"
-    if not db_path.exists():
+    if not db_path.exists() and not db_configured():
         return 0, 0
 
     async def _query() -> tuple[int, int]:
