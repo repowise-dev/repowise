@@ -460,6 +460,41 @@ def add_claude_code_distill_allow_rules() -> Path | None:
     return settings_path
 
 
+def uninstall_claude_code_distill_allow_rules() -> bool:
+    """Remove the distill allow rules from ``permissions.allow`` in settings.json.
+
+    Returns True when at least one rule was removed and saved, False otherwise.
+    Strictly removes only rules matching DISTILL_ALLOW_RULES; user rules survive.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+
+    permissions = existing.get("permissions")
+    if not isinstance(permissions, dict):
+        return False
+    allow = permissions.get("allow")
+    if not isinstance(allow, list):
+        return False
+
+    initial_len = len(allow)
+    allow[:] = [rule for rule in allow if rule not in DISTILL_ALLOW_RULES]
+    if len(allow) == initial_len:
+        return False
+
+    if not allow:
+        permissions.pop("allow", None)
+    if not permissions:
+        existing.pop("permissions", None)
+
+    return _write_settings(settings_path, existing)
+
+
+
 def _migrate_legacy_rewrite_matcher(hook_list: list) -> bool:
     """Widen legacy rewrite-hook matchers in place (``Bash`` → current)."""
     changed = False
@@ -652,6 +687,12 @@ def claude_code_leftover_reason() -> str | None:
                         _is_repowise_hook(hook) or _is_rewrite_hook(hook)
                     ):
                         return "one of our hooks was still present after the write"
+
+    permissions = existing.get("permissions")
+    if isinstance(permissions, dict):
+        allow = permissions.get("allow")
+        if isinstance(allow, list) and any(r in DISTILL_ALLOW_RULES for r in allow):
+            return "our distill permission rules were still present after the write"
     return None
 
 

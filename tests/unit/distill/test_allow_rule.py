@@ -18,6 +18,8 @@ from repowise.cli.editor_integrations import claude_config
 from repowise.cli.editor_integrations.claude_config import (
     DISTILL_ALLOW_RULES,
     add_claude_code_distill_allow_rules,
+    claude_code_leftover_reason,
+    uninstall_claude_code_distill_allow_rules,
 )
 
 
@@ -82,6 +84,45 @@ class TestAddDistillAllowRules:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text("{not json", encoding="utf-8")
         assert add_claude_code_distill_allow_rules() is None
+
+
+class TestUninstallDistillAllowRules:
+    def test_removes_rules_and_cleans_empty_permissions(self, settings_path) -> None:
+        add_claude_code_distill_allow_rules()
+        assert claude_code_leftover_reason() == "our distill permission rules were still present after the write"
+        assert uninstall_claude_code_distill_allow_rules() is True
+        assert claude_code_leftover_reason() is None
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert "permissions" not in data
+
+    def test_preserves_user_allow_rules(self, settings_path) -> None:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "permissions": {
+                        "allow": ["Bash(git status:*)", *DISTILL_ALLOW_RULES],
+                        "deny": ["WebFetch"],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert claude_code_leftover_reason() == "our distill permission rules were still present after the write"
+        assert uninstall_claude_code_distill_allow_rules() is True
+        assert claude_code_leftover_reason() is None
+        allow = _allow(settings_path)
+        assert allow == ["Bash(git status:*)"]
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert data["permissions"]["deny"] == ["WebFetch"]
+
+    def test_returns_false_when_absent(self, settings_path) -> None:
+        assert uninstall_claude_code_distill_allow_rules() is False
+
+    def test_returns_false_on_malformed_file(self, settings_path) -> None:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text("{not json", encoding="utf-8")
+        assert uninstall_claude_code_distill_allow_rules() is False
 
 
 class TestRewriteInstallFlag:
