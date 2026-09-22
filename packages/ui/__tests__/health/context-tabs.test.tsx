@@ -9,15 +9,10 @@
  * total exists only for a server that predates context scoping and sends
  * no facets.context at all.
  */
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ContextTabs } from "../../src/health/performance/filters.js";
 import type { PerformanceFacets } from "@repowise-dev/types/health";
-
-// jsdom has no layout engine; ViewTabs' active-tab scroll is a no-op here.
-beforeAll(() => {
-  Element.prototype.scrollIntoView = vi.fn();
-});
 
 const scopedCounts = [
   { value: "production", total: 22 },

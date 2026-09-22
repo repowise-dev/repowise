@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { PerformanceView } from "../../src/health/performance-view";
@@ -11,10 +11,6 @@ import {
   resolvedDetail,
   sibling,
 } from "./fixtures/performance";
-
-beforeAll(() => {
-  Element.prototype.scrollIntoView = vi.fn();
-});
 
 const rows = () => screen.findAllByRole("listitem");
 const openFirstRow = async () => {
