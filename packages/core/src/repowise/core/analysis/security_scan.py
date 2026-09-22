@@ -280,18 +280,7 @@ def _redaction(val: str) -> str:
 
 
 def _mask_secret_snippet(snippet: str, val: str) -> str:
-    """Replace the first occurrence of *val* inside *snippet* with a redacted form.
-
-    Keeps the variable name and surrounding text intact so the finding remains
-    locatable in the source file.  The replacement is ``val[:4] + '****'``
-    (first four characters visible, everything else hidden).  If the value is
-    shorter than four characters, the whole value is replaced with ``'****'``.
-
-    Examples
-    --------
-    >>> _mask_secret_snippet("password = 'super_secret_pass_99'", "super_secret_pass_99")
-    "password = 'supe****'"
-    """
+    """Replace the first occurrence of *val* in *snippet* with its redaction."""
     if not val:
         return snippet
     return snippet.replace(val, _redaction(val), 1)
@@ -301,29 +290,74 @@ def _mask_secret_snippet(snippet: str, val: str) -> str:
 # ``SECRET_KINDS`` the empty capture would fail validation and drop the finding.
 _ASSIGNED_VALUE = re.compile(r"""\A['"]?\s*[:=]+\s*['"`]?([^'"`\s,;]+)""")
 
-# Their snippets may hold ``****``, so are not verbatim on the source line.
-REDACTED_SNIPPET_KINDS: frozenset[str] = SECRET_KINDS | {"public_env_secret"}
+_SECRET_PATTERNS = [p for p, kind, _ in _PATTERNS if kind in SECRET_KINDS]
+_PUBLIC_ENV_PATTERN = next(p for p, kind, _ in _PATTERNS if kind == "public_env_secret")
+_SECRET_PREFILTER = re.compile(
+    "|".join(f"(?:{p.pattern})" for p in [*_SECRET_PATTERNS, _PUBLIC_ENV_PATTERN])
+)
+
+_SNIPPET_MAX = 120
+_MARKER = "****"
 
 
-def _redact_assigned_value(line: str, name_end: int) -> str:
-    value = _ASSIGNED_VALUE.search(line[name_end:])
-    if value is None:
+def _secret_spans(line: str) -> list[tuple[int, int]]:
+    """Every credential value on *line*, including repeats of one elsewhere on it."""
+    spans: list[tuple[int, int]] = []
+    for pattern in _SECRET_PATTERNS:
+        for match in pattern.finditer(line):
+            if _is_valid_credential_value(match.group(1)):
+                spans.append(match.span(1))
+    for match in _PUBLIC_ENV_PATTERN.finditer(line):
+        value = _ASSIGNED_VALUE.search(line[match.end() :])
+        if value is not None:
+            spans.append((match.end() + value.start(1), match.end() + value.end(1)))
+    for start, end in list(spans):
+        val = line[start:end]
+        if len(val) < 4:
+            continue
+        at = line.find(val)
+        while at != -1:
+            spans.append((at, at + len(val)))
+            at = line.find(val, at + 1)
+    return spans
+
+
+def _mask_line(line: str) -> str:
+    if not _SECRET_PREFILTER.search(line):
         return line
-    start, end = name_end + value.start(1), name_end + value.end(1)
-    return line[:start] + _redaction(line[start:end]) + line[end:]
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(_secret_spans(line)):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    out: list[str] = []
+    pos = 0
+    for start, end in merged:
+        out.append(line[pos:start])
+        out.append(_redaction(line[start:end]))
+        pos = end
+    out.append(line[pos:])
+    return "".join(out)
+
+
+def _snippet(line: str) -> str:
+    """*line* as stored: every secret on it masked, then stripped and trimmed.
+
+    Masking comes first because a value cut by the trim no longer matches.
+    """
+    text = _mask_line(line).strip()
+    cut = _SNIPPET_MAX
+    if len(text) > cut:
+        # Never end inside a marker: a bare ``*`` run defeats line verification.
+        marker = text.rfind(_MARKER, 0, cut + len(_MARKER) - 1)
+        if marker != -1 and marker < cut < marker + len(_MARKER):
+            cut = marker
+    return text[:cut]
 
 
 def _mask_findings(findings: list[dict]) -> None:
-    """Redact the captured secret value from every credential finding's snippet.
-
-    Operates in-place on *findings*.  Only kinds listed in ``SECRET_KINDS`` are
-    touched; every other kind (code-smell patterns, symbol names, spanning
-    patterns not in SECRET_KINDS) is left unchanged.
-
-    This is called as a final post-pass inside ``scan_source`` before returning,
-    so it covers the per-line loop, the spanning-pattern loop, and the
-    ``HistorySecurityScanner`` path in one place.
-    """
+    """Mask ``_secret_val`` in credential snippets built outside :func:`scan_source`."""
     for finding in findings:
         if finding.get("kind") not in SECRET_KINDS:
             continue
@@ -457,12 +491,11 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
                     continue
                 if call_name not in {"eval", "exec"}:
                     continue
-                line = source.splitlines()[node.lineno - 1].strip()[:120]
                 findings.append(
                     {
                         "kind": f"{call_name}_call",
                         "severity": "high",
-                        "snippet": line,
+                        "snippet": _snippet(source.splitlines()[node.lineno - 1]),
                         "line": node.lineno,
                     }
                 )
@@ -474,7 +507,7 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
 
     def add(kind: str, severity: str, offset: int) -> None:
         lineno = source.count("\n", 0, offset) + 1
-        snippet = lines[lineno - 1].strip()[:120] if lineno <= len(lines) else ""
+        snippet = _snippet(lines[lineno - 1]) if lineno <= len(lines) else ""
         findings.append({"kind": kind, "severity": severity, "snippet": snippet, "line": lineno})
 
     is_python = file_path.lower().endswith((".py", ".pyi"))
@@ -516,36 +549,19 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
     for lineno, line in enumerate(lines, start=1):
         if not _ANY_PATTERN.search(line):
             continue
+        snippet: str | None = None
         for pattern, kind, severity in _PATTERNS:
             if kind in _CALL_KINDS:
                 continue
             match = pattern.search(line)
             if match:
                 if kind in SECRET_KINDS:
-                    val = match.group(1) if match.groups() else ""
-                    if not _is_valid_credential_value(val):
+                    if not _is_valid_credential_value(match.group(1)):
                         continue
                     if is_low_sev_file:
                         severity = "low"
-                    # Mask before trimming: a value cut short no longer
-                    # matches the replace and would ship raw.
-                    snippet = line.strip().replace(val, _redaction(val))[:120]
-                    findings.append(
-                        {
-                            "kind": kind,
-                            "severity": severity,
-                            "snippet": snippet,
-                            "line": lineno,
-                            # Internal: consumed by _mask_findings, never persisted.
-                            "_secret_val": val,
-                        }
-                    )
-                    continue
-                shown = line
-                if kind == "public_env_secret":
-                    shown = _redact_assigned_value(line, match.end())
-                # Trim snippet to keep it concise
-                snippet = shown.strip()[:120]
+                if snippet is None:
+                    snippet = _snippet(line)
                 findings.append(
                     {
                         "kind": kind,
@@ -555,12 +571,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                     }
                 )
 
-    # Whole-source pass for patterns that span physical lines
-    # (``subprocess.run(\n    ...,\n    shell=True,\n)``). The per-line
-    # loop above can never see the sink when the call opens on one line
-    # and ``shell=`` lands on another, so scan the full source once. The
-    # finding is reported on the line where the call starts, and a match
-    # the per-line pass already caught on that line is not duplicated.
+    # Calls that open on one line and set ``shell=True`` on a later one; reported
+    # on the opening line, unless the per-line pass already did.
     for pattern, kind, severity in _SPANNING_PATTERNS:
         for match in pattern.finditer(source):
             if kind in SECRET_KINDS:
@@ -576,12 +588,11 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
             line_end = source.find("\n", match.start())
             if line_end == -1:
                 line_end = len(source)
-            snippet = source[line_start:line_end].strip()[:120]
             findings.append(
                 {
                     "kind": kind,
                     "severity": severity,
-                    "snippet": snippet,
+                    "snippet": _snippet(source[line_start:line_end]),
                     "line": start_line,
                 }
             )
@@ -599,12 +610,6 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 }
             )
 
-    # Mask secret values before any finding leaves this function.
-    # A single post-pass keyed on SECRET_KINDS covers the per-line loop,
-    # the spanning-pattern loop above, and HistorySecurityScanner (which
-    # calls this same function), so every present and future snippet site is
-    # covered by construction.
-    _mask_findings(findings)
     return findings
 
 

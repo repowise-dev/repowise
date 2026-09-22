@@ -810,3 +810,55 @@ class TestScanSource:
         assert scanned == ["a.py", "clean.py", "s.py"]
         assert set(findings_by_file) == {"a.py"}
         assert findings_by_file["a.py"] == scan_source("a.py", SNIPPY.decode())
+
+
+def _assert_no_raw(snippet: str, raw: str) -> None:
+    leaked = [raw[i : i + 5] for i in range(len(raw) - 4) if raw[i : i + 5] in snippet]
+    assert not leaked, f"raw value in {snippet!r}"
+
+
+class TestEverySnippetIsMasked:
+    """A secret leaks through whichever finding on its line shows the line."""
+
+    PW, KEY = "Qz8vK2mW9xL4pR7t", "Hj3nB6cX1vM5kS8d"
+
+    def test_two_secrets_on_one_line(self) -> None:
+        line = f'password = "{self.PW}"; api_key = "{self.KEY}"\n'
+        findings = scan_source("a.py", line)
+        assert {f["kind"] for f in findings} >= {"hardcoded_password", "hardcoded_secret"}
+        for f in findings:
+            _assert_no_raw(f["snippet"], self.PW)
+            _assert_no_raw(f["snippet"], self.KEY)
+
+    @pytest.mark.parametrize(
+        ("source", "kind"),
+        [
+            (f'API_KEY = "{KEY}"  # md5\n', "weak_hash"),
+            (f'os.system(cmd); secret = "{KEY}"\n', "os_system"),
+            (f'x = eval(y); secret = "{KEY}"\n', "eval_call"),
+            (f'subprocess.run(cmd, secret = "{KEY}",\n    shell=True)\n', "subprocess_shell_true"),
+        ],
+    )
+    def test_secret_beside_another_pattern(self, source: str, kind: str) -> None:
+        (hit,) = [f for f in scan_source("a.py", source) if f["kind"] == kind]
+        _assert_no_raw(hit["snippet"], self.KEY)
+
+    def test_two_public_env_values_on_one_line(self) -> None:
+        line = "NEXT_PUBLIC_API_KEY=abcdef0123456789 VITE_AUTH_TOKEN=tok_9876543210\n"
+        (hit,) = [f for f in scan_source("a.env.ts", line) if f["kind"] == "public_env_secret"]
+        _assert_no_raw(hit["snippet"], "abcdef0123456789")
+        _assert_no_raw(hit["snippet"], "tok_9876543210")
+
+    def test_unterminated_value_with_trailing_space(self) -> None:
+        (hit,) = scan_source("a.py", f'password = "{self.PW}   \n')
+        _assert_no_raw(hit["snippet"], self.PW)
+
+    @pytest.mark.parametrize("pad", range(95, 120))
+    def test_trim_never_ends_inside_a_mask(self, pad: int) -> None:
+        from repowise.server.services.security_lines import check_finding_line
+
+        line = f'{"x" * pad} password = "{self.PW}"'
+        (hit,) = [f for f in scan_source("a.py", line + "\n") if f["kind"] == "hardcoded_password"]
+        assert not hit["snippet"].endswith(("*", "**", "***")) or hit["snippet"].endswith("****")
+        _assert_no_raw(hit["snippet"], self.PW)
+        assert check_finding_line([line], 1, hit["snippet"], hit["kind"]).verified

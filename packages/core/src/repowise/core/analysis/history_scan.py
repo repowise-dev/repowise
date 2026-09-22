@@ -297,16 +297,6 @@ class HistorySecurityScanner:
             return kind in SECRET_KINDS
         return True
 
-    @staticmethod
-    def _is_placeholder(snippet: str | None) -> bool:
-        """True when the matched line is documentation, not a credential.
-
-        ``api_key="sk-..."`` in a docstring or README is the shape every
-        provider example uses. An elided value is never a live secret, and on
-        this repo it accounted for every non-test history hit.
-        """
-        return "..." in (snippet or "")
-
     # ------------------------------------------------------------------
     # Scan driver
     # ------------------------------------------------------------------
@@ -370,12 +360,9 @@ class HistorySecurityScanner:
             if not findings:
                 continue
 
-            kept = [
-                f
-                for f in findings
-                if self._passes_gate(f["kind"], secrets_only=secrets_only)
-                and not (secrets_only and self._is_placeholder(f.get("snippet")))
-            ]
+            # Elided values ("sk-...") never get here: the scan's credential
+            # check rejects them on the captured value, not the snippet.
+            kept = [f for f in findings if self._passes_gate(f["kind"], secrets_only=secrets_only)]
             if not kept:
                 continue
 

@@ -163,6 +163,48 @@ def test_migration_0041_upgrades_sqlite() -> None:
         asyncio.run(engine.dispose())
 
 
+def test_migration_0077_clears_credential_snippets_only() -> None:
+    """Rows written before full-line masking lose their snippet; others keep it."""
+    import sqlite3
+    from contextlib import closing
+
+    core_root = Path("packages/core")
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.db"
+        url = f"sqlite+aiosqlite:///{db_path}"
+        prev_url = os.environ.get("DATABASE_URL")
+        os.environ["DATABASE_URL"] = url
+        prev_cwd = Path.cwd()
+        try:
+            os.chdir(core_root)
+            alembic_cfg = Config("alembic.ini")
+            alembic_cfg.set_main_option("sqlalchemy.url", url)
+            with patch("logging.config.fileConfig"):
+                command.upgrade(alembic_cfg, "0076")
+                with closing(sqlite3.connect(db_path)) as conn, conn:
+                    conn.executemany(
+                        "INSERT INTO security_findings (repository_id, file_path, kind, "
+                        "severity, snippet, line_number, commit_sha, detected_at) "
+                        "VALUES ('r', 'a.ts', ?, 'high', ?, ?, ?, '2026-09-01')",
+                        [
+                            ("public_env_secret", "NEXT_PUBLIC_API_KEY=sk_live_raw", 1, ""),
+                            ("hardcoded_secret", 'API_KEY = "rawrawrawraw', 2, "abc123"),
+                            ("eval_call", "eval(x)", 3, ""),
+                        ],
+                    )
+                command.upgrade(alembic_cfg, "0077")
+        finally:
+            os.chdir(prev_cwd)
+            if prev_url is None:
+                os.environ.pop("DATABASE_URL", None)
+            else:
+                os.environ["DATABASE_URL"] = prev_url
+
+        with closing(sqlite3.connect(db_path)) as conn:
+            rows = dict(conn.execute("SELECT kind, snippet FROM security_findings").fetchall())
+        assert rows == {"public_env_secret": "", "hardcoded_secret": "", "eval_call": "eval(x)"}
+
+
 async def test_history_gate_excludes_code_smells_by_default(session: AsyncSession) -> None:
     """History mode keeps only secret kinds when secrets_only (default) is set."""
     assert HistorySecurityScanner._passes_gate("hardcoded_password", secrets_only=True)
@@ -357,6 +399,23 @@ async def test_history_default_skips_test_fixtures_and_placeholders(
     assert "leak.py" in paths, "the real secret must still be reported"
     assert "tests/test_client.py" not in paths, "test fixture leaked into a secrets report"
     assert "docs.py" not in paths, "elided placeholder reported as a credential"
+
+
+async def test_history_keeps_a_real_secret_beside_an_elided_comment(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    """Placeholder filtering reads the captured value, not the rest of the line."""
+    (secret_repo / "cfg.py").write_text('password = "a9f3kQ2mZx7LpW1v"  # rotate ...\n')
+    _git(secret_repo, "add", ".")
+    _git(secret_repo, "commit", "-m", "add cfg")
+
+    await HistorySecurityScanner(session, "repo-1").scan_history(secret_repo, secrets_only=True)
+
+    paths = {
+        r._mapping["file_path"]
+        for r in (await session.execute(text("SELECT file_path FROM security_findings"))).all()
+    }
+    assert "cfg.py" in paths
 
 
 async def test_all_patterns_lifts_the_noise_gate(session: AsyncSession, secret_repo: Path) -> None:

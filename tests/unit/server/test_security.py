@@ -237,3 +237,12 @@ async def test_working_tree_finding_has_no_commit_date(client: AsyncClient, app)
     row = (await client.get(f"/api/repos/{repo['id']}/security")).json()[0]
     assert row["found_in_history"] is False
     assert row["commit_at"] is None
+
+
+def test_snippet_cut_inside_a_mask_still_locates_its_line() -> None:
+    from repowise.server.services.security_lines import check_finding_line
+
+    line = 'API_KEY = "sk_live_0123456789"'
+    check = check_finding_line(["", line], 1, 'API_KEY = "sk_l**', "hardcoded_secret")
+    assert check.line_number == 2
+    assert check.verified is True

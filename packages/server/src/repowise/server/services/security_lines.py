@@ -15,9 +15,9 @@ The contract, mirroring that module:
 * ``line_number: None`` — the snippet is gone from the file entirely. The
   finding is stale; a line here would point at unrelated code.
 
-For the pattern scan the snippet is ``line.strip()[:120]`` (``security_scan.py``),
-so it is always a substring of the line it came from and containment is a sound
-gate. The symbol-name scan is the exception: its snippet is a bare identifier,
+A pattern snippet is its trimmed source line with secrets masked as ``****``, so
+the text before the first mask is a substring of that line and containment is a
+sound gate. The symbol-name scan is the exception: its snippet is a bare identifier,
 which recurs all over a file, so those kinds are checked in place and never
 relocated or withdrawn — see ``SYMBOL_NAME_KINDS``.
 """
@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from repowise.core.analysis.security_scan import REDACTED_SNIPPET_KINDS, SYMBOL_NAME_KINDS
+from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS
 
 
 @dataclass(frozen=True)
@@ -53,10 +53,10 @@ def check_finding_line(
     if lines is None or not snippet:
         return LineCheck(line_number=line_number, verified=False)
 
-    if kind in REDACTED_SNIPPET_KINDS and "****" in snippet:
-        # Only the text before the mask is verbatim on the line.
-        snippet = snippet.split("****", 1)[0]
-        if not snippet:
+    if kind not in SYMBOL_NAME_KINDS:
+        # Only the text before a mask is verbatim; older rows may end mid-mask.
+        snippet = snippet.split("****", 1)[0].rstrip("*")
+        if not snippet.strip():
             return LineCheck(line_number=line_number, verified=False)
 
     if (
