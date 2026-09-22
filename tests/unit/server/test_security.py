@@ -246,3 +246,21 @@ def test_snippet_cut_inside_a_mask_still_locates_its_line() -> None:
     check = check_finding_line(["", line], 1, 'API_KEY = "sk_l**', "hardcoded_secret")
     assert check.line_number == 2
     assert check.verified is True
+
+
+def test_a_literal_star_run_is_matched_verbatim_first() -> None:
+    from repowise.server.services.security_lines import check_finding_line
+
+    snippet = "****md5**** is weak"
+    check = check_finding_line(["x = 1", snippet], 1, snippet, "weak_hash")
+    assert (check.line_number, check.verified) == (2, True)
+
+
+def test_a_short_prefix_before_stars_is_not_a_match() -> None:
+    """A deleted banner must not verify against any line starting with '/'."""
+    from repowise.server.services.security_lines import check_finding_line
+
+    snippet = "/******** md5 helpers ********/"
+    check = check_finding_line(["/* other */", "int x;"], 1, snippet, "weak_hash")
+    assert check.line_number is None
+    assert check.verified is False

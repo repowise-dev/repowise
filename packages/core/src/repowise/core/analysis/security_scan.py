@@ -279,13 +279,6 @@ def _redaction(val: str) -> str:
     return (val[:4] + "****") if len(val) >= 4 else "****"
 
 
-def _mask_secret_snippet(snippet: str, val: str) -> str:
-    """Replace the first occurrence of *val* in *snippet* with its redaction."""
-    if not val:
-        return snippet
-    return snippet.replace(val, _redaction(val), 1)
-
-
 # ``public_env_secret`` has no capture group, so its value is found here. In
 # ``SECRET_KINDS`` the empty capture would fail validation and drop the finding.
 _ASSIGNED_VALUE = re.compile(r"""\A['"]?\s*[:=]+\s*['"`]?([^'"`\s,;]+)""")
@@ -311,8 +304,7 @@ def _secret_spans(line: str) -> list[tuple[int, int]]:
         value = _ASSIGNED_VALUE.search(line[match.end() :])
         if value is not None:
             spans.append((match.end() + value.start(1), match.end() + value.end(1)))
-    for start, end in list(spans):
-        val = line[start:end]
+    for val in {line[start:end] for start, end in spans}:
         if len(val) < 4:
             continue
         at = line.find(val)
@@ -354,18 +346,6 @@ def _snippet(line: str) -> str:
         if marker != -1 and marker < cut < marker + len(_MARKER):
             cut = marker
     return text[:cut]
-
-
-def _mask_findings(findings: list[dict]) -> None:
-    """Mask ``_secret_val`` in credential snippets built outside :func:`scan_source`."""
-    for finding in findings:
-        if finding.get("kind") not in SECRET_KINDS:
-            continue
-        val: str = finding.get("_secret_val", "")
-        if val:
-            finding["snippet"] = _mask_secret_snippet(finding.get("snippet", ""), val)
-            # Remove the internal key — it must never leave this module.
-            del finding["_secret_val"]
 
 
 def _mask_comments_and_strings(source: str) -> str:

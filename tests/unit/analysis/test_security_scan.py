@@ -19,7 +19,7 @@ from sqlalchemy import text
 
 from repowise.core.analysis.security_scan import (
     SecurityScanner,
-    _mask_secret_snippet,
+    _redaction,
     scan_source,
     scan_source_map,
 )
@@ -629,29 +629,16 @@ class TestPersistSecurityFindings:
 class TestSecretMasking:
     """Credential snippets must be masked; non-credential snippets must not."""
 
-    # ------------------------------------------------------------------ #
-    # _mask_secret_snippet — pure-function unit tests                      #
-    # ------------------------------------------------------------------ #
-
     @pytest.mark.parametrize(
-        ("snippet", "val", "expected"),
+        ("val", "expected"),
         [
-            # Normal case: first 4 chars kept, rest replaced.
-            ("password = 'super_secret_pass_99'", "super_secret_pass_99", "password = 'supe****'"),
-            # Short-ish value: still 4 chars kept.
-            ("api_key = 'abcd1234'", "abcd1234", "api_key = 'abcd****'"),
-            # Value exactly 4 chars: keep all 4, append ****.
-            ("secret = 'abcd'", "abcd", "secret = 'abcd****'"),
-            # Value shorter than 4 chars: replace entirely.
-            ("secret = 'abc'", "abc", "secret = '****'"),
-            # Empty val: snippet unchanged.
-            ("password = 'something'", "", "password = 'something'"),
+            ("super_secret_pass_99", "supe****"),
+            ("abcd", "abcd****"),
+            ("abc", "****"),
         ],
     )
-    def test_mask_secret_snippet_helper(
-        self, snippet: str, val: str, expected: str
-    ) -> None:
-        assert _mask_secret_snippet(snippet, val) == expected
+    def test_redaction_keeps_four_chars(self, val: str, expected: str) -> None:
+        assert _redaction(val) == expected
 
     # ------------------------------------------------------------------ #
     # scan_file — credential kinds are masked                              #
@@ -695,16 +682,11 @@ class TestSecretMasking:
                 f"expected masked form {expected_mask!r} not found in {hit['snippet']!r}"
             )
 
-    def test_credential_finding_has_no_internal_secret_val_key(self) -> None:
-        """The internal ``_secret_val`` key must be consumed by _mask_findings
-        and must never appear in a returned finding."""
+    def test_credential_finding_carries_no_raw_value_field(self) -> None:
+        """A finding holds only the persisted keys, so no raw value rides along."""
         source = "password = 'super_secret_password_123'\n"
-        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
-        for f in findings:
-            assert "_secret_val" not in f, (
-                f"internal key '_secret_val' leaked out of scan_file: {f}"
-            )
+        for f in scan_source("config.py", source):
+            assert set(f) == {"kind", "severity", "snippet", "line"}
 
     # ------------------------------------------------------------------ #
     # scan_file — non-credential kinds are NOT masked                      #
@@ -862,3 +844,12 @@ class TestEverySnippetIsMasked:
         assert not hit["snippet"].endswith(("*", "**", "***")) or hit["snippet"].endswith("****")
         _assert_no_raw(hit["snippet"], self.PW)
         assert check_finding_line([line], 1, hit["snippet"], hit["kind"]).verified
+
+    def test_a_repeated_value_masks_in_linear_time(self) -> None:
+        import time
+
+        line = " ".join(f'password = "{self.PW}";' for _ in range(5000))
+        started = time.perf_counter()
+        (hit,) = scan_source("a.py", line + "\n")
+        assert time.perf_counter() - started < 1.0
+        _assert_no_raw(hit["snippet"], self.PW)
