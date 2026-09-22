@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from repowise.core.docs_mode import resolve_docs_mode
+from repowise.core.workspace.cross_repo import MAX_EDGES, MAX_EDGES_PER_REPO_PAIR
 from repowise.server.deps import (
     get_cross_repo_enricher,
     get_workspace_config,
@@ -26,6 +27,7 @@ from repowise.server.schemas import (
     WorkspaceBreakingChangesResponse,
     WorkspaceCoChangeEntry,
     WorkspaceCoChangesResponse,
+    WorkspaceCoChangeStructure,
     WorkspaceConformanceResponse,
     WorkspaceContractDetail,
     WorkspaceContractEntry,
@@ -519,6 +521,15 @@ async def get_co_changes(
 
     co_changes = list(getattr(enricher, "_co_changes", []))
     total_mined = getattr(enricher, "_total_co_changes", len(co_changes))
+    # Which cap trimmed the stored overlay, judged before any query filter. The
+    # miner walks pairs strongest first, so a full global budget means the
+    # workspace-wide cap stopped it (the per-pair cap may also have applied).
+    if total_mined <= len(co_changes):
+        truncated_by = None
+    elif len(co_changes) >= MAX_EDGES:
+        truncated_by = "total"
+    else:
+        truncated_by = "per_repo_pair"
 
     if repo:
         co_changes = [
@@ -550,6 +561,72 @@ async def get_co_changes(
         ],
         total=total,
         total_mined=total_mined,
+        # The constants name the rules the miner applied; the overlay does not
+        # store them.
+        per_repo_pair_cap=MAX_EDGES_PER_REPO_PAIR,
+        total_cap=MAX_EDGES,
+        truncated_by=truncated_by,
+    )
+
+
+@router.get("/co-changes/structure", response_model=WorkspaceCoChangeStructure)
+async def get_co_change_structure(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    source_repo: str = Query(...),
+    source_file: str = Query(...),
+    target_repo: str = Query(...),
+    target_file: str = Query(...),
+):
+    """Declared structure behind one co-changing pair: the contract links between
+    the two files, and between their repositories through any files.
+
+    Served per pair so the co-change drawer never downloads the whole link list.
+    """
+    _require_workspace(ws_config)
+    if enricher is None:
+        return WorkspaceCoChangeStructure(
+            pair_links=[],
+            repo_links_total=0,
+            repo_links_by_type={},
+            source_file_links=0,
+            target_file_links=0,
+        )
+
+    provider_index = getattr(enricher, "_contract_provider_index", {})
+    consumer_index = getattr(enricher, "_contract_consumer_index", {})
+    src = (source_repo, source_file)
+    tgt = (target_repo, target_file)
+
+    def touching(key: tuple[str, str]) -> list[dict]:
+        # .get, not []: the indexes are defaultdicts and a read must not grow them.
+        return [*provider_index.get(key, []), *consumer_index.get(key, [])]
+
+    src_links = touching(src)
+    pair = {src, tgt}
+    pair_links = [
+        lk
+        for lk in src_links
+        if {
+            (lk.get("provider_repo"), lk.get("provider_file")),
+            (lk.get("consumer_repo"), lk.get("consumer_file")),
+        }
+        == pair
+    ]
+
+    repos = {source_repo, target_repo}
+    by_type: dict[str, int] = {}
+    for lk in getattr(enricher, "_contract_links", []):
+        if {lk.get("provider_repo"), lk.get("consumer_repo")} == repos:
+            ct = lk.get("contract_type", "unknown")
+            by_type[ct] = by_type.get(ct, 0) + 1
+
+    return WorkspaceCoChangeStructure(
+        pair_links=[_contract_link(lk) for lk in pair_links],
+        repo_links_total=sum(by_type.values()),
+        repo_links_by_type=by_type,
+        source_file_links=len(src_links),
+        target_file_links=len(touching(tgt)),
     )
 
 

@@ -18,7 +18,20 @@ function pair(
   };
 }
 
-describe("RepoPairTable (virtualized)", () => {
+describe("RepoPairTable", () => {
+  it("names the narrowing, and opens the repo-pair prompt without narrowing", () => {
+    const onSelect = vi.fn();
+    const onPrompt = vi.fn();
+    const p = pair("api", "core");
+    render(
+      <RepoPairTable repoPairs={[p]} onSelectPair={onSelect} onPrompt={onPrompt} selectedPairId={p.id} />,
+    );
+    expect(screen.getByText("Showing only these")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "AI prompt for api and core" }));
+    expect(onPrompt).toHaveBeenCalledWith(p);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it("renders a row per pair with both repo names and the file-pair count", () => {
     const rows = [pair("api", "core", 7), pair("ui", "core", 2)];
     render(<RepoPairTable repoPairs={rows} />);

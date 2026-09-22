@@ -4,6 +4,7 @@ import type {
   WorkspaceContractsResponse,
   WorkspaceContractDetail,
   WorkspaceCoChangesResponse,
+  WorkspaceCoChangeStructure,
   WorkspaceGraphResponse,
   WorkspaceRepoRemovedResponse,
   WorkspaceSyncResponse,
@@ -75,6 +76,16 @@ export async function getWorkspaceCoChanges(opts?: {
   if (opts?.min_strength != null) params.min_strength = String(opts.min_strength);
   if (opts?.limit != null) params.limit = String(opts.limit);
   return apiGet<WorkspaceCoChangesResponse>("/api/workspace/co-changes", params);
+}
+
+/** Contract links behind one co-changing file pair, fetched when its drawer opens. */
+export async function getWorkspaceCoChangeStructure(pair: {
+  source_repo: string;
+  source_file: string;
+  target_repo: string;
+  target_file: string;
+}): Promise<WorkspaceCoChangeStructure> {
+  return apiGet<WorkspaceCoChangeStructure>("/api/workspace/co-changes/structure", pair);
 }
 
 export async function getWorkspaceGraph(): Promise<WorkspaceGraphResponse> {

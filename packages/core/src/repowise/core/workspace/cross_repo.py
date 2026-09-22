@@ -60,10 +60,11 @@ _UBIQUITY_MIN_HISTORY: int = 30
 # 2-of-2 sessions (67% after smoothing) cannot outrank sustained coupling
 # like 30-of-40 (73%).
 _STRENGTH_SMOOTHING: float = 1.0
-_MAX_EDGES: int = 200
+# Public: the workspace API reports which of these caps trimmed the overlay.
+MAX_EDGES: int = 200
 # One hyperactive repo pair must not consume the whole edge budget and starve
 # the other pairs out of the overlay.
-_MAX_EDGES_PER_REPO_PAIR: int = 50
+MAX_EDGES_PER_REPO_PAIR: int = 50
 # Per-session cap on files paired per side, guarding the O(N*M) cross-product
 # against sprawling release/codemod sessions.
 _MAX_FILES_PER_SESSION_SIDE: int = 20
@@ -206,7 +207,7 @@ class CrossRepoOverlay:
     package_diagnostics: list[CrossRepoPackageDiagnostic] = field(default_factory=list)
     repo_summaries: dict[str, dict] = field(default_factory=dict)
     #: How many pairs cleared the strength/session thresholds before
-    #: ``_MAX_EDGES`` / ``_MAX_EDGES_PER_REPO_PAIR`` trimmed ``co_changes``.
+    #: ``MAX_EDGES`` / ``MAX_EDGES_PER_REPO_PAIR`` trimmed ``co_changes``.
     #: Equal to ``len(co_changes)`` when nothing was dropped. Not a count of
     #: every pair in git history: ``_MAX_FILES_PER_SESSION_SIDE`` bounds each
     #: session before pairing, so pairs involving an evicted file are in
@@ -579,19 +580,19 @@ def detect_cross_repo_co_changes(
     capped: list[CrossRepoCoChange] = []
     for r in results:
         pair_key = (r.source_repo, r.target_repo)
-        if per_pair[pair_key] >= _MAX_EDGES_PER_REPO_PAIR:
+        if per_pair[pair_key] >= MAX_EDGES_PER_REPO_PAIR:
             continue
         per_pair[pair_key] += 1
         capped.append(r)
-        if len(capped) >= _MAX_EDGES:
+        if len(capped) >= MAX_EDGES:
             break
     if len(capped) < len(results):
         _log.info(
             "Co-change mining kept %d of %d qualifying pairs (caps: %d total, %d per repo pair)",
             len(capped),
             len(results),
-            _MAX_EDGES,
-            _MAX_EDGES_PER_REPO_PAIR,
+            MAX_EDGES,
+            MAX_EDGES_PER_REPO_PAIR,
         )
     return capped, len(results)
 

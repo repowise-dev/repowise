@@ -177,6 +177,24 @@ export interface WorkspaceCoChangesResponse {
    * before pairing, so some pairs are in neither number.
    */
   total_mined: number;
+  /** Most pairs the miner keeps per repository pair. Optional for older servers. */
+  per_repo_pair_cap?: number | null;
+  /** Most pairs the miner keeps across the workspace. */
+  total_cap?: number | null;
+  /** Which cap trimmed the stored overlay; null when nothing was dropped. */
+  truncated_by?: "total" | "per_repo_pair" | null;
+}
+
+/** Declared structure behind one co-changing file pair. */
+export interface WorkspaceCoChangeStructure {
+  /** Contract links where one of the two files provides and the other consumes. */
+  pair_links: WorkspaceContractLinkEntry[];
+  /** Contract links between the two repositories through any files. */
+  repo_links_total: number;
+  repo_links_by_type: Record<string, number>;
+  /** Contract links touching each file, whatever the other end. */
+  source_file_links: number;
+  target_file_links: number;
 }
 
 export interface WorkspaceGraphNode {
