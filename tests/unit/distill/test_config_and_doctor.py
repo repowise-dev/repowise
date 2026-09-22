@@ -334,7 +334,7 @@ def test_uninstall_workspace_disables_all_repo_configs(
     tmp_path: Path, settings_path: Path, monkeypatch
 ) -> None:
     from repowise.core.repo_config import load_repo_config
-    from repowise.core.workspace_config import RepoEntry, WorkspaceConfig
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 
     root = tmp_path / "workspace"
     root.mkdir(parents=True)
