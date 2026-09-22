@@ -158,6 +158,22 @@ def collect_io_names(tree_root: _NodeLike, language: str) -> dict[str, str]:
                 if kind is not None:
                     for name in bound:
                         names.setdefault(name, kind)
+        elif node.type == "declUses" and language == "pascal":
+            # Pascal's ``uses`` clause is one flat node listing every unit
+            # (``uses SysUtils, Classes, IdHTTP;``), unlike Go's grouped
+            # import which nests a per-line ``import_spec`` leaf. Classifying
+            # the whole node would pick whichever unit's kind resolves first
+            # out of an unordered set and bind ALL of them to it (so
+            # ``IdHTTP`` could inherit ``db`` from a ``FireDAC`` listed in the
+            # same clause) -- so each ``moduleName`` child is classified on
+            # its own instead.
+            for child in node.children:
+                if child.type != "moduleName":
+                    continue
+                kind, bound = _classify_import(child)
+                if kind is not None:
+                    for name in bound:
+                        names.setdefault(name, kind)
         elif "import" in node.type or node.type in ("using_directive", "use_declaration"):
             # Classify only the *leaf* import node. A Go grouped
             # ``import ( "database/sql"; "regexp" )`` is an ``import_declaration``

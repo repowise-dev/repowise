@@ -824,11 +824,15 @@ cannot check.
 - **Razor has no import edges**, and an attribute-bound handler carries none.
 - **Object Pascal's `extends`/`implements` split is a naming heuristic**,
   inferred from the `I`-prefix convention rather than a language guarantee.
-- **Object Pascal's performance risk covers filesystem and subprocess sinks
-  only**, matched by RTL/VCL/FPC call name. DB and network calls (`TDataSet`,
-  `THTTPClient`) are not covered: the `uses` clause lists bare unit names with
-  no import-classification table behind it yet, so there is no evidence to
-  disambiguate `Open` / `Get` / `Post` from an ordinary method of the same name.
+- **Object Pascal's DB/network performance sinks are gated on file-wide
+  `uses`-clause evidence, not per-receiver evidence.** A file importing
+  `FireDAC` gates every `.Open` / `.ExecSQL` / `.Post` call in it, not only
+  calls on an actual `TFDQuery`, because a Pascal variable's declared type has
+  no textual link back to the unit it came from the way `client = requests.Session()`
+  does in Python. Separately, a call with no parentheses (`Q.Open;`, idiomatic
+  for a zero-argument procedure) is invisible to the whole performance pass
+  regardless of sink kind: it parses as a bare `exprDot` rather than an
+  `exprCall`, and `call_kinds` only recognises the latter as a call site.
 - **A GDScript `uid://` resolves through the `.uid` sidecar Godot writes for
   scripts**, so a `preload` naming one reaches its file. A uid naming a scene
   does not: Godot writes no sidecar for `.tscn` / `.tres`, and the
@@ -860,7 +864,7 @@ Per-language mechanics behind these:
 | C# | Full (health) | Dataflow dialect |
 | Dart | Good | riverpod / get_it dynamic hints, dataflow dialect |
 | GDScript | Good | The health dialects (complexity, performance, dataflow) that would take it to Full; the grammar supports all three |
-| Object Pascal | Good | Assertion markers, DB/network performance sinks (needs `uses`-clause import classification), a dedicated `uses` resolver |
+| Object Pascal | Good | Assertion markers, a parenless-call (`exprDot`/bare `identifier`) call site so DB/network sinks reach paren-omitted calls too, a dedicated `uses` resolver |
 | COBOL | Good | Copybook resolution, source-format normalization, dialect coverage, health markers |
 | VB.NET | Good | Health markers, project-level `<Import Include=...>` as implicit imports |
 | Elixir | Good | Health markers, and a call-resolution strategy beyond same-file |

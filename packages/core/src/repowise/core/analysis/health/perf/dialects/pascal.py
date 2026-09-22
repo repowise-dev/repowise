@@ -12,17 +12,20 @@ generic base extraction's ``function`` field, and a qualified call
 than a ``member_expression`` — so callee extraction is overridden outright
 rather than reusing ``BasePerfDialect``'s field-name probing.
 
-No import-based gating: Pascal's ``uses`` clause lists bare unit names with no
-stdlib/third-party distinction the shared ``io_kind`` table recognises (unlike
-Python's ``import os`` or Go's ``"database/sql"``), so ``io_names`` /
-``has_db_import`` are always empty here. Every sink below is therefore an
-unambiguous, distinctively-named RTL/VCL/FPC call that does not collide with
-an unrelated API — the same precision-first posture the "no signal" default
-already takes, just drawn from names instead of imports. DB and network calls
-(``TDataSet.Open`` / ``THTTPClient.Get``) are intentionally NOT covered: their
-verbs (``Open`` / ``Get`` / ``Post``) collide with ordinary collection and
-stream methods everywhere in this codebase family, and there is no import
-evidence available to disambiguate them.
+Filesystem and subprocess sinks below are unambiguous, distinctively-named
+RTL/VCL/FPC calls that never collide with an unrelated API, so they fire on
+the name alone. DB and network verbs (``Open`` / ``ExecSQL`` / ``Get`` /
+``Post``) are NOT distinctive -- they collide with ordinary collection and
+stream methods everywhere in this codebase family -- so they additionally
+require ``uses``-clause evidence (``io_boundaries.collect_io_names``'s
+Pascal branch, keyed off the shared ``io_kind`` table: ``FireDAC`` / ``ADODB``
+-> db, ``IdHTTP`` / ``System.Net.HttpClient`` -> network) before they fire.
+That evidence is file-wide, not receiver-scoped like Python's ``client.get()``
+-> ``client`` bound to ``requests`` -- a variable named ``FDConnection`` has
+no textual link back to the ``FireDAC`` unit it came from -- so a file that
+imports FireDAC AND separately calls an unrelated ``.Open`` on something else
+can still false-fire. Precision trades against the alternative, which is no
+DB/network signal for Pascal at all.
 
 No ``async``/``await`` in the language, so ``blocking_sync_in_async`` is not
 in :attr:`markers`. String accumulation is idiomatically ``s := s + x``, not
@@ -104,6 +107,14 @@ _SUBPROCESS_BARE: frozenset[str] = frozenset(
         "CreateProcessA",
     }
 )
+# TDataSet-family round-trips (FireDAC / ADO / dbGo / ZeosLib all share this
+# vocabulary). Gated on ``uses``-clause DB evidence -- see the module
+# docstring -- since ``Open`` / ``Post`` collide with unrelated stream and
+# collection methods on their own.
+_DB_METHODS: frozenset[str] = frozenset({"Open", "ExecSQL", "Post"})
+# Indy / ``System.Net.HttpClient`` / FPC ``fphttpclient`` verb calls. Gated on
+# ``uses``-clause network evidence for the same reason.
+_NETWORK_METHODS: frozenset[str] = frozenset({"Get", "Post", "Put", "Patch", "Delete", "Head"})
 
 
 class PascalPerfDialect(BasePerfDialect):
@@ -164,6 +175,10 @@ class PascalPerfDialect(BasePerfDialect):
             return "filesystem"
         if method in _SUBPROCESS_BARE:
             return "subprocess"
+        if is_attribute and has_db_import and method in _DB_METHODS:
+            return "db"
+        if is_attribute and method in _NETWORK_METHODS and "network" in io_names.values():
+            return "network"
         return None
 
 

@@ -247,7 +247,14 @@ log = structlog.get_logger(__name__)
 # understates both. Pascal also gained a ``PerfDialect`` (filesystem /
 # subprocess sinks by RTL/VCL/FPC name), so ``io_in_loop`` / ``hot_path_sync_io``
 # now fire for it instead of the pass silently skipping every Pascal file.
-HEALTH_ANALYZER_VERSION = 22
+#
+# v23: Pascal's ``uses`` clause now feeds ``io_boundaries.collect_io_names``
+# (``FireDAC`` / ``ADODB`` -> db, ``IdHTTP`` / ``System.Net.HttpClient`` ->
+# network), and the Pascal ``PerfDialect`` gates ``TDataSet.Open`` /
+# ``.ExecSQL`` / ``.Post`` and an HTTP client's ``.Get`` / ``.Post`` on that
+# evidence -- a loop calling one of these now produces a ``db`` / ``network``
+# ``io_in_loop`` where before it stayed silent (filesystem/subprocess only).
+HEALTH_ANALYZER_VERSION = 23
 
 
 def walked_functions(

@@ -226,6 +226,46 @@ _CASES = [
         [],
         "built-in substring Copy() is not TFile.Copy -- ordinary computation",
     ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open();\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "DB dataset .Open() in a loop, gated by a FireDAC uses-clause import",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, IdHTTP;\nimplementation\n"
+        b"procedure F(Http: TIdHTTP; Urls: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Urls.Count - 1 do\n"
+        b"    Http.Get(Urls[I]);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "network")],
+        "HTTP client .Get() in a loop, gated by an IdHTTP uses-clause import",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open();\n"
+        b"end;\nend.\n",
+        [],
+        "the same .Open() call with no uses-clause DB evidence is not a sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(L: TStringList; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    L.Delete(0);\n"
+        b"end;\nend.\n",
+        [],
+        "TStringList.Delete is not a DB verb even with no uses evidence",
+    ),
 ]
 
 
