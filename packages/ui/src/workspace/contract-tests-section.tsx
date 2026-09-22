@@ -29,6 +29,8 @@ export interface ContractTestsSectionProps {
   contractId: string;
   /** A failed lookup, worded by the host. */
   error?: string | null;
+  /** Panel scale for the contract drawer: a micro-label heading, 12px prose. */
+  compact?: boolean;
 }
 
 const VIA_WORDS: Record<string, string> = {
@@ -64,17 +66,34 @@ const SUMMARY_REASON_WORDS: Record<string, string> = {
 const NONE_WORDS =
   "The consumer repositories were analyzed and nothing reaches the call sites for this contract. That is an answer, not a failure: no test in another repository guards it.";
 
-export function ContractTestsSection({ result, contractId, error }: ContractTestsSectionProps) {
+export function ContractTestsSection({
+  result,
+  contractId,
+  error,
+  compact = false,
+}: ContractTestsSectionProps) {
   // Null is "the host did not ask", which is a different fact from "the answer
   // was empty" and gets no section at all.
   if (!result && !error) return null;
 
   return (
-    <section className="mt-10 flex flex-col gap-3 border-t border-[var(--color-border-default)] pt-6 sm:mt-12 sm:pt-8">
-      <h2 className="text-xl font-semibold tracking-tight text-[var(--color-text-primary)]">
-        Tests to run
-      </h2>
-      <Body result={result} contractId={contractId} error={error ?? null} />
+    <section
+      className={
+        compact
+          ? "flex flex-col gap-2"
+          : "mt-10 flex flex-col gap-3 border-t border-[var(--color-border-default)] pt-6 sm:mt-12 sm:pt-8"
+      }
+    >
+      {compact ? (
+        <h4 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+          Tests to run
+        </h4>
+      ) : (
+        <h2 className="text-xl font-semibold tracking-tight text-[var(--color-text-primary)]">
+          Tests to run
+        </h2>
+      )}
+      <Body result={result} contractId={contractId} error={error ?? null} compact={compact} />
     </section>
   );
 }
@@ -83,12 +102,14 @@ function Body({
   result,
   contractId,
   error,
+  compact,
 }: {
   result: WorkspaceTestImpactResponse | null;
   contractId: string;
   error: string | null;
+  compact: boolean;
 }) {
-  if (error) return <Prose>{error}</Prose>;
+  if (error) return <Prose compact={compact}>{error}</Prose>;
   if (!result) return null;
 
   const rows = result.recommendations.filter((r) => r.contract_ids.includes(contractId));
@@ -100,21 +121,20 @@ function Body({
     // lookup fall through to the analyzed-and-found-nothing wording.
     const words = SUMMARY_REASON_WORDS[reason ?? ""] ?? NONE_WORDS;
     const detail = reason === "lookup_failed" ? summaryDetail(result) : null;
-    return <Prose>{detail ? `${words} (${detail})` : words}</Prose>;
+    return <Prose compact={compact}>{detail ? `${words} (${detail})` : words}</Prose>;
   }
 
+  const RepoHeading = compact ? "h5" : "h3";
   return (
     <>
-      <Prose>
+      <Prose compact={compact}>
         Tests in the repositories that call this contract, found by walking each consumer&apos;s
         own index from the call site. A measured row is a coverage map recording that the test ran
         the code; an inferred row is a graph reaching it.
       </Prose>
       {groupByRepo(rows).map(([repo, repoRows]) => (
         <div key={repo} className="flex flex-col gap-2">
-          <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-            {repo}
-          </h3>
+          <RepoHeading className={MICRO_LABEL}>{repo}</RepoHeading>
           <ul className="m-0 flex list-none flex-col gap-2 p-0">
             {repoRows.map((row) => (
               // One test id can appear once per provider repo it guards, so
@@ -140,18 +160,23 @@ function Body({
           </ul>
         </div>
       ))}
-      {unresolved.length > 0 && <UnresolvedList rows={unresolved} />}
+      {unresolved.length > 0 && <UnresolvedList rows={unresolved} compact={compact} />}
     </>
   );
 }
 
-function UnresolvedList({ rows }: { rows: WorkspaceUnresolvedLink[] }) {
+function UnresolvedList({ rows, compact }: { rows: WorkspaceUnresolvedLink[]; compact: boolean }) {
+  // In the drawer the section heading is an h4 micro-label, so this sits one
+  // level below it at the same scale.
+  const Heading = compact ? "h5" : "h3";
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+      <Heading
+        className={compact ? MICRO_LABEL : "text-sm font-semibold text-[var(--color-text-primary)]"}
+      >
         Could not determine
-      </h3>
-      <Prose>
+      </Heading>
+      <Prose compact={compact}>
         These call sites were not answered either way, so treat them as unknown and not as
         untested.
       </Prose>
@@ -175,9 +200,16 @@ function UnresolvedList({ rows }: { rows: WorkspaceUnresolvedLink[] }) {
   );
 }
 
-function Prose({ children }: { children: ReactNode }) {
+const MICRO_LABEL =
+  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+
+function Prose({ children, compact }: { children: ReactNode; compact: boolean }) {
   return (
-    <p className="max-w-[68ch] text-base leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+    <p
+      className={`max-w-[68ch] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty] ${
+        compact ? "text-xs" : "text-base"
+      }`}
+    >
       {children}
     </p>
   );

@@ -22,3 +22,26 @@ export function contractDetailHref(contract: {
   });
   return `/workspace/contracts/detail?${params.toString()}`;
 }
+
+/** The full list's filters, as the page reads them from the URL. */
+export interface ContractListFilters {
+  type?: string | undefined;
+  repo?: string | undefined;
+  role?: string | undefined;
+  /** `yes`: on a matched link. `no`: on none. */
+  linked?: string | undefined;
+  q?: string | undefined;
+  page?: number | undefined;
+}
+
+/** The list filtered, scrolled to the list. Empty values are left out. */
+export function contractsListHref(filters: ContractListFilters): string {
+  const params = new URLSearchParams();
+  for (const key of ["type", "repo", "role", "linked", "q"] as const) {
+    const value = filters[key];
+    if (value) params.set(key, value);
+  }
+  if (filters.page && filters.page > 1) params.set("page", String(filters.page));
+  const query = params.toString();
+  return `/workspace/contracts${query ? `?${query}` : ""}#all-contracts`;
+}

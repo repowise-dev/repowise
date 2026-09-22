@@ -1,21 +1,112 @@
 "use client";
 
+import { memo, useMemo } from "react";
 import { ContractTypeBadge } from "./contract-type-badge";
+import { ContractIdentity, FilePathText, distinctService } from "./contract-identity";
+import { LINK_CONFIDENCE_NOTE } from "./contract-facts";
 import { EmptyState } from "../shared/empty-state";
-import { VirtualizedTable } from "../shared/virtualized-table";
+import { InfoTip } from "../shared/info-tip";
+import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import type { WorkspaceContractLinkEntry } from "@repowise-dev/types/workspace";
 
 interface ContractLinksTableProps {
   links: WorkspaceContractLinkEntry[];
+  /** Open one link. The row is the verb; without this the rows are plain. */
+  onSelect?: ((link: WorkspaceContractLinkEntry) => void) | undefined;
 }
 
-// Column-priority hide classes, mirroring the shared ResponsiveTable scale:
-// priority 2 hides below md (768px), priority 3 hides below lg (1024px). The
-// always-visible columns (priority 1) carry no hide class.
-const HIDE_BELOW_MD = "max-md:hidden";
-const HIDE_BELOW_LG = "max-lg:hidden";
+function Side({
+  repo,
+  service,
+  file,
+}: {
+  repo: string;
+  service: string | null;
+  file: string;
+}) {
+  const shownService = distinctService(service, file);
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <span className="text-xs font-medium text-[var(--color-text-primary)]">
+        {repo}
+        {shownService ? (
+          <span className="font-mono font-normal text-[var(--color-text-tertiary)]">
+            {" "}
+            / {shownService}
+          </span>
+        ) : null}
+      </span>
+      <FilePathText path={file} />
+    </div>
+  );
+}
 
-export function ContractLinksTable({ links }: ContractLinksTableProps) {
+const COLUMNS: ResponsiveColumn<WorkspaceContractLinkEntry>[] = [
+  {
+    key: "contract",
+    header: "Contract",
+    cellClassName: "min-w-[180px] max-w-[320px]",
+    render: (l) => <ContractIdentity contractId={l.contract_id} />,
+  },
+  {
+    key: "type",
+    header: "Type",
+    priority: 3,
+    render: (l) => <ContractTypeBadge type={l.contract_type} />,
+  },
+  {
+    key: "provider",
+    header: "Provider",
+    render: (l) => <Side repo={l.provider_repo} service={l.provider_service} file={l.provider_file} />,
+  },
+  {
+    key: "consumer",
+    header: "Consumer",
+    priority: 2,
+    render: (l) => <Side repo={l.consumer_repo} service={l.consumer_service} file={l.consumer_file} />,
+  },
+  {
+    key: "confidence",
+    // One explanation in the header instead of a bar per row: the figure is the
+    // weaker side's extraction confidence, so it repeats in long runs.
+    header: (
+      <span className="inline-flex items-center gap-1">
+        Confidence
+        <InfoTip content={LINK_CONFIDENCE_NOTE} label="What link confidence means" />
+      </span>
+    ),
+    mobileLabel: "Confidence",
+    align: "right",
+    priority: 3,
+    render: (l) => (
+      <span className="font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
+        {Math.round(l.confidence * 100)}%
+      </span>
+    ),
+  },
+];
+
+function linkKey(l: WorkspaceContractLinkEntry): string {
+  return `${l.contract_id}|${l.consumer_contract_id ?? ""}|${l.provider_repo}|${l.provider_file}|${l.consumer_repo}|${l.consumer_file}`;
+}
+
+/** Memoised so opening the drawer above it does not redraw every row. */
+export const ContractLinksTable = memo(function ContractLinksTable({
+  links,
+  onSelect,
+}: ContractLinksTableProps) {
+  // Strongest first, then by contract: the extraction order put a run of the
+  // weakest links on top, which read as if every link were weak.
+  const sorted = useMemo(
+    () =>
+      links
+        .slice()
+        .sort(
+          (a, b) => b.confidence - a.confidence || a.contract_id.localeCompare(b.contract_id),
+        ),
+    [links],
+  );
+
   if (links.length === 0) {
     return (
       <EmptyState
@@ -25,88 +116,17 @@ export function ContractLinksTable({ links }: ContractLinksTableProps) {
     );
   }
 
-  const header = (
-    <tr className="bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider">
-      <th className="px-3 py-2 text-left font-medium">Contract</th>
-      <th className={`px-3 py-2 text-left font-medium ${HIDE_BELOW_MD}`}>Type</th>
-      <th className="px-3 py-2 text-left font-medium">Provider</th>
-      <th className={`px-3 py-2 text-left font-medium ${HIDE_BELOW_MD}`}>Consumer</th>
-      <th className={`px-3 py-2 text-left font-medium w-20 ${HIDE_BELOW_LG}`}>Confidence</th>
-    </tr>
-  );
-
-  const renderRow = (link: WorkspaceContractLinkEntry) => (
-    <tr className="border-t border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)]">
-      <td className="px-3 py-2 text-left min-w-[140px] max-w-[280px]">
-        <span
-          className="text-xs font-mono text-[var(--color-text-secondary)] [overflow-wrap:anywhere]"
-          title={link.contract_id}
-        >
-          {link.contract_id}
-        </span>
-      </td>
-      <td className={`px-3 py-2 text-left ${HIDE_BELOW_MD}`}>
-        <ContractTypeBadge type={link.contract_type} />
-      </td>
-      <td className="px-3 py-2 text-left">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-xs font-medium text-[var(--color-text-primary)]">
-            {link.provider_repo}
-          </span>
-          {/* No truncation: a path is exactly the string somebody is
-              scanning for, and an ellipsis reports a layout decision as
-              missing content. Wraps instead, as the contracts table does. */}
-          <span className="text-xs font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
-            {link.provider_file}
-          </span>
-        </div>
-      </td>
-      <td className={`px-3 py-2 text-left ${HIDE_BELOW_MD}`}>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-xs font-medium text-[var(--color-text-primary)]">
-            {link.consumer_repo}
-          </span>
-          {/* No truncation: a path is exactly the string somebody is
-              scanning for, and an ellipsis reports a layout decision as
-              missing content. Wraps instead, as the contracts table does. */}
-          <span className="text-xs font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
-            {link.consumer_file}
-          </span>
-        </div>
-      </td>
-      <td className={`px-3 py-2 text-left w-20 ${HIDE_BELOW_LG}`}>
-        <div className="flex items-center gap-1.5">
-          <div className="h-1.5 w-12 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${Math.round(link.confidence * 100)}%`,
-                backgroundColor:
-                  link.confidence >= 0.8
-                    ? "var(--color-confidence-fresh)"
-                    : link.confidence >= 0.6
-                    ? "var(--color-confidence-stale)"
-                    : "var(--color-confidence-outdated)",
-              }}
-            />
-          </div>
-          <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums">
-            {Math.round(link.confidence * 100)}%
-          </span>
-        </div>
-      </td>
-    </tr>
-  );
-
   return (
-    <VirtualizedTable<WorkspaceContractLinkEntry>
-      rows={links}
-      rowKey={(link) =>
-        `${link.contract_id}|${link.consumer_contract_id ?? ""}|${link.provider_repo}|${link.provider_file}|${link.consumer_repo}|${link.consumer_file}`
-      }
-      header={header}
-      renderRow={renderRow}
-      aria-label="Cross-repo contract links"
+
+    <ResponsiveTable<WorkspaceContractLinkEntry>
+      columns={COLUMNS}
+      rows={sorted}
+      rowKey={linkKey}
+      onRowClick={onSelect}
+      virtualize={{ estimateRowHeight: 56, estimateCardHeight: 120, maxHeight: 560 }}
+      caption="Cross-repo contract links"
+      stacked="md"
+      bare
     />
   );
-}
+});

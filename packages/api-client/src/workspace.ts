@@ -26,6 +26,12 @@ export async function getWorkspaceContracts(opts?: {
   contract_type?: string;
   repo?: string;
   role?: string;
+  /** Every whitespace-separated term must appear in the id, file, symbol, repo or service. */
+  q?: string;
+  /** true: only contracts on a matched link; false: only those on none. */
+  linked?: boolean;
+  /** false omits the link rows; `total_links` is still counted. */
+  include_links?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<WorkspaceContractsResponse> {
@@ -33,6 +39,9 @@ export async function getWorkspaceContracts(opts?: {
   if (opts?.contract_type) params.contract_type = opts.contract_type;
   if (opts?.repo) params.repo = opts.repo;
   if (opts?.role) params.role = opts.role;
+  if (opts?.q) params.q = opts.q;
+  if (opts?.linked != null) params.linked = String(opts.linked);
+  if (opts?.include_links === false) params.include_links = "false";
   if (opts?.limit != null) params.limit = String(opts.limit);
   if (opts?.offset != null) params.offset = String(opts.offset);
   return apiGet<WorkspaceContractsResponse>("/api/workspace/contracts", params);

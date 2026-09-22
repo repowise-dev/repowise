@@ -238,3 +238,200 @@ export function linksForContract<
         l.consumer_file === contract.file_path,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Identity parsed off the id, and the words each state is read in. Shared by
+// the list rows, the drawer, the detail page and the agent prompts, so every
+// surface names one contract and one state the same way.
+// ---------------------------------------------------------------------------
+
+/** A contract id split into the parts a reader scans for. */
+export interface ContractIdParts {
+  /** The id's leading type segment: `http`, `data`, `code`, `grpc`... */
+  kind: string;
+  /** HTTP verb, when the id carries one. `*` is kept as extraction wrote it. */
+  method: string | null;
+  /** Path, table, symbol or rpc: the part a reader recognises. */
+  label: string;
+  /** The package a `code` contract is exported from. */
+  qualifier: string | null;
+}
+
+/**
+ * Parse `http::GET::/path`, `data::table`, `code::pkg::symbol` and friends.
+ * Only rows that carry nothing but the id (links, diagnostics) need this; a
+ * full entry reads its `meta` instead through `contractHeading`.
+ */
+export function parseContractId(id: string): ContractIdParts {
+  const parts = id.split("::");
+  const kind = parts[0] ?? "";
+  if (parts.length < 2) return { kind: "", method: null, label: id, qualifier: null };
+  if (kind === "http" && parts.length >= 3) {
+    return { kind, method: parts[1] ?? null, label: parts.slice(2).join("::"), qualifier: null };
+  }
+  if (kind === "code" && parts.length >= 3) {
+    return {
+      kind,
+      method: null,
+      label: parts.slice(2).join("::"),
+      qualifier: parts[1] ?? null,
+    };
+  }
+  return { kind, method: null, label: parts.slice(1).join("::"), qualifier: null };
+}
+
+/** Why a consumer matched no provider, in words, with what to do about it. */
+export interface UnmatchedReasonCopy {
+  /** Heading for one consumer in this state. */
+  title: string;
+  /** Short label for counts: "54 no provider found". */
+  short: string;
+  /** One line for a group of consumers in this state. */
+  meaning: string;
+  /** Whether a reader has something to fix, which orders the groups. */
+  actionable: boolean;
+}
+
+export const UNMATCHED_REASONS: Record<string, UnmatchedReasonCopy> = {
+  no_provider: {
+    title: "No provider found",
+    short: "no provider found",
+    meaning:
+      "Nothing in the workspace declares these routes: a typo, a removed endpoint, a service outside the workspace, or a framework extraction does not read.",
+    actionable: true,
+  },
+  unlinked: {
+    title: "No link formed",
+    short: "unlinked",
+    meaning:
+      "A matching declaration exists in another service but no link was formed, which points at the matcher rather than the code.",
+    actionable: true,
+  },
+  internal_only: {
+    title: "Not a cross-repo link",
+    short: "internal to one service",
+    meaning:
+      "The only matching declaration is in the same repository and service, so the call never crosses a boundary. Nothing to fix.",
+    actionable: false,
+  },
+  external_host: {
+    title: "Outside this workspace",
+    short: "external host",
+    meaning:
+      "Calls to a literal third-party host, left out of matching on purpose. Nothing to fix unless the host is one of your own services.",
+    actionable: false,
+  },
+};
+
+const UNKNOWN_REASON: UnmatchedReasonCopy = {
+  title: "No provider found",
+  short: "no reason recorded",
+  meaning:
+    "These calls matched no declaration and no reason was recorded. Reasons come from the system graph, so rebuild it to get one.",
+  actionable: true,
+};
+
+export function unmatchedReasonCopy(reason: string | null | undefined): UnmatchedReasonCopy {
+  return (reason && UNMATCHED_REASONS[reason]) || UNKNOWN_REASON;
+}
+
+/** Actionable reasons first, then by size. */
+export function sortUnmatchedReasons<T extends { reason: string; count: number }>(
+  groups: T[],
+): T[] {
+  return groups
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(unmatchedReasonCopy(b.reason).actionable) -
+          Number(unmatchedReasonCopy(a.reason).actionable) || b.count - a.count,
+    );
+}
+
+/** One consumer's unmatched state as a paragraph, with the concrete next step. */
+export function unmatchedConsumerProse(reason: string | null, contract: ContractEntry): string {
+  const host = contractMetaString(contract.meta, "host");
+  switch (reason) {
+    case "external_host":
+      return `This call goes to ${host ?? "a third-party host"}, which is not a service in this workspace. Calls to a literal external host are left out of matching on purpose, so there is nothing to link. If ${host ?? "that host"} is one of your own services, add its repository to the workspace.`;
+    case "internal_only":
+      return "The only declarations matching this call live in the same repository and the same service as the call itself, so it never crosses a boundary. Intra-service calls are left out of the link set on purpose: a link is a claim that two services depend on each other.";
+    case "no_provider":
+      return `Nothing in this workspace declares ${contractHeading(contract)}. Check for a typo in the path, an endpoint that was renamed or removed, a service outside these repositories, or a route declared in a form extraction does not recognise.`;
+    case "unlinked":
+      return "A declaration with this id exists in another service, but no link was formed between the two. That is rare, and it points at a gap in the matcher rather than at the code.";
+    default:
+      return "This call matched no declaration, and no reason was recorded for it. Reasons come from the system graph, so a workspace that has not built one reports the count without the explanation.";
+  }
+}
+
+/**
+ * A provider nothing calls. The expected state for most exported code, so it
+ * reads as a sentence and never as a warning.
+ */
+export function unlinkedProviderProse(contract: ContractEntry): string {
+  // A pair is skipped when the repository *and* the service both match, so
+  // the excluded set is not "everything in this repo" unless this declaration
+  // also sits outside a service.
+  const excluded = contract.service
+    ? `a call from inside ${contract.repo}/${contract.service}`
+    : `a call from elsewhere in ${contract.repo} that also sits outside any service`;
+  return `Nothing in this workspace resolves to this contract. It may be called from outside the workspace, or by code extraction cannot follow, and ${excluded} is excluded by construction. Neither reading makes it dead code.`;
+}
+
+/** How many call sites resolve to a provider, and from where. */
+export function providerLinkedProse(
+  links: { consumer_repo: string }[],
+  repo: string,
+): string {
+  const n = links.length;
+  const one = n === 1;
+  const repos = new Set(links.map((l) => l.consumer_repo));
+  const head = `${n} call ${one ? "site resolves" : "sites resolve"} to this contract`;
+  if (repos.size === 1 && repos.has(repo)) {
+    return `${head}, ${one ? "from" : "all from"} a different service inside ${repo}.`;
+  }
+  return `${head} across ${repos.size} ${repos.size === 1 ? "repository" : "repositories"}.`;
+}
+
+/**
+ * What a link's confidence is. It is the lower of the two sides' extraction
+ * confidence, so it names how each side was found, not how well they match.
+ */
+export const LINK_CONFIDENCE_NOTE =
+  "A link's confidence is the lower of its two sides' extraction confidence, so it says how each side was found, not how well they match. For example, exports and imports read from the symbol index score 90%, routes, tables and client calls 75 to 85%, SQL found in strings 70%, and calls through a helper recognised only by its name 65%.";
+
+/** Providers with no caller, for one repository and type. */
+export interface OrphanGroup<T> {
+  repo: string;
+  contractType: string;
+  /** Every provider in the group. */
+  count: number;
+  /** The first `keep` of them: enough for a prompt, not the whole list. */
+  rows: T[];
+}
+
+/**
+ * Group providers with no caller by repository and type, largest first.
+ *
+ * Runs on the server so the page ships counts and a prompt's worth of rows per
+ * group, not every provider: on a large workspace the full list is most of the
+ * payload and the page only ever shows a summary of it.
+ */
+export function groupOrphanProviders<T extends { repo: string; contract_type: string }>(
+  orphans: T[],
+  keep: number,
+): OrphanGroup<T>[] {
+  const byKey = new Map<string, OrphanGroup<T>>();
+  for (const o of orphans) {
+    const key = `${o.repo}\u0000${o.contract_type}`;
+    let group = byKey.get(key);
+    if (!group) {
+      group = { repo: o.repo, contractType: o.contract_type, count: 0, rows: [] };
+      byKey.set(key, group);
+    }
+    group.count += 1;
+    if (group.rows.length < keep) group.rows.push(o);
+  }
+  return [...byKey.values()].sort((a, b) => b.count - a.count || a.repo.localeCompare(b.repo));
+}

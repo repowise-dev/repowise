@@ -291,6 +291,32 @@ def _contract_link(lk: dict) -> WorkspaceContractLinkEntry:
     )
 
 
+def _contract_haystack(c: dict) -> str:
+    return " ".join(
+        str(c.get(k) or "") for k in ("contract_id", "file_path", "symbol_name", "repo", "service")
+    ).lower()
+
+
+def _link_haystack(lk: dict) -> str:
+    return " ".join(
+        str(lk.get(k) or "")
+        for k in (
+            "contract_id",
+            "consumer_contract_id",
+            "provider_repo",
+            "provider_file",
+            "provider_symbol",
+            "consumer_repo",
+            "consumer_file",
+            "consumer_symbol",
+        )
+    ).lower()
+
+
+def _matches_terms(haystack: str, terms: list[str]) -> bool:
+    return all(t in haystack for t in terms)
+
+
 # ---------------------------------------------------------------------------
 # GET /api/workspace/contracts
 # ---------------------------------------------------------------------------
@@ -305,6 +331,19 @@ async def get_contracts(
     ),
     repo: str | None = Query(None, description="Filter by repo alias"),
     role: str | None = Query(None, description="Filter: provider or consumer"),
+    q: str | None = Query(
+        None,
+        description="Case-insensitive search over id, file, symbol, repo and service. "
+        "Every whitespace-separated term must match.",
+    ),
+    linked: bool | None = Query(
+        None, description="true: only contracts on a matched link; false: only those on none"
+    ),
+    include_links: bool = Query(
+        True,
+        description="false omits the link rows (total_links is still counted), for a caller "
+        "paging the contract list that already holds the links",
+    ),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
@@ -333,6 +372,27 @@ async def get_contracts(
         ]
     if role:
         contracts = [c for c in contracts if c.get("role") == role]
+    if linked is not None:
+        # Keyed on the side each contract plays, from the unfiltered links, so a
+        # type or repo filter above cannot turn a linked contract into an unused one.
+        on_link = set()
+        for lk in getattr(enricher, "_contract_links", []):
+            cid = lk.get("contract_id")
+            on_link.add(("provider", lk.get("provider_repo"), lk.get("provider_file"), cid))
+            on_link.add(("consumer", lk.get("consumer_repo"), lk.get("consumer_file"), cid))
+        contracts = [
+            c
+            for c in contracts
+            if (
+                (c.get("role"), c.get("repo"), c.get("file_path"), c.get("contract_id"))
+                in on_link
+            )
+            == linked
+        ]
+    terms = (q or "").lower().split()
+    if terms:
+        contracts = [c for c in contracts if _matches_terms(_contract_haystack(c), terms)]
+        links = [lk for lk in links if _matches_terms(_link_haystack(lk), terms)]
 
     total_contracts = len(contracts)
     total_links = len(links)
@@ -348,7 +408,7 @@ async def get_contracts(
 
     return WorkspaceContractsResponse(
         contracts=[_contract_entry(c) for c in contracts_page],
-        links=[_contract_link(lk) for lk in links],
+        links=[_contract_link(lk) for lk in links] if include_links else [],
         total_contracts=total_contracts,
         total_links=total_links,
         by_type=by_type,

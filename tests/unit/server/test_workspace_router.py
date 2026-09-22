@@ -445,6 +445,54 @@ class TestGetContracts:
         assert data["total_contracts"] == 0
         assert data["total_links"] == 0
 
+    @pytest.mark.asyncio
+    async def test_search_matches_every_term_across_fields(self, tmp_path: Path) -> None:
+        """``q`` is case-insensitive and every term must match somewhere."""
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            by_path = (await c.get("/api/workspace/contracts", params={"q": "USERS"})).json()
+            by_file_and_repo = (
+                await c.get("/api/workspace/contracts", params={"q": "client.ts frontend"})
+            ).json()
+            no_hit = (await c.get("/api/workspace/contracts", params={"q": "users grpc"})).json()
+        assert by_path["total_contracts"] == 2
+        assert by_path["total_links"] == 1
+        assert [r["file_path"] for r in by_file_and_repo["contracts"]] == ["client.ts"]
+        assert no_hit["total_contracts"] == 0
+        assert no_hit["total_links"] == 0
+
+    @pytest.mark.asyncio
+    async def test_filter_by_linked(self, tmp_path: Path) -> None:
+        """``linked`` splits contracts by whether their own side sits on a link."""
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yes = (await c.get("/api/workspace/contracts", params={"linked": "true"})).json()
+            no = (
+                await c.get(
+                    "/api/workspace/contracts", params={"linked": "false", "role": "provider"}
+                )
+            ).json()
+        assert {(r["repo"], r["file_path"]) for r in yes["contracts"]} == {
+            ("backend", "routes.py"),
+            ("frontend", "client.ts"),
+        }
+        assert [r["contract_id"] for r in no["contracts"]] == ["grpc::Auth/Login"]
+
+    @pytest.mark.asyncio
+    async def test_include_links_false_omits_rows_but_keeps_the_count(self, tmp_path: Path) -> None:
+        """A pager that already holds the links can skip them; the total still counts."""
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=_make_enricher(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            data = (
+                await c.get("/api/workspace/contracts", params={"include_links": "false"})
+            ).json()
+        assert data["links"] == []
+        assert data["total_links"] == 1
+        assert data["total_contracts"] == 4
+
 
 class TestContractWireFields:
     """The list endpoint carries everything but ``schema``."""
