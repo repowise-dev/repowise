@@ -115,6 +115,16 @@ class LanguageNodeMap:
     # false positive, and no vocabulary row can give it any.
     assert_kinds: frozenset[str] = frozenset()
     assert_call_kinds: frozenset[str] = frozenset()
+    #   * ``expr_stmt_kinds`` — this language's wrapper node type(s) for "an
+    #     expression used as a full statement", when that wrapper is not
+    #     literally named ``expression_statement`` (most grammars this pass
+    #     already serves use that exact name, hardcoded in
+    #     ``assertions._assertion_tier``; Pascal's is called ``statement``).
+    #     Empty by default: a grammar whose wrapper IS ``expression_statement``
+    #     needs nothing here, and one with no wrapper at all (a call sits
+    #     directly in the statement list, e.g. Kotlin) needs nothing here
+    #     either -- ``stmt.type in assert_call_kinds`` already matches it.
+    expr_stmt_kinds: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Performance pass (io_in_loop / string_concat_in_loop /
@@ -806,6 +816,18 @@ _PASCAL = LanguageNodeMap(
     # not generic operator text inside a binary node, so no text-sniffing
     # set is needed here (unlike the C-family languages above).
     boolean_operator_kinds=frozenset({"kAnd", "kOr"}),
+    # DUnit's ``Check`` / ``CheckEquals`` / ``Fail`` family are ordinary calls
+    # named in ``asserts/lexicon.py``'s Pascal row (broad tier); DUnitX's
+    # ``Assert.AreEqual`` / ``Assert.IsTrue`` / ... need no row at all -- the
+    # narrow tier already matches any callee chain with an ``assert``-prefixed
+    # identifier, and ``Assert`` (the receiver) is one. Same for the RTL's own
+    # ``Assert(cond, msg)`` runtime-assertion call.
+    assert_call_kinds=frozenset({"exprCall"}),
+    # A call in flat statement position -- ``CheckEquals(5, X);`` as much as a
+    # structural statement -- sits directly under a ``statement`` wrapper, not
+    # a node literally named ``expression_statement`` the way most grammars
+    # this pass serves spell it.
+    expr_stmt_kinds=frozenset({"statement"}),
     # No class-level metrics: Pascal splits a class into an interface-only
     # ``declClass`` (method SIGNATURES only, via ``declProc`` -- no bodies)
     # and a fully separate implementation section where each qualified
@@ -817,7 +839,14 @@ _PASCAL = LanguageNodeMap(
     # every class. Same posture as Go (external-receiver methods): left
     # unmapped rather than emitting a misleading zero-method class.
     if_kinds=frozenset({"if", "ifElse"}),
-    block_kinds=frozenset({"block"}),
+    # ``block`` is the ``begin ... end`` container; ``statements`` is the
+    # grammar's OTHER flat statement-list node, used for a ``try``'s guarded
+    # body and each ``except``/``finally`` clause's body (``try`` has no
+    # ``begin``/``end`` of its own). Both are true statement-list containers,
+    # so both belong here -- without ``statements``, every assertion inside a
+    # ``try ... finally Free; end`` (a near-universal Delphi test idiom) was
+    # invisible to the assertion pass and to mock-setup counting.
+    block_kinds=frozenset({"block", "statements"}),
     # No dedicated ``return`` node -- ``Result := ...`` is an ordinary
     # assignment and a bare ``Exit`` / ``Exit(...)`` is an ordinary
     # identifier/call statement, so neither edges to the CFG exit specially

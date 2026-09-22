@@ -263,7 +263,24 @@ log = structlog.get_logger(__name__)
 # no-op for every language that does not map it) tells that shape apart from
 # the wrapper's other tenants (``Exit;`` / ``inherited;``), so ``Q.Open;`` now
 # finds the same ``io_in_loop`` as ``Q.Open();`` already did.
-HEALTH_ANALYZER_VERSION = 24
+#
+# v25: Pascal opts into assertion detection (``assert_call_kinds``): DUnit's
+# ``Check``/``CheckEquals``/``Fail`` family (a new ``asserts/lexicon.py`` row,
+# broad tier) and DUnitX's ``Assert.*`` plus the RTL's own ``Assert(cond, msg)``
+# (narrow tier, no row needed -- ``Assert`` itself is an assert-prefixed
+# identifier). A new ``expr_stmt_kinds`` field tells the walker that a call in
+# flat statement position sits under a node named ``statement``, not the
+# hardcoded ``expression_statement`` every other mapped grammar uses.
+# ``block_kinds`` also gains ``statements`` (plural) -- a ``try``'s guarded
+# body and its ``except``/``finally`` clauses use that distinct container, not
+# ``block``, so every assertion inside a ``try ... finally Free; end`` (close
+# to universal in Delphi tests) was invisible before this: measured on a real
+# ~150-file Delphi codebase's Test*.dpr suite, assertion coverage moved from
+# 66/120 files (1844 assertions) to 86/120 (2873). ``large_assertion_block`` /
+# ``duplicated_assertion_block`` now fire for Pascal; ``assertion_free_test``
+# deliberately does not -- it gates on a ``SHIPPING_LANGUAGES`` allowlist that
+# needs its own measured-precision pass before Pascal joins it.
+HEALTH_ANALYZER_VERSION = 25
 
 
 def walked_functions(

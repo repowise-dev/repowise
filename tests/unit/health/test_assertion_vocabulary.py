@@ -142,6 +142,79 @@ describe("thing", () => {
 
 
 # ---------------------------------------------------------------------------
+# Object Pascal — DUnit's Check*/Fail family (broad) and DUnitX's Assert.*
+# plus the RTL's own Assert() (both narrow, no dialect row needed)
+# ---------------------------------------------------------------------------
+
+
+def test_pascal_dunit_check_family_is_broad_not_narrow() -> None:
+    """``CheckEquals`` / ``CheckTrue`` / ``Fail`` count but never join a run.
+
+    None start with ``assert``/``expect``, so they are broad-tier only via
+    the Pascal ``AssertDialect`` row — same posture as Go's bare receiver
+    list.
+    """
+    _require("pascal")
+    source = (
+        "unit UTestFoo;\ninterface\nimplementation\n"
+        "procedure TFooTest.TestBar;\nbegin\n"
+        "  CheckEquals(5, GetValue);\n"
+        "  CheckTrue(IsOk);\n"
+        "  Fail('boom');\n"
+        "end;\nend.\n"
+    )
+    count, blocks = _counts(source, "TestFoo.pas", "pascal")["TestBar"]
+    assert count == 3
+    assert blocks == 0
+
+
+def test_pascal_dunitx_assert_dot_needs_no_dialect_row() -> None:
+    """``Assert.AreEqual`` / ``Assert.IsTrue`` are narrow via the receiver
+    identifier alone, and form a run like any other narrow-tier pair."""
+    _require("pascal")
+    source = (
+        "unit UTestFoo;\ninterface\nimplementation\n"
+        "procedure TFooTest.TestBar;\nbegin\n"
+        "  Assert.AreEqual(5, GetValue);\n"
+        "  Assert.IsTrue(IsOk);\n"
+        "end;\nend.\n"
+    )
+    count, blocks = _counts(source, "TestFoo.pas", "pascal")["TestBar"]
+    assert count == 2
+    assert blocks == 1
+
+
+def test_pascal_runtime_assert_call_is_narrow() -> None:
+    """The RTL's own ``Assert(cond, msg)`` matches the narrow prefix rule
+    like any other assert-prefixed callee -- no Pascal-specific handling."""
+    _require("pascal")
+    source = (
+        "unit UTestFoo;\ninterface\nimplementation\n"
+        "procedure TFooTest.TestBar;\nbegin\n"
+        "  Assert(SomeCheck, 'x');\n"
+        "  Assert(OtherCheck, 'y');\n"
+        "end;\nend.\n"
+    )
+    count, blocks = _counts(source, "TestFoo.pas", "pascal")["TestBar"]
+    assert count == 2
+    assert blocks == 1
+
+
+def test_pascal_production_code_has_no_false_assertions() -> None:
+    """Ordinary calls, including a name merely containing ``check`` as a
+    substring (``CheckoutCart``, not an exact broad-tier name), count nothing."""
+    _require("pascal")
+    source = (
+        "unit U;\ninterface\nimplementation\n"
+        "procedure Bar;\nbegin\n"
+        "  CheckoutCart;\n"
+        "  DoNormalWork;\n"
+        "end;\nend.\n"
+    )
+    assert _counts(source, "u.pas", "pascal")["Bar"] == (0, 0)
+
+
+# ---------------------------------------------------------------------------
 # The boundary the phase turns on
 # ---------------------------------------------------------------------------
 
