@@ -311,7 +311,7 @@ def test_install_workspace_mode_re_enables_every_repo(
         assert cfg["distill"]["commands"]["enabled"] is True
 
 
-def test_uninstall_removes_hook_but_leaves_repo_config(
+def test_uninstall_removes_hook_and_disables_repo_config(
     tmp_path: Path, settings_path: Path, monkeypatch
 ) -> None:
     from repowise.core.repo_config import load_repo_config
@@ -326,10 +326,36 @@ def test_uninstall_removes_hook_but_leaves_repo_config(
     assert "removed" in result.output
     data = json.loads(settings_path.read_text(encoding="utf-8"))
     assert not data.get("hooks", {}).get("PreToolUse")
-    # Uninstall is global (settings.json); per-repo config stays as-is so a
-    # later reinstall does not need to re-discover repo preferences.
     cfg = load_repo_config(repo)
-    assert cfg["distill"]["commands"]["enabled"] is True
+    assert cfg["distill"]["commands"]["enabled"] is False
+
+
+def test_uninstall_workspace_disables_all_repo_configs(
+    tmp_path: Path, settings_path: Path, monkeypatch
+) -> None:
+    from repowise.core.repo_config import load_repo_config
+    from repowise.core.workspace_config import RepoEntry, WorkspaceConfig
+
+    root = tmp_path / "workspace"
+    root.mkdir(parents=True)
+    aliases = ("alpha", "beta")
+    for alias in aliases:
+        repo = root / alias
+        (repo / ".repowise").mkdir(parents=True)
+    WorkspaceConfig(repos=[RepoEntry(path=a, alias=a) for a in aliases], default_repo="alpha").save(
+        root
+    )
+    monkeypatch.chdir(root)
+
+    CliRunner().invoke(rewrite_install, ["--workspace"])
+    for alias in aliases:
+        assert load_repo_config(root / alias)["distill"]["commands"]["enabled"] is True
+
+    result = CliRunner().invoke(rewrite_uninstall, ["--workspace"])
+    assert result.exit_code == 0
+    assert "disabled" in result.output
+    for alias in aliases:
+        assert load_repo_config(root / alias)["distill"]["commands"]["enabled"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +432,30 @@ def test_uninstall_removes_codex_hook_and_agents_md_section(
     data = json.loads(codex_env.read_text(encoding="utf-8"))
     assert not data.get("hooks", {}).get("PreToolUse")
     assert not (repo / "AGENTS.md").exists()  # awareness section round-tripped away
+
+
+def test_uninstall_removes_agents_md_section_when_codex_not_detected(
+    tmp_path: Path, settings_path: Path, monkeypatch
+) -> None:
+    from repowise.cli.agent_adapters.codex import CodexAdapter
+    from repowise.cli.editor_integrations import codex_config
+
+    monkeypatch.setattr(CodexAdapter, "detect", lambda self: True)
+    monkeypatch.setattr(codex_config, "codex_cli_version", lambda: (0, 137, 0))
+    repo = _make_repo(tmp_path, monkeypatch)
+
+    # Install writes AGENTS.md while Codex is detected
+    CliRunner().invoke(rewrite_install, [])
+    assert (repo / "AGENTS.md").exists()
+    assert "REPOWISE_DISTILL" in (repo / "AGENTS.md").read_text(encoding="utf-8")
+
+    # Simulate Codex no longer detected
+    monkeypatch.setattr(CodexAdapter, "detect", lambda self: False)
+
+    result = CliRunner().invoke(rewrite_uninstall, [])
+    assert result.exit_code == 0
+    assert "AGENTS.md distill section removed" in result.output
+    assert not (repo / "AGENTS.md").exists()
 
 
 def test_status_is_honest_about_codex_capability(
