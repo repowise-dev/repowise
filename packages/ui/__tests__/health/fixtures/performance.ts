@@ -3,6 +3,7 @@ import type {
   PerformanceOpportunity,
   PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
+  PerformanceOpportunitySibling,
 } from "@repowise-dev/types/health";
 
 import type { PerformanceViewAdapter } from "../../../src/health/performance/adapter";
@@ -14,6 +15,18 @@ import type { PerformanceViewAdapter } from "../../../src/health/performance/ada
  * evidence preview, or a context with no rows has to be reachable on demand,
  * and a live index only offers whatever it happens to hold.
  */
+
+export function sibling(
+  overrides: Partial<PerformanceOpportunitySibling> = {},
+): PerformanceOpportunitySibling {
+  return {
+    opportunity_id: "perf2_sibling",
+    biomarker_type: "nested_loop_with_io",
+    strategy: "batch_or_prefetch_io",
+    relation: "preferred",
+    ...overrides,
+  };
+}
 
 export function opportunity(
   overrides: Partial<PerformanceOpportunity> = {},

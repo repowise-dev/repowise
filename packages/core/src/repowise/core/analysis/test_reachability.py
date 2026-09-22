@@ -162,6 +162,7 @@ from repowise.core.analysis.execution_graph import (
 )
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GraphNode
+from repowise.core.test_paths import paired_test_names
 
 # How many call hops a test may take and still be said to reach a file. The walk
 # saturates here; see the Depth section above.
@@ -181,7 +182,8 @@ MAX_TESTS_PER_TARGET = 50
 
 # Which tier answered. The CLI prints this so a reader can tell "this test runs
 # into the file" from the weaker "this test imports it".
-ReachedVia = Literal["call-graph", "import-graph"]
+# ``name-match`` is weaker still: a test named for the file, with no edge.
+ReachedVia = Literal["call-graph", "import-graph", "name-match"]
 
 __all__ = [
     "DEFAULT_CALL_DEPTH",
@@ -194,6 +196,7 @@ __all__ = [
     "call_graph_from_graph",
     "files_reached_by_tests",
     "load_test_files",
+    "tests_matching_by_name",
     "tests_reaching",
     "tests_reaching_by_tier",
 ]
@@ -574,3 +577,25 @@ async def _edges_into(
         params,
     )
     return [(s, t) for s, t in rows]
+
+
+def tests_matching_by_name(targets: list[str], test_files: Collection[str]) -> dict[str, ReachedBy]:
+    """Tests named for each target by convention: the fallback when no edge answered.
+
+    An unresolved graph (dynamic client, unindexed framework) leaves
+    ``tests/test_x.py`` with no edge to ``x.py``; "unknown" there argues
+    against a change a test guards.
+    """
+    by_name: dict[str, list[str]] = {}
+    for path in test_files:
+        by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+    out: dict[str, ReachedBy] = {}
+    for target in targets:
+        found = sorted(
+            path for name in paired_test_names(target) for path in by_name.get(name, ())
+        )
+        if found:
+            out[target] = ReachedBy(
+                found[:MAX_TESTS_PER_TARGET], "name-match", len(found), tuple(found)
+            )
+    return out

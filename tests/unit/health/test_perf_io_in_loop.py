@@ -275,3 +275,26 @@ def test_perf_findings_score_performance_not_defect():
     assert scores["performance"] < 10.0
     # Every perf finding carries 0 defect-pillar impact.
     assert all(d == 0.0 for d in deductions)
+
+
+@pytest.mark.parametrize(
+    ("header", "chunked"),
+    [
+        ("for start in range(0, len(ids), CHUNK):", True),
+        ("for batch in itertools.batched(ids, 50):", True),
+        ("for start in range(0, len(ids), 1):", False),
+        ("for i in ids:", False),
+    ],
+)
+def test_a_sink_in_a_chunked_loop_carries_the_fact(header: str, chunked: bool):
+    source = (
+        "async def f(client, ids):\n"
+        f"    {header}\n"
+        "        await client.table('t').select('*').execute()\n"
+    ).encode()
+    fc = walk_file("f.py", "python", source)
+    loop_hits = [h for h in fc.perf_hits if h.kind in {"io_in_loop", "serial_await_in_loop"}]
+    assert loop_hits
+    assert all(h.chunked is chunked for h in loop_hits)
+    finding = IoInLoopDetector().detect(_ctx(loop_hits))[0]
+    assert finding.details.get("chunked_iteration", False) is chunked

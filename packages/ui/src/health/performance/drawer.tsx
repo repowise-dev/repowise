@@ -5,13 +5,17 @@ import { Sparkles } from "lucide-react";
 import type {
   PerformanceOpportunity,
   PerformanceOpportunityDetail,
+  PerformanceOpportunityPlanStep,
+  PerformanceOpportunitySibling,
+  PerformanceOpportunityValidation,
   PerformanceModelState,
 } from "@repowise-dev/types/health";
-import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import type { RecommendationValidation, RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { AdaptivePanel } from "../../shared/adaptive-panel";
 import { ProvenancePathList } from "../../shared/provenance-path-list";
 import { performancePlanDetail } from "../../refactoring/types";
+import { ValidationSummary } from "../../refactoring/validation-summary";
 import type { PerformanceViewAdapter } from "./adapter";
 import { RawObservations } from "./evidence";
 import {
@@ -25,8 +29,28 @@ import {
   opportunityEvidenceLine,
   opportunityTitle,
   planPresentation,
+  siblingFixLabel,
   whyRankedLabel,
 } from "./presentation";
+
+/** The queue's small validation shape, adapted onto the refactoring surface's
+ *  reader rather than duplicated. The fields it doesn't materialize (per-target
+ *  breakdown, affected paths) read as empty, not missing. */
+function toRecommendationValidation(
+  validation: PerformanceOpportunityValidation,
+): RecommendationValidation {
+  return {
+    basis: validation.basis,
+    via: validation.via,
+    total: validation.total,
+    tests: validation.tests,
+    truncated: false,
+    affected_files: [],
+    affected_symbols: [],
+    commands: validation.commands,
+    targets: [],
+  };
+}
 
 /**
  * One opportunity in depth.
@@ -115,6 +139,95 @@ function useVerifiedPlan(
   return { planId, data, error, isLoading, matches, verified: matches ? data! : null };
 }
 
+/** One sibling's fix, as a link when the drawer can open another opportunity,
+ *  plain text otherwise (an agent-facing or read-only host, say). */
+function SiblingLink({
+  sibling,
+  label,
+  onSelect,
+}: {
+  sibling: PerformanceOpportunitySibling;
+  label: string;
+  onSelect?: ((opportunityId: string) => void) | undefined;
+}) {
+  if (!onSelect) {
+    return <span className="font-medium text-[var(--color-text-secondary)]">{label}</span>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(sibling.opportunity_id)}
+      className="rounded font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+    >
+      {label}
+    </button>
+  );
+}
+
+/** Other causes on the same lines, one quiet line. A `preferred` sibling says
+ *  plainly that its fix is the stronger one; the rest are just named. */
+function SiblingsNote({
+  siblings,
+  onSelect,
+}: {
+  siblings: PerformanceOpportunitySibling[];
+  onSelect?: ((opportunityId: string) => void) | undefined;
+}) {
+  const preferred = siblings.filter((sibling) => sibling.relation === "preferred");
+  const rest = siblings.filter((sibling) => sibling.relation !== "preferred");
+  return (
+    <p className="mt-3 text-xs text-[var(--color-text-tertiary)]">
+      {preferred.map((sibling) => (
+        <span key={sibling.opportunity_id} className="block">
+          {siblingFixLabel(sibling)} is the stronger fix here; see{" "}
+          <SiblingLink sibling={sibling} label="this cause" onSelect={onSelect} />.
+        </span>
+      ))}
+      {rest.length > 0 ? (
+        <span className="block">
+          Also flagged on these lines:{" "}
+          {rest.map((sibling, index) => (
+            <span key={sibling.opportunity_id}>
+              {index > 0 ? ", " : ""}
+              <SiblingLink
+                sibling={sibling}
+                label={humanizeToken(sibling.biomarker_type)}
+                onSelect={onSelect}
+              />
+            </span>
+          ))}
+          .
+        </span>
+      ) : null}
+    </p>
+  );
+}
+
+/** The plan's edits in order; only the rarer mechanical ones are marked. */
+function PlanSteps({ steps }: { steps: PerformanceOpportunityPlanStep[] }) {
+  return (
+    <ol className="mt-3 space-y-1.5">
+      {[...steps]
+        .sort((a, b) => a.order - b.order)
+        .map((step) => (
+          <li key={step.order} className="text-sm text-[var(--color-text-secondary)]">
+            <span className="tabular-nums text-[var(--color-text-tertiary)]">{step.order}.</span>{" "}
+            {step.action}
+            {step.applicability === "mechanical" ? (
+              <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">mechanical</span>
+            ) : null}
+            {step.file_path ? (
+              <span className="ml-1.5 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
+                {step.file_path}
+                {step.line ? `:${step.line}` : ""}
+              </span>
+            ) : null}
+          </li>
+        ))}
+    </ol>
+  );
+}
+
 function PlanSection({
   opportunity,
   adapter,
@@ -132,6 +245,7 @@ function PlanSection({
     planId && matches
       ? adapter.refactoringPlanHref?.(planId, opportunity.opportunity_id)
       : undefined;
+  const steps = opportunity.plan_steps;
 
   return (
     <Section title="Plan">
@@ -142,6 +256,15 @@ function PlanSection({
           Proposed intervention: {humanizeToken(opportunity.fix.strategy).toLowerCase()}.{" "}
           {opportunity.fix.rationale}
         </p>
+      ) : null}
+      {steps && steps.length > 0 ? <PlanSteps steps={steps} /> : null}
+      {opportunity.validation ? (
+        <div className="mt-3">
+          <ValidationSummary
+            validation={toRecommendationValidation(opportunity.validation)}
+            fileHref={adapter.fileHref}
+          />
+        </div>
       ) : null}
       {planId && !enabled ? (
         <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
@@ -182,6 +305,7 @@ export function OpportunityDrawer({
   planEnabled,
   onClose,
   onAgentHandoff,
+  onSelectById,
 }: {
   /** The row that was inspected, held so the panel can render before the fetch. */
   opportunity: PerformanceOpportunity | null;
@@ -190,6 +314,8 @@ export function OpportunityDrawer({
   planEnabled: boolean;
   onClose: () => void;
   onAgentHandoff: (opportunity: PerformanceOpportunity, plan: RefactoringPlan | null) => void;
+  /** Open a sibling cause by id, replacing the drawer's contents in place. */
+  onSelectById?: ((opportunityId: string) => void) | undefined;
 }) {
   const id = opportunity?.opportunity_id ?? null;
   const { data: detail } = useSWR<PerformanceOpportunityDetail>(
@@ -261,6 +387,9 @@ export function OpportunityDrawer({
                 <Field label="Leverage" value={humanizeToken(current.facets.leverage)} />
                 <Field label="Change risk" value={humanizeToken(current.facets.change_risk)} />
               </dl>
+              {current.siblings && current.siblings.length > 0 ? (
+                <SiblingsNote siblings={current.siblings} onSelect={onSelectById} />
+              ) : null}
             </Section>
 
             <Section title="Whether it can be changed">

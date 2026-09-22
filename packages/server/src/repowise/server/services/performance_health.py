@@ -171,7 +171,8 @@ def parse_query(
             return None
         if value in allowed:
             return value
-        ignored[name] = value
+        # Name the vocabulary, so a rejected value is recoverable from the reply.
+        ignored[name] = f"{value} (accepted: {', '.join(allowed)})"
         return None
 
     resolved_context: PerformanceContext = DEFAULT_CONTEXT
@@ -181,7 +182,9 @@ def parse_query(
         else:
             # Named, so the caller learns the value was not understood, then
             # treated as absent like every other unrecognized filter.
-            ignored["performance_context"] = context
+            ignored["performance_context"] = (
+                f"{context} (accepted: {', '.join((*CANONICAL_CONTEXTS, 'all'))})"
+            )
     return (
         PerformanceQuery(
             context=resolved_context,
@@ -432,6 +435,7 @@ class PerformanceHealthService:
             "plan_state": lead["plan_state"],
             "plan_reason": _PLAN_REASONS[lead["plan_state"]],
             "prerequisites": lead["prerequisites"],
+            **_plan_brief(lead.get("plan"), economics=False),
             "next_action": {
                 "tool": "get_health",
                 "arguments": {"opportunity_id": lead["opportunity_id"]},
@@ -539,6 +543,8 @@ class PerformanceHealthService:
             "actionability_reason": details.get("actionability_reason"),
             "prerequisites": details.get("prerequisites", []),
             "rank_factors": details.get("rank_factors", {}),
+            "siblings": details.get("siblings", []),
+            **_plan_brief(details.get("plan")),
             "fix": None
             if fix_strategy is None
             else {
@@ -630,6 +636,21 @@ def evidence_block(
         block["evidence_reduced_reason"] = "evidence_page"
         block["evidence_next_cursor"] = emitted
     return block
+
+
+def _plan_brief(plan: dict[str, Any] | None, *, economics: bool = True) -> dict[str, Any]:
+    """The stored plan's validation (and steps, economics), or nothing on an older store."""
+    if not plan:
+        return {}
+    validation = plan.get("validation") or {}
+    keys = ("basis", "via", "total", "tests", "commands") if economics else ("basis", "via", "total")
+    brief: dict[str, Any] = {"validation": {key: validation.get(key) for key in keys}}
+    if economics:
+        brief["plan_steps"] = plan.get("steps", [])
+        brief["plan_economics"] = {
+            key: plan.get(key) for key in ("effort_bucket", "benefit", "cost", "risk")
+        }
+    return brief
 
 
 def _title(lead: dict[str, Any]) -> str:

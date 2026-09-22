@@ -21,7 +21,6 @@ import asyncio
 import os
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -37,6 +36,7 @@ from ...ingestion.git_indexer.function_blame import (
 from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
+from ...test_paths import paired_test_names
 from ..graph_view import HasEdge, ImportEdgeView
 from ..test_reachability import files_reached_by_tests
 from .asserts.lexicon import AssertVocabulary
@@ -58,6 +58,7 @@ from .perf import (
     collect_crossfn_io_in_loop,
     link_performance_findings,
 )
+from .perf.unbounded_reduction import collect_unbounded_reductions
 from .refactoring import (
     PerformancePlanPolicy,
     RefactoringContext,
@@ -109,6 +110,9 @@ log = structlog.get_logger(__name__)
 # ``with atomic(), pytest.raises(E):`` counted one. Each item is classified now,
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
+#
+# v22: perf findings in a chunked loop carry ``chunked_iteration``, and
+# ``unbounded_read_reduced_in_memory`` is a new marker; a v21 store has neither.
 #
 # v21 moves two stored counts, both of which were order-dependent in the same
 # way. ``assertion_count`` rises on such a header. ``mock_setup_count`` falls on
@@ -240,7 +244,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 21
+HEALTH_ANALYZER_VERSION = 22
 
 
 def walked_functions(
@@ -417,48 +421,9 @@ def _path_basenames(all_paths: set[str]) -> set[str]:
     return {p.rsplit("/", 1)[-1] for p in all_paths}
 
 
-_PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
-
-
 def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
-    """Heuristic: does any other file look like a test for *rel_path*?
-
-    Cheap and conservative — looks for common test-file naming
-    conventions paired with the same basename. *path_basenames* is the
-    precomputed ``_path_basenames`` set for the analyzed file list.
-    """
-    p = Path(rel_path)
-    stem = p.stem
-    test_suffix = ".exs" if p.suffix == ".ex" else p.suffix
-    candidates = {
-        f"test_{stem}{test_suffix}",
-        f"{stem}_test{test_suffix}",
-        f"{stem}_spec{test_suffix}",
-        f"{stem}.test.ts",
-        f"{stem}.test.tsx",
-        f"{stem}.test.js",
-        f"{stem}.test.mts",
-        f"{stem}.test.cts",
-        f"{stem}.spec.ts",
-        f"{stem}.spec.js",
-        f"{stem}.spec.mts",
-        f"{stem}.spec.cts",
-    }
-    if p.suffix.lower() in _PASCAL_UNIT_SUFFIXES:
-        # Delphi/FPC's lowercase "u" unit-name prefix (uFoo.pas) has no
-        # test-file convention of its own; real-world projects pair it with
-        # a standalone console test program named Test<Foo>.dpr (the "u" is
-        # dropped, the extension is .dpr since a runnable test program is a
-        # project file, not a unit). Only a lowercase "u" is stripped -- a
-        # stem that merely starts with capital "U" (Utils.pas) is a
-        # different word, not this naming convention. Confirmed against a
-        # real ~150-file Delphi codebase: uKeymap.pas <-> TestKeymap.dpr,
-        # uANSIParser.pas <-> TestANSIParser.dpr, uConsoleBuffer.pas <->
-        # TestConsoleBuffer.dpr, etc. -- src/tools/Test*.dpr, not next to
-        # the unit.
-        pascal_stem = stem[1:] if stem[:1] == "u" else stem
-        candidates.add(f"Test{pascal_stem}.dpr")
-    return not candidates.isdisjoint(path_basenames)
+    """Whether any analyzed file is named like a test for *rel_path*."""
+    return not paired_test_names(rel_path).isdisjoint(path_basenames)
 
 
 class HealthAnalyzer:
@@ -712,6 +677,8 @@ class HealthAnalyzer:
         # centrality-gated nested-loop hits are present to promote).
         with timed(timings, "analysis.health.promotions"):
             apply_perf_promotions(walked, dataflow=dataflow_cache)
+        with timed(timings, "analysis.health.unbounded_reduction"):
+            collect_unbounded_reductions(walked, read_source=self.read_source)
 
         timings_evaluate = timed(timings, "analysis.health.evaluate")
         timings_evaluate.__enter__()
@@ -774,7 +741,6 @@ class HealthAnalyzer:
             suggestions.extend(
                 performance_fix_suggestions(
                     opportunities,
-                    nloc_by_file={metric.file_path: metric.nloc for metric in metrics},
                     min_confidence=refactoring_min_confidence,
                 )
             )
@@ -982,7 +948,6 @@ class HealthAnalyzer:
             suggestions.extend(
                 performance_fix_suggestions(
                     opportunities,
-                    nloc_by_file={metric.file_path: metric.nloc for metric in metrics},
                     min_confidence=refactoring_min_confidence,
                 )
             )

@@ -20,7 +20,6 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import (
-    HealthFileMetric,
     HealthFinding,
     PerformanceOpportunity,
     PerformanceSummary,
@@ -63,13 +62,17 @@ _OBSERVATION_COLUMNS = (
 )
 
 
-def opportunity_details(opportunity: OpportunityModel) -> dict[str, Any]:
+def opportunity_details(
+    opportunity: OpportunityModel, plan: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """The explanatory half of one opportunity, the half no query filters on.
 
     Everything a column already holds is deliberately absent, so the row and
-    the payload cannot drift into disagreeing about the same fact.
+    the payload cannot drift into disagreeing about the same fact. *plan* is
+    the stored plan's validation and economics, resolved once at finalize.
     """
     return {
+        **({"plan": plan} if plan else {}),
         "biomarker_types": list(opportunity.biomarker_types),
         "shared_path_suffix": list(opportunity.shared_path_suffix),
         "resource_fingerprints": list(opportunity.resource_fingerprints),
@@ -81,6 +84,7 @@ def opportunity_details(opportunity: OpportunityModel) -> dict[str, Any]:
         "rank_factors": dict(opportunity.rank_factors),
         "why_ranked": [dict(entry) for entry in opportunity.why_ranked],
         "fix_rationale": opportunity.fix.rationale if opportunity.fix else None,
+        "siblings": [dict(entry) for entry in opportunity.siblings],
     }
 
 
@@ -90,6 +94,7 @@ def _row_kwargs(
     position: int,
     plan_state: str,
     analyzed_commit: str | None,
+    plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     fix = opportunity.fix
     return {
@@ -112,7 +117,7 @@ def _row_kwargs(
         "observations_total": opportunity.observations_total,
         "affected_call_sites_total": opportunity.affected_call_sites_total,
         "affected_files_total": opportunity.affected_files_total,
-        "details_json": json.dumps(opportunity_details(opportunity), separators=(",", ":")),
+        "details_json": json.dumps(opportunity_details(opportunity, plan), separators=(",", ":")),
         "analyzed_commit": analyzed_commit,
     }
 
@@ -125,7 +130,11 @@ def _intervention_file(opportunity: OpportunityModel) -> str:
     return opportunity.evidence[0]["file_path"] if opportunity.evidence else ""
 
 
-def _summary_payload(opportunities: list[OpportunityModel], plan_states: dict[str, str]) -> dict:
+def _summary_payload(
+    opportunities: list[OpportunityModel],
+    plan_states: dict[str, str],
+    plans: dict[str, dict[str, Any]] | None = None,
+) -> dict:
     """The compact current headline, written once and read by primary key."""
     counts: dict[str, int] = {}
     contexts: dict[str, int] = {}
@@ -159,6 +168,7 @@ def _summary_payload(opportunities: list[OpportunityModel], plan_states: dict[st
             "why_ranked": [dict(entry) for entry in lead.why_ranked],
             "prerequisites": list(lead.prerequisites),
             "actionability_reason": lead.actionability_reason,
+            **({"plan": plan} if (plan := (plans or {}).get(lead.opportunity_id)) else {}),
         },
     }
 
@@ -197,9 +207,11 @@ async def finalize_performance_opportunities(
     opportunities = build_performance_opportunities(rows, evidence_limit=_EVIDENCE_LIMIT)
 
     await _restamp_findings(session, rows)
-    plan_states = await _replace_plans(session, repository_id, opportunities, policy)
-    await _reconcile_opportunities(session, repository_id, opportunities, plan_states, analyzed_commit)
-    await _write_summary(session, repository_id, opportunities, plan_states, analyzed_commit)
+    plan_states, plans = await _replace_plans(session, repository_id, opportunities, policy)
+    await _reconcile_opportunities(
+        session, repository_id, opportunities, plan_states, analyzed_commit, plans
+    )
+    await _write_summary(session, repository_id, opportunities, plan_states, analyzed_commit, plans)
     return len(opportunities)
 
 
@@ -234,8 +246,8 @@ async def _replace_plans(
     repository_id: str,
     opportunities: list[OpportunityModel],
     policy: PerformancePlanPolicy,
-) -> dict[str, str]:
-    """Write the authoritative plans and report each opportunity's plan state.
+) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+    """Write the authoritative plans; report each opportunity's plan state and facts.
 
     Plans are generated here rather than from an analysis report because the
     report sees one run's findings while this sees the merged stored set, and a
@@ -255,27 +267,45 @@ async def _replace_plans(
         for item in opportunities
     }
     if not policy.enabled:
-        return states
+        return states, {}
 
-    nloc_by_file = dict(
-        (
-            await session.execute(
-                select(HealthFileMetric.file_path, HealthFileMetric.nloc).where(
-                    HealthFileMetric.repository_id == repository_id
-                )
-            )
-        ).all()
-    )
     suggestions = performance_fix_suggestions(
-        opportunities,
-        nloc_by_file=nloc_by_file,
-        min_confidence=policy.min_confidence,
+        opportunities, min_confidence=policy.min_confidence
     )
+    rows = []
     for suggestion in suggestions:
-        session.add(RefactoringSuggestion(**_refactoring_row_kwargs(suggestion, repository_id)))
+        row = RefactoringSuggestion(**_refactoring_row_kwargs(suggestion, repository_id))
+        session.add(row)
+        rows.append(row)
         states[suggestion.plan["opportunity_id"]] = "available"
     await session.flush()
-    return states
+    return states, await _plan_facts(session, repository_id, rows)
+
+
+async def _plan_facts(
+    session: AsyncSession, repository_id: str, rows: list[Any]
+) -> dict[str, dict[str, Any]]:
+    """Validation and economics per plan, resolved once here rather than per read.
+
+    Serving one plan cannot afford the test-reachability walk, and without this
+    it fell back to an empty profile that read as "no tests" for every plan.
+    """
+    from ....analysis.health.refactoring.recommendations import hydrate_recommendations
+
+    if not rows:
+        return {}
+    facts: dict[str, dict[str, Any]] = {}
+    for recommendation in await hydrate_recommendations(session, repository_id, rows):
+        suggestion = recommendation.suggestion
+        facts[suggestion.plan["opportunity_id"]] = {
+            "steps": (suggestion.plan or {}).get("steps", []),
+            "effort_bucket": suggestion.effort_bucket,
+            "benefit": recommendation.benefit,
+            "cost": recommendation.cost,
+            "risk": recommendation.risk,
+            "validation": recommendation.validation.as_dict(),
+        }
+    return facts
 
 
 async def _reconcile_opportunities(
@@ -284,6 +314,7 @@ async def _reconcile_opportunities(
     opportunities: list[OpportunityModel],
     plan_states: dict[str, str],
     analyzed_commit: str | None,
+    plans: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Update, insert, and resolve, in one pass over the stored rows."""
     stored = {
@@ -308,6 +339,7 @@ async def _reconcile_opportunities(
             position=position,
             plan_state=plan_states.get(item.opportunity_id, "no_safe_plan"),
             analyzed_commit=analyzed_commit,
+            plan=(plans or {}).get(item.opportunity_id),
         )
         row = stored.get(key)
         if row is None:
@@ -336,11 +368,14 @@ async def _write_summary(
     opportunities: list[OpportunityModel],
     plan_states: dict[str, str],
     analyzed_commit: str | None,
+    plans: dict[str, dict[str, Any]] | None = None,
 ) -> None:
 
     from ....analysis.health.perf.opportunities import PERFORMANCE_MODEL_VERSION
 
-    payload = json.dumps(_summary_payload(opportunities, plan_states), separators=(",", ":"))
+    payload = json.dumps(
+        _summary_payload(opportunities, plan_states, plans), separators=(",", ":")
+    )
     row = await session.get(PerformanceSummary, repository_id)
     if row is None:
         row = PerformanceSummary(repository_id=repository_id)

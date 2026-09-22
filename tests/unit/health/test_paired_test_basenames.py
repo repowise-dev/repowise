@@ -150,3 +150,18 @@ class TestPascalPairing:
         assert _has_paired_test_file("src/user.cr", _path_basenames(crystal))
         # Same stem, dot form, must NOT count for Ruby's underscore layout.
         assert not _has_paired_test_file("lib/user.rb", _path_basenames({"spec/user.spec.rb"}))
+
+
+def test_name_match_tier_finds_tests_named_for_a_target_anywhere():
+    from repowise.core.analysis.test_reachability import tests_matching_by_name
+
+    tests = {"tests/unit/test_jira_links.py", "tests/other/test_jira_links.py", "web/a.test.ts"}
+    found = tests_matching_by_name(["app/jira_links.py", "web/a.ts", "app/none.py"], tests)
+
+    assert found["app/jira_links.py"].tests == [
+        "tests/other/test_jira_links.py",
+        "tests/unit/test_jira_links.py",
+    ]
+    assert found["app/jira_links.py"].via == "name-match"
+    assert found["web/a.ts"].total == 1
+    assert "app/none.py" not in found

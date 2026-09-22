@@ -5,81 +5,6 @@
       "actionability_state": "plan_ready",
       "affected_call_sites_total": 1,
       "affected_files_total": 1,
-      "biomarker_type": "serial_await_in_loop",
-      "biomarker_types": [
-        "serial_await_in_loop"
-      ],
-      "boundary_kind": "network",
-      "confidence": "high",
-      "evidence": [
-        {
-          "biomarker_type": "serial_await_in_loop",
-          "file_path": "src/app/fanout.py",
-          "finding_id": "finding_28eb6a8735fdf18585c6",
-          "function_name": "gather_all",
-          "line_end": 92,
-          "line_start": 90,
-          "path": [],
-          "provenance": "direct",
-          "reason": "async_serial_awaits: serial_await_in_loop at src/app/fanout.py:90 repeats work per iteration."
-        }
-      ],
-      "evidence_truncated": false,
-      "execution_context": "production",
-      "facets": {
-        "actionability_confidence": "high",
-        "amplification": "per_iteration",
-        "change_risk": "contained",
-        "exposure": "unknown",
-        "leverage": "isolated"
-      },
-      "fix": {
-        "rationale": "Dataflow proves that every observed loop carries no cross-iteration dependence.",
-        "safety": "proven",
-        "strategy": "parallelize_independent_awaits"
-      },
-      "intervention_symbol": null,
-      "observations_total": 1,
-      "opportunity_id": "perf2_182b2a7c053167959285",
-      "performance_model_version": 2,
-      "prerequisites": [],
-      "provenance": "direct",
-      "rank_factors": {
-        "affected_call_sites": 2,
-        "boundary_kind": 4,
-        "entry_reachability": 0,
-        "execution_context": 3,
-        "multiplier_shape": 4,
-        "provenance": 3
-      },
-      "rank_score": 16,
-      "reliable_entry_reachability": null,
-      "resource_fingerprints": [],
-      "shared_path_suffix": [],
-      "terminal_sink": null,
-      "why_ranked": [
-        {
-          "factor": "boundary_kind",
-          "points": 4,
-          "value": "network"
-        },
-        {
-          "factor": "multiplier_shape",
-          "points": 4,
-          "value": "serial_await_in_loop"
-        },
-        {
-          "factor": "execution_context",
-          "points": 3,
-          "value": "production"
-        }
-      ]
-    },
-    {
-      "actionability_reason": "proven_strategy",
-      "actionability_state": "plan_ready",
-      "affected_call_sites_total": 1,
-      "affected_files_total": 1,
       "biomarker_type": "resource_construction_in_loop",
       "biomarker_types": [
         "resource_construction_in_loop"
@@ -131,6 +56,7 @@
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
+      "siblings": [],
       "terminal_sink": null,
       "why_ranked": [
         {
@@ -231,6 +157,7 @@
         "src/app/entry.py::_hit",
         "src/app/db.py::reach_sink"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::reach_sink",
       "why_ranked": [
         {
@@ -331,6 +258,7 @@
         "src/app/repo.py::fetch_page",
         "src/app/db.py::execute"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::execute",
       "why_ranked": [
         {
@@ -432,6 +360,7 @@
         "src/app/reindex.py::_write",
         "src/app/db.py::upsert"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::upsert",
       "why_ranked": [
         {
@@ -532,6 +461,7 @@
         "src/app/sync.py::_load",
         "src/app/db.py::query"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::query",
       "why_ranked": [
         {
@@ -615,6 +545,7 @@
         "src/app/cache.py::refresh",
         "src/app/db.py::write"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::write",
       "why_ranked": [
         {
@@ -626,6 +557,84 @@
           "factor": "boundary_kind",
           "points": 4,
           "value": "db"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "serial_await_in_loop",
+      "biomarker_types": [
+        "serial_await_in_loop"
+      ],
+      "boundary_kind": "network",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "serial_await_in_loop",
+          "file_path": "src/app/fanout.py",
+          "finding_id": "finding_28eb6a8735fdf18585c6",
+          "function_name": "gather_all",
+          "line_end": 92,
+          "line_start": 90,
+          "path": [],
+          "provenance": "direct",
+          "reason": "async_serial_awaits: serial_await_in_loop at src/app/fanout.py:90 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "Iteration independence is proven; the concurrency the fan-out would create is not bounded by anything this group can see.",
+        "safety": "advisory",
+        "strategy": "parallelize_independent_awaits"
+      },
+      "intervention_symbol": null,
+      "observations_total": 1,
+      "opportunity_id": "perf2_182b2a7c053167959285",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "bounded_concurrency"
+      ],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "siblings": [],
+      "terminal_sink": null,
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "network"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "serial_await_in_loop"
         },
         {
           "factor": "execution_context",
@@ -699,6 +708,7 @@
         "src/app/billing.py::handle",
         "src/app/db.py::get_session"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::get_session",
       "why_ranked": [
         {
@@ -783,6 +793,7 @@
         "src/app/orders.py::handle",
         "src/app/db.py::get_session"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::get_session",
       "why_ranked": [
         {
@@ -867,6 +878,7 @@
         "src/app/reports.py::handle",
         "src/app/db.py::get_session"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::get_session",
       "why_ranked": [
         {
@@ -951,6 +963,7 @@
         "src/app/job.py::run",
         "src/app/db.py::get_session"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::get_session",
       "why_ranked": [
         {
@@ -1033,6 +1046,7 @@
       "shared_path_suffix": [
         "src/app/db.py::only_sink"
       ],
+      "siblings": [],
       "terminal_sink": null,
       "why_ranked": [
         {
@@ -1117,6 +1131,7 @@
         "scripts/backfill.py::run",
         "src/app/db.py::get_session"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::get_session",
       "why_ranked": [
         {
@@ -1201,6 +1216,7 @@
         "src/app/edge.py::run",
         "src/app/db.py::reliable_sink"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::reliable_sink",
       "why_ranked": [
         {
@@ -1285,6 +1301,7 @@
         "tests/test_job.py::run",
         "src/app/db.py::get_session"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::get_session",
       "why_ranked": [
         {
@@ -1370,6 +1387,7 @@
         "src/app/guess.py::run",
         "src/app/db.py::guessed_sink"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/db.py::guessed_sink",
       "why_ranked": [
         {
@@ -1448,6 +1466,7 @@
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
+      "siblings": [],
       "terminal_sink": null,
       "why_ranked": [
         {
@@ -1525,6 +1544,7 @@
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
+      "siblings": [],
       "terminal_sink": null,
       "why_ranked": [
         {
@@ -1620,6 +1640,7 @@
         "src/app/store.py::flush_all",
         "src/app/store.py::flush"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/store.py::flush",
       "why_ranked": [
         {
@@ -1745,6 +1766,7 @@
         "src/app/parse.py::_get_query",
         "src/app/parse.py::_load_compiled_query"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/parse.py::_load_compiled_query",
       "why_ranked": [
         {
@@ -1818,6 +1840,7 @@
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
+      "siblings": [],
       "terminal_sink": null,
       "why_ranked": [
         {
@@ -1891,6 +1914,7 @@
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
+      "siblings": [],
       "terminal_sink": null,
       "why_ranked": [
         {
@@ -1970,6 +1994,7 @@
         "src/app/walker.py::scan",
         "src/app/fsio.py::read_text"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/fsio.py::read_text",
       "why_ranked": [
         {
@@ -2049,6 +2074,7 @@
         "src/app/walker.py::index",
         "src/app/fsio.py::read_text"
       ],
+      "siblings": [],
       "terminal_sink": "src/app/fsio.py::read_text",
       "why_ranked": [
         {
@@ -2122,6 +2148,7 @@
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
+      "siblings": [],
       "terminal_sink": null,
       "why_ranked": [
         {
@@ -2195,6 +2222,7 @@
       "reliable_entry_reachability": null,
       "resource_fingerprints": [],
       "shared_path_suffix": [],
+      "siblings": [],
       "terminal_sink": null,
       "why_ranked": [
         {

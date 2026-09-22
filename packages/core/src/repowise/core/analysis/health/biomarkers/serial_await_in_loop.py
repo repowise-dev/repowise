@@ -41,13 +41,17 @@ class SerialAwaitInLoopDetector:
             if hit.promoted:
                 # Dataflow proved the loop carries no data dependence between
                 # iterations: assert the fan-out instead of hedging on it.
-                details = {"boundary_kind": hit.detail, "dataflow_verified": True}
+                details = {
+                    "boundary_kind": hit.detail,
+                    "dataflow_verified": True,
+                    **hit.loop_facts(),
+                }
                 reason = (
                     f"{phrasing} is awaited serially in a loop whose iterations "
                     "carry no data dependence; fan out with gather / Promise.all"
                 )
             else:
-                details = {"boundary_kind": hit.detail}
+                details = {"boundary_kind": hit.detail, **hit.loop_facts()}
                 reason = (
                     f"{phrasing} is awaited serially in a loop; if the "
                     "iterations are independent, fan out with gather / Promise.all"

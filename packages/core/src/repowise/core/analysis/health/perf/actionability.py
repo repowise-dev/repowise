@@ -9,7 +9,7 @@ Three separate questions live here and must not collapse into one label:
 * evidence confidence, :func:`provenance_confidence`, asks how reliably the
   call path was resolved;
 * fix safety, :attr:`PerformanceFix.safety`, asks how strongly the specific
-  transformation is proven;
+  transformation is proven, not whether the runtime can absorb it;
 * actionability, :func:`actionability`, asks what to do with the group now, and
   demotes a proven strategy whose evidence is weak.
 """
@@ -29,10 +29,14 @@ FixStrategy = Literal[
     "hoist_loop_invariant_resource",
     "batch_or_prefetch_io",
     "shrink_lock_scope",
+    "push_reduction_into_query",
 ]
 
 BATCHABLE_MARKERS = frozenset({"io_in_loop", "nested_loop_with_io"})
 BATCHABLE_BOUNDARIES = frozenset({"db", "network"})
+
+# Fanning out N awaits here spends a pool, rate limit or statement timeout.
+CONCURRENCY_SENSITIVE_BOUNDARIES = frozenset({"db", "network"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,11 +56,13 @@ class FixAssessment:
     Prerequisites are stable machine tokens rather than prose: a caller renders
     them, and a new detector fact is expected to clear one by name. They are
     populated whether or not a fix was returned, because an offered advisory
-    strategy has open questions too.
+    strategy has open questions too. ``refusal`` names why no strategy was
+    offered when the reason is a fact about the code, not a missing proof.
     """
 
     fix: PerformanceFix | None
     prerequisites: tuple[str, ...]
+    refusal: str = "no_supported_strategy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +115,17 @@ def assess_fix(
     if marker == "serial_await_in_loop":
         if not all(detail.get("dataflow_verified") for detail in details):
             return FixAssessment(None, ("loop_carried_dependence_proof",))
+        if boundary in CONCURRENCY_SENSITIVE_BOUNDARIES:
+            # Independence is proven; nothing here bounds the fan-out.
+            return FixAssessment(
+                PerformanceFix(
+                    "parallelize_independent_awaits",
+                    "advisory",
+                    "Iteration independence is proven; the concurrency the fan-out "
+                    "would create is not bounded by anything this group can see.",
+                ),
+                ("bounded_concurrency",),
+            )
         return FixAssessment(
             PerformanceFix(
                 "parallelize_independent_awaits",
@@ -137,7 +154,21 @@ def assess_fix(
             ),
             ("accumulator_not_observed",),
         )
+    if marker == "unbounded_read_reduced_in_memory":
+        return FixAssessment(
+            PerformanceFix(
+                "push_reduction_into_query",
+                "advisory",
+                "The read is proven unbounded and the per-key selection proven "
+                "Python-side; whether the query layer can express that "
+                "selection (DISTINCT ON / a window function / a view) is not.",
+            ),
+            ("query_supports_group_selection",),
+        )
     if set(markers) <= BATCHABLE_MARKERS:
+        if details and all(detail.get("chunked_iteration") for detail in details):
+            # The loop is already the batch; "batch this" repeats advice taken.
+            return FixAssessment(None, (), refusal="loop_already_chunked")
         if boundary not in BATCHABLE_BOUNDARIES:
             # Filesystem and subprocess repetition is real, but there is no
             # batch or prefetch operation to point the caller at.
@@ -193,7 +224,7 @@ def actionability(
     fix = assessment.fix
     if fix is None:
         return Actionability(
-            "investigate", "no_supported_strategy", "low", assessment.prerequisites, None
+            "investigate", assessment.refusal, "low", assessment.prerequisites, None
         )
     if evidence_confidence == "low":
         # A transformation proven against a path we could not resolve is not

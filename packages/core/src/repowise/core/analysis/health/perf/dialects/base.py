@@ -271,6 +271,10 @@ class BasePerfDialect:
         """
         return None
 
+    def is_chunked_loop(self, node: Node) -> bool:
+        """True when this loop walks its data a chunk at a time (already batched)."""
+        return False
+
     def is_string_concat(self, node: Node) -> bool:
         """True if *node* is a ``+=`` accumulation onto a string."""
         if not self.aug_assign_kinds or node.type not in self.aug_assign_kinds:
@@ -435,6 +439,14 @@ class BasePerfDialect:
         :meth:`blocking_sync_api` instead. Default ``None``.
         """
         return None
+
+    def unbounded_read_bound_methods(self) -> frozenset[str]:
+        """Method names anywhere in a chain that prove a DB read is bounded.
+
+        Default empty: a language that does not override this never scans
+        for ``unbounded_read_reduced_in_memory`` (v1 is Python-only).
+        """
+        return frozenset()
 
     def is_lock_scope(self, node: Node) -> bool:
         """True if *node* opens a block-scoped held-lock region.

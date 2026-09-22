@@ -153,6 +153,20 @@ def _enclosing_loop_iterables(
     return names
 
 
+def _in_chunked_loop(
+    node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
+) -> bool:
+    """Whether the innermost enclosing loop chunks; walked up only for rare sink hits."""
+    cur = node.parent
+    for _ in range(64):
+        if cur is None or cur.type in fn_kinds:
+            return False
+        if cur.type in loop_kinds and cur.is_named:
+            return dialect.is_chunked_loop(cur)
+        cur = cur.parent
+    return False
+
+
 def _is_block_loop_body_scope(
     node: Node, dialect: BasePerfDialect, call_kinds: frozenset[str]
 ) -> bool:
@@ -232,6 +246,7 @@ def _collect_perf_hits(
     # Block-iteration loops (Ruby ``items.each do … end``): only pay for the
     # per-call-node hook when the dialect actually overrides it.
     do_block_loop = type(dialect).block_loop_body is not BasePerfDialectClass.block_loop_body
+    do_chunked = type(dialect).is_chunked_loop is not BasePerfDialectClass.is_chunked_loop
 
     hits: list[PerfHit] = []
     # Per-enclosing-function accumulators keyed by the function's start line
@@ -357,7 +372,13 @@ def _collect_perf_hits(
             )
             if kind is not None:
                 if loop_depth >= 1:
-                    hits.append(PerfHit("io_in_loop", line, next_func, kind, func_start=next_start))
+                    chunked = do_chunked and _in_chunked_loop(node, dialect, loop_kinds, fn_kinds)
+                    hits.append(
+                        PerfHit(
+                            "io_in_loop", line, next_func, kind, func_start=next_start,
+                            chunked=chunked,
+                        )
+                    )
                     if do_serial_await and awaited:
                         # An *awaited* sink in a loop body is additionally a
                         # missed-concurrency candidate (a serial round-trip that
@@ -366,7 +387,8 @@ def _collect_perf_hits(
                         # the boundary kind for the finding.
                         hits.append(
                             PerfHit(
-                                "serial_await_in_loop", line, next_func, kind, func_start=next_start
+                                "serial_await_in_loop", line, next_func, kind,
+                                func_start=next_start, chunked=chunked,
                             )
                         )
                     if do_nested_io and loop_depth >= 2 and outer_iter:
@@ -379,7 +401,8 @@ def _collect_perf_hits(
                         # (Phase-7c TS while-cursor FP).
                         hits.append(
                             PerfHit(
-                                "nested_loop_with_io", line, next_func, kind, func_start=next_start
+                                "nested_loop_with_io", line, next_func, kind,
+                                func_start=next_start, chunked=chunked,
                             )
                         )
                 else:

@@ -222,8 +222,8 @@ async def test_an_unrecognized_filter_value_is_reported_not_read_as_no_data(
     assert body["total"] == 1
     assert body["items"][0]["execution_context"] == "production"
     assert body["ignored_arguments"] == {
-        "performance_context": "staging",
-        "performance_boundary": "pigeon",
+        "performance_context": "staging (accepted: production, tooling, test, unknown, all)",
+        "performance_boundary": "pigeon (accepted: db, network, filesystem, subprocess, lock, none)",
     }
 
 

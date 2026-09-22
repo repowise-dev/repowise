@@ -3,7 +3,14 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { PerformanceView } from "../../src/health/performance-view";
-import { adapter, legacyPage, opportunity, page, resolvedDetail } from "./fixtures/performance";
+import {
+  adapter,
+  legacyPage,
+  opportunity,
+  page,
+  resolvedDetail,
+  sibling,
+} from "./fixtures/performance";
 
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn();
@@ -429,6 +436,228 @@ describe("PerformanceView drawer", () => {
     await openFirstRow();
     fireEvent.click(await screen.findByRole("button", { name: /Read the raw observations/ }));
     expect(await screen.findByText(/does not page the remaining observations/)).toBeTruthy();
+  });
+});
+
+describe("PerformanceView drawer siblings", () => {
+  it("names a preferred sibling's fix as the stronger one", async () => {
+    const withSiblings = page({
+      items: [
+        opportunity({
+          opportunity_id: "perf2_planready",
+          siblings: [
+            sibling({
+              opportunity_id: "perf2_preferred",
+              relation: "preferred",
+              strategy: "batch_or_prefetch_io",
+            }),
+            sibling({
+              opportunity_id: "perf2_alt",
+              relation: "alternative",
+              biomarker_type: "serial_await_in_loop",
+              strategy: null,
+            }),
+          ],
+        }),
+      ],
+    });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => withSiblings })}
+      />,
+    );
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).getByText(/Batch or prefetch io is the stronger fix here/)).toBeTruthy();
+    expect(within(panel).getByText(/Also flagged on these lines/)).toBeTruthy();
+    expect(within(panel).getByRole("button", { name: "Serial await in loop" })).toBeTruthy();
+  });
+
+  it("opens a sibling cause from the drawer, the same way a shared link would", async () => {
+    const withSiblings = page({
+      items: [
+        opportunity({
+          opportunity_id: "perf2_planready",
+          siblings: [
+            sibling({
+              opportunity_id: "perf2_alt",
+              relation: "same_site",
+              biomarker_type: "serial_await_in_loop",
+              strategy: null,
+            }),
+          ],
+        }),
+      ],
+    });
+    const getDetail = vi.fn(async (id: string) =>
+      resolvedDetail({
+        opportunity_id: id,
+        siblings: id === "perf2_planready" ? (withSiblings.items[0]!.siblings ?? []) : [],
+      }),
+    );
+    const onOpenOpportunityChange = vi.fn();
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getPerformanceOpportunities: async () => withSiblings,
+          getPerformanceOpportunity: getDetail,
+        })}
+        onOpenOpportunityChange={onOpenOpportunityChange}
+      />,
+    );
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(within(panel).getByRole("button", { name: "Serial await in loop" })).toBeTruthy(),
+    );
+    fireEvent.click(within(panel).getByRole("button", { name: "Serial await in loop" }));
+    await waitFor(() =>
+      expect(getDetail).toHaveBeenCalledWith("perf2_alt", { evidenceLimit: 8 }),
+    );
+    expect(onOpenOpportunityChange).toHaveBeenLastCalledWith("perf2_alt");
+  });
+
+  it("renders no siblings note when the opportunity carries none", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).queryByText(/Also flagged on these lines/)).toBeNull();
+    expect(within(panel).queryByText(/is the stronger fix here/)).toBeNull();
+  });
+});
+
+describe("PerformanceView drawer plan steps and validation", () => {
+  it("renders ordered plan steps and marks only the mechanical ones", async () => {
+    const withSteps = page({
+      items: [
+        opportunity({
+          opportunity_id: "perf2_planready",
+          plan_steps: [
+            {
+              order: 2,
+              action: "Batch the second call",
+              symbol: "src/b.py::run",
+              file_path: "src/b.py",
+              line: 20,
+              applicability: "judgment",
+            },
+            {
+              order: 1,
+              action: "Batch the first call",
+              symbol: "src/a.py::run",
+              file_path: "src/a.py",
+              line: 10,
+              applicability: "mechanical",
+            },
+          ],
+        }),
+      ],
+    });
+    render(
+      <PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => withSteps })} />,
+    );
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    const firstStepText = within(panel).getByText(/Batch the first call/).closest("li");
+    const secondStepText = within(panel).getByText(/Batch the second call/).closest("li");
+    expect(firstStepText?.textContent).toContain("mechanical");
+    expect(secondStepText?.textContent).not.toContain("mechanical");
+    const ol = firstStepText?.closest("ol");
+    const liTexts = Array.from(ol?.querySelectorAll("li") ?? []).map((li) => li.textContent ?? "");
+    expect(liTexts[0]).toContain("Batch the first call");
+    expect(liTexts[1]).toContain("Batch the second call");
+  });
+
+  it("renders the stored validation through the shared validation summary", async () => {
+    const withValidation = page({
+      items: [
+        opportunity({
+          opportunity_id: "perf2_planready",
+          validation: {
+            basis: "measured",
+            via: "call-graph",
+            total: 2,
+            tests: ["tests/test_a.py"],
+            commands: ["pytest tests/test_a.py"],
+          },
+        }),
+      ],
+    });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => withValidation })}
+      />,
+    );
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).getByText(/Measured coverage/)).toBeTruthy();
+    expect(within(panel).getByText(/via call graph/)).toBeTruthy();
+    expect(within(panel).getByText("tests/test_a.py")).toBeTruthy();
+  });
+
+  it("reads a name-match validation honestly", async () => {
+    const withValidation = page({
+      items: [
+        opportunity({
+          opportunity_id: "perf2_planready",
+          validation: {
+            basis: "inferred",
+            via: "name-match",
+            total: 1,
+            tests: ["tests/test_b.py"],
+            commands: [],
+          },
+        }),
+      ],
+    });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => withValidation })}
+      />,
+    );
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).getByText(/via name match/)).toBeTruthy();
+  });
+
+  it("says validation is unknown honestly rather than silently skipping it", async () => {
+    const withValidation = page({
+      items: [
+        opportunity({
+          opportunity_id: "perf2_planready",
+          validation: { basis: "unknown", via: null, total: 0, tests: [], commands: [] },
+        }),
+      ],
+    });
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: async () => withValidation })}
+      />,
+    );
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).getByText("Validation gap")).toBeTruthy();
+    expect(within(panel).getByText(/Treat this as explicit validation work/)).toBeTruthy();
+  });
+
+  it("renders no validation block when the opportunity carries none", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).queryByText(/guarding test/)).toBeNull();
+    expect(within(panel).queryByText(/Validation gap/)).toBeNull();
+  });
+});
+
+describe("PerformanceView sort control", () => {
+  it("asks the server to sort by the chosen vocabulary", async () => {
+    const load = vi.fn(async () => page());
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
+    await rows();
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "leverage" } });
+    await waitFor(() =>
+      expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ sort: "leverage" })),
+    );
   });
 });
 
