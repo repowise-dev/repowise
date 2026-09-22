@@ -12,6 +12,15 @@ generic base extraction's ``function`` field, and a qualified call
 than a ``member_expression`` — so callee extraction is overridden outright
 rather than reusing ``BasePerfDialect``'s field-name probing.
 
+A call to a zero-argument procedure may omit its parentheses entirely
+(``Q.Open;`` is as idiomatic as ``Q.Open();``), which produces no ``exprCall``
+node at all — just a bare ``identifier`` / ``exprDot`` sitting directly under
+a ``statement`` wrapper. :meth:`PascalPerfDialect.bare_statement_call` (via
+``LanguageNodeMap.bare_call_wrapper_kinds``) tells that shape apart from the
+statement wrapper's other tenants (``Exit;`` / ``inherited;``), and
+:meth:`_entity_of` treats the resulting bare node as its own entity, so every
+sink lexicon below applies identically regardless of parentheses.
+
 Filesystem and subprocess sinks below are unambiguous, distinctively-named
 RTL/VCL/FPC calls that never collide with an unrelated API, so they fire on
 the name alone. DB and network verbs (``Open`` / ``ExecSQL`` / ``Get`` /
@@ -123,8 +132,23 @@ class PascalPerfDialect(BasePerfDialect):
 
     # -- callee extraction (Pascal's own field names) -------------------------
 
+    @staticmethod
+    def _entity_of(call_node: Node) -> Node | None:
+        """The callee expression a call site names.
+
+        An ``exprCall`` (parenthesized call) carries it in its ``entity``
+        field. A parenless call has no wrapping ``exprCall`` at all --
+        :meth:`bare_statement_call` hands back the bare ``identifier`` /
+        ``exprDot`` itself as *call_node*, which already IS its own entity.
+        """
+        if call_node.type == "exprCall":
+            return call_node.child_by_field_name("entity")
+        if call_node.type in ("identifier", "exprDot"):
+            return call_node
+        return None
+
     def callee_root_name(self, call_node: Node) -> str | None:
-        entity = call_node.child_by_field_name("entity")
+        entity = self._entity_of(call_node)
         if entity is None:
             return None
         node = entity
@@ -140,7 +164,7 @@ class PascalPerfDialect(BasePerfDialect):
         return node.text.decode("utf-8", "replace").split(".")[-1]
 
     def callee_method_name(self, call_node: Node) -> str | None:
-        entity = call_node.child_by_field_name("entity")
+        entity = self._entity_of(call_node)
         if entity is None:
             return None
         if entity.type == "exprDot":
@@ -153,8 +177,26 @@ class PascalPerfDialect(BasePerfDialect):
         return entity.text.decode("utf-8", "replace")
 
     def callee_is_attribute(self, call_node: Node) -> bool:
-        entity = call_node.child_by_field_name("entity")
+        entity = self._entity_of(call_node)
         return entity is not None and entity.type == "exprDot"
+
+    def bare_statement_call(self, node: Node) -> Node | None:
+        """*node* is a ``statement`` wrapper; return its sole named child if
+        that child is a bare ``identifier`` / ``exprDot`` -- a parenless call
+        (``Q.Open;`` / ``FindClose;``). The same wrapper also carries
+        non-call statements (``Exit;`` / ``inherited;`` -- also a bare
+        ``identifier`` in the grammar's case of ``Exit``!), which this cannot
+        structurally rule out; sink lexicon membership is what keeps a bare
+        ``Exit`` harmless (it names no sink). A statement already headed by
+        its own ``exprCall`` (the parenthesized form) returns ``None`` here --
+        that call site is reached separately, through ``call_kinds``, so
+        returning it again would double-count the hit.
+        """
+        named = node.named_children
+        if len(named) != 1:
+            return None
+        child = named[0]
+        return child if child.type in ("identifier", "exprDot") else None
 
     # -- sink classification (the lexicon) ------------------------------------
 

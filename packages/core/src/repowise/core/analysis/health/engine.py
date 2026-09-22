@@ -254,7 +254,16 @@ log = structlog.get_logger(__name__)
 # ``.ExecSQL`` / ``.Post`` and an HTTP client's ``.Get`` / ``.Post`` on that
 # evidence -- a loop calling one of these now produces a ``db`` / ``network``
 # ``io_in_loop`` where before it stayed silent (filesystem/subprocess only).
-HEALTH_ANALYZER_VERSION = 23
+#
+# v24: a Pascal call to a zero-argument procedure may omit its parentheses
+# entirely (``Q.Open;``), which produces no ``exprCall`` node at all -- just a
+# bare ``identifier`` / ``exprDot`` under a ``statement`` wrapper, invisible to
+# the whole performance pass regardless of sink kind. The new
+# ``bare_call_wrapper_kinds`` / ``PerfDialect.bare_statement_call`` hook (a
+# no-op for every language that does not map it) tells that shape apart from
+# the wrapper's other tenants (``Exit;`` / ``inherited;``), so ``Q.Open;`` now
+# finds the same ``io_in_loop`` as ``Q.Open();`` already did.
+HEALTH_ANALYZER_VERSION = 24
 
 
 def walked_functions(

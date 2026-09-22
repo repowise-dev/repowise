@@ -133,6 +133,16 @@ class LanguageNodeMap:
     #     walker, so this set only needs the dedicated async node types.
     call_kinds: frozenset[str] = frozenset()
     async_function_kinds: frozenset[str] = frozenset()
+    # Statement-wrapper node type(s) that MAY wrap a call with no ``call_kinds``
+    # node at all -- a parenless call (Pascal's ``Q.Open;``, valid for any
+    # zero-argument procedure). Every wrapped statement of this kind reaches
+    # ``PerfDialect.bare_statement_call``, which returns the node to treat as
+    # the call (typically the wrapper's sole named child) or ``None`` when the
+    # statement is not a call at all (Pascal's bare ``Exit;`` / ``inherited;``
+    # take this same wrapper shape and correctly return ``None``). Empty by
+    # default: a language whose call site always has its own dedicated node
+    # (most grammars) needs neither this field nor the hook.
+    bare_call_wrapper_kinds: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Dataflow def/use pass (intra-procedural CFG + reaching definitions).
@@ -825,6 +835,12 @@ _PASCAL = LanguageNodeMap(
     # ``Obj.Foo(x)`` (``entity`` is an ``exprDot``). Feeds the perf pass
     # (``perf/dialects/pascal.py``).
     call_kinds=frozenset({"exprCall"}),
+    # A parenless call to a zero-argument procedure (``Q.Open;`` / ``Close;``)
+    # has no ``exprCall`` node at all -- it is a bare ``identifier`` or
+    # ``exprDot`` sitting directly under a ``statement`` wrapper (the same
+    # wrapper ``Break``/``Continue``/``Exit`` use, per the comment above).
+    # ``PascalPerfDialect.bare_statement_call`` tells the two apart.
+    bare_call_wrapper_kinds=frozenset({"statement"}),
 )
 
 

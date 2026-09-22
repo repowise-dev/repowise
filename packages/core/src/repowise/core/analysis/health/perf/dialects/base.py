@@ -451,6 +451,25 @@ class BasePerfDialect:
         """
         return False
 
+    def bare_statement_call(self, node: Node) -> Node | None:
+        """The call site inside *node*, a ``LanguageNodeMap.bare_call_wrapper_kinds``
+        statement wrapper, if this particular statement is a parenless call --
+        else ``None``.
+
+        Only relevant to a grammar where a call with no arguments can omit its
+        parentheses (Pascal's ``Q.Open;``), so the call site is not any
+        ``call_kinds`` node at all but a bare identifier/member-access sitting
+        directly in statement position. The SAME wrapper shape holds other
+        non-call statements too (Pascal's bare ``Exit;`` / ``inherited;``), so
+        this has to tell them apart, not just unwrap unconditionally.
+
+        Default ``None`` -- a language with no such wrapper in
+        ``bare_call_wrapper_kinds`` never reaches this hook, and one that maps
+        the field but returns ``None`` here for a given node just means "this
+        statement is not a call."
+        """
+        return None
+
 
 # The registry, populated by ``dialects/__init__.py`` from each language module.
 # Keyed by ``LanguageTag``; a missing key ⇒ the perf pass is silent for that

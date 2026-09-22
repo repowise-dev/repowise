@@ -829,10 +829,7 @@ cannot check.
   `FireDAC` gates every `.Open` / `.ExecSQL` / `.Post` call in it, not only
   calls on an actual `TFDQuery`, because a Pascal variable's declared type has
   no textual link back to the unit it came from the way `client = requests.Session()`
-  does in Python. Separately, a call with no parentheses (`Q.Open;`, idiomatic
-  for a zero-argument procedure) is invisible to the whole performance pass
-  regardless of sink kind: it parses as a bare `exprDot` rather than an
-  `exprCall`, and `call_kinds` only recognises the latter as a call site.
+  does in Python.
 - **A GDScript `uid://` resolves through the `.uid` sidecar Godot writes for
   scripts**, so a `preload` naming one reaches its file. A uid naming a scene
   does not: Godot writes no sidecar for `.tscn` / `.tres`, and the
@@ -864,7 +861,7 @@ Per-language mechanics behind these:
 | C# | Full (health) | Dataflow dialect |
 | Dart | Good | riverpod / get_it dynamic hints, dataflow dialect |
 | GDScript | Good | The health dialects (complexity, performance, dataflow) that would take it to Full; the grammar supports all three |
-| Object Pascal | Good | Assertion markers, a parenless-call (`exprDot`/bare `identifier`) call site so DB/network sinks reach paren-omitted calls too, a dedicated `uses` resolver |
+| Object Pascal | Good | Assertion markers, a dedicated `uses` resolver |
 | COBOL | Good | Copybook resolution, source-format normalization, dialect coverage, health markers |
 | VB.NET | Good | Health markers, project-level `<Import Include=...>` as implicit imports |
 | Elixir | Good | Health markers, and a call-resolution strategy beyond same-file |

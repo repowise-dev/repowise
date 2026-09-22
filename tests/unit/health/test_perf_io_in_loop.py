@@ -266,6 +266,40 @@ _CASES = [
         [],
         "TStringList.Delete is not a DB verb even with no uses evidence",
     ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "parenless .Open (no exprCall node at all) is still a DB sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Items: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"    FindClose;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "parenless bare FindClose is still a filesystem sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"  begin\n"
+        b"    if I = 0 then Exit;\n"
+        b"    inherited;\n"
+        b"    Q.Open;\n"
+        b"  end;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "bare Exit/inherited in the same statement-wrapper shape do not false-fire",
+    ),
 ]
 
 

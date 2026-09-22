@@ -229,9 +229,17 @@ def _collect_perf_hits(
     fn_kinds = lmap.function_kinds
     lambda_kinds = lmap.lambda_kinds
     async_fn_kinds = lmap.async_function_kinds
+    bare_call_wrapper_kinds = lmap.bare_call_wrapper_kinds
     # Block-iteration loops (Ruby ``items.each do … end``): only pay for the
     # per-call-node hook when the dialect actually overrides it.
     do_block_loop = type(dialect).block_loop_body is not BasePerfDialectClass.block_loop_body
+    # Parenless calls (Pascal ``Q.Open;``): only probe a bare-call wrapper
+    # (``statement``) when the dialect actually overrides the hook, same
+    # pay-for-what-you-use posture as ``do_block_loop``.
+    do_bare_stmt_call = (
+        bool(bare_call_wrapper_kinds)
+        and type(dialect).bare_statement_call is not BasePerfDialectClass.bare_statement_call
+    )
 
     hits: list[PerfHit] = []
     # Per-enclosing-function accumulators keyed by the function's start line
@@ -336,22 +344,32 @@ def _collect_perf_hits(
                     PerfHit(icm, node.start_point[0] + 1, next_func, "", func_start=next_start)
                 )
 
+        call_node: Node | None = None
         if t in call_kinds:
-            method = dialect.callee_method_name(node) or ""
-            root_name = dialect.callee_root_name(node) or ""
-            awaited = _is_awaited(node)
-            line = node.start_point[0] + 1
+            call_node = node
+        elif do_bare_stmt_call and t in bare_call_wrapper_kinds:
+            # A parenless call (Pascal ``Q.Open;``): no ``call_kinds`` node
+            # exists at all, so the dialect is asked whether this particular
+            # statement wrapper IS one (it also wraps non-call statements —
+            # Pascal's bare ``Exit;`` / ``inherited;`` — that must stay None).
+            call_node = dialect.bare_statement_call(node)
+
+        if call_node is not None:
+            method = dialect.callee_method_name(call_node) or ""
+            root_name = dialect.callee_root_name(call_node) or ""
+            awaited = _is_awaited(call_node)
+            line = call_node.start_point[0] + 1
             if do_bare_call_marker:
                 # A call that is its own iteration construct (``.reduce`` with an
                 # accumulator spread) — a perf smell at any loop depth.
-                bare = dialect.bare_call_marker(root_name, method, node)
+                bare = dialect.bare_call_marker(root_name, method, call_node)
                 if bare is not None:
                     hits.append(PerfHit(bare, line, next_func, "", func_start=next_start))
             kind = dialect.sink_kind(
                 root_name,
                 method,
                 awaited=awaited,
-                is_attribute=dialect.callee_is_attribute(node),
+                is_attribute=dialect.callee_is_attribute(call_node),
                 io_names=io_names,
                 has_db_import=has_db_import,
             )
@@ -418,7 +436,7 @@ def _collect_perf_hits(
             else:
                 if loop_depth >= 1:
                     marker = (
-                        dialect.loop_call_marker(root_name, method, node, list_names)
+                        dialect.loop_call_marker(root_name, method, call_node, list_names)
                         if do_loop_call_marker
                         else None
                     )
