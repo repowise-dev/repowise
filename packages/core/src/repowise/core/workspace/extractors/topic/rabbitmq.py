@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import re
 
+from repowise.core.workspace.contracts import (
+    TOPIC_KIND_BINDING,
+    TOPIC_KIND_EXCHANGE,
+    TOPIC_KIND_QUEUE,
+)
+
 from ..langs import JAVA, JS_TS, PYTHON
-from .dialect import KIND_BINDING, KIND_EXCHANGE, KIND_QUEUE, Arg, TopicCall, TopicDialect
+from ..strings import Arg
+from .dialect import TopicCall, TopicDialect
 
 RABBITMQ = TopicDialect(
     name="rabbitmq",
-    broker="rabbitmq",
-    gate=re.compile(r"channel\.|[Rr]abbit"),
     calls=(
         TopicCall(
             head=re.compile(r"@RabbitListener\s*\("),
@@ -22,7 +27,7 @@ RABBITMQ = TopicDialect(
             label="@RabbitListener",
             extensions=JAVA,
             name=Arg(keys=("queues", "queue")),
-            kind=KIND_QUEUE,
+            kind=TOPIC_KIND_QUEUE,
         ),
         TopicCall(
             head=re.compile(r"rabbitTemplate\.convertAndSend\s*\("),
@@ -30,7 +35,10 @@ RABBITMQ = TopicDialect(
             label="rabbitTemplate.convertAndSend",
             extensions=JAVA,
             name=Arg(pos=0),
-            kind=KIND_EXCHANGE,
+            kind=TOPIC_KIND_EXCHANGE,
+            # `(exchange, routingKey, message)`; in the two-argument form the
+            # second is the message, which does not resolve, so it routes nowhere.
+            routing_key=Arg(pos=1),
         ),
         TopicCall(
             head=re.compile(r"channel\.consume\s*\("),
@@ -38,7 +46,7 @@ RABBITMQ = TopicDialect(
             label="channel.consume",
             extensions=JS_TS,
             name=Arg(pos=0),
-            kind=KIND_QUEUE,
+            kind=TOPIC_KIND_QUEUE,
         ),
         TopicCall(
             head=re.compile(r"channel\.publish\s*\("),
@@ -46,7 +54,7 @@ RABBITMQ = TopicDialect(
             label="channel.publish",
             extensions=JS_TS,
             name=Arg(pos=0),
-            kind=KIND_EXCHANGE,
+            kind=TOPIC_KIND_EXCHANGE,
             routing_key=Arg(pos=1),
             default_exchange=True,
         ),
@@ -56,7 +64,7 @@ RABBITMQ = TopicDialect(
             label="channel.sendToQueue",
             extensions=JS_TS,
             name=Arg(pos=0),
-            kind=KIND_QUEUE,
+            kind=TOPIC_KIND_QUEUE,
         ),
         TopicCall(
             head=re.compile(r"channel\.bindQueue\s*\("),
@@ -64,7 +72,7 @@ RABBITMQ = TopicDialect(
             label="channel.bindQueue",
             extensions=JS_TS,
             name=Arg(pos=1),
-            kind=KIND_BINDING,
+            kind=TOPIC_KIND_BINDING,
             routing_key=Arg(pos=2),
             queue=Arg(pos=0),
         ),
@@ -73,8 +81,8 @@ RABBITMQ = TopicDialect(
             role="consumer",
             label="basic_consume",
             extensions=PYTHON,
-            name=Arg(keys=("queue",)),
-            kind=KIND_QUEUE,
+            name=Arg(keys=("queue",), pos=0),
+            kind=TOPIC_KIND_QUEUE,
             confidence=0.7,
         ),
         TopicCall(
@@ -83,7 +91,7 @@ RABBITMQ = TopicDialect(
             label="basic_publish",
             extensions=PYTHON,
             name=Arg(keys=("exchange",)),
-            kind=KIND_EXCHANGE,
+            kind=TOPIC_KIND_EXCHANGE,
             confidence=0.7,
             routing_key=Arg(keys=("routing_key",)),
             default_exchange=True,
@@ -94,7 +102,7 @@ RABBITMQ = TopicDialect(
             label="queue_bind",
             extensions=PYTHON,
             name=Arg(keys=("exchange",), pos=1),
-            kind=KIND_BINDING,
+            kind=TOPIC_KIND_BINDING,
             confidence=0.7,
             routing_key=Arg(keys=("routing_key",), pos=2),
             queue=Arg(keys=("queue",), pos=0),

@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, select_files
-from ..dialect import ContractDialect, applies_to, union_extensions
+from ..dialect import ContractDialect, union_extensions
 from ..langs import PYTHON
 from .aspnet import AspNetDialect
 from .csharp_http import CSharpHttpDialect
@@ -183,14 +183,14 @@ class HttpExtractor:
                     )
 
             for dialect in self.provider_dialects:
-                if not applies_to(dialect, suffix, content):
+                if suffix not in dialect.extensions:
                     continue
                 if from_parse and dialect.name in _INDEX_BACKED_DIALECTS:
                     continue  # superseded by the index pass above
                 contracts.extend(dialect.extract(ctx))
             index_ids = {c.contract_id for c in consumers_from_parse}
             for dialect in self.consumer_dialects:
-                if not applies_to(dialect, suffix, content):
+                if suffix not in dialect.extensions:
                     continue
                 found = dialect.extract(ctx)
                 if index_ids and dialect.name in _INDEX_BACKED_CONSUMER_DIALECTS:

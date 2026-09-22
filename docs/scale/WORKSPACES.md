@@ -246,9 +246,11 @@ publishers name an exchange and a routing key while consumers name a queue, so
 a queue binding found anywhere in the workspace connects the two: each consumer
 of the bound queue links to the exchange's publishers whose routing key the
 binding pattern accepts (`*` and `#` follow topic-exchange rules; an empty key
-or pattern matches everything). Such a link carries the exchange as its
-`contract_id` and the queue as `consumer_contract_id`. A publish to the default
-exchange (`publish('', 'jobs')`) is a publish to the queue `jobs`.
+or pattern matches everything, while a key the source does not settle matches
+nothing). Such a link carries the exchange as its `contract_id` and the queue as
+`consumer_contract_id`. When no consumer of the bound queue is found, the
+binding site itself is linked. A publish to the default exchange
+(`publish('', 'jobs')`) is a publish to the queue `jobs`.
 
 Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](#system-graph). The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
 

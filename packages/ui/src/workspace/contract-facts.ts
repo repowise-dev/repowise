@@ -218,6 +218,7 @@ export function schemaFieldConstraints(field: SchemaField): string {
 export function linksForContract<
   T extends {
     contract_id: string;
+    consumer_contract_id?: string | null;
     provider_repo: string;
     provider_file: string;
     consumer_repo: string;
@@ -225,11 +226,15 @@ export function linksForContract<
   },
 >(contract: ContractEntry, links: T[]): T[] {
   const isProvider = contract.role === "provider";
-  return links.filter(
-    (l) =>
-      l.contract_id === contract.contract_id &&
-      (isProvider
-        ? l.provider_repo === contract.repo && l.provider_file === contract.file_path
-        : l.consumer_repo === contract.repo && l.consumer_file === contract.file_path),
+  // A consumer that reached its provider under another name (a queue bound to
+  // an exchange) carries its own id on the link, not the provider's.
+  return links.filter((l) =>
+    isProvider
+      ? l.contract_id === contract.contract_id &&
+        l.provider_repo === contract.repo &&
+        l.provider_file === contract.file_path
+      : (l.consumer_contract_id ?? l.contract_id) === contract.contract_id &&
+        l.consumer_repo === contract.repo &&
+        l.consumer_file === contract.file_path,
   );
 }

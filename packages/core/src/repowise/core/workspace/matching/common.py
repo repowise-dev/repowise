@@ -5,19 +5,16 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from repowise.core.workspace.contracts import Contract, ContractLink, normalize_contract_id
-
-
-def same_service(repo_a: str, service_a: str | None, repo_b: str, service_b: str | None) -> bool:
-    """True when two ends sit in one repo and one service boundary (or neither has one).
-
-    Such a pair is one program calling itself, not a cross-repo contract, so no
-    pass links it.
-    """
-    return repo_a == repo_b and service_a == service_b
+from repowise.core.workspace.contracts import (
+    Contract,
+    ContractLink,
+    normalize_contract_id,
+    same_service,
+)
 
 
 def internal(provider: Contract, consumer: Contract) -> bool:
+    """One program calling itself, which no pass links."""
     return same_service(provider.repo, provider.service, consumer.repo, consumer.service)
 
 
@@ -32,7 +29,7 @@ class MatchState:
     provider_index: dict[str, list[Contract]]
     consumers: list[Contract]
     links: list[ContractLink] = field(default_factory=list)
-    seen: set[tuple[str, str, str, str, str]] = field(default_factory=set)
+    seen: set[tuple[str, ...]] = field(default_factory=set)
     matched: set[int] = field(default_factory=set)
 
     @classmethod
@@ -69,7 +66,8 @@ class MatchState:
         A link's ``contract_id`` is the id both ends share. *via_alias* marks a
         consumer that reached the provider under another name (a queue bound to
         an exchange): the link then carries the provider's id, and the
-        consumer's own id as ``consumer_contract_id``.
+        consumer's own id as ``consumer_contract_id``. One queue bound to two
+        exchanges is two links, so an aliased key names the provider's id too.
         """
         dedup_key = (
             normalize_contract_id(consumer.contract_id),
@@ -77,6 +75,7 @@ class MatchState:
             consumer.file_path,
             provider.repo,
             provider.file_path,
+            normalize_contract_id(provider.contract_id) if via_alias else "",
         )
         if dedup_key in self.seen:
             return False
@@ -152,5 +151,4 @@ __all__ = [
     "find_matching_keys",
     "internal",
     "prefer_target_repo",
-    "same_service",
 ]

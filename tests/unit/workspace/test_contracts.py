@@ -13,8 +13,8 @@ from repowise.core.workspace.contracts import (
     normalize_contract_id,
     save_contract_store,
 )
-from repowise.core.workspace.extractors.grpc_extractor import GrpcExtractor
-from repowise.core.workspace.extractors.http_extractor import (
+from repowise.core.workspace.extractors.grpc import GrpcExtractor
+from repowise.core.workspace.extractors.http import (
     HttpExtractor,
     normalize_http_path,
 )

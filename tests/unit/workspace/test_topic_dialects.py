@@ -64,6 +64,37 @@ class TestKafka:
         src = 'T = "a"\nT = "b"\nproducer.produce(T)\n'
         assert _extract(tmp_path, "pub.py", src) == []
 
+    def test_kafka_listener_singular_topic_key(self, tmp_path: Path) -> None:
+        c = _one(_extract(tmp_path, "C.java", '@KafkaListener(topic = "orders")'), "consumer")
+        assert c.contract_id == "topic::orders"
+
+    def test_kafkajs_subscribe_singular_topic(self, tmp_path: Path) -> None:
+        src = "await consumer.subscribe({ topic: 'orders' });"
+        c = _one(_extract(tmp_path, "c.ts", src), "consumer")
+        assert c.contract_id == "topic::orders"
+
+    def test_confluent_produce_topic_keyword(self, tmp_path: Path) -> None:
+        src = "producer.produce(topic='orders', value=b'x')\n"
+        c = _one(_extract(tmp_path, "p.py", src), "provider")
+        assert c.contract_id == "topic::orders"
+
+    def test_an_array_keeps_the_elements_it_can_read(self, tmp_path: Path) -> None:
+        rows = _extract(tmp_path, "C.java", '@KafkaListener(topics = {"orders", dynamicTopic})')
+        assert [c.contract_id for c in rows] == ["topic::orders"]
+
+    def test_a_spring_property_placeholder_is_refused(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "C.java", '@KafkaListener(topics = "${orders.topic}")') == []
+
+    @pytest.mark.parametrize(
+        ("rel", "src"),
+        [
+            ("pub.go", 'const Orders = "orders"\nc.ConsumePartition(Orders, 0, 0)\n'),
+            ("Pub.java", 'static final String ORDERS = "orders";\nkafkaTemplate.send(ORDERS, p);\n'),
+        ],
+    )
+    def test_constants_fold_in_go_and_java(self, tmp_path: Path, rel: str, src: str) -> None:
+        assert [c.contract_id for c in _extract(tmp_path, rel, src)] == ["topic::orders"]
+
     def test_java_listener_shape_is_not_read_in_python(self, tmp_path: Path) -> None:
         assert _extract(tmp_path, "x.py", 'kafkaTemplate.send("orders", p)') == []
 
@@ -129,6 +160,41 @@ class TestRabbitMq:
         c = _one(_extract(tmp_path, "p.py", src), "provider")
         assert (c.contract_id, c.meta["kind"]) == ("topic::jobs", "queue")
 
+    def test_bind_queue_with_an_unreadable_queue_binds_nothing(self, tmp_path: Path) -> None:
+        src = "channel.bindQueue(q.queue, 'orders', 'order.*');"
+        assert _extract(tmp_path, "w.js", src) == []
+
+    def test_bind_queue_with_an_unreadable_pattern_is_marked(self, tmp_path: Path) -> None:
+        src = "channel.bindQueue('audit', 'orders', pattern);"
+        c = _one(_extract(tmp_path, "w.js", src), "consumer")
+        assert c.meta["routing_key_unresolved"] is True
+        assert "routing_key" not in c.meta
+
+    def test_spring_convert_and_send_reads_the_routing_key(self, tmp_path: Path) -> None:
+        src = 'rabbitTemplate.convertAndSend("orders", "order.created", event);'
+        c = _one(_extract(tmp_path, "P.java", src), "provider")
+        assert (c.contract_id, c.meta["kind"], c.meta["routing_key"]) == (
+            "topic::orders",
+            "exchange",
+            "order.created",
+        )
+
+    def test_spring_two_argument_send_routes_nowhere(self, tmp_path: Path) -> None:
+        src = 'rabbitTemplate.convertAndSend("jobs", event);'
+        c = _one(_extract(tmp_path, "P.java", src), "provider")
+        assert c.meta["routing_key_unresolved"] is True
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            "channel.basic_consume(queue='jobs', on_message_callback=cb)",
+            "channel.basic_consume('jobs', cb)",
+        ],
+    )
+    def test_pika_basic_consume(self, tmp_path: Path, call: str) -> None:
+        c = _one(_extract(tmp_path, "w.py", call + "\n"), "consumer")
+        assert (c.contract_id, c.meta["kind"]) == ("topic::jobs", "queue")
+
     def test_rabbit_listener_consumer(self, tmp_path: Path) -> None:
         c = _one(_extract(tmp_path, "W.java", '@RabbitListener(queues = "jobs")'), "consumer")
         assert (c.contract_id, c.meta["kind"]) == ("topic::jobs", "queue")
@@ -154,6 +220,18 @@ class TestNats:
             ("provider", "topic::events.deleted"),
         }
         assert {c.meta["kind"] for c in rows} == {"subject"}
+
+    @pytest.mark.parametrize(
+        ("rel", "src", "role"),
+        [
+            ("sub.py", 'await nc.subscribe("events.created", cb=h)\n', "consumer"),
+            ("Pub.java", 'nc.publish("events.created", data);', "provider"),
+            ("pub.ts", "nc.publish('events.created', sc.encode(x));", "provider"),
+        ],
+    )
+    def test_nats_in_other_languages(self, tmp_path: Path, rel: str, src: str, role: str) -> None:
+        c = _one(_extract(tmp_path, rel, src), role)
+        assert c.contract_id == "topic::events.created"
 
     def test_an_unrelated_receiver_is_not_nats(self, tmp_path: Path) -> None:
         assert _extract(tmp_path, "x.ts", "store.subscribe('state', h);") == []

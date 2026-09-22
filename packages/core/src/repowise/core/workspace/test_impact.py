@@ -27,8 +27,7 @@ from repowise.core.analysis.test_reachability import (
 )
 from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
 from repowise.core.workspace.config import WorkspaceConfig
-from repowise.core.workspace.contracts import ContractLink, load_contract_store
-from repowise.core.workspace.matching import same_service
+from repowise.core.workspace.contracts import ContractLink, load_contract_store, same_service
 from repowise.core.workspace.repo_index import WorkspaceIndex, open_workspace_index
 
 if TYPE_CHECKING:

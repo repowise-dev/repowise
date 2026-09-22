@@ -4,7 +4,7 @@ Write path: runs during ``repowise update --workspace``.
 Results read by ``CrossRepoEnricher`` in the MCP server (read path).
 
 Contracts are persisted as ``.repowise-workspace/contracts.json`` — separate
-from ``cross_repo_edges.json`` so Phase 3 and Phase 4 fail independently.
+from ``cross_repo_edges.json`` so extraction and cross-repo edges fail independently.
 Provider-to-consumer matching lives in :mod:`.matching`.
 """
 
@@ -53,6 +53,19 @@ CONTRACTS_FILENAME = "contracts.json"
 # Version 9 gives topic contracts a kind and routing key, and adds RabbitMQ
 # queue bindings.
 CONTRACTS_VERSION = 9
+
+#: ``meta["kind"]`` of a topic contract: the destination a broker call names.
+#: A queue is read by one consumer group; a topic or subject fans out; an
+#: exchange routes to the queues bound to it; a binding is a queue subscribing
+#: to an exchange, recorded as a consumer of that exchange.
+TOPIC_KIND_TOPIC = "topic"
+TOPIC_KIND_QUEUE = "queue"
+TOPIC_KIND_EXCHANGE = "exchange"
+TOPIC_KIND_SUBJECT = "subject"
+TOPIC_KIND_BINDING = "binding"
+#: Set on a publish or binding whose routing key the file does not settle; the
+#: topic matcher refuses to route through it rather than read it as match-all.
+TOPIC_ROUTING_KEY_UNRESOLVED = "routing_key_unresolved"
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +301,14 @@ def bind_symbol_ids(contracts: list[Contract], index: RepoIndex | None) -> dict[
             key = f"identity_unindexed_{contract.role}"
             counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def same_service(repo_a: str, service_a: str | None, repo_b: str, service_b: str | None) -> bool:
+    """True when two ends sit in one repo and one service boundary (or neither has one).
+
+    Such a pair is one program calling itself, not a cross-repo contract.
+    """
+    return repo_a == repo_b and service_a == service_b
 
 
 # ---------------------------------------------------------------------------

@@ -9,12 +9,11 @@ library is one module and one registry entry.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol
 
 from .base import ScanContext, select_files
 
 if TYPE_CHECKING:
-    import re
     from collections.abc import Callable, Hashable, Iterable, Sequence
     from pathlib import Path
 
@@ -23,14 +22,8 @@ if TYPE_CHECKING:
     from .base import SourceFile
 
 
-@runtime_checkable
 class ContractDialect(Protocol):
-    """A recogniser for the files whose extension is in ``extensions``.
-
-    A dialect may also carry a ``gate`` pattern: a file whose text does not
-    contain it is never handed to the dialect, which keeps a library's regexes
-    off the files that cannot use it.
-    """
+    """A recogniser for the files whose extension is in ``extensions``."""
 
     name: str
     extensions: frozenset[str]
@@ -74,14 +67,6 @@ def union_extensions(dialects: Iterable[ContractDialect]) -> frozenset[str]:
     for d in dialects:
         out |= d.extensions
     return frozenset(out)
-
-
-def applies_to(dialect: ContractDialect, suffix: str, content: str) -> bool:
-    """True when *dialect* reads *suffix* and its gate, if any, is in *content*."""
-    if suffix not in dialect.extensions:
-        return False
-    gate: re.Pattern[str] | None = getattr(dialect, "gate", None)
-    return gate is None or gate.search(content) is not None
 
 
 def file_identity(c: Contract) -> Hashable:
@@ -132,7 +117,7 @@ class DialectExtractor:
             ctx = ScanContext(repo_alias, rel_path, suffix, content)
             found: list[Contract] = []
             for dialect in self.dialects:
-                if applies_to(dialect, suffix, content):
+                if suffix in dialect.extensions:
                     found.extend(dialect.extract(ctx))
             contracts.extend(found if self.identity is None else dedupe(found, self.identity))
         return contracts
@@ -141,7 +126,6 @@ class DialectExtractor:
 __all__ = [
     "ContractDialect",
     "DialectExtractor",
-    "applies_to",
     "build_contract",
     "dedupe",
     "file_identity",

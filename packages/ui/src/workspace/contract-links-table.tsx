@@ -102,7 +102,7 @@ export function ContractLinksTable({ links }: ContractLinksTableProps) {
     <VirtualizedTable<WorkspaceContractLinkEntry>
       rows={links}
       rowKey={(link) =>
-        `${link.contract_id}|${link.provider_repo}|${link.provider_file}|${link.consumer_repo}|${link.consumer_file}`
+        `${link.contract_id}|${link.consumer_contract_id ?? ""}|${link.provider_repo}|${link.provider_file}|${link.consumer_repo}|${link.consumer_file}`
       }
       header={header}
       renderRow={renderRow}

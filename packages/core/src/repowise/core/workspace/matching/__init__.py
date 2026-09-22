@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from . import http, topic
-from .common import MatchState, find_matching_keys, internal, prefer_target_repo, same_service
+from .common import MatchState, find_matching_keys, internal, prefer_target_repo
 from .http import annotate_consumer_targets
 
 if TYPE_CHECKING:
@@ -38,7 +38,9 @@ MATCHERS: dict[str, TypeMatcher] = {
         deferred=http.is_deferred,
         passes=(http.base_resolved_pass, http.candidate_pass),
     ),
-    "topic": TypeMatcher(accepts=topic.accepts, passes=(topic.binding_pass,)),
+    "topic": TypeMatcher(
+        deferred=topic.is_binding, accepts=topic.accepts, passes=(topic.binding_pass,)
+    ),
 }
 
 _NO_RULES = TypeMatcher()
@@ -79,5 +81,4 @@ __all__ = [
     "TypeMatcher",
     "annotate_consumer_targets",
     "match_contracts",
-    "same_service",
 ]

@@ -444,6 +444,93 @@ def literal_span(content: str, m: re.Match[str], group: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Selecting an argument
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Arg:
+    """Where a call carries a value: a keyword or map key first, else a position.
+
+    ``keys`` match a keyword argument (``queue='jobs'``, ``topics = "a"``) or a
+    key of a map-literal argument (``{ topic: 'a' }``, ``['queue' => 'a']``).
+    A value that is an array literal yields each element.
+    """
+
+    keys: tuple[str, ...] = ()
+    pos: int | None = None
+
+
+# One map entry's key: a quoted string or an identifier, then `:` or `=>`.
+_MAP_KEY_RE = re.compile(r"""^(?:'[^']*'|"[^"]*"|[A-Za-z_$][\w$]*)\s*(?:=>|:(?!:))""")
+
+
+@cache
+def _keyword_re(keys: tuple[str, ...]) -> re.Pattern[str]:
+    alts = "|".join(re.escape(k) for k in keys)
+    return re.compile(
+        rf"""^['"]?(?:{alts})['"]?\s*(?:=>|:(?!:)|=(?!=))\s*(?P<value>.+)$""", re.DOTALL
+    )
+
+
+def _bracketed(text: str) -> bool:
+    return len(text) >= 2 and text[0] in "[{" and text[-1] in "]}"
+
+
+def _map_entries(text: str) -> list[str] | None:
+    """The entries of a map literal (``{a: 1}``, ``['a' => 1]``), or ``None`` if *text* is not one."""
+    if not _bracketed(text):
+        return None
+    entries = [e.strip() for e in split_top_level(text[1:-1], ",") if e.strip()]
+    # `any`: a JS object may mix `key: value` with shorthand `{ topic, messages }`.
+    if any(_MAP_KEY_RE.match(e) for e in entries):
+        return entries
+    return None
+
+
+def select_argument(args: list[str], arg: Arg) -> list[str]:
+    """The source text of the value(s) *arg* selects from *args*, arrays expanded."""
+    value: str | None = None
+    if arg.keys:
+        pattern = _keyword_re(arg.keys)
+        for a in args:
+            for entry in _map_entries(a) or [a]:
+                m = pattern.match(entry)
+                if m is not None:
+                    value = m.group("value").strip()
+                    break
+            if value is not None:
+                break
+    if value is None and arg.pos is not None and arg.pos < len(args):
+        value = args[arg.pos]
+    if value is None:
+        return []
+    if _bracketed(value) and _map_entries(value) is None:
+        return [e.strip() for e in split_top_level(value[1:-1], ",") if e.strip()]
+    return [value]
+
+
+def resolve_argument(
+    args: list[str], arg: Arg, syntax: StringSyntax, constants: dict[str, str]
+) -> tuple[list[str], bool]:
+    """``(values, refused)`` for *arg*: each selected value resolved to plain text.
+
+    A value that does not resolve, or resolves to a template with a hole in
+    it, is dropped and ``refused`` is set, so a caller can tell "the call did
+    not say" from "the call said something this file cannot settle".
+    """
+    values: list[str] = []
+    refused = False
+    for raw in select_argument(args, arg):
+        text = resolve_string(raw, syntax, constants)
+        if text is None or "${" in text:
+            refused = True
+        else:
+            values.append(text.strip())
+    return values, refused
+
+
+# ---------------------------------------------------------------------------
 # Per-language syntax tables
 # ---------------------------------------------------------------------------
 
@@ -571,11 +658,14 @@ __all__ = [
     "RUBY_SYNTAX",
     "RUST_SYNTAX",
     "SCAN_LIMIT",
+    "Arg",
     "StringSyntax",
     "call_arguments",
     "literal_span",
     "match_paren",
+    "resolve_argument",
     "resolve_string",
+    "select_argument",
     "split_first_arg",
     "split_top_level",
     "string_constants",

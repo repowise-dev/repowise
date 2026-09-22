@@ -5,9 +5,10 @@ RabbitMQ producer publishes to an *exchange* with a routing key; a consumer
 reads a *queue*; a binding (``bindQueue(queue, exchange, pattern)``) is what
 connects the two, and it can live in either service or a third. Extraction
 records a binding as a consumer of the exchange carrying ``queue`` and
-``routing_key`` in its meta, so the exact pass already links the binding site.
-The pass here links each consumer of the bound queue to the exchange's
-producers, and the routing check keeps a binding from linking to a producer
+``routing_key``. A binding is wiring, not a call: the exact pass leaves it
+alone, and the pass here links each consumer of the bound queue to the
+exchange's publishers, or the binding site itself when no consumer of the
+queue was found. The routing check keeps a binding from linking to a publisher
 whose key it would never receive.
 """
 
@@ -17,8 +18,12 @@ from collections import defaultdict
 from functools import cache
 from typing import TYPE_CHECKING
 
-from repowise.core.workspace.contracts import normalize_contract_id
-from repowise.core.workspace.extractors.topic.dialect import KIND_BINDING, KIND_QUEUE
+from repowise.core.workspace.contracts import (
+    TOPIC_KIND_BINDING,
+    TOPIC_KIND_QUEUE,
+    TOPIC_ROUTING_KEY_UNRESOLVED,
+    normalize_contract_id,
+)
 
 from .common import internal
 
@@ -53,30 +58,54 @@ def routing_matches(pattern: str, key: str) -> bool:
     return _words_match(tuple(pattern.split(".")), tuple(key.split(".")))
 
 
+def is_binding(consumer: Contract) -> bool:
+    """A binding row is linked by :func:`binding_pass`, never by the exact pass."""
+    return consumer.meta.get("kind") == TOPIC_KIND_BINDING
+
+
 def accepts(provider: Contract, consumer: Contract) -> bool:
-    """Whether the exact pass may link *consumer* to *provider* on routing grounds."""
+    """Whether *consumer* receives what *provider* publishes, on routing grounds.
+
+    A key the source did not settle routes nowhere: reading it as match-all
+    would link every binding on the exchange.
+    """
+    if provider.meta.get(TOPIC_ROUTING_KEY_UNRESOLVED) or consumer.meta.get(
+        TOPIC_ROUTING_KEY_UNRESOLVED
+    ):
+        return False
     return routing_matches(
         consumer.meta.get("routing_key", ""), provider.meta.get("routing_key", "")
     )
 
 
 def binding_pass(state: MatchState) -> None:
-    """Link each unmatched queue consumer to the producers of an exchange its queue is bound to."""
-    bindings: dict[str, list[Contract]] = defaultdict(list)
+    """Link every consumer of a bound queue, else the binding, to the exchange's publishers."""
+    queue_consumers: dict[str, list[Contract]] = defaultdict(list)
+    bindings: list[Contract] = []
     for c in state.consumers:
-        if c.contract_type == "topic" and c.meta.get("kind") == KIND_BINDING:
-            queue = c.meta.get("queue")
-            if queue:
-                bindings[queue.lower()].append(c)
-    if not bindings:
-        return
-
-    for consumer in state.unmatched("topic"):
-        if consumer.meta.get("kind") != KIND_QUEUE:
+        if c.contract_type != "topic":
             continue
-        for binding in bindings.get(str(consumer.meta.get("topic", "")).lower(), []):
-            for provider in state.provider_index.get(normalize_contract_id(binding.contract_id), []):
-                if internal(provider, consumer) or not accepts(provider, binding):
+        if is_binding(c):
+            bindings.append(c)
+        elif c.meta.get("kind") == TOPIC_KIND_QUEUE:
+            queue_consumers[str(c.meta.get("topic", "")).lower()].append(c)
+
+    for binding in bindings:
+        publishers = [
+            p
+            for p in state.provider_index.get(normalize_contract_id(binding.contract_id), [])
+            if accepts(p, binding)
+        ]
+        readers = queue_consumers.get(str(binding.meta.get("queue", "")).lower())
+        for provider in publishers:
+            if not readers:
+                if not internal(provider, binding):
+                    state.add(
+                        binding, provider, "exact", min(provider.confidence, binding.confidence)
+                    )
+                continue
+            for consumer in readers:
+                if internal(provider, consumer):
                     continue
                 state.add(
                     consumer,
@@ -87,4 +116,4 @@ def binding_pass(state: MatchState) -> None:
                 )
 
 
-__all__ = ["accepts", "binding_pass", "routing_matches"]
+__all__ = ["accepts", "binding_pass", "is_binding", "routing_matches"]

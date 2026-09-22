@@ -5,15 +5,14 @@ from __future__ import annotations
 import re
 
 from ..langs import GO, JAVA, JS_TS, PYTHON
-from .dialect import Arg, TopicCall, TopicDialect
+from ..strings import Arg
+from .dialect import TopicCall, TopicDialect
 
 _TOPIC = Arg(keys=("topics", "topic"))
 _FIRST = Arg(pos=0)
 
 KAFKA = TopicDialect(
     name="kafka",
-    broker="kafka",
-    gate=re.compile(r"[Kk]afka|producer\.|consumer\.|ConsumePartition"),
     calls=(
         TopicCall(
             head=re.compile(r"@KafkaListener\s*\("),
@@ -56,7 +55,7 @@ KAFKA = TopicDialect(
             role="provider",
             label="producer.produce",
             extensions=PYTHON | JS_TS,
-            name=_FIRST,
+            name=Arg(keys=("topic",), pos=0),
             confidence=0.7,
         ),
         TopicCall(

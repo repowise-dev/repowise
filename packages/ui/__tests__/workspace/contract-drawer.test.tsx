@@ -185,4 +185,17 @@ describe("linksForContract", () => {
     const mine = link();
     expect(linksForContract(c, [mine])).toEqual([mine]);
   });
+
+  it("finds a consumer that reached its provider under another id", () => {
+    const c = contract({
+      role: "consumer",
+      contract_id: "topic::audit",
+      repo: "web-app",
+      file_path: "src/api/users-client.ts",
+    });
+    const bridged = link({ contract_id: "topic::orders", consumer_contract_id: "topic::audit" });
+    const provider = contract({ contract_id: "topic::orders" });
+    expect(linksForContract(c, [bridged])).toEqual([bridged]);
+    expect(linksForContract(provider, [bridged])).toEqual([bridged]);
+  });
 });

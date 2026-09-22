@@ -22,8 +22,8 @@ from repowise.core.workspace.cross_repo import (
     _scan_csproj,
     detect_package_dependencies,
 )
-from repowise.core.workspace.extractors.grpc_extractor import GrpcExtractor
-from repowise.core.workspace.extractors.http_extractor import HttpExtractor
+from repowise.core.workspace.extractors.grpc import GrpcExtractor
+from repowise.core.workspace.extractors.http import HttpExtractor
 
 # ---------------------------------------------------------------------------
 # HTTP — ASP.NET
