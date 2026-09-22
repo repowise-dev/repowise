@@ -17,7 +17,12 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
-from repowise.core.analysis.security_scan import SecurityScanner, _mask_secret_snippet
+from repowise.core.analysis.security_scan import (
+    SecurityScanner,
+    _mask_secret_snippet,
+    scan_source,
+    scan_source_map,
+)
 
 SNIPPY = b"""import pickle
 
@@ -729,3 +734,79 @@ class TestSecretMasking:
         assert hits[0]["severity"] == "low"
         assert "super_secret_real_password_99" not in hits[0]["snippet"]
         assert "supe****" in hits[0]["snippet"]
+
+
+class TestScanSource:
+    """The session-free entry points, and masking that survives the length cap."""
+
+    def test_long_token_is_masked_before_the_snippet_is_trimmed(self) -> None:
+        """A value running past the 120-char cut must not ship its head raw."""
+        token = "".join(chr(ord("a") + (i * 7) % 26) for i in range(220))
+        findings = scan_source("config.py", f'API_KEY = "{token}"\n')
+        hits = [f for f in findings if f["kind"] == "hardcoded_secret"]
+        assert hits
+        snippet = hits[0]["snippet"]
+        assert len(snippet) <= 120
+        assert token[:4] + "****" in snippet
+        leaked = [token[i : i + 5] for i in range(len(token) - 4) if token[i : i + 5] in snippet]
+        assert not leaked, f"raw token substrings in snippet: {leaked[:3]}"
+
+    def test_recurring_value_is_masked_everywhere_on_the_line(self) -> None:
+        source = "password = 'hunter2hunter2'  # was hunter2hunter2\n"
+        (hit,) = [f for f in scan_source("a.py", source) if f["kind"] == "hardcoded_password"]
+        assert "hunter2hunter2" not in hit["snippet"]
+
+    @pytest.mark.parametrize(
+        ("source", "raw"),
+        [
+            ("NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_0123456789abcdef\n", "sk_live_0123456789abcdef"),
+            ('  "VITE_API_KEY": "abcdef0123456789",\n', "abcdef0123456789"),
+            ("export const NEXT_PUBLIC_AUTH_TOKEN = 'tok_9876543210';\n", "tok_9876543210"),
+        ],
+    )
+    def test_public_env_secret_value_is_redacted(self, source: str, raw: str) -> None:
+        hits = [f for f in scan_source("config.ts", source) if f["kind"] == "public_env_secret"]
+        assert hits, "the finding must still be emitted"
+        assert raw not in hits[0]["snippet"]
+        assert raw[:4] + "****" in hits[0]["snippet"]
+
+    def test_public_env_secret_without_a_value_is_unchanged(self) -> None:
+        source = "const k = process.env.NEXT_PUBLIC_N8N_API_KEY;\n"
+        (hit,) = [f for f in scan_source("config.ts", source) if f["kind"] == "public_env_secret"]
+        assert hit["snippet"] == source.strip()
+
+    def test_secret_kinds_and_history_gate_are_unchanged(self) -> None:
+        from repowise.core.analysis.history_scan import HistorySecurityScanner
+        from repowise.core.analysis.security_scan import SECRET_KINDS
+
+        assert (
+            frozenset(
+                {
+                    "hardcoded_password",
+                    "hardcoded_secret",
+                    "aws_access_key",
+                    "github_token",
+                    "slack_token",
+                    "google_api_key",
+                    "stripe_key",
+                    "private_key_pem",
+                }
+            )
+            == SECRET_KINDS
+        )
+        assert not HistorySecurityScanner._passes_gate("public_env_secret", secrets_only=True)
+
+    def test_scan_file_wraps_scan_source(self) -> None:
+        source = SNIPPY.decode()
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        sym = SimpleNamespace(name="auth", start_line=2)
+        assert asyncio.run(scanner.scan_file("a.py", source, [sym])) == scan_source(
+            "a.py", source, [sym]
+        )
+
+    def test_scan_source_map_returns_replace_findings_inputs(self) -> None:
+        result = _fake_result({"a.py": SNIPPY, "clean.py": CLEAN, "s.py": "x = 1\n"})
+        findings_by_file, scanned = scan_source_map(result.parsed_files, result.source_map)
+        assert scanned == ["a.py", "clean.py", "s.py"]
+        assert set(findings_by_file) == {"a.py"}
+        assert findings_by_file["a.py"] == scan_source("a.py", SNIPPY.decode())

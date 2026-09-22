@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS
+from repowise.core.analysis.security_scan import REDACTED_SNIPPET_KINDS, SYMBOL_NAME_KINDS
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,12 @@ def check_finding_line(
     """
     if lines is None or not snippet:
         return LineCheck(line_number=line_number, verified=False)
+
+    if kind in REDACTED_SNIPPET_KINDS and "****" in snippet:
+        # Only the text before the mask is verbatim on the line.
+        snippet = snippet.split("****", 1)[0]
+        if not snippet:
+            return LineCheck(line_number=line_number, verified=False)
 
     if (
         line_number is not None

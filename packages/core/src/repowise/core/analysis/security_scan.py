@@ -5,7 +5,7 @@ authentication, secret handling, raw SQL, dangerous deserialization, etc.
 
 Two scan surfaces share the same pattern registry and persistence layer:
 
-* working-tree scans (during indexing) — ``SecurityScanner.scan_file`` +
+* working-tree scans (during indexing) — ``scan_source`` / ``scan_source_map`` +
   ``replace_findings`` with no commit provenance;
 * full-history scans (``repowise security scan --history``) — iterate every
   tracked revision of every source file and persist hits tagged with the
@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import logging
 import re
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
@@ -274,6 +275,10 @@ SECRET_KINDS: frozenset[str] = frozenset(
 SYMBOL_NAME_KINDS: frozenset[str] = frozenset({"security_sensitive_symbol"})
 
 
+def _redaction(val: str) -> str:
+    return (val[:4] + "****") if len(val) >= 4 else "****"
+
+
 def _mask_secret_snippet(snippet: str, val: str) -> str:
     """Replace the first occurrence of *val* inside *snippet* with a redacted form.
 
@@ -289,8 +294,23 @@ def _mask_secret_snippet(snippet: str, val: str) -> str:
     """
     if not val:
         return snippet
-    redacted = (val[:4] + "****") if len(val) >= 4 else "****"
-    return snippet.replace(val, redacted, 1)
+    return snippet.replace(val, _redaction(val), 1)
+
+
+# ``public_env_secret`` has no capture group, so its value is found here. In
+# ``SECRET_KINDS`` the empty capture would fail validation and drop the finding.
+_ASSIGNED_VALUE = re.compile(r"""\A['"]?\s*[:=]+\s*['"`]?([^'"`\s,;]+)""")
+
+# Their snippets may hold ``****``, so are not verbatim on the source line.
+REDACTED_SNIPPET_KINDS: frozenset[str] = SECRET_KINDS | {"public_env_secret"}
+
+
+def _redact_assigned_value(line: str, name_end: int) -> str:
+    value = _ASSIGNED_VALUE.search(line[name_end:])
+    if value is None:
+        return line
+    start, end = name_end + value.start(1), name_end + value.end(1)
+    return line[:start] + _redaction(line[start:end]) + line[end:]
 
 
 def _mask_findings(findings: list[dict]) -> None:
@@ -300,7 +320,7 @@ def _mask_findings(findings: list[dict]) -> None:
     touched; every other kind (code-smell patterns, symbol names, spanning
     patterns not in SECRET_KINDS) is left unchanged.
 
-    This is called as a final post-pass inside ``scan_file`` before returning,
+    This is called as a final post-pass inside ``scan_source`` before returning,
     so it covers the per-line loop, the spanning-pattern loop, and the
     ``HistorySecurityScanner`` path in one place.
     """
@@ -484,6 +504,134 @@ def _is_missing_table_error(exc: Exception) -> bool:
     return "no such table" in message or "does not exist" in message
 
 
+def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> list[dict]:
+    """Scan *source* text and symbol names; return finding dicts. No I/O."""
+    findings: list[dict] = []
+    lines = source.splitlines()
+
+    findings.extend(_call_findings(file_path, source))
+
+    # Line-by-line pattern scan
+    is_low_sev_file = _is_low_severity_path(file_path)
+    for lineno, line in enumerate(lines, start=1):
+        if not _ANY_PATTERN.search(line):
+            continue
+        for pattern, kind, severity in _PATTERNS:
+            if kind in _CALL_KINDS:
+                continue
+            match = pattern.search(line)
+            if match:
+                if kind in SECRET_KINDS:
+                    val = match.group(1) if match.groups() else ""
+                    if not _is_valid_credential_value(val):
+                        continue
+                    if is_low_sev_file:
+                        severity = "low"
+                    # Mask before trimming: a value cut short no longer
+                    # matches the replace and would ship raw.
+                    snippet = line.strip().replace(val, _redaction(val))[:120]
+                    findings.append(
+                        {
+                            "kind": kind,
+                            "severity": severity,
+                            "snippet": snippet,
+                            "line": lineno,
+                            # Internal: consumed by _mask_findings, never persisted.
+                            "_secret_val": val,
+                        }
+                    )
+                    continue
+                shown = line
+                if kind == "public_env_secret":
+                    shown = _redact_assigned_value(line, match.end())
+                # Trim snippet to keep it concise
+                snippet = shown.strip()[:120]
+                findings.append(
+                    {
+                        "kind": kind,
+                        "severity": severity,
+                        "snippet": snippet,
+                        "line": lineno,
+                    }
+                )
+
+    # Whole-source pass for patterns that span physical lines
+    # (``subprocess.run(\n    ...,\n    shell=True,\n)``). The per-line
+    # loop above can never see the sink when the call opens on one line
+    # and ``shell=`` lands on another, so scan the full source once. The
+    # finding is reported on the line where the call starts, and a match
+    # the per-line pass already caught on that line is not duplicated.
+    for pattern, kind, severity in _SPANNING_PATTERNS:
+        for match in pattern.finditer(source):
+            if kind in SECRET_KINDS:
+                val = match.group(1) if match.groups() else ""
+                if not _is_valid_credential_value(val):
+                    continue
+                if is_low_sev_file:
+                    severity = "low"
+            start_line = source.count("\n", 0, match.start()) + 1
+            if any(f["kind"] == kind and f["line"] == start_line for f in findings):
+                continue
+            line_start = source.rfind("\n", 0, match.start()) + 1
+            line_end = source.find("\n", match.start())
+            if line_end == -1:
+                line_end = len(source)
+            snippet = source[line_start:line_end].strip()[:120]
+            findings.append(
+                {
+                    "kind": kind,
+                    "severity": severity,
+                    "snippet": snippet,
+                    "line": start_line,
+                }
+            )
+
+    # Symbol-name scan (informational / low)
+    for sym in symbols:
+        name = getattr(sym, "name", "") or getattr(sym, "qualified_name", "") or ""
+        if name and _SYMBOL_KEYWORDS.search(name):
+            findings.append(
+                {
+                    "kind": "security_sensitive_symbol",
+                    "severity": "low",
+                    "snippet": name,
+                    "line": getattr(sym, "start_line", 0) or 0,
+                }
+            )
+
+    # Mask secret values before any finding leaves this function.
+    # A single post-pass keyed on SECRET_KINDS covers the per-line loop,
+    # the spanning-pattern loop above, and HistorySecurityScanner (which
+    # calls this same function), so every present and future snippet site is
+    # covered by construction.
+    _mask_findings(findings)
+    return findings
+
+
+def scan_source_map(
+    parsed_files: Iterable[Any],
+    source_map: Mapping[str, bytes | str],
+) -> tuple[dict[str, list[dict]], list[str]]:
+    """Return ``(findings_by_file, scanned_paths)`` for ``replace_findings``.
+
+    A path missing from *source_map* still gets the symbol-name scan.
+    """
+    findings_by_file: dict[str, list[dict]] = {}
+    scanned_paths: list[str] = []
+    for pf in parsed_files:
+        path = pf.file_info.path
+        raw = source_map.get(path, b"")
+        if isinstance(raw, (bytes, bytearray)):
+            source_text = raw.decode("utf-8", errors="replace")
+        else:
+            source_text = raw or ""
+        scanned_paths.append(path)
+        findings = scan_source(path, source_text, pf.symbols)
+        if findings:
+            findings_by_file[path] = findings
+    return findings_by_file, scanned_paths
+
+
 class SecurityScanner:
     """Scan a single file for security signals and persist to the database."""
 
@@ -497,113 +645,8 @@ class SecurityScanner:
         source: str,
         symbols: list[Any],
     ) -> list[dict]:
-        """Scan *source* text and symbol names; return list of finding dicts.
-
-        Parameters
-        ----------
-        file_path:
-            Relative path of the file (for reference only; not used in scan).
-        source:
-            Full text content of the file.
-        symbols:
-            List of symbol objects that have a ``name`` attribute (or similar).
-        """
-        findings: list[dict] = []
-        lines = source.splitlines()
-
-        findings.extend(_call_findings(file_path, source))
-
-        # Line-by-line pattern scan
-        is_low_sev_file = _is_low_severity_path(file_path)
-        for lineno, line in enumerate(lines, start=1):
-            if not _ANY_PATTERN.search(line):
-                continue
-            for pattern, kind, severity in _PATTERNS:
-                if kind in _CALL_KINDS:
-                    continue
-                match = pattern.search(line)
-                if match:
-                    if kind in SECRET_KINDS:
-                        val = match.group(1) if match.groups() else ""
-                        if not _is_valid_credential_value(val):
-                            continue
-                        if is_low_sev_file:
-                            severity = "low"
-                        # Trim snippet to keep it concise
-                        snippet = line.strip()[:120]
-                        findings.append(
-                            {
-                                "kind": kind,
-                                "severity": severity,
-                                "snippet": snippet,
-                                "line": lineno,
-                                # Internal: consumed by _mask_findings, never persisted.
-                                "_secret_val": val,
-                            }
-                        )
-                        continue
-                    # Trim snippet to keep it concise
-                    snippet = line.strip()[:120]
-                    findings.append(
-                        {
-                            "kind": kind,
-                            "severity": severity,
-                            "snippet": snippet,
-                            "line": lineno,
-                        }
-                    )
-
-        # Whole-source pass for patterns that span physical lines
-        # (``subprocess.run(\n    ...,\n    shell=True,\n)``). The per-line
-        # loop above can never see the sink when the call opens on one line
-        # and ``shell=`` lands on another, so scan the full source once. The
-        # finding is reported on the line where the call starts, and a match
-        # the per-line pass already caught on that line is not duplicated.
-        for pattern, kind, severity in _SPANNING_PATTERNS:
-            for match in pattern.finditer(source):
-                if kind in SECRET_KINDS:
-                    val = match.group(1) if match.groups() else ""
-                    if not _is_valid_credential_value(val):
-                        continue
-                    if is_low_sev_file:
-                        severity = "low"
-                start_line = source.count("\n", 0, match.start()) + 1
-                if any(f["kind"] == kind and f["line"] == start_line for f in findings):
-                    continue
-                line_start = source.rfind("\n", 0, match.start()) + 1
-                line_end = source.find("\n", match.start())
-                if line_end == -1:
-                    line_end = len(source)
-                snippet = source[line_start:line_end].strip()[:120]
-                findings.append(
-                    {
-                        "kind": kind,
-                        "severity": severity,
-                        "snippet": snippet,
-                        "line": start_line,
-                    }
-                )
-
-        # Symbol-name scan (informational / low)
-        for sym in symbols:
-            name = getattr(sym, "name", "") or getattr(sym, "qualified_name", "") or ""
-            if name and _SYMBOL_KEYWORDS.search(name):
-                findings.append(
-                    {
-                        "kind": "security_sensitive_symbol",
-                        "severity": "low",
-                        "snippet": name,
-                        "line": getattr(sym, "start_line", 0) or 0,
-                    }
-                )
-
-        # Mask secret values before any finding leaves this function.
-        # A single post-pass keyed on SECRET_KINDS covers the per-line loop,
-        # the spanning-pattern loop above, and HistorySecurityScanner (which
-        # calls this same method), so every present and future snippet site is
-        # covered by construction.
-        _mask_findings(findings)
-        return findings
+        """Async wrapper over :func:`scan_source`."""
+        return scan_source(file_path, source, symbols)
 
     def _uses_sqlite(self) -> bool:
         """True when the bound session talks to SQLite (local/dev backend)."""

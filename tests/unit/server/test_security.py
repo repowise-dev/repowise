@@ -151,6 +151,27 @@ async def test_symbol_name_finding_is_never_relocated_or_withdrawn(
 
 
 @pytest.mark.asyncio
+async def test_masked_credential_snippet_still_locates_its_line(
+    client: AsyncClient, app
+) -> None:
+    """A masked snippet is not verbatim on its line, but the code is still there."""
+    repo = await create_test_repo(client)
+    src = Path(repo["local_path"]) / "app.py"
+    src.write_text("import os\n\nAPI_KEY = 'sk_live_0123456789'\n")
+
+    await _insert(
+        app.state.session_factory,
+        repo["id"],
+        snippet="API_KEY = 'sk_l****'",
+        line_number=1,
+    )
+
+    row = (await client.get(f"/api/repos/{repo['id']}/security")).json()[0]
+    assert row["line_number"] == 3
+    assert row["line_verified"] is True
+
+
+@pytest.mark.asyncio
 async def test_path_outside_the_repo_is_not_read(client: AsyncClient, app) -> None:
     """A finding path is not a licence to read anywhere on disk."""
     repo = await create_test_repo(client)
