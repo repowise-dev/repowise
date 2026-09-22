@@ -15,7 +15,7 @@ import pathlib
 import re
 
 from repowise.core.analysis.execution_flows import FLOW_TERMINATION_VALUES
-from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
+from repowise.core.ingestion.models import HERITAGE_KIND_VALUES, RESOLUTION_ORIGIN_VALUES
 from repowise.core.workspace.diagnostics import UNMATCHED_REASON_VALUES
 
 _TYPES_SRC = pathlib.Path(__file__).resolve().parents[3] / "packages/types/src"
@@ -39,3 +39,11 @@ def test_flow_termination_union_matches_python() -> None:
 
 def test_unmatched_reason_union_matches_python() -> None:
     assert _union_members("UnmatchedReason", "workspace.ts") == set(UNMATCHED_REASON_VALUES)
+
+
+def test_heritage_kind_differs_from_python_only_where_documented() -> None:
+    """Not a mirror: TS types a different payload, so a new member on either
+    side must be placed on purpose."""
+    ts = _union_members("HeritageKind", "symbols.ts")
+    assert ts - set(HERITAGE_KIND_VALUES) == {"method_implements", "method_overrides"}
+    assert set(HERITAGE_KIND_VALUES) - ts == {"derive"}
