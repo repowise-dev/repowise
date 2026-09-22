@@ -58,14 +58,21 @@ _INCIDENTAL_BASES = {"file_change", "context_change", "unknown"}
 
 @dataclass(frozen=True, slots=True)
 class DeltaRequest:
-    repo_path: str
+    """What to compare. ``repo_path`` is unused by the comparison; ``None`` is fine."""
+
+    repo_path: str | None
     revspec: str | None
     extensions: tuple[str, ...] = ()
     exclude_patterns: tuple[str, ...] = ()
 
 
 class ChangeHealthDeltaService:
-    """Compare the health of two revisions of the same repository."""
+    """Compare the health of two revisions of the same repository.
+
+    Without a checkout, pass a ``MappingRevisionSource`` (diff hunks plus raw
+    bytes at both SHAs). Both sides are re-scored from those bytes, so custom
+    health rules need ``RevisionHealthAnalyzer(config=...)`` to match the index.
+    """
 
     def __init__(
         self,
