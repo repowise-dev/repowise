@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repowise.core.workspace.contracts import match_contracts, normalize_contract_id
+from repowise.core.workspace.contracts import normalize_contract_id
 from repowise.core.workspace.extractors.data import DataExtractor
 from repowise.core.workspace.extractors.data.names import (
     normalize_table_name,
     split_qualified,
 )
+from repowise.core.workspace.matching import match_contracts
 from repowise.core.workspace.system_graph import edge_kind_for_contract_type
 
 

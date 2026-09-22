@@ -129,6 +129,9 @@ class WorkspaceContractLinkEntry(BaseModel):
     #: than a display label. None when that side never bound to one.
     provider_symbol_id: str | None = None
     consumer_symbol_id: str | None = None
+    #: The consumer's own contract id when it reached the provider under another
+    #: name (a queue bound to the exchange ``contract_id`` names); None otherwise.
+    consumer_contract_id: str | None = None
 
 
 class WorkspaceContractsResponse(BaseModel):

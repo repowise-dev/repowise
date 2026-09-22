@@ -18,7 +18,8 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from ..langs import RUST
-from .client_calls import RUST_SYNTAX, ClientCallMatch, consumer_contracts, matches_in
+from ..strings import RUST_SYNTAX
+from .client_calls import ClientCallMatch, consumer_contracts, matches_in
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract

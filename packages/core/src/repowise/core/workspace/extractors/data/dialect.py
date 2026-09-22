@@ -9,25 +9,15 @@ scheme (``data::<normalized table>``) and the normalization rules stay in
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
-from ..base import ScanContext
+from ..dialect import build_contract
 from .names import normalize_table_name
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
 
-
-@runtime_checkable
-class DataDialect(Protocol):
-    """A table-ownership/access recogniser for a set of file extensions."""
-
-    name: str
-    extensions: frozenset[str]
-
-    def extract(self, ctx: ScanContext) -> list[Contract]:
-        """Return the contracts found in *ctx* (may be empty)."""
-        ...
+    from ..base import ScanContext
 
 
 def build_table_provider(
@@ -44,20 +34,16 @@ def build_table_provider(
     a migration. ``None`` when the raw token does not normalize to a concrete
     table name.
     """
-    from repowise.core.workspace.contracts import Contract
-
     table = normalize_table_name(table_raw)
     if table is None:
         return None
-    return Contract(
-        repo=ctx.repo_alias,
+    return build_contract(
+        ctx,
         contract_id=f"data::{table}",
         contract_type="data",
         role="provider",
-        file_path=ctx.rel_path,
         symbol_name=f"{framework}:{table_raw}",
         confidence=confidence,
-        service=None,
         line=line,
         meta={"table": table, "framework": framework},
     )
@@ -78,20 +64,16 @@ def build_table_consumer(
     ``insert`` / ``update`` / ``delete`` / ``join``), carried in ``meta`` so
     downstream views can distinguish readers from writers.
     """
-    from repowise.core.workspace.contracts import Contract
-
     table = normalize_table_name(table_raw)
     if table is None:
         return None
-    return Contract(
-        repo=ctx.repo_alias,
+    return build_contract(
+        ctx,
         contract_id=f"data::{table}",
         contract_type="data",
         role="consumer",
-        file_path=ctx.rel_path,
         symbol_name=f"{client}:{verb} {table}",
         confidence=confidence,
-        service=None,
         line=line,
         meta={"table": table, "verb": verb, "client": client},
     )

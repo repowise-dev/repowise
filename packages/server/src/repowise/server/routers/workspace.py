@@ -287,6 +287,7 @@ def _contract_link(lk: dict) -> WorkspaceContractLinkEntry:
         consumer_service=lk.get("consumer_service"),
         provider_symbol_id=lk.get("provider_symbol_id"),
         consumer_symbol_id=lk.get("consumer_symbol_id"),
+        consumer_contract_id=lk.get("consumer_contract_id"),
     )
 
 

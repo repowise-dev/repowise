@@ -117,6 +117,11 @@ export interface WorkspaceContractLinkEntry {
    */
   provider_symbol_id: string | null;
   consumer_symbol_id: string | null;
+  /**
+   * The consumer's own contract id when it reached the provider under another
+   * name (a queue bound to the exchange `contract_id` names); null otherwise.
+   */
+  consumer_contract_id?: string | null;
 }
 
 export interface WorkspaceContractsResponse {

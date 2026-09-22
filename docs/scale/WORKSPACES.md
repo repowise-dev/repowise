@@ -234,10 +234,21 @@ Scans source files for HTTP route handlers, gRPC service definitions, and messag
 | HTTP | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal API), Rust (Axum routes, Actix/Rocket attribute macros) | fetch/axios/URL-literal wrappers (JS/TS), requests/httpx (Python), HttpClient/UnityWebRequest/Best.HTTP (C#), reqwest (Rust) |
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
 | Data / DB | DDL (`CREATE TABLE`/`VIEW`/`MATERIALIZED VIEW`), ORM dialects (SQLAlchemy, Django, JPA, EF Core, ActiveRecord, Eloquent) | Raw SQL string literals in app code (verb-anchored: `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`MERGE`) |
-| Topics | Kafka, RabbitMQ, NATS producers | Corresponding consumers |
+| Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika), NATS producers | The corresponding consumers, plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)` |
 
 Socket detection is C#/Python only and is toggled by `detect_socket` in the `contracts:` block below.
+
+A topic, queue or exchange name is read the way a URL is: a literal, or a name
+the same file assigns exactly once to a literal (Python, Go and Java today), is
+resolved; a name built at runtime is skipped rather than guessed. RabbitMQ
+publishers name an exchange and a routing key while consumers name a queue, so
+a queue binding found anywhere in the workspace connects the two: each consumer
+of the bound queue links to the exchange's publishers whose routing key the
+binding pattern accepts (`*` and `#` follow topic-exchange rules; an empty key
+or pattern matches everything). Such a link carries the exchange as its
+`contract_id` and the queue as `consumer_contract_id`. A publish to the default
+exchange (`publish('', 'jobs')`) is a publish to the queue `jobs`.
 
 Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](#system-graph). The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
 

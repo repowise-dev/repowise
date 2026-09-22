@@ -12,8 +12,8 @@ from .service_boundary import (
     assign_service,
     detect_service_boundaries,
 )
-from .socket_extractor import SocketExtractor
-from .topic_extractor import TopicExtractor
+from .socket import SocketExtractor
+from .topic import TopicExtractor
 
 __all__ = [
     "DataExtractor",

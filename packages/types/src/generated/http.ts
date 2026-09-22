@@ -2987,6 +2987,7 @@ export interface WorkspaceContractLinkEntry {
   consumer_service?: string | null;
   provider_symbol_id?: string | null;
   consumer_symbol_id?: string | null;
+  consumer_contract_id?: string | null;
 }
 
 export interface WorkspaceContractSummary {
