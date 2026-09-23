@@ -332,10 +332,10 @@ def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     return blockers
 
 
-# The readers below take a record as a plain mapping with the keys
-# ``affected_files``, ``affected_modules``, ``kind``, ``rationale``, ``context``,
-# ``source``, ``evidence_commits`` and ``evidence_file``. List fields may be
-# lists or their JSON text, so an ORM row can be passed with its columns as-is.
+# The readers below take a mapping keyed ``affected_files``, ``affected_modules``,
+# ``kind``, ``rationale``, ``context``, ``source``, ``evidence_commits``,
+# ``evidence_file``; list fields may be stored JSON text. ORM rows go through
+# ``crud.authority.decision_fields``.
 
 
 def _str_list(value: Any) -> list[str]:
@@ -416,12 +416,8 @@ def requirement(
     resolved_evidence = evidence if evidence is not None else record_evidence(rec)
     if not resolved_evidence and self_authored:
         resolved_evidence = [f"accepted by {accepter}"]
-    # The why may come from `rationale` or from `context` ("what forced this
-    # decision?"), never from `decision`, which is the what. Measured over the
-    # dev store's 513 acceptable records: 199 have a blank rationale, but 145
-    # of those give their reason in `context`, so stopping at `rationale` would
-    # block 145 records a hand-read sample of 20 judged worth keeping. Stopping
-    # at `context` blocks the other 54, each blank in both fields.
+    # The why comes from `rationale` or `context` ("what forced this decision?"),
+    # never from `decision`, which is the what.
     return AcceptanceRequirement(
         reason=_first_non_blank(reason, rec.get("rationale"), rec.get("context")),
         scope=scope if scope is not None else record_scope(rec),

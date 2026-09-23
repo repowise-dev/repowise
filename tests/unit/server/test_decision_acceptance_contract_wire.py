@@ -1,8 +1,7 @@
 """The acceptance contract's reads of a record, pinned at the server.
 
-Two rules here have been restated elsewhere and drifted: the reason falls back
-from ``rationale`` to ``context`` and never to ``decision``, and an agreement
-naming no file governs the repository rather than nothing.
+The reason falls back from ``rationale`` to ``context`` and never to
+``decision``, and an agreement naming no file governs the repository.
 """
 
 from __future__ import annotations
