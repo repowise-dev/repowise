@@ -1,5 +1,9 @@
 """Laravel routes / service-provider / Eloquent convention edges.
 
+The files Laravel loads with no importer (providers, route files, commands,
+factories, ...) are named in ``framework_facts.LARAVEL`` and anchored to
+``framework:laravel`` here.
+
 Split out of ``framework_edges.py`` (PR 3.5) — behaviour-preserving move. The
 ``Route::`` recogniser lives in ``ingestion.framework_routes``, shared with the
 contract extractor that reads the same call for its path.
@@ -10,6 +14,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..composer import repo_composer_manifests
+from ..framework_facts import LARAVEL
 from ..framework_routes import laravel_routes
 from ..resolvers import ResolverContext
 from .base import (
@@ -17,6 +23,7 @@ from .base import (
     FrameworkHandler,
     _add_edge_if_new,
     _build_class_to_file,
+    add_entry_edges,
     read_text,
 )
 
@@ -46,6 +53,11 @@ def _resolve_laravel_class(
     return class_to_file.get(short)
 
 
+def _manifest_roots(ctx: ResolverContext) -> list[str]:
+    """Directories of every first-party manifest that requires the framework."""
+    return [m.rel_dir for m in repo_composer_manifests(ctx) if LARAVEL.matches(m)]
+
+
 def _add_laravel_edges(
     graph: nx.DiGraph,
     parsed_files: dict[str, Any],
@@ -54,9 +66,20 @@ def _add_laravel_edges(
 ) -> int:
     count = 0
     class_to_file = _build_class_to_file(parsed_files, ("php",))
+    roots = _manifest_roots(ctx)
+
+    # ---- files the framework loads by convention (providers, routes, ...) ----
+    # Only where a manifest requires the framework: ``config/*.php`` or
+    # ``app/Providers/*.php`` alone say nothing about Laravel.
+    for root in roots:
+        count += add_entry_edges(graph, LARAVEL, root, path_set)
 
     # ---- routes/web.php / routes/api.php → controllers ----
-    for routes_path in ("routes/web.php", "routes/api.php"):
+    for routes_path in (
+        f"{root}/{name}" if root else name
+        for root in dict.fromkeys(["", *roots])
+        for name in ("routes/web.php", "routes/api.php")
+    ):
         if routes_path not in path_set:
             continue
         text = read_text(parsed_files[routes_path])
@@ -108,6 +131,7 @@ class _LaravelHandler:
             "laravel" in dctx.stack_lower
             or "routes/web.php" in dctx.path_set
             or "routes/api.php" in dctx.path_set
+            or bool(_manifest_roots(dctx.ctx))
         )
 
     def add_edges(

@@ -18,10 +18,10 @@ from repowise.core.workspace.cross_repo import (
     _is_noise_path,
     _parse_git_log,
     detect_cross_repo_co_changes,
-    detect_package_dependencies,
     load_overlay,
     save_overlay,
 )
+from repowise.core.workspace.manifests import detect_package_dependencies
 
 # ---------------------------------------------------------------------------
 # _parse_git_log

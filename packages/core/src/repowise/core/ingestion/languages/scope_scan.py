@@ -1,7 +1,8 @@
 """One implicit-scope scan, bound to a different declaration index per language.
 
 Several languages let a file name a sibling's type with no import statement:
-JVM same-package, C# same-namespace and ``global using``, Swift same-module.
+JVM same-package, C# same-namespace and ``global using``, Swift same-module,
+PHP same-namespace.
 What differs between them is which index answers and what shadows a name, so
 those are the parameters; the scan, the one-declaring-file rule and the edge
 emission are shared.

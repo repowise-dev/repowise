@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     import networkx as nx
 
+    from ..framework_facts import FrameworkFacts
     from ..resolvers import ResolverContext
 
 
@@ -92,6 +93,21 @@ def add_symbol_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
         imported_names=[],
     )
     return True
+
+
+def add_entry_edges(graph: nx.DiGraph, facts: FrameworkFacts, root: str, path_set: set[str]) -> int:
+    """Anchor every file *facts* says its runtime loads under *root*.
+
+    The ``framework:`` anchor is what dead-code liveness reads: a file it
+    points at is reached from outside the import graph.
+    """
+    count = 0
+    for target in facts.entry_files(root, path_set):
+        if facts.anchor not in graph:
+            graph.add_node(facts.anchor, language="external")
+        if _add_edge_if_new(graph, facts.anchor, target):
+            count += 1
+    return count
 
 
 def read_text(parsed: Any, encoding: str = "utf-8") -> str:

@@ -5,7 +5,13 @@ from __future__ import annotations
 import posixpath
 
 from .context import ResolverContext
-from .php_composer import resolve_via_psr4
+from .php_composer import (
+    basename_index,
+    claims_namespace,
+    get_or_build_psr4_map,
+    in_classmap,
+    resolve_via_psr4,
+)
 
 
 def resolve_php_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
@@ -32,21 +38,21 @@ def resolve_php_import(module_path: str, importer_path: str, ctx: ResolverContex
     psr4_match = resolve_via_psr4(module_path, ctx)
     if psr4_match is not None:
         return psr4_match
+    # A namespaced class no autoload prefix covers is a dependency's (it lives
+    # in vendor/); a name match would bind ``Illuminate\Support\Facades\Auth``
+    # to an unrelated local ``config/auth.php``. Only a classmapped file may
+    # still claim it.
+    unclaimed = (
+        "\\" in module_path.strip("\\")
+        and bool(get_or_build_psr4_map(ctx))
+        and not claims_namespace(module_path, ctx)
+    )
 
-    # Convert namespace separators to path separators
-    path_form = module_path.replace("\\", "/")
-    parts = path_form.split("/")
-    local = parts[-1]
-
-    # Try stem lookup on the class name
+    local = module_path.replace("\\", "/").rsplit("/", 1)[-1]
     result = ctx.stem_lookup(local.lower())
-    if result and result.endswith(".php"):
+    if not (result and result.endswith(".php")):
+        # The stem map may rank a same-named non-PHP file first.
+        result = next(iter(basename_index(ctx).get(f"{local}.php", ())), None)
+    if result and (not unclaimed or in_classmap(result, ctx)):
         return result
-
-    # Try PSR-4 style: namespace path maps to directory
-    php_name = f"{local}.php"
-    for p in ctx.sorted_paths:
-        if p.endswith(php_name):
-            return p
-
     return ctx.add_external_node(module_path)

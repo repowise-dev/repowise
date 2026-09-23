@@ -522,6 +522,11 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # at all. Emit conservative sibling edges so neither reads as orphaned.
         self._resolve_dotnet_same_namespace(ctx, progress=progress)
 
+        # --- PHP same-namespace implicit references ---
+        # An unqualified class name resolves in the file's own namespace with
+        # no ``use``; emit conservative sibling edges for those references.
+        self._resolve_php_same_namespace(progress=progress)
+
         # --- Swift intra-module type references ---
         # Swift files see same-target siblings with no import statement;
         # emit conservative type-reference edges per SPM target.

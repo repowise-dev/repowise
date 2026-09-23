@@ -170,3 +170,66 @@ class TestLaravelGate:
         ctx = _ctx(tmp_path, parsed)
         count = add_framework_edges(graph, parsed, ctx, tech_stack=[])
         assert count == 0
+
+
+class TestLaravelConventionFiles:
+    def _graph(self, repo: Path) -> nx.DiGraph:
+        parsed = _build_parsed(repo)
+        graph = nx.DiGraph()
+        graph.add_nodes_from(parsed)
+        add_framework_edges(graph, parsed, _ctx(repo, parsed), tech_stack=[])
+        return graph
+
+    def test_nested_app_found_from_its_manifest(self, tmp_path: Path) -> None:
+        # No routes/ at the repo root and no stack hint: the nested manifest
+        # requiring the framework is what places the app.
+        app = tmp_path / "apps" / "api"
+        app.mkdir(parents=True)
+        (app / "composer.json").write_text(json.dumps({"require": {"laravel/framework": "^11"}}))
+        for rel in (
+            "routes/api.php",
+            "app/Providers/AppServiceProvider.php",
+            "app/Console/Commands/Prune.php",
+            "database/factories/UserFactory.php",
+            "app/Jobs/SendMail.php",
+        ):
+            (app / rel).parent.mkdir(parents=True, exist_ok=True)
+            (app / rel).write_text("<?php\n")
+        graph = self._graph(tmp_path)
+        anchored = set(graph.successors("framework:laravel"))
+        assert anchored == {
+            "apps/api/routes/api.php",
+            "apps/api/app/Providers/AppServiceProvider.php",
+            "apps/api/app/Console/Commands/Prune.php",
+            "apps/api/database/factories/UserFactory.php",
+        }
+
+    def test_route_files_alone_anchor_no_convention_files(self, tmp_path: Path) -> None:
+        # A PHP app with routes/web.php but no Laravel requirement keeps its
+        # route edges and gets no framework anchors for config/ or providers.
+        (tmp_path / "composer.json").write_text(json.dumps({"require": {"slim/slim": "^4"}}))
+        for rel in ("routes/web.php", "config/app.php", "app/Providers/Boot.php"):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("<?php\n")
+        graph = self._graph(tmp_path)
+        assert "framework:laravel" not in graph
+
+    def test_route_files_link_controllers_under_a_nested_root(self, tmp_path: Path) -> None:
+        app = tmp_path / "api"
+        (app / "routes").mkdir(parents=True)
+        (app / "composer.json").write_text(
+            json.dumps(
+                {"require": {"laravel/framework": "^11"}, "autoload": {"psr-4": {"App\\": "app/"}}}
+            )
+        )
+        (app / "routes" / "api.php").write_text(
+            "<?php\nuse App\\Http\\Controllers\\PingController;\n"
+            "Route::get('/ping', [PingController::class, 'show']);\n"
+        )
+        ctrl = app / "app" / "Http" / "Controllers"
+        ctrl.mkdir(parents=True)
+        (ctrl / "PingController.php").write_text(
+            "<?php\nnamespace App\\Http\\Controllers;\nclass PingController {}\n"
+        )
+        graph = self._graph(tmp_path)
+        assert graph.has_edge("api/routes/api.php", "api/app/Http/Controllers/PingController.php")

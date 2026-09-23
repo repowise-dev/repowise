@@ -46,10 +46,10 @@ class ResolverContext:
     source_map: dict[str, bytes] | None = field(default=None, repr=False)
     compile_commands_cache: dict[str, dict] | None = field(default=None, repr=False)
     # Lazy per-language indexes are stashed via getattr/setattr (e.g.
-    # ``_php_psr4_map``, ``_ts_workspace_map``, ``_kotlin_index``,
-    # ``_ruby_rails_index``, ``_swift_targets``, ``_scala_index``). This
-    # mirrors the dotnet/index.py pattern and keeps language-specific bloat
-    # off the dataclass.
+    # ``_php_psr4_map``, ``_composer_manifests``, ``_ts_workspace_map``,
+    # ``_kotlin_index``, ``_ruby_rails_index``, ``_swift_targets``,
+    # ``_scala_index``). This mirrors the dotnet/index.py pattern and keeps
+    # language-specific bloat off the dataclass.
 
     # Cached sorted view of ``path_set``. Resolvers that scan for a *first*
     # match MUST iterate this, never the raw set: set iteration order varies
