@@ -102,6 +102,9 @@ export interface SigmaEdgeAttributes {
   // Original data
   importedNames: string[];
   edgeCount: number;
+  /** sqrt(edgeCount / heaviest edge), 0..1, on aggregated community edges:
+   *  the colour pass reads it for opacity, as the adapter did for width. */
+  weight?: number | undefined;
   confidence?: number | undefined;
 
   // Interaction state
