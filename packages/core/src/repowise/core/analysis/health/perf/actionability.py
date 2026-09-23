@@ -26,7 +26,6 @@ FixStrategy = Literal[
     "parallelize_independent_awaits",
     "replace_membership_collection",
     "buffer_string_accumulation",
-    "hoist_loop_invariant_resource",
     "batch_or_prefetch_io",
     "shrink_lock_scope",
     "push_reduction_into_query",
@@ -44,9 +43,20 @@ class PerformanceFix:
     strategy: FixStrategy
     safety: FixSafety
     rationale: str
+    # The concrete construct the edit uses (a bulk call, a bound), when one was found.
+    api: str | None = None
 
     def as_dict(self) -> dict[str, str]:
-        return {"strategy": self.strategy, "safety": self.safety, "rationale": self.rationale}
+        out = {"strategy": self.strategy, "safety": self.safety, "rationale": self.rationale}
+        if self.api:
+            out["api"] = self.api
+        return out
+
+
+def _shared(details: list[dict[str, Any]], key: str) -> Any:
+    """The one value every detail carries under *key*, else ``None``."""
+    values = {detail.get(key) for detail in details}
+    return values.pop() if len(values) == 1 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +126,19 @@ def assess_fix(
         if not all(detail.get("dataflow_verified") for detail in details):
             return FixAssessment(None, ("loop_carried_dependence_proof",))
         if boundary in CONCURRENCY_SENSITIVE_BOUNDARIES:
+            # A small fixed trip count is not a bound: that is what a retry loop
+            # looks like, and retries must stay sequential.
+            bound = _shared(details, "concurrency_bound")
+            if bound:
+                return FixAssessment(
+                    PerformanceFix(
+                        "parallelize_independent_awaits",
+                        "proven",
+                        f"Iterations are independent and each await already runs under {bound}.",
+                        bound,
+                    ),
+                    (),
+                )
             # Independence is proven; nothing here bounds the fan-out.
             return FixAssessment(
                 PerformanceFix(
@@ -173,6 +196,29 @@ def assess_fix(
             # Filesystem and subprocess repetition is real, but there is no
             # batch or prefetch operation to point the caller at.
             return FixAssessment(None, ("batch_operation_for_boundary",))
+        form = _shared(details, "batch_form")
+        if form:
+            if _shared(details, "batch_equivalent") is True:
+                return FixAssessment(
+                    PerformanceFix(
+                        "batch_or_prefetch_io",
+                        "proven",
+                        f"Every call filters on the loop's own key, so {form} returns the same "
+                        "rows, and nothing else in the loop can observe the difference.",
+                        form,
+                    ),
+                    (),
+                )
+            return FixAssessment(
+                PerformanceFix(
+                    "batch_or_prefetch_io",
+                    "advisory",
+                    f"Every call filters on the loop's own key, so {form} is the bulk form; "
+                    "the per-key call limits, orders or shares the loop with other I/O.",
+                    form,
+                ),
+                ("result_equivalence",),
+            )
         return FixAssessment(
             PerformanceFix(
                 "batch_or_prefetch_io",
@@ -198,16 +244,9 @@ def assess_fix(
             ("shared_state_ordering",),
         )
     if marker == "resource_construction_in_loop":
-        if not all(detail.get("resource_invariant") is True for detail in details):
-            return FixAssessment(None, ("loop_invariant_construction_proof",))
-        return FixAssessment(
-            PerformanceFix(
-                "hoist_loop_invariant_resource",
-                "proven",
-                "Dataflow proves construction arguments and lifetime are loop invariant.",
-            ),
-            (),
-        )
+        # Hoisting needs per-argument dataflow plus a guard against attribute
+        # mutation (``Client(token=self.token)``); neither exists, so no strategy.
+        return FixAssessment(None, ("loop_invariant_construction_proof",))
     return FixAssessment(None, ("supported_strategy_for_marker",))
 
 

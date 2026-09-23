@@ -331,6 +331,8 @@ export interface PerformanceOpportunityFix {
   strategy: string;
   safety: "proven" | "advisory";
   rationale: string;
+  /** The concrete construct the edit uses (a bulk call, a bound), when one was found. */
+  api?: string;
 }
 
 export interface PerformanceOpportunityEvidence {
@@ -356,6 +358,13 @@ export interface PerformanceWhyRanked {
 }
 
 /**
+ * Whether the loop's trip count grows with data, read off every member of the
+ * group. `n/a` is for markers whose amplification is not per_iteration or
+ * quadratic, so there is no loop to measure.
+ */
+export type PerformanceLoopMagnitude = "grows_with_data" | "bounded" | "unknown" | "n/a";
+
+/**
  * The facets that are not published anywhere else on the row.
  * `confidence` stays evidence confidence and `fix.safety` stays fix safety,
  * so no value appears twice.
@@ -366,6 +375,8 @@ export interface PerformanceOpportunityFacets {
   amplification: string;
   leverage: string;
   change_risk: string;
+  /** Absent on rows stored before the fact existed. */
+  loop_magnitude?: PerformanceLoopMagnitude;
 }
 
 /**

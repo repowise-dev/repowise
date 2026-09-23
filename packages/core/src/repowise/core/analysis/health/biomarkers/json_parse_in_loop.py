@@ -32,7 +32,7 @@ class JsonParseInLoopDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
+                    details=hit.loop_facts(),
                     reason=(
                         "JSON.parse/stringify runs every loop iteration; hoist the "
                         "serialization or use structuredClone for deep copies"

@@ -66,10 +66,14 @@ pillar depends on.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from tree_sitter import Node
+
+    from ..loop_facts import BatchForm, LoopMagnitude, SinkProbe
 
 # Node types whose callee is a member access (``x.foo()``) rather than a bare
 # identifier call. Covers Python ``attribute``, TS ``member_expression``, C++/
@@ -274,6 +278,98 @@ class BasePerfDialect:
     def is_chunked_loop(self, node: Node) -> bool:
         """True when this loop walks its data a chunk at a time (already batched)."""
         return False
+
+    # -- promotion facts (perf/loop_facts.py); ``None`` means "not settled" ----
+
+    # The grammar's ``await <expr>`` node, and the key-hop node kinds with the
+    # field naming their receiver (``r.id`` / ``r["id"]``).
+    await_kind: str = ""
+    key_hops: ClassVar[dict[str, str]] = {}
+    # Statements that bind a name (kind -> field holding the target), nodes that
+    # run their child conditionally, statements that leave an iteration early,
+    # and scopes whose body does not run as part of the loop.
+    binding_fields: ClassVar[dict[str, str]] = {}
+    branch_kinds: frozenset[str] = frozenset()
+    exit_kinds: frozenset[str] = frozenset()
+    scope_kinds: frozenset[str] = frozenset()
+
+    def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
+        """Whether the loop's iterable grows with data or has a fixed small bound."""
+        return None
+
+    def batch_form(self, sink: Node, loop: Node, probe: SinkProbe) -> BatchForm | None:
+        """The bulk counterpart of *sink* when its only varying key is the loop's element."""
+        return None
+
+    def concurrency_bound(self, sink: Node, loop: Node) -> str | None:
+        """The semaphore or limiter *sink* already runs under inside the loop body."""
+        return None
+
+    @staticmethod
+    def _walk(node: Node, prune: frozenset[str] = frozenset()) -> Iterator[Node]:
+        """*node*'s subtree, not descending below node kinds in *prune*."""
+        stack = [node]
+        while stack:
+            cur = stack.pop()
+            yield cur
+            if cur.type not in prune or cur == node:
+                stack.extend(cur.children)
+
+    @staticmethod
+    def _grows(magnitude: LoopMagnitude | None) -> LoopMagnitude | None:
+        """A projection of a growing source grows; nothing else carries through it."""
+        return magnitude if magnitude == "grows_with_data" else None
+
+    @staticmethod
+    def _within(container: Node, node: Node) -> bool:
+        return container.start_byte <= node.start_byte and node.end_byte <= container.end_byte
+
+    def _is_key_of(self, node: Node, ref: Node) -> bool:
+        """*node* is the loop element *ref* itself, or one hop into it (``r.id``, ``r["id"]``)."""
+        if node == ref:
+            return True
+        field = self.key_hops.get(node.type)
+        return field is not None and node.child_by_field_name(field) == ref
+
+    def _reads_loop_local(self, sink: Node, body: Node) -> bool:
+        """*sink* reads a name the loop body binds, so its key is not the element alone."""
+        bound: set[bytes | None] = set()
+        for node in self._walk(body, prune=self.scope_kinds):
+            field = self.binding_fields.get(node.type)
+            target = node.child_by_field_name(field) if field else None
+            # ``rec.x = ...`` / ``seen[k] = ...`` mutate a value; they bind no name.
+            if target is not None and target.type not in self.key_hops:
+                bound.update(n.text for n in (target, *target.children) if n.type == "identifier")
+        return any(n.type == "identifier" and n.text in bound for n in self._walk(sink))
+
+    def _unconditional(self, sink: Node, body: Node) -> bool:
+        """*sink* runs on every iteration: no branch around it, no early exit in the body."""
+        cur = sink.parent
+        while cur is not None and cur != body:
+            if cur.type in self.branch_kinds:
+                return False
+            cur = cur.parent
+        return not any(n.type in self.exit_kinds for n in self._walk(body, prune=self.scope_kinds))
+
+    def _only_io_in_body(self, sink: Node, body: Node, probe: SinkProbe) -> bool:
+        """*sink* is the loop body's only I/O sink and its only await.
+
+        Any other one could write what the batched read would have read first.
+        Ceiling: a helper call that does I/O out of sight is not seen.
+        """
+        own = sink
+        while own.parent is not None and own.parent.type == "parenthesized_expression":
+            own = own.parent
+        if own.parent is not None and own.parent.type == self.await_kind:
+            own = own.parent
+        for node in self._walk(body):
+            if self._within(own, node):
+                continue
+            if node.type == self.await_kind and node.is_named:
+                return False
+            if node.child_by_field_name("function") is not None and probe(node) is not None:
+                return False
+        return True
 
     def is_string_concat(self, node: Node) -> bool:
         """True if *node* is a ``+=`` accumulation onto a string."""

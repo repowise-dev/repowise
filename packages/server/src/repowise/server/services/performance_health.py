@@ -551,6 +551,7 @@ class PerformanceHealthService:
                 "strategy": fix_strategy,
                 "safety": row.fix_safety,
                 "rationale": details.get("fix_rationale") or "",
+                **({"api": details["fix_api"]} if details.get("fix_api") else {}),
             },
         }
 

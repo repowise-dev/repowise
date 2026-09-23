@@ -24,7 +24,11 @@
       "cases": [
         "generic_infra_sink",
         "same_file_db_helper",
-        "async_serial_awaits"
+        "async_serial_awaits",
+        "batch_form_equivalent",
+        "batch_form_limited",
+        "bounded_fan_out",
+        "retry_loop"
       ],
       "note": "Database boundary through a shared session/query helper."
     },

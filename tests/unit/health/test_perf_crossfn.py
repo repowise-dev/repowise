@@ -531,3 +531,26 @@ def test_crossfn_finding_scores_performance_not_defect():
     assert scores["defect"] == 10.0
     assert scores["performance"] < 10.0
     assert all(d == 0.0 for d in deductions)
+
+
+def test_crossfn_hit_carries_the_owning_loops_magnitude(tmp_path):
+    """The loop that pays for the helper's sink is in the caller, so its trip
+    count travels with the cross-function hit into the finding."""
+    source = _SCHEDULER.replace(
+        "        for repo in repos:",
+        "        repos = self.session.execute(select(Repo)).scalars().all()\n"
+        "        for repo in repos:",
+    )
+    walked, graph = _build(tmp_path, {"scheduler.py": source})
+    (hit,) = [h for hs in collect_crossfn_io_in_loop(walked, graph).values() for h in hs]
+    assert hit.loop is not None and hit.loop.magnitude == "grows_with_data"
+    ctx = FileContext(
+        file_path="scheduler.py",
+        language="python",
+        nloc=20,
+        has_test_file=False,
+        module="scheduler",
+        perf_hits=[hit],
+    )
+    (finding,) = IoInLoopDetector().detect(ctx)
+    assert finding.details["loop_magnitude"] == "grows_with_data"

@@ -275,6 +275,7 @@ async def test_detail_carries_the_facets_and_evidence_for_one_cause(
         "amplification",
         "leverage",
         "change_risk",
+        "loop_magnitude",
     }
     assert body["evidence_total"] == 2
     assert body["evidence_emitted"] == 1
@@ -370,3 +371,28 @@ async def test_a_file_with_no_cause_scopes_to_an_empty_queue(app, client):
     page = await _page(client, repo_id, context="all", file_paths="src/nothing-here.py")
     assert page["total"] == 0
     assert page["items"] == []
+
+
+async def test_the_bulk_call_a_plan_names_is_served(app, client: AsyncClient) -> None:
+    finding = HealthFindingData(
+        biomarker_type="io_in_loop",
+        severity=Severity.MEDIUM,
+        file_path="src/owners.py",
+        function_name="load",
+        line_start=12,
+        line_end=12,
+        details={
+            "boundary_kind": "db",
+            "batch_form": '.in_("repo_id", keys)',
+            "batch_equivalent": True,
+        },
+        health_impact=0.0,
+        reason="Database work repeats for every loop iteration.",
+        dimension="performance",
+    )
+    repo_id, opportunity_id = await _seed(app, client, [finding])
+    body = (
+        await client.get(f"/api/repos/{repo_id}/health/performance-opportunities/{opportunity_id}")
+    ).json()
+    assert body["actionability_state"] == "plan_ready"
+    assert body["fix"]["api"] == '.in_("repo_id", keys)'

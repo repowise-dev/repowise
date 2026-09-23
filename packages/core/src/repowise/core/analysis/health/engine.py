@@ -111,6 +111,9 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
+# v23: loop-shaped perf findings carry the loop's magnitude, the bulk form of a
+# per-key sink and any concurrency bound around it; a v22 store has none.
+#
 # v22: perf findings in a chunked loop carry ``chunked_iteration``, and
 # ``unbounded_read_reduced_in_memory`` is a new marker; a v21 store has neither.
 #
@@ -244,7 +247,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 22
+HEALTH_ANALYZER_VERSION = 23
 
 
 def walked_functions(

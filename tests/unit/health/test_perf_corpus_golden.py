@@ -139,7 +139,12 @@ def test_linking_stamps_the_id_the_builder_derives() -> None:
         ("distinct_lock_owners", 1, {None}),
         ("membership_scan", 1, {"replace_membership_collection"}),
         ("string_accumulation", 1, {"buffer_string_accumulation"}),
-        ("resource_construction", 2, {"hoist_loop_invariant_resource", None}),
+        # No hoisting proof exists, so neither construction site gets a strategy.
+        ("resource_construction", 2, {None}),
+        ("batch_form_equivalent", 1, {"batch_or_prefetch_io"}),
+        ("batch_form_limited", 1, {"batch_or_prefetch_io"}),
+        ("bounded_fan_out", 1, {"parallelize_independent_awaits"}),
+        ("retry_loop", 1, {"batch_or_prefetch_io"}),
         # Execution context is an identity input: one shape, three contexts.
         ("context_split", 3, {"batch_or_prefetch_io"}),
         # io_in_loop and nested_loop_with_io share one cross-function identity
@@ -242,3 +247,29 @@ def test_reachability_aggregates_any_true_over_all_false() -> None:
     item = build_performance_opportunities(rows_for("reachability_states"))[0]
     assert item.reliable_entry_reachability is True
     assert item.observations_total == 2
+
+
+@pytest.mark.parametrize(
+    ("case", "state", "prerequisites", "api"),
+    [
+        # The loop's own key filters the call, so the bulk form reads the same rows.
+        ("batch_form_equivalent", "plan_ready", (), '.in_("repo_id", keys)'),
+        # The bulk form exists, but a per-key limit means it may not read the same rows.
+        ("batch_form_limited", "advisory", ("result_equivalence",), '.in_("repo_id", keys)'),
+        ("bounded_fan_out", "plan_ready", (), "self._sem"),
+        ("retry_loop", "advisory", ("batch_api_contract", "result_equivalence"), None),
+    ],
+)
+def test_promotion_facts_clear_exactly_their_prerequisite(case, state, prerequisites, api) -> None:
+    (item,) = build_performance_opportunities(rows_for(case))
+    assert item.actionability_state == state
+    assert item.prerequisites == prerequisites
+    assert item.fix is not None and item.fix.api == api
+
+
+def test_a_loop_that_grows_with_data_outranks_a_bounded_one() -> None:
+    (grows,) = build_performance_opportunities(rows_for("batch_form_equivalent"))
+    (bounded,) = build_performance_opportunities(rows_for("retry_loop"))
+    assert grows.facets["loop_magnitude"] == "grows_with_data"
+    assert bounded.facets["loop_magnitude"] == "bounded"
+    assert grows.rank_factors["loop_magnitude"] > bounded.rank_factors["loop_magnitude"]

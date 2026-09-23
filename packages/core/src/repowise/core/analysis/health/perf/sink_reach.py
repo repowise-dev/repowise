@@ -51,6 +51,7 @@ def collect_sink_reaching_hits(
     index: CallGraphIndex | None = None,
     max_depth: int = 3,
     carry_func_start: bool = False,
+    carry_loop: bool = False,
 ) -> dict[str, list[PerfHit]]:
     """Hits for entry callees that reach a bare I/O sink, keyed by owning file.
 
@@ -62,6 +63,8 @@ def collect_sink_reaching_hits(
     callers disagree today: the lock pass carries it and the loop pass does not.
     Preserved rather than unified, since making them agree is a behaviour change
     and this is a de-duplication.
+
+    ``carry_loop`` attaches the owning loop's magnitude, which only the loop pass has.
     """
     walked_list = list(walked)
     if graph is None or not walked_list:
@@ -118,6 +121,7 @@ def collect_sink_reaching_hits(
                 entries=entries,
                 kind=kind,
                 carry_func_start=carry_func_start,
+                carry_loop=carry_loop,
             )
             if hits:
                 out.setdefault(path, []).extend(hits)
@@ -134,8 +138,10 @@ def _hits_for_function(
     entries: EntrySelector,
     kind: str,
     carry_func_start: bool,
+    carry_loop: bool,
 ) -> list[PerfHit]:
     from ..complexity import PerfHit
+    from .loop_facts import LoopFacts
 
     a_sid = index.resolve_function(path, fact.func_start)
     if a_sid is None:
@@ -145,6 +151,7 @@ def _hits_for_function(
         return []
 
     extra: dict[str, Any] = {"func_start": fact.func_start} if carry_func_start else {}
+    magnitudes = dict(fact.loop_call_magnitudes) if carry_loop else {}
     hits: list[PerfHit] = []
     seen: set[str] = set()
     for target_name, call_line in entries(fact):
@@ -170,6 +177,9 @@ def _hits_for_function(
                     detail=sink_kind.get(info.sink, ""),
                     path=(a_sid, *chain),
                     resolution_basis=basis,
+                    loop=LoopFacts(magnitude=magnitudes[call_line])
+                    if call_line in magnitudes
+                    else None,
                     **extra,
                 )
             )

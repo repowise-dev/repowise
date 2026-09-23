@@ -216,6 +216,28 @@ describe("PerformanceView drawer", () => {
     expect(within(panel).getByText(/How reliably the call path resolved/)).toBeTruthy();
   });
 
+  it("shows the loop magnitude facet and the fix's concrete api", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).getByText("Loop magnitude")).toBeTruthy();
+    expect(within(panel).getByText("Grows with data")).toBeTruthy();
+    expect(within(panel).getByText("self._sem")).toBeTruthy();
+  });
+
+  it("hides the loop magnitude field for a n/a magnitude", async () => {
+    const getDetail = vi.fn(async () =>
+      resolvedDetail({
+        facets: { ...opportunity().facets, loop_magnitude: "n/a" },
+      }),
+    );
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunity: getDetail })} />);
+    await openFirstRow();
+    await waitFor(() => expect(getDetail).toHaveBeenCalled());
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).queryByText("Loop magnitude")).toBeNull();
+  });
+
   it("carries the exact drill-down an agent should call", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();

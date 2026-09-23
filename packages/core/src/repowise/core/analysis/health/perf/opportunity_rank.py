@@ -70,6 +70,9 @@ CROSS_FUNCTION_POINTS = 1
 the loop, so it earns a point that an intra-function hit does not."""
 
 CONTEXT_POINTS = {"production": 3, "tooling": 2, "test": 1, "unknown": 1}
+MAGNITUDE_POINTS = {"grows_with_data": 2, "unknown": 1, "n/a": 1, "bounded": 0}
+"""A loop over a query result is paid again as the data grows; a retry loop or a
+constant-width slice is not. Unknown sits between, so a guess never outranks a fact."""
 PROVENANCE_POINTS = {"call-site": 3, "direct": 3, "reliable-edge": 2, "name-fallback": 0}
 
 AMPLIFICATION = {
@@ -129,6 +132,21 @@ def amplification(marker: str) -> str:
     return "per_iteration" if marker in MULTIPLIER_POINTS else "unknown"
 
 
+def loop_magnitude(marker: str, details: list[dict[str, Any]]) -> str:
+    """Whether the loop's trip count grows with data, read off every member.
+
+    One member proven to grow is enough to say the cause grows; ``bounded``
+    needs every member. Markers that are not paid per iteration have no loop
+    to measure.
+    """
+    if amplification(marker) not in {"per_iteration", "quadratic"}:
+        return "n/a"
+    values = {detail.get("loop_magnitude", "unknown") for detail in details}
+    if "grows_with_data" in values:
+        return "grows_with_data"
+    return "bounded" if values == {"bounded"} else "unknown"
+
+
 def exposure(reachable: bool | None) -> str:
     """How closely an entry point reaches this group.
 
@@ -177,6 +195,7 @@ def rank_factors(
     reachable: bool | None,
     site_count: int,
     provenance: str,
+    magnitude: str,
 ) -> dict[str, int]:
     """The additive rank terms, published verbatim on every opportunity.
 
@@ -190,6 +209,7 @@ def rank_factors(
         "entry_reachability": 3 if reachable is True else 0,
         "affected_call_sites": min(8, int(log2(site_count + 1) * 2)),
         "provenance": PROVENANCE_POINTS.get(provenance, 0),
+        "loop_magnitude": MAGNITUDE_POINTS[magnitude],
     }
 
 
@@ -230,6 +250,7 @@ __all__ = [
     "BOUNDARY_POINTS",
     "CONTEXT_POINTS",
     "CROSS_FUNCTION_POINTS",
+    "MAGNITUDE_POINTS",
     "MULTIPLIER_POINTS",
     "PROVENANCE_POINTS",
     "UNKNOWN_MULTIPLIER_POINTS",
@@ -239,6 +260,7 @@ __all__ = [
     "dominant_marker",
     "exposure",
     "leverage",
+    "loop_magnitude",
     "observation_rank",
     "rank_factors",
     "rank_sort_key",

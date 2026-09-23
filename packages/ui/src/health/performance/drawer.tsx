@@ -253,8 +253,14 @@ function PlanSection({
       <p className="mt-1 text-sm text-[var(--color-text-tertiary)]">{presentation.detail}</p>
       {opportunity.fix ? (
         <p className="mt-2 text-sm text-[var(--color-text-secondary)]">
-          Proposed intervention: {humanizeToken(opportunity.fix.strategy).toLowerCase()}.{" "}
-          {opportunity.fix.rationale}
+          Proposed intervention: {humanizeToken(opportunity.fix.strategy).toLowerCase()}
+          {opportunity.fix.api ? (
+            <>
+              {" "}
+              (<code className="font-mono text-xs">{opportunity.fix.api}</code>)
+            </>
+          ) : null}
+          . {opportunity.fix.rationale}
         </p>
       ) : null}
       {steps && steps.length > 0 ? <PlanSteps steps={steps} /> : null}
@@ -386,6 +392,12 @@ export function OpportunityDrawer({
                 <Field label="Exposure" value={humanizeToken(current.facets.exposure)} />
                 <Field label="Leverage" value={humanizeToken(current.facets.leverage)} />
                 <Field label="Change risk" value={humanizeToken(current.facets.change_risk)} />
+                {current.facets.loop_magnitude && current.facets.loop_magnitude !== "n/a" ? (
+                  <Field
+                    label="Loop magnitude"
+                    value={humanizeToken(current.facets.loop_magnitude)}
+                  />
+                ) : null}
               </dl>
               {current.siblings && current.siblings.length > 0 ? (
                 <SiblingsNote siblings={current.siblings} onSelect={onSelectById} />

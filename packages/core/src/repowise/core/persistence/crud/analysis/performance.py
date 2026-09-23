@@ -84,6 +84,7 @@ def opportunity_details(
         "rank_factors": dict(opportunity.rank_factors),
         "why_ranked": [dict(entry) for entry in opportunity.why_ranked],
         "fix_rationale": opportunity.fix.rationale if opportunity.fix else None,
+        **({"fix_api": opportunity.fix.api} if opportunity.fix and opportunity.fix.api else {}),
         "siblings": [dict(entry) for entry in opportunity.siblings],
     }
 

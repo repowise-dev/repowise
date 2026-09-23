@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
 from ..perf.io_boundaries import collect_io_names
+from ..perf.loop_facts import LoopFacts
 from .ast_utils import _dart_signature_sibling, _find_name
 from .languages import LanguageNodeMap
 from .models import PerfFnFacts, PerfHit
@@ -153,18 +154,24 @@ def _enclosing_loop_iterables(
     return names
 
 
-def _in_chunked_loop(
+def _enclosing_loops(
     node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
-) -> bool:
-    """Whether the innermost enclosing loop chunks; walked up only for rare sink hits."""
+) -> list[Node]:
+    """The data-dependent loops around *node* in its function, innermost first;
+    walked up only for hits."""
+    loops: list[Node] = []
     cur = node.parent
     for _ in range(64):
         if cur is None or cur.type in fn_kinds:
-            return False
-        if cur.type in loop_kinds and cur.is_named:
-            return dialect.is_chunked_loop(cur)
+            break
+        if cur.type in loop_kinds and cur.is_named and not dialect.is_constant_loop(cur):
+            loops.append(cur)
         cur = cur.parent
-    return False
+    return loops
+
+
+def _overrides(dialect: BasePerfDialect, hook: str) -> bool:
+    return getattr(type(dialect), hook) is not getattr(BasePerfDialectClass, hook)
 
 
 def _is_block_loop_body_scope(
@@ -245,8 +252,46 @@ def _collect_perf_hits(
     async_fn_kinds = lmap.async_function_kinds
     # Block-iteration loops (Ruby ``items.each do … end``): only pay for the
     # per-call-node hook when the dialect actually overrides it.
-    do_block_loop = type(dialect).block_loop_body is not BasePerfDialectClass.block_loop_body
-    do_chunked = type(dialect).is_chunked_loop is not BasePerfDialectClass.is_chunked_loop
+    do_block_loop = _overrides(dialect, "block_loop_body")
+    do_chunked = _overrides(dialect, "is_chunked_loop")
+    do_magnitude = _overrides(dialect, "loop_magnitude")
+    do_batch = _overrides(dialect, "batch_form")
+    do_bound = _overrides(dialect, "concurrency_bound")
+    do_loop_facts = do_chunked or do_magnitude or do_batch or do_bound
+
+    def probe(call: Node) -> str | None:
+        return dialect.sink_kind(
+            dialect.callee_root_name(call) or "",
+            dialect.callee_method_name(call) or "",
+            awaited=_is_awaited(call),
+            is_attribute=dialect.callee_is_attribute(call),
+            io_names=io_names,
+            has_db_import=has_db_import,
+        )
+
+    def magnitude(loops: list[Node]) -> str:
+        """Grows if any enclosing loop grows; bounded only if every one is, since a
+        retry loop inside a loop over rows still runs once per row."""
+        found = {dialect.loop_magnitude(loop, probe) or "unknown" for loop in loops}
+        if "grows_with_data" in found:
+            return "grows_with_data"
+        return "bounded" if found == {"bounded"} else "unknown"
+
+    def loop_facts(node: Node, sink: bool) -> LoopFacts | None:
+        """Facts of *node*'s innermost loop; batch and bound only mean something at a sink."""
+        if not do_loop_facts:
+            return None
+        loops = _enclosing_loops(node, dialect, loop_kinds, fn_kinds)
+        if not loops:
+            return None
+        loop = loops[0]
+        facts = LoopFacts(
+            chunked=do_chunked and dialect.is_chunked_loop(loop),
+            magnitude=magnitude(loops) if do_magnitude else "unknown",
+            batch=dialect.batch_form(node, loop, probe) if sink and do_batch else None,
+            concurrency_bound=dialect.concurrency_bound(node, loop) if sink and do_bound else None,
+        )
+        return facts if facts != LoopFacts() else None
 
     hits: list[PerfHit] = []
     # Per-enclosing-function accumulators keyed by the function's start line
@@ -262,6 +307,8 @@ def _collect_perf_hits(
     fn_acc: dict[
         int, tuple[str | None, dict[str, int], dict[str, int], list[str | None], list]
     ] = {}
+    # func_start -> {call_line: magnitude} for the loop-call targets above.
+    call_magnitudes: dict[int, dict[int, str]] = {}
 
     def _acc(
         func_start: int, func_name: str | None
@@ -372,12 +419,9 @@ def _collect_perf_hits(
             )
             if kind is not None:
                 if loop_depth >= 1:
-                    chunked = do_chunked and _in_chunked_loop(node, dialect, loop_kinds, fn_kinds)
+                    facts = loop_facts(node, sink=True)
                     hits.append(
-                        PerfHit(
-                            "io_in_loop", line, next_func, kind, func_start=next_start,
-                            chunked=chunked,
-                        )
+                        PerfHit("io_in_loop", line, next_func, kind, func_start=next_start, loop=facts)
                     )
                     if do_serial_await and awaited:
                         # An *awaited* sink in a loop body is additionally a
@@ -388,7 +432,7 @@ def _collect_perf_hits(
                         hits.append(
                             PerfHit(
                                 "serial_await_in_loop", line, next_func, kind,
-                                func_start=next_start, chunked=chunked,
+                                func_start=next_start, loop=facts,
                             )
                         )
                     if do_nested_io and loop_depth >= 2 and outer_iter:
@@ -402,7 +446,7 @@ def _collect_perf_hits(
                         hits.append(
                             PerfHit(
                                 "nested_loop_with_io", line, next_func, kind,
-                                func_start=next_start, chunked=chunked,
+                                func_start=next_start, loop=facts,
                             )
                         )
                 else:
@@ -446,7 +490,12 @@ def _collect_perf_hits(
                         else None
                     )
                     if marker is not None:
-                        hits.append(PerfHit(marker, line, next_func, "", func_start=next_start))
+                        hits.append(
+                            PerfHit(
+                                marker, line, next_func, "", func_start=next_start,
+                                loop=loop_facts(node, sink=False),
+                            )
+                        )
                     elif method:
                         # A loop-nested call to a non-sink helper: a candidate
                         # entry for cross-function reachability (PR4). Keep the
@@ -454,6 +503,12 @@ def _collect_perf_hits(
                         targets = _acc(next_start, next_func)[0]
                         if method not in targets:
                             targets[method] = line
+                            if do_magnitude:
+                                facts = loop_facts(node, sink=False)
+                                if facts is not None and facts.magnitude != "unknown":
+                                    call_magnitudes.setdefault(next_start, {})[line] = (
+                                        facts.magnitude
+                                    )
                 if do_lock_io and lock_depth >= 1 and method:
                     # A non-sink call under a held lock: a candidate entry for the
                     # cross-function ``blocking_io_under_lock`` reachability pass.
@@ -491,6 +546,7 @@ def _collect_perf_hits(
                             next_func,
                             "",
                             func_start=next_start,
+                            loop=loop_facts(node, sink=False),
                         )
                     )
                 elif do_loop_stmt_marker:
@@ -503,6 +559,7 @@ def _collect_perf_hits(
                                 next_func,
                                 "",
                                 func_start=next_start,
+                                loop=loop_facts(node, sink=False),
                             )
                         )
 
@@ -587,6 +644,7 @@ def _collect_perf_hits(
             nested_loop_line=misc[0],
             blocking_sink_kind=misc[1],
             blocking_sink_line=misc[2],
+            loop_call_magnitudes=tuple(sorted(call_magnitudes.get(start, {}).items())),
         )
         for start, (name, loop_targets, lock_targets, sink, misc) in fn_acc.items()
         if (loop_targets or lock_targets or sink[0] is not None or misc[0] or misc[1] is not None)
