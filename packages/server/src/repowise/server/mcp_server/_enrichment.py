@@ -1,6 +1,7 @@
 """Cross-repo enrichment for MCP tool responses.
 
-Loaded once at MCP lifespan start from ``.repowise-workspace/cross_repo_edges.json``.
+Loaded once at MCP lifespan start from ``.repowise-workspace/cross_repo_edges.json``,
+or built with :meth:`CrossRepoEnricher.from_data` from payloads already parsed.
 Provides O(1) in-memory lookups — never blocks or slows MCP queries.
 """
 
@@ -20,7 +21,7 @@ class CrossRepoEnricher:
 
     def __init__(
         self,
-        data_path: Path,
+        data_path: Path | None,
         contracts_path: Path | None = None,
         system_graph_path: Path | None = None,
         breaking_changes_path: Path | None = None,
@@ -77,15 +78,49 @@ class CrossRepoEnricher:
         self._breaking_changes_path = breaking_changes_path
         self._conformance_path = conformance_path
 
-        self._load(data_path)
-        if contracts_path is not None:
-            self._load_contracts(contracts_path)
-        if system_graph_path is not None:
-            self._load_system_graph(system_graph_path)
-        if breaking_changes_path is not None:
-            self._load_breaking_changes(breaking_changes_path)
-        if conformance_path is not None:
-            self._load_conformance(conformance_path)
+        self._load_all()
+
+    @classmethod
+    def from_data(
+        cls,
+        *,
+        overlay: dict | None = None,
+        contracts: dict | None = None,
+        system_graph: dict | None = None,
+        breaking_changes: dict | None = None,
+        conformance: dict | None = None,
+    ) -> CrossRepoEnricher:
+        """An enricher over artifact payloads the caller has already parsed.
+
+        Each argument is the parsed JSON of the file of the same name
+        (``cross_repo_edges.json`` for *overlay*), and gets the same validation
+        and indexes a file load does. A None payload is an absent artifact.
+        There are no files, so :meth:`reload` leaves this enricher empty.
+        """
+        enricher = cls(None)
+        if overlay is not None:
+            enricher._ingest_overlay(overlay, "<data>")
+        if contracts is not None:
+            enricher._ingest_contracts(contracts)
+        if system_graph is not None:
+            enricher._ingest_system_graph(system_graph)
+        if breaking_changes is not None:
+            enricher._ingest_breaking_changes(breaking_changes)
+        if conformance is not None:
+            enricher._ingest_conformance(conformance)
+        return enricher
+
+    def _load_all(self) -> None:
+        if self._data_path is not None:
+            self._load(self._data_path)
+        if self._contracts_path is not None:
+            self._load_contracts(self._contracts_path)
+        if self._system_graph_path is not None:
+            self._load_system_graph(self._system_graph_path)
+        if self._breaking_changes_path is not None:
+            self._load_breaking_changes(self._breaking_changes_path)
+        if self._conformance_path is not None:
+            self._load_conformance(self._conformance_path)
 
     def _load(self, data_path: Path) -> None:
         """Parse JSON and build indexes."""
@@ -102,14 +137,16 @@ class CrossRepoEnricher:
             }
             _log.warning("Failed to parse cross-repo data at %s", data_path, exc_info=True)
             return
+        self._ingest_overlay(data, data_path)
 
+    def _ingest_overlay(self, data: dict, source: object) -> None:
         if data.get("version", 1) < 2:
             # v1 overlays carry unbounded strength values; everything
             # downstream now assumes the bounded [0, 1) session share, so
             # skip stale files until a workspace update regenerates them.
             _log.info(
                 "Ignoring cross-repo data at %s (version %s < 2)",
-                data_path,
+                source,
                 data.get("version", 1),
             )
             self._cross_repo_analysis = {
@@ -261,7 +298,9 @@ class CrossRepoEnricher:
             }
             _log.warning("Failed to parse contract data at %s", contracts_path, exc_info=True)
             return
+        self._ingest_contracts(data)
 
+    def _ingest_contracts(self, data: dict) -> None:
         self._contracts = data.get("contracts", [])
         self._contract_links = data.get("contract_links", [])
         self._contract_analysis = {
@@ -316,10 +355,13 @@ class CrossRepoEnricher:
             return
         try:
             graph = json.loads(system_graph_path.read_text(encoding="utf-8"))
-            self._system_graph = graph
         except Exception:
             _log.warning("Failed to parse system graph at %s", system_graph_path, exc_info=True)
             return
+        self._ingest_system_graph(graph)
+
+    def _ingest_system_graph(self, graph: dict) -> None:
+        self._system_graph = graph
         _log.debug(
             "System graph loaded: %d nodes, %d edges",
             len(graph.get("nodes", [])),
@@ -333,12 +375,15 @@ class CrossRepoEnricher:
             return
         try:
             report = json.loads(breaking_changes_path.read_text(encoding="utf-8"))
-            self._breaking_changes = report
         except Exception:
             _log.warning(
                 "Failed to parse breaking changes at %s", breaking_changes_path, exc_info=True
             )
             return
+        self._ingest_breaking_changes(report)
+
+    def _ingest_breaking_changes(self, report: dict) -> None:
+        self._breaking_changes = report
         for change in report.get("changes", []):
             repo = change.get("provider_repo")
             if repo:
@@ -355,10 +400,13 @@ class CrossRepoEnricher:
             return
         try:
             report = json.loads(conformance_path.read_text(encoding="utf-8"))
-            self._conformance = report
         except Exception:
             _log.warning("Failed to parse conformance at %s", conformance_path, exc_info=True)
             return
+        self._ingest_conformance(report)
+
+    def _ingest_conformance(self, report: dict) -> None:
+        self._conformance = report
         _log.debug(
             "Conformance report loaded: %d violation(s), %d cycle(s)",
             len(report.get("violations", [])),
@@ -402,15 +450,7 @@ class CrossRepoEnricher:
         self._breaking_changes_by_repo = defaultdict(list)
         self._conformance = None
 
-        self._load(self._data_path)
-        if self._contracts_path is not None:
-            self._load_contracts(self._contracts_path)
-        if self._system_graph_path is not None:
-            self._load_system_graph(self._system_graph_path)
-        if self._breaking_changes_path is not None:
-            self._load_breaking_changes(self._breaking_changes_path)
-        if self._conformance_path is not None:
-            self._load_conformance(self._conformance_path)
+        self._load_all()
 
         _log.info(
             "Cross-repo enricher reloaded: %d co-change edges, %d package deps, %d contract links",
@@ -428,6 +468,26 @@ class CrossRepoEnricher:
             or self._package_diagnostics
             or self._contract_links
         )
+
+    @property
+    def contracts(self) -> list[dict]:
+        """Every contract row, as stored."""
+        return self._contracts
+
+    @property
+    def contract_links(self) -> list[dict]:
+        """Every matched link row, as stored."""
+        return self._contract_links
+
+    @property
+    def co_changes(self) -> list[dict]:
+        """The stored co-change pairs, already capped by the miner."""
+        return self._co_changes
+
+    @property
+    def total_co_changes(self) -> int:
+        """How many pairs cleared the miner's thresholds before its caps."""
+        return self._total_co_changes
 
     @property
     def has_contract_data(self) -> bool:
@@ -484,33 +544,15 @@ class CrossRepoEnricher:
         """Return the raw conformance report (violations + cycles + rollups)."""
         return self._conformance
 
-    @staticmethod
-    def _node_repo(node_id: str) -> str:
-        """Repo alias for a system-graph node id (``repo`` or ``repo::service``)."""
-        return node_id.split("::", 1)[0]
-
     def get_conformance_for_repo(self, repo_alias: str) -> dict:
         """Violations + cycles that involve *repo_alias*.
 
-        A violation involves the repo when either endpoint lives in it; a cycle
-        when any participating service does. Used by the ``get_risk`` PR-mode
-        directive to surface architecture findings a diff's repo participates in.
+        Used by the ``get_risk`` PR-mode directive to surface architecture
+        findings a diff's repo participates in.
         """
-        report = self._conformance
-        if not report:
-            return {"violations": [], "cycles": []}
-        violations = [
-            v
-            for v in report.get("violations", [])
-            if self._node_repo(v.get("source", "")) == repo_alias
-            or self._node_repo(v.get("target", "")) == repo_alias
-        ]
-        cycles = [
-            c
-            for c in report.get("cycles", [])
-            if any(self._node_repo(n) == repo_alias for n in c.get("nodes", []))
-        ]
-        return {"violations": violations, "cycles": cycles}
+        from repowise.core.workspace.reads import conformance_for_repo
+
+        return conformance_for_repo(self._conformance, repo_alias)
 
     def get_architecture_metrics(self) -> dict | None:
         """Compute the architecture-complexity metrics from the system graph.

@@ -63,11 +63,13 @@ class MatchState:
     ) -> bool:
         """Record one link unless an identical one exists; True when it was added.
 
-        A link's ``contract_id`` is the id both ends share. *via_alias* marks a
-        consumer that reached the provider under another name (a queue bound to
-        an exchange): the link then carries the provider's id, and the
-        consumer's own id as ``consumer_contract_id``. One queue bound to two
-        exchanges is two links, so an aliased key names the provider's id too.
+        A link's ``contract_id`` is the provider's id, and ``consumer_contract_id``
+        the consumer's whenever it is spelled differently (another case, a
+        wildcard method, a prefix the candidate pass collapsed), so each side
+        finds its links under its own id. *via_alias* marks a consumer that
+        reached the provider under another name (a queue bound to an exchange).
+        One queue bound to two exchanges is two links, so an aliased key names
+        the provider's id too.
         """
         dedup_key = (
             normalize_contract_id(consumer.contract_id),
@@ -82,7 +84,7 @@ class MatchState:
         self.seen.add(dedup_key)
         self.links.append(
             ContractLink(
-                contract_id=provider.contract_id if via_alias else consumer.contract_id,
+                contract_id=provider.contract_id,
                 contract_type=consumer.contract_type,
                 match_type=match_type,
                 confidence=confidence,
@@ -96,7 +98,9 @@ class MatchState:
                 provider_symbol_id=provider.symbol_id,
                 consumer_symbol_id=consumer.symbol_id,
                 consumer_service=consumer.service,
-                consumer_contract_id=consumer.contract_id if via_alias else None,
+                consumer_contract_id=(
+                    consumer.contract_id if consumer.contract_id != provider.contract_id else None
+                ),
             )
         )
         self.matched.add(id(consumer))

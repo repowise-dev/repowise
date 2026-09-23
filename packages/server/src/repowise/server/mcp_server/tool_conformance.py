@@ -73,8 +73,23 @@ async def get_conformance(repo: str | None = None) -> dict[str, Any]:
             "_meta": _build_meta(),
         }
 
+    graph = enricher.get_system_graph() or {}
+    analysis_commits = {
+        alias: provenance.get("head")
+        for alias, provenance in graph.get("repo_provenance", {}).items()
+        if provenance.get("head")
+    }
+    payload = conformance_payload(report, repo)
+    payload["_meta"] = _build_meta(extra=_analysis_meta(report.get("generated_at"), analysis_commits))
+    return payload
+
+
+def conformance_payload(report: dict[str, Any], repo: str | None = None) -> dict[str, Any]:
+    """The ``get_conformance`` answer over a *report* that ran, without ``_meta``."""
+    from repowise.core.workspace.reads import conformance_for_repo
+
     if repo:
-        scoped = enricher.get_conformance_for_repo(repo)
+        scoped = conformance_for_repo(report, repo)
         violations = scoped["violations"]
         cycles = scoped["cycles"]
         # Scoping picks from the already-capped stored list, so the pre-cap
@@ -87,12 +102,6 @@ async def get_conformance(repo: str | None = None) -> dict[str, Any]:
 
     shown_violations = violations[:_MCP_VIOLATION_LIMIT]
     shown_cycles = cycles[:_MCP_CYCLE_LIMIT]
-    graph = enricher.get_system_graph() or {}
-    analysis_commits = {
-        alias: provenance.get("head")
-        for alias, provenance in graph.get("repo_provenance", {}).items()
-        if provenance.get("head")
-    }
 
     if violations or cycles:
         summary = (
@@ -119,5 +128,4 @@ async def get_conformance(repo: str | None = None) -> dict[str, Any]:
         "total_cycles": total_cycles,
         "checked_at": report.get("generated_at"),
         "summary": summary,
-        "_meta": _build_meta(extra=_analysis_meta(report.get("generated_at"), analysis_commits)),
     }

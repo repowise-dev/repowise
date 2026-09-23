@@ -995,6 +995,39 @@ class TestCandidateMatching:
         # Candidate confidence is strictly lower than an exact min() would give.
         assert links[0].confidence < 0.75
 
+    def test_a_link_names_each_end_by_its_own_id(self) -> None:
+        # The provider's page reads its links by contract_id and the consumer's
+        # by consumer_contract_id or contract_id, so each must find this one.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource/search"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/api/resource/search",
+                    file_path="c.ts"),
+        ]
+        [link] = match_contracts(contracts)
+        assert link.contract_id == "http::GET::/resource/search"
+        assert link.consumer_contract_id == "http::GET::/api/resource/search"
+
+    def test_an_exact_match_spelled_differently_keeps_both_ids(self) -> None:
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/Users"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/users",
+                    file_path="c.ts"),
+        ]
+        [link] = match_contracts(contracts)
+        assert link.match_type == "exact"
+        assert link.contract_id == "http::GET::/Users"
+        assert link.consumer_contract_id == "http::GET::/users"
+
+    def test_a_link_spelled_alike_carries_no_consumer_id(self) -> None:
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/users"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/users",
+                    file_path="c.ts"),
+        ]
+        [link] = match_contracts(contracts)
+        assert link.consumer_contract_id is None
+        assert "consumer_contract_id" not in link.to_dict()
+
     def test_version_prefix_with_base_param(self) -> None:
         # Provider /v1/resource; consumer base resolved to a leading {param}.
         contracts = [

@@ -171,9 +171,10 @@ class ContractLink:
     #: a display label. None when the contract never bound to one.
     provider_symbol_id: str | None = None
     consumer_symbol_id: str | None = None
-    #: The consumer's own contract id, when it reached the provider under
-    #: another name (a queue bound to the exchange ``contract_id`` names).
-    #: None when both ends share ``contract_id``, which is every other link.
+    #: The consumer's own contract id when it is not spelled like the
+    #: provider's ``contract_id``: a queue bound to the exchange that id names,
+    #: or a path matched across case, a wildcard method or a mount prefix.
+    #: None when both ends share ``contract_id``.
     consumer_contract_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:

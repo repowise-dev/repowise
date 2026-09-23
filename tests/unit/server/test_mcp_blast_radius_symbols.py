@@ -261,3 +261,29 @@ async def test_no_tests_block_when_the_symbol_has_no_consumers(tmp_path: Path):
     block = result["symbol_targets"][0]
     assert block["consumers"] == []
     assert "tests_summary" not in block
+
+
+@pytest.mark.asyncio
+async def test_a_caller_supplies_the_test_join(tmp_path: Path):
+    """The payload builder runs over any enricher and any join, outside the tool."""
+    from repowise.core.workspace.test_impact import WorkspaceTestImpactResult
+    from repowise.server.mcp_server.tool_blast_radius import blast_radius_payload
+
+    provider = _provider()
+    consumer = _consumer()
+    enricher = _enricher(tmp_path, [provider, consumer], [_link(provider, consumer)])
+    asked: list[dict] = []
+
+    async def join(changed_by_repo):
+        asked.append(dict(changed_by_repo))
+        return WorkspaceTestImpactResult(summary={"reason": "no_matching_links"})
+
+    payload = await blast_radius_payload(
+        enricher, enricher.get_system_graph(), ["src/types.ts::Order"], tests_for=join
+    )
+    assert asked == [{"backend": ["src/types.ts"]}]
+    assert payload["symbol_targets"][0]["consumers"][0]["tests"]["state"] == "none"
+    assert "_meta" not in payload
+    with _in_workspace(enricher):
+        tool = await get_blast_radius(["src/types.ts::Order"])
+    assert set(tool) - set(payload) == {"_meta"}

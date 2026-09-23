@@ -31,9 +31,17 @@ from repowise.core.workspace.contracts import ContractLink, load_contract_store,
 from repowise.core.workspace.repo_index import WorkspaceIndex, open_workspace_index
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from repowise.core.workspace.repo_index import RepoIndex
+
+    #: The measured read: ``(session, repo_id, files) -> {file: [coverage rows]}``,
+    #: the shape of :func:`tests_covering_files`.
+    CoveringReads = Callable[
+        [Any, str, set[str]], Awaitable[Mapping[str, Sequence[Mapping[str, Any]]]]
+    ]
+    #: The inferred read, the signature of :func:`tests_reaching_by_tier`.
+    ReachingReads = Callable[..., Awaitable[Mapping[str, Any]]]
 
 _BASIS_ORDER = {"measured": 0, "inferred": 1}
 
@@ -219,6 +227,8 @@ async def _analyze_consumer(
     import_depth: int,
     include_measured: bool,
     include_inferred: bool,
+    covering: CoveringReads,
+    reaching: ReachingReads,
 ) -> _ConsumerOutcome:
     """Resolve one consumer repo, sequentially on the one session it holds."""
     out = _ConsumerOutcome()
@@ -257,7 +267,7 @@ async def _analyze_consumer(
         session = repo_index.session
         if include_measured:
             try:
-                rows = await tests_covering_files(session, repo_index.repo_id, set(files))
+                rows = await covering(session, repo_index.repo_id, set(files))
                 for path, covering in rows.items():
                     measured[path] = [
                         {
@@ -277,7 +287,7 @@ async def _analyze_consumer(
                 # own symbol: the call tier is keyed by symbol id, and the import
                 # tier, which only knows files, runs for the files no symbol answered.
                 symbol_ids = sorted({sid for path in files for sid in seeds[path]})
-                by_symbol = await tests_reaching_by_tier(
+                by_symbol = await reaching(
                     session,
                     repo_index.repo_id,
                     symbol_ids,
@@ -288,7 +298,7 @@ async def _analyze_consumer(
                 unanswered = [
                     path for path in files if not any(sid in by_symbol for sid in seeds[path])
                 ]
-                by_file_reached = await tests_reaching_by_tier(
+                by_file_reached = await reaching(
                     session,
                     repo_index.repo_id,
                     unanswered,
@@ -412,12 +422,19 @@ async def analyze_workspace_test_impact(
     min_confidence: float = 0.0,
     target_repos: Collection[str] | None = None,
     max_tests_per_pair: int | None = MAX_TESTS_PER_TARGET,
+    covering: CoveringReads | None = None,
+    reaching: ReachingReads | None = None,
 ) -> WorkspaceTestImpactResult:
     """Tests in consumer repos that guard *changed_files* in provider repos.
 
     *index* and *links* are supplied by the caller, so a request handler that
     already holds both opens nothing here. ``max_tests_per_pair=None`` turns
     the per-pair cap off, for a caller that caps and banks the tail itself.
+
+    *covering* and *reaching* are the two consumer reads, defaulting to
+    :func:`tests_covering_files` and :func:`tests_reaching_by_tier`. Each is
+    handed the consumer's :attr:`RepoIndex.session`, so a caller whose indexes
+    hold something other than a database session passes reads that take it.
     """
     changed_by_provider: dict[str, set[str]] = defaultdict(set)
     for entry in changed_files:
@@ -483,6 +500,9 @@ async def analyze_workspace_test_impact(
                 import_depth=import_depth,
                 include_measured=include_measured,
                 include_inferred=include_inferred,
+                # Resolved per call, so a default is always the module's current one.
+                covering=covering or tests_covering_files,
+                reaching=reaching or tests_reaching_by_tier,
             )
             for alias in aliases
         )

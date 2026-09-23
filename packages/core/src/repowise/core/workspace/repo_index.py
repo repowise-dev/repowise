@@ -21,11 +21,11 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
-    from pathlib import Path
+    from collections.abc import Collection, Iterable, Mapping, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,16 +79,17 @@ _QUALIFIER_RE = re.compile(r"::|\.")
 class RepoIndex:
     """Read-only accessor over one repo's ``wiki.db``.
 
-    Built by :func:`open_workspace_index`; the caller owns :meth:`close`. Every
-    accessor is a pure in-memory read of what :meth:`_load` fetched, so a
-    dialect may call one from the worker thread it runs in.
+    Built by :func:`open_workspace_index`, or by :meth:`from_symbols` from rows
+    the caller already holds; the caller owns :meth:`close`. Every accessor is a
+    pure in-memory read of what was loaded, so a dialect may call one from the
+    worker thread it runs in.
     """
 
     def __init__(
         self,
         alias: str,
         repo_path: Path,
-        session: AsyncSession,
+        session: AsyncSession | Any,
         engine: Any,
         *,
         # Required: an empty id makes every repository-scoped query return nothing.
@@ -103,7 +104,40 @@ class RepoIndex:
         self._by_name: dict[str, list[IndexedSymbol]] = {}
         self._externals: list[ExternalImport] = []
 
+    @classmethod
+    def from_symbols(
+        cls,
+        alias: str,
+        symbols: Iterable[IndexedSymbol],
+        *,
+        repo_id: str,
+        session: Any = None,
+        names: Mapping[str, Sequence[IndexedSymbol]] | None = None,
+    ) -> RepoIndex:
+        """An index over *symbols* the caller already holds, with no database.
+
+        *session* is whatever the caller's test-impact reads take (see
+        :func:`.test_impact.analyze_workspace_test_impact`); :meth:`close` leaves
+        it alone. *names* replaces the name lookup built from *symbols*, for a
+        caller that loads only some files but resolves names across the repo.
+        """
+        index = cls(alias, Path(), session, None, repo_id=repo_id)
+        index._index(symbols)
+        if names is not None:
+            index._by_name = names  # type: ignore[assignment]
+        return index
+
     # -- Loading -----------------------------------------------------------
+
+    def _index(self, symbols: Iterable[IndexedSymbol]) -> None:
+        for sym in symbols:
+            self._by_file.setdefault(sym.file_path, []).append(sym)
+        # Outermost first, so the first span containing a line is the class and
+        # the last is the method.
+        for file_symbols in self._by_file.values():
+            file_symbols.sort(key=lambda s: (s.start_line, -s.end_line))
+            for sym in file_symbols:
+                self._by_name.setdefault(sym.name, []).append(sym)
 
     async def _load(self, repo_id: str) -> None:
         from sqlalchemy import select
@@ -124,29 +158,23 @@ class RepoIndex:
                 WikiSymbol.language,
             ).where(WikiSymbol.repository_id == repo_id)
         )
-        for row in rows:
-            # By keyword: eight of the ten fields are strings, so a reordered
-            # or inserted column would swap values positionally without error.
-            self._by_file.setdefault(row.file_path, []).append(
-                IndexedSymbol(
-                    symbol_id=row.symbol_id,
-                    name=row.name,
-                    qualified_name=row.qualified_name,
-                    kind=row.kind,
-                    signature=row.signature,
-                    file_path=row.file_path,
-                    start_line=row.start_line,
-                    end_line=row.end_line,
-                    visibility=row.visibility,
-                    language=row.language or "",
-                )
+        # By keyword: eight of the ten fields are strings, so a reordered or
+        # inserted column would swap values positionally without error.
+        self._index(
+            IndexedSymbol(
+                symbol_id=row.symbol_id,
+                name=row.name,
+                qualified_name=row.qualified_name,
+                kind=row.kind,
+                signature=row.signature,
+                file_path=row.file_path,
+                start_line=row.start_line,
+                end_line=row.end_line,
+                visibility=row.visibility,
+                language=row.language or "",
             )
-        # Outermost first, so the first span containing a line is the class and
-        # the last is the method.
-        for symbols in self._by_file.values():
-            symbols.sort(key=lambda s: (s.start_line, -s.end_line))
-            for sym in symbols:
-                self._by_name.setdefault(sym.name, []).append(sym)
+            for row in rows
+        )
 
         edges = await self._session.execute(
             select(
@@ -177,7 +205,7 @@ class RepoIndex:
     # -- Public API --------------------------------------------------------
 
     @property
-    def session(self) -> AsyncSession:
+    def session(self) -> AsyncSession | Any:
         """The connection the index holds; reachability queries run on it too."""
         return self._session
 
@@ -257,6 +285,9 @@ class RepoIndex:
         return [s for syms in self._by_file.values() for s in syms if s.visibility == "public"]
 
     async def close(self) -> None:
+        # No engine means the caller built this over its own handle and owns it.
+        if self._engine is None:
+            return
         await self._session.close()
         await self._engine.dispose()
 
