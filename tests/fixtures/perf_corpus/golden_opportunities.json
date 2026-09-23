@@ -36,7 +36,7 @@
       },
       "fix": {
         "api": ".in_(\"repo_id\", keys)",
-        "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) returns the same rows, and nothing else in the loop can observe the difference.",
+        "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) covers the same rows, and nothing else in the loop can observe the difference.",
         "safety": "proven",
         "strategy": "batch_or_prefetch_io"
       },

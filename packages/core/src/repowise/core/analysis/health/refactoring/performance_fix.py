@@ -36,8 +36,8 @@ _STEPS: dict[str, tuple[str | None, str]] = {
 _API_STEPS: dict[str, tuple[str | None, str]] = {
     "batch_or_prefetch_io": (
         None,
-        "Collect the keys before the loop, query once with {api} in place of the per-key "
-        "filter, and read each row by its key",
+        "Collect the keys before the loop and make one call with {api} in place of the "
+        "per-key filter",
     ),
     "parallelize_independent_awaits": (
         None,

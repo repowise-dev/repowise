@@ -203,7 +203,7 @@ def assess_fix(
                     PerformanceFix(
                         "batch_or_prefetch_io",
                         "proven",
-                        f"Every call filters on the loop's own key, so {form} returns the same "
+                        f"Every call filters on the loop's own key, so {form} covers the same "
                         "rows, and nothing else in the loop can observe the difference.",
                         form,
                     ),

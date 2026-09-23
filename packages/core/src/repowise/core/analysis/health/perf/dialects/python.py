@@ -170,8 +170,6 @@ _PY_NONLIST_BUILTINS: frozenset[str] = frozenset({"set", "dict", "frozenset"})
 _PY_RESULT_PROJECTIONS: frozenset[str] = frozenset(
     {"all", "scalars", "fetchall", "json", "data", "rows"}
 )
-_PY_LISTING_METHODS: frozenset[str] = frozenset({"glob", "rglob", "iterdir"})
-_PY_OS_LISTING_METHODS: frozenset[str] = frozenset({"walk", "listdir", "scandir"})
 _PY_BOUND_NAME_RE = re.compile(r"(?i)retr|attempt")
 _PY_MUTATE_METHODS: frozenset[str] = frozenset({"append", "extend", "add", "insert"})
 # A per-key call that limits or orders its rows is not the read one IN query makes.
@@ -182,6 +180,7 @@ _PY_PER_KEY_LIMITS: frozenset[str] = frozenset(
     }
 )
 _PY_ONE_ROW: frozenset[str] = _PY_PER_KEY_LIMITS | {"scalar"}
+_PY_READ_CAPS: frozenset[str] = _PY_ONE_ROW - {"order", "order_by", "offset"}
 _PY_WRITES: frozenset[str] = frozenset({"update", "insert", "upsert", "values"})
 _PY_LOOP_EXITS: frozenset[str] = frozenset({"break_statement", "return_statement"})
 _PY_SCOPES: frozenset[str] = frozenset({"function_definition", "lambda", "class_definition"})
@@ -744,18 +743,22 @@ class PythonPerfDialect(BasePerfDialect):
             if attr is None or (attr.text or b"").decode() not in _PY_RESULT_PROJECTIONS:
                 return None
             return self._grows(self._magnitude(expr.child_by_field_name("object"), loop, probe, hop=hop))
-        if expr.type != "call":
-            return None
+        return self._call_magnitude(expr, loop, probe, hop=hop) if expr.type == "call" else None
+
+    def _call_magnitude(
+        self, expr: Node, loop: Node, probe: SinkProbe, *, hop: bool
+    ) -> LoopMagnitude | None:
         method = self.callee_method_name(expr) or ""
         member = self.callee_is_attribute(expr)
         if method == "range" and not member:
             return self._range_magnitude(expr, loop, probe, hop=hop)
         if probe(expr) in ("db", "network"):
-            return "grows_with_data"
-        if (member and method in _PY_LISTING_METHODS) or (
-            self.callee_root_name(expr) == "os" and method in _PY_OS_LISTING_METHODS
-        ):
-            return "grows_with_data"
+            # A read capped in the query (``.limit(n)``) is as large as its cap.
+            capped = any(
+                n.type == "call" and self.callee_method_name(n) in _PY_READ_CAPS
+                for n in self._walk(expr)
+            )
+            return None if capped else "grows_with_data"
         if member and method in _PY_RESULT_PROJECTIONS:
             receiver = expr.child_by_field_name("function").child_by_field_name("object")
             return self._grows(self._magnitude(receiver, loop, probe, hop=hop))

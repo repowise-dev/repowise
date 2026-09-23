@@ -29,7 +29,7 @@
           "provenance": 3
         },
         "rank_score": 18,
-        "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) returns the same rows, and nothing else in the loop can observe the difference.",
+        "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) covers the same rows, and nothing else in the loop can observe the difference.",
         "reliable_entry_reachability": null
       },
       "file_path": "src/app/owners.py",
@@ -57,7 +57,7 @@
         "safety": "proven",
         "steps": [
           {
-            "action": "Collect the keys before the loop, query once with .in_(\"repo_id\", keys) in place of the per-key filter, and read each row by its key",
+            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key filter",
             "applicability": "mechanical",
             "file_path": "src/app/owners.py",
             "line": 20,
@@ -1099,7 +1099,7 @@
         "safety": "advisory",
         "steps": [
           {
-            "action": "Collect the keys before the loop, query once with .in_(\"repo_id\", keys) in place of the per-key filter, and read each row by its key",
+            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key filter",
             "applicability": "judgment",
             "file_path": "src/app/commits.py",
             "line": 30,

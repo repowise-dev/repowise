@@ -63,8 +63,7 @@ def test_magnitude_range_len_of_grown_source_grows():
     assert facts.magnitude == "grows_with_data"
 
 
-def test_magnitude_os_walk_grows():
-    """G2: a filesystem listing call is data-dependent."""
+def test_a_directory_listing_is_as_unknown_as_the_path_it_is_given():
     facts = _loop(
         b"import os\n"
         b"from sqlalchemy import select\n"
@@ -72,7 +71,17 @@ def test_magnitude_os_walk_grows():
         b"    for root_, dirs, files in os.walk('/tmp'):\n"
         b"        await session.execute(select(root_))\n"
     )
-    assert facts.magnitude == "grows_with_data"
+    assert facts is None or facts.magnitude == "unknown"
+
+
+def test_a_read_capped_in_the_query_does_not_grow():
+    facts = _loop(
+        b"def f(sb, repo_id, max_snaps):\n"
+        b"    rows = sb.table('s').select('*').eq('repo_id', repo_id).limit(max_snaps).execute().data\n"
+        b"    for row in rows:\n"
+        b"        sb.table('t').delete().eq('id', row['id']).execute()\n"
+    )
+    assert facts.magnitude == "unknown"
 
 
 def test_magnitude_range_all_caps_constant_bounded():

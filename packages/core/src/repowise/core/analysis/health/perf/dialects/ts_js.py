@@ -362,7 +362,6 @@ class TsJsPerfDialect(BasePerfDialect):
     # -- promotion facts (perf/loop_facts.py) ----------------------------------
 
     #: Filesystem listing calls whose result count scales with data on disk.
-    _FS_LISTING_METHODS: frozenset[str] = frozenset({"readdirSync", "readdir", "glob"})
     #: A function/lambda scope: the boundary for the reaching-assignment walk
     #: (below it) and the "not a loop exit" skip for break/return/throw inside
     #: a nested closure (a callback's own ``return`` doesn't exit the loop).
@@ -417,12 +416,15 @@ class TsJsPerfDialect(BasePerfDialect):
             return self._grows(self._magnitude_of_expr(node.child_by_field_name("left"), probe, depth + 1))
         if node.type == "call_expression":
             method = self.callee_method_name(node) or ""
-            if method in self._FS_LISTING_METHODS:
-                return "grows_with_data"
             if method == "slice":
                 return "bounded" if self._slice_is_bounded(node) else None
             if probe(node) in ("db", "network"):
-                return "grows_with_data"
+                # A read capped in the query (``take: n``) is as large as its cap.
+                capped = any(
+                    n.type == "pair" and (n.child_by_field_name("key") or n).text == b"take"
+                    for n in self._walk(node)
+                )
+                return None if capped else "grows_with_data"
             if method == "json":
                 # ``fetch(url).json()`` / ``(await sink()).json()`` — a
                 # projection of whatever the receiver resolves to.

@@ -171,7 +171,7 @@ async function f() {
     assert hits[0].loop.magnitude == "grows_with_data"
 
 
-def test_magnitude_grows_with_readdir_sync():
+def test_a_directory_listing_is_as_unknown_as_the_path_it_is_given():
     src = """
 function f(dir) {
   const files = fs.readdirSync(dir);
@@ -181,8 +181,7 @@ function f(dir) {
 }
 """
     hits = _io_hits(src)
-    assert hits[0].loop is not None
-    assert hits[0].loop.magnitude == "grows_with_data"
+    assert hits[0].loop is None or hits[0].loop.magnitude == "unknown"
 
 
 def test_magnitude_bounded_via_slice():
