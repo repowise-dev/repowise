@@ -492,7 +492,8 @@ def test_session_get_sink_shape(call, db_import, sink):
 # ---------------------------------------------------------------------------
 
 
-def test_batch_session_get_equivalent():
+def test_batch_session_get_is_named_but_never_proven():
+    """``get`` may be an identity-map hit, so batching it is not a proven saving."""
     facts = _loop(
         b"from sqlalchemy import select\n"
         b"async def f(session, rows):\n"
@@ -500,18 +501,7 @@ def test_batch_session_get_equivalent():
         b"        obj = await session.get(Repo, r.id)\n"
     )
     assert facts.batch.call == "select(Repo).where(inspect(Repo).primary_key[0].in_(keys))"
-    assert facts.batch.equivalent is True
-
-
-def test_batch_session_get_on_the_whole_element_is_not_equivalent():
-    """The element itself may be a composite key tuple, which one column's IN does not match."""
-    facts = _loop(
-        b"from sqlalchemy import select\n"
-        b"async def f(session, keys):\n"
-        b"    for key in keys:\n"
-        b"        obj = await session.get(Repo, key)\n"
-    )
-    assert facts.batch is not None and facts.batch.equivalent is False
+    assert facts.batch.equivalent is False
 
 
 def test_batch_session_get_second_sink_in_body_not_equivalent():
@@ -620,3 +610,131 @@ def test_a_result_read_from_one_chunk_of_keys_does_not_grow():
         b"            await session.execute(select(H).where(H.id == g.id))\n"
     )
     assert facts.magnitude != "grows_with_data"
+
+
+# ``.all()`` on a bare name is a query result only when the function binds that name;
+# an imported registry (dispatch's ``plugins.all()``) is not.
+
+
+@pytest.mark.parametrize(
+    ("setup", "receiver_call", "sink"),
+    [
+        ("from dispatch.plugins.base import plugins\n", "plugins.all()", False),
+        ("registry = Registry()\n", "registry.all()", False),  # module global, lower-case
+        ("REGISTRY = Registry()\n", "REGISTRY.all()", False),  # module global, ALL_CAPS
+        ("", "query.all()", True),  # a function parameter
+    ],
+)
+def test_ambiguous_db_method_receiver_gate(setup, receiver_call, sink):
+    src = (
+        "from sqlalchemy import select\n"
+        + setup
+        + "def f(query, ids):\n"
+        + "    for i in ids:\n"
+        + f"        {receiver_call}\n"
+    )
+    hits = _hits(src.encode())
+    assert [h.detail for h in hits] == (["db"] if sink else [])
+
+
+def test_ambiguous_db_method_on_a_locally_assigned_result_is_still_a_sink():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"def f(session, ids):\n"
+        b"    for i in ids:\n"
+        b"        res = session.execute(select(i))\n"
+        b"        res.all()\n"
+    )
+    assert [h.detail for h in hits] == ["db", "db"]
+
+
+def test_ambiguous_db_method_on_an_imported_registry_does_not_grow():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"from dispatch.plugins.base import plugins\n"
+        b"def f(session, ids):\n"
+        b"    for p in plugins.all():\n"
+        b"        session.execute(select(p))\n"
+    )
+    assert facts is None or facts.magnitude != "grows_with_data"
+
+
+def test_ambiguous_db_method_on_a_locally_assigned_result_still_grows():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, ids):\n"
+        b"    res = await session.execute(select(1))\n"
+        b"    for r in res.all():\n"
+        b"        session.execute(select(r))\n"
+    )
+    assert facts.magnitude == "grows_with_data"
+
+
+@pytest.mark.parametrize("stmt", ["run_task(document_id=doc.id)", "t = run_task(doc.id)"])
+def test_a_read_after_a_call_made_for_its_effect_is_not_equivalent(stmt):
+    """dify: the loop runs a task, then reads what it wrote; read up front, it runs first."""
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"def f(session, docs):\n"
+        b"    for doc in docs:\n"
+        + f"        {stmt}\n".encode()
+        + b"        session.scalars(select(Seg).where(Seg.document_id == doc.id)).all()\n"
+    )
+    assert facts.batch is not None and facts.batch.equivalent is False
+
+
+def test_a_local_collection_update_keeps_the_read_equivalent():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, grants):\n"
+        b"    seen = set()\n"
+        b"    for g in grants:\n"
+        b"        res = await session.execute(select(M).where(M.id == g.member_id))\n"
+        b"        key = str(g.member_id)\n"
+        b"        seen.add(key)\n"
+    )
+    assert facts.batch is not None and facts.batch.equivalent is True
+
+
+def test_a_raw_sql_read_capped_in_its_text_does_not_grow():
+    """dify: ``sa.text("... LIMIT 1000")`` pages a table; one page is as large as its cap."""
+    facts = _loop(
+        b"import sqlalchemy as sa\n"
+        b"def f(conn, session):\n"
+        b'    sql = "SELECT id FROM apps ORDER BY created_at LIMIT 1000"\n'
+        b"    rs = conn.execute(sa.text(sql))\n"
+        b"    for i in rs:\n"
+        b"        session.execute(sa.text('DELETE FROM x WHERE id = :id'), {'id': i.id})\n"
+    )
+    assert facts is None or facts.magnitude != "grows_with_data"
+
+
+def test_a_write_through_a_local_session_before_the_read_is_not_equivalent():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"def f(rows):\n"
+        b"    session = SessionLocal()\n"
+        b"    for r in rows:\n"
+        b"        session.add(r)\n"
+        b"        session.execute(select(M).where(M.id == r.id))\n"
+    )
+    assert facts.batch is not None and facts.batch.equivalent is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "note = 'throttle limit 5 per user'",  # not SQL
+        "note = 'SELECT id FROM apps -- was LIMIT 1000'",  # the cap is commented out
+    ],
+)
+def test_a_limit_outside_live_sql_does_not_cap_the_read(text):
+    facts = _loop(
+        b"import sqlalchemy as sa\n"
+        b"def f(conn, session):\n"
+        + f"    {text}\n".encode()
+        + b"    rs = conn.execute(sa.text('SELECT id FROM apps'), note)\n"
+        b"    for i in rs:\n"
+        b"        session.execute(sa.text('DELETE FROM x WHERE id = :id'), {'id': i.id})\n"
+    )
+    assert facts.magnitude == "grows_with_data"

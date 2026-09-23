@@ -111,6 +111,10 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
+# v26: ``.all()`` on an imported or module-global name (a plugin registry) is not a
+# db sink, a SQL string saying ``LIMIT n`` caps a read, and a batched read is never
+# proven for ``session.get`` or beside a call made for its effect; a v25 store differs.
+#
 # v25: repetition with nothing to change (a filesystem or subprocess boundary, or
 # a loop already walking chunks) is stored as ``expected``; a v24 store says investigate.
 #
@@ -253,7 +257,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 25
+HEALTH_ANALYZER_VERSION = 26
 
 
 def walked_functions(

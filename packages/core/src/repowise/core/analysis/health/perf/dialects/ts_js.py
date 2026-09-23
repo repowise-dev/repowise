@@ -476,12 +476,11 @@ class TsJsPerfDialect(BasePerfDialect):
             return self._magnitude_of_expr(self._reaching_assignment(loop, right.text), probe)
         return magnitude
 
-    def _limiter_of(self, closure: Node) -> str | None:
-        """The limiter an awaited call runs *closure* through (``await limit(() => f(x))``).
+    def _awaited_wrapper_call(self, closure: Node) -> Node | None:
+        """The awaited call *closure* is passed to (``await limit(() => f(x))``).
 
         Awaited, the closure finishes before the loop moves on, so it is the loop
-        body. Stored, returned or not awaited, it runs later and is not. A curried
-        ``pLimit(2)(...)`` builds a fresh limiter per call, which bounds nothing.
+        body. Stored, returned or not awaited, it runs later and is not.
         """
         args = closure.parent
         if closure.type != "arrow_function" or args is None or args.type != "arguments":
@@ -492,9 +491,18 @@ class TsJsPerfDialect(BasePerfDialect):
         fn = call.child_by_field_name("function")
         if fn is None or fn.type not in ("identifier", "member_expression"):
             return None
+        return call
+
+    def _limiter_of(self, closure: Node) -> str | None:
+        """The limiter *closure* runs through. A curried ``pLimit(2)(...)`` builds a
+        fresh limiter per call, which bounds nothing, so the callee must be named one."""
+        call = self._awaited_wrapper_call(closure)
+        if call is None:
+            return None
         name = self.callee_method_name(call) or ""
         if not (_LIMITER_NAME_RE.search(name) or name in _LIMITER_METHODS):
             return None
+        fn = call.child_by_field_name("function")
         return (fn.text or b"").decode() or None
 
     def runs_in_place(self, closure: Node) -> bool:
