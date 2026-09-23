@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 from repowise.core.analysis.health.rows import json_field
 from repowise.core.analysis.module_health import aggregate_modules, detail_extras, summarize
-from repowise.core.analysis.owners import aggregate_owners, as_utc
+from repowise.core.analysis.owners import aggregate_owners, as_utc, silo_modules
 from repowise.core.analysis.reviewers import cochange_paths, suggest_reviewers
 
 _ROWS = [
@@ -116,3 +116,12 @@ def test_reviewer_fold_is_the_same_over_stored_and_decoded_rows() -> None:
         out = suggest_reviewers(rows[:1], rows[1:], limit=5)
         assert [s["name"] for s in out] == ["Bob", "Alice"]
         assert out[0]["co_change_paths"] == ["lib/util.py"]
+
+
+def test_a_sole_owner_is_a_silo_in_both_rollups() -> None:
+    rows = [_stored(r) for r in _ROWS]
+    accs, totals = aggregate_owners(rows, [])
+    assert silo_modules(accs["alice@example.com"], totals) == 1
+    modules = aggregate_modules(rows, [], [], [])
+    assert summarize(modules["src"])["is_silo"] is True
+    assert summarize(modules["src"])["health_score"] == 34.5

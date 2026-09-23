@@ -8,8 +8,8 @@ cycle from closing.
 
 The engine now binds on first attribute access, and ``scoring`` keeps its one
 biomarker import behind a ``TYPE_CHECKING`` gate. A consumer that only wants the
-ranking, the folds or the trend arithmetic pays for none of it: the seven modules
-below reach fewer than ten repowise modules between them, against the 419 and a
+ranking, the folds or the trend arithmetic pays for none of it: the modules
+below each reach about ten repowise modules, against the 419 and a
 full set of tree-sitter grammars before. This is a guard, not a benchmark: it
 fails when someone reintroduces an eager import, and says nothing about speed.
 """
@@ -30,6 +30,9 @@ _LIGHTWEIGHT = (
     "repowise.core.analysis.health.grading",
     "repowise.core.analysis.health.suggestions",
     "repowise.core.analysis.health.defect_accuracy",
+    "repowise.core.analysis.module_health",
+    "repowise.core.analysis.owners",
+    "repowise.core.analysis.reviewers",
 )
 
 # Loading any of these means the seam stopped being portable: a downstream

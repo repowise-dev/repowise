@@ -32,8 +32,8 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 
-#: The one definition behind every ownership rollup. Not a package boundary --
-#: see the module docstring.
+#: The one definition behind every ownership rollup; not a package boundary
+#: (see :mod:`repowise.core.analysis.module_health`).
 top_level_module = module_label
 
 

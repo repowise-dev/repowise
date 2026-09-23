@@ -49,6 +49,7 @@ def suggest_reviewers(
     those of :func:`cochange_paths`. Each needs ``file_path``,
     ``top_authors_json`` and ``commit_count_90d``.
     """
+    direct_rows, cochange_rows = list(direct_rows), list(cochange_rows)
     tally: dict[str, dict] = {}
 
     def _bump(

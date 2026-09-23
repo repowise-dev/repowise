@@ -21,7 +21,7 @@ from typing import Any
 from repowise.core.analysis.health.aggregation import module_label
 from repowise.core.analysis.health.rows import field as row_field
 from repowise.core.analysis.health.rows import json_field
-from repowise.core.ingestion.git_indexer.identity import (
+from repowise.core.author_identity import (
     build_identity_resolver,
     canonicalize_author_email,
 )
@@ -112,9 +112,8 @@ def aggregate_owners(
     accs: dict[str, OwnerAccumulator] = {}
     module_totals: dict[str, int] = defaultdict(int)
 
-    # Build a repo-wide identity resolver first so noreply variants and a
-    # person's same-display-name real+noreply emails fold to one bucket. Needs
-    # every (name, email) pair up front, so collect them in a cheap pre-pass.
+    # The resolver folds noreply variants and same-name real+noreply emails to
+    # one bucket, so it needs every (name, email) pair before the main walk.
     pairs: list[tuple[str | None, str | None]] = []
     for m in rows:
         pairs.append((row_field(m, "primary_owner_name"), row_field(m, "primary_owner_email")))
@@ -150,8 +149,7 @@ def aggregate_owners(
         deleted = row_field(m, "lines_deleted_90d") or 0
         commits_90d = row_field(m, "commit_count_90d") or 0
 
-        # Track everyone who touched this file — for co-author tallies we
-        # need the full list.
+        # Everyone who touched this file, for the co-author tally below.
         touchers: list[OwnerAccumulator] = []
         for a in authors:
             name = a.get("name") or ""
@@ -168,9 +166,8 @@ def aggregate_owners(
             acc.lines_deleted_90d_est += deleted * share
             for cat, n in categories.items():
                 acc.commit_categories[cat] += int(n * share)
-            # Prefer the author's *own* last/first commit to this file (added to
-            # top_authors by the git indexer); fall back to the file-level value
-            # for indexes built before that field existed.
+            # Prefer the author's own last/first commit to this file; indexes
+            # without per-author times fall back to the file-level value.
             a_last_ts = a.get("last_commit_ts")
             a_last = (
                 datetime.fromtimestamp(a_last_ts, tz=UTC)
@@ -192,7 +189,7 @@ def aggregate_owners(
                 acc.first_commit_at = a_first
             touchers.append(acc)
 
-        # Primary owner — credit them for "files_owned" / hotspots / silo.
+        # Primary owner: credit them for files_owned, hotspots and silo risk.
         primary = _ensure(
             row_field(m, "primary_owner_name") or "", row_field(m, "primary_owner_email")
         )
@@ -215,7 +212,7 @@ def aggregate_owners(
                     for tier, n in json_field(m, "agent_tier_counts_json", {}).items():
                         primary.owned_agent_tier_counts[str(tier)] += int(n)
 
-        # Co-author tally — each pair of distinct touchers shares this file.
+        # Co-author tally: each pair of distinct touchers shares this file.
         for i, a in enumerate(touchers):
             for b in touchers[i + 1 :]:
                 if a.key == b.key:
