@@ -1,4 +1,4 @@
-"""Node HTTP client libraries: axios, ky, got and ofetch.
+"""HTTP client libraries for JS / TS: axios, ky, got, ofetch and Angular's HttpClient.
 
 A call goes straight through the library (``axios.post(url)``, ``ky.get(url)``,
 ``got(url, { method })``) or through an instance created with a base
@@ -15,6 +15,12 @@ A base resolves through the strings layer. One it cannot read
 (``process.env.API_URL``) stays a ``${...}`` placeholder, which the consumer
 builder records as the call's base token, exactly as for a hand-written
 ``${API_URL}/users``. ``ofetch(url)`` itself is the ``fetch`` reader's.
+
+Angular's ``HttpClient`` is a type, not a callable: its clients are the
+receivers declared with it (:func:`.angular.http_client_receivers`). URLs also fold
+what the file imports from an environment module (``environment.apiUrl``) and
+class fields set once (``private base = `${environment.apiUrl}/users```), so
+``this.http.get(`${this.base}/${id}`)`` reads whole.
 """
 
 from __future__ import annotations
@@ -26,8 +32,9 @@ from typing import TYPE_CHECKING
 
 from ..base import line_at
 from ..calls import Call, call_sites, file_strings, receiver_at
-from ..langs import JS_TS
-from ..strings import NAME_RE, Arg, call_arguments, select_argument
+from ..langs import JS_EXTENSION_RE, JS_TS
+from ..strings import NAME_RE, Arg, call_arguments, js_class_fields, select_argument
+from .angular import ANGULAR_HTTP, http_client_receivers, imported_environment
 from .client_calls import VERBS, is_rooted_url, method_from_argument
 from .dialect import build_consumer_contract
 from .wrappers import GENERIC_ARGS
@@ -37,28 +44,46 @@ if TYPE_CHECKING:
 
     from ..base import ScanContext
     from ..calls import FileStrings
+    from ..strings import ClassFields
 
 
 @dataclass(frozen=True)
 class _Library:
     name: str
-    factories: tuple[str, ...]
-    base_key: str
-    verbs: bool  # `client.get(url)`; ofetch has none
+    factories: tuple[str, ...] = ()
+    base_key: str = ""  # the option naming an instance's base
+    verbs: bool = True  # `client.get(url)`; ofetch has none
     exports: tuple[str, ...] = ("default",)  # what an import of the client names
+    specifier: str = ""  # the package, when it is not *name*
+    # The import names a type, and the receivers declared with it are the
+    # clients (Angular's injected `HttpClient`), not the import itself. Such a
+    # client has verbs only; `client(url)` is not a call.
+    typed: bool = False
+    request: str = ""  # `request({ url, method })` ("config") or `request('GET', url)` ("method")
+    body_first: bool = False  # post / put / patch take a body before their options
+
+    @property
+    def package(self) -> str:
+        return self.specifier or self.name
 
 
-_LIBRARIES = {
-    lib.name: lib
-    for lib in (
-        _Library("axios", ("create",), "baseURL", True),
-        _Library("ky", ("create", "extend"), "prefixUrl", True),
-        _Library("got", ("extend",), "prefixUrl", True),
-        _Library("ofetch", ("create",), "baseURL", False, ("ofetch", "$fetch")),
-    )
-}
+_LIBRARY_LIST = (
+    _Library("axios", ("create",), "baseURL", request="config", body_first=True),
+    _Library("ky", ("create", "extend"), "prefixUrl"),
+    _Library("got", ("extend",), "prefixUrl"),
+    _Library("ofetch", ("create",), "baseURL", verbs=False, exports=("ofetch", "$fetch")),
+    _Library(
+        "angular",
+        exports=("HttpClient",),
+        specifier=ANGULAR_HTTP,
+        typed=True,
+        request="method",
+        body_first=True,
+    ),
+)
+_LIBRARIES = {lib.package: lib for lib in _LIBRARY_LIST}
 # A library's specifier in quotes, so `ky` is not read out of every word holding it.
-_SPECIFIERS = tuple(f"{q}{name}{q}" for name in _LIBRARIES for q in "'\"")
+_SPECIFIERS = tuple(f"{q}{package}{q}" for package in _LIBRARIES for q in "'\"")
 # axios is also a global (a script tag, Laravel's `window.axios`, Nuxt's `$axios`).
 _AXIOS_GLOBALS = ("axios.", "axios(")
 # Qualifiers a client is called through: its own class, the browser global, Vue.
@@ -101,7 +126,6 @@ _EXPORT_LIST_RE = re.compile(r"export(?<![\w$]export)\s*\{(?P<names>[^{}]*)\}")
 _EXPORT_DEFAULT_RE = re.compile(
     r"export(?<![\w$]export)\s+default\s+(?P<name>[A-Za-z_$][\w$]*)\s*;?\s*$", re.MULTILINE
 )
-_EXTENSION_RE = re.compile(r"\.(?:[cm]?[jt]sx?)$")
 
 
 def _named(entries: str) -> list[tuple[str, str]]:
@@ -145,7 +169,7 @@ def _is_package(spec: str) -> bool:
 
 def _module_name(path: str) -> str:
     """What a specifier naming *path* ends with: its stem, or its directory's for an index."""
-    parts = _EXTENSION_RE.sub("", path).rstrip("/").split("/")
+    parts = JS_EXTENSION_RE.sub("", path).rstrip("/").split("/")
     if parts[-1] == "index" and len(parts) > 1:
         return parts[-2]
     return parts[-1]
@@ -156,12 +180,12 @@ def _key(module: str, export: str) -> str:
 
 
 def _encode(client: _Client) -> str:
-    return f"{client.library.name}\n{client.base}"
+    return f"{client.library.package}\n{client.base}"
 
 
 def _decode(value: str) -> _Client:
-    name, _, base = value.partition("\n")
-    return _Client(_LIBRARIES[name], base)
+    package, _, base = value.partition("\n")
+    return _Client(_LIBRARIES[package], base)
 
 
 def _alternation(names: tuple[str, ...]) -> str:
@@ -187,6 +211,8 @@ def _calls_for(names: tuple[str, ...]) -> tuple[Call, ...]:
 
 def _base(args: list[str], library: _Library, strings: FileStrings) -> str | None:
     """The base a factory call's options name; ``None`` when they name none."""
+    if not library.base_key:
+        return None
     raws = select_argument(args, Arg(keys=(library.base_key,)))
     if not raws:
         return None
@@ -203,14 +229,19 @@ class _FileClients:
     exported: dict[str, _Client]  # what it exports, by exported name (`default` too)
 
 
-def _file_clients(ctx: ScanContext) -> _FileClients:
+def _file_clients(
+    ctx: ScanContext, imports: list[tuple[str, str, str]], strings: FileStrings | None
+) -> _FileClients:
     content = ctx.content
     clients: dict[str, _Client] = {}
-    for local, imported, spec in _imports(content):
+    for local, imported, spec in imports:
         library = _LIBRARIES.get(spec)
         if library is not None:
-            if imported in library.exports:
-                clients[local] = _Client(library, "", direct=True)
+            if imported not in library.exports:
+                continue
+            receivers = http_client_receivers(content, local) if library.typed else [local]
+            for name in receivers:
+                clients[name] = _Client(library, "", direct=True)
         elif not _is_package(spec):
             value = ctx.mounts.get(_key(_module_name(spec), imported))
             if value is not None:
@@ -224,7 +255,6 @@ def _file_clients(ctx: ScanContext) -> _FileClients:
     if not clients or (".create" not in content and ".extend" not in content):
         return _FileClients(clients, exported)
 
-    strings = file_strings(ctx)
     locals_: dict[str, _Client] = {}
     for m in _factory_re(tuple(clients)).finditer(content):
         parent = clients[m.group("parent")]
@@ -264,7 +294,7 @@ def client_mounts(ctx: ScanContext) -> dict[str, str]:
         return {}
     if not any(s in content for s in _SPECIFIERS) and "axios.create" not in content:
         return {}  # no library here, so no instance of one (imported ones are not re-read)
-    exported = _file_clients(ctx).exported
+    exported = _file_clients(ctx, _imports(content), file_strings(ctx)).exported
     module = _module_name(ctx.rel_path)
     out = {_key(module, name): _encode(client) for name, client in exported.items()}
     if out:
@@ -279,17 +309,23 @@ _BODY_VERBS = frozenset({"post", "put", "patch"})
 def _request(
     verb: str | None, args: list[str], client: _Client, strings: FileStrings
 ) -> tuple[str, str] | None:
-    """``(method, url)`` a call names: ``x.post(url)``, ``x(url, { method })``, ``x({ url, method })``.
+    """``(method, url)`` a call names: ``x.post(url)``, ``x(url, { method })``,
+    ``x({ url, method })``, ``x.request('GET', url)``.
 
     A base in the call's own options (``axios.get(url, { baseURL })``) wins over
     the client's, as it does at run time.
     """
     if not args:
         return None
+    library = client.library
     if verb is not None and verb != "request":
         url_raws, method = args[:1], verb.upper()
-        body = client.library.name == "axios" and verb in _BODY_VERBS
-        options = args[2:3] if body else args[1:2]
+        options = args[2:3] if library.body_first and verb in _BODY_VERBS else args[1:2]
+    elif verb == "request" and library.request == "method":
+        named = method_from_argument(args[0])
+        if named is None:
+            return None  # a variable, or an `HttpRequest` object
+        url_raws, method, options = args[1:2], named, args[2:3]
     else:
         config = args[0].startswith("{")
         if verb == "request" and not config:
@@ -301,8 +337,41 @@ def _request(
     url = strings.text(url_raws[0]) if url_raws else None
     if url is None:
         return None
-    base = _base(options, client.library, strings)
+    base = _base(options, library, strings)
     return method, _join(client.base if base is None else base, url)
+
+
+class _Fields:
+    """The class fields in scope at a call, settled into the file's strings.
+
+    Only the innermost class holding the call is in scope, so a field of one
+    class never folds into another's URL. Holes are allowed, and a field built
+    on another (``users = `${this.base}/users```) resolves on the second
+    round, once the first has settled ``this.base``.
+    """
+
+    def __init__(self, strings: FileStrings) -> None:
+        self._strings = strings
+        self._classes: list[ClassFields] | None = None
+        self._current: ClassFields | None = None
+
+    def enter(self, pos: int) -> None:
+        if self._classes is None:
+            self._classes = js_class_fields(self._strings.content)
+        found = next((c for c in self._classes if c.start <= pos < c.end), None)
+        if found is self._current:
+            return
+        settled = self._strings.settled
+        for name in self._current.fields if self._current else ():
+            settled.pop(name, None)
+        self._current = found
+        if found is None:
+            return
+        for _ in range(2):
+            for name, rhs in found.fields.items():
+                text = self._strings.text(rhs)
+                if text is not None:
+                    settled[name] = text
 
 
 def _join(base: str, url: str) -> str:
@@ -320,20 +389,29 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
         or (_MOUNT_ANY in ctx.mounts and ("import" in content or "require" in content))
     ):
         return [], frozenset()
-    clients = _file_clients(ctx).callable
+    strings = file_strings(ctx)
+    if strings is None:
+        return [], frozenset()
+    imports = _imports(content)
+    strings.settled.update(imported_environment(ctx, imports))
+    clients = _file_clients(ctx, imports, strings).callable
     # `ofetch(url)` is a fetch call the fetch reader already reads.
     names = tuple(n for n, c in clients.items() if not (c.direct and not c.library.verbs))
     if not names:
         return [], frozenset()
+    fields = _Fields(strings)
     out: list[Contract] = []
-    for _call, args, m, strings in call_sites(ctx, _calls_for(names)):
+    for _call, args, m, _strings in call_sites(ctx, _calls_for(names), strings):
+        if any("this." in a for a in args[:3]):
+            fields.enter(m.start())  # read only for a call whose URL may name a field
         if not receiver_at(content, m.start(), _QUALIFIER_RE):
             continue
         client = clients[m.group("recv")]
+        library = client.library
         verb = m.group("verb")
-        if verb in VERBS and not client.library.verbs:
+        if (verb in VERBS and not library.verbs) or (verb is None and library.typed):
             continue
-        if verb == "request" and client.library.name != "axios":
+        if verb == "request" and not library.request:
             continue
         request = _request(verb, args, client, strings)
         if request is None:

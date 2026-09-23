@@ -16,7 +16,7 @@ import re
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from ..calls import call_sites
+from ..calls import call_sites, typed_receivers
 from ..langs import JS_TS
 from ..strings import Arg, map_entry, select_argument, split_top_level
 from .dialect import TopicCall, topic_contract
@@ -50,9 +50,7 @@ _HANDLERS = (
 )
 
 # `private readonly client: ClientProxy`, `@Inject('X') billing: ClientKafka`.
-_PROXY_FIELD_RE = re.compile(
-    r"\b(?P<name>[A-Za-z_$][\w$]*)\s*[?!]?\s*:\s*Client(?:Proxy|Kafka|RMQ|Nats|Redis|Mqtt)\b"
-)
+_PROXY_TYPE_RE = re.compile(r"Client(?:Proxy|Kafka|RMQ|Nats|Redis|Mqtt)")
 
 
 @lru_cache(maxsize=256)
@@ -102,7 +100,7 @@ class NestMicroservicesDialect:
         if not any(r in content for r in _MICROSERVICES):
             return []  # handlers and ClientProxy both come from this package
         calls = list(_HANDLERS)
-        names = {m.group("name") for m in _PROXY_FIELD_RE.finditer(content)}
+        names = set(typed_receivers(content, _PROXY_TYPE_RE))
         if names:
             calls.extend(_proxy_calls(tuple(sorted(names))))
         out: list[Contract] = []

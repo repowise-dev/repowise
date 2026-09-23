@@ -9,6 +9,7 @@ from repowise.core.workspace.extractors.strings import (
     PHP_SYNTAX,
     PYTHON_SYNTAX,
     Arg,
+    inline_names,
     resolve_argument,
     resolve_string,
     select_argument,
@@ -109,6 +110,19 @@ class TestJsConstants:
 
     def test_an_example_in_a_comment_is_not_a_binding(self) -> None:
         assert _js("// const Q = 'a';\n", "Q") is None
+
+    def test_a_comment_after_the_last_member_value_is_not_the_value(self) -> None:
+        src = "export const env = {\n  apiUrl: '/assets/data' // 'http://localhost:3000'\n};\n"
+        assert _js(src, "env.apiUrl") == "/assets/data"
+
+    def test_a_url_member_keeps_its_slashes(self) -> None:
+        src = "const env = { api: 'http://localhost:4000' /* dev */, b: 'https://x.io//y' };\n"
+        assert (_js(src, "env.api"), _js(src, "env.b")) == ("http://localhost:4000", "https://x.io//y")
+
+
+def test_inline_names_fills_settled_holes_and_keeps_the_rest() -> None:
+    names = {"this.base": "${environment.apiUrl}/users"}
+    assert inline_names("${this.base}/${id}", names) == "${environment.apiUrl}/users/${id}"
 
 
 class TestPhpConstants:

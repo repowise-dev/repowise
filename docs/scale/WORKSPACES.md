@@ -231,7 +231,7 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 
 | Language | Providers (routes served) | Consumers (calls made) |
 |----------|---------------------------|------------------------|
-| JS / TS | Express, Hono, Fastify, Koa, Elysia; NestJS controllers; Next.js App Router; Remix | `fetch`; axios, ky, got, ofetch and their instances; HTTP-named wrappers |
+| JS / TS | Express, Hono, Fastify, Koa, Elysia; NestJS controllers; Next.js App Router; Remix | `fetch`; axios, ky, got, ofetch and their instances; Angular `HttpClient`; HTTP-named wrappers |
 | Python | FastAPI, Flask, Django | requests, httpx (aiohttp through wrappers the index confirms) |
 | PHP | Laravel | Guzzle, Laravel `Http` |
 | Java / Kotlin | Spring, JAX-RS, Micronaut | Feign, `java.net.http`, `RestTemplate`, Ktor (Kotlin) |
@@ -306,7 +306,9 @@ otherwise, and `Route::resource` / `apiResource` expand into the routes they reg
 route is served at the app's `setGlobalPrefix` (unless its `exclude` list names the route), then
 its URI version (`enableVersioning`, `@Version`), then the `@Controller` prefix. A call through an
 axios, ky, got or ofetch instance is read with the instance's `baseURL` / `prefixUrl`, also when
-another file imports the instance. A client call
+another file imports the instance. An Angular `HttpClient` call is read on any receiver typed
+or injected as `HttpClient`, with `environment.apiUrl` folded from `src/environments/` and class
+fields built on it; a base an interceptor prepends is not read. A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path and a lower-confidence **candidate** when the target is ambiguous.

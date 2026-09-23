@@ -16,6 +16,7 @@ from .paths import (
     absolute_host,
     consumer_meta,
     extract_path_from_url,
+    flatten_interpolations,
     is_unusable_consumer_path,
     normalize_http_path,
     strip_leading_base_expr,
@@ -129,6 +130,8 @@ def build_consumer_contract(
     host = absolute_host(url)
     path = extract_path_from_url(url)
     path, base_token = strip_leading_base_expr(path)
+    if "${" in path:
+        path = flatten_interpolations(path)
     path = strip_trailing_query_expr(path)
     norm_path = normalize_http_path(path)
     if is_unusable_consumer_path(norm_path):

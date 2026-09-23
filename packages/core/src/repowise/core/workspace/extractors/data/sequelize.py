@@ -17,7 +17,7 @@ import re
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, line_at
-from ..calls import Call, call_sites, decorated_member, file_strings
+from ..calls import Call, call_sites, decorated_member, file_strings, receiver_name
 from ..langs import JS_TS
 from ..strings import Arg, call_arguments, match_paren, on_comment_line, select_argument
 from .dialect import CONVENTION_CONFIDENCE, EXPLICIT_CONFIDENCE, dedup_emit
@@ -32,8 +32,6 @@ _SEQUELIZE = ("sequelize",)
 _DEFINE = Call(re.compile(r"\.\s*define\s*\("), JS_TS, _SEQUELIZE)
 # `User.init(attributes, { sequelize, ... })`: the options name the connection.
 _INIT = Call(re.compile(r"\.\s*init\s*\("), JS_TS, _SEQUELIZE)
-# The receiver a `.define(` / `.init(` is called on, read back from the dot.
-_RECEIVER_RE = re.compile(r"(?<![\w$.])(?:this\s*\.\s*)?(?P<name>[A-Za-z_$][\w$]*)\s*$")
 _CONNECTION_RE = re.compile(r"(?<![\w$])sequelize(?![\w$])")
 _BOUND_RE = re.compile(r"(?P<name>[A-Za-z_$][\w$]*)\s*=\s*new\s+Sequelize\s*\(")
 _CLASS_RE = re.compile(r"\bclass\s+(?P<name>[A-Za-z_$][\w$]*)")
@@ -65,11 +63,6 @@ def _table(model: str, options: list[str], strings: FileStrings) -> tuple[str, f
     return name, CONVENTION_CONFIDENCE
 
 
-def _receiver(content: str, dot: int) -> str | None:
-    m = _RECEIVER_RE.search(content, max(0, dot - 80), dot)
-    return m.group("name") if m else None
-
-
 class SequelizeDialect:
     name = "sequelize"
     extensions = JS_TS
@@ -81,7 +74,7 @@ class SequelizeDialect:
         connections = {"sequelize", *(m.group("name") for m in _BOUND_RE.finditer(content))}
         found: list[tuple[str, float, int]] = []
         for call, args, m, strings in call_sites(ctx, (_DEFINE, _INIT)):
-            receiver = _receiver(content, m.start())
+            receiver = receiver_name(content, m.start())
             if receiver is None:
                 continue
             if call is _DEFINE:

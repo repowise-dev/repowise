@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from .strings import (
     call_arguments,
+    inline_names,
     match_paren,
     resolve_argument,
     resolve_string,
@@ -50,15 +51,28 @@ class Call:
 
 
 class FileStrings:
-    """One file's string syntax, and its constants, read the first time they are needed."""
+    """One file's string syntax, and its constants, read the first time they are needed.
 
-    __slots__ = ("_code", "_constants", "content", "syntax")
+    ``settled`` holds names whose text is already resolved elsewhere (an
+    imported module's member, a class field), holes allowed. They are inlined
+    after the file's own constants have had their turn, so a local binding
+    still wins.
+    """
 
-    def __init__(self, content: str, syntax: StringSyntax, code: str | None = None) -> None:
+    __slots__ = ("_code", "_constants", "content", "settled", "syntax")
+
+    def __init__(
+        self,
+        content: str,
+        syntax: StringSyntax,
+        code: str | None = None,
+        settled: dict[str, str] | None = None,
+    ) -> None:
         self.content = content
         self.syntax = syntax
         self._code = code
         self._constants: dict[str, str] | None = None
+        self.settled = settled if settled is not None else {}
 
     @property
     def constants(self) -> dict[str, str]:
@@ -81,6 +95,11 @@ class FileStrings:
         text = resolve_string(expr, self.syntax)
         if text is None or "${" in text:
             text = resolve_string(expr, self.syntax, self.constants)
+        if self.settled:
+            if text is None:
+                return self.settled.get(expr.strip())
+            if "${" in text:
+                return inline_names(text, self.settled)
         return text
 
 
@@ -169,6 +188,47 @@ def receiver_at(content: str, start: int, qualifiers: re.Pattern[str] | None = N
     return qualifiers is not None and qualifiers.search(head) is not None
 
 
+_RECEIVER_NAME_RE = re.compile(r"(?<![\w$.])(?:this\s*\.\s*)?(?P<name>[A-Za-z_$][\w$]*)\s*$")
+
+
+def receiver_name(content: str, dot: int) -> str | None:
+    """The name a member call is made on, read back from its ``.`` at *dot*.
+
+    ``api`` for ``api.get`` and ``this.api.get``; ``None`` for a longer chain
+    (``window.api.get``) or no name at all.
+    """
+    m = _RECEIVER_NAME_RE.search(content, max(0, dot - 80), dot)
+    return m.group("name") if m else None
+
+
+# What stands before a type to declare a receiver of it: `http: ` (a parameter,
+# parameter property or field) or `http = inject(` (a field).
+_TYPED_RE = re.compile(r"(?P<name>[A-Za-z_$][\w$]*)\s*[?!]?\s*:\s*$")
+_INJECTED_RE = re.compile(r"(?P<name>[A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*inject\s*\(\s*$")
+_DECLARATION_WINDOW = 120
+
+
+def typed_receivers(content: str, type_re: re.Pattern[str]) -> list[str]:
+    """TypeScript names declared with a type *type_re* matches, or injected with it.
+
+    ``private http: HttpClient``, ``http = inject(HttpClient)``,
+    ``@Inject('X') billing: ClientKafka``. The type must stand alone: not a
+    longer name, a member (``ns.HttpClient``) or a generic.
+    """
+    names: list[str] = []
+    for m in type_re.finditer(content):
+        after = content[m.end() : m.end() + 1]
+        if after and (after.isalnum() or after in "_$.<"):
+            continue
+        if not receiver_at(content, m.start()):
+            continue
+        before = content[max(0, m.start() - _DECLARATION_WINDOW) : m.start()]
+        found = _TYPED_RE.search(before) or _INJECTED_RE.search(before)
+        if found is not None and found.group("name") not in names:
+            names.append(found.group("name"))
+    return names
+
+
 # Whitespace and comments between decorators and the member they decorate.
 _GAP_RE = re.compile(r"(?:\s+|//[^\n]*|/\*.*?\*/)*", re.DOTALL)
 _DECORATOR_NAME_RE = re.compile(r"@[\w$.]+")
@@ -208,4 +268,6 @@ __all__ = [
     "decorated_member",
     "file_strings",
     "receiver_at",
+    "receiver_name",
+    "typed_receivers",
 ]

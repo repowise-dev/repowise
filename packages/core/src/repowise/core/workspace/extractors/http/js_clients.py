@@ -14,8 +14,10 @@ import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from ..calls import receiver_name
 from ..langs import JS_TS
 from ..strings import JS_SYNTAX, literal_span, string_constants
+from .angular import environment_mounts
 from .client_calls import ClientCallMatch, consumer_contracts, matches_in
 from .node_clients import client_calls, client_mounts
 
@@ -72,6 +74,14 @@ def _callee(content: str, start: int, end: int) -> str:
     return content[start:end]
 
 
+def _receiver(content: str, start: int) -> str | None:
+    """The name a member call at *start* is made on (``http`` in ``this.http.get``)."""
+    dot = start - 1
+    while dot >= 0 and content[dot] in " \t\n":
+        dot -= 1
+    return receiver_name(content, dot) if dot >= 0 and content[dot] == "." else None
+
+
 def wrapper_calls(content: str, clients: frozenset[str]) -> Iterator[ClientCallMatch]:
     """``fetchJSON(`${BASE}/path`, { method: "POST" })`` and its relatives.
 
@@ -81,6 +91,8 @@ def wrapper_calls(content: str, clients: frozenset[str]) -> Iterator[ClientCallM
         callee = m.group(1)
         if callee in _WRAPPER_SKIP or _callee(content, m.start(1), m.end(1)) in clients:
             continue
+        if clients and _receiver(content, m.start(1)) in clients:
+            continue  # `http.post(url, { method })`, a client's own verb
         nl = content.find("\n", m.end())
         window = content[m.end() :] if nl == -1 else content[m.end() : nl]
         method_opt = _METHOD_OPT_RE.search(window)
@@ -104,7 +116,7 @@ class JsClientsDialect:
     extensions = JS_TS
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
-        return client_mounts(ctx)
+        return client_mounts(ctx) | environment_mounts(ctx)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

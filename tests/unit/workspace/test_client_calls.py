@@ -15,6 +15,11 @@ from repowise.core.workspace.extractors.http.client_calls import (
     consumer_contracts,
     method_from_argument,
 )
+from repowise.core.workspace.extractors.http.paths import (
+    absolute_host,
+    extract_path_from_url,
+    flatten_interpolations,
+)
 from repowise.core.workspace.extractors.strings import (
     CSHARP_SYNTAX,
     GO_SYNTAX,
@@ -294,3 +299,20 @@ class TestConsumerContracts:
         rows = [ClientCallMatch(client="w", url='"database_url"', offset=0, method="GET")]
         assert consumer_contracts(self._ctx("x"), rows, GO_SYNTAX, path_only=True) == []
         assert len(consumer_contracts(self._ctx("x"), rows, GO_SYNTAX)) == 1
+
+
+class TestConsumerUrlShapes:
+    def test_nested_braces_in_an_interpolation_stay_one_segment(self):
+        assert flatten_interpolations("/rate/${format(d, F, { in: utc })}/x") == "/rate/${expr}/x"
+        assert flatten_interpolations("/a/${id}/b") == "/a/${id}/b"
+        assert flatten_interpolations("/a/${broken") == "/a/${broken"
+
+    def test_a_scheme_inside_an_interpolation_is_not_the_host(self):
+        url = "${prod ? 'https://x.io' : ''}/api/status"
+        assert absolute_host(url) is None
+        assert extract_path_from_url(url) == url
+        assert absolute_host("https://x.io/${p}") == "x.io"
+
+    def test_a_scheme_after_a_leading_interpolation_is_the_urls(self):
+        assert absolute_host("${proto}://h.com/api/u") == "h.com"
+        assert extract_path_from_url("${proto}://h.com/api/u") == "/api/u"

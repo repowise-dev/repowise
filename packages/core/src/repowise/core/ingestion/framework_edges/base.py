@@ -11,6 +11,7 @@ dispatcher iterates over.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -20,6 +21,9 @@ if TYPE_CHECKING:
 
     from ..framework_facts import FrameworkFacts
     from ..resolvers import ResolverContext
+
+# One JS / TS string literal, blanked so a name inside one is not read as a reference.
+JS_STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
 
 
 @dataclass(frozen=True)

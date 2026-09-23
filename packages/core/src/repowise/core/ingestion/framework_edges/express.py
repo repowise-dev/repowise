@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from ..framework_routes import express_routes, js_router_bindings, match_paren
 from ..resolvers import ResolverContext
 from .base import (
+    JS_STRING_LITERAL_RE,
     DetectionContext,
     FrameworkHandler,
     _add_edge_if_new,
@@ -29,7 +30,6 @@ _NEST_MODULE_RE = re.compile(r"@Module\s*\(\s*\{([^}]*)\}\s*\)", re.DOTALL)
 _NEST_ARRAY_FIELD_RE = re.compile(r"\b(?:controllers|providers|imports|exports)\s*:\s*\[([^\]]*)\]")
 _IDENT_RE = re.compile(r"\b([A-Z]\w*)\b")
 
-_STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
 _ARG_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
 
 
@@ -86,7 +86,7 @@ def _add_express_edges(
                     close = match_paren(text, route.paren_offset)
                     if close == -1:
                         continue
-                    arg_blob = _STRING_LITERAL_RE.sub(
+                    arg_blob = JS_STRING_LITERAL_RE.sub(
                         "", text[route.paren_offset + 1 : close]
                     )
                     for ident in _ARG_IDENT_RE.finditer(arg_blob):

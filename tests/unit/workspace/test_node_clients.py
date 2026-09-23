@@ -240,3 +240,20 @@ def test_a_base_in_the_calls_own_options_wins(tmp_path: Path) -> None:
         ("axios", "POST", "/v2/jobs", ""),
         ("axios", "GET", "/api/users", ""),
     }
+
+
+def test_an_axios_call_folds_a_class_field(tmp_path: Path) -> None:
+    text = (
+        "import axios from 'axios';\nexport class S {\n  private base = '/api/v1';\n"
+        "  a() { return axios.get(`${this.base}/users`); }\n}\n"
+    )
+    assert _calls(_write(tmp_path, {"a.ts": text})) == {("axios", "GET", "/api/v1/users", "")}
+
+
+def test_an_instance_verb_with_a_method_option_is_not_a_wrapper_row(tmp_path: Path) -> None:
+    text = (
+        "import axios from 'axios';\nconst api = axios.create({ baseURL: '/api' });\n"
+        "api.post('/pay', { method: 'card' });\n"
+    )
+    rows = [c for c in HttpExtractor().extract(_write(tmp_path, {"a.ts": text}), "web") if c.role == "consumer"]
+    assert [(c.meta["client"], c.contract_id) for c in rows] == [("axios", "http::POST::/api/pay")]

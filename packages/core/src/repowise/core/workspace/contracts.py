@@ -60,7 +60,9 @@ CONTRACTS_FILENAME = "contracts.json"
 # Laravel broadcasting sockets; JS/TS constants fold.
 # Version 12 adds NestJS controllers, axios/ky/got/ofetch instances with their
 # base, and Prisma, TypeORM, Sequelize, Drizzle and Knex tables.
-CONTRACTS_VERSION = 12
+# Version 13 adds Angular HttpClient calls, with bases folded from environment
+# files and class fields.
+CONTRACTS_VERSION = 13
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans

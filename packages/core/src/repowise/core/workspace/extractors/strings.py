@@ -385,6 +385,16 @@ def resolve_string(
     return None
 
 
+def inline_names(text: str, names: dict[str, str]) -> str:
+    """Resolved template *text* with each ``${name}`` *names* holds replaced by its text.
+
+    For values settled outside the file's own constants, whose text may keep a
+    hole of its own (``${environment.apiUrl}/users``); :func:`_fold` inlines
+    only hole-free constants.
+    """
+    return _TEMPLATE_INTERP_RE.sub(lambda m: names.get(m.group(1).strip(), m.group(0)), text)
+
+
 def string_constants(
     content: str, syntax: StringSyntax, code: str | None = None
 ) -> dict[str, str]:
@@ -427,6 +437,74 @@ def string_constants(
     return {name: text for name, text in seen.items() if text is not None}
 
 
+_CLASS_OPEN_RE = re.compile(r"class(?<![\w$]class)\s+[A-Za-z_$][\w$]*[^{;]*\{")
+# A class field and what it is set to: a declaration on its own line
+# (`private base = x`, `base: string = x`) or `this.base = x` anywhere, with
+# `op` set for a compound assignment (`this.base += x`).
+_FIELD_DECL_RE = re.compile(
+    r"^[ \t]*(?P<mods>(?:(?:private|protected|public|readonly|static|override)[ \t]+)*)"
+    r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*[?!]?(?:[ \t]*:[^=\n]+)?=(?![=>])[ \t]*(?P<rhs>[^\n]+)$",
+    re.MULTILINE,
+)
+_THIS_ASSIGN_RE = re.compile(
+    r"this\s*\.\s*(?P<name>[A-Za-z_$][\w$]*)\s*(?P<op>[-+*/%?|&]*)=(?![=>])[ \t]*(?P<rhs>[^\n;]*)"
+)
+_BARE_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+@dataclass(frozen=True)
+class ClassFields:
+    """One class body's span and its fields: ``this.name -> rhs``, raw text."""
+
+    start: int
+    end: int
+    fields: dict[str, str]
+
+
+def js_class_fields(content: str) -> list[ClassFields]:
+    """The fields each class in *content* sets exactly once, per class body.
+
+    A declaration counts only directly in the body (not a method's local
+    ``url = x``) and not when ``static`` (read as ``A.base``, not ``this.base``).
+    A field set twice, or by ``+=``, is not a constant, nor one set to a bare
+    name (``this.base = base``), usually a constructor parameter shadowing any
+    constant of that name. Innermost classes come first.
+    """
+    spans: list[tuple[int, int]] = []
+    for c in _CLASS_OPEN_RE.finditer(content):
+        close = match_paren(content, c.end() - 1, len(content), closer="}")
+        if close > 0:
+            spans.append((c.end(), close))
+    out: list[ClassFields] = []
+    for start, end in sorted(spans, key=lambda s: s[1] - s[0]):
+        inner = [s for s in spans if start < s[0] and s[1] < end]
+        seen: dict[str, str | None] = {}
+        depth, at = 0, start
+        for m in _FIELD_DECL_RE.finditer(content, start, end):
+            depth += content.count("{", at, m.start()) - content.count("}", at, m.start())
+            at = m.start()
+            if depth == 0 and "static" not in m.group("mods"):
+                _record(seen, content, m)
+        for m in _THIS_ASSIGN_RE.finditer(content, start, end):
+            if not any(a <= m.start() < b for a, b in inner):
+                _record(seen, content, m)
+        fields = {name: rhs for name, rhs in seen.items() if rhs}
+        if fields:
+            out.append(ClassFields(start, end, fields))
+    return out
+
+
+def _record(seen: dict[str, str | None], content: str, m: re.Match[str]) -> None:
+    if on_comment_line(content, m.start()):
+        return
+    name = "this." + m.group("name")
+    rhs = m.group("rhs").strip()
+    if JS_SYNTAX.assignment_strip is not None:
+        rhs = JS_SYNTAX.assignment_strip.sub("", rhs).strip()
+    refused = name in seen or m.groupdict().get("op") or _BARE_NAME_RE.fullmatch(rhs)
+    seen[name] = None if refused else rhs
+
+
 # One object or enum entry: comments before it, an identifier or quoted key,
 # then `:` or `=`.
 _MEMBER_RE = re.compile(
@@ -439,6 +517,13 @@ _MEMBER_RE = re.compile(
 _MEMBER_VALUE_MAX = 512
 _MEMBER_VALUE_START = frozenset("'\"`{$_") | frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+
+
+# A literal member value with a comment after it (`url: '/api' // was '/v1'`).
+_LITERAL_THEN_COMMENT_RE = re.compile(
+    r"""^(?P<lit>(?P<q>['"`])(?:(?!(?P=q))[^\\]|\\.)*(?P=q))\s*(?://[^\n]*|/\*.*?\*/)\s*$""",
+    re.DOTALL,
 )
 
 
@@ -478,6 +563,8 @@ def _fold_members(
             continue
         key, value, value_at = member
         name = f"{prefix}.{key}"
+        if value[0] in _QUOTES and "/" in value and len(value) <= _MEMBER_VALUE_MAX:
+            value = _LITERAL_THEN_COMMENT_RE.sub(r"\g<lit>", value)
         if value[0] not in _MEMBER_VALUE_START or len(value) > _MEMBER_VALUE_MAX:
             seen[name] = None
             continue
@@ -772,8 +859,11 @@ __all__ = [
     "RUST_SYNTAX",
     "SCAN_LIMIT",
     "Arg",
+    "ClassFields",
     "StringSyntax",
     "call_arguments",
+    "inline_names",
+    "js_class_fields",
     "literal_span",
     "map_entry",
     "match_paren",
