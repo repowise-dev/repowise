@@ -56,13 +56,13 @@ scored, ranked, or aggregated.
 | `subprocess_shell_true` | high | `subprocess.*` with `shell=True`, including across physical lines |
 | `os_system` | high | `os.system` |
 | `hardcoded_password` | high | an assignment of a quoted literal to a name containing `password`, any case |
-| `hardcoded_secret` | high | the same for a name containing `api_key`, `apikey`, `secret`, `token` or `access_key` |
+| `hardcoded_secret` | high | the same for a name containing `api_key`, `apikey`, `secret`, `token` or `access_key`. A snake_case value (a constant holding a key's name) or a template placeholder (`{{ ... }}`, `${...}`) is skipped, and a value one of the vendor kinds below already reports is not reported twice |
 | `aws_access_key` | high | an AWS access key ID (`AKIA`/`ASIA` + 16 chars), regardless of variable name |
 | `github_token` | high | a GitHub PAT, OAuth, app, or refresh token (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_`), regardless of variable name |
 | `slack_token` | high | a Slack token (`xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, `xoxs-`), regardless of variable name |
-| `google_api_key` | high | a Google API key (`AIza` + 35 chars), regardless of variable name |
-| `stripe_key` | high | a Stripe secret or live publishable key (`sk_live_`, `sk_test_`, `pk_live_`), regardless of variable name |
-| `private_key_pem` | high | a PEM header (`-----BEGIN ... PRIVATE KEY-----`) followed by a base64-looking body line, so assembling just the header string does not fire |
+| `google_api_key` | high | a Google API key (`AIza` + 35 chars), regardless of variable name, but not from the middle of a base64 run such as a lockfile integrity hash |
+| `stripe_key` | high | a Stripe secret or restricted key (`sk_` or `rk_`, then `live_`, `test_` or `prod_`), regardless of variable name. Publishable `pk_` keys are public by design and do not fire |
+| `private_key_pem` | high | a PEM header (`-----BEGIN ... PRIVATE KEY-----`) followed by a base64-looking body line, so assembling just the header string does not fire. The break may be an escaped `\n`, which catches keys held on one line in JSON or `.env` files |
 | `fstring_sql` | med | an f-string containing `SELECT` and an interpolation |
 | `concat_sql` | med | `.execute("SELECT ... +` |
 | `tls_verify_false` | med | `verify = False` |
@@ -89,7 +89,8 @@ searched in raw source because the module usually arrives as a string literal
 that masking would blank. Every other pattern in the table is a plain regex over
 one line of raw source, comments included.
 
-**One pattern sees across lines.** `subprocess.run(` opening on one line with
+**Two patterns see across lines.** `private_key_pem` needs the body line after
+its header, and `subprocess.run(` opening on one line with
 `shell=True` several lines down is invisible to a per-line scan, so
 `subprocess_shell_true` gets a second pass over the whole source. Continuation
 is restricted to lines that begin with indentation and capped at roughly 200

@@ -853,3 +853,86 @@ class TestEverySnippetIsMasked:
         (hit,) = scan_source("a.py", line + "\n")
         assert time.perf_counter() - started < 1.0
         _assert_no_raw(hit["snippet"], self.PW)
+
+    def test_long_github_pat_straddling_the_cut_is_masked(self) -> None:
+        pat = "github_pat_" + "".join(chr(ord("A") + (i * 7) % 26) for i in range(82))
+        line = f'{"x" * 80} = Client(auth="{pat}")'
+        assert line.index(pat) < 120 < line.index(pat) + len(pat)
+        (hit,) = [f for f in scan_source("a.py", line + "\n") if f["kind"] == "github_token"]
+        assert "gith****" in hit["snippet"]
+        _assert_no_raw(hit["snippet"], pat)
+
+    def test_vendor_token_beside_a_weak_hash_is_masked_in_both(self) -> None:
+        token = "ghp_" + "Kq7mZ2xV9pL4rT8wN3bY6cH1jF5dS0gA2eUo"
+        findings = scan_source("a.py", f'digest = md5(body); auth = "{token}"\n')
+        assert {f["kind"] for f in findings} == {"weak_hash", "github_token"}
+        for f in findings:
+            _assert_no_raw(f["snippet"], token)
+
+    def test_inline_pem_body_is_masked(self) -> None:
+        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj"
+        line = (
+            '  "private_key": "-----BEGIN PRIVATE KEY-----\\n'
+            f'{body}\\n{body[::-1]}\\n-----END PRIVATE KEY-----\\n",'
+        )
+        (hit,) = [f for f in scan_source("sa.json", line + "\n") if f["kind"] == "private_key_pem"]
+        _assert_no_raw(hit["snippet"], body)
+        _assert_no_raw(hit["snippet"], body[::-1])
+
+    def test_stray_hit_on_a_pem_body_line_is_masked(self) -> None:
+        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgE+md5/AoIBAQC7VJTUt9Us8cKj"
+        source = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\n"
+        (hit,) = [f for f in scan_source("id_rsa", source) if f["kind"] == "weak_hash"]
+        assert hit["line"] == 2
+        _assert_no_raw(hit["snippet"], body)
+
+
+class TestVendorShapeEdges:
+    """Edges of the vendor-shape and keyword patterns."""
+
+    @staticmethod
+    def _kinds(source: str, path: str = "config.py") -> list[str]:
+        return [f["kind"] for f in scan_source(path, source)]
+
+    @pytest.mark.parametrize("prefix", ["sk_live_", "rk_live_", "sk_test_", "sk_prod_"])
+    def test_stripe_secret_and_restricted_keys_fire(self, prefix: str) -> None:
+        # Split so the contiguous prefix never sits in source for push protection.
+        key = prefix[:3] + prefix[3:] + "A" * 24
+        assert "stripe_key" in self._kinds(f'stripe_client = Stripe("{key}")\n')
+
+    def test_stripe_publishable_key_does_not_fire(self) -> None:
+        key = "pk_" + "live_" + "A" * 24
+        assert "stripe_key" not in self._kinds(f'const stripe = loadStripe("{key}");\n', "a.ts")
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'ACCESS_TOKEN = "access_token"\n',
+            'const token = "auth_token_key";\n',
+            'token = "{{ csrf_token }}"\n',
+            'API_KEY = "${STRIPE_API_KEY}"\n',
+        ],
+    )
+    def test_key_names_and_templates_are_not_secrets(self, source: str) -> None:
+        assert "hardcoded_secret" not in self._kinds(source)
+
+    def test_vendor_shape_and_keyword_report_one_finding(self) -> None:
+        source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'
+        assert self._kinds(source) == ["github_token"]
+
+    def test_pem_key_with_escaped_newline_is_flagged(self) -> None:
+        source = (
+            'PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\n'
+            'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\\n"\n'
+        )
+        assert "private_key_pem" in self._kinds(source, ".env")
+
+    def test_google_key_ending_in_a_dash_is_flagged(self) -> None:
+        source = 'MAPS_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9a-"\n'
+        assert "google_api_key" in self._kinds(source)
+
+    def test_google_shape_inside_an_integrity_hash_is_ignored(self) -> None:
+        run = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"
+        for integrity in (f"sha512-{run}+Q==", f"sha512-Zm9v/{run}/b2=="):
+            source = f'      "integrity": "{integrity}",\n'
+            assert "google_api_key" not in self._kinds(source, "package-lock.json")

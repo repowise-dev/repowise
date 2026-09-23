@@ -189,6 +189,7 @@ def test_migration_0077_clears_credential_snippets_only() -> None:
                         [
                             ("public_env_secret", "NEXT_PUBLIC_API_KEY=sk_live_raw", 1, ""),
                             ("hardcoded_secret", 'API_KEY = "rawrawrawraw', 2, "abc123"),
+                            ("github_token", 'GH = "ghp_rawrawrawraw', 4, ""),
                             ("eval_call", "eval(x)", 3, ""),
                         ],
                     )
@@ -202,7 +203,12 @@ def test_migration_0077_clears_credential_snippets_only() -> None:
 
         with closing(sqlite3.connect(db_path)) as conn:
             rows = dict(conn.execute("SELECT kind, snippet FROM security_findings").fetchall())
-        assert rows == {"public_env_secret": "", "hardcoded_secret": "", "eval_call": "eval(x)"}
+        assert rows == {
+            "public_env_secret": "",
+            "hardcoded_secret": "",
+            "github_token": "",
+            "eval_call": "eval(x)",
+        }
 
 
 async def test_history_gate_excludes_code_smells_by_default(session: AsyncSession) -> None:

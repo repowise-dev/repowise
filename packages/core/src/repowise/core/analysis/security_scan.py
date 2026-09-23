@@ -154,9 +154,16 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "high",
     ),
     (re.compile(r"(?i:(xox[baprs]-[0-9a-zA-Z-]{10,72}))"), "slack_token", "high"),
-    (re.compile(r"\b(AIza[0-9A-Za-z_-]{35})\b"), "google_api_key", "high"),
+    # Bounded by lookarounds, not ``\b``: a key can end in ``-``, and a base64 run
+    # (a lockfile ``sha512-`` integrity hash) must not yield one from its middle.
     (
-        re.compile(r"\b((?:sk_(?:live|test)|pk_live)_[0-9A-Za-z]{10,99})\b"),
+        re.compile(r"(?<![0-9A-Za-z+/_-])(AIza[0-9A-Za-z_-]{35})(?![0-9A-Za-z_-])"),
+        "google_api_key",
+        "high",
+    ),
+    # Secret and restricted keys only: a publishable ``pk_`` key is public by design.
+    (
+        re.compile(r"\b((?:sk|rk)_(?:live|test|prod)_[0-9A-Za-z]{10,99})\b"),
         "stripe_key",
         "high",
     ),
@@ -238,8 +245,11 @@ _SPANNING_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # body line right after the header is what tells the two apart, and the
     # capture group around that body line is the value the SECRET_KINDS gate
     # below checks (length + placeholder), same as every other secret kind.
+    # The break may be an escaped ``\n``: JSON and .env files hold the key on one line.
     (
-        re.compile(r"(?i:-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----)\r?\n([A-Za-z0-9+/=]{20,})"),
+        re.compile(
+            r"(?i:-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----)(?:\r?\n|\\n)([A-Za-z0-9+/=]{20,})"
+        ),
         "private_key_pem",
         "high",
     ),
@@ -275,6 +285,23 @@ SECRET_KINDS: frozenset[str] = frozenset(
 SYMBOL_NAME_KINDS: frozenset[str] = frozenset({"security_sensitive_symbol"})
 
 
+_KEYWORD_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secret"})
+
+# A snake_case name is a key's name (a constant holding its own name) and a
+# template placeholder is filled at render time; neither is a credential.
+_KEY_NAME_VALUE = re.compile(r"[a-z_]*_[a-z_]*")
+_TEMPLATE_VALUE = re.compile(r"\{\{.*\}\}|\$\{[^}]*\}")
+
+
+def _is_secret_value(kind: str, val: str) -> bool:
+    """True when *val*, captured by a *kind* pattern, looks like a real credential."""
+    if not _is_valid_credential_value(val):
+        return False
+    if kind == "hardcoded_secret" and _KEY_NAME_VALUE.fullmatch(val):
+        return False
+    return not (kind in _KEYWORD_KINDS and _TEMPLATE_VALUE.fullmatch(val.strip()))
+
+
 def _redaction(val: str) -> str:
     return (val[:4] + "****") if len(val) >= 4 else "****"
 
@@ -283,10 +310,17 @@ def _redaction(val: str) -> str:
 # ``SECRET_KINDS`` the empty capture would fail validation and drop the finding.
 _ASSIGNED_VALUE = re.compile(r"""\A['"]?\s*[:=]+\s*['"`]?([^'"`\s,;]+)""")
 
-_SECRET_PATTERNS = [p for p, kind, _ in _PATTERNS if kind in SECRET_KINDS]
+_SECRET_PATTERNS = [(p, kind) for p, kind, _ in _PATTERNS if kind in SECRET_KINDS]
 _PUBLIC_ENV_PATTERN = next(p for p, kind, _ in _PATTERNS if kind == "public_env_secret")
+# A PEM body written on its header's line (escaped ``\n`` breaks), up to ``-----END``.
+_PEM_INLINE_BODY = re.compile(
+    r"(?i:-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----)(?:\\[rn])*((?:[A-Za-z0-9+/=]|\\[rn])+)"
+)
 _SECRET_PREFILTER = re.compile(
-    "|".join(f"(?:{p.pattern})" for p in [*_SECRET_PATTERNS, _PUBLIC_ENV_PATTERN])
+    "|".join(
+        f"(?:{p.pattern})"
+        for p in [*(p for p, _ in _SECRET_PATTERNS), _PUBLIC_ENV_PATTERN, _PEM_INLINE_BODY]
+    )
 )
 
 _SNIPPET_MAX = 120
@@ -296,10 +330,13 @@ _MARKER = "****"
 def _secret_spans(line: str) -> list[tuple[int, int]]:
     """Every credential value on *line*, including repeats of one elsewhere on it."""
     spans: list[tuple[int, int]] = []
-    for pattern in _SECRET_PATTERNS:
+    for pattern, kind in _SECRET_PATTERNS:
         for match in pattern.finditer(line):
-            if _is_valid_credential_value(match.group(1)):
+            if _is_secret_value(kind, match.group(1)):
                 spans.append(match.span(1))
+    for match in _PEM_INLINE_BODY.finditer(line):
+        if _is_valid_credential_value(match.group(1)):
+            spans.append(match.span(1))
     for match in _PUBLIC_ENV_PATTERN.finditer(line):
         value = _ASSIGNED_VALUE.search(line[match.end() :])
         if value is not None:
@@ -530,38 +567,52 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
         if not _ANY_PATTERN.search(line):
             continue
         snippet: str | None = None
+        keyword_hits: list[tuple[dict, str]] = []
+        vendor_values: list[str] = []
         for pattern, kind, severity in _PATTERNS:
             if kind in _CALL_KINDS:
                 continue
             match = pattern.search(line)
             if match:
                 if kind in SECRET_KINDS:
-                    if not _is_valid_credential_value(match.group(1)):
+                    if not _is_secret_value(kind, match.group(1)):
                         continue
                     if is_low_sev_file:
                         severity = "low"
                 if snippet is None:
                     snippet = _snippet(line)
-                findings.append(
-                    {
-                        "kind": kind,
-                        "severity": severity,
-                        "snippet": snippet,
-                        "line": lineno,
-                    }
-                )
+                finding = {
+                    "kind": kind,
+                    "severity": severity,
+                    "snippet": snippet,
+                    "line": lineno,
+                }
+                findings.append(finding)
+                if kind in _KEYWORD_KINDS:
+                    keyword_hits.append((finding, match.group(1)))
+                elif kind in SECRET_KINDS:
+                    vendor_values.append(match.group(1))
+        # One secret, one finding: the vendor shape already names what the keyword saw.
+        for finding, value in keyword_hits:
+            if any(vendor in value for vendor in vendor_values):
+                findings.remove(finding)
 
     # Calls that open on one line and set ``shell=True`` on a later one; reported
     # on the opening line, unless the per-line pass already did.
+    pem_body_lines: set[int] = set()
     for pattern, kind, severity in _SPANNING_PATTERNS:
         for match in pattern.finditer(source):
             if kind in SECRET_KINDS:
                 val = match.group(1) if match.groups() else ""
-                if not _is_valid_credential_value(val):
+                if not _is_secret_value(kind, val):
                     continue
                 if is_low_sev_file:
                     severity = "low"
             start_line = source.count("\n", 0, match.start()) + 1
+            if kind == "private_key_pem":
+                end = source.find("-----END", match.end())
+                end_line = source.count("\n", 0, end if end != -1 else match.end()) + 1
+                pem_body_lines.update(range(start_line + 1, end_line + (end == -1)))
             if any(f["kind"] == kind and f["line"] == start_line for f in findings):
                 continue
             line_start = source.rfind("\n", 0, match.start()) + 1
@@ -576,6 +627,12 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                     "line": start_line,
                 }
             )
+
+    # A key body line matches nothing of its own, so a hit there is stray and its
+    # snippet would carry key material: mask the whole line.
+    for finding in findings:
+        if finding["line"] in pem_body_lines:
+            finding["snippet"] = _redaction(lines[finding["line"] - 1].strip())
 
     # Symbol-name scan (informational / low)
     for sym in symbols:

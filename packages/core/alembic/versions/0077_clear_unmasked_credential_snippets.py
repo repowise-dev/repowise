@@ -1,7 +1,8 @@
 """Clear credential snippets stored before full-line masking.
 
 Rows written earlier can hold a raw value: a long secret cut before it was
-masked, or a ``public_env_secret`` value that was never masked. Updates do not
+masked, a ``public_env_secret`` value that was never masked, or a vendor-shape
+secret sharing a line with another finding. Updates do not
 rescan and history re-runs keep existing rows, so nothing else would replace
 them. No downgrade: it would restore the secrets.
 
@@ -28,7 +29,9 @@ def upgrade() -> None:
     op.get_bind().execute(
         sa.text(
             "UPDATE security_findings SET snippet = '' "
-            "WHERE kind IN ('hardcoded_password', 'hardcoded_secret', 'public_env_secret')"
+            "WHERE kind IN ('hardcoded_password', 'hardcoded_secret', 'public_env_secret', "
+            "'aws_access_key', 'github_token', 'slack_token', 'google_api_key', "
+            "'stripe_key', 'private_key_pem')"
         )
     )
 
