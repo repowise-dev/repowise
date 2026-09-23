@@ -33,4 +33,20 @@ def detail_map(row: Any) -> dict[str, Any]:
     return {}
 
 
-__all__ = ["detail_map", "field"]
+def json_field(row: Any, name: str, default: Any) -> Any:
+    """A JSON-text column decoded, or the value as given when already decoded.
+
+    *default* stands in for an absent, empty or malformed cell.
+    """
+    value = field(row, name, None)
+    if isinstance(value, (str, bytes)):
+        if not value:
+            return default
+        try:
+            return json.loads(value)
+        except ValueError:
+            return default
+    return default if value is None else value
+
+
+__all__ = ["detail_map", "field", "json_field"]
