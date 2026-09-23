@@ -28,7 +28,19 @@ def _iso(value: Any) -> str | None:
     return isoformat() if callable(isoformat) else str(value)
 
 
-def _freshness(ingested_commit: str | None, indexed_commit: str | None) -> dict[str, Any]:
+def _freshness(
+    ingested_commit: str | None,
+    indexed_commit: str | None,
+    indexed_commit_error: str | None = None,
+) -> dict[str, Any]:
+    if indexed_commit_error:
+        return {
+            "status": "unknown",
+            "reason": "index_commit_read_failed",
+            "error": indexed_commit_error,
+            "ingested_commit": ingested_commit,
+            "indexed_commit": None,
+        }
     if not ingested_commit or not indexed_commit:
         return {
             "status": "unknown",
@@ -121,14 +133,16 @@ async def analyze_test_impact(
         summary = {}
         coverage_error = type(exc).__name__
 
+    indexed_commit_error: str | None = None
     try:
         indexed_commit = (
             await session.execute(
                 select(Repository.head_commit).where(Repository.id == repository_id)
             )
         ).scalar_one_or_none()
-    except Exception:
+    except Exception as exc:
         indexed_commit = None
+        indexed_commit_error = type(exc).__name__
 
     measured: dict[str, list[Mapping[str, Any]]] = {}
     if summary.get("pair_count", 0) > 0:
@@ -157,6 +171,7 @@ async def analyze_test_impact(
         inferred,
         summary,
         indexed_commit=indexed_commit,
+        indexed_commit_error=indexed_commit_error,
         coverage_error=coverage_error,
         inference_error=inference_error,
         **fold,
@@ -186,6 +201,7 @@ def assemble_test_impact(
     change_status: Mapping[str, str] | None = None,
     coverage_error: str | None = None,
     inference_error: str | None = None,
+    indexed_commit_error: str | None = None,
 ) -> dict[str, Any]:
     """Fold coverage and reachability evidence into the test-impact result.
 
@@ -196,8 +212,8 @@ def assemble_test_impact(
     uncapped list (``ReachedBy.all_tests``, not the display-capped ``tests``);
     paths outside *changed_files* are ignored. *coverage_summary* carries
     ``pair_count``, ``test_count``, ``source_file_count``, ``ingested_at``,
-    ``source_format`` and ``ingested_commit_sha``. The two ``*_error`` arguments
-    are the exception type names of a failed read, which mark that side degraded.
+    ``source_format`` and ``ingested_commit_sha``. The ``*_error`` arguments
+    are the exception type names of a failed read; each marks the analysis degraded.
     *changed_files* is filtered by *exclude_spec* here too.
 
     *change_status* maps path to ``added``/``modified``/``deleted``/``renamed``.
@@ -354,7 +370,7 @@ def assemble_test_impact(
         coverage_status = "available"
         coverage_reason = "no_matching_changed_files" if changed and matched_files == 0 else None
 
-    freshness = _freshness(summary.get("ingested_commit_sha"), indexed_commit)
+    freshness = _freshness(summary.get("ingested_commit_sha"), indexed_commit, indexed_commit_error)
     coverage = {
         "status": coverage_status,
         "reason": coverage_reason,
@@ -407,7 +423,11 @@ def assemble_test_impact(
         )
 
     stale = freshness["status"] == "stale"
-    degraded = coverage_status == "degraded" or inference_status == "degraded"
+    degraded = (
+        coverage_status == "degraded"
+        or inference_status == "degraded"
+        or bool(indexed_commit_error)
+    )
     partial = coverage_status != "available" or inference_status != "available" or stale
     if degraded:
         analysis_status = "degraded"
