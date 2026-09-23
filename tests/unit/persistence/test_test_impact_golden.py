@@ -75,3 +75,43 @@ async def test_test_impact_matches_golden(async_session, tmp_path) -> None:
         _GOLDEN.parent.mkdir(exist_ok=True)
         _GOLDEN.write_text(json.dumps(got, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     assert got == json.loads(_GOLDEN.read_text(encoding="utf-8"))
+
+
+async def test_a_failed_per_file_coverage_read_degrades_coverage_only(
+    async_session, monkeypatch
+) -> None:
+    fixture = _fixture()
+    repo = await insert_repo(async_session, name="perfile", head_commit="fixture-head")
+    await _seed(async_session, repo.id, fixture)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("coverage read failed")
+
+    monkeypatch.setattr("repowise.core.persistence.crud.tests_covering", _boom)
+    impact = await analyze_test_impact(async_session, repo.id, fixture["changed_files"])
+
+    assert impact["coverage"]["status"] == "degraded"
+    assert impact["coverage"]["reason"] == "RuntimeError: coverage_query_failed"
+    assert impact["inference"]["status"] == "available"
+    assert {r["basis"] for r in impact["recommendations"]} == {"inferred"}
+
+
+async def test_a_failed_reachability_read_degrades_inference_only(
+    async_session, monkeypatch
+) -> None:
+    fixture = _fixture()
+    repo = await insert_repo(async_session, name="noreach", head_commit="fixture-head")
+    await _seed(async_session, repo.id, fixture)
+
+    async def _boom(*args, **kwargs):
+        raise TimeoutError
+
+    monkeypatch.setattr(
+        "repowise.core.analysis.test_reachability.tests_reaching_by_tier", _boom
+    )
+    impact = await analyze_test_impact(async_session, repo.id, fixture["changed_files"])
+
+    assert impact["inference"]["status"] == "degraded"
+    assert impact["inference"]["reason"] == "TimeoutError: test_reachability_failed"
+    assert impact["analysis"]["status"] == "degraded"
+    assert {r["basis"] for r in impact["recommendations"]} == {"measured"}

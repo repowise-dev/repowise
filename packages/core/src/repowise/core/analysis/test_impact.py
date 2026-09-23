@@ -192,10 +192,13 @@ def assemble_test_impact(
     Pure: no I/O. *measured_by_file* maps a changed path to its coverage-map
     rows (``test_id``, optional ``test_file`` and ``source_format``), read only
     when *coverage_summary* reports pairs. *inferred_by_file* maps a changed path
-    to ``{"tests": [...], "via": tier}``. *coverage_summary* carries
+    to ``{"tests": [...], "via": tier}``, both keys required, with ``tests`` the
+    uncapped list (``ReachedBy.all_tests``, not the display-capped ``tests``);
+    paths outside *changed_files* are ignored. *coverage_summary* carries
     ``pair_count``, ``test_count``, ``source_file_count``, ``ingested_at``,
     ``source_format`` and ``ingested_commit_sha``. The two ``*_error`` arguments
     are the exception type names of a failed read, which mark that side degraded.
+    *changed_files* is filtered by *exclude_spec* here too.
 
     *change_status* maps path to ``added``/``modified``/``deleted``/``renamed``.
     A deleted path has no head side to cover, so "no measured tests" there is a
