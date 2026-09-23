@@ -256,3 +256,172 @@ function f(ids, n) {
     hits = _io_hits(src)
     assert hits
     assert hits[0].loop is None or hits[0].loop.chunked is False
+
+
+# ---------------------------------------------------------------------------
+# runs_in_place / concurrency_bound: an awaited limiter closure is the loop body
+# ---------------------------------------------------------------------------
+
+
+def test_stored_closure_is_not_in_place():
+    src = """
+async function f(xs) {
+  for (const x of xs) {
+    const cb = () => fetch(x);
+    await limit(cb);
+  }
+}
+"""
+    assert _io_hits(src) == []
+
+
+def test_returned_closure_is_not_in_place():
+    src = """
+function make(xs) {
+  for (const x of xs) {
+    return () => fetch(x);
+  }
+}
+"""
+    assert _io_hits(src) == []
+
+
+def test_unawaited_limiter_call_is_not_in_place():
+    # The fan-out already happens here: `limit(...)` is queued, not awaited.
+    src = """
+async function f(xs) {
+  for (const x of xs) {
+    tasks.push(limit(() => fetch(x)));
+  }
+}
+"""
+    assert _io_hits(src) == []
+
+
+def test_limiter_call_inside_a_non_limiter_callback_is_not_in_place():
+    # The outer closure is the argument of `other(...)`, not a limiter — its
+    # boundary resets loop_depth regardless of the limiter call nested inside.
+    src = """
+async function f(xs) {
+  for (const x of xs) {
+    await other(() => { limit(() => fetch(x)); });
+  }
+}
+"""
+    assert _io_hits(src) == []
+
+
+def test_closure_passed_to_settimeout_is_not_in_place():
+    src = """
+async function f(xs) {
+  for (const x of xs) {
+    setTimeout(() => fetch(x), 0);
+  }
+}
+"""
+    assert _io_hits(src) == []
+
+
+def test_limiter_built_inside_the_loop_body_bounds_nothing():
+    # `pLimit(2)` is itself a call, so the enclosing call's callee is a
+    # `call_expression`, not an identifier/member naming a limiter — the
+    # closure does not run in place, and even if it did there would be no
+    # stable limiter identity to report.
+    src = """
+async function f(xs) {
+  for (const x of xs) {
+    await pLimit(2)(() => fetch(x));
+  }
+}
+"""
+    assert _io_hits(src) == []
+
+
+def test_break_in_body_gives_a_hit_with_no_bound():
+    src = """
+async function f(xs) {
+  for (const x of xs) {
+    if (!x) break;
+    await limit(() => fetch(x));
+  }
+}
+"""
+    hits = _io_hits(src)
+    assert hits
+    assert hits[0].loop is None or hits[0].loop.concurrency_bound is None
+
+
+def test_limit_closure_runs_in_place_and_bounds_the_sink():
+    src = """
+async function f(xs) {
+  for (const x of xs) {
+    await limit(() => fetch(x));
+  }
+}
+"""
+    for kind in ("io_in_loop", "serial_await_in_loop"):
+        hits = _hits(src, kind)
+        assert hits and hits[0].loop is not None
+        assert hits[0].loop.concurrency_bound == "limit"
+
+
+def test_mutex_run_exclusive_closure_runs_in_place_and_bounds_the_sink():
+    src = """
+async function f(xs) {
+  for (const x of xs) {
+    await mutex.runExclusive(async () => { await fetch(x); });
+  }
+}
+"""
+    hits = _io_hits(src)
+    assert hits
+    assert hits[0].loop is not None
+    assert hits[0].loop.concurrency_bound == "mutex.runExclusive"
+    # The sink is awaited inside the closure too, so it is additionally a
+    # missed-concurrency co-signal — carrying the same bound.
+    serial = _hits(src, "serial_await_in_loop")
+    assert serial
+    assert serial[0].loop is not None
+    assert serial[0].loop.concurrency_bound == "mutex.runExclusive"
+
+
+def test_prisma_find_unique_pushed_in_key_order_not_equivalent():
+    src = """
+async function f(users) {
+  const out = [];
+  for (const u of users) {
+    out.push(await prisma.user.findUnique({ where: { id: u.id } }));
+  }
+  return out;
+}
+"""
+    loop = _io_hits(src)[0].loop
+    assert loop is not None and loop.batch is not None and loop.batch.equivalent is False
+
+
+def test_a_float_step_of_one_is_not_chunked():
+    src = """
+async function f(ids) {
+  for (let i = 0; i < ids.length; i += 1.0) {
+    await fetch(ids[i]);
+  }
+}
+"""
+    loop = _io_hits(src)[0].loop
+    assert loop is None or not loop.chunked
+
+
+def test_a_push_inside_a_limiter_closure_still_breaks_equivalence():
+    src = """
+async function f(users) {
+  const out = [];
+  for (const u of users) {
+    await mutex.runExclusive(async () => {
+      out.push(await prisma.user.findUnique({ where: { id: u.id } }));
+    });
+  }
+  return out;
+}
+"""
+    loop = _io_hits(src)[0].loop
+    assert loop is not None and loop.batch is not None and loop.batch.equivalent is False

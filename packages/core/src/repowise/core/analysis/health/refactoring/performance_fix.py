@@ -37,7 +37,7 @@ _API_STEPS: dict[str, tuple[str | None, str]] = {
     "batch_or_prefetch_io": (
         None,
         "Collect the keys before the loop and make one call with {api} in place of the "
-        "per-key filter",
+        "per-key call",
     ),
     "parallelize_independent_awaits": (
         None,

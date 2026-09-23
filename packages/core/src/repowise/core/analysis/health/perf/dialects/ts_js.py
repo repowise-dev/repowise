@@ -8,6 +8,7 @@ and the TS branches of the walker (``_has_async_modifier`` and the
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, ClassVar
 
 from ..loop_facts import BatchForm
@@ -83,6 +84,11 @@ _TS_RESOURCE_CTORS: frozenset[str] = frozenset(
         "IORedis",
     }
 )
+
+# A concurrency limiter, named by convention (``limit`` / ``this.sem``), or by the
+# method async-mutex (``runExclusive``) and bottleneck (``schedule``) run work through.
+_LIMITER_NAME_RE = re.compile(r"(?i)(sem|semaphore|limiter|limit|mutex)$")
+_LIMITER_METHODS: frozenset[str] = frozenset({"runExclusive", "schedule"})
 
 
 class TsJsPerfDialect(BasePerfDialect):
@@ -338,20 +344,7 @@ class TsJsPerfDialect(BasePerfDialect):
         ``for...of`` over a ``chunk(xs, n)`` / lodash ``_.chunk(xs, n)`` call.
         """
         if node.type == "for_statement":
-            inc = node.child_by_field_name("increment")
-            if inc is None or inc.type != "augmented_assignment_expression":
-                return False
-            if not any(c.type == "+=" for c in inc.children):
-                return False
-            right = inc.child_by_field_name("right")
-            if right is None:
-                return False
-            if right.type == "number" and right.text is not None:
-                try:
-                    return float(right.text.decode("utf-8", "replace")) != 1
-                except ValueError:
-                    return False
-            return right.type == "identifier"  # a named step is not a literal 1
+            return self._steps_by_chunk(node.child_by_field_name("increment"))
         if node.type in self._ITERATION_LOOP_KINDS:
             right = node.child_by_field_name("right")
             if right is None or right.type != "call_expression":
@@ -368,7 +361,7 @@ class TsJsPerfDialect(BasePerfDialect):
     _FN_KINDS: frozenset[str] = frozenset(
         {"function_declaration", "function_expression", "arrow_function", "method_definition"}
     )
-    _MUTATOR_METHODS: frozenset[str] = frozenset({"push", "unshift", "splice"})
+    sequence_appends = frozenset({"push", "unshift", "splice"})
     await_kind = "await_expression"
     key_hops: ClassVar[dict[str, str]] = {
         "member_expression": "object",
@@ -483,9 +476,52 @@ class TsJsPerfDialect(BasePerfDialect):
             return self._magnitude_of_expr(self._reaching_assignment(loop, right.text), probe)
         return magnitude
 
-    # No ``concurrency_bound``: a limiter wraps its await in a closure
-    # (``limit(() => call())``), and the walker does not count a closure as the
-    # loop body, so no hit could reach it.
+    def _limiter_of(self, closure: Node) -> str | None:
+        """The limiter an awaited call runs *closure* through (``await limit(() => f(x))``).
+
+        Awaited, the closure finishes before the loop moves on, so it is the loop
+        body. Stored, returned or not awaited, it runs later and is not. A curried
+        ``pLimit(2)(...)`` builds a fresh limiter per call, which bounds nothing.
+        """
+        args = closure.parent
+        call = args.parent if args is not None and args.type == "arguments" else None
+        if (
+            closure.type != "arrow_function"
+            or call is None
+            or call.type != "call_expression"
+            or not self.is_awaited(call)
+        ):
+            return None
+        fn = call.child_by_field_name("function")
+        name = self.callee_method_name(call) or ""
+        if fn is None or fn.type not in ("identifier", "member_expression"):
+            return None
+        if not (_LIMITER_NAME_RE.search(name) or name in _LIMITER_METHODS):
+            return None
+        return (fn.text or b"").decode() or None
+
+    def runs_in_place(self, closure: Node) -> bool:
+        return self._limiter_of(closure) is not None
+
+    def is_awaited(self, node: Node) -> bool:
+        # ``await limit(() => fetch(x))`` awaits what the closure's expression body returns.
+        if super().is_awaited(node):
+            return True
+        parent = node.parent
+        if parent is None or parent.child_by_field_name("body") != node:
+            return False
+        return self._limiter_of(parent) is not None
+
+    def concurrency_bound(self, sink: Node, loop: Node) -> str | None:
+        if self._exits_early(self.loop_body(loop) or loop):
+            return None
+        cur = sink.parent
+        while cur is not None and cur != loop:
+            limiter = self._limiter_of(cur)
+            if limiter:
+                return limiter
+            cur = cur.parent
+        return None
 
     def batch_form(self, sink: Node, loop: Node, probe: SinkProbe) -> BatchForm | None:
         """Prisma ``m.findUnique/findFirst/delete({ where: { f: key } })`` -> its bulk form."""
@@ -508,7 +544,7 @@ class TsJsPerfDialect(BasePerfDialect):
             if (
                 node.type == "call_expression"
                 and self.callee_root_name(node) == iterable
-                and self.callee_method_name(node) in self._MUTATOR_METHODS
+                and self.callee_method_name(node) in self.sequence_appends
             ):
                 return None  # a worklist: its keys are not known before the loop
         refs = [n for n in self._walk(sink) if n.type == "identifier" and n.text == target.text]
@@ -525,7 +561,7 @@ class TsJsPerfDialect(BasePerfDialect):
             )
         return BatchForm(
             f"{text}.findMany({{ where: {{ {field}: {{ in: keys }} }} }})",
-            only_io and method == "findUnique",
+            only_io and method == "findUnique" and not self._builds_in_order(body),
         )
 
     def _where_key(self, sink: Node, ref: Node) -> str | None:

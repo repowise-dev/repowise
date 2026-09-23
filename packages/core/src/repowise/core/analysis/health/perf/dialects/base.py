@@ -176,6 +176,14 @@ class BasePerfDialect:
             return False
         return fn.type in self.attribute_callee_kinds
 
+    @staticmethod
+    def is_awaited(node: Node) -> bool:
+        """*node* is the operand of an ``await``, through parentheses (``await (foo())``)."""
+        parent = node.parent
+        while parent is not None and parent.type == "parenthesized_expression":
+            parent = parent.parent
+        return parent is not None and "await" in parent.type
+
     # -- sink classification (the lexicon) ------------------------------------
 
     def sink_kind(
@@ -191,6 +199,24 @@ class BasePerfDialect:
         """Boundary kind (db / network / filesystem / subprocess) if this call
         is an *execution sink*, else ``None`` ("not an I/O round-trip")."""
         return None
+
+    def call_sink_kind(
+        self, call: Node, *, awaited: bool, io_names: dict[str, str], has_db_import: bool
+    ) -> str | None:
+        """:meth:`sink_kind` of a call node; override when the arguments decide it."""
+        return self.sink_kind(
+            self.callee_root_name(call) or "",
+            self.callee_method_name(call) or "",
+            awaited=awaited,
+            is_attribute=self.callee_is_attribute(call),
+            io_names=io_names,
+            has_db_import=has_db_import,
+        )
+
+    def runs_in_place(self, closure: Node) -> bool:
+        """*closure* runs to completion where it is written, like the loop body
+        around it (``await limit(() => call())``), rather than being stored for later."""
+        return False
 
     # -- loop / string / async predicates -------------------------------------
 
@@ -279,6 +305,25 @@ class BasePerfDialect:
         """True when this loop walks its data a chunk at a time (already batched)."""
         return False
 
+    @staticmethod
+    def _steps_by_chunk(update: Node | None) -> bool:
+        """``i += 100`` / ``i += BATCH``: a counter that advances more than one at a time."""
+        if update is None or not any(c.type == "+=" for c in update.children):
+            return False
+        step = update.child_by_field_name("right")
+        if step is not None and step.type == "expression_list":  # Go wraps the right side
+            step = step.named_children[0] if step.named_child_count == 1 else None
+        if step is None:
+            return False
+        if step.type == "identifier":
+            return True
+        try:
+            return step.type in ("number", "int_literal", "decimal_integer_literal") and float(
+                (step.text or b"").decode().replace("_", "")
+            ) != 1
+        except ValueError:
+            return False
+
     # -- promotion facts (perf/loop_facts.py); ``None`` means "not settled" ----
 
     # The grammar's ``await <expr>`` node, and the key-hop node kinds with the
@@ -292,6 +337,8 @@ class BasePerfDialect:
     branch_kinds: frozenset[str] = frozenset()
     exit_kinds: frozenset[str] = frozenset()
     scope_kinds: frozenset[str] = frozenset()
+    # Methods that grow a sequence in call order (``append`` / ``push``).
+    sequence_appends: frozenset[str] = frozenset()
 
     def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
         """Whether the loop's iterable grows with data or has a fixed small bound."""
@@ -350,6 +397,29 @@ class BasePerfDialect:
                 return False
             cur = cur.parent
         return not any(n.type in self.exit_kinds for n in self._walk(body, prune=self.scope_kinds))
+
+    def _exits_early(self, body: Node) -> bool:
+        """An iteration can end the loop, so fanned out, the iterations it skips would run."""
+        return any(
+            n.type in self.exit_kinds and n.type != "continue_statement"
+            for n in self._walk(body, prune=self.scope_kinds)
+        )
+
+    def _builds_in_order(self, body: Node) -> bool:
+        """The body appends to a sequence or yields, so what it builds follows the
+        loop's key order, which one bulk read does not keep."""
+        stack = [body]
+        while stack:
+            node = stack.pop()
+            if "yield" in node.type or (
+                node.child_by_field_name("function") is not None
+                and self.callee_method_name(node) in self.sequence_appends
+            ):
+                return True
+            # A closure that runs in place is part of the body; any other one runs later.
+            if node == body or node.type not in self.scope_kinds or self.runs_in_place(node):
+                stack.extend(node.children)
+        return False
 
     def _only_io_in_body(self, sink: Node, body: Node, probe: SinkProbe) -> bool:
         """*sink* is the loop body's only I/O sink and its only await.

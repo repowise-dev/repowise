@@ -456,3 +456,244 @@ def test_magnitude_sees_through_an_empty_fallback():
         b"        sb.table('t').select('*').eq('id', row['id']).execute()\n"
     )
     assert facts.magnitude == "grows_with_data"
+
+
+# ---------------------------------------------------------------------------
+# session.get(Model, key): a db sink
+# ---------------------------------------------------------------------------
+
+
+def test_session_get_is_a_db_sink():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, ids):\n"
+        b"    for i in ids:\n"
+        b"        await session.get(Repo, i)\n"
+    )
+    assert [h.detail for h in hits] == ["db"]
+
+
+def test_session_get_needs_db_evidence():
+    """``self.get(User, x)`` in a file with no db import is not a sink."""
+    hits = _hits(
+        b"async def f(self, ids):\n"
+        b"    for i in ids:\n"
+        b"        await self.get(User, i)\n"
+    )
+    assert hits == []
+
+
+def test_session_get_one_arg_is_not_a_sink():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, ids):\n"
+        b"    for i in ids:\n"
+        b"        await session.get(User)\n"
+    )
+    assert hits == []
+
+
+def test_dict_get_with_default_is_not_a_sink():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"def f(d, ids):\n"
+        b"    for i in ids:\n"
+        b"        d.get(i, None)\n"
+    )
+    assert hits == []
+
+
+def test_cache_get_string_key_is_not_a_sink():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"def f(cache, ids):\n"
+        b"    for i in ids:\n"
+        b"        cache.get('k', None)\n"
+    )
+    assert hits == []
+
+
+def test_os_environ_get_is_not_a_sink():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"def f(ids):\n"
+        b"    for i in ids:\n"
+        b"        os.environ.get('KEY', i)\n"
+    )
+    assert hits == []
+
+
+def test_requests_get_all_caps_url_is_not_a_sink():
+    """An ALL_CAPS first argument (a constant, not a model class) never matches."""
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"def f(ids):\n"
+        b"    for i in ids:\n"
+        b"        requests.get(API_URL, i)\n"
+    )
+    assert hits == []
+
+
+def test_session_get_with_splat_args_is_not_a_sink():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"def f(session, args, ids):\n"
+        b"    for i in ids:\n"
+        b"        session.get(*args)\n"
+    )
+    assert hits == []
+
+
+def test_session_get_dotted_model_path_is_a_sink():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, ids):\n"
+        b"    for i in ids:\n"
+        b"        await session.get(models.Repo, i)\n"
+    )
+    assert [h.detail for h in hits] == ["db"]
+
+
+# ---------------------------------------------------------------------------
+# session.get(Model, key): the batch form
+# ---------------------------------------------------------------------------
+
+
+def test_batch_session_get_equivalent():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, rows):\n"
+        b"    for r in rows:\n"
+        b"        obj = await session.get(Repo, r.id)\n"
+    )
+    assert facts.batch.call == "select(Repo).where(inspect(Repo).primary_key[0].in_(keys))"
+    assert facts.batch.equivalent is True
+
+
+def test_batch_session_get_on_the_whole_element_is_not_equivalent():
+    """The element itself may be a composite key tuple, which one column's IN does not match."""
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, keys):\n"
+        b"    for key in keys:\n"
+        b"        obj = await session.get(Repo, key)\n"
+    )
+    assert facts.batch is not None and facts.batch.equivalent is False
+
+
+def test_session_get_accepts_an_acronym_model_name():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, rows):\n"
+        b"    for r in rows:\n"
+        b"        await session.get(DBUser, r.id)\n"
+    )
+    assert [h.detail for h in hits if h.kind == "io_in_loop"] == ["db"]
+
+
+def test_batch_session_get_second_sink_in_body_not_equivalent():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, others, ids):\n"
+        b"    for rid in ids:\n"
+        b"        session.execute(select(Other))\n"
+        b"        obj = await session.get(Repo, rid)\n"
+    )
+    get_hit = next(h for h in hits if h.loop is not None and h.loop.batch is not None)
+    assert get_hit.loop.batch.equivalent is False
+
+
+def test_batch_session_get_none_when_key_computed_from_element():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, ids):\n"
+        b"    for rid in ids:\n"
+        b"        obj = await session.get(Repo, f'x:{rid}')\n"
+    )
+    assert facts is None or facts.batch is None
+
+
+
+def test_a_result_built_in_key_order_is_not_equivalent():
+    """One IN query returns rows in its own order, not grouped by the loop's keys."""
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"def f(session, events):\n"
+        b"    out = []\n"
+        b"    for e in events:\n"
+        b"        rows = session.query(A).filter(A.event_id == e.id).all()\n"
+        b"        out.extend(rows)\n"
+        b"    return out\n"
+    )
+    assert facts.batch is not None and facts.batch.equivalent is False
+
+
+def test_session_get_of_a_key_already_used_in_the_iteration_is_not_a_sink():
+    """The earlier call may have loaded the row, so the second ``get`` is served from memory."""
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, recs):\n"
+        b"    for rec in recs:\n"
+        b"        await upsert(session, rec.id)\n"
+        b"        meta = await session.get(Meta, rec.id)\n"
+    )
+    assert all(h.line != 5 for h in hits)
+
+
+def test_a_read_filtered_to_one_chunk_of_keys_does_not_grow():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, paths):\n"
+        b"    for i in range(0, len(paths), BATCH):\n"
+        b"        result = await session.execute(select(G).where(G.path.in_(paths[i : i + BATCH])))\n"
+        b"        for g in result.scalars().all():\n"
+        b"            await session.execute(select(H).where(H.id == g.id))\n"
+    )
+    assert facts.magnitude != "grows_with_data"
+
+
+def test_a_read_filtered_to_a_chunk_loops_element_does_not_grow():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, paths):\n"
+        b"    for chunk in chunked(paths):\n"
+        b"        result = await session.execute(select(G).where(G.path.in_(chunk)))\n"
+        b"        for g in result.all():\n"
+        b"            await session.execute(select(H).where(H.id == g.id))\n"
+    )
+    assert facts.magnitude != "grows_with_data"
+
+
+def test_a_limit_on_a_statement_built_before_the_loop_caps_the_read():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, limit):\n"
+        b"    stmt = select(G).limit(limit)\n"
+        b"    rows = (await session.execute(stmt)).scalars().all()\n"
+        b"    for g in rows:\n"
+        b"        await session.execute(select(H).where(H.id == g.id))\n"
+    )
+    assert facts.magnitude != "grows_with_data"
+
+
+def test_a_dict_lookup_of_the_key_does_not_hide_the_session_get():
+    hits = _hits(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, rows, quotes):\n"
+        b"    for row in rows:\n"
+        b"        quote = quotes.get(row.old_id)\n"
+        b"        rec = await session.get(Rec, row.old_id)\n"
+    )
+    assert any(h.line == 5 for h in hits)
+
+
+def test_a_result_read_from_one_chunk_of_keys_does_not_grow():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, paths):\n"
+        b"    for chunk in chunked(paths):\n"
+        b"        result = await session.execute(select(G).where(G.path.in_(chunk)))\n"
+        b"        for g in result.scalars().all():\n"
+        b"            await session.execute(select(H).where(H.id == g.id))\n"
+    )
+    assert facts.magnitude != "grows_with_data"

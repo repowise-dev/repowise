@@ -111,6 +111,9 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
+# v24: ``session.get(Model, key)`` is a db sink, an awaited TS limiter closure runs
+# in its loop, and Go/Java loops report chunking; a v23 store has none of them.
+#
 # v23: loop-shaped perf findings carry the loop's magnitude, the bulk form of a
 # per-key sink and any concurrency bound around it; a v22 store has none.
 #
@@ -247,7 +250,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 23
+HEALTH_ANALYZER_VERSION = 24
 
 
 def walked_functions(

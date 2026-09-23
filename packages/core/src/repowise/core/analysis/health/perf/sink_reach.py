@@ -141,7 +141,6 @@ def _hits_for_function(
     carry_loop: bool,
 ) -> list[PerfHit]:
     from ..complexity import PerfHit
-    from .loop_facts import LoopFacts
 
     a_sid = index.resolve_function(path, fact.func_start)
     if a_sid is None:
@@ -151,7 +150,7 @@ def _hits_for_function(
         return []
 
     extra: dict[str, Any] = {"func_start": fact.func_start} if carry_func_start else {}
-    magnitudes = dict(fact.loop_call_magnitudes) if carry_loop else {}
+    loop_facts = dict(fact.loop_call_facts) if carry_loop else {}
     hits: list[PerfHit] = []
     seen: set[str] = set()
     for target_name, call_line in entries(fact):
@@ -177,9 +176,7 @@ def _hits_for_function(
                     detail=sink_kind.get(info.sink, ""),
                     path=(a_sid, *chain),
                     resolution_basis=basis,
-                    loop=LoopFacts(magnitude=magnitudes[call_line])
-                    if call_line in magnitudes
-                    else None,
+                    loop=loop_facts.get(call_line),
                     **extra,
                 )
             )

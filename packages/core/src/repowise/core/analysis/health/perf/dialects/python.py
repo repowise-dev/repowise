@@ -171,7 +171,6 @@ _PY_RESULT_PROJECTIONS: frozenset[str] = frozenset(
     {"all", "scalars", "fetchall", "json", "data", "rows"}
 )
 _PY_BOUND_NAME_RE = re.compile(r"(?i)retr|attempt")
-_PY_MUTATE_METHODS: frozenset[str] = frozenset({"append", "extend", "add", "insert"})
 # A per-key call that limits or orders its rows is not the read one IN query makes.
 _PY_PER_KEY_LIMITS: frozenset[str] = frozenset(
     {
@@ -182,9 +181,10 @@ _PY_PER_KEY_LIMITS: frozenset[str] = frozenset(
 _PY_ONE_ROW: frozenset[str] = _PY_PER_KEY_LIMITS | {"scalar"}
 _PY_READ_CAPS: frozenset[str] = _PY_ONE_ROW - {"order", "order_by", "offset"}
 _PY_WRITES: frozenset[str] = frozenset({"update", "insert", "upsert", "values"})
-_PY_LOOP_EXITS: frozenset[str] = frozenset({"break_statement", "return_statement"})
 _PY_SCOPES: frozenset[str] = frozenset({"function_definition", "lambda", "class_definition"})
 _PY_SEM_NAME_RE = re.compile(r"(?i)(sem|semaphore|limiter|limit)$")
+# A model class is CapWords; an ALL_CAPS constant (``API_URL``) is not.
+_PY_MODEL_NAME_RE = re.compile(r"^[A-Z]\w*[a-z]\w*$")
 
 
 class PythonPerfDialect(BasePerfDialect):
@@ -286,6 +286,54 @@ class PythonPerfDialect(BasePerfDialect):
         if awaited and root_kind == "network":
             return "network"
         return None
+
+    def call_sink_kind(
+        self, call: Node, *, awaited: bool, io_names: dict[str, str], has_db_import: bool
+    ) -> str | None:
+        kind = super().call_sink_kind(
+            call, awaited=awaited, io_names=io_names, has_db_import=has_db_import
+        )
+        orm_get = self._orm_get(call) if kind is None else None
+        if orm_get is not None:
+            # ``get`` alone is ``dict.get`` / ``requests.get``; the model-class shape
+            # plus db evidence in the file is what makes it ``Session.get``.
+            db = has_db_import or io_names.get(self.callee_root_name(call) or "") == "db"
+            return "db" if db and not self._key_used_earlier(call, orm_get[1]) else None
+        return kind
+
+    def _key_used_earlier(self, call: Node, key: Node) -> bool:
+        """An earlier call in this loop body gave the same session the same key, so the
+        row may already sit in the session and ``get`` answers from memory."""
+        loop = call.parent
+        while loop is not None and loop.type not in ("for_statement", "while_statement"):
+            if loop.type in _PY_SCOPES:
+                return False
+            loop = loop.parent
+        body = loop.child_by_field_name("body") if loop is not None else None
+        session = (self.callee_root_name(call) or "").encode()
+        for node in self._walk(body, prune=_PY_SCOPES) if body is not None else ():
+            args = node.child_by_field_name("arguments") if node.type == "call" else None
+            if args is None or node.end_byte > call.start_byte:
+                continue
+            texts = {arg.text for arg in args.children}
+            same_session = session in texts or self.callee_root_name(node) == session.decode()
+            if key.text in texts and same_session:
+                return True
+        return False
+
+    def _orm_get(self, call: Node) -> tuple[str, Node] | None:
+        """``(Model, key)`` of a ``x.get(Model, key)`` primary-key lookup."""
+        if self.callee_method_name(call) != "get" or not self.callee_is_attribute(call):
+            return None
+        args = call.child_by_field_name("arguments")
+        named = [c for c in args.children if c.is_named] if args is not None else []
+        if any(c.type in ("list_splat", "dictionary_splat") for c in named):
+            return None
+        positional = [c for c in named if c.type != "keyword_argument"]
+        model = self._dotted_path(positional[0]) if len(positional) == 2 else None
+        if model is None or not _PY_MODEL_NAME_RE.match(model.rsplit(".", 1)[-1]):
+            return None
+        return model, positional[1]
 
     def is_constant_loop(self, node: Node) -> bool:
         """True if a Python for-loop iterates a compile-time-constant bound.
@@ -710,6 +758,7 @@ class PythonPerfDialect(BasePerfDialect):
         {"break_statement", "continue_statement", "return_statement", "raise_statement"}
     )
     scope_kinds = _PY_SCOPES
+    sequence_appends = frozenset({"append", "extend", "insert"})
 
     def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
         if loop.type != "for_statement":
@@ -753,16 +802,36 @@ class PythonPerfDialect(BasePerfDialect):
         if method == "range" and not member:
             return self._range_magnitude(expr, loop, probe, hop=hop)
         if probe(expr) in ("db", "network"):
-            # A read capped in the query (``.limit(n)``) is as large as its cap.
-            capped = any(
-                n.type == "call" and self.callee_method_name(n) in _PY_READ_CAPS
-                for n in self._walk(expr)
-            )
+            # A read capped in the query is as large as its cap; a statement or result
+            # built before the loop (``stmt = ....limit(n)``) is read one assignment back.
+            names = [n.text for n in self._walk(expr) if n.type == "identifier"]
+            parts = [expr, *filter(None, (self._reaching_rhs(loop, name) for name in names))]
+            capped = any(self._caps_read(n, loop) for part in parts for n in self._walk(part))
             return None if capped else "grows_with_data"
         if member and method in _PY_RESULT_PROJECTIONS:
             receiver = expr.child_by_field_name("function").child_by_field_name("object")
             return self._grows(self._magnitude(receiver, loop, probe, hop=hop))
         return None
+
+    def _caps_read(self, node: Node, loop: Node) -> bool:
+        """``.limit(n)`` and peers, or ``.in_()`` over one chunk of keys
+        (``xs[i:i + N]``, or the element of a loop that walks ``xs`` in chunks)."""
+        method = self.callee_method_name(node) if node.type == "call" else None
+        if method in _PY_READ_CAPS:
+            return True
+        args = node.child_by_field_name("arguments") if method == "in_" else None
+        keys = next((c for c in args.children if c.is_named), None) if args else None
+        if keys is None:
+            return False
+        if keys.type == "subscript":
+            return self._slice_magnitude(keys) == "bounded"
+        outer = loop
+        while outer is not None and keys.type == "identifier":
+            target = outer.child_by_field_name("left") if outer.type == "for_statement" else None
+            if target is not None and target.text == keys.text and self.is_chunked_loop(outer):
+                return True
+            outer = outer.parent
+        return False
 
     def _range_magnitude(
         self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool
@@ -836,7 +905,7 @@ class PythonPerfDialect(BasePerfDialect):
                 node.type == "call"
                 and self.callee_is_attribute(node)
                 and self.callee_root_name(node) == iterable
-                and self.callee_method_name(node) in _PY_MUTATE_METHODS
+                and self.callee_method_name(node) in self.sequence_appends
             ):
                 return None  # a worklist: its keys are not known before the loop
         refs = [n for n in self._walk(sink) if n.type == "identifier" and n.text == target.text]
@@ -846,12 +915,21 @@ class PythonPerfDialect(BasePerfDialect):
         call = self._keyed_filter(sink, refs[0], methods)
         if call is None:
             return None
+        if "delete" in methods:
+            # Batched, a delete also removes rows a skipped iteration would have left.
+            kept = self._unconditional(sink, body)
+        else:
+            kept = not self._builds_in_order(body)
+        orm_get = self._orm_get(sink)
+        if orm_get is not None and orm_get[1] == refs[0]:
+            # The whole element as the key may be a composite (tuple) key, which
+            # ``primary_key[0].in_`` does not match; only ``r.id`` names one column.
+            kept = False
         equivalent = (
-            not methods & _PY_PER_KEY_LIMITS
+            kept
+            and not methods & _PY_PER_KEY_LIMITS
             and not self._limited_downstream(sink, body)
             and self._only_io_in_body(sink, body, probe)
-            # Batched, a delete also removes rows a skipped iteration would have left.
-            and ("delete" not in methods or self._unconditional(sink, body))
         )
         return BatchForm(call, equivalent)
 
@@ -876,6 +954,9 @@ class PythonPerfDialect(BasePerfDialect):
 
     def _keyed_filter(self, sink: Node, ref: Node, methods: set[str | None]) -> str | None:
         """The bulk filter when *sink* selects or deletes by equality on *ref*."""
+        orm_get = self._orm_get(sink)
+        if orm_get is not None and self._is_key_of(orm_get[1], ref):
+            return f"select({orm_get[0]}).where(inspect({orm_get[0]}).primary_key[0].in_(keys))"
         for node in self._walk(sink):
             if node.type == "call" and self.callee_method_name(node) == "eq":
                 # supabase-py: ``.table(t).select(...).eq("col", key)``
@@ -903,9 +984,8 @@ class PythonPerfDialect(BasePerfDialect):
         return None
 
     def concurrency_bound(self, sink: Node, loop: Node) -> str | None:
-        body = self.loop_body(loop) or loop
-        if any(n.type in _PY_LOOP_EXITS for n in self._walk(body, prune=_PY_SCOPES)):
-            return None  # fanned out, it would run the iterations the exit skips
+        if self._exits_early(self.loop_body(loop) or loop):
+            return None
         cur = sink.parent
         while cur is not None and cur != loop:
             if cur.type == "with_statement" and any(c.type == "async" for c in cur.children):

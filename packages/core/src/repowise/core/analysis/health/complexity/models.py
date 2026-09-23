@@ -323,9 +323,9 @@ class PerfFnFacts:
     nested_loop_line: int = 0
     blocking_sink_kind: str | None = None
     blocking_sink_line: int = 0
-    # ``(call_line, magnitude)`` for loop-nested calls whose loop magnitude is known,
-    # so a cross-function hit reports the trip count of the loop that pays it.
-    loop_call_magnitudes: tuple[tuple[int, str], ...] = ()
+    # ``(call_line, facts)`` for loop-nested calls whose loop settles a fact, so a
+    # cross-function hit reports the trip count and chunking of the loop that pays it.
+    loop_call_facts: tuple[tuple[int, LoopFacts], ...] = ()
 
 
 @dataclass

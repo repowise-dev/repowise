@@ -554,3 +554,14 @@ def test_crossfn_hit_carries_the_owning_loops_magnitude(tmp_path):
     )
     (finding,) = IoInLoopDetector().detect(ctx)
     assert finding.details["loop_magnitude"] == "grows_with_data"
+
+
+def test_crossfn_hit_carries_the_owning_loops_chunking(tmp_path):
+    """A caller that already walks its rows a batch at a time is not told to batch."""
+    source = _SCHEDULER.replace(
+        "        for repo in repos:\n            out.append(self._poll(repo))",
+        "        for batch in batched(repos, 100):\n            out.append(self._poll(batch))",
+    )
+    walked, graph = _build(tmp_path, {"scheduler.py": source})
+    (hit,) = [h for hs in collect_crossfn_io_in_loop(walked, graph).values() for h in hs]
+    assert hit.loop is not None and hit.loop.chunked

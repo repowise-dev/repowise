@@ -57,7 +57,7 @@
         "safety": "proven",
         "steps": [
           {
-            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key filter",
+            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key call",
             "applicability": "mechanical",
             "file_path": "src/app/owners.py",
             "line": 20,
@@ -1099,7 +1099,7 @@
         "safety": "advisory",
         "steps": [
           {
-            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key filter",
+            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key call",
             "applicability": "judgment",
             "file_path": "src/app/commits.py",
             "line": 30,

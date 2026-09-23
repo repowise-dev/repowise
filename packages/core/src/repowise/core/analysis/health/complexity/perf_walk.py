@@ -94,23 +94,6 @@ _HOT_PATH_SINK_KINDS = frozenset({"subprocess", "filesystem"})
 # (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
 _LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement", "do_block"})
 
-# Non-semantic wrapper nodes tree-sitter inserts between a ``call`` and its
-# enclosing ``await`` — parenthesising an awaited call (``await (foo())``) adds a
-# ``parenthesized_expression`` hop, so the immediate-parent ``await`` check would
-# miss it and wrongly read the call as un-awaited. Walk up through these before
-# testing for ``await``.
-_AWAIT_WRAPPER_KINDS = frozenset({"parenthesized_expression"})
-
-
-def _is_awaited(node: Node) -> bool:
-    """Whether ``node`` is (transitively, through parenthesising wrappers) the
-    operand of an ``await``. Mirrors the old immediate-parent substring test but
-    first skips non-semantic wrappers so ``await (foo())`` reads as awaited."""
-    parent = node.parent
-    while parent is not None and parent.type in _AWAIT_WRAPPER_KINDS:
-        parent = parent.parent
-    return parent is not None and "await" in parent.type
-
 
 def _perf_func_name(node: Node) -> str | None:
     if node.type == "function_body":
@@ -259,14 +242,11 @@ def _collect_perf_hits(
     do_bound = _overrides(dialect, "concurrency_bound")
     do_loop_facts = do_chunked or do_magnitude or do_batch or do_bound
 
+    do_in_place = _overrides(dialect, "runs_in_place")
+
     def probe(call: Node) -> str | None:
-        return dialect.sink_kind(
-            dialect.callee_root_name(call) or "",
-            dialect.callee_method_name(call) or "",
-            awaited=_is_awaited(call),
-            is_attribute=dialect.callee_is_attribute(call),
-            io_names=io_names,
-            has_db_import=has_db_import,
+        return dialect.call_sink_kind(
+            call, awaited=dialect.is_awaited(call), io_names=io_names, has_db_import=has_db_import
         )
 
     def magnitude(loops: list[Node]) -> str:
@@ -307,8 +287,8 @@ def _collect_perf_hits(
     fn_acc: dict[
         int, tuple[str | None, dict[str, int], dict[str, int], list[str | None], list]
     ] = {}
-    # func_start -> {call_line: magnitude} for the loop-call targets above.
-    call_magnitudes: dict[int, dict[int, str]] = {}
+    # func_start -> {call_line: facts} for the loop-call targets above.
+    call_facts: dict[int, dict[int, LoopFacts]] = {}
 
     def _acc(
         func_start: int, func_name: str | None
@@ -358,9 +338,11 @@ def _collect_perf_hits(
         # inline invocation, so those are cleared too — accepted (favouring
         # precision), and the Go IIFE case is the idiomatic defer-in-loop fix.
         # …except the lambda a block-iteration combinator passes as its body,
-        # which runs per element rather than later (Kotlin ``ids.forEach { … }``).
-        body_scope = (
-            entering_fn and do_block_loop and _is_block_loop_body_scope(node, dialect, call_kinds)
+        # which runs per element rather than later (Kotlin ``ids.forEach { … }``),
+        # and a closure the dialect proves runs in place (an awaited limiter call).
+        body_scope = entering_fn and (
+            (do_block_loop and _is_block_loop_body_scope(node, dialect, call_kinds))
+            or (do_in_place and dialect.runs_in_place(node))
         )
         next_loop_depth = loop_depth if (body_scope or not entering_fn) else 0
         next_lock_depth = lock_depth if (body_scope or not entering_fn) else 0
@@ -401,7 +383,7 @@ def _collect_perf_hits(
         if t in call_kinds:
             method = dialect.callee_method_name(node) or ""
             root_name = dialect.callee_root_name(node) or ""
-            awaited = _is_awaited(node)
+            awaited = dialect.is_awaited(node)
             line = node.start_point[0] + 1
             if do_bare_call_marker:
                 # A call that is its own iteration construct (``.reduce`` with an
@@ -409,13 +391,8 @@ def _collect_perf_hits(
                 bare = dialect.bare_call_marker(root_name, method, node)
                 if bare is not None:
                     hits.append(PerfHit(bare, line, next_func, "", func_start=next_start))
-            kind = dialect.sink_kind(
-                root_name,
-                method,
-                awaited=awaited,
-                is_attribute=dialect.callee_is_attribute(node),
-                io_names=io_names,
-                has_db_import=has_db_import,
+            kind = dialect.call_sink_kind(
+                node, awaited=awaited, io_names=io_names, has_db_import=has_db_import
             )
             if kind is not None:
                 if loop_depth >= 1:
@@ -503,12 +480,9 @@ def _collect_perf_hits(
                         targets = _acc(next_start, next_func)[0]
                         if method not in targets:
                             targets[method] = line
-                            if do_magnitude:
-                                facts = loop_facts(node, sink=False)
-                                if facts is not None and facts.magnitude != "unknown":
-                                    call_magnitudes.setdefault(next_start, {})[line] = (
-                                        facts.magnitude
-                                    )
+                            facts = loop_facts(node, sink=False)
+                            if facts is not None:
+                                call_facts.setdefault(next_start, {})[line] = facts
                 if do_lock_io and lock_depth >= 1 and method:
                     # A non-sink call under a held lock: a candidate entry for the
                     # cross-function ``blocking_io_under_lock`` reachability pass.
@@ -644,7 +618,7 @@ def _collect_perf_hits(
             nested_loop_line=misc[0],
             blocking_sink_kind=misc[1],
             blocking_sink_line=misc[2],
-            loop_call_magnitudes=tuple(sorted(call_magnitudes.get(start, {}).items())),
+            loop_call_facts=tuple(sorted(call_facts.get(start, {}).items())),
         )
         for start, (name, loop_targets, lock_targets, sink, misc) in fn_acc.items()
         if (loop_targets or lock_targets or sink[0] is not None or misc[0] or misc[1] is not None)
