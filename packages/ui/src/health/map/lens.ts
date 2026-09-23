@@ -120,6 +120,8 @@ const ACTIONABILITY_STATE: Record<PerformanceActionability, PerformanceNodeState
   plan_ready: "actionable",
   advisory: "advisory",
   investigate: "investigate",
+  // Nothing to change; the server already leaves these out of the count.
+  expected: "clear",
 };
 
 /**
