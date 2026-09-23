@@ -111,6 +111,53 @@ def provenance_confidence(provenance: str) -> OpportunityConfidence:
     return "low"
 
 
+# Markers whose FixAssessment depends on nothing but the marker itself: looked up
+# once, at the point in the gate order the first of them used to sit.
+_CONSTANT_FIXES: dict[str, FixAssessment] = {
+    "membership_test_against_list_in_loop": FixAssessment(
+        PerformanceFix(
+            "replace_membership_collection",
+            "advisory",
+            "The collection is proven list-backed; element hashability and "
+            "ordering/identity use still require validation.",
+        ),
+        ("element_hashability", "ordering_and_identity_use"),
+    ),
+    "string_concat_in_loop": FixAssessment(
+        PerformanceFix(
+            "buffer_string_accumulation",
+            "advisory",
+            "Repeated string accumulation is proven; intermediate accumulator "
+            "observations still require validation.",
+        ),
+        ("accumulator_not_observed",),
+    ),
+    "unbounded_read_reduced_in_memory": FixAssessment(
+        PerformanceFix(
+            "push_reduction_into_query",
+            "advisory",
+            "The read is proven unbounded and the per-key selection proven "
+            "Python-side; whether the query layer can express that "
+            "selection (DISTINCT ON / a window function / a view) is not.",
+        ),
+        ("query_supports_group_selection",),
+    ),
+    "lazy_load_in_loop": FixAssessment(
+        PerformanceFix(
+            "eager_load_relationship",
+            "advisory",
+            "The relationship is declared lazy and the query that produced the "
+            "rows does not load it; whether every iteration reaches the access, "
+            "and whether another layer loads it first, is not proven.",
+        ),
+        ("relationship_not_loaded_elsewhere",),
+    ),
+    # Hoisting needs per-argument dataflow plus a guard against attribute mutation
+    # (``Client(token=self.token)``); neither exists, so no strategy.
+    "resource_construction_in_loop": FixAssessment(None, ("loop_invariant_construction_proof",)),
+}
+
+
 def assess_fix(
     marker: str,
     markers: tuple[str, ...],
@@ -162,48 +209,8 @@ def assess_fix(
             ),
             (),
         )
-    if marker == "membership_test_against_list_in_loop":
-        return FixAssessment(
-            PerformanceFix(
-                "replace_membership_collection",
-                "advisory",
-                "The collection is proven list-backed; element hashability and "
-                "ordering/identity use still require validation.",
-            ),
-            ("element_hashability", "ordering_and_identity_use"),
-        )
-    if marker == "string_concat_in_loop":
-        return FixAssessment(
-            PerformanceFix(
-                "buffer_string_accumulation",
-                "advisory",
-                "Repeated string accumulation is proven; intermediate accumulator "
-                "observations still require validation.",
-            ),
-            ("accumulator_not_observed",),
-        )
-    if marker == "unbounded_read_reduced_in_memory":
-        return FixAssessment(
-            PerformanceFix(
-                "push_reduction_into_query",
-                "advisory",
-                "The read is proven unbounded and the per-key selection proven "
-                "Python-side; whether the query layer can express that "
-                "selection (DISTINCT ON / a window function / a view) is not.",
-            ),
-            ("query_supports_group_selection",),
-        )
-    if marker == "lazy_load_in_loop":
-        return FixAssessment(
-            PerformanceFix(
-                "eager_load_relationship",
-                "advisory",
-                "The relationship is declared lazy and the query that produced the "
-                "rows does not load it; whether every iteration reaches the access, "
-                "and whether another layer loads it first, is not proven.",
-            ),
-            ("relationship_not_loaded_elsewhere",),
-        )
+    if marker in _CONSTANT_FIXES:
+        return _CONSTANT_FIXES[marker]
     if set(markers) <= BATCHABLE_MARKERS:
         if details and all(detail.get("chunked_iteration") for detail in details):
             # The loop is already the batch; "batch this" repeats advice taken.
@@ -259,10 +266,6 @@ def assess_fix(
             ),
             ("shared_state_ordering",),
         )
-    if marker == "resource_construction_in_loop":
-        # Hoisting needs per-argument dataflow plus a guard against attribute
-        # mutation (``Client(token=self.token)``); neither exists, so no strategy.
-        return FixAssessment(None, ("loop_invariant_construction_proof",))
     return FixAssessment(None, ("supported_strategy_for_marker",))
 
 

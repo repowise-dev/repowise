@@ -241,12 +241,31 @@ def _sa_relation_from_assignment(
     return attr, relation, pending
 
 
+def _has_declared_attr_decorator(stmt: Node) -> bool:
+    decorators = [c for c in stmt.children if c.type == "decorator"]
+    return any(_DECLARED_ATTR_HINT in (_node_text(d) or "") for d in decorators)
+
+
+def _relationship_return(
+    body: Node, declaring: str
+) -> tuple[Relation, tuple[str, str, Relation] | None] | None:
+    """The resolved call of the first ``return relationship(...)`` in *body*, if any."""
+    for ret in walk(body):
+        if ret.type != "return_statement":
+            continue
+        value = next((c for c in ret.children if c.is_named), None)
+        if value is None or value.type != "call":
+            continue
+        if _callee_last_segment(value) == "relationship":
+            return _sa_relationship_call(value, None, declaring)
+    return None
+
+
 def _sa_declared_attr(
     stmt: Node, declaring: str
 ) -> tuple[str, Relation, tuple[str, str, Relation] | None] | None:
     """A ``@declared_attr`` method whose body returns a ``relationship(...)`` call."""
-    decorators = [c for c in stmt.children if c.type == "decorator"]
-    if not any(_DECLARED_ATTR_HINT in (_node_text(d) or "") for d in decorators):
+    if not _has_declared_attr_decorator(stmt):
         return None
     fn = stmt.child_by_field_name("definition")
     if fn is None or fn.type != "function_definition":
@@ -255,16 +274,8 @@ def _sa_declared_attr(
     body = fn.child_by_field_name("body")
     if not name or body is None:
         return None
-    for ret in walk(body):
-        if ret.type != "return_statement":
-            continue
-        value = next((c for c in ret.children if c.is_named), None)
-        if value is None or value.type != "call":
-            continue
-        if _callee_last_segment(value) == "relationship":
-            result = _sa_relationship_call(value, None, declaring)
-            return (name, *result) if result is not None else None
-    return None
+    result = _relationship_return(body, declaring)
+    return (name, *result) if result is not None else None
 
 
 # -- Django ------------------------------------------------------------------------
