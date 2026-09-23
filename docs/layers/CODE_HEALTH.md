@@ -534,6 +534,27 @@ findings are usually batchable; filesystem ones often are not, since deleting N
 files genuinely needs N unlinks. The finding still tells you where the time
 goes.
 
+A few more things keep the plans honest:
+
+- **Proven means the transformation, not the runtime.** Parallelizing awaits
+  against a database or network client is advisory with a
+  `bounded_concurrency` prerequisite, however clean the dataflow. A loop that
+  already walks its input in chunks (`range(0, n, CHUNK)`, `batched(...)`) is
+  reported as `loop_already_chunked` rather than told to batch.
+- **One line, one problem.** When `io_in_loop` and `serial_await_in_loop` fire
+  on the same call, each names the other in `siblings`, and batching is queued
+  right before the parallelize variant.
+- **Plans carry steps and validation.** Each performance plan lists its edits
+  (`mechanical` only when the strategy is proven) and the tests that validate
+  it: coverage, then call graph, then import graph, then a test named for the
+  file (`via: "name-match"`).
+
+**Over-fetch.** `unbounded_read_reduced_in_memory` (Python, advisory) flags a
+query with no limit or aggregate whose rows are then deduplicated per key in
+code, in the same function or one same-file helper. It is the one shape here
+that is not a loop around I/O: the query runs once and returns too much, and
+the fix is to select one row per key in the database.
+
 Methodology and raw data:
 [perf-detection](https://github.com/repowise-dev/repowise-bench/tree/master/perf-detection).
 

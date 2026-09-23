@@ -21,6 +21,7 @@ import {
   narrowingCount,
   type NarrowingKey,
   type PerformanceFilterState,
+  type PerformanceSort,
 } from "./query";
 
 /**
@@ -201,6 +202,31 @@ export function ScopeLine({
         </>
       ) : null}
     </p>
+  );
+}
+
+const SORT_OPTIONS: { value: PerformanceSort; label: string }[] = [
+  { value: "rank", label: "Rank" },
+  { value: "leverage", label: "Call sites" },
+  { value: "observations", label: "Observations" },
+];
+
+/** How the queue is ordered. A separate axis from the narrowing filters, so
+ * it gets its own control rather than sharing theirs. */
+export function SortControl({
+  value,
+  onChange,
+}: {
+  value: PerformanceSort;
+  onChange: (value: PerformanceSort) => void;
+}) {
+  return (
+    <FilterSelect
+      label="Sort"
+      value={value}
+      onChange={(next) => onChange(next as PerformanceSort)}
+      options={SORT_OPTIONS}
+    />
   );
 }
 

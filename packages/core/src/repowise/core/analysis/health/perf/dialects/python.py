@@ -41,6 +41,11 @@ PY_DB_AMBIGUOUS: frozenset[str] = frozenset({"all", "first", "one", "one_or_none
 PY_SUBPROC_METHODS: frozenset[str] = frozenset(
     {"run", "call", "check_call", "check_output", "Popen"}
 )
+# Any of these anywhere in a read's call chain proves it is bounded, gating
+# ``unbounded_read_reduced_in_memory`` (analysis.health.perf.unbounded_reduction).
+PY_UNBOUNDED_READ_BOUND_METHODS: frozenset[str] = frozenset(
+    {"limit", "range", "single", "maybe_single", "first", "count", "head", "aggregate"}
+)
 
 # Filesystem round-trips, in two strata for the same reason the DB verbs are
 # stratified: how much evidence the name alone carries.
@@ -321,6 +326,30 @@ class PythonPerfDialect(BasePerfDialect):
                 return first.text.decode("utf-8", "replace")
         return None
 
+    # ``itertools.batched``, ``more_itertools.chunked`` and hand-rolled peers.
+    _CHUNKING_CALLS: frozenset[str] = frozenset(
+        {"batched", "chunked", "ichunked", "chunks", "iter_chunks", "grouper"}
+    )
+
+    def is_chunked_loop(self, node: Node) -> bool:
+        """``range(start, stop, step)`` with a non-unit step, or a chunking helper."""
+        if node.type != "for_statement":
+            return False
+        right = node.child_by_field_name("right")
+        if right is None or right.type != "call":
+            return False
+        fn = right.child_by_field_name("function")
+        if fn is None or fn.text is None:
+            return False
+        name = fn.text.decode("utf-8", "replace").rsplit(".", 1)[-1]
+        if name in self._CHUNKING_CALLS:
+            return True
+        if name != "range":
+            return False
+        args = right.child_by_field_name("arguments")
+        named = [c for c in args.children if c.is_named] if args is not None else []
+        return len(named) == 3 and named[2].text not in (b"1", b"-1")
+
     def is_string_concat(self, node: Node) -> bool:
         """``s += "x"`` accumulation — but skip an accumulator that is *reset*
         each iteration of an enclosing loop.
@@ -367,6 +396,9 @@ class PythonPerfDialect(BasePerfDialect):
                     return True
             stack.extend(n.children)
         return False
+
+    def unbounded_read_bound_methods(self) -> frozenset[str]:
+        return PY_UNBOUNDED_READ_BOUND_METHODS
 
     def blocking_sync_api(self, root: str, method: str) -> str | None:
         """The offending API name if ``root.method`` is a known blocking sync call.

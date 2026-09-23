@@ -1585,7 +1585,7 @@ async def get_health(
         refactoring_view: ``diversified`` (default)|``canonical``|
             ``file_spread``; _type/_confidence/_effort filter.
         performance_view/_context/_boundary/_confidence/_sort: queue
-            projection and filters; the facets list them.
+            projection and filters; a rejected value lists the accepted.
         scope / counts: default ``all``/``everything``. ``production`` drops
             test files; ``code_shape`` drops the git-derived half of the
             score and its findings.

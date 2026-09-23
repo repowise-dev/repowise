@@ -271,6 +271,12 @@ class PerfHit:
     # proof is unavailable (no dialect, guard trip, non-convergence) or the loop
     # genuinely carries a dependence. The biomarker sharpens its message when set.
     promoted: bool = False
+    # Innermost loop walks its data in chunks (same-function hits only).
+    chunked: bool = False
+
+    def loop_facts(self) -> dict[str, bool]:
+        """Loop facts for ``details``; absent when unset so old findings are unchanged."""
+        return {"chunked_iteration": True} if self.chunked else {}
 
 
 @dataclass(frozen=True)

@@ -17,13 +17,18 @@ from typing import Any, Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.grading import TARGET_SCORE
-from repowise.core.analysis.test_reachability import ReachedBy, tests_reaching_by_tier
+from repowise.core.analysis.test_reachability import (
+    ReachedBy,
+    load_test_files,
+    tests_matching_by_name,
+    tests_reaching_by_tier,
+)
 
 from .models import RefactoringSuggestion
 
 RecommendationView = Literal["canonical", "file_spread"]
 ValidationBasis = Literal["measured", "inferred", "mixed", "unknown"]
-ValidationVia = Literal["coverage", "call-graph", "import-graph", "mixed"]
+ValidationVia = Literal["coverage", "call-graph", "import-graph", "name-match", "mixed"]
 
 DEFAULT_TEST_LIMIT = 12
 # Public because the opportunity rank charges the same work and the same
@@ -503,12 +508,13 @@ def _priority_components(
     cost = EFFORT_COST.get(suggestion.effort_bucket, 3.0)
     provenance = str((suggestion.evidence or {}).get("provenance") or "")
     weak_graph = 1.0 if provenance in _WEAK_PROVENANCE else 0.0
-    validation_risk = {
-        "measured": 0.0,
-        "mixed": 0.5,
-        "inferred": 0.75,
-        "unknown": 1.5,
-    }[validation.basis]
+    # A test named for the file, with no edge proving it runs it, is weaker
+    # evidence than a graph walk; price it between inferred and unknown.
+    validation_risk = (
+        1.0
+        if validation.via == "name-match"
+        else {"measured": 0.0, "mixed": 0.5, "inferred": 0.75, "unknown": 1.5}[validation.basis]
+    )
     risk = surface_confidence_risk(surface, suggestion.confidence) + weak_graph + validation_risk
     # Benefit multiplies rather than offsets: leverage (the host file's
     # deficit and dependents) scales a real gain, and scales nothing when
@@ -652,6 +658,11 @@ async def hydrate_recommendations(
         if unanswered
         else {}
     )
+    unreached = sorted(unanswered - inferred.keys())
+    if unreached:
+        inferred.update(
+            tests_matching_by_name(unreached, await load_test_files(session, repository_id))
+        )
     validations = {
         index: build_validation_plan(suggestion, measured, inferred, test_limit=test_limit)
         for index, suggestion in enumerate(suggestions)

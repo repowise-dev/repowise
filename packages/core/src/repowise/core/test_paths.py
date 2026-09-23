@@ -43,7 +43,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from functools import cache
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath
 
 # Directory segments that mark every file beneath them as test material,
 # whatever the filename. ``__test__`` is the Jest variant of ``__tests__``.
@@ -310,3 +310,32 @@ def is_test_to_production_pair(
     against another file, with no node to read a stored flag from.
     """
     return is_test_related_path(code_path, code_language) ^ is_test_related_path(partner_path)
+
+
+_PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
+
+
+def paired_test_names(rel_path: str) -> frozenset[str]:
+    """Filenames a test for *rel_path* would conventionally carry, any directory."""
+    p = PurePath(rel_path)
+    stem = p.stem
+    test_suffix = ".exs" if p.suffix == ".ex" else p.suffix
+    names = {
+        f"test_{stem}{test_suffix}",
+        f"{stem}_test{test_suffix}",
+        f"{stem}_spec{test_suffix}",
+        f"{stem}.test.ts",
+        f"{stem}.test.tsx",
+        f"{stem}.test.js",
+        f"{stem}.test.mts",
+        f"{stem}.test.cts",
+        f"{stem}.spec.ts",
+        f"{stem}.spec.js",
+        f"{stem}.spec.mts",
+        f"{stem}.spec.cts",
+    }
+    if p.suffix.lower() in _PASCAL_UNIT_SUFFIXES:
+        # Delphi pairs ``uFoo.pas`` with a ``TestFoo.dpr`` program; only a
+        # lowercase ``u`` is the unit prefix (``Utils.pas`` keeps its U).
+        names.add(f"Test{stem[1:] if stem[:1] == 'u' else stem}.dpr")
+    return frozenset(names)

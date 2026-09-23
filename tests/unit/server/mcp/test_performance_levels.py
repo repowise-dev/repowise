@@ -16,7 +16,7 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 from repowise.core.persistence.crud import finalize_performance_opportunities
-from repowise.core.persistence.models import HealthFinding
+from repowise.core.persistence.models import GraphNode, HealthFinding
 
 _CALLERS = ("src/a.py", "src/b.py", "src/c.py", "src/d.py", "src/e.py")
 
@@ -90,7 +90,10 @@ async def test_a_bare_dashboard_leads_with_something_to_do(setup_mcp, materializ
 
     result = await get_health()
     directive = result["performance_directive"]
-    assert directive["status"] == "plan_ready"
+    # A fan-out at a db boundary is advisory until something bounds it.
+    assert directive["status"] == "advisory"
+    assert directive["prerequisites"] == ["bounded_concurrency"]
+    assert directive["validation"]["basis"] in {"measured", "inferred", "mixed", "unknown"}
     assert directive["opportunity_id"].startswith("perf")
     assert directive["plan_state"] == "available"
     assert directive["next_action"] == {
@@ -146,7 +149,7 @@ async def test_the_summary_rolls_up_and_names_the_next_call(setup_mcp, materiali
     result = await get_health(include=["performance"], only=["performance_summary"])
     summary = result["performance_summary"]
     assert summary["status"] == "current"
-    assert summary["actionability"]["plan_ready"] == 1
+    assert summary["actionability"].get("plan_ready", 0) == 0
     assert summary["with_plan_total"] == 2
     assert summary["analyzed_commit"] == "c" * 40
     assert "get_health" in summary["next_call"]
@@ -195,7 +198,9 @@ async def test_an_unrecognized_filter_value_is_named_not_silently_empty(
         performance_context="staging",
     )
     assert result["performance_opportunities_total"] == 2
-    assert result["ignored_arguments"] == {"performance_context": "staging"}
+    assert result["ignored_arguments"] == {
+        "performance_context": "staging (accepted: production, tooling, test, unknown, all)"
+    }
 
 
 @pytest.mark.asyncio
@@ -235,7 +240,9 @@ async def test_one_id_returns_the_cause_its_plan_and_its_rank_rationale(
     # The plan address space is the refactoring layer's content identity.
     assert result["plan_reference"].startswith("refac2_")
     assert result["confidence"] == "high"
-    assert result["fix"]["safety"] == "proven"
+    assert result["fix"]["safety"] == "advisory"
+    assert [step["order"] for step in result["plan_steps"]] == [1, 2, 3, 4, 5]
+    assert result["validation"]["commands"]
     assert result["facets"]["leverage"] == "shared"
     assert result["why_ranked"]
     assert len(json.dumps(result)) <= 20_000
@@ -452,3 +459,27 @@ async def test_rest_and_the_agent_surface_project_the_same_rows(
         for item in agent["performance_opportunities"]
         if item["plan_status"] == "available"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_plan_is_validated_by_a_test_named_for_its_file_when_no_edge_reaches_it(
+    setup_mcp, session, health_data
+):
+    """The plan selector used to rebuild validation from nothing: always unknown."""
+    from repowise.server.mcp_server import get_health
+
+    session.add(GraphNode(repository_id=health_data, node_id="tests/test_a.py", is_test=True))
+    for index, caller in enumerate(_CALLERS, start=10):
+        session.add(_row(health_data, caller, index))
+    await session.flush()
+    await finalize_performance_opportunities(session, health_data, analyzed_commit="c" * 40)
+    await session.commit()
+
+    lead = (await get_health())["performance_directive"]
+    assert lead["validation"]["via"] == "name-match"
+    opportunity = await get_health(opportunity_id=lead["opportunity_id"])
+    plan = (await get_health(plan_id=opportunity["plan_reference"]))["plan"]
+
+    assert "tests/test_a.py" in opportunity["validation"]["tests"]
+    assert plan["validation"]["via"] == "name-match"
+    assert "pytest tests/test_a.py" in plan["validation"]["commands"]

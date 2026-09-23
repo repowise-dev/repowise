@@ -17,6 +17,7 @@
 
 import type { C4IoKind } from "./external-systems.js";
 import type { Paginated } from "./pagination.js";
+import type { StepClassification, ValidationBasis, ValidationVia } from "./refactoring.js";
 
 /** Finding severity used across the health surface. */
 export type HealthSeverity = "low" | "medium" | "high" | "critical";
@@ -367,6 +368,47 @@ export interface PerformanceOpportunityFacets {
   change_risk: string;
 }
 
+/**
+ * Another cause observed on the same source lines. `relation` is from this
+ * opportunity's own view: `preferred` means the sibling's fix is the
+ * stronger one, `alternative` means this one is, `same_site` is no
+ * preference either way.
+ */
+export interface PerformanceOpportunitySibling {
+  opportunity_id: string;
+  biomarker_type: string;
+  strategy: string | null;
+  relation: "preferred" | "alternative" | "same_site";
+}
+
+/** How to validate a stored plan. Shares its vocabulary with refactoring's
+ *  `RecommendationValidation`, trimmed to the fields the queue materializes. */
+export interface PerformanceOpportunityValidation {
+  basis: ValidationBasis;
+  via: ValidationVia | null;
+  total: number;
+  tests: string[];
+  commands: string[];
+}
+
+/** One ordered edit in a stored plan. */
+export interface PerformanceOpportunityPlanStep {
+  order: number;
+  action: string;
+  symbol: string | null;
+  file_path: string | null;
+  line: number | null;
+  applicability: StepClassification;
+}
+
+/** Ranking inputs behind a plan, not a cost/benefit ledger. */
+export interface PerformanceOpportunityPlanEconomics {
+  effort_bucket: string;
+  benefit: number;
+  cost: number;
+  risk: number;
+}
+
 export interface PerformanceOpportunity {
   opportunity_id: string;
   /** Ids are stable within a model version and never translated across one. */
@@ -407,6 +449,15 @@ export interface PerformanceOpportunity {
   plan_id: string | null;
   plan_status: PerformancePlanStatus;
   plan_reason: string;
+  /** Other causes flagged on the same lines. Always present (may be empty) on
+   *  new stores; absent on payloads from an older store. */
+  siblings?: PerformanceOpportunitySibling[];
+  /** How to validate the stored plan. Absent when there is no stored plan. */
+  validation?: PerformanceOpportunityValidation;
+  /** Ordered edits for the stored plan. Absent when there is no stored plan. */
+  plan_steps?: PerformanceOpportunityPlanStep[];
+  /** Ranking inputs behind the stored plan, not a verdict. */
+  plan_economics?: PerformanceOpportunityPlanEconomics;
 }
 
 /** Whether a quoted id still names something this index can resolve. */

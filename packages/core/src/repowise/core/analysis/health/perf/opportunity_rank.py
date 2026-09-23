@@ -40,6 +40,7 @@ MULTIPLIER_POINTS = {
     "resource_construction_in_loop": 4,
     "goroutine_in_unbounded_loop": 4,
     "hot_path_sync_io": 4,
+    "unbounded_read_reduced_in_memory": 4,
     # In-loop CPU or allocation: real, and orders below a round-trip.
     "membership_test_against_list_in_loop": 3,
     "string_concat_in_loop": 3,
@@ -76,6 +77,9 @@ AMPLIFICATION = {
     "nested_loop_quadratic": "quadratic",
     "hot_path_sync_io": "per_call",
     "blocking_sync_in_async": "per_call",
+    # Runs once (not per iteration); its cost scales with the unbounded row
+    # count the read transfers and decodes, not with a loop trip count.
+    "unbounded_read_reduced_in_memory": "per_call",
 }
 """Marker to the repetition shape its evidence supports.
 
@@ -96,7 +100,7 @@ _LEVERAGE_BANDS = ((1, "isolated"), (3, "local"), (9, "shared"))
 _CHANGE_RISK_BANDS = ((1, "contained"), (4, "moderate"))
 
 
-def _band(value: int, bands: tuple[tuple[int, str], ...], beyond: str) -> str:
+def band(value: int, bands: tuple[tuple[int, str], ...], beyond: str) -> str:
     for ceiling, label in bands:
         if value <= ceiling:
             return label
@@ -139,7 +143,7 @@ def exposure(reachable: bool | None) -> str:
 
 def leverage(call_sites: int) -> str:
     """How many places one intervention would settle."""
-    return _band(call_sites, _LEVERAGE_BANDS, "broad")
+    return band(call_sites, _LEVERAGE_BANDS, "broad")
 
 
 def change_risk(affected_files: int) -> str:
@@ -148,7 +152,7 @@ def change_risk(affected_files: int) -> str:
     Structural reach only. Churn and hotspot history live in the serving layer
     and are not read here, so nothing in this module costs a query.
     """
-    return _band(affected_files, _CHANGE_RISK_BANDS, "wide")
+    return band(affected_files, _CHANGE_RISK_BANDS, "wide")
 
 
 def observation_rank(marker: str | None, boundary: str | None, cross_function: bool) -> int:
@@ -230,6 +234,7 @@ __all__ = [
     "PROVENANCE_POINTS",
     "UNKNOWN_MULTIPLIER_POINTS",
     "amplification",
+    "band",
     "change_risk",
     "dominant_marker",
     "exposure",

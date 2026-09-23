@@ -1192,7 +1192,10 @@ get_health(only=["kpis"], limit=0)                    # headline numbers, no row
 A bare `get_health()` carries `performance_directive`: one bounded lead with
 its status (`plan_ready` / `advisory` / `investigate` / `clear` / `unavailable`),
 up to three `why_ranked` facets, the exact plan state, and a structured
-`next_action`. Performance findings carry `health_impact: 0` by construction, so
+`next_action`, and, when a plan is stored, its `validation` basis. An opportunity
+by id adds `plan_steps`, `validation` (tests and commands) and `siblings`: other
+causes observed on the same lines. A rejected filter value is echoed with its
+accepted values in `ignored_arguments`. Performance findings carry `health_impact: 0` by construction, so
 they never competed for the main `directive` and the dashboard used to report
 counts and nothing to act on. `clear` means no supported pattern surfaced, which
 is not a claim about how the code runs; `unavailable` means this index has not

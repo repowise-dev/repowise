@@ -12,7 +12,6 @@ from typing import Any
 
 from ..health import HealthFindingData
 from ..health.perf.opportunities import build_performance_opportunities
-from ..health.perf.opportunity_rank import rank_sort_key
 
 #: Supporting evidence rows kept per surfaced opportunity.
 EVIDENCE_CAP = 3
@@ -55,7 +54,7 @@ def opportunities_for(findings: list[HealthFindingData]) -> list[PerfOpportunity
     if not rows:
         return []
     built = build_performance_opportunities(rows, evidence_limit=max(len(rows), EVIDENCE_CAP))
-    return [_view(o) for o in sorted(built, key=rank_sort_key)]
+    return [_view(o) for o in built]
 
 
 def index_by_finding(
