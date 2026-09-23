@@ -27,6 +27,7 @@ _LIGHTWEIGHT = (
     "repowise.core.analysis.health.ranking",
     "repowise.core.analysis.health.aggregation",
     "repowise.core.analysis.health.trends",
+    "repowise.core.analysis.knowledge_map",
     "repowise.core.analysis.health.grading",
     "repowise.core.analysis.health.suggestions",
     "repowise.core.analysis.health.defect_accuracy",

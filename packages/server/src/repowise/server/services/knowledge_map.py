@@ -52,7 +52,7 @@ async def compute_onboarding_targets(
     feeds the first-index experience. Overview used to reach it through
     :func:`compute_knowledge_map` and pay for the owner aggregation as well.
     """
-    # `pagerank > 0` in SQL, not in the comprehension below: the filter
+    # `pagerank > 0` in SQL too, though the fold repeats it: the filter
     # discards most rows and there is no reason to ship them.
     node_result = await session.execute(
         select(GraphNode.node_id, GraphNode.pagerank).where(

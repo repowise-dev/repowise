@@ -51,22 +51,24 @@ def rank_silos(git_rows: Iterable[Any]) -> list[dict[str, Any]]:
 
 def onboarding_targets(
     file_nodes: Iterable[Any],
-    doc_words: Mapping[str, int],
+    doc_size: Mapping[str, int],
     *,
     limit: int = ONBOARDING_LIMIT,
 ) -> list[dict[str, Any]]:
     """High-centrality files carrying the least documentation.
 
     ``file_nodes`` are non-test graph nodes with ``node_id`` and ``pagerank``;
-    nodes without a positive pagerank are skipped. ``doc_words`` maps a path to
-    its file page's size, 0 or absent when undocumented. Sorted by that size,
-    then pagerank descending; ties keep input order.
+    nodes without a positive pagerank are skipped. ``doc_size`` maps a path to
+    its file page's word count, or any measure that ranks like one; 0 or absent
+    when undocumented. Rows report it as ``doc_words``, so a caller ranking by a
+    proxy must swap exact words in. Sorted by size, then pagerank descending;
+    ties keep input order.
     """
     candidates = [
         {
             "path": field(n, "node_id"),
             "pagerank": field(n, "pagerank"),
-            "doc_words": doc_words.get(field(n, "node_id"), 0),
+            "doc_words": doc_size.get(field(n, "node_id"), 0),
         }
         for n in file_nodes
         if (field(n, "pagerank") or 0.0) > 0.0

@@ -24,12 +24,17 @@ def test_rank_silos_filters_then_ranks_hotspot_activity_concentration() -> None:
         _git("hot.py", 0.81, commits=3, hotspot=True),
         _git("hot_tie.py", 0.95, commits=3, hotspot=True, email=None),
         _git("no_pct.py", None),
+        # Equal once rounded to 3 places; ranked by the raw share.
+        _git("close_low.py", 0.8496, commits=7),
+        _git("close_high.py", 0.8504, commits=7),
     ]
     out = rank_silos(rows)
     assert [s["file_path"] for s in out] == [
         "hot_tie.py",
         "hot.py",
         "busy.py",
+        "close_high.py",
+        "close_low.py",
         "quiet.py",
         "unknown.py",
     ]
