@@ -7,7 +7,7 @@ import pytest
 from repowise.core.workspace.contracts import Contract, ContractLink
 from repowise.core.workspace.diagnostics import build_diagnostics
 from repowise.core.workspace.matching import match_contracts
-from repowise.core.workspace.matching.topic import routing_matches
+from repowise.core.workspace.matching.topic import pattern_matches, routing_matches
 
 
 def _topic(repo: str, role: str, name: str, file: str, **meta) -> Contract:
@@ -178,3 +178,121 @@ class TestDiagnosticsReadTheConsumerId:
         assert ContractLink.from_dict(link.to_dict()).consumer_contract_id == "topic::audit"
         plain = ContractLink.from_dict({**link.to_dict(), "consumer_contract_id": None})
         assert "consumer_contract_id" not in plain.to_dict()
+
+
+class TestPatternMatches:
+    @pytest.mark.parametrize(
+        ("syntax", "pattern", "name", "expected"),
+        [
+            ("nats", "orders.*", "orders.created", True),
+            ("nats", "orders.*", "orders.created.v2", False),
+            ("nats", "orders.>", "orders.created.v2", True),
+            ("nats", "orders.>", "orders", False),
+            ("nats", "*.created", "orders.created", True),
+            ("glob", "orders.*", "orders.created.v2", True),
+            ("glob", "orders.?", "orders.a", True),
+            ("glob", "Orders.*", "orders.a", True),
+            ("regex", "orders\\..*", "orders.created", True),
+            ("regex", "orders\\..*", "ordersXcreated", False),
+            ("regex", "[unclosed", "orders", False),
+            ("unknown", "*", "orders", False),
+        ],
+    )
+    def test_semantics(self, syntax: str, pattern: str, name: str, expected: bool) -> None:
+        assert pattern_matches(syntax, pattern, name) is expected
+
+
+class TestPatternSubscriptions:
+    def _subscriber(self, pattern: str, syntax: str = "nats") -> Contract:
+        return _topic("audit", "consumer", pattern, "sub.go", kind="subject", pattern=syntax)
+
+    def test_a_pattern_links_every_publisher_it_matches(self) -> None:
+        contracts = [
+            _topic("orders", "provider", "orders.created", "a.go", kind="subject"),
+            _topic("orders", "provider", "orders.deleted", "b.go", kind="subject"),
+            _topic("billing", "provider", "invoices.created", "c.go", kind="subject"),
+            self._subscriber("orders.*"),
+        ]
+        links = match_contracts(contracts)
+        # Each link names the topic it carries; the subscription is the consumer's id.
+        assert sorted((lk.contract_id, lk.provider_file) for lk in links) == [
+            ("topic::orders.created", "a.go"),
+            ("topic::orders.deleted", "b.go"),
+        ]
+        assert {lk.consumer_contract_id for lk in links} == {"topic::orders.*"}
+
+    def test_two_topics_from_one_file_are_two_links(self) -> None:
+        contracts = [
+            _topic("orders", "provider", "orders.created", "pub.go", kind="subject"),
+            _topic("orders", "provider", "orders.deleted", "pub.go", kind="subject"),
+            self._subscriber("orders.*"),
+        ]
+        assert len(match_contracts(contracts)) == 2
+
+    @pytest.mark.parametrize(("pattern", "syntax"), [(">", "nats"), ("*", "glob"), (".*", "regex")])
+    def test_a_pattern_of_wildcards_alone_links_nothing(self, pattern: str, syntax: str) -> None:
+        contracts = [
+            _topic("orders", "provider", "orders.created", "a.go", kind="subject"),
+            self._subscriber(pattern, syntax),
+        ]
+        assert match_contracts(contracts) == []
+
+    def test_a_pattern_reaches_only_its_own_broker(self) -> None:
+        kafka = _topic("orders", "provider", "orders.created", "a.ts", kind="topic")
+        kafka.meta["broker"] = "kafka"
+        nats = self._subscriber("orders.*")
+        nats.meta["broker"] = "nats"
+        assert match_contracts([kafka, nats]) == []
+
+
+    def test_a_pattern_in_its_own_service_is_not_linked(self) -> None:
+        contracts = [
+            _topic("audit", "provider", "orders.created", "a.go", kind="subject"),
+            self._subscriber("orders.*"),
+        ]
+        assert match_contracts(contracts) == []
+
+
+def _on(broker: str, role: str, repo: str, name: str = "emails", **meta) -> Contract:
+    c = _topic(repo, role, name, f"{repo}.src", kind="queue", **meta)
+    c.meta["broker"] = broker
+    return c
+
+
+class TestTransports:
+    @pytest.mark.parametrize(
+        ("provider", "consumer", "linked"),
+        [
+            ("rabbitmq", "rabbitmq", True),
+            ("kafka", "rabbitmq", False),
+            ("sns", "sqs", False),
+            ("laravel", "rabbitmq", True),
+            ("rabbitmq", "laravel", True),
+            ("nestjs", "kafka", True),
+            ("laravel", "bullmq", False),
+            ("redis", "bullmq", False),
+            ("bullmq", "bullmq", True),
+        ],
+    )
+    def test_which_brokers_meet(self, provider: str, consumer: str, linked: bool) -> None:
+        links = match_contracts([_on(provider, "provider", "a"), _on(consumer, "consumer", "b")])
+        assert bool(links) is linked
+
+    def test_two_laravel_apps_meet_only_on_one_job_class(self) -> None:
+        same = [
+            _on("laravel", "provider", "web", job="App\\Jobs\\Send"),
+            _on("laravel", "consumer", "worker", job="App\\Jobs\\Send"),
+        ]
+        other = [
+            _on("laravel", "provider", "web", job="App\\Jobs\\Send"),
+            _on("laravel", "consumer", "worker", job="App\\Jobs\\Other"),
+        ]
+        assert len(match_contracts(same)) == 1
+        assert match_contracts(other) == []
+
+    def test_a_name_that_only_looks_like_a_pattern_is_exact(self) -> None:
+        contracts = [
+            _topic("orders", "provider", "orders.created", "a.go", kind="subject"),
+            _topic("audit", "consumer", "orders.*", "sub.go", kind="subject"),
+        ]
+        assert match_contracts(contracts) == []

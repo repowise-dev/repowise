@@ -5,21 +5,19 @@ from __future__ import annotations
 import re
 
 from ..langs import PYTHON
-from .dialect import SocketDialect, SocketPattern
+from ..strings import Arg
+from .dialect import SocketCall, SocketDialect
 
 PYTHON_SOCKETS = SocketDialect(
     name="python-sockets",
-    extensions=PYTHON,
-    patterns=(
-        SocketPattern(
-            regex=re.compile(
-                r"""@(?:app|router)\.websocket\s*\(\s*['"]([^'"]+)['"]""", re.IGNORECASE
-            ),
+    calls=(
+        SocketCall(
+            head=re.compile(r"@(?:app|router)\.websocket\s*\(", re.IGNORECASE),
             role="provider",
             transport="fastapi-websocket",
-            confidence=0.8,
             label="@app.websocket",
-            identity_group=1,
+            extensions=PYTHON,
+            name=Arg(keys=("path",), pos=0),
         ),
     ),
 )

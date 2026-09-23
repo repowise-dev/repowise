@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from ..langs import JS_TS
-from ..strings import JS_SYNTAX, literal_span
+from ..strings import JS_SYNTAX, literal_span, string_constants
 from .client_calls import ClientCallMatch, consumer_contracts, matches_in
 from .dialect import METHODS
 
@@ -105,4 +105,6 @@ class JsClientsDialect:
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
         matches = [*fetch_calls(content), *axios_calls(content), *wrapper_calls(content)]
-        return consumer_contracts(ctx, matches, JS_SYNTAX)
+        # A `${BASE}` interpolation folds when the file binds BASE to a constant.
+        constants = string_constants(content, JS_SYNTAX) if any("${" in m.url for m in matches) else {}
+        return consumer_contracts(ctx, matches, JS_SYNTAX, constants=constants)

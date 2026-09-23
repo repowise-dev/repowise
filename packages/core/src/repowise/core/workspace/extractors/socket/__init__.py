@@ -1,16 +1,25 @@
 """Socket / websocket contract extraction.
 
-Each language's endpoint and connect shapes are a :class:`.dialect.SocketDialect`
-table registered in :data:`DIALECTS`.
+Each library's endpoints, connections and events are a dialect (usually a
+:class:`.dialect.SocketDialect` table) registered in :data:`DIALECTS`.
 """
 
 from __future__ import annotations
 
 from ..dialect import ContractDialect, DialectExtractor, file_identity
+from .broadcasting import ECHO, LARAVEL_BROADCAST
 from .dotnet import DOTNET
 from .python import PYTHON_SOCKETS
+from .socketio import SOCKET_IO, WEBSOCKETS
 
-DIALECTS: tuple[ContractDialect, ...] = (DOTNET, PYTHON_SOCKETS)
+DIALECTS: tuple[ContractDialect, ...] = (
+    DOTNET,
+    PYTHON_SOCKETS,
+    WEBSOCKETS,
+    SOCKET_IO,
+    LARAVEL_BROADCAST,
+    ECHO,
+)
 
 
 class SocketExtractor(DialectExtractor):

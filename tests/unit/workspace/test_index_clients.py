@@ -676,7 +676,8 @@ class TestSupersedeCannotSubtract:
         ('"/a/b"', "/a/b"),
         ("`/a/${id}`", "/a/${id}"),
         ("path", None),
-        ('"/a" + id', None),
+        ('"/a/" + id', "/a/${id}"),
+        ('"/a/" + buildPath(id)', None),
         ("buildPath(id)", None),
     ],
 )

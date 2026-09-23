@@ -16,6 +16,10 @@ def _extract(tmp_path: Path, rel: str, content: str, alias: str = "svc"):
     return TopicExtractor().extract(tmp_path, alias)
 
 
+# amqplib's `publish` and `consume` are read only in a file importing it.
+_AMQP = "import amqp from 'amqplib';\n"
+
+
 def _one(contracts, role: str):
     rows = [c for c in contracts if c.role == role]
     assert len(rows) == 1, rows
@@ -109,27 +113,26 @@ class TestRabbitMq:
         assert c.meta["kind"] == "queue"
 
     def test_publish_carries_exchange_and_routing_key(self, tmp_path: Path) -> None:
-        c = _one(
-            _extract(tmp_path, "pub.ts", "channel.publish('orders', 'order.created', body);"),
-            "provider",
-        )
+        src = _AMQP + "channel.publish('orders', 'order.created', body);"
+        c = _one(_extract(tmp_path, "pub.ts", src), "provider")
         assert c.contract_id == "topic::orders"
         assert c.meta["kind"] == "exchange"
         assert c.meta["routing_key"] == "order.created"
 
     def test_publish_to_the_default_exchange_names_the_queue(self, tmp_path: Path) -> None:
-        c = _one(_extract(tmp_path, "pub.ts", "channel.publish('', 'jobs', body);"), "provider")
+        src = _AMQP + "channel.publish('', 'jobs', body);"
+        c = _one(_extract(tmp_path, "pub.ts", src), "provider")
         assert c.contract_id == "topic::jobs"
         assert c.meta["kind"] == "queue"
         assert "routing_key" not in c.meta
 
     def test_two_routing_keys_on_one_exchange_are_two_rows(self, tmp_path: Path) -> None:
-        src = "channel.publish('orders', 'a', b);\nchannel.publish('orders', 'b', b);\n"
+        src = _AMQP + "channel.publish('orders', 'a', b);\nchannel.publish('orders', 'b', b);\n"
         keys = sorted(c.meta["routing_key"] for c in _extract(tmp_path, "pub.ts", src))
         assert keys == ["a", "b"]
 
     def test_repeated_identical_call_is_one_row(self, tmp_path: Path) -> None:
-        src = "channel.consume('jobs', a);\nchannel.consume('jobs', b);\n"
+        src = _AMQP + "channel.consume('jobs', a);\nchannel.consume('jobs', b);\n"
         assert len(_extract(tmp_path, "w.js", src)) == 1
 
     def test_bind_queue_is_a_binding_consumer_of_the_exchange(self, tmp_path: Path) -> None:
@@ -208,7 +211,60 @@ class TestRabbitMq:
         ],
     )
     def test_a_name_not_settled_in_the_file_is_refused(self, tmp_path: Path, call: str) -> None:
-        assert _extract(tmp_path, "w.js", call) == []
+        assert _extract(tmp_path, "w.js", _AMQP + call) == []
+
+    def test_publish_and_consume_need_the_amqplib_import(self, tmp_path: Path) -> None:
+        src = "channel.publish('orders', 'k', b);\nchannel.consume('jobs', h);\n"
+        assert _extract(tmp_path, "w.ts", src) == []
+
+    def test_any_channel_name_is_read_in_an_amqplib_file(self, tmp_path: Path) -> None:
+        src = _AMQP + "await this.ch.consume('jobs', h);\n"
+        assert _one(_extract(tmp_path, "w.ts", src), "consumer").contract_id == "topic::jobs"
+
+    def test_send_to_queue_needs_no_import(self, tmp_path: Path) -> None:
+        src = "currentChannel().sendToQueue('jobs', body);\n"
+        assert _one(_extract(tmp_path, "w.ts", src), "provider").contract_id == "topic::jobs"
+
+    def test_an_object_member_constant_folds(self, tmp_path: Path) -> None:
+        src = (
+            _AMQP
+            + "export const QUEUES = { ticketSold: 'ticket.sold' } as const;\n"
+            + "channel.consume(QUEUES.ticketSold, h);\n"
+        )
+        assert _one(_extract(tmp_path, "w.ts", src), "consumer").contract_id == "topic::ticket.sold"
+
+
+class TestPhpAmqplib:
+    _USE = "<?php\nuse PhpAmqpLib\\Message\\AMQPMessage;\n"
+
+    def test_publish_to_an_exchange(self, tmp_path: Path) -> None:
+        src = self._USE + "$channel->basic_publish($msg, 'orders', 'order.created');\n"
+        c = _one(_extract(tmp_path, "Pub.php", src), "provider")
+        assert (c.contract_id, c.meta["kind"], c.meta["routing_key"]) == (
+            "topic::orders",
+            "exchange",
+            "order.created",
+        )
+
+    def test_publish_to_the_default_exchange_names_the_queue(self, tmp_path: Path) -> None:
+        src = self._USE + "$channel->basic_publish($msg, '', 'jobs');\n"
+        c = _one(_extract(tmp_path, "Pub.php", src), "provider")
+        assert (c.contract_id, c.meta["kind"]) == ("topic::jobs", "queue")
+
+    def test_consume_and_bind(self, tmp_path: Path) -> None:
+        src = (
+            self._USE
+            + "$channel->queue_bind('audit', 'orders', 'order.*');\n"
+            + "$channel->basic_consume('audit', '', false, true, false, false, $cb);\n"
+        )
+        rows = _extract(tmp_path, "Work.php", src)
+        assert {(c.contract_id, c.meta["kind"]) for c in rows} == {
+            ("topic::orders", "binding"),
+            ("topic::audit", "queue"),
+        }
+
+    def test_nothing_without_the_library(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "X.php", "<?php\n$x->basic_publish($m, 'orders');\n") == []
 
 
 class TestNats:
@@ -235,3 +291,166 @@ class TestNats:
 
     def test_an_unrelated_receiver_is_not_nats(self, tmp_path: Path) -> None:
         assert _extract(tmp_path, "x.ts", "store.subscribe('state', h);") == []
+
+    def test_bare_sub_is_not_a_nats_receiver(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "x.ts", "sub.subscribe('events.created', h);") == []
+
+    @pytest.mark.parametrize("subject", ["events.*", "events.>"])
+    def test_a_wildcard_subscription_is_a_pattern(self, tmp_path: Path, subject: str) -> None:
+        c = _one(_extract(tmp_path, "sub.go", f'nc.Subscribe("{subject}", h)\n'), "consumer")
+        assert c.meta["pattern"] == "nats"
+
+    def test_a_plain_subject_is_not_a_pattern(self, tmp_path: Path) -> None:
+        c = _one(_extract(tmp_path, "sub.go", 'nc.Subscribe("events.created", h)\n'), "consumer")
+        assert "pattern" not in c.meta
+
+
+class TestKafkaPattern:
+    def test_topic_pattern_is_a_regex_subscription(self, tmp_path: Path) -> None:
+        src = '@KafkaListener(topicPattern = "orders\\\\..*")\nvoid f() {}'
+        c = _one(_extract(tmp_path, "C.java", src), "consumer")
+        assert c.meta["pattern"] == "regex"
+        assert c.meta["topic"] == "orders\\..*"  # the Java escape read as the regex it spells
+
+    def test_a_topics_listener_is_not_a_pattern(self, tmp_path: Path) -> None:
+        c = _one(_extract(tmp_path, "C.java", '@KafkaListener(topics = "a.*")'), "consumer")
+        assert "pattern" not in c.meta
+
+
+class TestBullMq:
+    _IMPORT = "import { Queue, Worker } from 'bullmq';\n"
+
+    def test_queue_and_worker(self, tmp_path: Path) -> None:
+        src = self._IMPORT + "const q = new Queue('emails');\nnew Worker<Job>('emails', process);\n"
+        rows = _extract(tmp_path, "q.ts", src)
+        assert {(c.role, c.contract_id, c.meta["kind"]) for c in rows} == {
+            ("provider", "topic::emails", "queue"),
+            ("consumer", "topic::emails", "queue"),
+        }
+
+    def test_a_queue_class_of_another_library_is_not_bullmq(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "q.ts", "const q = new Queue('emails');\n") == []
+
+    def test_nestjs_processor_and_inject_queue(self, tmp_path: Path) -> None:
+        src = (
+            "import { Processor, InjectQueue } from '@nestjs/bullmq';\n"
+            "@Processor('audio')\nclass AudioProcessor {}\n"
+            "constructor(@InjectQueue('audio') private q: Queue) {}\n"
+        )
+        rows = _extract(tmp_path, "audio.ts", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("consumer", "topic::audio"),
+            ("provider", "topic::audio"),
+        }
+
+    def test_a_flow_names_its_queue(self, tmp_path: Path) -> None:
+        src = (
+            self._IMPORT
+            + "const flow = new FlowProducer();\n"
+            + "flow.add({ name: 'j', queueName: 'renders' });\n"
+        )
+        assert _one(_extract(tmp_path, "f.ts", src), "provider").contract_id == "topic::renders"
+
+
+class TestAws:
+    def test_sqs_queue_url_names_its_last_segment(self, tmp_path: Path) -> None:
+        src = (
+            "const URL = 'https://sqs.eu-west-1.amazonaws.com/123456789012/orders';\n"
+            "await sqs.send(new SendMessageCommand({ QueueUrl: URL, MessageBody: b }));\n"
+            "await sqs.send(new ReceiveMessageCommand({ QueueUrl: `${base}/orders` }));\n"
+        )
+        rows = _extract(tmp_path, "q.ts", src)
+        assert {(c.role, c.contract_id, c.meta["broker"]) for c in rows} == {
+            ("provider", "topic::orders", "sqs"),
+            ("consumer", "topic::orders", "sqs"),
+        }
+
+    def test_a_queue_url_from_the_environment_is_refused(self, tmp_path: Path) -> None:
+        src = "new SendMessageCommand({ QueueUrl: process.env.QUEUE_URL, MessageBody: b });\n"
+        assert _extract(tmp_path, "q.ts", src) == []
+
+    def test_sns_topic_arn_names_its_last_field(self, tmp_path: Path) -> None:
+        src = "new PublishCommand({ TopicArn: 'arn:aws:sns:eu-west-1:123:orders', Message: m });\n"
+        c = _one(_extract(tmp_path, "p.ts", src), "provider")
+        assert (c.contract_id, c.meta["broker"], c.meta["kind"]) == ("topic::orders", "sns", "topic")
+
+    def test_boto3_keywords(self, tmp_path: Path) -> None:
+        src = "sqs.send_message(QueueUrl='https://sqs.x/1/jobs', MessageBody='x')\n"
+        assert _one(_extract(tmp_path, "p.py", src), "provider").contract_id == "topic::jobs"
+
+    def test_send_message_without_a_queue_url_is_not_sqs(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "bot.ts", "bot.sendMessage(chatId, 'hello');\n") == []
+
+
+class TestRedis:
+    _IMPORT = "import Redis from 'ioredis';\n"
+
+    def test_publish_subscribe(self, tmp_path: Path) -> None:
+        src = self._IMPORT + "pub.publish('scores', x);\nsub.subscribe('scores');\n"
+        rows = _extract(tmp_path, "r.ts", src)
+        assert {(c.role, c.contract_id, c.meta["broker"], c.meta["kind"]) for c in rows} == {
+            ("provider", "topic::scores", "redis", "channel"),
+            ("consumer", "topic::scores", "redis", "channel"),
+        }
+
+    def test_psubscribe_is_a_glob_pattern(self, tmp_path: Path) -> None:
+        src = self._IMPORT + "sub.psubscribe('scores.*');\n"
+        assert _one(_extract(tmp_path, "r.ts", src), "consumer").meta["pattern"] == "glob"
+
+    def test_an_rxjs_subscribe_is_not_a_channel(self, tmp_path: Path) -> None:
+        src = self._IMPORT + "obs$.subscribe((v) => log(v));\nstore.subscribe(handler);\n"
+        assert _extract(tmp_path, "r.ts", src) == []
+
+    def test_nothing_without_a_redis_client(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "r.ts", "emitter.publish('scores', x);\n") == []
+
+    def test_a_redis_client_named_client_is_redis_not_nats(self, tmp_path: Path) -> None:
+        src = "import { createClient } from 'redis';\nclient.publish('scores', x);\n"
+        assert _one(_extract(tmp_path, "r.ts", src), "provider").meta["broker"] == "redis"
+
+    def test_laravel_facade(self, tmp_path: Path) -> None:
+        src = "<?php\nRedis::publish('scores', $x);\nRedis::subscribe(['scores', 'ranks'], $cb);\n"
+        rows = _extract(tmp_path, "R.php", src)
+        assert sorted((c.role, c.contract_id) for c in rows) == [
+            ("consumer", "topic::ranks"),
+            ("consumer", "topic::scores"),
+            ("provider", "topic::scores"),
+        ]
+
+
+class TestNestMicroservices:
+    _IMPORT = "import { EventPattern, MessagePattern, ClientProxy } from '@nestjs/microservices';\n"
+
+    def test_handlers(self, tmp_path: Path) -> None:
+        src = self._IMPORT + "@EventPattern('ticket.sold')\nf() {}\n@MessagePattern('sum')\ng() {}\n"
+        rows = _extract(tmp_path, "c.ts", src)
+        assert {(c.role, c.contract_id, c.meta["broker"]) for c in rows} == {
+            ("consumer", "topic::ticket.sold", "nestjs"),
+            ("consumer", "topic::sum", "nestjs"),
+        }
+
+    def test_a_client_proxy_emits_under_any_name(self, tmp_path: Path) -> None:
+        src = (
+            self._IMPORT
+            + "constructor(@Inject('BILLING') private readonly billing: ClientProxy) {}\n"
+            + "this.billing.emit('ticket.sold', t);\n"
+            + "res.send('ok');\n"
+        )
+        c = _one(_extract(tmp_path, "s.ts", src), "provider")
+        assert (c.contract_id, c.symbol_name) == (
+            "topic::ticket.sold",
+            "ClientProxy.emit('ticket.sold')",
+        )
+
+    def test_an_object_pattern_is_named_as_nest_serializes_it(self, tmp_path: Path) -> None:
+        src = (
+            self._IMPORT
+            + "@MessagePattern({ role: 'math', cmd: 'sum' })\nf() {}\n"
+            + "client: ClientProxy;\nthis.client.send({ cmd: 'sum', role: 'math' }, [1, 2]);\n"
+        )
+        rows = _extract(tmp_path, "m.ts", src)
+        assert {c.contract_id for c in rows} == {'topic::{"cmd":"sum","role":"math"}'}
+        assert {c.role for c in rows} == {"consumer", "provider"}
+
+    def test_handlers_need_the_microservices_import(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "c.ts", "@EventPattern('x')\nf() {}\n") == []

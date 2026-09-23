@@ -31,6 +31,7 @@ import re
 from typing import TYPE_CHECKING
 
 from ..base import line_at
+from ..calls import FileStrings
 from ..langs import PYTHON
 from ..strings import (
     JS_SYNTAX,
@@ -38,7 +39,6 @@ from ..strings import (
     match_paren,
     resolve_string,
     split_first_arg,
-    string_constants,
 )
 from .client_calls import VERBS, is_rooted_url
 from .dialect import build_consumer_contract
@@ -88,16 +88,19 @@ _match_paren = match_paren
 _split_first_arg = split_first_arg
 
 
-def _first_arg_url(arg: str, is_python: bool, constants: dict[str, str]) -> str | None:
+def _first_arg_url(arg: str, strings: FileStrings) -> str | None:
     """The URL a call's first argument names, or ``None`` if it is not one.
 
-    A literal spanning the whole argument is required: ``"/a" + x`` and a bare
-    identifier both return ``None``, because neither is a path this layer may
-    claim to know. Python additionally reads an f-string and folds a name bound
-    to a string literal, then faces the same concreteness test as every other
-    language.
+    The argument must resolve through the file's string syntax: a literal, an
+    f-string or template, a concatenation, or a name the file binds once to
+    one of those. A name it does not bind returns ``None``, because that is
+    not a path this layer may claim to know. The result then faces the same
+    concreteness test in every language.
     """
-    url = resolve_string(arg, PYTHON_SYNTAX if is_python else JS_SYNTAX, constants)
+    url = resolve_string(arg, strings.syntax)
+    if url is None or "${" in url:
+        # Only an expression that is not a plain literal reads the constants.
+        url = resolve_string(arg, strings.syntax, strings.constants)
     return url if url is not None and is_rooted_url(url) else None
 
 
@@ -183,7 +186,7 @@ def extract_consumers(
     if not confirmed and not sinks and not clients:
         return [], 0
 
-    constants = string_constants(content, PYTHON_SYNTAX, code) if is_python else {}
+    strings = FileStrings(content, PYTHON_SYNTAX if is_python else JS_SYNTAX, code or None)
     declarations = _declaration_sites(symbols)
 
     # Pass 1: every call site of a confirmed wrapper, split into resolved
@@ -224,7 +227,7 @@ def extract_consumers(
             parse_failures += 1
             continue
         first, rest = _split_first_arg(content[open_idx + 1 : close_idx])
-        url = _first_arg_url(first, is_python, constants)
+        url = _first_arg_url(first, strings)
         if url is None:
             # The wrapper's own plumbing — ``fetch(path)`` inside the very
             # function that wraps it — is not a lost endpoint. Whatever flows
@@ -255,7 +258,7 @@ def extract_consumers(
             parse_failures += 1
             continue
         first, _ = _split_first_arg(content[open_idx + 1 : close_idx])
-        url = _first_arg_url(first, is_python, constants)
+        url = _first_arg_url(first, strings)
         if url is None:
             # Unconditional, unlike the wrapper tally above: a client's
             # ``.post`` takes a URL by definition, so ``path_taking`` has no

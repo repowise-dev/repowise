@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import re
 
+from repowise.core.workspace.contracts import TOPIC_PATTERN_REGEX
+
 from ..langs import GO, JAVA, JS_TS, PYTHON
-from ..strings import Arg
+from ..strings import Arg, unescape_backslashes
 from .dialect import TopicCall, TopicDialect
 
 _TOPIC = Arg(keys=("topics", "topic"))
@@ -20,6 +22,15 @@ KAFKA = TopicDialect(
             label="@KafkaListener",
             extensions=JAVA,
             name=_TOPIC,
+        ),
+        TopicCall(
+            head=re.compile(r"@KafkaListener\s*\("),
+            role="consumer",
+            label="@KafkaListener",
+            extensions=JAVA,
+            name=Arg(keys=("topicPattern",)),
+            pattern=TOPIC_PATTERN_REGEX,
+            normalize=unescape_backslashes,
         ),
         TopicCall(
             head=re.compile(r"kafkaTemplate\.send\s*\("),

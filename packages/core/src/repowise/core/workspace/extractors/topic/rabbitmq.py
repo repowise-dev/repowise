@@ -1,7 +1,13 @@
-"""RabbitMQ publishers, consumers and queue bindings: Spring AMQP, amqplib, pika.
+"""RabbitMQ publishers, consumers and queue bindings: Spring AMQP, amqplib, pika, php-amqplib.
 
 A publish names an exchange and a routing key, a consume names a queue, and a
 binding connects the two; see :mod:`repowise.core.workspace.matching.topic`.
+
+amqplib's ``publish`` and ``consume`` are names half the event libraries
+share, so they are read only in a file that imports amqplib, whatever the
+channel variable is called. ``sendToQueue`` and ``bindQueue`` are amqplib's
+alone and are read anywhere, including on a channel handed in from another
+module.
 """
 
 from __future__ import annotations
@@ -14,9 +20,12 @@ from repowise.core.workspace.contracts import (
     TOPIC_KIND_QUEUE,
 )
 
-from ..langs import JAVA, JS_TS, PYTHON
+from ..langs import JAVA, JS_TS, PHP, PYTHON
 from ..strings import Arg
 from .dialect import TopicCall, TopicDialect
+
+_AMQPLIB = ("amqplib", "amqp-connection-manager")
+_PHP_AMQPLIB = ("PhpAmqpLib",)
 
 RABBITMQ = TopicDialect(
     name="rabbitmq",
@@ -41,15 +50,16 @@ RABBITMQ = TopicDialect(
             routing_key=Arg(pos=1),
         ),
         TopicCall(
-            head=re.compile(r"channel\.consume\s*\("),
+            head=re.compile(r"\.\s*consume\s*\("),
             role="consumer",
             label="channel.consume",
             extensions=JS_TS,
             name=Arg(pos=0),
             kind=TOPIC_KIND_QUEUE,
+            requires=_AMQPLIB,
         ),
         TopicCall(
-            head=re.compile(r"channel\.publish\s*\("),
+            head=re.compile(r"\.\s*publish\s*\("),
             role="provider",
             label="channel.publish",
             extensions=JS_TS,
@@ -57,17 +67,19 @@ RABBITMQ = TopicDialect(
             kind=TOPIC_KIND_EXCHANGE,
             routing_key=Arg(pos=1),
             default_exchange=True,
+            requires=_AMQPLIB,
         ),
         TopicCall(
-            head=re.compile(r"channel\.sendToQueue\s*\("),
+            head=re.compile(r"\.\s*sendToQueue\s*\("),
             role="provider",
             label="channel.sendToQueue",
             extensions=JS_TS,
             name=Arg(pos=0),
             kind=TOPIC_KIND_QUEUE,
+            requires=("sendToQueue",),
         ),
         TopicCall(
-            head=re.compile(r"channel\.bindQueue\s*\("),
+            head=re.compile(r"\.\s*bindQueue\s*\("),
             role="consumer",
             label="channel.bindQueue",
             extensions=JS_TS,
@@ -75,6 +87,7 @@ RABBITMQ = TopicDialect(
             kind=TOPIC_KIND_BINDING,
             routing_key=Arg(pos=2),
             queue=Arg(pos=0),
+            requires=("bindQueue",),
         ),
         TopicCall(
             head=re.compile(r"channel\.basic_consume\s*\("),
@@ -106,6 +119,38 @@ RABBITMQ = TopicDialect(
             confidence=0.7,
             routing_key=Arg(keys=("routing_key",), pos=2),
             queue=Arg(keys=("queue",), pos=0),
+        ),
+        # php-amqplib: `basic_publish($msg, $exchange = '', $routing_key = '')`.
+        TopicCall(
+            head=re.compile(r"->\s*basic_consume\s*\("),
+            role="consumer",
+            label="basic_consume",
+            extensions=PHP,
+            name=Arg(keys=("queue",), pos=0),
+            kind=TOPIC_KIND_QUEUE,
+            requires=_PHP_AMQPLIB,
+        ),
+        TopicCall(
+            head=re.compile(r"->\s*basic_publish\s*\("),
+            role="provider",
+            label="basic_publish",
+            extensions=PHP,
+            name=Arg(keys=("exchange",), pos=1),
+            kind=TOPIC_KIND_EXCHANGE,
+            routing_key=Arg(keys=("routing_key",), pos=2),
+            default_exchange=True,
+            requires=_PHP_AMQPLIB,
+        ),
+        TopicCall(
+            head=re.compile(r"->\s*queue_bind\s*\("),
+            role="consumer",
+            label="queue_bind",
+            extensions=PHP,
+            name=Arg(keys=("exchange",), pos=1),
+            kind=TOPIC_KIND_BINDING,
+            routing_key=Arg(keys=("routing_key",), pos=2),
+            queue=Arg(keys=("queue",), pos=0),
+            requires=_PHP_AMQPLIB,
         ),
     ),
 )

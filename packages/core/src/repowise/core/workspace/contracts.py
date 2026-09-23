@@ -55,20 +55,31 @@ CONTRACTS_FILENAME = "contracts.json"
 # Version 10 serves Laravel routes under their group and route-file prefixes
 # with resources expanded, and adds Laravel migration, model-convention and
 # query-builder table contracts.
-CONTRACTS_VERSION = 10
+# Version 11 adds Laravel queues, BullMQ, SQS/SNS, Redis pub/sub, NestJS
+# microservices, php-amqplib, pattern subscriptions, and socket.io, ws and
+# Laravel broadcasting sockets; JS/TS constants fold.
+CONTRACTS_VERSION = 11
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
-#: A queue is read by one consumer group; a topic or subject fans out; an
-#: exchange routes to the queues bound to it; a binding is a queue subscribing
-#: to an exchange, recorded as a consumer of that exchange.
+#: A queue is read by one consumer group; a topic, subject or channel fans
+#: out; an exchange routes to the queues bound to it; a binding is a queue
+#: subscribing to an exchange, recorded as a consumer of that exchange.
+TOPIC_PREFIX = "topic::"
 TOPIC_KIND_TOPIC = "topic"
 TOPIC_KIND_QUEUE = "queue"
 TOPIC_KIND_EXCHANGE = "exchange"
 TOPIC_KIND_SUBJECT = "subject"
+TOPIC_KIND_CHANNEL = "channel"
 TOPIC_KIND_BINDING = "binding"
 #: Set on a publish or binding whose routing key the file does not settle; the
 #: topic matcher refuses to route through it rather than read it as match-all.
 TOPIC_ROUTING_KEY_UNRESOLVED = "routing_key_unresolved"
+#: ``meta`` key of a consumer subscribed by pattern (``orders.*``); its value
+#: names the pattern syntax.
+TOPIC_PATTERN = "pattern"
+TOPIC_PATTERN_NATS = "nats"
+TOPIC_PATTERN_GLOB = "glob"
+TOPIC_PATTERN_REGEX = "regex"
 
 
 # ---------------------------------------------------------------------------

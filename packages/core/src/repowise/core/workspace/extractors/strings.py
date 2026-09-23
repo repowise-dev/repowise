@@ -25,6 +25,7 @@ comments; ``ingestion.framework_routes`` keeps its own comment-aware scanner.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from itertools import pairwise
@@ -48,6 +49,9 @@ class StringSyntax:
     the language's dialects do not fold concatenation. ``assignment`` locates
     ``name = rhs`` statements for constant folding; ``assignment_strip`` drops a
     trailing decoration from the right-hand side (Ruby's ``.freeze``).
+    ``members`` locates a constant object or enum (``const Q = {``,
+    ``enum Q {``), ending at its opening brace; each ``key: value`` or
+    ``key = value`` entry folds as ``Q.key``.
     """
 
     quotes: str = "\"'"
@@ -63,6 +67,7 @@ class StringSyntax:
     concat: str = ""
     assignment: re.Pattern[str] | None = None
     assignment_strip: re.Pattern[str] | None = None
+    members: re.Pattern[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +246,8 @@ def _lookup(name: str, constants: dict[str, str]) -> str | None:
     const = constants.get(name)
     if const is None and name.startswith("$"):
         const = constants.get(name[1:])  # a PHP variable, keyed without its sigil
+    if const is None and name.startswith(("self::", "static::")):
+        const = constants.get(name.partition("::")[2])  # a PHP class constant
     return const
 
 
@@ -406,6 +413,11 @@ def string_constants(
         # A second assignment retires the name whatever it assigns: the reader
         # cannot tell which one reaches the use site.
         seen[name] = None if name in seen or resolve_string(rhs, syntax) is None else rhs
+    if syntax.members is not None:
+        for m in syntax.members.finditer(text):
+            if code is None and _on_comment_line(content, m.start()):
+                continue
+            _fold_members(content, m.end() - 1, m.group("name"), syntax, seen)
     # `x += "/v1"` and `x, err = f()` rebind a name without the plain form.
     for m in _COMPOUND_ASSIGN_RE.finditer(text):
         seen[m.group(1)] = None
@@ -413,6 +425,70 @@ def string_constants(
         for name in m.group(1).replace(" ", "").split(","):
             seen[name.lstrip("$")] = None
     return {name: text for name, text in seen.items() if text is not None}
+
+
+# One object or enum entry: comments before it, an identifier or quoted key,
+# then `:` or `=`.
+_MEMBER_RE = re.compile(
+    r"""^(?:\s*(?://[^\n]*|/\*.*?\*/))*\s*"""
+    r"""(?:(?P<id>[A-Za-z_$][\w$]*)|['"](?P<quoted>[\w$.-]+)['"])\s*[:=](?![=>])\s*(?P<value>.+?)\s*$""",
+    re.DOTALL,
+)
+# A member value worth resolving: a string, a template, a name, or an object.
+# A function body or a long expression is neither a constant nor cheap to read.
+_MEMBER_VALUE_MAX = 512
+_MEMBER_VALUE_START = frozenset("'\"`{$_") | frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+
+
+def map_entry(entry: str) -> tuple[str, str, int] | None:
+    """``(key, value source, value offset)`` of one ``key: value`` / ``key = value`` entry.
+
+    Leading comments are skipped; a spread, a method or a bare enum member is
+    ``None``.
+    """
+    m = _MEMBER_RE.match(entry)
+    if m is None:
+        return None
+    return m.group("id") or m.group("quoted"), m.group("value"), m.start("value")
+
+
+def _fold_members(
+    content: str,
+    brace: int,
+    prefix: str,
+    syntax: StringSyntax,
+    seen: dict[str, str | None],
+    close: int | None = None,
+) -> None:
+    """Record each entry of the object literal opening at *brace* as ``prefix.key``.
+
+    A nested object folds one level deeper (``Q.orders.created``); an entry
+    that is not a string expression retires its name like any assignment.
+    """
+    if close is None:
+        close = match_paren(content, brace, closer="}")
+    if close < 0:
+        return
+    _, seps = _scan(content, brace + 1, close, sep=",")
+    for start, end in pairwise([brace, *seps, close]):
+        member = map_entry(content[start + 1 : end])
+        if member is None:
+            continue
+        key, value, value_at = member
+        name = f"{prefix}.{key}"
+        if value[0] not in _MEMBER_VALUE_START or len(value) > _MEMBER_VALUE_MAX:
+            seen[name] = None
+            continue
+        if value[0] == "{":
+            if value.endswith("}"):
+                offset = start + 1 + value_at
+                _fold_members(content, offset, name, syntax, seen, offset + len(value) - 1)
+            continue
+        if syntax.assignment_strip is not None:
+            value = syntax.assignment_strip.sub("", value).strip()
+        seen[name] = None if name in seen or resolve_string(value, syntax) is None else value
 
 
 # ``x += ...`` / ``$x .= ...``; the name is keyed without a PHP sigil.
@@ -427,6 +503,16 @@ def _on_comment_line(content: str, offset: int) -> bool:
     """True when the line holding *offset* starts as a line or block comment."""
     start = max(content.rfind("\n", 0, offset) + 1, offset - 200)
     return content[start:offset].lstrip().startswith(("//", "#", "*", "/*"))
+
+
+def unescape_backslashes(text: str) -> str:
+    """A literal body's ``\\\\`` as the one backslash it stands for.
+
+    Bodies are read raw, which keeps a path or queue name byte-exact; a value
+    that is itself a pattern or a namespaced name (a Java regex, a PHP class
+    in a JS string) is compared after this.
+    """
+    return text.replace("\\\\", "\\")
 
 
 def literal_span(content: str, m: re.Match[str], group: int) -> str:
@@ -511,18 +597,26 @@ def select_argument(args: list[str], arg: Arg) -> list[str]:
 
 
 def resolve_argument(
-    args: list[str], arg: Arg, syntax: StringSyntax, constants: dict[str, str]
+    args: list[str],
+    arg: Arg,
+    syntax: StringSyntax,
+    constants: dict[str, str],
+    normalize: Callable[[str], str | None] | None = None,
 ) -> tuple[list[str], bool]:
     """``(values, refused)`` for *arg*: each selected value resolved to plain text.
 
     A value that does not resolve, or resolves to a template with a hole in
     it, is dropped and ``refused`` is set, so a caller can tell "the call did
     not say" from "the call said something this file cannot settle".
+    *normalize* maps the resolved text first (a queue URL to its last
+    segment, a parameter to ``{param}``), so a hole it removes is no hole.
     """
     values: list[str] = []
     refused = False
     for raw in select_argument(args, arg):
         text = resolve_string(raw, syntax, constants)
+        if text is not None and normalize is not None:
+            text = normalize(text)
         if text is None or "${" in text:
             refused = True
         else:
@@ -539,7 +633,26 @@ _BRACE_PLACEHOLDER_RE = re.compile(r"\{[^}]*\}")
 _BRACE_INTERP_RE = re.compile(r"(?<!\{)\{([^{}]+)\}(?!\})")
 _ESCAPED_BRACE_RE = re.compile(r"\{\{|\}\}")
 
-JS_SYNTAX = StringSyntax(quotes="\"'`", template_quotes="`")
+# ``const NAME = <expr>`` only: a ``let`` or ``var`` may be reassigned by a
+# plain ``NAME = ...`` this reader does not track. ``as const`` and the
+# statement's ``;`` (with any comment after it) are not part of the value.
+JS_SYNTAX = StringSyntax(
+    quotes="\"'`",
+    template_quotes="`",
+    concat="+",
+    assignment=re.compile(
+        # The boundary is checked behind the literal, so the regex keeps its
+        # literal prefix and is not tried at every offset of the file.
+        r"const(?<![\w$]const)[ \t]+(?P<name>[A-Za-z_$][\w$]*)(?:[ \t]*:[^=\n]+)?[ \t]*=(?![=>])"
+        r"[ \t]*(?P<rhs>[^\n]+)$",
+        re.MULTILINE,
+    ),
+    assignment_strip=re.compile(r"\s*(?:as\s+const\s*)?;[^'\"`]*$|\s+as\s+const\s*$"),
+    members=re.compile(
+        r"(?:const(?<![\w$]const)|enum(?<![\w$]enum))[ \t]+(?P<name>[A-Za-z_$][\w$]*)[ \t]*(?::[^=\n{]+)?"
+        r"(?:=[ \t]*(?:Object\.freeze[ \t]*\([ \t]*)?)?\{"
+    ),
+)
 
 # ``NAME = <expr>`` at any indentation, RHS to end of line. The whitespace
 # around ``=`` is required, which excludes the usual unspaced keyword argument
@@ -662,6 +775,7 @@ __all__ = [
     "StringSyntax",
     "call_arguments",
     "literal_span",
+    "map_entry",
     "match_paren",
     "resolve_argument",
     "resolve_string",
@@ -670,4 +784,5 @@ __all__ = [
     "split_top_level",
     "string_constants",
     "syntax_for_suffix",
+    "unescape_backslashes",
 ]

@@ -234,14 +234,32 @@ Scans source files for HTTP route handlers, gRPC service definitions, and messag
 | HTTP | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal API), Rust (Axum routes, Actix/Rocket attribute macros) | fetch/axios/URL-literal wrappers (JS/TS), requests/httpx (Python), HttpClient/UnityWebRequest/Best.HTTP (C#), reqwest (Rust) |
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
 | Data / DB | DDL (`CREATE TABLE`/`VIEW`/`MATERIALIZED VIEW`), Alembic `op.create_table`, Laravel migrations (`Schema::create` / `Schema::table`), ORM dialects (SQLAlchemy, Django, JPA, EF Core, ActiveRecord, Eloquent `$table` or the class-name convention) | Raw SQL string literals in app code (verb-anchored: `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`MERGE`), Laravel `DB::table(...)` |
-| Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika), NATS producers | The corresponding consumers, plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
-| Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)` |
+| Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
+| Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
 
-Socket detection is C#/Python only and is toggled by `detect_socket` in the `contracts:` block below.
+Socket detection is toggled by `detect_socket` in the `contracts:` block below.
+An endpoint is identified by its path (`socket::/hubs/game`); a message by its
+event within a scope, `socket::<scope>#<event>`, where the scope is a socket.io
+namespace (`/` unless the file names one) or a broadcast channel. Channels keep
+the wire prefix Pusher gives them (`private-orders.{param}`), and Echo's event
+names are read the way Echo formats them, so `.listen('OrderShipped')` meets a
+Laravel event class `App\Events\OrderShipped` and `.listen('.order.shipped')`
+meets `broadcastAs()` returning `order.shipped`. The emitting side is the
+provider. socket.io, amqplib's `publish`/`consume`, BullMQ, Redis and NestJS
+calls are read only in a file importing the library, since `emit`, `on`,
+`publish` and `subscribe` are common method names.
 
 A topic, queue or exchange name is read the way a URL is: a literal, or a name
-the same file assigns exactly once to a literal (Python, Go and Java today), is
-resolved; a name built at runtime is skipped rather than guessed. RabbitMQ
+the same file assigns exactly once to a literal (Python, Go, Java, PHP class
+constants, and JS/TS `const` including object and enum members such as
+`QUEUES.ticketSold`), is resolved; a name built at runtime is skipped rather
+than guessed. An SQS queue URL is named by its last path segment and an SNS
+topic ARN by its last field. A subscription by pattern (NATS `orders.*` /
+`orders.>`, Redis `psubscribe`, Kafka `topicPattern`) links to every publisher
+whose name it matches. A Laravel job dispatched without a queue runs on the
+queue its class declares (`public $queue`, `$this->onQueue()`, `viaQueue()`),
+found by the class's fully qualified name; one left on the connection's
+default queue is not recorded, since every app has one. RabbitMQ
 publishers name an exchange and a routing key while consumers name a queue, so
 a queue binding found anywhere in the workspace connects the two: each consumer
 of the bound queue links to the exchange's publishers whose routing key the

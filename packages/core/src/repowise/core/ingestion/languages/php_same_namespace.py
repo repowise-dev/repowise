@@ -30,6 +30,8 @@ from ..cohesion import SAME_NAMESPACE_HINT
 from .scope_scan import FileScope, ScopeTier, emit_scope_edges
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import networkx as nx
 
 _NAMESPACE_RE = re.compile(r"^\s*namespace\s+\\?([A-Za-z_][\w\\]*)\s*[;{]", re.MULTILINE)
@@ -43,6 +45,15 @@ _NAME_RE = re.compile(r"(?<![\w\\])\\?[A-Z]\w*(?:\\\w+)*")
 _TYPE_KINDS = frozenset({"class", "interface", "trait", "enum"})
 
 QUALIFIED_NAME_HINT = "qualified_name"
+
+#: A class name as code writes it: bare, relative or fully qualified.
+PHP_CLASS_NAME = r"\\?[A-Za-z_]\w*(?:\\[A-Za-z_]\w*)*"
+
+_DECLARATION = r"^[ \t]*(?:(?:final|abstract|readonly)[ \t]+)*"
+#: A class declared at the start of a line, so "class" in a docblock is not one.
+PHP_CLASS_DECL_RE = re.compile(_DECLARATION + r"class[ \t]+(?P<cls>[A-Za-z_]\w*)", re.MULTILINE)
+# The first declaration of any kind: every `use` clause comes before it.
+_FIRST_DECL_RE = re.compile(_DECLARATION + r"(?:class|interface|trait|enum|function)\b", re.MULTILINE)
 
 
 def file_namespace(text: str) -> str | None:
@@ -78,6 +89,38 @@ def qualify_php_name(name: str, namespace: str | None, aliases: dict[str, str]) 
     if head in aliases:
         return aliases[head] + sep + rest
     return f"{namespace}\\{name}" if namespace else name
+
+
+def php_name_qualifier(path: str, text: str) -> Callable[[str], str]:
+    """:func:`qualify_php_name` for a PHP file that has not been parsed yet.
+
+    For a caller outside the graph build (the contract extractors) that has
+    only the file's text: the ``use`` clauses are read by the same parser the
+    import graph uses, so both qualify a name alike. Only the header before the
+    first declaration is parsed, since PHP puts every ``use`` there.
+    """
+    from datetime import UTC, datetime
+
+    from ..models import FileInfo
+    from ..parser import parse_file
+
+    first = _FIRST_DECL_RE.search(text)
+    raw = (text[: first.start()] if first else text).encode("utf-8")
+    info = FileInfo(
+        path=path,
+        abs_path=path,
+        language="php",
+        size_bytes=len(raw),
+        git_hash="",
+        last_modified=datetime.now(UTC),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    namespace = file_namespace(text)
+    aliases = php_use_aliases(parse_file(info, raw))
+    return lambda name: qualify_php_name(name, namespace, aliases)
 
 
 def resolve_php_same_namespace_refs(

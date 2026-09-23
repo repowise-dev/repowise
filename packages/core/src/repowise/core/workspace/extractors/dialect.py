@@ -33,6 +33,21 @@ class ContractDialect(Protocol):
         ...
 
 
+class RepoPass(Protocol):
+    """One extraction run's state for a dialect whose contracts span files.
+
+    A dialect with a ``repo_pass()`` factory is handed each file through
+    :meth:`scan` instead of ``extract``, and names its contracts in
+    :meth:`finish` once the whole repo has been read: a Laravel job
+    dispatched in a controller runs on the queue its own class declares.
+    A fresh pass per run keeps repos extracted concurrently apart.
+    """
+
+    def scan(self, ctx: ScanContext) -> None: ...
+
+    def finish(self) -> list[Contract]: ...
+
+
 def build_contract(
     ctx: ScanContext,
     *,
@@ -111,14 +126,26 @@ class DialectExtractor:
     ) -> list[Contract]:
         """Scan *repo_path* (or the already-walked *files*) for contracts."""
         contracts: list[Contract] = []
+        passes: dict[int, RepoPass] = {
+            id(d): d.repo_pass() for d in self.dialects if hasattr(d, "repo_pass")
+        }
         for rel_path, suffix, content in select_files(
             repo_path, self.source_extensions(), exclude, files
         ):
             ctx = ScanContext(repo_alias, rel_path, suffix, content)
             found: list[Contract] = []
             for dialect in self.dialects:
-                if suffix in dialect.extensions:
+                if suffix not in dialect.extensions:
+                    continue
+                repo_pass = passes.get(id(dialect))
+                if repo_pass is not None:
+                    repo_pass.scan(ctx)
+                else:
                     found.extend(dialect.extract(ctx))
+            contracts.extend(found if self.identity is None else dedupe(found, self.identity))
+        for repo_pass in passes.values():
+            found = repo_pass.finish()
+            # Every identity names the file, so a whole-repo dedupe is per file.
             contracts.extend(found if self.identity is None else dedupe(found, self.identity))
         return contracts
 
@@ -126,6 +153,7 @@ class DialectExtractor:
 __all__ = [
     "ContractDialect",
     "DialectExtractor",
+    "RepoPass",
     "build_contract",
     "dedupe",
     "file_identity",

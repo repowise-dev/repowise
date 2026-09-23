@@ -66,7 +66,7 @@ class TestLiterals:
         ("syntax", "expr"),
         [
             (JS_SYNTAX, "path"),
-            (JS_SYNTAX, '"/a" + id'),
+            (JS_SYNTAX, '"/a" + buildPath(id)'),
             (JS_SYNTAX, "buildPath(id)"),
             (PYTHON_SYNTAX, 'b"/bytes"'),
             (PYTHON_SYNTAX, 'f"/x/{{literal}}"'),
@@ -98,6 +98,9 @@ class TestFormatCalls:
 class TestUnwrapAndConcat:
     def test_java_uri_create_is_unwrapped(self):
         assert resolve_string('URI.create(base + "/echo")', JAVA_SYNTAX) == "${base}/echo"
+
+    def test_js_concat_with_a_trailing_name(self):
+        assert resolve_string("'/users/' + id", JS_SYNTAX) == "/users/${id}"
 
     def test_go_concat_with_a_trailing_name(self):
         assert resolve_string('"/users/" + id', GO_SYNTAX) == "/users/${id}"

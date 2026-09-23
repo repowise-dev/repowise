@@ -287,6 +287,16 @@ class TestHttpExtractor:
         assert consumers[0].contract_id == "http::GET::/api/users"
         assert consumers[0].meta.get("base_stripped") is True
 
+    def test_fetch_consumer_folds_a_const_base(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/api.ts", """
+            const API = 'http://ticketing:8000/api';
+            const users = await fetch(`${API}/users`);
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "frontend")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert [c.contract_id for c in consumers] == ["http::GET::/api/users"]
+        assert "base_stripped" not in consumers[0].meta
+
     def test_fetch_consumer_keeps_interior_param(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "src/api.ts", """
             const u = await fetch(`/users/${id}`);

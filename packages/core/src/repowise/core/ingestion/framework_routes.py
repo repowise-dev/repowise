@@ -753,6 +753,11 @@ def laravel_route_file_prefixes(content: str) -> dict[str, str | None]:
     return out
 
 
+#: A scheduled job, `Schedule::job(new X, 'queue')` or `$schedule->job(...)`,
+#: up to its `(`: the graph links the job class, contracts read its queue.
+LARAVEL_SCHEDULED_JOB = r"(?:\bSchedule::|->\s*)job"
+
+
 def laravel_route_file(rel_path: str) -> bool:
     """Whether *rel_path* is a route file: a PHP file under a ``routes`` directory.
 

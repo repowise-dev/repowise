@@ -10,7 +10,9 @@ from repowise.core.workspace.extractors.strings import (
     PYTHON_SYNTAX,
     Arg,
     resolve_argument,
+    resolve_string,
     select_argument,
+    string_constants,
     syntax_for_suffix,
 )
 
@@ -48,6 +50,72 @@ class TestResolveArgument:
     def test_php_map_value(self) -> None:
         got = resolve_argument(["['queue' => 'jobs']"], Arg(keys=("queue",)), PHP_SYNTAX, {})
         assert got == (["jobs"], False)
+
+    def test_normalize_runs_before_the_hole_check(self) -> None:
+        got = resolve_argument(
+            ["`${base}/orders`"], Arg(pos=0), JS_SYNTAX, {}, lambda v: v.rpartition("/")[2]
+        )
+        assert got == (["orders"], False)
+
+    def test_normalize_may_refuse(self) -> None:
+        assert resolve_argument(["'x'"], Arg(pos=0), JS_SYNTAX, {}, lambda v: None) == ([], True)
+
+
+def _js(src: str, expr: str) -> str | None:
+    return resolve_string(expr, JS_SYNTAX, string_constants(src, JS_SYNTAX))
+
+
+class TestJsConstants:
+    def test_a_const_folds(self) -> None:
+        assert _js("export const QUEUE = 'orders';\n", "QUEUE") == "orders"
+
+    def test_as_const_and_a_trailing_comment_are_not_the_value(self) -> None:
+        assert _js("const Q = 'orders' as const; // the queue\n", "Q") == "orders"
+
+    def test_a_typed_const_folds(self) -> None:
+        assert _js("const Q: string = 'orders';\n", "Q") == "orders"
+
+    def test_let_and_var_are_not_folded(self) -> None:
+        src = "let A = 'a';\nvar B = 'b';\nA = 'c';\n"
+        assert _js(src, "A") is None
+        assert _js(src, "B") is None
+
+    def test_a_const_declared_twice_is_refused(self) -> None:
+        assert _js("const Q = 'a';\nfunction f() { const Q = 'b'; }\n", "Q") is None
+
+    def test_a_const_built_by_concatenation(self) -> None:
+        assert _js("const BASE = '/api';\nconst URL = BASE + '/users';\n", "URL") == "/api/users"
+
+    def test_object_members_fold(self) -> None:
+        src = "export const QUEUES = {\n  ticketSold: 'ticket.sold',\n  'guest-in': \"guest.in\",\n} as const;\n"
+        assert _js(src, "QUEUES.ticketSold") == "ticket.sold"
+        assert string_constants(src, JS_SYNTAX)["QUEUES.guest-in"] == '"guest.in"'
+
+    def test_nested_object_members_fold(self) -> None:
+        src = "const Q = Object.freeze({ orders: { created: 'orders.created' } });\n"
+        assert _js(src, "Q.orders.created") == "orders.created"
+
+    def test_enum_members_fold(self) -> None:
+        src = "export enum Queue { Sold = 'ticket.sold', Plain }\n"
+        assert _js(src, "Queue.Sold") == "ticket.sold"
+        assert _js(src, "Queue.Plain") is None
+
+    def test_a_comment_between_members_is_skipped(self) -> None:
+        src = "const Q = {\n  a: 'x', // first\n  /* second */ b: 'y',\n};\n"
+        assert (_js(src, "Q.a"), _js(src, "Q.b")) == ("x", "y")
+
+    def test_a_member_that_is_not_a_string_is_refused(self) -> None:
+        assert _js("const Q = { n: 5, f: () => 'x' };\n", "Q.n") is None
+
+    def test_an_example_in_a_comment_is_not_a_binding(self) -> None:
+        assert _js("// const Q = 'a';\n", "Q") is None
+
+
+class TestPhpConstants:
+    def test_a_class_constant_folds_through_self(self) -> None:
+        constants = string_constants("class A { const QUEUE = 'jobs'; }", PHP_SYNTAX)
+        assert resolve_string("self::QUEUE", PHP_SYNTAX, constants) == "jobs"
+        assert resolve_string("static::QUEUE", PHP_SYNTAX, constants) == "jobs"
 
 
 @pytest.mark.parametrize(

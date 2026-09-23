@@ -1039,10 +1039,12 @@ workspace/extractors/
     js_clients.py  python_clients.py  php_clients.py  …                 # consumers
     __init__.py      #   HttpExtractor (adds router mounts + index passes)
   grpc/              #   proto.py + languages.py (one table of stub shapes)
-  topic/             #   dialect.py (TopicCall table) + kafka.py rabbitmq.py nats.py
-  socket/            #   dialect.py + dotnet.py python.py
+  calls.py           #   call_sites / call_chain: the table reader topic and socket share
+  topic/             #   dialect.py (TopicCall table) + kafka.py rabbitmq.py nats.py redis.py
+                     #   bullmq.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
+  socket/            #   dialect.py (SocketCall table) + dotnet.py python.py socketio.py broadcasting.py
   data/              #   table providers (DDL / ORM entities) <-> SQL consumers
-workspace/matching/  # shared exact pass + per-type passes (http.py, topic.py)
+workspace/matching/  # shared exact pass + per-type passes (http.py, topic.py, data.py)
 ```
 
 A dialect declares the file extensions it understands (via `langs.py`) and turns
@@ -1050,16 +1052,20 @@ matches into `Contract`s through shared builders, so every dialect emits
 identically-shaped providers/consumers and normalization lives in one place.
 **Adding a framework or client** means dropping one module into `http/`,
 `grpc/`, `topic/`, `socket/` or `data/` and appending its dialect to the
-relevant registry tuple, with no orchestrator edits. A contract type whose two
-ends can name one thing differently (HTTP mount prefixes, a queue bound to an
-exchange) registers its extra passes in `matching.MATCHERS`.
+relevant registry tuple, with no orchestrator edits. A dialect whose contracts
+span files (a Laravel job dispatched in one file runs on the queue its class
+declares in another) offers a `repo_pass()` instead: it sees every file, then
+names its contracts once. A contract type whose two ends can name one thing
+differently (HTTP mount prefixes, a queue bound to an exchange, a pattern
+subscription) registers its extra passes, or its own `keys`, in
+`matching.MATCHERS`.
 
 | Contract | Providers | Consumers |
 |----------|-----------|-----------|
 | **HTTP** | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal), Rust (Axum routes, Actix/Rocket attribute macros) | `fetch` / `axios` / URL-literal wrappers (JS/TS), `requests` / `httpx` (Python), `HttpClient` / `UnityWebRequest` / Best.HTTP (C#), `reqwest` (Rust) |
 | **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
-| **Topic** | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika), NATS | The same libraries' consumers, plus RabbitMQ queue bindings |
-| **Socket** | SignalR `MapHub`, FastAPI `@app.websocket` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp |
+| **Topic** | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
+| **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, ORM entities (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent `$table` or the class-name convention) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table` |
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing

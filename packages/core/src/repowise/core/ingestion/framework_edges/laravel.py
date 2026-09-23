@@ -32,8 +32,18 @@ from typing import TYPE_CHECKING, Any
 
 from ..composer import repo_composer_manifests
 from ..framework_facts import LARAVEL
-from ..framework_routes import laravel_route_file, laravel_routes, match_paren
-from ..languages.php_same_namespace import file_namespace, php_use_aliases, qualify_php_name
+from ..framework_routes import (
+    LARAVEL_SCHEDULED_JOB,
+    laravel_route_file,
+    laravel_routes,
+    match_paren,
+)
+from ..languages.php_same_namespace import (
+    PHP_CLASS_NAME,
+    file_namespace,
+    php_use_aliases,
+    qualify_php_name,
+)
 from ..resolvers import ResolverContext
 from ..resolvers.php import resolve_php_class
 from .base import (
@@ -49,7 +59,7 @@ if TYPE_CHECKING:
     import networkx as nx
 
 
-_NAME = r"\\?[A-Za-z_]\w*(?:\\[A-Za-z_]\w*)*"
+_NAME = PHP_CLASS_NAME
 _CLASS_REF_RE = re.compile(rf"(?<![\w\\$])(?P<name>{_NAME})\s*::\s*class\b")
 _NEW_RE = re.compile(rf"\bnew\s+(?P<name>{_NAME})")
 
@@ -67,7 +77,7 @@ _REGISTRY_RE = re.compile(
     r"\$(?:listen|subscribe|policies|commands|middlewareAliases|routeMiddleware"
     r"|middlewareGroups|middleware|observers)\s*=\s*(?P<open>\[)"
     r"|(?:\bEvent::(?:listen|subscribe)|\bGate::policy|->\s*with(?:Providers|Commands|Events)"
-    r"|\bSchedule::job|->\s*job)\s*(?P<call>\()"
+    rf"|{LARAVEL_SCHEDULED_JOB})\s*(?P<call>\()"
 )
 
 # Middleware aliases: `'auth' => Authenticate::class` inside `->alias([...])`
