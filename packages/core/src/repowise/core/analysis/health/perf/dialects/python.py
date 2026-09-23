@@ -843,14 +843,18 @@ class PythonPerfDialect(BasePerfDialect):
         return None
 
     def _caps_read(self, node: Node, loop: Node) -> bool:
-        """``.limit(n)`` and peers, a SQL string with ``LIMIT n``, or ``.in_()`` over one chunk of keys
-        (``xs[i:i + N]``, or the element of a loop that walks ``xs`` in chunks)."""
+        """``.limit(n)`` and peers, a SQL string saying ``LIMIT n``, or ``.in_()`` over
+        one chunk of keys."""
         if node.type == "string":
             return bool(_PY_SQL_LIMIT_RE.search(_PY_SQL_COMMENT_RE.sub(b"", node.text or b"")))
         method = self.callee_method_name(node) if node.type == "call" else None
         if method in _PY_READ_CAPS:
             return True
-        args = node.child_by_field_name("arguments") if method == "in_" else None
+        return method == "in_" and self._in_one_chunk(node, loop)
+
+    def _in_one_chunk(self, node: Node, loop: Node) -> bool:
+        """``.in_(xs[i:i + N])``, or ``.in_(chunk)`` where a loop walks ``xs`` in chunks."""
+        args = node.child_by_field_name("arguments")
         keys = next((c for c in args.children if c.is_named), None) if args else None
         if keys is None:
             return False
