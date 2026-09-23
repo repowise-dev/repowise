@@ -20,7 +20,7 @@ collected per dialect and merged by the orchestrator.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from repowise.core.ingestion.framework_routes import GroupMatch
 
@@ -77,18 +77,47 @@ def compose_prefix(prefix: str, path: str) -> str:
 
 
 def merge_mount_maps(maps: list[dict[str, str]]) -> dict[str, str]:
-    """Merge per-file cross-file mount maps into one unambiguous ``var -> prefix``.
+    """Merge per-file mount maps into one unambiguous map.
 
-    A router variable mounted at two *different* prefixes anywhere in the repo is
-    ambiguous (the common case being a generic name like ``router`` reused across
-    files), so it is dropped rather than guessed. Only names with a single
-    distinct prefix survive.
+    A key two files give *different* values anywhere in the repo is ambiguous
+    (the common case being a generic router name like ``router`` reused across
+    files), so it is dropped rather than guessed. Only keys with a single
+    distinct value survive. Keys are router variables, and prefixed names for
+    everything else a dialect shares (``laravel-route-file:``, ``nest-prefix:``,
+    ``http-client:``).
     """
     collected: dict[str, set[str]] = {}
     for m in maps:
         for var, prefix in m.items():
             collected.setdefault(var, set()).add(prefix)
     return {var: next(iter(prefixes)) for var, prefixes in collected.items() if len(prefixes) == 1}
+
+
+# Mount values are strings; a declared value this cannot read travels as this.
+_UNREADABLE = "\0"
+# The merge above drops a key two files disagree on. A second key, always the
+# same value, survives it, so a declared-but-dropped value reads as ambiguous
+# (refused) rather than undeclared (the default).
+_DECLARED = "declared:"
+
+
+def declare_mount(key: str, value: str | None) -> dict[str, str]:
+    """The mount entries declaring *key* as *value* (``None``: unreadable)."""
+    return {key: _UNREADABLE if value is None else value, _DECLARED + key: ""}
+
+
+def declared_mount(mounts: Mapping[str, str], key: str) -> tuple[bool, str | None]:
+    """``(declared, value)`` for *key*; ``value`` is ``None`` when unreadable or ambiguous."""
+    if _DECLARED + key not in mounts:
+        return False, None
+    value = mounts.get(key, _UNREADABLE)
+    return True, None if value == _UNREADABLE else value
+
+
+def declared_names(mounts: Mapping[str, str], prefix: str) -> list[str]:
+    """The names declared under *prefix*, agreed on or not."""
+    head = _DECLARED + prefix
+    return [key[len(head) :] for key in mounts if key.startswith(head)]
 
 
 def group_prefixes(groups: Iterable[GroupMatch]) -> dict[str, str]:

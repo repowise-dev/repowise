@@ -401,6 +401,9 @@ class FileTraverser:
             repos (common when a workspace root is itself versioned) would
             be walked end-to-end, pulling in hundreds of thousands of files
             that belong to the nested repos.
+        keep_unparsed: Extensions yielded (as language ``unknown``) although no
+            language parses them, for a caller reading their text itself: the
+            contract walk reads ``schema.prisma``. The index never passes it.
     """
 
     def __init__(
@@ -412,8 +415,10 @@ class FileTraverser:
         extra_exclude_patterns: list[str] | None = None,
         include_submodules: bool = False,
         include_nested_repos: bool = False,
+        keep_unparsed: frozenset[str] = frozenset(),
     ) -> None:
         self.repo_root = repo_root.resolve()
+        self._keep_unparsed = keep_unparsed
         self.max_file_size_bytes = max_file_size_kb * 1024
         self._extra_ignore_filename = extra_ignore_filename
         self._gitignore = load_gitignore_spec(self.repo_root)
@@ -768,7 +773,7 @@ class FileTraverser:
                     self.stats.skipped_binary += 1
                 return None
             language = _detect_by_shebang(abs_path)
-            if language == "unknown":
+            if language == "unknown" and abs_path.suffix.lower() not in self._keep_unparsed:
                 with self._count_lock:
                     self.stats.skipped_unknown_language += 1
                     # Keep the path even though nothing here can parse it. A

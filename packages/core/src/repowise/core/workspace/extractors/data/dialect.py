@@ -85,6 +85,23 @@ def build_table_consumer(
     )
 
 
+def dedup_consumers(
+    ctx: ScanContext, client: str, found: list[tuple[str, str, int]]
+) -> list[Contract]:
+    """One consumer per table and verb in *found*, ``(raw_table, verb, line)``."""
+    out: list[Contract] = []
+    seen: set[tuple[str, str]] = set()
+    for raw, verb, line in found:
+        key = (raw.lower(), verb)
+        if key in seen:
+            continue
+        seen.add(key)
+        contract = build_table_consumer(ctx, table_raw=raw, verb=verb, client=client, line=line)
+        if contract is not None:
+            out.append(contract)
+    return out
+
+
 EXPLICIT_CONFIDENCE = 0.85
 CONVENTION_CONFIDENCE = 0.6
 # A declaration that evolves a table (``ALTER TABLE``, ``Schema::table``).

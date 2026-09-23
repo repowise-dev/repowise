@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from ..dialect import ContractDialect, DialectExtractor
 from .ddl import DdlDialect
+from .drizzle import DrizzleDialect
+from .knex import KnexDialect
 from .laravel import EloquentDialect, LaravelMigrationDialect, LaravelQueryDialect
 from .names import normalize_table_name
 from .orm_models import (
@@ -21,7 +23,10 @@ from .orm_models import (
     JpaDialect,
     SqlAlchemyDjangoDialect,
 )
+from .prisma import PrismaDialect
+from .sequelize import SequelizeDialect
 from .sql_strings import SqlStringsDialect
+from .typeorm import TypeOrmDialect
 
 # Table-ownership recognisers (DDL + one per ORM family).
 PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
@@ -32,10 +37,20 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     ActiveRecordDialect(),
     EloquentDialect(),
     LaravelMigrationDialect(),
+    PrismaDialect(),
+    TypeOrmDialect(),
+    SequelizeDialect(),
+    DrizzleDialect(),
 )
 
 # Table-access recognisers.
-CONSUMER_DIALECTS: tuple[ContractDialect, ...] = (SqlStringsDialect(), LaravelQueryDialect())
+# Knex reads both sides (its migrations and its query builder), so it is
+# registered once, here.
+CONSUMER_DIALECTS: tuple[ContractDialect, ...] = (
+    SqlStringsDialect(),
+    LaravelQueryDialect(),
+    KnexDialect(),
+)
 
 
 class DataExtractor(DialectExtractor):

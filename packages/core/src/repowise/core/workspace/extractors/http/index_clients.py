@@ -37,7 +37,6 @@ from ..strings import (
     JS_SYNTAX,
     PYTHON_SYNTAX,
     match_paren,
-    resolve_string,
     split_first_arg,
 )
 from .client_calls import VERBS, is_rooted_url
@@ -97,10 +96,7 @@ def _first_arg_url(arg: str, strings: FileStrings) -> str | None:
     not a path this layer may claim to know. The result then faces the same
     concreteness test in every language.
     """
-    url = resolve_string(arg, strings.syntax)
-    if url is None or "${" in url:
-        # Only an expression that is not a plain literal reads the constants.
-        url = resolve_string(arg, strings.syntax, strings.constants)
+    url = strings.text(arg)
     return url if url is not None and is_rooted_url(url) else None
 
 

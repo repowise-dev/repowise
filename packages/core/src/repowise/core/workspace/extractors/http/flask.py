@@ -80,8 +80,8 @@ class FlaskDialect:
     name = "flask"
     extensions = PYTHON
 
-    def collect_mounts(self, content: str) -> dict[str, str]:
-        """``register_blueprint(bp, url_prefix=...)`` mounts declared in *content*.
+    def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
+        """``register_blueprint(bp, url_prefix=...)`` mounts declared in the file.
 
         Keyed by the blueprint expression's final name segment (``views.bp`` ->
         ``bp``), which is the name its own file binds. Only registrations
@@ -89,10 +89,10 @@ class FlaskDialect:
         own ``url_prefix`` in charge. A prefix the registration names but this
         cannot read is recorded as unknown, which refuses the routes below it.
         """
-        if not flask_file(content):
+        if not flask_file(ctx.content):
             return {}
         out: dict[str, str] = {}
-        for mount in flask_blueprints(content):
+        for mount in flask_blueprints(ctx.content):
             if mount.prefix is None:
                 out[_MOUNT_PREFIX + mount.var.split(".")[-1]] = _UNKNOWN_MOUNT
             elif mount.prefix:

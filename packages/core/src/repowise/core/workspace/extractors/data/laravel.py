@@ -24,7 +24,7 @@ from .dialect import (
     ALTER_CONFIDENCE,
     CONVENTION_CONFIDENCE,
     EXPLICIT_CONFIDENCE,
-    build_table_consumer,
+    dedup_consumers,
     dedup_emit,
     found_names,
 )
@@ -128,23 +128,10 @@ class LaravelQueryDialect:
         return "update"  # increment / decrement
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        out: list[Contract] = []
         if "DB::" not in ctx.content:
-            return out
-        seen: set[tuple[str, str]] = set()
-        for m in self._TABLE_RE.finditer(ctx.content):
-            verb = self._verb(ctx.content, m.end())
-            key = (m.group("table").lower(), verb)
-            if key in seen:
-                continue
-            seen.add(key)
-            contract = build_table_consumer(
-                ctx,
-                table_raw=m.group("table"),
-                verb=verb,
-                client=self.name,
-                line=line_at(ctx.content, m.start()),
-            )
-            if contract is not None:
-                out.append(contract)
-        return out
+            return []
+        found = [
+            (m.group("table"), self._verb(ctx.content, m.end()), line_at(ctx.content, m.start()))
+            for m in self._TABLE_RE.finditer(ctx.content)
+        ]
+        return dedup_consumers(ctx, self.name, found)

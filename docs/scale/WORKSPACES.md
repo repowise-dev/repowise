@@ -225,15 +225,40 @@ Useful for:
 
 ### API Contract Extraction
 
-Scans source files for HTTP route handlers, gRPC service definitions, and message topic publishers/subscribers. Then matches providers (servers) with consumers (clients) across repos.
+Scans source files for HTTP routes, gRPC services, database tables, message topics and socket events. Then matches providers (servers) with consumers (clients) across repos.
 
-**Supported patterns:**
+**HTTP routes and calls:**
+
+| Language | Providers (routes served) | Consumers (calls made) |
+|----------|---------------------------|------------------------|
+| JS / TS | Express, Hono, Fastify, Koa, Elysia; NestJS controllers; Next.js App Router; Remix | `fetch`; axios, ky, got, ofetch and their instances; HTTP-named wrappers |
+| Python | FastAPI, Flask, Django | requests, httpx (aiohttp through wrappers the index confirms) |
+| PHP | Laravel | Guzzle, Laravel `Http` |
+| Java / Kotlin | Spring, JAX-RS, Micronaut | Feign, `java.net.http`, `RestTemplate`, Ktor (Kotlin) |
+| Go | gin, echo, chi, net/http | net/http |
+| C# | ASP.NET (attribute and minimal API) | HttpClient, UnityWebRequest, Best.HTTP |
+| Ruby | | HTTParty, RestClient, Faraday, Net::HTTP |
+| Rust | Axum, Actix, Rocket | reqwest |
+| Any | OpenAPI 3.x documents | |
+
+**Database tables:**
+
+| Language | Providers (tables declared) | Consumers (tables queried) |
+|----------|-----------------------------|----------------------------|
+| SQL | `CREATE TABLE` / `VIEW` / `MATERIALIZED VIEW`, `ALTER TABLE` | |
+| JS / TS | Prisma, TypeORM, Sequelize, Drizzle, Knex migrations | SQL strings, Knex queries |
+| Python | SQLAlchemy, SQLModel, Django, Alembic | SQL strings |
+| PHP | Eloquent, Laravel migrations | SQL strings, `DB::table` |
+| Java / Kotlin | JPA | SQL strings |
+| Go | | SQL strings |
+| C# | EF Core | SQL strings |
+| Ruby | ActiveRecord | SQL strings |
+
+**gRPC, topics and sockets:**
 
 | Type | Providers | Consumers |
 |------|-----------|-----------|
-| HTTP | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal API), Rust (Axum routes, Actix/Rocket attribute macros) | fetch/axios/URL-literal wrappers (JS/TS), requests/httpx (Python), HttpClient/UnityWebRequest/Best.HTTP (C#), reqwest (Rust) |
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
-| Data / DB | DDL (`CREATE TABLE`/`VIEW`/`MATERIALIZED VIEW`), Alembic `op.create_table`, Laravel migrations (`Schema::create` / `Schema::table`), ORM dialects (SQLAlchemy, Django, JPA, EF Core, ActiveRecord, Eloquent `$table` or the class-name convention) | Raw SQL string literals in app code (verb-anchored: `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`MERGE`), Laravel `DB::table(...)` |
 | Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
 
@@ -270,14 +295,18 @@ nothing). Such a link carries the exchange as its `contract_id` and the queue as
 binding site itself is linked. A publish to the default exchange
 (`publish('', 'jobs')`) is a publish to the queue `jobs`.
 
-Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](#system-graph). A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
+Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](#system-graph). An ORM model with no explicit table name takes its library's default: the Prisma model name, the TypeORM class name in snake case, the Sequelize model name pluralized, the Eloquent class name in snake case and plural. A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
 
 HTTP routes are matched on their **full** path: a router mount prefix
 (`APIRouter(prefix=...)`, `include_router(prefix=...)`, Express `app.use('/x', router)`,
 Go route groups, Laravel `Route::prefix(...)->group(...)` and `Route::group(['prefix' => ...])`)
 is stitched onto each handler path before matching. Laravel's `routes/api.php` is
 served under `/api` unless `bootstrap/app.php` (`apiPrefix`) or a route provider says
-otherwise, and `Route::resource` / `apiResource` expand into the routes they register. A client call
+otherwise, and `Route::resource` / `apiResource` expand into the routes they register. A NestJS
+route is served at the app's `setGlobalPrefix` (unless its `exclude` list names the route), then
+its URI version (`enableVersioning`, `@Version`), then the `@Controller` prefix. A call through an
+axios, ky, got or ofetch instance is read with the instance's `baseURL` / `prefixUrl`, also when
+another file imports the instance. A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path and a lower-confidence **candidate** when the target is ambiguous.
@@ -611,7 +640,7 @@ Workspace init automatically registers MCP servers with Claude Desktop and Claud
 
 - **Default repo context**, queries go to the primary repo unless you specify otherwise
 - **Cross-repo tools**, MCP tools can query across repos and return enriched context with co-change and contract data; `get_blast_radius` answers cross-repo downstream impact (see [Cross-Repo Blast Radius](#cross-repo-blast-radius)); `get_conformance` answers architecture rule violations and dependency cycles (see [Architecture Conformance](#architecture-conformance)); `get_architecture` answers whole-system coupling, the cyclic core, and the architecture score (see [Architecture Metrics](#architecture-metrics))
-- **Repo parameter**, most tools accept an optional `repo` parameter to target a specific repo, or `"all"` to query across the workspace
+- **Repo parameter**, most tools accept an optional `repo` parameter to target a specific repo. Four also accept `"all"` to query across the workspace: `get_overview` (workspace topology and a summary per repo), `search_codebase` (results from every repo), `get_dead_code` (findings from every repo) and `get_why` with a query (decisions from every repo). The other tools answer about one repo at a time
 
 ---
 

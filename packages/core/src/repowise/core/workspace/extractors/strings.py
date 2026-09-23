@@ -404,7 +404,7 @@ def string_constants(
     text = content if code is None else code
     seen: dict[str, str | None] = {}
     for m in syntax.assignment.finditer(text):
-        if code is None and _on_comment_line(content, m.start()):
+        if code is None and on_comment_line(content, m.start()):
             continue  # an example in a doc comment is not a binding
         name = m.group("name")
         rhs = content[m.start("rhs") : m.end("rhs")].strip()
@@ -415,7 +415,7 @@ def string_constants(
         seen[name] = None if name in seen or resolve_string(rhs, syntax) is None else rhs
     if syntax.members is not None:
         for m in syntax.members.finditer(text):
-            if code is None and _on_comment_line(content, m.start()):
+            if code is None and on_comment_line(content, m.start()):
                 continue
             _fold_members(content, m.end() - 1, m.group("name"), syntax, seen)
     # `x += "/v1"` and `x, err = f()` rebind a name without the plain form.
@@ -499,7 +499,7 @@ _MULTI_ASSIGN_RE = re.compile(
 )
 
 
-def _on_comment_line(content: str, offset: int) -> bool:
+def on_comment_line(content: str, offset: int) -> bool:
     """True when the line holding *offset* starts as a line or block comment."""
     start = max(content.rfind("\n", 0, offset) + 1, offset - 200)
     return content[start:offset].lstrip().startswith(("//", "#", "*", "/*"))
@@ -777,6 +777,7 @@ __all__ = [
     "literal_span",
     "map_entry",
     "match_paren",
+    "on_comment_line",
     "resolve_argument",
     "resolve_string",
     "select_argument",

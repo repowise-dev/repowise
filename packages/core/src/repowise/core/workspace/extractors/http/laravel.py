@@ -21,6 +21,7 @@ from repowise.core.ingestion.framework_routes import (
 from ..base import line_at
 from ..langs import PHP
 from .dialect import build_provider_contract
+from .mounts import declare_mount, declared_mount
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -28,31 +29,24 @@ if TYPE_CHECKING:
     from ..base import ScanContext
 
 _MOUNT_KEY = "laravel-route-file:"
-# The mount merge drops a key two files disagree on. This second key, always
-# the same value, survives it, so a declared-but-dropped file reads as
-# ambiguous (refused) rather than undeclared (served at the default).
-_DECLARED_KEY = "laravel-route-file-declared:"
-# Mount values are strings; a declared prefix this cannot read travels as this.
-_UNREADABLE = "\0"
 
 
 class LaravelDialect:
     name = "laravel"
     extensions = PHP
 
-    def collect_mounts(self, content: str) -> dict[str, str]:
+    def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
         out: dict[str, str] = {}
-        for name, prefix in laravel_route_file_prefixes(content).items():
-            out[f"{_MOUNT_KEY}{name}"] = _UNREADABLE if prefix is None else prefix
-            out[f"{_DECLARED_KEY}{name}"] = ""
+        for name, prefix in laravel_route_file_prefixes(ctx.content).items():
+            out.update(declare_mount(f"{_MOUNT_KEY}{name}", prefix))
         return out
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         name = ctx.rel_path.rpartition("/")[2]
         declared: dict[str, str | None] = {}
-        if f"{_DECLARED_KEY}{name}" in ctx.mounts:
-            value = ctx.mounts.get(f"{_MOUNT_KEY}{name}", _UNREADABLE)
-            declared[name] = None if value == _UNREADABLE else value
+        found, value = declared_mount(ctx.mounts, f"{_MOUNT_KEY}{name}")
+        if found:
+            declared[name] = value
         prefix = laravel_route_prefix(ctx.rel_path, declared)
         if prefix is None:
             return []  # served under a prefix this cannot read

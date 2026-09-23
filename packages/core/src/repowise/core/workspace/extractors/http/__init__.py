@@ -33,6 +33,7 @@ from .kotlin_clients import KotlinClientsDialect
 from .laravel import LaravelDialect
 from .micronaut import MicronautDialect
 from .mounts import merge_mount_maps
+from .nestjs import NestDialect
 from .next_app import NextAppDialect
 from .paths import normalize_http_path
 from .php_clients import PhpClientsDialect
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
 # Route-declaration recognisers (one framework each).
 PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     ExpressDialect(),
+    NestDialect(),
     FastApiDialect(),
     FlaskDialect(),
     SpringDialect(),
@@ -137,7 +139,7 @@ class HttpExtractor:
         these contracts states its own denominator.
         """
         scanned = select_files(repo_path, self.source_extensions(), exclude, files)
-        mounts = self._collect_mounts(scanned)
+        mounts = self._collect_mounts(scanned, repo_alias)
 
         from ..from_index import (
             CONSUMER_INDEX_SUFFIXES,
@@ -204,19 +206,26 @@ class HttpExtractor:
                 contracts.extend(found)
         return contracts
 
-    def _collect_mounts(self, files: list[tuple[str, str, str]]) -> dict[str, str]:
+    def _collect_mounts(self, files: list[SourceFile], repo_alias: str) -> dict[str, str]:
         """Build the unambiguous repo-wide ``router-var -> mount-prefix`` map.
 
-        Each provider dialect may expose ``collect_mounts(content)``; results are
-        merged across every file, dropping any router name mounted at conflicting
-        prefixes (see :func:`merge_mount_maps`).
+        Any dialect may expose ``collect_mounts(ctx)``: a router mount, where
+        an app serves its routes, or a client instance another file imports.
+        Results are merged across every file, dropping any key two files
+        disagree on (see :func:`merge_mount_maps`).
         """
+        collectors = [
+            d
+            for d in self.provider_dialects + self.consumer_dialects
+            if hasattr(d, "collect_mounts")
+        ]
         per_file: list[dict[str, str]] = []
-        for _rel, suffix, content in files:
-            for dialect in self.provider_dialects:
-                collect = getattr(dialect, "collect_mounts", None)
-                if collect is not None and suffix in dialect.extensions:
-                    found = collect(content)
+        for rel_path, suffix, content in files:
+            ctx: ScanContext | None = None
+            for dialect in collectors:
+                if suffix in dialect.extensions:
+                    ctx = ctx or ScanContext(repo_alias, rel_path, suffix, content)
+                    found = dialect.collect_mounts(ctx)
                     if found:
                         per_file.append(found)
         return merge_mount_maps(per_file)

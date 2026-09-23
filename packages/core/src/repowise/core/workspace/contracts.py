@@ -58,7 +58,9 @@ CONTRACTS_FILENAME = "contracts.json"
 # Version 11 adds Laravel queues, BullMQ, SQS/SNS, Redis pub/sub, NestJS
 # microservices, php-amqplib, pattern subscriptions, and socket.io, ws and
 # Laravel broadcasting sockets; JS/TS constants fold.
-CONTRACTS_VERSION = 11
+# Version 12 adds NestJS controllers, axios/ky/got/ofetch instances with their
+# base, and Prisma, TypeORM, Sequelize, Drizzle and Knex tables.
+CONTRACTS_VERSION = 12
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans

@@ -79,6 +79,10 @@ meaningless for a script invoked by name. See
 [Beyond code files](#beyond-code-files), along with
 [config and data formats](#config-and-data).
 
+Cross-repo contracts (HTTP routes and calls, database tables, queues, sockets)
+are listed per language and framework in
+[WORKSPACES.md](../scale/WORKSPACES.md#api-contract-extraction).
+
 ## What the pipeline gives each tier
 
 | Stage | Full | Good | Partial | Lightweight | Structural |
@@ -289,8 +293,8 @@ than tree-sitter.
   import edges, so model-level lineage, hotspots, co-change, ownership and
   communities all fall out free.
 - **App-to-database contracts** (workspace mode), table *providers* (DDL,
-  Alembic, ORM entities) pair with table *consumers* (SQL literals in app code)
-  on the Live System Map. See [WORKSPACES.md](../scale/WORKSPACES.md).
+  migrations, ORM models) pair with table *consumers* (SQL literals and query
+  builders in app code) on the Live System Map. See [WORKSPACES.md](../scale/WORKSPACES.md).
 - **Health markers**: stored routines get cyclomatic complexity, plus
   `sql_select_star`, `sql_update_delete_without_where` and `sql_cartesian_join`.
   All of them are **uncalibrated by construction** (no defect corpus covers

@@ -99,8 +99,9 @@ class ScanContext:
 
     ``rel_path`` is POSIX-relative to the repo root; ``suffix`` is the
     lower-cased file extension (including the dot); ``content`` is the decoded
-    file text. ``mounts`` is the repo-wide ``router-variable -> mount-prefix``
-    map a provider dialect uses to recover cross-file route prefixes (see
+    file text. ``mounts`` is the repo-wide map the HTTP dialects collect
+    before extraction: router mount prefixes, where each app serves its
+    routes, and client instances other files import (see
     :mod:`.http.mounts`); empty for single-file extraction.
 
     ``index`` is the repo's read-only symbol table, when the repo has one.
@@ -170,7 +171,8 @@ def iter_source_files(
     if not root.is_dir():
         return
 
-    traverser = FileTraverser(root)
+    # A contract format no language parses (`schema.prisma`) is still read here.
+    traverser = FileTraverser(root, keep_unparsed=extensions)
     for info in traverser.traverse():
         suffix = os.path.splitext(info.path)[1].lower()
         if suffix not in extensions:
