@@ -298,15 +298,8 @@ class PythonPerfDialect(BasePerfDialect):
         kind = super().call_sink_kind(
             call, awaited=awaited, io_names=io_names, has_db_import=has_db_import
         )
-        if kind == "db" and self.callee_method_name(call) in PY_DB_AMBIGUOUS:
-            # ``plugins.all()`` on an imported or module-global name is a registry,
-            # not a query result: a result is bound in the function that reads it.
-            fn = call.child_by_field_name("function")
-            receiver = fn.child_by_field_name("object") if fn is not None else None
-            if receiver is not None and receiver.type == "identifier":
-                name = receiver.text or b""
-                if io_names.get(name.decode()) != "db" and not self._bound_locally(call, name):
-                    return None
+        if kind == "db" and self._reads_a_registry(call, io_names):
+            return None
         orm_get = self._orm_get(call) if kind is None else None
         if orm_get is not None:
             # ``get`` alone is ``dict.get`` / ``requests.get``; the model-class shape
@@ -314,6 +307,18 @@ class PythonPerfDialect(BasePerfDialect):
             db = has_db_import or io_names.get(self.callee_root_name(call) or "") == "db"
             return "db" if db and not self._key_used_earlier(call, orm_get[1]) else None
         return kind
+
+    def _reads_a_registry(self, call: Node, io_names: dict[str, str]) -> bool:
+        """``plugins.all()`` on an imported or module-global name reads a registry, not a
+        query result: a result is bound in the function that reads it."""
+        if self.callee_method_name(call) not in PY_DB_AMBIGUOUS:
+            return False
+        fn = call.child_by_field_name("function")
+        receiver = fn.child_by_field_name("object") if fn is not None else None
+        if receiver is None or receiver.type != "identifier":
+            return False
+        name = receiver.text or b""
+        return io_names.get(name.decode()) != "db" and not self._bound_locally(call, name)
 
     def _bound_locally(self, call: Node, name: bytes) -> bool:
         """*name* is assigned before *call* in its function, or is a parameter of it."""
@@ -963,8 +968,7 @@ class PythonPerfDialect(BasePerfDialect):
     def _calls_for_effect(self, sink: Node, body: Node) -> bool:
         """Another statement calls something this function did not build as a list, set
         or dict (``run_task(doc)``, ``session.add(r)``, ``t = task.delay(d)``), which may
-        write what the batched read would read before it ran. ``seen.add(x)`` is fine, and
-        so is an assigned builtin or method on a local (``key = str(r.id)``)."""
+        write what the batched read would read before it ran."""
         for node in self._walk(body, prune=_PY_SCOPES):
             if node.type == "expression_statement":
                 call, assigned = node.named_children[0], False
@@ -976,17 +980,19 @@ class PythonPerfDialect(BasePerfDialect):
                 call = next((c for c in call.children if c.is_named), None)
             if call is None or call.type != "call" or self._within(call, sink):
                 continue
-            if not self.callee_is_attribute(call):
-                if not (assigned and self.callee_method_name(call) in _PY_BUILTINS):
-                    return True
-                continue
-            root = self.callee_root_name(call) or ""
-            rhs = self._reaching_rhs(call, root.encode())
-            if rhs is None or not (
-                assigned or self._rhs_is_list(rhs) or self._rhs_is_nonlist_container(rhs)
-            ):
+            if self._has_effect(call, assigned=assigned):
                 return True
         return False
+
+    def _has_effect(self, call: Node, *, assigned: bool) -> bool:
+        """Not ``seen.add(x)`` on a local collection, and, when its result is kept, not a
+        builtin (``str(r.id)``) or a method on a local (``res.first()``)."""
+        if not self.callee_is_attribute(call):
+            return not (assigned and self.callee_method_name(call) in _PY_BUILTINS)
+        rhs = self._reaching_rhs(call, (self.callee_root_name(call) or "").encode())
+        if rhs is None:
+            return True
+        return not (assigned or self._rhs_is_list(rhs) or self._rhs_is_nonlist_container(rhs))
 
     def _limited_downstream(self, sink: Node, body: Node) -> bool:
         """The result is cut to one row after the call (``(await q).first()``,
