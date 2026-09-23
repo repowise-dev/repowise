@@ -425,3 +425,14 @@ async function f(users) {
 """
     loop = _io_hits(src)[0].loop
     assert loop is not None and loop.batch is not None and loop.batch.equivalent is False
+
+
+def test_an_awaited_non_limiter_callback_is_not_in_place():
+    src = """
+async function f(xs) {
+  for (const x of xs) {
+    await retry(() => fetch(x));
+  }
+}
+"""
+    assert _io_hits(src) == []

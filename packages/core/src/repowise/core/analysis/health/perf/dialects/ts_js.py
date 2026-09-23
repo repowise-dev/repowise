@@ -484,18 +484,15 @@ class TsJsPerfDialect(BasePerfDialect):
         ``pLimit(2)(...)`` builds a fresh limiter per call, which bounds nothing.
         """
         args = closure.parent
-        call = args.parent if args is not None and args.type == "arguments" else None
-        if (
-            closure.type != "arrow_function"
-            or call is None
-            or call.type != "call_expression"
-            or not self.is_awaited(call)
-        ):
+        if closure.type != "arrow_function" or args is None or args.type != "arguments":
+            return None
+        call = args.parent
+        if call.type != "call_expression" or not self.is_awaited(call):
             return None
         fn = call.child_by_field_name("function")
-        name = self.callee_method_name(call) or ""
         if fn is None or fn.type not in ("identifier", "member_expression"):
             return None
+        name = self.callee_method_name(call) or ""
         if not (_LIMITER_NAME_RE.search(name) or name in _LIMITER_METHODS):
             return None
         return (fn.text or b"").decode() or None

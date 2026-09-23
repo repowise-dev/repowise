@@ -8,6 +8,8 @@ paired with the refusal(s) that protect precision (SPEC.md "Dialect hooks").
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.perf.loop_facts import LoopFacts
 
@@ -463,95 +465,26 @@ def test_magnitude_sees_through_an_empty_fallback():
 # ---------------------------------------------------------------------------
 
 
-def test_session_get_is_a_db_sink():
-    hits = _hits(
-        b"from sqlalchemy import select\n"
-        b"async def f(session, ids):\n"
-        b"    for i in ids:\n"
-        b"        await session.get(Repo, i)\n"
-    )
-    assert [h.detail for h in hits] == ["db"]
-
-
-def test_session_get_needs_db_evidence():
-    """``self.get(User, x)`` in a file with no db import is not a sink."""
-    hits = _hits(
-        b"async def f(self, ids):\n"
-        b"    for i in ids:\n"
-        b"        await self.get(User, i)\n"
-    )
-    assert hits == []
-
-
-def test_session_get_one_arg_is_not_a_sink():
-    hits = _hits(
-        b"from sqlalchemy import select\n"
-        b"async def f(session, ids):\n"
-        b"    for i in ids:\n"
-        b"        await session.get(User)\n"
-    )
-    assert hits == []
-
-
-def test_dict_get_with_default_is_not_a_sink():
-    hits = _hits(
-        b"from sqlalchemy import select\n"
-        b"def f(d, ids):\n"
-        b"    for i in ids:\n"
-        b"        d.get(i, None)\n"
-    )
-    assert hits == []
-
-
-def test_cache_get_string_key_is_not_a_sink():
-    hits = _hits(
-        b"from sqlalchemy import select\n"
-        b"def f(cache, ids):\n"
-        b"    for i in ids:\n"
-        b"        cache.get('k', None)\n"
-    )
-    assert hits == []
-
-
-def test_os_environ_get_is_not_a_sink():
-    hits = _hits(
-        b"from sqlalchemy import select\n"
-        b"def f(ids):\n"
-        b"    for i in ids:\n"
-        b"        os.environ.get('KEY', i)\n"
-    )
-    assert hits == []
-
-
-def test_requests_get_all_caps_url_is_not_a_sink():
-    """An ALL_CAPS first argument (a constant, not a model class) never matches."""
-    hits = _hits(
-        b"from sqlalchemy import select\n"
-        b"def f(ids):\n"
-        b"    for i in ids:\n"
-        b"        requests.get(API_URL, i)\n"
-    )
-    assert hits == []
-
-
-def test_session_get_with_splat_args_is_not_a_sink():
-    hits = _hits(
-        b"from sqlalchemy import select\n"
-        b"def f(session, args, ids):\n"
-        b"    for i in ids:\n"
-        b"        session.get(*args)\n"
-    )
-    assert hits == []
-
-
-def test_session_get_dotted_model_path_is_a_sink():
-    hits = _hits(
-        b"from sqlalchemy import select\n"
-        b"async def f(session, ids):\n"
-        b"    for i in ids:\n"
-        b"        await session.get(models.Repo, i)\n"
-    )
-    assert [h.detail for h in hits] == ["db"]
+@pytest.mark.parametrize(
+    ("call", "db_import", "sink"),
+    [
+        ("await session.get(Repo, i)", True, True),
+        ("await session.get(models.Repo, i)", True, True),
+        ("await session.get(DBUser, i)", True, True),
+        ("await self.get(User, i)", False, False),  # no db evidence in the file
+        ("await session.get(User)", True, False),
+        ("d.get(i, None)", True, False),
+        ("cache.get('k', None)", True, False),
+        ("os.environ.get('KEY', i)", True, False),
+        ("requests.get(API_URL, i)", True, False),  # an ALL_CAPS constant, not a model
+        ("session.get(*args)", True, False),
+    ],
+)
+def test_session_get_sink_shape(call, db_import, sink):
+    header = "from sqlalchemy import select\n" if db_import else ""
+    src = f"{header}async def f(session, self, d, cache, args, ids):\n    for i in ids:\n        {call}\n"
+    hits = _hits(src.encode())
+    assert [h.detail for h in hits] == (["db"] if sink else [])
 
 
 # ---------------------------------------------------------------------------
@@ -579,16 +512,6 @@ def test_batch_session_get_on_the_whole_element_is_not_equivalent():
         b"        obj = await session.get(Repo, key)\n"
     )
     assert facts.batch is not None and facts.batch.equivalent is False
-
-
-def test_session_get_accepts_an_acronym_model_name():
-    hits = _hits(
-        b"from sqlalchemy import select\n"
-        b"async def f(session, rows):\n"
-        b"    for r in rows:\n"
-        b"        await session.get(DBUser, r.id)\n"
-    )
-    assert [h.detail for h in hits if h.kind == "io_in_loop"] == ["db"]
 
 
 def test_batch_session_get_second_sink_in_body_not_equivalent():
