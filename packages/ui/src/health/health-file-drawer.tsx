@@ -28,6 +28,7 @@ import { FindingOpportunityLink } from "./file-opportunity";
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { formatRelativeTimeOrNull } from "../lib/format";
 import { Sparkline } from "./sparkline";
+import { ACTIONABILITY_LABEL } from "./performance/presentation";
 import {
   SEVERITY_CHIP,
   SEVERITY_LABEL,
@@ -1015,7 +1016,7 @@ function CauseRow({
           {biomarkerLabel(o.biomarker_type)}
         </span>
         <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
-          {ACTIONABILITY_WORD[o.actionability_state] ?? o.actionability_state}
+          {ACTIONABILITY_LABEL[o.actionability_state]}
         </span>
       </span>
       {location ? (
@@ -1047,8 +1048,3 @@ function CauseRow({
   );
 }
 
-const ACTIONABILITY_WORD: Record<string, string> = {
-  plan_ready: "Plan ready",
-  advisory: "Advisory",
-  investigate: "Investigate",
-};
