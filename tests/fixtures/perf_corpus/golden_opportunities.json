@@ -1943,134 +1943,6 @@
     {
       "actionability_reason": "no_supported_strategy",
       "actionability_state": "investigate",
-      "affected_call_sites_total": 4,
-      "affected_files_total": 4,
-      "biomarker_type": "io_in_loop",
-      "biomarker_types": [
-        "io_in_loop"
-      ],
-      "boundary_kind": "filesystem",
-      "confidence": "high",
-      "evidence": [
-        {
-          "biomarker_type": "io_in_loop",
-          "file_path": "src/app/formatter.py",
-          "finding_id": "finding_b853807b08e242e784f5",
-          "function_name": "run",
-          "line_end": 24,
-          "line_start": 22,
-          "path": [
-            "src/app/formatter.py::run",
-            "src/app/parse.py::_get_query",
-            "src/app/parse.py::_load_compiled_query"
-          ],
-          "provenance": "call-site",
-          "reason": "shared_dominator_fan_in: io_in_loop at src/app/formatter.py:22 repeats work per iteration."
-        },
-        {
-          "biomarker_type": "io_in_loop",
-          "file_path": "src/app/lexer.py",
-          "finding_id": "finding_7e425174e879fb9f9d23",
-          "function_name": "run",
-          "line_end": 22,
-          "line_start": 20,
-          "path": [
-            "src/app/lexer.py::run",
-            "src/app/parse.py::_get_query",
-            "src/app/parse.py::_load_compiled_query"
-          ],
-          "provenance": "call-site",
-          "reason": "shared_dominator_fan_in: io_in_loop at src/app/lexer.py:20 repeats work per iteration."
-        },
-        {
-          "biomarker_type": "io_in_loop",
-          "file_path": "src/app/linter.py",
-          "finding_id": "finding_34d631c0ff0bed50aafd",
-          "function_name": "run",
-          "line_end": 23,
-          "line_start": 21,
-          "path": [
-            "src/app/linter.py::run",
-            "src/app/parse.py::_get_query",
-            "src/app/parse.py::_load_compiled_query"
-          ],
-          "provenance": "call-site",
-          "reason": "shared_dominator_fan_in: io_in_loop at src/app/linter.py:21 repeats work per iteration."
-        },
-        {
-          "biomarker_type": "io_in_loop",
-          "file_path": "src/app/resolver.py",
-          "finding_id": "finding_ef6b980a3a371a707424",
-          "function_name": "run",
-          "line_end": 25,
-          "line_start": 23,
-          "path": [
-            "src/app/resolver.py::run",
-            "src/app/parse.py::_get_query",
-            "src/app/parse.py::_load_compiled_query"
-          ],
-          "provenance": "call-site",
-          "reason": "shared_dominator_fan_in: io_in_loop at src/app/resolver.py:23 repeats work per iteration."
-        }
-      ],
-      "evidence_truncated": false,
-      "execution_context": "production",
-      "facets": {
-        "actionability_confidence": "low",
-        "amplification": "per_iteration",
-        "change_risk": "moderate",
-        "exposure": "unknown",
-        "leverage": "shared",
-        "loop_magnitude": "unknown"
-      },
-      "fix": null,
-      "intervention_symbol": "src/app/parse.py::_get_query",
-      "observations_total": 4,
-      "opportunity_id": "perf2_a445d6f2d021ddf6a425",
-      "performance_model_version": 2,
-      "prerequisites": [
-        "batch_operation_for_boundary"
-      ],
-      "provenance": "call-site",
-      "rank_factors": {
-        "affected_call_sites": 4,
-        "boundary_kind": 2,
-        "entry_reachability": 0,
-        "execution_context": 3,
-        "loop_magnitude": 1,
-        "multiplier_shape": 4,
-        "provenance": 3
-      },
-      "rank_score": 17,
-      "reliable_entry_reachability": null,
-      "resource_fingerprints": [],
-      "shared_path_suffix": [
-        "src/app/parse.py::_get_query",
-        "src/app/parse.py::_load_compiled_query"
-      ],
-      "siblings": [],
-      "terminal_sink": "src/app/parse.py::_load_compiled_query",
-      "why_ranked": [
-        {
-          "factor": "affected_call_sites",
-          "points": 4,
-          "value": 4
-        },
-        {
-          "factor": "multiplier_shape",
-          "points": 4,
-          "value": "io_in_loop"
-        },
-        {
-          "factor": "execution_context",
-          "points": 3,
-          "value": "production"
-        }
-      ]
-    },
-    {
-      "actionability_reason": "no_supported_strategy",
-      "actionability_state": "investigate",
       "affected_call_sites_total": 1,
       "affected_files_total": 1,
       "biomarker_type": "resource_construction_in_loop",
@@ -2297,8 +2169,134 @@
       ]
     },
     {
-      "actionability_reason": "no_supported_strategy",
-      "actionability_state": "investigate",
+      "actionability_reason": "inherent_to_boundary",
+      "actionability_state": "expected",
+      "affected_call_sites_total": 4,
+      "affected_files_total": 4,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "filesystem",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/formatter.py",
+          "finding_id": "finding_b853807b08e242e784f5",
+          "function_name": "run",
+          "line_end": 24,
+          "line_start": 22,
+          "path": [
+            "src/app/formatter.py::run",
+            "src/app/parse.py::_get_query",
+            "src/app/parse.py::_load_compiled_query"
+          ],
+          "provenance": "call-site",
+          "reason": "shared_dominator_fan_in: io_in_loop at src/app/formatter.py:22 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/lexer.py",
+          "finding_id": "finding_7e425174e879fb9f9d23",
+          "function_name": "run",
+          "line_end": 22,
+          "line_start": 20,
+          "path": [
+            "src/app/lexer.py::run",
+            "src/app/parse.py::_get_query",
+            "src/app/parse.py::_load_compiled_query"
+          ],
+          "provenance": "call-site",
+          "reason": "shared_dominator_fan_in: io_in_loop at src/app/lexer.py:20 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/linter.py",
+          "finding_id": "finding_34d631c0ff0bed50aafd",
+          "function_name": "run",
+          "line_end": 23,
+          "line_start": 21,
+          "path": [
+            "src/app/linter.py::run",
+            "src/app/parse.py::_get_query",
+            "src/app/parse.py::_load_compiled_query"
+          ],
+          "provenance": "call-site",
+          "reason": "shared_dominator_fan_in: io_in_loop at src/app/linter.py:21 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/resolver.py",
+          "finding_id": "finding_ef6b980a3a371a707424",
+          "function_name": "run",
+          "line_end": 25,
+          "line_start": 23,
+          "path": [
+            "src/app/resolver.py::run",
+            "src/app/parse.py::_get_query",
+            "src/app/parse.py::_load_compiled_query"
+          ],
+          "provenance": "call-site",
+          "reason": "shared_dominator_fan_in: io_in_loop at src/app/resolver.py:23 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "moderate",
+        "exposure": "unknown",
+        "leverage": "shared",
+        "loop_magnitude": "unknown"
+      },
+      "fix": null,
+      "intervention_symbol": "src/app/parse.py::_get_query",
+      "observations_total": 4,
+      "opportunity_id": "perf2_a445d6f2d021ddf6a425",
+      "performance_model_version": 2,
+      "prerequisites": [],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 4,
+        "boundary_kind": 2,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "loop_magnitude": 1,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 17,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/parse.py::_get_query",
+        "src/app/parse.py::_load_compiled_query"
+      ],
+      "siblings": [],
+      "terminal_sink": "src/app/parse.py::_load_compiled_query",
+      "why_ranked": [
+        {
+          "factor": "affected_call_sites",
+          "points": 4,
+          "value": 4
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "inherent_to_boundary",
+      "actionability_state": "expected",
       "affected_call_sites_total": 1,
       "affected_files_total": 1,
       "biomarker_type": "io_in_loop",
@@ -2338,9 +2336,7 @@
       "observations_total": 1,
       "opportunity_id": "perf2_19a89b391403e23aed4d",
       "performance_model_version": 2,
-      "prerequisites": [
-        "batch_operation_for_boundary"
-      ],
+      "prerequisites": [],
       "provenance": "call-site",
       "rank_factors": {
         "affected_call_sites": 2,
@@ -2379,8 +2375,8 @@
       ]
     },
     {
-      "actionability_reason": "no_supported_strategy",
-      "actionability_state": "investigate",
+      "actionability_reason": "inherent_to_boundary",
+      "actionability_state": "expected",
       "affected_call_sites_total": 1,
       "affected_files_total": 1,
       "biomarker_type": "io_in_loop",
@@ -2420,9 +2416,7 @@
       "observations_total": 1,
       "opportunity_id": "perf2_68583bf925fadb4f4731",
       "performance_model_version": 2,
-      "prerequisites": [
-        "batch_operation_for_boundary"
-      ],
+      "prerequisites": [],
       "provenance": "call-site",
       "rank_factors": {
         "affected_call_sites": 2,
@@ -2461,8 +2455,8 @@
       ]
     },
     {
-      "actionability_reason": "no_supported_strategy",
-      "actionability_state": "investigate",
+      "actionability_reason": "inherent_to_boundary",
+      "actionability_state": "expected",
       "affected_call_sites_total": 1,
       "affected_files_total": 1,
       "biomarker_type": "io_in_loop",
@@ -2499,9 +2493,7 @@
       "observations_total": 1,
       "opportunity_id": "perf2_8ffbe99d8409ad899a72",
       "performance_model_version": 2,
-      "prerequisites": [
-        "batch_operation_for_boundary"
-      ],
+      "prerequisites": [],
       "provenance": "direct",
       "rank_factors": {
         "affected_call_sites": 2,
@@ -2537,8 +2529,8 @@
       ]
     },
     {
-      "actionability_reason": "no_supported_strategy",
-      "actionability_state": "investigate",
+      "actionability_reason": "inherent_to_boundary",
+      "actionability_state": "expected",
       "affected_call_sites_total": 1,
       "affected_files_total": 1,
       "biomarker_type": "io_in_loop",
@@ -2575,9 +2567,7 @@
       "observations_total": 1,
       "opportunity_id": "perf2_91e5b79c0937ef51ec73",
       "performance_model_version": 2,
-      "prerequisites": [
-        "batch_operation_for_boundary"
-      ],
+      "prerequisites": [],
       "provenance": "direct",
       "rank_factors": {
         "affected_call_sites": 2,

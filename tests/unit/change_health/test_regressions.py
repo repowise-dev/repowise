@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from repowise.core.analysis.change_health.analyzer import MAX_FILE_BYTES
 from repowise.core.analysis.change_health.identity import change_finding_id, finding_key
 from repowise.core.analysis.change_health.matcher import FindingMatcher
 from repowise.core.analysis.change_health.models import FindingKey
-from repowise.core.analysis.change_health.service import ChangeHealthDeltaService, DeltaRequest
+from repowise.core.analysis.change_health.service import (
+    ChangeHealthDeltaService,
+    DeltaRequest,
+    _suggestion,
+)
 from repowise.core.analysis.change_health.sources import GitRevisionSource
 from repowise.core.analysis.health import HealthFindingData, Severity
 from repowise.core.analysis.health.scoring import score_file
@@ -227,3 +233,12 @@ def test_a_continuous_marker_still_worsens_when_its_own_deduction_grows():
 
     better = FindingMatcher().match([gradient(0.6)], [gradient(0.2)]).matched
     assert [m.kind for m in better] == ["unchanged"]
+
+
+def test_an_expected_cause_says_there_is_nothing_to_change():
+    perf = SimpleNamespace(
+        actionability_state="expected",
+        actionability_reason="inherent_to_boundary",
+        intervention_symbol=None,
+    )
+    assert "inherent_to_boundary" not in _suggestion(SimpleNamespace(), perf)

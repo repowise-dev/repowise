@@ -347,7 +347,7 @@ export interface PerformanceOpportunityEvidence {
   provenance: string;
 }
 
-export type PerformanceActionabilityState = "plan_ready" | "advisory" | "investigate";
+export type PerformanceActionabilityState = "plan_ready" | "advisory" | "investigate" | "expected";
 export type PerformancePlanStatus = "available" | "no_safe_plan" | "not_persisted";
 
 /** One rank term, the input it read, and the points it contributed. */

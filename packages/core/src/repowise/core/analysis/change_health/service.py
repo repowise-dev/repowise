@@ -461,6 +461,8 @@ def _suggestion(finding: HealthFindingData, perf: PerfOpportunityView | None) ->
     if perf is not None:
         if perf.actionability_state == "plan_ready" and perf.intervention_symbol:
             return f"Hoist or batch the repeated call in {perf.intervention_symbol}."
+        if perf.actionability_state == "expected":
+            return "Nothing to change: the repetition is inherent or already batched."
         return perf.actionability_reason or "Confirm the cost before changing it."
     return finding.reason or f"Review the {finding.biomarker_type.replace('_', ' ')}."
 

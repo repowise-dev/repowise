@@ -31,6 +31,13 @@ describe("performance filter state", () => {
     expect(parseFilters(serializeFilters(state))).toEqual(state);
   });
 
+  it("round trips the expected actionability state", () => {
+    // expected sits out of the default queue but is still a real, selectable
+    // state: the round trip must not treat it as unrecognized.
+    const state = { ...INITIAL_FILTERS, actionability: "expected" as const };
+    expect(parseFilters(serializeFilters(state))).toEqual(state);
+  });
+
   it("drops a value the vocabulary does not contain instead of forwarding it", () => {
     const parsed = parseFilters("context=production_tooling&actionability=nonsense&offset=-3");
     expect(parsed.context).toBe("production");

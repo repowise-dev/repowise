@@ -44,12 +44,14 @@ export const ACTIONABILITY_LABEL: Record<PerformanceActionabilityState, string> 
   plan_ready: "Plan ready",
   advisory: "Advisory",
   investigate: "Needs investigation",
+  expected: "Expected",
 };
 
 export const ACTIONABILITY_HINT: Record<PerformanceActionabilityState, string> = {
   plan_ready: "A named intervention the analysis considers safe to apply.",
   advisory: "A coherent intervention, but the analysis cannot prove it is safe.",
   investigate: "Evidence worth reading before any change is proposed.",
+  expected: "The repetition is real and there is no change to make.",
 };
 
 export const CONFIDENCE_LABEL: Record<PerformanceOpportunityConfidence, string> = {

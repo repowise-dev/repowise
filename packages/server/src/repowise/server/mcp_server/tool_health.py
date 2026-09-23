@@ -206,6 +206,7 @@ async def _performance_blocks(
     context: str | None,
     boundary: str | None,
     confidence: str | None,
+    actionability: str | None,
     sort: str | None,
 ) -> _PerformanceBlocks:
     """Read the materialized queue, its rollup, and the dashboard lead.
@@ -224,6 +225,7 @@ async def _performance_blocks(
             context=context,
             boundary=boundary,
             confidence=confidence,
+            actionability=actionability,
             view=view,
             sort=sort,
             file_paths=file_paths,
@@ -1555,6 +1557,7 @@ async def get_health(
     performance_context: str | None = None,
     performance_boundary: str | None = None,
     performance_confidence: str | None = None,
+    performance_actionability: str | None = None,
     performance_sort: str | None = None,
     scope: str = DEFAULT_SCOPE,
     counts: str = DEFAULT_COUNTS,
@@ -1584,8 +1587,8 @@ async def get_health(
             plan, evidence paged by ``only=["*_evidence"]``.
         refactoring_view: ``diversified`` (default)|``canonical``|
             ``file_spread``; _type/_confidence/_effort filter.
-        performance_view/_context/_boundary/_confidence/_sort: queue
-            projection and filters; a rejected value lists the accepted.
+        performance_view/_context/_boundary/_confidence/_actionability/_sort:
+            queue filters; a rejected value lists the accepted.
         scope / counts: default ``all``/``everything``. ``production`` drops
             test files; ``code_shape`` drops the git-derived half of the
             score and its findings.
@@ -2202,6 +2205,7 @@ async def get_health(
             context=performance_context,
             boundary=performance_boundary,
             confidence=performance_confidence,
+            actionability=performance_actionability,
             sort=performance_sort,
         )
 

@@ -67,6 +67,13 @@ describe("PerformanceView queue", () => {
     );
   });
 
+  it("labels the actionability select's empty option as excluding expected", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await rows();
+    const actionability = screen.getByLabelText("Actionability");
+    expect(within(actionability).getByRole("option", { name: "All but expected" })).toBeTruthy();
+  });
+
   it("states a facet with one value instead of offering a control that cannot narrow", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await rows();

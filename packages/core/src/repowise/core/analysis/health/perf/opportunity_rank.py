@@ -91,12 +91,12 @@ listed and :func:`amplification` supplies the rest. A marker nobody has
 characterised reports ``unknown`` rather than borrowing a neighbour's shape.
 """
 
-ACTIONABILITY_ORDER = {"plan_ready": 0, "advisory": 1, "investigate": 2}
+ACTIONABILITY_ORDER = {"plan_ready": 0, "advisory": 1, "investigate": 2, "expected": 3}
 """Actionable work sorts above evidence, whatever the raw magnitude.
 
 A generic sink accumulates points through sheer volume. Left to the score
 alone it buries every group somebody could act on today, which is the wrong
-lead for both an agent and a person.
+lead for both an agent and a person. ``expected`` is never a lead.
 """
 
 _LEVERAGE_BANDS = ((1, "isolated"), (3, "local"), (9, "shared"))

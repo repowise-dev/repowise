@@ -111,6 +111,9 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
+# v25: repetition with nothing to change (a filesystem or subprocess boundary, or
+# a loop already walking chunks) is stored as ``expected``; a v24 store says investigate.
+#
 # v24: ``session.get(Model, key)`` is a db sink, an awaited TS limiter closure runs
 # in its loop, and Go/Java loops report chunking; a v23 store has none of them.
 #
@@ -250,7 +253,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 24
+HEALTH_ANALYZER_VERSION = 25
 
 
 def walked_functions(

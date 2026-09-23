@@ -21,7 +21,11 @@ from typing import Any, Literal
 
 FixSafety = Literal["proven", "advisory"]
 OpportunityConfidence = Literal["high", "medium", "low"]
-ActionabilityState = Literal["plan_ready", "advisory", "investigate"]
+# ``expected``: the repetition is real and there is nothing to change.
+ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"]
+
+# Refusals that are facts about the code, not missing proofs: nothing to investigate.
+_EXPECTED_REFUSALS = frozenset({"inherent_to_boundary", "loop_already_chunked"})
 FixStrategy = Literal[
     "parallelize_independent_awaits",
     "replace_membership_collection",
@@ -195,7 +199,7 @@ def assess_fix(
         if boundary not in BATCHABLE_BOUNDARIES:
             # Filesystem and subprocess repetition is real, but there is no
             # batch or prefetch operation to point the caller at.
-            return FixAssessment(None, ("batch_operation_for_boundary",))
+            return FixAssessment(None, (), refusal="inherent_to_boundary")
         form = _shared(details, "batch_form")
         if form:
             if _shared(details, "batch_equivalent") is True:
@@ -262,9 +266,10 @@ def actionability(
     """
     fix = assessment.fix
     if fix is None:
-        return Actionability(
-            "investigate", assessment.refusal, "low", assessment.prerequisites, None
+        state: ActionabilityState = (
+            "expected" if assessment.refusal in _EXPECTED_REFUSALS else "investigate"
         )
+        return Actionability(state, assessment.refusal, "low", assessment.prerequisites, None)
     if evidence_confidence == "low":
         # A transformation proven against a path we could not resolve is not
         # proven against this code. The safety label moves with the verdict so

@@ -198,7 +198,7 @@ def test_a_path_that_names_no_caller_is_keyed_locally() -> None:
 
 def test_every_group_reports_an_actionability_state_and_a_reason() -> None:
     """Nothing is dropped for being unexplainable; it is labelled instead."""
-    states = {"plan_ready", "advisory", "investigate"}
+    states = {"plan_ready", "advisory", "investigate", "expected"}
     for item in _opportunities():
         assert item.actionability_state in states
         assert item.actionability_reason
