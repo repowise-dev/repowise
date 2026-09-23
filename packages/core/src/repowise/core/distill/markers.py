@@ -10,6 +10,7 @@ that crashes the terminal would violate the never-make-things-worse rule.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 REF_LENGTH = 12
 
@@ -17,8 +18,28 @@ _MARKER_TEMPLATE = (
     "[repowise#{ref}: {lines} lines omitted (~{tokens} tokens); restore: repowise expand {ref}]"
 )
 
-MARKER_RE = re.compile(r"\[repowise#(?P<ref>[0-9a-f]{12}):[^\]]*\]")
+#: Matches any marker and recovers its ref; the counts are optional groups so
+#: one pattern serves callers that want only the ref and callers that want both.
+MARKER_RE = re.compile(
+    r"\[repowise#(?P<ref>[0-9a-f]{12}):"
+    r"(?:\s*(?P<lines>\d+) lines omitted \(~(?P<tokens>\d+) tokens\))?"
+    r"[^\]]*\]"
+)
 OMISSION_ID_RE = re.compile(r"^repowise#(?P<ref>[0-9a-f]{12})$")
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedMarker:
+    """One complete marker read back out of delivered text.
+
+    ``text`` is the marker verbatim, so a reader reconstructing what an output
+    cost before distillation can subtract the marker's own size.
+    """
+
+    ref: str
+    text: str
+    lines_omitted: int
+    tokens_omitted: int
 
 
 def render_marker(ref: str, lines_omitted: int, tokens_omitted: int) -> str:
@@ -40,6 +61,32 @@ def parse_marker_refs(text: str) -> list[str]:
             seen.add(ref)
             refs.append(ref)
     return refs
+
+
+def parse_markers(text: str) -> list[ParsedMarker]:
+    """Return every *complete* marker in *text*, in order, one per ref.
+
+    Unlike :func:`parse_marker_refs` this requires both counts, which is also
+    what keeps the documented example marker out: it prints a rounded
+    ``~6.1k`` and is quoted into transcripts often enough to matter.
+    """
+    seen: set[str] = set()
+    markers: list[ParsedMarker] = []
+    for match in MARKER_RE.finditer(text):
+        ref = match.group("ref")
+        tokens = match.group("tokens")
+        if tokens is None or ref in seen:
+            continue
+        seen.add(ref)
+        markers.append(
+            ParsedMarker(
+                ref=ref,
+                text=match.group(0),
+                lines_omitted=int(match.group("lines")),
+                tokens_omitted=int(tokens),
+            )
+        )
+    return markers
 
 
 def is_valid_ref(ref: str) -> bool:

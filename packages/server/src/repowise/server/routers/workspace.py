@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from repowise.core.docs_mode import resolve_docs_mode
+from repowise.core.workspace.cross_repo import MAX_EDGES, MAX_EDGES_PER_REPO_PAIR
 from repowise.server.deps import (
     get_cross_repo_enricher,
     get_workspace_config,
@@ -26,6 +27,7 @@ from repowise.server.schemas import (
     WorkspaceBreakingChangesResponse,
     WorkspaceCoChangeEntry,
     WorkspaceCoChangesResponse,
+    WorkspaceCoChangeStructure,
     WorkspaceConformanceResponse,
     WorkspaceContractDetail,
     WorkspaceContractEntry,
@@ -38,6 +40,7 @@ from repowise.server.schemas import (
     WorkspaceGraphNode,
     WorkspaceGraphResponse,
     WorkspaceRepoEntry,
+    WorkspaceRepoRemovedResponse,
     WorkspaceResponse,
     WorkspaceSyncResponse,
     WorkspaceSystemGraphResponse,
@@ -286,7 +289,34 @@ def _contract_link(lk: dict) -> WorkspaceContractLinkEntry:
         consumer_service=lk.get("consumer_service"),
         provider_symbol_id=lk.get("provider_symbol_id"),
         consumer_symbol_id=lk.get("consumer_symbol_id"),
+        consumer_contract_id=lk.get("consumer_contract_id"),
     )
+
+
+def _contract_haystack(c: dict) -> str:
+    return " ".join(
+        str(c.get(k) or "") for k in ("contract_id", "file_path", "symbol_name", "repo", "service")
+    ).lower()
+
+
+def _link_haystack(lk: dict) -> str:
+    return " ".join(
+        str(lk.get(k) or "")
+        for k in (
+            "contract_id",
+            "consumer_contract_id",
+            "provider_repo",
+            "provider_file",
+            "provider_symbol",
+            "consumer_repo",
+            "consumer_file",
+            "consumer_symbol",
+        )
+    ).lower()
+
+
+def _matches_terms(haystack: str, terms: list[str]) -> bool:
+    return all(t in haystack for t in terms)
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +333,19 @@ async def get_contracts(
     ),
     repo: str | None = Query(None, description="Filter by repo alias"),
     role: str | None = Query(None, description="Filter: provider or consumer"),
+    q: str | None = Query(
+        None,
+        description="Case-insensitive search over id, file, symbol, repo and service. "
+        "Every whitespace-separated term must match.",
+    ),
+    linked: bool | None = Query(
+        None, description="true: only contracts on a matched link; false: only those on none"
+    ),
+    include_links: bool = Query(
+        True,
+        description="false omits the link rows (total_links is still counted), for a caller "
+        "paging the contract list that already holds the links",
+    ),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
@@ -331,6 +374,27 @@ async def get_contracts(
         ]
     if role:
         contracts = [c for c in contracts if c.get("role") == role]
+    if linked is not None:
+        # Keyed on the side each contract plays, from the unfiltered links, so a
+        # type or repo filter above cannot turn a linked contract into an unused one.
+        on_link = set()
+        for lk in getattr(enricher, "_contract_links", []):
+            cid = lk.get("contract_id")
+            on_link.add(("provider", lk.get("provider_repo"), lk.get("provider_file"), cid))
+            on_link.add(("consumer", lk.get("consumer_repo"), lk.get("consumer_file"), cid))
+        contracts = [
+            c
+            for c in contracts
+            if (
+                (c.get("role"), c.get("repo"), c.get("file_path"), c.get("contract_id"))
+                in on_link
+            )
+            == linked
+        ]
+    terms = (q or "").lower().split()
+    if terms:
+        contracts = [c for c in contracts if _matches_terms(_contract_haystack(c), terms)]
+        links = [lk for lk in links if _matches_terms(_link_haystack(lk), terms)]
 
     total_contracts = len(contracts)
     total_links = len(links)
@@ -346,7 +410,7 @@ async def get_contracts(
 
     return WorkspaceContractsResponse(
         contracts=[_contract_entry(c) for c in contracts_page],
-        links=[_contract_link(lk) for lk in links],
+        links=[_contract_link(lk) for lk in links] if include_links else [],
         total_contracts=total_contracts,
         total_links=total_links,
         by_type=by_type,
@@ -457,6 +521,15 @@ async def get_co_changes(
 
     co_changes = list(getattr(enricher, "_co_changes", []))
     total_mined = getattr(enricher, "_total_co_changes", len(co_changes))
+    # Which cap trimmed the stored overlay, judged before any query filter. The
+    # miner walks pairs strongest first, so a full global budget means the
+    # workspace-wide cap stopped it (the per-pair cap may also have applied).
+    if total_mined <= len(co_changes):
+        truncated_by = None
+    elif len(co_changes) >= MAX_EDGES:
+        truncated_by = "total"
+    else:
+        truncated_by = "per_repo_pair"
 
     if repo:
         co_changes = [
@@ -488,6 +561,72 @@ async def get_co_changes(
         ],
         total=total,
         total_mined=total_mined,
+        # The constants name the rules the miner applied; the overlay does not
+        # store them.
+        per_repo_pair_cap=MAX_EDGES_PER_REPO_PAIR,
+        total_cap=MAX_EDGES,
+        truncated_by=truncated_by,
+    )
+
+
+@router.get("/co-changes/structure", response_model=WorkspaceCoChangeStructure)
+async def get_co_change_structure(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    source_repo: str = Query(...),
+    source_file: str = Query(...),
+    target_repo: str = Query(...),
+    target_file: str = Query(...),
+):
+    """Declared structure behind one co-changing pair: the contract links between
+    the two files, and between their repositories through any files.
+
+    Served per pair so the co-change drawer never downloads the whole link list.
+    """
+    _require_workspace(ws_config)
+    if enricher is None:
+        return WorkspaceCoChangeStructure(
+            pair_links=[],
+            repo_links_total=0,
+            repo_links_by_type={},
+            source_file_links=0,
+            target_file_links=0,
+        )
+
+    provider_index = getattr(enricher, "_contract_provider_index", {})
+    consumer_index = getattr(enricher, "_contract_consumer_index", {})
+    src = (source_repo, source_file)
+    tgt = (target_repo, target_file)
+
+    def touching(key: tuple[str, str]) -> list[dict]:
+        # .get, not []: the indexes are defaultdicts and a read must not grow them.
+        return [*provider_index.get(key, []), *consumer_index.get(key, [])]
+
+    src_links = touching(src)
+    pair = {src, tgt}
+    pair_links = [
+        lk
+        for lk in src_links
+        if {
+            (lk.get("provider_repo"), lk.get("provider_file")),
+            (lk.get("consumer_repo"), lk.get("consumer_file")),
+        }
+        == pair
+    ]
+
+    repos = {source_repo, target_repo}
+    by_type: dict[str, int] = {}
+    for lk in getattr(enricher, "_contract_links", []):
+        if {lk.get("provider_repo"), lk.get("consumer_repo")} == repos:
+            ct = lk.get("contract_type", "unknown")
+            by_type[ct] = by_type.get(ct, 0) + 1
+
+    return WorkspaceCoChangeStructure(
+        pair_links=[_contract_link(lk) for lk in pair_links],
+        repo_links_total=sum(by_type.values()),
+        repo_links_by_type=by_type,
+        source_file_links=len(src_links),
+        target_file_links=len(touching(tgt)),
     )
 
 
@@ -1068,3 +1207,80 @@ async def sync_workspace(
         skipped=sum(1 for r in results if r.status == "skipped"),
         errors=sum(1 for r in results if r.status == "error"),
     )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/workspace/repos/{alias}
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/repos/{alias}",
+    response_model=WorkspaceRepoRemovedResponse,
+    status_code=200,
+)
+async def remove_workspace_repo(
+    alias: str,
+    request: Request,
+    ws_config=Depends(get_workspace_config),
+):
+    """Remove a repository from the workspace configuration.
+
+    Drops the repo entry from ``.repowise-workspace.yaml`` and cleans up
+    running server state (session factories, FTS, repo id mappings) so
+    the change takes effect immediately without requiring a restart.
+    """
+    _require_workspace(ws_config)
+
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    if ws_root is None:
+        raise HTTPException(status_code=500, detail="Workspace root missing on app state")
+    ws_root_path = Path(ws_root)
+
+    entry = ws_config.get_repo(alias)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown repo alias '{alias}' in workspace.",
+        )
+
+    # Compute absolute repo path to clean up mappings
+    repo_path_str = str((ws_root_path / entry.path).resolve())
+
+    # Remove from config and save to disk
+    removed = ws_config.remove_repo(alias)
+    if removed is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown repo alias '{alias}' in workspace.",
+        )
+    ws_config.save(ws_root_path)
+
+    # Update live in-memory app state
+    request.app.state.workspace_config = ws_config
+
+    # Clean up associated in-memory references if present
+    path_to_rid = getattr(request.app.state, "workspace_path_to_repo_id", None)
+    repo_id = None
+    if path_to_rid and repo_path_str in path_to_rid:
+        repo_id = path_to_rid.pop(repo_path_str)
+
+    if repo_id is not None:
+        ws_sessions = getattr(request.app.state, "workspace_sessions", None)
+        if ws_sessions and repo_id in ws_sessions:
+            ws_sessions.pop(repo_id, None)
+
+        ws_fts = getattr(request.app.state, "workspace_fts", None)
+        if ws_fts and repo_id in ws_fts:
+            ws_fts.pop(repo_id, None)
+
+        ws_vs = getattr(request.app.state, "workspace_vector_stores", None)
+        if ws_vs and repo_id in ws_vs:
+            ws_vs.pop(repo_id, None)
+
+    return WorkspaceRepoRemovedResponse(
+        ok=True,
+        alias=alias,
+        remaining_repos=len(ws_config.repos),
+    )
+

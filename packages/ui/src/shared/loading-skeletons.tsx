@@ -92,10 +92,14 @@ export function PageSkeleton({
           <h1 className={PAGE_SHELL_TITLE}>
             <Skeleton className="h-[1lh] w-52 max-w-full" />
           </h1>
+          {/* A div, not a p: `Skeleton` renders a div and a p may not contain
+              one. The browser closes the p early, so the server and client
+              trees differ and React discards the hydrated subtree. It carries
+              no text, so the p bought nothing. */}
           {description && (
-            <p className={PAGE_SHELL_DESCRIPTION}>
+            <div className={PAGE_SHELL_DESCRIPTION}>
               <Skeleton className="block h-[1lh] w-full" />
-            </p>
+            </div>
           )}
         </div>
         {actions && <Skeleton className="h-8 w-24 shrink-0" />}

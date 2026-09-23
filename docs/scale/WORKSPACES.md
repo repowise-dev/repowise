@@ -233,17 +233,33 @@ Scans source files for HTTP route handlers, gRPC service definitions, and messag
 |------|-----------|-----------|
 | HTTP | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal API), Rust (Axum routes, Actix/Rocket attribute macros) | fetch/axios/URL-literal wrappers (JS/TS), requests/httpx (Python), HttpClient/UnityWebRequest/Best.HTTP (C#), reqwest (Rust) |
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
-| Data / DB | DDL (`CREATE TABLE`/`VIEW`/`MATERIALIZED VIEW`), ORM dialects (SQLAlchemy, Django, JPA, EF Core, ActiveRecord, Eloquent) | Raw SQL string literals in app code (verb-anchored: `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`MERGE`) |
-| Topics | Kafka, RabbitMQ, NATS producers | Corresponding consumers |
+| Data / DB | DDL (`CREATE TABLE`/`VIEW`/`MATERIALIZED VIEW`), Alembic `op.create_table`, Laravel migrations (`Schema::create` / `Schema::table`), ORM dialects (SQLAlchemy, Django, JPA, EF Core, ActiveRecord, Eloquent `$table` or the class-name convention) | Raw SQL string literals in app code (verb-anchored: `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`MERGE`), Laravel `DB::table(...)` |
+| Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika), NATS producers | The corresponding consumers, plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)` |
 
 Socket detection is C#/Python only and is toggled by `detect_socket` in the `contracts:` block below.
 
-Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](#system-graph). The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
+A topic, queue or exchange name is read the way a URL is: a literal, or a name
+the same file assigns exactly once to a literal (Python, Go and Java today), is
+resolved; a name built at runtime is skipped rather than guessed. RabbitMQ
+publishers name an exchange and a routing key while consumers name a queue, so
+a queue binding found anywhere in the workspace connects the two: each consumer
+of the bound queue links to the exchange's publishers whose routing key the
+binding pattern accepts (`*` and `#` follow topic-exchange rules; an empty key
+or pattern matches everything, while a key the source does not settle matches
+nothing). Such a link carries the exchange as its `contract_id` and the queue as
+`consumer_contract_id`. When no consumer of the bound queue is found, the
+binding site itself is linked. A publish to the default exchange
+(`publish('', 'jobs')`) is a publish to the queue `jobs`.
+
+Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](#system-graph). A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
 
 HTTP routes are matched on their **full** path: a router mount prefix
 (`APIRouter(prefix=...)`, `include_router(prefix=...)`, Express `app.use('/x', router)`,
-Go route groups) is stitched onto each handler path before matching. A client call
+Go route groups, Laravel `Route::prefix(...)->group(...)` and `Route::group(['prefix' => ...])`)
+is stitched onto each handler path before matching. Laravel's `routes/api.php` is
+served under `/api` unless `bootstrap/app.php` (`apiPrefix`) or a route provider says
+otherwise, and `Route::resource` / `apiResource` expand into the routes they register. A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path and a lower-confidence **candidate** when the target is ambiguous.
@@ -289,9 +305,19 @@ excluded from matching and reported under the `external_host` diagnostics reason
 
 ### Package Dependency Scanning
 
-Reads package manifests (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`,
-`.csproj`, and Maven `pom.xml`) to detect when one repo depends on another as a
-package or project.
+Reads package manifests (`package.json`, `composer.json`, `pyproject.toml`,
+`Cargo.toml`, `go.mod`, `.csproj`, and Maven `pom.xml`) to detect when one repo
+depends on another as a package or project.
+
+npm and composer dependencies match in two ways: a local path (`file:` specs,
+workspace globs, composer `path` repositories) that resolves into a sibling repo,
+or a package name that exactly one sibling repo publishes. For npm, a repo
+publishes its root `package.json` and its declared workspace members, so a
+vendored or fixture `package.json` never claims a name. For composer, every
+`composer.json` up to three directories deep counts, outside `vendor/`, hidden
+directories, tests, fixtures and examples, which covers split packages such as
+`src/Illuminate/Support/composer.json`. A name two repos publish links to
+neither.
 
 Maven matching is filesystem-only and coordinate-based. Repowise resolves local
 reactor modules, local parents, properties, and dependency-management versions,
@@ -314,7 +340,7 @@ unsupported.
 
 The contracts, package dependencies, and co-changes above are each a flat list. repowise folds them into a single normalized **system graph**, the one structure every cross-repo view reads. It is rebuilt automatically on every `repowise update --workspace` and persisted to `.repowise-workspace/system_graph.json`.
 
-**Nodes are services, not repos.** A monorepo with three detected service boundaries (a `package.json` / `go.mod` / `Cargo.toml` sub-directory) shows three nodes; the repo is a grouping attribute on each node. A repo with no sub-boundary collapses to a single repo-root node. Each node carries its provider/consumer counts, the contract types it participates in, and flags for orphan/isolated services.
+**Nodes are services, not repos.** A monorepo with three detected service boundaries (a `package.json` / `composer.json` / `go.mod` / `Cargo.toml` sub-directory) shows three nodes; the repo is a grouping attribute on each node. A repo with no sub-boundary collapses to a single repo-root node. Each node carries its provider/consumer counts, the contract types it participates in, and flags for orphan/isolated services.
 
 **Edges are typed and honest.** Every edge carries:
 

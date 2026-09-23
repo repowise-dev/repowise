@@ -87,6 +87,10 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "dynamic_hints/swift.py": 1,
     # Splits an import statement's package path, not a type reference.
     _PREFIX + "languages/jvm_same_package.py": 1,
+    # Qualifies a PHP name against its `use` alias (the HEAD segment) and
+    # splits an FQN into the namespace it indexes by and the class: it asks
+    # which namespace, the opposite end from the shared helper.
+    _PREFIX + "languages/php_same_namespace.py": 2,
     # Takes the head of a URLconf's `views.detail` to reach the Python module
     # declaring the view. The trailing segment is the view function and the
     # head is a module path, so neither end is a type.
@@ -110,7 +114,6 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "framework_edges/jakarta.py": 2,
     _PREFIX + "framework_edges/micronaut.py": 2,
     _PREFIX + "framework_edges/spring.py": 4,
-    _PREFIX + "framework_edges/laravel.py": 1,
     _PREFIX + "parser_helpers.py": 1,
     _PREFIX + "languages/go_interface_satisfaction.py": 1,
 }

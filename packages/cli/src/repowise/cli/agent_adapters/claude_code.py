@@ -15,7 +15,13 @@ import os
 import os.path
 from typing import TYPE_CHECKING, ClassVar
 
-from repowise.cli.agent_adapters.base import AgentAdapter, RewriteRequest, RewriteResult
+from repowise.cli.agent_adapters.base import (
+    SHELL_POSIX,
+    SHELL_POWERSHELL,
+    AgentAdapter,
+    RewriteRequest,
+    RewriteResult,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -91,7 +97,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         return RewriteRequest(
             command=command,
             cwd=cwd if isinstance(cwd, str) else "",
-            shell="powershell" if tool_name == "PowerShell" else "posix",
+            shell=SHELL_POWERSHELL if tool_name == "PowerShell" else SHELL_POSIX,
             session_id=session_id if isinstance(session_id, str) else "",
         )
 

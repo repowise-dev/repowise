@@ -45,9 +45,23 @@ MIN_SAVED_TOKENS = 40
 #: How much of one command's output an agent host actually delivers. Claude
 #: Code truncates a Bash/PowerShell tool result at 30,000 characters, so
 #: everything past this was never going to reach the model and distilling it
-#: away saves nothing. Applied to every source, including ``cli``: a human at
-#: a real terminal has no such cap, so this undersells for them, and the
-#: ledger is meant to be a floor rather than a best case.
+#: away saves nothing.
+#:
+#: Applied to every source here, which is the *smallest* known host cap and
+#: so an undersell for the others rather than an overclaim: a human at a real
+#: terminal has no cap at all, and Codex's own measured cap is 40,000
+#: characters. This path cannot do better, deliberately -- it records
+#: ``agent: "unknown"`` because knowing the rewrite hook's shell is not
+#: knowing which agent ran it, and the contract says an unknown field stays
+#: unknown rather than being filled with the likeliest answer. Choosing a cap
+#: per agent here would be exactly that guess.
+#:
+#: The transcript backfill *does* know the harness, having read that
+#: harness's own file, so it applies a per-agent cap
+#: (``savings/transcript.py:_HARNESS_OUTPUT_CAP_TOKENS``). The two therefore
+#: disagree by at most 2,500 tokens for one Codex result distilled live
+#: versus recovered from a transcript. Recorded rather than hidden; closing
+#: it needs an agent identity this path has decided not to invent.
 HOST_OUTPUT_CAP_CHARS = 30_000
 
 
@@ -103,12 +117,21 @@ def _record_event(
     """
     from repowise.core.savings import recorder
     from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
+    from repowise.core.savings.pricing import resolve_pricing_snapshot
 
     try:
         repo_root = store.db_path.parents[2]
         if store.db_path != recorder.sidecar_path(repo_root) or repo_root == Path.home():
             return
         event_id = new_event_id()
+        surface = "hook" if source.startswith("hook") else "distill"
+        # A hook-sourced run is not a CLI command a human typed: the rewrite
+        # hook turns the agent's own Bash call into `repowise distill`, so this
+        # runs synchronously inside that tool call. Detecting the model scans
+        # the local transcripts -- seconds, on a repository with no Codex
+        # history -- so the hook reads the cache and never fills it, exactly as
+        # the PostToolUse hook does. A direct `repowise distill` may scan.
+        pricing = resolve_pricing_snapshot(repo_root, allow_scan=surface != "hook")
         recorder.record_event_in(
             store,
             repo_root,
@@ -117,7 +140,7 @@ def _record_event(
                 "idempotency_key": scoped_idempotency_key(str(repo_root), "distill", event_id),
                 "occurred_at": datetime.now(UTC),
                 # The rewrite hook tags its shell; everything else is the CLI.
-                "surface": "hook" if source.startswith("hook") else "distill",
+                "surface": surface,
                 "integration": "unknown",
                 "agent": "unknown",
                 "operation": filter_name,
@@ -132,6 +155,7 @@ def _record_event(
                 "pre_budget_input_tokens": raw_tokens,
                 "delivered_input_tokens": distilled_tokens,
                 "omission_refs": (ref,),
+                **(pricing.as_payload() if pricing else {}),
             },
         )
     except Exception:

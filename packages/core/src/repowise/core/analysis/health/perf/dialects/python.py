@@ -8,12 +8,17 @@ zero Python behavior — the defect golden + perf suite lock that.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import builtins
+import re
+from typing import TYPE_CHECKING, ClassVar
 
+from ..loop_facts import BatchForm
 from .base import BasePerfDialect
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+    from ..loop_facts import LoopMagnitude, SinkProbe
 
 # Network round-trip verbs (shared across languages that name HTTP methods).
 HTTP_VERBS: frozenset[str] = frozenset(
@@ -40,6 +45,11 @@ PY_DB_COMMIT: frozenset[str] = frozenset({"commit"})
 PY_DB_AMBIGUOUS: frozenset[str] = frozenset({"all", "first", "one", "one_or_none"})
 PY_SUBPROC_METHODS: frozenset[str] = frozenset(
     {"run", "call", "check_call", "check_output", "Popen"}
+)
+# Any of these anywhere in a read's call chain proves it is bounded, gating
+# ``unbounded_read_reduced_in_memory`` (analysis.health.perf.unbounded_reduction).
+PY_UNBOUNDED_READ_BOUND_METHODS: frozenset[str] = frozenset(
+    {"limit", "range", "single", "maybe_single", "first", "count", "head", "aggregate"}
 )
 
 # Filesystem round-trips, in two strata for the same reason the DB verbs are
@@ -156,6 +166,31 @@ _PY_NONLIST_RHS_KINDS: frozenset[str] = frozenset(
 )
 _PY_NONLIST_BUILTINS: frozenset[str] = frozenset({"set", "dict", "frozenset"})
 
+# Promotion facts (perf/loop_facts.py). Calls and attributes that read a query
+# result out without changing how many rows it holds.
+_PY_RESULT_PROJECTIONS: frozenset[str] = frozenset(
+    {"all", "scalars", "fetchall", "json", "data", "rows"}
+)
+_PY_BOUND_NAME_RE = re.compile(r"(?i)retr|attempt")
+# Raw SQL capped in its own text: ``sa.text("... LIMIT 1000")``.
+_PY_SQL_LIMIT_RE = re.compile(rb"(?is)\bselect\b.*\blimit\s+\d+\b")
+_PY_SQL_COMMENT_RE = re.compile(rb"--[^\n]*|/\*.*?\*/", re.S)
+# A per-key call that limits or orders its rows is not the read one IN query makes.
+_PY_PER_KEY_LIMITS: frozenset[str] = frozenset(
+    {
+        "limit", "single", "maybe_single", "first", "one", "scalar_one",
+        "scalar_one_or_none", "order", "order_by", "range", "offset",
+    }
+)
+_PY_ONE_ROW: frozenset[str] = _PY_PER_KEY_LIMITS | {"scalar"}
+_PY_READ_CAPS: frozenset[str] = _PY_ONE_ROW - {"order", "order_by", "offset"}
+_PY_WRITES: frozenset[str] = frozenset({"update", "insert", "upsert", "values"})
+_PY_SCOPES: frozenset[str] = frozenset({"function_definition", "lambda", "class_definition"})
+_PY_BUILTINS: frozenset[str] = frozenset(dir(builtins))
+_PY_SEM_NAME_RE = re.compile(r"(?i)(sem|semaphore|limiter|limit)$")
+# A model class is CapWords; an ALL_CAPS constant (``API_URL``) is not.
+_PY_MODEL_NAME_RE = re.compile(r"^[A-Z]\w*[a-z]\w*$")
+
 
 class PythonPerfDialect(BasePerfDialect):
     language = "python"
@@ -257,6 +292,78 @@ class PythonPerfDialect(BasePerfDialect):
             return "network"
         return None
 
+    def call_sink_kind(
+        self, call: Node, *, awaited: bool, io_names: dict[str, str], has_db_import: bool
+    ) -> str | None:
+        kind = super().call_sink_kind(
+            call, awaited=awaited, io_names=io_names, has_db_import=has_db_import
+        )
+        if kind == "db" and self._reads_a_registry(call, io_names):
+            return None
+        orm_get = self._orm_get(call) if kind is None else None
+        if orm_get is not None:
+            # ``get`` alone is ``dict.get`` / ``requests.get``; the model-class shape
+            # plus db evidence in the file is what makes it ``Session.get``.
+            db = has_db_import or io_names.get(self.callee_root_name(call) or "") == "db"
+            return "db" if db and not self._key_used_earlier(call, orm_get[1]) else None
+        return kind
+
+    def _reads_a_registry(self, call: Node, io_names: dict[str, str]) -> bool:
+        """``plugins.all()`` on an imported or module-global name reads a registry, not a
+        query result: a result is bound in the function that reads it."""
+        if self.callee_method_name(call) not in PY_DB_AMBIGUOUS:
+            return False
+        fn = call.child_by_field_name("function")
+        receiver = fn.child_by_field_name("object") if fn is not None else None
+        if receiver is None or receiver.type != "identifier":
+            return False
+        name = receiver.text or b""
+        return io_names.get(name.decode()) != "db" and not self._bound_locally(call, name)
+
+    def _bound_locally(self, call: Node, name: bytes) -> bool:
+        """*name* is assigned before *call* in its function, or is a parameter of it."""
+        if self._reaching_rhs(call, name) is not None:
+            return True
+        scope = call.parent
+        while scope is not None and scope.type != "function_definition":
+            scope = scope.parent
+        params = scope.child_by_field_name("parameters") if scope is not None else None
+        return params is not None and name.decode() in self._param_names(params)
+
+    def _key_used_earlier(self, call: Node, key: Node) -> bool:
+        """An earlier call in this loop body gave the same session the same key, so the
+        row may already sit in the session and ``get`` answers from memory."""
+        loop = call.parent
+        while loop is not None and loop.type not in ("for_statement", "while_statement"):
+            if loop.type in _PY_SCOPES:
+                return False
+            loop = loop.parent
+        body = loop.child_by_field_name("body") if loop is not None else None
+        session = (self.callee_root_name(call) or "").encode()
+        for node in self._walk(body, prune=_PY_SCOPES) if body is not None else ():
+            args = node.child_by_field_name("arguments") if node.type == "call" else None
+            if args is None or node.end_byte > call.start_byte:
+                continue
+            texts = {arg.text for arg in args.children}
+            same_session = session in texts or self.callee_root_name(node) == session.decode()
+            if key.text in texts and same_session:
+                return True
+        return False
+
+    def _orm_get(self, call: Node) -> tuple[str, Node] | None:
+        """``(Model, key)`` of a ``x.get(Model, key)`` primary-key lookup."""
+        if self.callee_method_name(call) != "get" or not self.callee_is_attribute(call):
+            return None
+        args = call.child_by_field_name("arguments")
+        named = [c for c in args.children if c.is_named] if args is not None else []
+        if any(c.type in ("list_splat", "dictionary_splat") for c in named):
+            return None
+        positional = [c for c in named if c.type != "keyword_argument"]
+        model = self._dotted_path(positional[0]) if len(positional) == 2 else None
+        if model is None or not _PY_MODEL_NAME_RE.match(model.rsplit(".", 1)[-1]):
+            return None
+        return model, positional[1]
+
     def is_constant_loop(self, node: Node) -> bool:
         """True if a Python for-loop iterates a compile-time-constant bound.
 
@@ -321,6 +428,30 @@ class PythonPerfDialect(BasePerfDialect):
                 return first.text.decode("utf-8", "replace")
         return None
 
+    # ``itertools.batched``, ``more_itertools.chunked`` and hand-rolled peers.
+    _CHUNKING_CALLS: frozenset[str] = frozenset(
+        {"batched", "chunked", "ichunked", "chunks", "iter_chunks", "grouper"}
+    )
+
+    def is_chunked_loop(self, node: Node) -> bool:
+        """``range(start, stop, step)`` with a non-unit step, or a chunking helper."""
+        if node.type != "for_statement":
+            return False
+        right = node.child_by_field_name("right")
+        if right is None or right.type != "call":
+            return False
+        fn = right.child_by_field_name("function")
+        if fn is None or fn.text is None:
+            return False
+        name = fn.text.decode("utf-8", "replace").rsplit(".", 1)[-1]
+        if name in self._CHUNKING_CALLS:
+            return True
+        if name != "range":
+            return False
+        args = right.child_by_field_name("arguments")
+        named = [c for c in args.children if c.is_named] if args is not None else []
+        return len(named) == 3 and named[2].text not in (b"1", b"-1")
+
     def is_string_concat(self, node: Node) -> bool:
         """``s += "x"`` accumulation — but skip an accumulator that is *reset*
         each iteration of an enclosing loop.
@@ -367,6 +498,9 @@ class PythonPerfDialect(BasePerfDialect):
                     return True
             stack.extend(n.children)
         return False
+
+    def unbounded_read_bound_methods(self) -> frozenset[str]:
+        return PY_UNBOUNDED_READ_BOUND_METHODS
 
     def blocking_sync_api(self, root: str, method: str) -> str | None:
         """The offending API name if ``root.method`` is a known blocking sync call.
@@ -632,6 +766,304 @@ class PythonPerfDialect(BasePerfDialect):
             if fn is not None and fn.type == "identifier" and fn.text is not None:
                 return fn.text.decode("utf-8", "replace") in _PY_NONLIST_BUILTINS
         return False
+
+    # -- promotion facts (perf/loop_facts.py) ---------------------------------
+
+    await_kind = "await"
+    key_hops: ClassVar[dict[str, str]] = {"attribute": "object", "subscript": "value"}
+    binding_fields: ClassVar[dict[str, str]] = {
+        "assignment": "left",
+        "augmented_assignment": "left",
+        "for_statement": "left",
+        "named_expression": "name",
+    }
+    branch_kinds = frozenset(
+        {
+            "if_statement", "try_statement", "match_statement", "while_statement",
+            "conditional_expression", "boolean_operator",
+        }
+    )
+    exit_kinds = frozenset(
+        {"break_statement", "continue_statement", "return_statement", "raise_statement"}
+    )
+    scope_kinds = _PY_SCOPES
+    sequence_appends = frozenset({"append", "extend", "insert"})
+
+    def loop_magnitude(self, loop: Node, probe: SinkProbe) -> LoopMagnitude | None:
+        if loop.type != "for_statement":
+            return None
+        return self._magnitude(loop.child_by_field_name("right"), loop, probe, hop=True)
+
+    def _magnitude(
+        self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool
+    ) -> LoopMagnitude | None:
+        """Grows (a query result or a directory listing), bounded, or ``None``.
+
+        *hop* allows one step through the name's last assignment before the
+        loop; a parameter has none and stays unknown on purpose.
+        """
+        if expr is None:
+            return None
+        if expr.type in ("await", "parenthesized_expression"):
+            inner = next((c for c in expr.children if c.is_named), None)
+            return self._magnitude(inner, loop, probe, hop=hop)
+        if expr.type == "identifier" and hop and expr.text:
+            rhs = self._reaching_rhs(loop, expr.text)
+            return self._magnitude(rhs, loop, probe, hop=False)
+        if expr.type == "subscript":
+            return self._slice_magnitude(expr)
+        if expr.type == "boolean_operator" and any(c.type == "or" for c in expr.children):
+            # ``(await q.execute()).data or []``: the fallback is empty, the read is not.
+            left = expr.child_by_field_name("left")
+            return self._grows(self._magnitude(left, loop, probe, hop=hop))
+        if expr.type == "attribute":
+            attr = expr.child_by_field_name("attribute")
+            if attr is None or (attr.text or b"").decode() not in _PY_RESULT_PROJECTIONS:
+                return None
+            return self._grows(self._magnitude(expr.child_by_field_name("object"), loop, probe, hop=hop))
+        return self._call_magnitude(expr, loop, probe, hop=hop) if expr.type == "call" else None
+
+    def _call_magnitude(
+        self, expr: Node, loop: Node, probe: SinkProbe, *, hop: bool
+    ) -> LoopMagnitude | None:
+        method = self.callee_method_name(expr) or ""
+        member = self.callee_is_attribute(expr)
+        if method == "range" and not member:
+            return self._range_magnitude(expr, loop, probe, hop=hop)
+        if probe(expr) in ("db", "network"):
+            # A read capped in the query is as large as its cap; a statement or result
+            # built before the loop (``stmt = ....limit(n)``) is read one assignment back.
+            names = [n.text for n in self._walk(expr) if n.type == "identifier"]
+            parts = [expr, *filter(None, (self._reaching_rhs(loop, name) for name in names))]
+            capped = any(self._caps_read(n, loop) for part in parts for n in self._walk(part))
+            return None if capped else "grows_with_data"
+        if member and method in _PY_RESULT_PROJECTIONS:
+            receiver = expr.child_by_field_name("function").child_by_field_name("object")
+            return self._grows(self._magnitude(receiver, loop, probe, hop=hop))
+        return None
+
+    def _caps_read(self, node: Node, loop: Node) -> bool:
+        """``.limit(n)`` and peers, a SQL string saying ``LIMIT n``, or ``.in_()`` over
+        one chunk of keys."""
+        if node.type == "string":
+            return bool(_PY_SQL_LIMIT_RE.search(_PY_SQL_COMMENT_RE.sub(b"", node.text or b"")))
+        method = self.callee_method_name(node) if node.type == "call" else None
+        if method in _PY_READ_CAPS:
+            return True
+        return method == "in_" and self._in_one_chunk(node, loop)
+
+    def _in_one_chunk(self, node: Node, loop: Node) -> bool:
+        """``.in_(xs[i:i + N])``, or ``.in_(chunk)`` where a loop walks ``xs`` in chunks."""
+        args = node.child_by_field_name("arguments")
+        keys = next((c for c in args.children if c.is_named), None) if args else None
+        if keys is None:
+            return False
+        if keys.type == "subscript":
+            return self._slice_magnitude(keys) == "bounded"
+        outer = loop
+        while outer is not None and keys.type == "identifier":
+            target = outer.child_by_field_name("left") if outer.type == "for_statement" else None
+            if target is not None and target.text == keys.text and self.is_chunked_loop(outer):
+                return True
+            outer = outer.parent
+        return False
+
+    def _range_magnitude(
+        self, call: Node, loop: Node, probe: SinkProbe, *, hop: bool
+    ) -> LoopMagnitude | None:
+        """``range(len(rows))`` grows with ``rows``; ``range(MAX_RETRIES)`` is bounded."""
+        args = [c for c in call.child_by_field_name("arguments").children if c.is_named]
+        if not args:
+            return None
+        stop = args[1] if len(args) > 1 else args[0]
+        if stop.type == "call" and self.callee_method_name(stop) == "len":
+            inner = [c for c in stop.child_by_field_name("arguments").children if c.is_named]
+            if len(inner) == 1:
+                return self._grows(self._magnitude(inner[0], loop, probe, hop=hop))
+            return None
+        path = self._dotted_path(stop) if stop.type in ("identifier", "attribute") else None
+        last = path.rsplit(".", 1)[-1] if path else ""
+        if (stop.type == "identifier" and last.isupper() and len(last) > 1) or (
+            last and _PY_BOUND_NAME_RE.search(last)
+        ):
+            return "bounded"
+        return None
+
+    def _slice_magnitude(self, subscript: Node) -> LoopMagnitude | None:
+        """``xs[:5]`` / ``xs[:LIMIT]`` / ``xs[i:i + 4]``: a constant-width slice."""
+        piece = subscript.child_by_field_name("subscript")
+        if piece is None or piece.type != "slice" or sum(c.type == ":" for c in piece.children) != 1:
+            return None
+        colon = next(i for i, c in enumerate(piece.children) if c.type == ":")
+        start = next((c for c in piece.children[:colon] if c.is_named), None)
+        stop = next((c for c in piece.children[colon + 1 :] if c.is_named), None)
+        if stop is None:
+            return None
+        if start is None:
+            text = (stop.text or b"").decode()
+            constant = stop.type == "integer" or (
+                stop.type == "identifier" and text.isupper() and len(text) > 1
+            )
+            return "bounded" if constant else None
+        if stop.type == "binary_operator":
+            left, right = stop.child_by_field_name("left"), stop.child_by_field_name("right")
+            same_start = left is not None and self._dotted_path(left) == self._dotted_path(start)
+            if same_start and right is not None and right.type == "integer":
+                return "bounded"
+        return None
+
+    def _reaching_rhs(self, loop: Node, name: bytes) -> Node | None:
+        """The right side of the last ``name = ...`` before *loop* in its function."""
+        scope = loop.parent
+        while scope is not None and scope.type != "function_definition":
+            scope = scope.parent
+        if scope is None:
+            return None
+        last: Node | None = None
+        for node in self._walk(scope, prune=_PY_SCOPES):
+            if node.type != "assignment" or node.end_byte > loop.start_byte:
+                continue
+            left = node.child_by_field_name("left")
+            named = left is not None and left.type == "identifier" and left.text == name
+            if named and (last is None or node.start_byte > last.start_byte):
+                last = node
+        return last.child_by_field_name("right") if last is not None else None
+
+    def batch_form(self, sink: Node, loop: Node, probe: SinkProbe) -> BatchForm | None:
+        target = loop.child_by_field_name("left")
+        if loop.type != "for_statement" or target is None or target.type != "identifier":
+            return None
+        body = self.loop_body(loop) or loop
+        iterable = self.loop_iterable_name(loop)
+        for node in self._walk(body):
+            if (
+                node.type == "call"
+                and self.callee_is_attribute(node)
+                and self.callee_root_name(node) == iterable
+                and self.callee_method_name(node) in self.sequence_appends
+            ):
+                return None  # a worklist: its keys are not known before the loop
+        refs = [n for n in self._walk(sink) if n.type == "identifier" and n.text == target.text]
+        methods = {self.callee_method_name(n) for n in self._walk(sink) if n.type == "call"}
+        if len(refs) != 1 or methods & _PY_WRITES or self._reads_loop_local(sink, body):
+            return None
+        call = self._keyed_filter(sink, refs[0], methods)
+        if call is None:
+            return None
+        if "delete" in methods:
+            # Batched, a delete also removes rows a skipped iteration would have left.
+            kept = self._unconditional(sink, body)
+        else:
+            kept = not self._builds_in_order(body)
+        if self._orm_get(sink) is not None:
+            # ``get`` answers from the session's identity map when the row is already
+            # loaded, which no syntax shows: held out, half of these sites made no
+            # round trip. The bulk form is named, never proven.
+            kept = False
+        equivalent = (
+            kept
+            and not methods & _PY_PER_KEY_LIMITS
+            and not self._limited_downstream(sink, body)
+            and self._only_io_in_body(sink, body, probe)
+            and not self._calls_for_effect(sink, body)
+        )
+        return BatchForm(call, equivalent)
+
+    def _calls_for_effect(self, sink: Node, body: Node) -> bool:
+        """Another statement calls something this function did not build as a list, set
+        or dict (``run_task(doc)``, ``session.add(r)``, ``t = task.delay(d)``), which may
+        write what the batched read would read before it ran."""
+        for node in self._walk(body, prune=_PY_SCOPES):
+            if node.type == "expression_statement":
+                call, assigned = node.named_children[0], False
+            elif node.type == "assignment":
+                call, assigned = node.child_by_field_name("right"), True
+            else:
+                continue
+            if call is not None and call.type == "await":
+                call = next((c for c in call.children if c.is_named), None)
+            if call is None or call.type != "call" or self._within(call, sink):
+                continue
+            if self._has_effect(call, assigned=assigned):
+                return True
+        return False
+
+    def _has_effect(self, call: Node, *, assigned: bool) -> bool:
+        """Not ``seen.add(x)`` on a local collection, and, when its result is kept, not a
+        builtin (``str(r.id)``) or a method on a local (``res.first()``)."""
+        if not self.callee_is_attribute(call):
+            return not (assigned and self.callee_method_name(call) in _PY_BUILTINS)
+        rhs = self._reaching_rhs(call, (self.callee_root_name(call) or "").encode())
+        if rhs is None:
+            return True
+        return not (assigned or self._rhs_is_list(rhs) or self._rhs_is_nonlist_container(rhs))
+
+    def _limited_downstream(self, sink: Node, body: Node) -> bool:
+        """The result is cut to one row after the call (``(await q).first()``,
+        ``res = await q`` then ``res.scalar_one()``), which one IN query does not do."""
+        names: set[bytes | None] = set()
+        cur = sink
+        while cur.parent is not None and cur.parent != body:
+            cur = cur.parent
+            if cur.type == "call" and self.callee_method_name(cur) in _PY_ONE_ROW:
+                return True
+            left = cur.child_by_field_name("left") if cur.type == "assignment" else None
+            if left is not None and left.type == "identifier":
+                names.add(left.text)
+        return any(
+            n.type == "call"
+            and self.callee_method_name(n) in _PY_ONE_ROW
+            and (self.callee_root_name(n) or "").encode() in names
+            for n in self._walk(body)
+        )
+
+    def _keyed_filter(self, sink: Node, ref: Node, methods: set[str | None]) -> str | None:
+        """The bulk filter when *sink* selects or deletes by equality on *ref*."""
+        orm_get = self._orm_get(sink)
+        if orm_get is not None and self._is_key_of(orm_get[1], ref):
+            return f"select({orm_get[0]}).where(inspect({orm_get[0]}).primary_key[0].in_(keys))"
+        for node in self._walk(sink):
+            if node.type == "call" and self.callee_method_name(node) == "eq":
+                # supabase-py: ``.table(t).select(...).eq("col", key)``
+                args = [c for c in node.child_by_field_name("arguments").children if c.is_named]
+                if (
+                    len(args) == 2
+                    and args[0].type == "string"
+                    and self._is_key_of(args[1], ref)
+                    and ("select" in methods) != ("delete" in methods)
+                ):
+                    column = next(
+                        (c.text.decode() for c in args[0].children if c.type == "string_content"),
+                        None,
+                    )
+                    return f'.in_("{column}", keys)' if column else None
+            if node.type == "comparison_operator" and any(c.type == "==" for c in node.children):
+                # SQLAlchemy: ``.where(M.col == key)`` / ``.filter(M.col == key)``
+                sides = [c for c in node.children if c.is_named]
+                if len(sides) != 2:
+                    continue
+                for column, key in (sides, sides[::-1]):
+                    path = self._dotted_path(column)
+                    if path and "." in path and self._is_key_of(key, ref):
+                        return f"{path}.in_(keys)"
+        return None
+
+    def concurrency_bound(self, sink: Node, loop: Node) -> str | None:
+        if self._exits_early(self.loop_body(loop) or loop):
+            return None
+        cur = sink.parent
+        while cur is not None and cur != loop:
+            if cur.type == "with_statement" and any(c.type == "async" for c in cur.children):
+                clause = next((c for c in cur.children if c.type == "with_clause"), None)
+                for item in clause.children if clause is not None else ():
+                    value = item.child_by_field_name("value") if item.type == "with_item" else None
+                    # A name, not a constructor: ``async with Semaphore(5)`` in the
+                    # loop makes a fresh bound per iteration, which bounds nothing.
+                    path = self._dotted_path(value) if value is not None else None
+                    if path and _PY_SEM_NAME_RE.search(path.rsplit(".", 1)[-1]):
+                        return path
+            cur = cur.parent
+        return None
 
 
 DIALECT = PythonPerfDialect()

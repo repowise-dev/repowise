@@ -27,7 +27,7 @@ from repowise.core.analysis.test_reachability import (
 )
 from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
 from repowise.core.workspace.config import WorkspaceConfig
-from repowise.core.workspace.contracts import ContractLink, load_contract_store
+from repowise.core.workspace.contracts import ContractLink, load_contract_store, same_service
 from repowise.core.workspace.repo_index import WorkspaceIndex, open_workspace_index
 
 if TYPE_CHECKING:
@@ -118,13 +118,9 @@ def _norm(path: str) -> str:
 
 
 def _internal_call(link: ContractLink) -> bool:
-    """Mirror of ``contracts._same_repo_same_service``, which takes Contracts.
-
-    A provider and consumer in the same repo and the same service boundary are
-    one program calling itself, not a cross-repo contract.
-    """
-    return link.provider_repo == link.consumer_repo and (
-        link.provider_service == link.consumer_service
+    """A link whose two ends are one program calling itself, as the matcher defines it."""
+    return same_service(
+        link.provider_repo, link.provider_service, link.consumer_repo, link.consumer_service
     )
 
 

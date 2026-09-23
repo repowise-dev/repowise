@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from repowise.core.workspace.contract_schema import ContractSchema, SchemaField
 
+from ..dialect import build_contract
 from ..langs import PROTO
-from .dialect import make_grpc_contract
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -219,8 +219,9 @@ class ProtoDialect:
         out: list[Contract] = []
         for svc in services:
             for method in svc.methods:
-                contract = make_grpc_contract(
+                contract = build_contract(
                     ctx,
+                    contract_type="grpc",
                     contract_id=f"grpc::{svc.full_path}/{method.name}",
                     role="provider",
                     symbol_name=f"{svc.full_path}/{method.name}",
@@ -231,6 +232,7 @@ class ProtoDialect:
                         "method": method.name,
                         "source": "proto",
                     },
+                    line=None,
                 )
                 schema = ContractSchema(
                     source="proto",

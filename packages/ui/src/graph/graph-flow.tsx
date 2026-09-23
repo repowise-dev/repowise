@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTheme } from "next-themes";
-import { X } from "lucide-react";
+import { HelpCircle } from "lucide-react";
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
 import { type Signal } from "./context";
@@ -31,7 +31,7 @@ import { useGraphSearch } from "./use-graph-search";
 import { useCommunityFilter } from "./use-community-filter";
 import { useModuleFilter, filterGraphToModule } from "./use-module-filter";
 import { useGraphKeyboardShortcuts } from "./use-graph-keyboard-shortcuts";
-import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type GraphTheme } from "./graph-toolbar";
+import { GraphToolbar, type ColorMode, type ViewMode, type GraphTheme } from "./graph-toolbar";
 import { GraphLegend } from "./graph-legend";
 import { GraphNodeFilter } from "./graph-toolbar";
 import { GraphCanvasShell } from "./graph-canvas-shell";
@@ -60,10 +60,11 @@ import {
   UNCLUSTERED_COMMUNITY_ID,
 } from "./sigma/constellation-adapter";
 import { computeRadialLayout } from "./sigma/radial-layout";
-import { ELK_MAX_NODES, elkSkipReason } from "./sigma/use-elk-sigma-layout";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./sigma/types";
 import type GraphologyGraph from "graphology";
 import { useEgoFilter } from "./sigma/use-ego-filter";
+import { filterOverviewData, getOverviewMeta, layoutFilesOverview } from "./sigma/files-overview";
+import { CommunityColorContext, communityColorSlots } from "./community-colors";
 
 export interface GraphFlowProps {
   fullGraph: GraphExport | undefined;
@@ -99,6 +100,13 @@ export interface GraphFlowProps {
    *  supplied. */
   population?: GraphPopulation | undefined;
   onPopulationChange?: ((next: GraphPopulation) => void) | undefined;
+  /** Whether the whole-repo Files view draws third-party (`external:` /
+   *  `framework:`) nodes. Off by default: on this repo they are a tenth of the
+   *  drawn nodes and touch 40% of the drawn edges, none of it the repo's own
+   *  structure. Controlled when supplied (a host URL-syncs it); otherwise the
+   *  component tracks it. The key always says how many are hidden. */
+  showExternal?: boolean | undefined;
+  onShowExternalChange?: ((next: boolean) => void) | undefined;
   /** Repo name for the constellation core label. */
   repoName?: string;
   deadCodeGraph: GraphExport | undefined;
@@ -196,6 +204,8 @@ export function GraphFlow(props: GraphFlowProps) {
     activeCommunity: controlledActiveCommunity,
     population,
     onPopulationChange,
+    showExternal: controlledShowExternal,
+    onShowExternalChange,
     onActiveCommunityChange,
     communitySlice,
     isLoadingCommunitySlice,
@@ -264,12 +274,15 @@ export function GraphFlow(props: GraphFlowProps) {
   const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set());
   const [showPathFinder, setShowPathFinder] = useState(false);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
-  // Explanation surfaced when the hierarchical layout refuses to run (too
-  // many nodes) — otherwise the toggle looks active but does nothing.
-  const [layoutNotice, setLayoutNotice] = useState<string | null>(null);
-  // Constellation is the default scope → its fixed radial layout.
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>(
-    (initialViewMode ?? "architecture") === "architecture" ? "radial" : "force",
+  // Third-party nodes in the Files overview. See `showExternal`.
+  const [showExternalState, setShowExternalState] = useState(false);
+  const showExternal = controlledShowExternal ?? showExternalState;
+  const setShowExternal = useCallback(
+    (next: boolean) => {
+      if (onShowExternalChange) onShowExternalChange(next);
+      else setShowExternalState(next);
+    },
+    [onShowExternalChange],
   );
 
   // The dependency graph follows the global app theme rather than a separate
@@ -565,6 +578,26 @@ export function GraphFlow(props: GraphFlowProps) {
     return filterGraphToModule(scopeGraphData, controlledActiveModule ?? null);
   }, [isInsideCommunity, communitySlice, scopeGraphData, controlledActiveModule]);
 
+  // The whole-repo Files view is the overview: clusters, bands, and a file's
+  // own edges on hover (see `sigma/files-overview.ts`). The dead/hot signals
+  // keep the plain reading: their payloads are sparse by design, and dropping
+  // unlinked files would drop most of a dead-code view.
+  const isFilesOverview = viewMode === "full" && !isInsideCommunity;
+  const overviewData = useMemo(
+    () =>
+      isFilesOverview && fileGraphData
+        ? filterOverviewData(fileGraphData, { showExternal, pinned: initialSelectedNode })
+        : undefined,
+    [isFilesOverview, fileGraphData, showExternal, initialSelectedNode],
+  );
+  // What is built and drawn: the overview's filtered set, or the payload.
+  const drawData = overviewData ?? fileGraphData;
+  // The overview speaks community: clusters, bands, names and the key are all
+  // community hues, so a Language reading (key 1, `?colorMode=language`) would
+  // repaint the files alone and leave the rest unkeyed. It applies to the
+  // other file readings; the Communities view never read it.
+  const drawnColorMode: ColorMode = isFilesOverview ? "community" : colorMode;
+
   // Loading state
   const isLoading =
     isInsideCommunity ? !!isLoadingCommunitySlice :
@@ -601,7 +634,7 @@ export function GraphFlow(props: GraphFlowProps) {
   // returns null and the effect below constructs them in chunks, keeping the
   // loading state up until the first frame is ready.
   const syncSigmaGraph = useMemo(() => {
-    const graphData = fileGraphData;
+    const graphData = drawData;
     if (!graphData) return null;
 
     // Defer large file graphs to the async effect below.
@@ -615,7 +648,7 @@ export function GraphFlow(props: GraphFlowProps) {
       { nodes: graphData.nodes, links: graphData.links },
       { signals, ...(sliceBoundaryIds ? { boundaryNodeIds: sliceBoundaryIds } : {}) },
     );
-  }, [fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds, sliceBoundaryIds]);
+  }, [drawData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds, sliceBoundaryIds]);
 
   // Async-built file graph for large graphs (built in chunks off the main
   // thread critical path). Null while building / when the sync path applies.
@@ -626,7 +659,7 @@ export function GraphFlow(props: GraphFlowProps) {
   const [isBuildingGraph, setIsBuildingGraph] = useState(false);
 
   const needsAsyncBuild =
-    !!fileGraphData && fileGraphData.nodes.length >= ASYNC_BUILD_THRESHOLD;
+    !!drawData && drawData.nodes.length >= ASYNC_BUILD_THRESHOLD;
 
   // `isBuildingGraph` is only raised *inside* the effect below, which React
   // runs after it has already painted. So on the commit where an async build
@@ -638,7 +671,7 @@ export function GraphFlow(props: GraphFlowProps) {
   const isAwaitingAsyncBuild = needsAsyncBuild && !asyncSigmaGraph;
 
   useEffect(() => {
-    if (!needsAsyncBuild || !fileGraphData) {
+    if (!needsAsyncBuild || !drawData) {
       setAsyncSigmaGraph(null);
       setIsBuildingGraph(false);
       return;
@@ -652,7 +685,7 @@ export function GraphFlow(props: GraphFlowProps) {
     if (hasDeadSignal || isUnified) signals.deadNodeIds = deadNodeIds;
 
     void fileGraphToGraphologyAsync(
-      { nodes: fileGraphData.nodes, links: fileGraphData.links },
+      { nodes: drawData.nodes, links: drawData.links },
       { signals, ...(sliceBoundaryIds ? { boundaryNodeIds: sliceBoundaryIds } : {}) },
     ).then((graph) => {
       if (cancelled) return;
@@ -663,11 +696,17 @@ export function GraphFlow(props: GraphFlowProps) {
     return () => {
       cancelled = true;
     };
-  }, [needsAsyncBuild, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds, sliceBoundaryIds]);
+  }, [needsAsyncBuild, drawData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds, sliceBoundaryIds]);
 
-  const sigmaGraph = isConstellation
-    ? constellationSigmaGraph
-    : (syncSigmaGraph ?? asyncSigmaGraph);
+  const builtFileGraph = syncSigmaGraph ?? asyncSigmaGraph;
+  // The overview lays out the graph it was built from, once per build. It
+  // mutates positions in place and is idempotent (React may run this twice),
+  // and it runs before Sigma is handed the graph, so no frame shows the seed.
+  const sigmaGraph = useMemo(() => {
+    if (isConstellation) return constellationSigmaGraph;
+    if (builtFileGraph && isFilesOverview) layoutFilesOverview(builtFileGraph);
+    return builtFileGraph;
+  }, [isConstellation, constellationSigmaGraph, builtFileGraph, isFilesOverview]);
 
   // Entering a community swaps the payload, and the slice is a round trip.
   // Blanking to a skeleton in between would unmount the renderer, and with it
@@ -688,6 +727,46 @@ export function GraphFlow(props: GraphFlowProps) {
     isInsideCommunity && !communitySlice && !!isLoadingCommunitySlice;
   const displayGraph =
     sigmaGraph ?? (isEnteringCommunity ? heldGraphRef.current : null);
+
+  // Community colours keyed by label rather than by id, which is a size rank
+  // and renumbers between indexes. See `community-colors.ts`. The summary list
+  // covers both scopes and the constellation payload fills in what it lacks.
+  // The drawn graph fills in the rest: a community on the canvas that neither
+  // lists (below the summary's floor, or before it has loaded) is keyed by its
+  // best-connected drawn file, so it still takes a free family instead of
+  // falling back to `id % 12` on top of one a listed community holds.
+  const colorSlots = useMemo(() => {
+    const entries: { communityId: number; label: string; size: number }[] = [];
+    const seen = new Set<number>();
+    for (const c of communities ?? []) {
+      seen.add(c.community_id);
+      entries.push({ communityId: c.community_id, label: c.label, size: c.member_count });
+    }
+    for (const n of constellationGraph?.nodes ?? []) {
+      if (seen.has(n.community_id)) continue;
+      seen.add(n.community_id);
+      entries.push({ communityId: n.community_id, label: n.label ?? "", size: n.member_count });
+    }
+    if (displayGraph && !isConstellation) {
+      const drawn = new Map<number, { top: string; rank: number; size: number }>();
+      displayGraph.forEachNode((node, a) => {
+        if (a.nodeType !== "file" || seen.has(a.communityId)) return;
+        const d = drawn.get(a.communityId);
+        if (!d) drawn.set(a.communityId, { top: node, rank: a.pagerank, size: 1 });
+        else {
+          d.size++;
+          if (a.pagerank > d.rank) {
+            d.top = node;
+            d.rank = a.pagerank;
+          }
+        }
+      });
+      for (const [communityId, d] of drawn) {
+        entries.push({ communityId, label: d.top, size: d.size });
+      }
+    }
+    return entries.length > 0 ? communityColorSlots(entries) : null;
+  }, [communities, constellationGraph, displayGraph, isConstellation]);
 
   const { hiddenNodes, isActive: isEgoActive, visibleCount: egoVisibleCount } = useEgoFilter({
     graph: displayGraph,
@@ -1043,10 +1122,6 @@ export function GraphFlow(props: GraphFlowProps) {
     setPathNotice(null);
   }, []);
 
-  const handleFitView = useCallback(() => {
-    sigmaRef.current?.fitView();
-  }, []);
-
   // Everything a scope change has to clear, in one place. Scope can now arrive
   // from the host (the section-header switcher, URL-synced) as well as from the
   // toolbar's overlay buttons, so this reacts to the resolved value rather than
@@ -1057,9 +1132,6 @@ export function GraphFlow(props: GraphFlowProps) {
   useEffect(() => {
     if (appliedViewModeRef.current === viewMode) return;
     appliedViewModeRef.current = viewMode;
-    // Constellation is fixed-radial; other scopes default back to FA2.
-    setLayoutMode(viewMode === "architecture" ? "radial" : "force");
-    setLayoutNotice(null);
     setHighlightedPath(new Set());
     setHighlightedEdges(new Set());
     // Measured against the graph being replaced, so it retires with it.
@@ -1069,19 +1141,6 @@ export function GraphFlow(props: GraphFlowProps) {
     // the drill-down is a file-scope state and does not survive leaving it.
     if (viewMode === "architecture") setActiveCommunity(null);
   }, [viewMode, setActiveCommunity]);
-
-  const handleLayoutModeChange = useCallback((mode: LayoutMode) => {
-    // Refuse right at the click when ELK can't run: switching the mode anyway
-    // would stop the force layout and leave an active-looking toggle doing
-    // nothing (the canvas-side notice covers graphs that grow past the cap
-    // after the mode is already active).
-    if (mode === "hierarchical" && displayGraph && displayGraph.order > ELK_MAX_NODES) {
-      setLayoutNotice(elkSkipReason(displayGraph.order));
-      return;
-    }
-    setLayoutMode(mode);
-    setLayoutNotice(null);
-  }, [displayGraph]);
 
   const handleEdgeTypeToggle = useCallback((edgeType: string) => {
     setVisibleEdgeTypes((prev) => {
@@ -1176,6 +1235,49 @@ export function GraphFlow(props: GraphFlowProps) {
     });
     return n;
   }, [displayGraph, visibleEdgeTypes]);
+
+  // The overview's key. Memoized with the trailing button so the memoized
+  // legend does not re-render with every render of this shell.
+  const overviewLegend = useMemo(() => {
+    if (!overviewData || !displayGraph) return undefined;
+    // Dependencies only: co-change and low-confidence edges are revealed on a
+    // focused file, never counted as the map's structure.
+    let dependencies = 0;
+    displayGraph.forEachEdge((_, attrs) => {
+      if (
+        (attrs.edgeKind === "internal" || attrs.edgeKind === "crossCommunity") &&
+        visibleEdgeTypes.has(attrs.edgeKind)
+      ) {
+        dependencies++;
+      }
+    });
+    return {
+      hiddenExternal: overviewData.hiddenExternal,
+      shownExternal: overviewData.shownExternal,
+      hiddenUnlinked: overviewData.hiddenUnlinked,
+      omittedLinks: getOverviewMeta(displayGraph)?.omittedPairs ?? 0,
+      dependencies,
+      showExternal,
+      onShowExternalChange: setShowExternal,
+    };
+  }, [overviewData, displayGraph, visibleEdgeTypes, showExternal, setShowExternal]);
+
+  // Moved out of the header row, which now carries only what changes the
+  // picture. `?` still opens it from anywhere.
+  const shortcutsButton = useMemo(
+    () => (
+      <button
+        type="button"
+        onClick={handleToggleShortcutHelp}
+        title="Keyboard shortcuts (?)"
+        aria-label="Keyboard shortcuts"
+        className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      >
+        <HelpCircle className="h-3.5 w-3.5" />
+      </button>
+    ),
+    [handleToggleShortcutHelp],
+  );
 
   // Members vs the one-hop stubs around them, from the same payload the banner
   // counts, so the two figures on screen cannot disagree.
@@ -1331,6 +1433,7 @@ export function GraphFlow(props: GraphFlowProps) {
       : null;
 
   return (
+    <CommunityColorContext.Provider value={colorSlots}>
     <GraphCanvasShell
       breadcrumb={
         isInsideCommunity && activeCommunityLabel ? (
@@ -1363,9 +1466,6 @@ export function GraphFlow(props: GraphFlowProps) {
           )}
           <GraphToolbar
             viewMode={viewMode}
-            colorMode={colorMode}
-            onColorModeChange={setColorMode}
-            onFitView={handleFitView}
             showPathFinder={showPathFinder}
             pathFinderAvailable={Boolean(renderPathFinder)}
             onTogglePathFinder={() => {
@@ -1384,19 +1484,11 @@ export function GraphFlow(props: GraphFlowProps) {
             searchMatchCount={searchResults.length}
             searchTotalCount={displayGraph?.order ?? 0}
             onSearchKeyDown={handleSearchKeyDown}
-            layoutMode={isEnteringCommunity ? "radial" : layoutMode}
-            onLayoutModeChange={handleLayoutModeChange}
-            onToggleHelp={handleToggleShortcutHelp}
-            hierarchicalDisabledReason={
-              displayGraph && displayGraph.order > ELK_MAX_NODES
-                ? elkSkipReason(displayGraph.order)
-                : undefined
-            }
           />
         </div>
       }
       banner={
-        banner || layoutNotice || sliceNotice || pathNotice ? (
+        banner || sliceNotice || pathNotice ? (
           <div className="space-y-2">
             {banner}
             {(sliceNotice || pathNotice) && (
@@ -1408,22 +1500,6 @@ export function GraphFlow(props: GraphFlowProps) {
                 {[sliceNotice, pathNotice].filter(Boolean).join(" ")}
               </p>
             )}
-            {layoutNotice && (
-              <div
-                role="status"
-                aria-live="polite"
-                className="flex items-center gap-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-bg-elevated)] px-3 py-1.5"
-              >
-                <span className="text-[11px] text-[var(--color-text-primary)]">{layoutNotice}</span>
-                <button
-                  onClick={() => setLayoutNotice(null)}
-                  aria-label="Dismiss layout notice"
-                  className="shrink-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            )}
           </div>
         ) : undefined
       }
@@ -1434,7 +1510,7 @@ export function GraphFlow(props: GraphFlowProps) {
             nodeCount={displayGraph?.order ?? 0}
             edgeCount={displayGraph?.size ?? 0}
             visibleEdgeCount={visibleEdgeCount}
-            colorMode={colorMode}
+            colorMode={drawnColorMode}
             viewMode={viewMode}
             {...(isInsideCommunity && activeCommunityLabel
               ? {
@@ -1473,6 +1549,8 @@ export function GraphFlow(props: GraphFlowProps) {
                   }
                 : undefined
             }
+            overview={overviewLegend}
+            trailing={shortcutsButton}
           />
           {hasCanvasStatus && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -1533,29 +1611,30 @@ export function GraphFlow(props: GraphFlowProps) {
         <SigmaCanvas
           ref={sigmaRef}
           graph={displayGraph}
-          layoutMode={isEnteringCommunity ? "radial" : layoutMode}
+          // The seed is the layout (see `buildFileGraph`): "force" only means
+          // "not the constellation", and FA2 skips a presettled graph.
+          layoutMode={isConstellation || isEnteringCommunity ? "radial" : "force"}
           viewMode={viewMode}
           selectedNodeId={selectedNodeId}
           highlightedPath={highlightedPath}
           highlightedEdges={highlightedEdges}
           searchDimmedNodes={searchDimmedNodes}
           communityDimmedNodes={communityDimmedNodes}
-          colorMode={colorMode}
+          colorMode={drawnColorMode}
           activeSignals={activeSignals}
           graphTheme={graphTheme}
-          fileNodes={fileGraphData?.nodes}
-          fileEdges={fileGraphData?.links}
           onNodeClick={handleSigmaNodeClick}
           onNodeDoubleClick={handleSigmaDoubleClick}
           onNodeContextMenu={handleSigmaNodeContextMenu}
           onStageClick={() => setSelectedNodeId(null)}
-          onLayoutSkipped={setLayoutNotice}
           reducedMotion={prefersReducedMotion}
           hiddenNodes={isEgoActive ? hiddenNodes : undefined}
           visibleEdgeTypes={visibleEdgeTypes}
           depthRingRadii={
             isConstellation || isEnteringCommunity ? constellationRingRadii : null
           }
+          communityLabels={communityLabels}
+          activeCommunities={activeCommunities}
         />
       ) : !isLoading ? (
         <div className="flex items-center justify-center h-full">
@@ -1570,6 +1649,7 @@ export function GraphFlow(props: GraphFlowProps) {
       ) : null}
       </div>
     </GraphCanvasShell>
+    </CommunityColorContext.Provider>
   );
 }
 

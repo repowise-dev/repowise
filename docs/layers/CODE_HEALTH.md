@@ -74,7 +74,7 @@ per-line blame index built for every file.
 
 ## The markers, and what each is allowed to do
 
-Repowise ships **49 registered detectors (52 marker ids)**, but only **26 are
+Repowise ships **51 registered detectors (54 marker ids)**, but only **26 are
 permitted to move the headline number**. That restriction is deliberate: the
 defect score carries published accuracy claims, so only markers that earned
 their weight against a bug corpus may affect it.
@@ -85,6 +85,7 @@ their weight against a bug corpus may affect it.
 | **Performance** | **20** | Own pillar, own cap; never touches the defect score |
 | **Maintainability-only (SQL)** | **3** | Maintainability only |
 | **Governance** | **3** | Surfaces as a finding; never deducts |
+| **Advisory** | **2** | Measured and reported; never deducts, and stays out of impact-ranked lists unless asked for |
 
 Nothing is inert, but "doesn't move the number" means three different things:
 
@@ -427,9 +428,14 @@ claims to predict bugs using evidence that says nothing about bugs.
 `advisory` is where those markers live. It is deliberately **not** one of the
 three scored dimensions: there is no weight table, category or cap keyed on it,
 so "never deducts" is structural rather than a promise. Its findings carry a
-`health_impact` of exactly `0.0`, are excluded from every impact-ranked work
-queue, are never counted in a change's introduced/worsened totals, and can never
-make a review verdict blocking.
+`health_impact` of exactly `0.0`, are never counted in a change's
+introduced/worsened totals, and can never make a review verdict blocking.
+
+They are also out of every impact-ranked list, which is a statement about
+ranking rather than about existence: a zero-impact row appended to a list
+ordered by impact reads as a deduction that rounded away. Ask for the dimension
+and you get it, and a surface that ranks nothing -- one file's findings in an
+editor, or a list already filtered to one marker -- gets it without asking.
 
 | Marker | Languages | What it measures |
 |---|---|---|
@@ -454,19 +460,25 @@ whether an assertion observes a double or production output, which is a dataflow
 question the pass does not ask — and on the TypeScript sample that one question
 accounted for every false positive.
 
-`assertion_free_test` measures **51%** on TypeScript (51 findings, the complete
-population of two corpora) and **86%** on Python (29 hand-labelled, a systematic
+`assertion_free_test` measures at least **71%** on TypeScript — a floor
+rather than a current reading, three false-positive families having been closed
+since the labelling (31 findings, the complete
+population of two corpora; an earlier pass published 51% for the larger
+pre-change population, which re-labels to 43.1% against this rubric) and **86%** on Python (29 hand-labelled, a systematic
 sample of 172), and does not report on Go or Java at all; the per-language
 reasoning is in
-[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage). The gap between
-the two is one fact: a test that delegates its oracle to a helper in the same
-file is resolved, and a JS/TS suite keeps its helpers in another file. The
-marker stays advisory on both, and twenty-nine items are too few to settle
-whether Python clears the bar.
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage). A test that
+delegates its oracle to a helper is resolved in the same file by name, and in
+another file when the call graph binds the call, which is what closed most of
+the TypeScript gap. The marker stays advisory on both: neither population is large
+enough to settle the bar.
 
 It asks a question with a yes-or-no answer rather than a
-threshold, which is why it can be stated plainly: a test case whose assertion
-count and verification count are both zero. A **mock verification counts as an
+threshold, which is why it can be stated plainly: a test case with no oracle of
+any kind — no assertion, no mock verification, no `raise`/`throw` the author
+wrote by hand, and no call to an assertion helper from a position the statement
+scan cannot classify. Four questions, every one of them yes or no and none of
+them a threshold. A **mock verification counts as an
 assertion here**, the opposite of the marker above it, because a test whose only
 oracle is `verify(...)` does check something. The two markers read the same call
 for two different questions; the tiers that keep them apart are in
@@ -521,6 +533,27 @@ round-trip, it does not claim the work is avoidable. Database and network
 findings are usually batchable; filesystem ones often are not, since deleting N
 files genuinely needs N unlinks. The finding still tells you where the time
 goes.
+
+A few more things keep the plans honest:
+
+- **Proven means the transformation, not the runtime.** Parallelizing awaits
+  against a database or network client is advisory with a
+  `bounded_concurrency` prerequisite, however clean the dataflow. A loop that
+  already walks its input in chunks (`range(0, n, CHUNK)`, `batched(...)`) is
+  reported as `loop_already_chunked` rather than told to batch.
+- **One line, one problem.** When `io_in_loop` and `serial_await_in_loop` fire
+  on the same call, each names the other in `siblings`, and batching is queued
+  right before the parallelize variant.
+- **Plans carry steps and validation.** Each performance plan lists its edits
+  (`mechanical` only when the strategy is proven) and the tests that validate
+  it: coverage, then call graph, then import graph, then a test named for the
+  file (`via: "name-match"`).
+
+**Over-fetch.** `unbounded_read_reduced_in_memory` (Python, advisory) flags a
+query with no limit or aggregate whose rows are then deduplicated per key in
+code, in the same function or one same-file helper. It is the one shape here
+that is not a loop around I/O: the query runs once and returns too much, and
+the fix is to select one row per key in the database.
 
 Methodology and raw data:
 [perf-detection](https://github.com/repowise-dev/repowise-bench/tree/master/perf-detection).
@@ -634,5 +667,7 @@ unchanged files stay put; no nightly full re-index.
   the full marker roster, and the complete weight tables.
 - [`docs/BENCHMARKS.md`](../BENCHMARKS.md): every published number with its
   sample size and test.
+- [DOC_DRIFT.md](DOC_DRIFT.md): the other thing this layer checks, your own
+  documentation against the tree.
 - [REFACTORING.md](REFACTORING.md) · [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md) ·
   [BUG_HISTORY.md](BUG_HISTORY.md)

@@ -477,8 +477,10 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
                 )}
               </div>
             )}
-            {typeof data.score === "number" && (
-              <StatRow label="Diff-shape score" value={data.score.toFixed(1)} />
+            {data.diff_shape && (
+              <p className="text-[10px] text-[var(--color-text-tertiary)]">
+                {String(data.diff_shape)}
+              </p>
             )}
             {data.classification && (
               <p className="text-[10px] text-[var(--color-text-tertiary)]">

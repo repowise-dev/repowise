@@ -37,7 +37,7 @@ class ResourceConstructionInLoopDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
+                    details=hit.loop_facts(),
                     reason=(
                         "a heavy client / connection is constructed each loop "
                         "iteration; hoist and reuse a single instance"

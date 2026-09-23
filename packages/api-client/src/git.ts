@@ -121,14 +121,24 @@ export async function getCommitsPage(
   options: {
     sort?: "risk" | "date";
     authorship?: "all" | "agent" | "human";
+    /** Narrows the whole repository, not the page: the high review-priority
+     *  band, or bug-fix commits. */
+    kind?: "all" | "high" | "fixes";
     limit?: number;
     offset?: number;
   } = {},
 ): Promise<Paginated<CommitResponse>> {
-  const { sort = "risk", authorship = "all", limit = 50, offset = 0 } = options;
+  const {
+    sort = "date",
+    authorship = "all",
+    kind = "all",
+    limit = 50,
+    offset = 0,
+  } = options;
   return apiGet<Paginated<CommitResponse>>(`/api/repos/${repoId}/commits`, {
     sort,
     authorship,
+    kind,
     limit,
     offset,
   });

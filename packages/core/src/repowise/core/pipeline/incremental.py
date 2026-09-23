@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -550,12 +551,20 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
                     return None
+                # What the last full index measured over every walked function.
+                stored = getattr(repo, "function_mod_p80", None)
+                if stored:
+                    return int(stored)
                 counts = await get_git_function_mod_counts(session, repo.id)
         finally:
             await engine.dispose()
         if not counts:
             return None
-        # Same inclusive-lower p80 as the in-memory path — do not reimplement.
+        # Fallback for a store whose last full index predates the column above.
+        # The rollup is keyed by ``{path}::{name}``, so a file's same-named
+        # functions collapse to one row and this percentile is taken over a
+        # population missing those samples. Closer than the changed-files
+        # subset, still not the number a full index computes.
         from repowise.core.analysis.health.engine import _percentile_p80
 
         return _percentile_p80(counts)
@@ -1344,6 +1353,7 @@ async def persist_incremental_commits(
         get_latest_commit_committed_at,
         get_repository,
         update_repo_git_totals,
+        upsert_git_commit_files_bulk,
         upsert_git_commits_bulk,
     )
     from repowise.core.repo_config import load_repo_config
@@ -1370,9 +1380,28 @@ async def persist_incremental_commits(
         dt = newest if newest.tzinfo is not None else newest.replace(tzinfo=UTC)
         since_ts = int(dt.timestamp())
     with timed(timings, "persist.commits.capture"):
-        rows = await asyncio.to_thread(indexer.capture_new_commit_rows, since_ts=since_ts)
+        # One walk fills both, so they describe the same commit set.
+        file_rows: list[dict] = []
+        rows = await asyncio.to_thread(
+            partial(
+                indexer.capture_new_commit_rows,
+                since_ts=since_ts,
+                file_rows_sink=file_rows,
+            )
+        )
         if rows:
             await upsert_git_commits_bulk(session, repo_id, rows)
+        if file_rows:
+            await upsert_git_commit_files_bulk(session, repo_id, file_rows)
+
+    # What the new commits did to health. An update is a handful of commits, so
+    # this is seconds; the same budget still applies if a long gap made it many.
+    with timed(timings, "persist.commits.health"):
+        from .commit_health import recent_shas, refresh_commit_health
+
+        await refresh_commit_health(
+            session, repo_id, str(repo_path), recent_shas(rows)
+        )
 
     with timed(timings, "persist.commits.experience"):
         await reconcile_commit_experience(session, repo_id, indexer)
@@ -1458,6 +1487,8 @@ async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) 
     failure-isolated like the rest of the git-phase refreshes.
     """
     from repowise.core.persistence.crud import (
+        delete_commit_health_by_sha,
+        delete_git_commit_files_by_sha,
         delete_git_commits_by_sha,
         get_commit_experience_inputs,
         upsert_git_commits_bulk,
@@ -1473,6 +1504,9 @@ async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) 
             orphans = [r["sha"] for r in stored if r["sha"] not in reachable]
             if orphans:
                 await delete_git_commits_by_sha(session, repo_id, orphans)
+                # Per-commit rows leave with their commit; nothing cascades them.
+                await delete_git_commit_files_by_sha(session, repo_id, orphans)
+                await delete_commit_health_by_sha(session, repo_id, orphans)
                 stored = [r for r in stored if r["sha"] in reachable]
                 logger.info("commit_orphans_pruned", repo_id=repo_id, count=len(orphans))
 

@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+
+class WorkspaceRepoRemovedResponse(BaseModel):
+    """Response returned when a repo is removed from the workspace config."""
+
+    ok: bool = True
+    alias: str
+    remaining_repos: int
 
 
 class WorkspaceRepoEntry(BaseModel):
@@ -121,6 +131,9 @@ class WorkspaceContractLinkEntry(BaseModel):
     #: than a display label. None when that side never bound to one.
     provider_symbol_id: str | None = None
     consumer_symbol_id: str | None = None
+    #: The consumer's own contract id when it reached the provider under another
+    #: name (a queue bound to the exchange ``contract_id`` names); None otherwise.
+    consumer_contract_id: str | None = None
 
 
 class WorkspaceContractsResponse(BaseModel):
@@ -171,6 +184,27 @@ class WorkspaceCoChangesResponse(BaseModel):
     #: of every pair in git history — each session's file list is bounded
     #: before pairing.
     total_mined: int = 0
+    #: The most pairs the miner keeps for any one repository pair, so a page
+    #: can say why every repository pair stops at the same count.
+    per_repo_pair_cap: int | None = None
+    #: The most pairs the miner keeps across the whole workspace.
+    total_cap: int | None = None
+    #: Which cap trimmed the stored overlay: ``"total"``, ``"per_repo_pair"``,
+    #: or None when nothing was dropped.
+    truncated_by: Literal["total", "per_repo_pair"] | None = None
+
+
+class WorkspaceCoChangeStructure(BaseModel):
+    """What declared structure connects one co-changing file pair."""
+
+    #: Contract links where one of the two files provides and the other consumes.
+    pair_links: list[WorkspaceContractLinkEntry]
+    #: Contract links between the two repositories through any files.
+    repo_links_total: int
+    repo_links_by_type: dict[str, int]
+    #: Contract links touching each file, whatever the other end.
+    source_file_links: int
+    target_file_links: int
 
 
 class WorkspaceGraphNode(BaseModel):

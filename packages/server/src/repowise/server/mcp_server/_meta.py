@@ -30,6 +30,7 @@ from repowise.core.index_scope import (
     index_scope_fingerprint,
     load_index_scope,
 )
+from repowise.server.mcp_server._rounding import round_float
 
 # 2: index_scope carries the compact projection on routine responses. The key
 # and its version field are unchanged, so a consumer reading the old shape has
@@ -403,7 +404,17 @@ def build_meta(
     """
     out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION}
     if timing_ms is not None:
-        out["timing_ms"] = round(float(timing_ms), 2)
+        # Through the shared quantizer, not ``round(..., 2)``. A wall-clock
+        # duration is a float like any other on this wire, and two decimal
+        # places is not the same rule the rest of the payload follows: a
+        # 1077.85 ms measurement survives ``round`` but the significant-digit
+        # rule wants 1078.0, so the field tripped the no-raw-doubles guard
+        # whenever the run happened to land off an integer. ``round_float``
+        # returns None for a non-finite measurement, which is not valid JSON,
+        # so the key is omitted rather than emitted as null.
+        rounded_ms = round_float(float(timing_ms))
+        if rounded_ms is not None:
+            out["timing_ms"] = rounded_ms
     if hint:
         out["hint"] = hint
     if cached:
@@ -597,20 +608,6 @@ def _release_meta() -> dict[str, Any]:
             f"{check.current_version}; upgrade and restart the MCP server"
         )
     }
-
-
-def context_hint(targets: list[str], compact: bool, include: set[str] | None = None) -> str | None:
-    """Hint for `get_context` callers.
-
-    Conservative: only fires when the call shape suggests the agent could
-    have used a cheaper tool, AND the suggestion is unambiguously safe.
-    """
-    if not targets:
-        return None
-    # If caller requested source and got a large symbol, nudge toward Read with offset
-    if include and "source" in include and len(targets) == 1:
-        return None  # source mode provides its own truncation info
-    return None
 
 
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:

@@ -163,8 +163,16 @@ async def get_dead_code_findings(
     kind: str | None = None,
     min_confidence: float = 0.0,
     status: str = "open",
+    safe_to_delete: bool | None = None,
+    limit: int | None = None,
 ) -> list[DeadCodeFinding]:
-    """Return dead code findings filtered by kind, confidence, and status."""
+    """Return dead code findings filtered by kind, confidence, and status.
+
+    ``safe_to_delete`` and ``limit`` exist so a caller that wants a short
+    preview does not have to load every open finding in the repository and
+    then throw most of them away in Python. Overview does exactly that for a
+    five-row list.
+    """
     q = select(DeadCodeFinding).where(
         DeadCodeFinding.repository_id == repository_id,
         DeadCodeFinding.status == status,
@@ -172,7 +180,11 @@ async def get_dead_code_findings(
     )
     if kind is not None:
         q = q.where(DeadCodeFinding.kind == kind)
+    if safe_to_delete is not None:
+        q = q.where(DeadCodeFinding.safe_to_delete.is_(safe_to_delete))
     q = q.order_by(DeadCodeFinding.confidence.desc())
+    if limit is not None:
+        q = q.limit(limit)
     result = await session.execute(q)
     return list(result.scalars().all())
 

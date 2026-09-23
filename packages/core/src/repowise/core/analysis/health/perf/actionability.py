@@ -9,7 +9,7 @@ Three separate questions live here and must not collapse into one label:
 * evidence confidence, :func:`provenance_confidence`, asks how reliably the
   call path was resolved;
 * fix safety, :attr:`PerformanceFix.safety`, asks how strongly the specific
-  transformation is proven;
+  transformation is proven, not whether the runtime can absorb it;
 * actionability, :func:`actionability`, asks what to do with the group now, and
   demotes a proven strategy whose evidence is weak.
 """
@@ -21,18 +21,25 @@ from typing import Any, Literal
 
 FixSafety = Literal["proven", "advisory"]
 OpportunityConfidence = Literal["high", "medium", "low"]
-ActionabilityState = Literal["plan_ready", "advisory", "investigate"]
+# ``expected``: the repetition is real and there is nothing to change.
+ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"]
+
+# Refusals that are facts about the code, not missing proofs: nothing to investigate.
+_EXPECTED_REFUSALS = frozenset({"inherent_to_boundary", "loop_already_chunked"})
 FixStrategy = Literal[
     "parallelize_independent_awaits",
     "replace_membership_collection",
     "buffer_string_accumulation",
-    "hoist_loop_invariant_resource",
     "batch_or_prefetch_io",
     "shrink_lock_scope",
+    "push_reduction_into_query",
 ]
 
 BATCHABLE_MARKERS = frozenset({"io_in_loop", "nested_loop_with_io"})
 BATCHABLE_BOUNDARIES = frozenset({"db", "network"})
+
+# Fanning out N awaits here spends a pool, rate limit or statement timeout.
+CONCURRENCY_SENSITIVE_BOUNDARIES = frozenset({"db", "network"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,9 +47,20 @@ class PerformanceFix:
     strategy: FixStrategy
     safety: FixSafety
     rationale: str
+    # The concrete construct the edit uses (a bulk call, a bound), when one was found.
+    api: str | None = None
 
     def as_dict(self) -> dict[str, str]:
-        return {"strategy": self.strategy, "safety": self.safety, "rationale": self.rationale}
+        out = {"strategy": self.strategy, "safety": self.safety, "rationale": self.rationale}
+        if self.api:
+            out["api"] = self.api
+        return out
+
+
+def _shared(details: list[dict[str, Any]], key: str) -> Any:
+    """The one value every detail carries under *key*, else ``None``."""
+    values = {detail.get(key) for detail in details}
+    return values.pop() if len(values) == 1 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,11 +70,13 @@ class FixAssessment:
     Prerequisites are stable machine tokens rather than prose: a caller renders
     them, and a new detector fact is expected to clear one by name. They are
     populated whether or not a fix was returned, because an offered advisory
-    strategy has open questions too.
+    strategy has open questions too. ``refusal`` names why no strategy was
+    offered when the reason is a fact about the code, not a missing proof.
     """
 
     fix: PerformanceFix | None
     prerequisites: tuple[str, ...]
+    refusal: str = "no_supported_strategy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +129,30 @@ def assess_fix(
     if marker == "serial_await_in_loop":
         if not all(detail.get("dataflow_verified") for detail in details):
             return FixAssessment(None, ("loop_carried_dependence_proof",))
+        if boundary in CONCURRENCY_SENSITIVE_BOUNDARIES:
+            # A small fixed trip count is not a bound: that is what a retry loop
+            # looks like, and retries must stay sequential.
+            bound = _shared(details, "concurrency_bound")
+            if bound:
+                return FixAssessment(
+                    PerformanceFix(
+                        "parallelize_independent_awaits",
+                        "proven",
+                        f"Iterations are independent and each await already runs under {bound}.",
+                        bound,
+                    ),
+                    (),
+                )
+            # Independence is proven; nothing here bounds the fan-out.
+            return FixAssessment(
+                PerformanceFix(
+                    "parallelize_independent_awaits",
+                    "advisory",
+                    "Iteration independence is proven; the concurrency the fan-out "
+                    "would create is not bounded by anything this group can see.",
+                ),
+                ("bounded_concurrency",),
+            )
         return FixAssessment(
             PerformanceFix(
                 "parallelize_independent_awaits",
@@ -137,11 +181,48 @@ def assess_fix(
             ),
             ("accumulator_not_observed",),
         )
+    if marker == "unbounded_read_reduced_in_memory":
+        return FixAssessment(
+            PerformanceFix(
+                "push_reduction_into_query",
+                "advisory",
+                "The read is proven unbounded and the per-key selection proven "
+                "Python-side; whether the query layer can express that "
+                "selection (DISTINCT ON / a window function / a view) is not.",
+            ),
+            ("query_supports_group_selection",),
+        )
     if set(markers) <= BATCHABLE_MARKERS:
+        if details and all(detail.get("chunked_iteration") for detail in details):
+            # The loop is already the batch; "batch this" repeats advice taken.
+            return FixAssessment(None, (), refusal="loop_already_chunked")
         if boundary not in BATCHABLE_BOUNDARIES:
             # Filesystem and subprocess repetition is real, but there is no
             # batch or prefetch operation to point the caller at.
-            return FixAssessment(None, ("batch_operation_for_boundary",))
+            return FixAssessment(None, (), refusal="inherent_to_boundary")
+        form = _shared(details, "batch_form")
+        if form:
+            if _shared(details, "batch_equivalent") is True:
+                return FixAssessment(
+                    PerformanceFix(
+                        "batch_or_prefetch_io",
+                        "proven",
+                        f"Every call filters on the loop's own key, so {form} covers the same "
+                        "rows, and nothing else in the loop can observe the difference.",
+                        form,
+                    ),
+                    (),
+                )
+            return FixAssessment(
+                PerformanceFix(
+                    "batch_or_prefetch_io",
+                    "advisory",
+                    f"Every call filters on the loop's own key, so {form} is the bulk form; "
+                    "the per-key call limits, orders or shares the loop with other I/O.",
+                    form,
+                ),
+                ("result_equivalence",),
+            )
         return FixAssessment(
             PerformanceFix(
                 "batch_or_prefetch_io",
@@ -167,16 +248,9 @@ def assess_fix(
             ("shared_state_ordering",),
         )
     if marker == "resource_construction_in_loop":
-        if not all(detail.get("resource_invariant") is True for detail in details):
-            return FixAssessment(None, ("loop_invariant_construction_proof",))
-        return FixAssessment(
-            PerformanceFix(
-                "hoist_loop_invariant_resource",
-                "proven",
-                "Dataflow proves construction arguments and lifetime are loop invariant.",
-            ),
-            (),
-        )
+        # Hoisting needs per-argument dataflow plus a guard against attribute
+        # mutation (``Client(token=self.token)``); neither exists, so no strategy.
+        return FixAssessment(None, ("loop_invariant_construction_proof",))
     return FixAssessment(None, ("supported_strategy_for_marker",))
 
 
@@ -192,9 +266,10 @@ def actionability(
     """
     fix = assessment.fix
     if fix is None:
-        return Actionability(
-            "investigate", "no_supported_strategy", "low", assessment.prerequisites, None
+        state: ActionabilityState = (
+            "expected" if assessment.refusal in _EXPECTED_REFUSALS else "investigate"
         )
+        return Actionability(state, assessment.refusal, "low", assessment.prerequisites, None)
     if evidence_confidence == "low":
         # A transformation proven against a path we could not resolve is not
         # proven against this code. The safety label moves with the verdict so

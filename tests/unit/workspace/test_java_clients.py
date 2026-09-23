@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repowise.core.workspace.contracts import match_contracts
 from repowise.core.workspace.extractors.base import ScanContext
 from repowise.core.workspace.extractors.http import HttpExtractor
 from repowise.core.workspace.extractors.http.fastapi import FastApiDialect
@@ -20,6 +19,7 @@ from repowise.core.workspace.extractors.http.java_clients import (
     java_net_http_calls,
     resttemplate_calls,
 )
+from repowise.core.workspace.matching import match_contracts
 
 FEIGN_CLIENT = """package com.example.client;
 

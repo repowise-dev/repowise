@@ -629,16 +629,19 @@ ranking it against the same measure over the repo's own recent commits. It is
 the part that separates a small edit to a fragile file from a large edit to a
 safe one. `available` is false when the history walk could not run.
 
-`change_shape` carries the supporting diff-shape reading: `score`,
-`risk_percentile`, `review_priority`, `classification`, `fallback_band` and
-`is_fix`, which also stay at the top level. `score` is an offline-calibrated
-0-10 output measuring diff size and spread — not a probability, and not where
-the change lands. `fallback_band` appears only when no baseline was available.
+`diff_shape` is one sentence ranking the diff's size against the repo's recent
+commits, alongside the top-level `risk_percentile`, `review_priority`,
+`classification` and `is_fix`. It is size and spread, never a danger verdict.
 `working_tree` says whether uncommitted work was the subject.
 
-`include=["diagnostics"]` adds the raw mechanics: `risk_authority`,
-`score_measures`, `score_unit`, `baseline_sample_size`, `features` and
-`drivers`. `include=["scales"]` adds each field's kind, unit, range,
+The raw 0-10 `score` is not on the wire by default. It ranks 0.99 against lines
+added on every repository measured, so the percentile beside it already carried
+the ranking while the number invited being read as a probability. It remains
+available, with `fallback_band`, behind `include=["diagnostics"]`.
+
+`include=["diagnostics"]` adds the raw mechanics: `score`, `fallback_band`,
+`risk_authority`, `score_measures`, `score_unit`, `baseline_sample_size`,
+`features` and `drivers`. `include=["scales"]` adds each field's kind, unit, range,
 calibration and thresholds. Both are identical on every call, so ask once.
 
 It also returns `impacted_tests`, whose `tests_to_run` names the tests the
@@ -677,13 +680,13 @@ followed, and `unresolved_detail` names what failed.
 `is_fix` is the defect benchmark's keyword rule read over the commit subject,
 not the conventional-commit type, so a `feat:` commit whose subject says it
 fixes something reads true; the rule is frozen for comparability rather than
-tuned. `prior_fixes` below is the tuned view: it applies a diff-shape filter on
-top of that rule, counting only commits that actually edited production code.
-`fix_history` above runs the same unfiltered rule, and `prior_fixes` is the one
-block of the three that needs an index.
+tuned. `fix_history.overlap` is the tuned view: it applies a diff-shape filter
+on top of that rule, counting only commits that actually edited production
+code. `fix_history` itself runs the same unfiltered rule, and `overlap` is the
+one part of the three that needs an index.
 
-When the changed files carry counted bug fixes, the response also holds
-`prior_fixes`: per file, how many past bug-fix commits touched it
+When the changed files carry counted bug fixes, `fix_history.overlap` reports
+per file how many past bug-fix commits touched it
 (`fix_count`), how many of the change's lines fall inside the ranges one of
 those fixes replaced (`overlapping_lines`), and how long ago the most recent
 was (`last_fix_days_ago`). `total_fixes` counts distinct commits, not rows,
@@ -746,7 +749,7 @@ different fact: it reports the branch scan bound, not a cap. The block is absent
 no counted files, when no other branch edits a shared file, and when the scan
 exceeds its 20-second ceiling or git cannot answer.
 
-`change_shape.independent_changes` says when the diff is several changes rather
+`independent_changes` says when the diff is several changes rather
 than one. It groups the changed files by connectivity, over index edges (imports,
 calls, type references, framework and dynamic edges), stored co-change pairs, and,
 when `revspec` is a `base..head` range, the files each commit of that range
@@ -773,8 +776,8 @@ recoverable with `repowise expand <ref>`; nothing else in the block is capped. T
 block needs an index and is absent without one, and it is absent whenever the diff
 is one change: fewer than two changed files, fewer than two of them eligible to be
 grouped, or fewer than two groups surviving. Under a response over budget it is
-the first thing shed, ahead of the rest of `change_shape`; `branch_overlap` sheds
-after `prior_fixes` and before `cross_repo`.
+the first thing shed, ahead of `diff_shape`; `branch_overlap` sheds after
+`fix_history` and before `cross_repo`.
 
 The freshness envelope is scoped to the files this change edits, whether or not
 the repo is indexed: `branch_overlap` reads files on other branches, and that
@@ -907,11 +910,11 @@ get_health(opportunity_id="refop2_...")
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty means dashboard mode. |
-| `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), `"doc_drift"` (documentation whose claims about the tree no longer hold), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
+| `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), `"doc_drift"` (documentation whose claims about the tree no longer hold), and a dimension name (`"performance"` / `"defect"` / `"maintainability"` / `"advisory"`) to filter findings to that pillar. `"advisory"` is the only way to reach the advisory markers — `assertion_free_test` and `mock_saturated_test`. They carry a health impact of exactly zero, so they are out of every impact-ranked list by default: asking for the dimension is what returns them, and their absence from an unfiltered response is not a clean bill. |
 | `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. Note that `refactoring_plans` is the raw
 per-detector list and is now **opt-in**: `include=["refactoring"]` leads with
 `refactoring_opportunities`, the composed unit, and emitting both would ship two
-representations of the same work in one response. The `include` **dimension** names (`performance`, `defect`, `maintainability`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
+representations of the same work in one response. The `include` **dimension** names (`performance`, `defect`, `maintainability`, `advisory`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
 | `finding_id` | string | No | Resolve an emitted stable health-finding `id` directly in one call. |
@@ -924,6 +927,7 @@ representations of the same work in one response. The `include` **dimension** na
 | `performance_context` | string | No | `production` (default) / `tooling` / `test` / `unknown` / `all`. The summary block is scoped to the same context as the queue; `repository_total` stays the count over every context. |
 | `performance_boundary` | string | No | `db` / `network` / `filesystem` / `subprocess` / `lock` / `none`. |
 | `performance_confidence` | string | No | Evidence confidence: `high` / `medium` / `low`. Fix safety and actionability are separate facets. |
+| `performance_actionability` | string | No | `plan_ready` / `advisory` / `investigate` / `expected`. Unset means all but `expected` (real repetition with nothing to change), which is still counted in the facet and `repository_total`. |
 | `performance_sort` | string | No | `rank` (default) / `leverage` / `observations`. |
 | `scope` | string | No | Which files every figure describes: `all` (default) or `production`. Narrowing drops test files from the headline, the distribution and every ranked list. Tests score higher than production code, so `production` lowers the number without a defect having been found. |
 | `counts` | string | No | What the score counts: `everything` (default, the calibrated number) or `code_shape`, which removes the git-derived half. Change history rises as a file is worked on, so it answers what a repository has been through rather than what its code is like — `code_shape` is the reading that answers "is this code getting better". Files with no stored split are reported in `unscored_files` rather than counted. Findings from history are dropped, not re-scored. |
@@ -937,7 +941,9 @@ the name you asked for. Both are echoed on the response.
 pillar averages), the lowest-scoring files, and a per-module NLOC-weighted
 rollup. Targeted mode returns per-file marker findings with severity,
 per-dimension scores, and the score breakdown. Each finding carries a `dimension`
-(`defect` / `maintainability` / `performance`).
+(`defect` / `maintainability` / `performance` / `advisory`). Only the first three
+score; `advisory` describes and never deducts, which is why a file can carry an
+advisory finding and a deduction of zero.
 
 **Lead with `directive`.** Dashboard mode opens with the single file to fix
 first, its dominant finding, `recovers_weighted_deficit_points` /
@@ -1187,7 +1193,10 @@ get_health(only=["kpis"], limit=0)                    # headline numbers, no row
 A bare `get_health()` carries `performance_directive`: one bounded lead with
 its status (`plan_ready` / `advisory` / `investigate` / `clear` / `unavailable`),
 up to three `why_ranked` facets, the exact plan state, and a structured
-`next_action`. Performance findings carry `health_impact: 0` by construction, so
+`next_action`, and, when a plan is stored, its `validation` basis. An opportunity
+by id adds `plan_steps`, `validation` (tests and commands) and `siblings`: other
+causes observed on the same lines. A rejected filter value is echoed with its
+accepted values in `ignored_arguments`. Performance findings carry `health_impact: 0` by construction, so
 they never competed for the main `directive` and the dashboard used to report
 counts and nothing to act on. `clear` means no supported pattern surfaced, which
 is not a claim about how the code runs; `unavailable` means this index has not

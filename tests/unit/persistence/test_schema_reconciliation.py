@@ -167,12 +167,12 @@ async def test_reconciler_preserves_existing_row_data(tmp_path: Path) -> None:
         db_path,
         """
         INSERT INTO decision_records
-            (id, repository_id, title, status, context, decision, rationale,
+            (id, repository_id, title, status, kind, context, decision, rationale,
              alternatives_json, consequences_json, affected_files_json,
              affected_modules_json, tags_json, evidence_commits_json,
              source, confidence, staleness_score, created_at, updated_at)
         VALUES
-            ('rec-1', 1, 't', 'active', '', 'd', '',
+            ('rec-1', 1, 't', 'active', 'architectural', '', 'd', '',
              '[]', '[]', '[]',
              '[]', '[]', '[]',
              'inline', 0.5, 0.0, '2026-01-01', '2026-01-01')

@@ -36,7 +36,6 @@ def _detect(source: str, path: str = "tests/test_sample.py", language: str = "py
         nloc=fc.file_nloc,
         has_test_file=True,
         module=None,
-        function_metrics={f.name: f for f in fc.functions},
         all_functions=tuple(fc.functions),
     )
     return BIOMARKER.detect(ctx)
@@ -214,6 +213,201 @@ def test_a_with_block_never_joins_an_assertion_run() -> None:
     )
     fc = walk_file("tests/test_sample.py", "python", source.encode("utf-8"))
     assert fc.functions[0].assertion_blocks == []
+
+
+def _walk_one(body: str):
+    """The single ``FunctionComplexity`` a one-function source produces."""
+    source = "import pytest\n\n" + body
+    fc = walk_file("tests/test_sample.py", "python", source.encode("utf-8"))
+    return fc.functions[0]
+
+
+def test_a_multi_item_with_is_classified_on_its_oracle_not_its_first_item() -> None:
+    _require("python")
+    # ``assert_call_kinds`` is Python's plain ``call``, so a scan that stopped
+    # at the first call it met answered on whichever context manager the author
+    # typed first. The same two managers had to count the same either way round.
+    first = _walk_one(
+        "def test_oracle_first():\n"
+        "    with pytest.raises(ValueError), atomic():\n"
+        "        boom()\n"
+    )
+    second = _walk_one(
+        "def test_oracle_second():\n"
+        "    with atomic(), pytest.raises(ValueError):\n"
+        "        boom()\n"
+    )
+    middle = _walk_one(
+        "def test_oracle_middle():\n"
+        "    with atomic(), pytest.raises(ValueError), other():\n"
+        "        boom()\n"
+    )
+    assert (first.assertion_count, second.assertion_count, middle.assertion_count) == (1, 1, 1)
+
+
+def test_a_pytest_oracle_is_found_wherever_it_sits_in_the_header() -> None:
+    _require("python")
+    # The marker-level consequence, and the one a user sees. ``checks_something``
+    # has a ``called_names`` floor under the narrow prefixes, which answers the
+    # ``assertRaises`` spelling by name whatever the count says -- ``pytest``'s
+    # matches no prefix, so this test had nothing else to be found by.
+    source = (
+        "import pytest\n"
+        "\n"
+        "def test_only_pytest_oracle():\n"
+        "    with pytest.raises(ValueError), atomic():\n"
+        "        boom()\n"
+    )
+    assert _flagged(source) == []
+
+
+def test_the_header_descent_reaches_through_every_wrapper_shape() -> None:
+    _require("python")
+    # Each of these puts the call one node further from the ``with`` than the
+    # plain form: an ``as_pattern``, the ``async`` spelling, the parenthesised
+    # clause, and a suite on the header's own line. They are what the descent
+    # has to reach through, and a grammar bump is what would take one away.
+    as_pattern = _walk_one(
+        "def test_as():\n"
+        "    with pytest.raises(ValueError) as exc, atomic() as tx:\n"
+        "        boom()\n"
+    )
+    asynchronous = _walk_one(
+        "async def test_async():\n"
+        "    async with atomic(), pytest.raises(ValueError):\n"
+        "        await boom()\n"
+    )
+    parenthesised = _walk_one(
+        "def test_parens():\n"
+        "    with (\n"
+        "        atomic() as tx,\n"
+        "        pytest.raises(ValueError) as exc,\n"
+        "    ):\n"
+        "        boom()\n"
+    )
+    same_line = _walk_one(
+        "def test_same_line():\n"
+        "    with atomic(), pytest.raises(ValueError): boom()\n"
+    )
+    counts = (
+        as_pattern.assertion_count,
+        asynchronous.assertion_count,
+        parenthesised.assertion_count,
+        same_line.assertion_count,
+    )
+    assert counts == (1, 1, 1, 1)
+
+
+def test_a_header_oracle_leaves_the_mock_setup_count() -> None:
+    _require("python")
+    # Both sides of ``mock_saturated_test``'s ratio move on this one header:
+    # ``mock_walk._count_body_setup`` skips a statement ``_is_assertion_statement``
+    # admits, and that predicate runs the same header classification. Pinned
+    # together because the pair is what the ratio reads.
+    fn = _walk_one(
+        "def test_mocked():\n"
+        "    with pytest.raises(ValueError), mock.patch('svc.client'):\n"
+        "        run()\n"
+    )
+    assert (fn.assertion_count, fn.mock_setup_count) == (1, 0)
+
+
+def _with_tiers(body: str, dialect) -> list[int]:
+    """Every ``with`` statement's tier in *body*, under *dialect*.
+
+    Driven below ``walk_file`` on purpose: a verification in a ``with`` header
+    is unreachable through it, because no shipped Python dialect carries
+    ``verify_names`` and the configured vocabulary widens assert names only.
+    """
+    from tree_sitter import Parser
+
+    from repowise.core.analysis.health.complexity.assertions import _assertion_tier
+    from repowise.core.analysis.health.complexity.languages import get_language_map
+    from repowise.core.ingestion.parser import _get_language
+
+    lmap = get_language_map("python")
+    tree = Parser(_get_language("python")).parse(body.encode("utf-8"))
+    tiers: list[int] = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type in lmap.with_kinds:
+            tiers.append(_assertion_tier(node, lmap, dialect))
+        stack.extend(reversed(node.children))
+    return tiers
+
+
+def test_an_assertion_beats_a_verification_wherever_each_sits() -> None:
+    _require("python")
+    # The same order dependence one tier up, and the one place it could come
+    # back. No shipped Python dialect can produce a verification here, so this
+    # pins the rule against the day a ``verify_names`` row lands -- the failure
+    # it would cause is silent, a unit moving between two stored counts.
+    from repowise.core.analysis.health.asserts.lexicon import AssertDialect
+    from repowise.core.analysis.health.complexity.assertions import _BROAD, _VERIFICATION
+
+    dialect = AssertDialect(
+        receiver_methods={"pytest": frozenset({"raises"})},
+        verify_names=frozenset({"verify"}),
+    )
+    tiers = _with_tiers(
+        "def test_verify_first():\n"
+        "    with verify(mock), pytest.raises(ValueError):\n"
+        "        boom()\n"
+        "\n"
+        "def test_verify_second():\n"
+        "    with pytest.raises(ValueError), verify(mock):\n"
+        "        boom()\n"
+        "\n"
+        "def test_verify_alone():\n"
+        "    with verify(mock):\n"
+        "        boom()\n",
+        dialect,
+    )
+    # The first two agree, which is the whole point; a header with only a
+    # verification still reports one.
+    assert tiers == [_BROAD, _BROAD, _VERIFICATION]
+
+
+def test_a_with_header_of_no_oracles_still_counts_nothing() -> None:
+    _require("python")
+    fn = _walk_one(
+        "def test_no_oracle():\n"
+        "    with atomic(), other():\n"
+        "        boom()\n"
+    )
+    assert fn.assertion_count == 0
+
+
+def test_an_assertion_in_argument_position_is_not_the_headers_oracle() -> None:
+    _require("python")
+    # The bound a statement gets in ``_find_assert_call``: a call buried in an
+    # argument is not the thing being stated. Scanning past a declining call
+    # must not start reading into one.
+    fn = _walk_one(
+        "def test_argument():\n"
+        "    with atomic(pytest.raises(ValueError)):\n"
+        "        boom()\n"
+    )
+    assert fn.assertion_count == 0
+
+
+def test_a_multi_item_with_breaks_a_run_exactly_as_a_single_item_one_does() -> None:
+    _require("python")
+    # The block markers are calibrated on narrow runs. A ``with`` header is
+    # capped at broad in either form, so counting its oracle must leave the
+    # runs around it byte-identical to what a single-item header produces.
+    run = "    assert a == 1\n{header}        boom()\n    assert b == 2\n    assert c == 3\n"
+    single = _walk_one(
+        "def test_single():\n"
+        + run.format(header="    with pytest.raises(ValueError):\n")
+    )
+    multi = _walk_one(
+        "def test_multi():\n"
+        + run.format(header="    with pytest.raises(ValueError), atomic():\n")
+    )
+    assert multi.assertion_blocks == single.assertion_blocks
+    assert multi.assertion_blocks == [(7, 8, 2)]
 
 
 # --------------------------------------------------------------------------
@@ -549,3 +743,194 @@ def test_resolution_is_by_name_and_a_second_class_shares_it() -> None:
         "        self._check(g())\n"
     )
     assert _flagged(source) == []
+
+
+# --------------------------------------------------------------------------
+# A hand-rolled throw is an oracle
+# --------------------------------------------------------------------------
+
+
+def test_a_guard_test_that_reports_a_misconfiguration_by_throwing_is_not_assertion_free() -> None:
+    """``if (!ok) throw`` fails the test on a named property. No vocabulary
+    reaches it, because a throw is a statement and the vocabularies match
+    callee names."""
+    _require("typescript")
+    src = (
+        "it('the fixture directory is configured', () => {\n"
+        "  if (!process.env.FIXTURES) {\n"
+        "    throw new Error('FIXTURES is unset');\n"
+        "  }\n"
+        "});\n"
+        "it('checks nothing', () => {\n"
+        "  run();\n"
+        "});\n"
+    )
+    assert _flagged(src, "src/thing.test.ts", "typescript") == ["it callback"]
+
+
+def test_an_unbraced_throw_guard_counts_too() -> None:
+    """The count is taken wherever the traversal finds a throw, not only at
+    block level, so the brace-less form of the same guard is not a blind spot."""
+    _require("typescript")
+    src = "it('guards', () => {\n  if (!cfg) throw new Error('no cfg');\n  run();\n});\n"
+    assert _flagged(src, "src/thing.test.ts", "typescript") == []
+
+
+def test_a_python_test_that_raises_on_a_bad_state_is_not_assertion_free() -> None:
+    _require("python")
+    src = (
+        "def test_backend_is_reachable():\n"
+        "    if not ping():\n"
+        "        raise RuntimeError('backend down')\n"
+        "\n"
+        "def test_checks_nothing():\n"
+        "    run()\n"
+    )
+    assert _flagged(src) == ["test_checks_nothing"]
+
+
+def test_a_raise_inside_the_code_under_test_is_not_the_test_s_own_oracle() -> None:
+    """The count is per body and stops at a nested definition, so a callable
+    handed to the code under test purely to make it fail is not read as this
+    test having checked anything."""
+    _require("python")
+    src = (
+        "def test_registers_a_failing_callback():\n"
+        "    def boom():\n"
+        "        raise ValueError('nope')\n"
+        "    registry.add(boom)\n"
+    )
+    assert _flagged(src) == ["test_registers_a_failing_callback"]
+
+
+def test_an_abstract_stub_raising_notimplementederror_is_not_an_oracle() -> None:
+    """``raise NotImplementedError`` declares a method unimplemented; it checks
+    nothing. Counting it would make every abstract base-class method an oracle,
+    and the same-file lane matches helper names with the receiver dropped, so
+    one unimplemented stub would then answer for every same-named method on
+    every subclass that does implement it."""
+    _require("python")
+    src = (
+        "class BaseStorageTests:\n"
+        "    def create_backend(self):\n"
+        "        raise NotImplementedError('subclasses must set this')\n"
+        "\n"
+        "    def test_get(self):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "\n"
+        "class ConcreteTests(BaseStorageTests):\n"
+        "    def test_closes_cleanly(self):\n"
+        "        self.create_backend().close()\n"
+    )
+    assert _flagged(src) == ["test_closes_cleanly", "test_get"]
+
+
+# --------------------------------------------------------------------------
+# Assertion calls the statement scan cannot classify
+# --------------------------------------------------------------------------
+
+
+def test_an_expect_bound_to_a_const_still_counts_as_checking_something() -> None:
+    """``_assertion_tier`` classifies statements, and a declaration is not one.
+
+    The awaited-rejection idiom has to bind the expectation before advancing
+    the clock, so the only assertion in the test sits where the statement scan
+    never looks. ``called_names`` records the call wherever it sits."""
+    _require("typescript")
+    src = (
+        "it('times out', async () => {\n"
+        "  const expectation = expect(client.command('x')).rejects.toThrow('timed out');\n"
+        "  await vi.advanceTimersByTimeAsync(30001);\n"
+        "  await expectation;\n"
+        "});\n"
+        "it('checks nothing', () => {\n"
+        "  run();\n"
+        "});\n"
+    )
+    assert _flagged(src, "src/thing.test.ts", "typescript") == ["it callback"]
+
+
+def test_an_assertion_inside_a_nested_function_helper_is_not_lost() -> None:
+    """A function nested in a test body is collected as nobody's entry.
+
+    ``_collect_function_nodes`` does not descend past a function, so an inline
+    ``function`` helper is never a walked function of its own, and the counts
+    stop at it. Its calls would otherwise be recorded nowhere at all."""
+    _require("typescript")
+    src = (
+        "it('checks in a helper', () => {\n"
+        "  function verifyRow(row) {\n"
+        "    expect(row.id).toBeDefined();\n"
+        "  }\n"
+        "  rows.forEach(verifyRow);\n"
+        "});\n"
+        "it('checks nothing', () => {\n"
+        "  run();\n"
+        "});\n"
+    )
+    assert _flagged(src, "src/thing.test.ts", "typescript") == ["it callback"]
+
+
+def test_descending_for_names_does_not_move_the_assertion_count() -> None:
+    """The counts must stay where they were. Only the name set widened."""
+    _require("typescript")
+    src = (
+        "it('outer', () => {\n"
+        "  function inner() {\n"
+        "    expect(1).toBe(1);\n"
+        "  }\n"
+        "  inner();\n"
+        "});\n"
+    )
+    counts = _counts(src, "src/thing.test.ts", "typescript")
+    assert counts["it callback"][0] == 0, counts
+
+
+def test_a_throw_inside_a_callback_handed_to_the_code_under_test_is_not_the_oracle() -> None:
+    """The JS sibling of the nested-function case, one token apart.
+
+    The assertion counts deliberately cross a lambda, because
+    ``waitFor(() => expect(x).toBe(1))`` runs its assertion as part of the
+    test. A raise does not follow it across: a callback handed to the code
+    under test exists to fail *that*, and the bare re-throw below checks
+    nothing at all."""
+    _require("typescript")
+    src = (
+        "it('registers a failing callback', () => {\n"
+        "  registry.add(() => { throw new Error('nope'); });\n"
+        "  run();\n"
+        "});\n"
+        "it('rethrows', () => {\n"
+        "  return load().catch(err => { throw err; });\n"
+        "});\n"
+    )
+    assert _flagged(src, "src/thing.test.ts", "typescript") == ["it callback", "it callback"]
+
+
+def test_a_throw_in_the_test_s_own_body_still_counts_beside_those() -> None:
+    """The bound is the lambda, not the shape of the statement around it."""
+    _require("typescript")
+    src = (
+        "it('guards', () => {\n"
+        "  if (!cfg) {\n"
+        "    throw new Error('no cfg');\n"
+        "  }\n"
+        "  registry.add(() => { throw new Error('nope'); });\n"
+        "});\n"
+    )
+    assert _flagged(src, "src/thing.test.ts", "typescript") == []
+
+
+def test_a_bare_python_reraise_is_not_an_oracle() -> None:
+    """``except X: raise`` declines to swallow what is already in flight. It
+    is not a property the author checked."""
+    _require("python")
+    src = (
+        "def test_reraises():\n"
+        "    try:\n"
+        "        run()\n"
+        "    except ValueError:\n"
+        "        raise\n"
+    )
+    assert _flagged(src) == ["test_reraises"]

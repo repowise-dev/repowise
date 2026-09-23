@@ -1945,6 +1945,28 @@ class ASTParser:
                     )
                 continue
 
+            # PHP: one ``use`` declaration can name several classes, each its
+            # own file (``use A\B, C\D;`` and the grouped ``use A\{B, C}``).
+            if file_info.language == "php" and stmt_node.type == "namespace_use_declaration":
+                from .extractors.bindings.php import php_use_clauses
+                from .models import NamedBinding
+
+                for fqn, local in php_use_clauses(stmt_node, src):
+                    imports.append(
+                        Import(
+                            raw_statement=raw,
+                            module_path=fqn,
+                            imported_names=[local],
+                            is_relative=False,
+                            resolved_file=None,
+                            bindings=[
+                                NamedBinding(local_name=local, exported_name=fqn, source_file=None)
+                            ],
+                            is_reexport=False,
+                        )
+                    )
+                continue
+
             # Dart: URIs are relative unless schemed (``package:``/``dart:``),
             # ``export`` directives are barrel re-exports, and the legacy
             # dotted ``part of library.name;`` form resolves through the

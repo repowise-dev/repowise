@@ -23,6 +23,10 @@ class DirectRiskEntry(BaseModel):
     #: Deprecated exact alias of ``structural_score`` for older clients.
     risk_score: float
     temporal_hotspot: float
+    #: Repo-relative rank of ``temporal_hotspot``; comparable as a rank.
+    churn_percentile: float
+    #: The index's hotspot verdict: top-quartile churn AND its activity floors.
+    is_hotspot: bool
     centrality: float
 
 

@@ -260,6 +260,45 @@ class TestPromotionCarriesTheReviewLane:
         assert all(d.needs_split for d in promotion_decisions(row, Path(".")))
 
 
+class TestBundledClaimsAreFlaggedOnEveryLane:
+    """The detector ran only in the broad lane, which is off, so it never ran.
+
+    Every record in the dogfood store carried ``needs_split=False``, including
+    the ones that visibly bundle two decisions. Evidence-keyed identity folds
+    a bundled claim together with the separate decisions it bundles, so the
+    flag has to be set wherever a candidate is captured, not in one lane.
+    """
+
+    def test_a_marker_in_the_decision_text_raises_the_flag(self):
+        row = _row(kind="user_correction")
+        row["structured"]["decision"] = "Enable WAL; set a bounded busy timeout"
+
+        assert all(d.needs_split for d in promotion_decisions(row, Path(".")))
+
+    def test_an_unbundled_decision_is_not_flagged(self):
+        assert not any(d.needs_split for d in promotion_decisions(_row(), Path(".")))
+
+    def test_a_bare_conjunction_is_not_a_marker(self):
+        """Widening to ``" and "`` flags 194 of 357 records and is not shipping."""
+        row = _row()
+        row["structured"]["decision"] = "Enable WAL and a bounded busy timeout"
+
+        assert not any(d.needs_split for d in promotion_decisions(row, Path(".")))
+
+    def test_a_flag_the_broad_lane_set_survives_prose_that_carries_no_marker(self):
+        row = _row(kind="session_discovery")
+        row["structured"]["decision"] = "Enable WAL and a bounded busy timeout"
+        row["structured"]["needs_split"] = True
+
+        assert all(d.needs_split for d in promotion_decisions(row, Path(".")))
+
+    def test_a_row_with_no_decision_text_at_all_is_not_flagged(self):
+        row = _row()
+        row["structured"]["decision"] = None
+
+        assert not any(d.needs_split for d in promotion_decisions(row, Path(".")))
+
+
 class TestScopeNamesOnlyIndexedCode:
     """A record is delivered as a rule about the files it names."""
 

@@ -14,7 +14,7 @@ export { contractTypeLabel };
  * token that repeats once per row tile into stripes down a table and outweigh
  * the contract ids they label. Adding a sixth ground for the largest type
  * would have made the loudest column the one carrying the least, and following
- * the colour goes nowhere — the type is what the filter already selects on. A
+ * the colour goes nowhere: the type is what the filter already selects on. A
  * quiet word says the same thing, and a new type costs nothing.
  */
 export function ContractTypeBadge({ type }: { type: string }) {
@@ -29,7 +29,7 @@ export function ContractTypeBadge({ type }: { type: string }) {
  * Green for provider against amber for consumer broke two rules at once. Those
  * hues are reserved for readouts that carry a health band, and neither role is
  * one. And providers outnumber consumers by better than two to one, so the
- * green was the default state wearing the colour of a verdict — a mark every
+ * green was the default state wearing the colour of a verdict, and a mark every
  * row carries says nothing.
  */
 export function RoleBadge({ role }: { role: string }) {

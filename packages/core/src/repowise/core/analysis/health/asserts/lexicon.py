@@ -18,9 +18,11 @@ walk, and they are deliberately not the same count:
   that marker's denominator. Same call, opposite treatment, two questions.
 
 That split is the reason a row here can never move a score, and it is the only
-reason this file is safe to edit freely.
+reason a row here is safe to edit freely. :data:`NARROW_PREFIXES` and
+:data:`STUB_EXCEPTIONS` are not rows: both are read by
+``asserts/predicate.py``, which decides findings.
 
-Names are matched **exactly**, never as prefixes. SonarQube keeps a wide list
+Dialect names are matched **exactly**, never as prefixes. SonarQube keeps a wide list
 and a narrow one for the same reason we keep two, but its wide list matches
 name prefixes; measured across three test corpora, the ambiguous English verbs
 in that shape (``check``, ``validate``, ``approve``, ``fail``) matched
@@ -49,6 +51,17 @@ from dataclasses import dataclass, field
 #: every identifier in a call's callee chain. Frozen: the calibrated markers
 #: count with these and nothing else.
 NARROW_PREFIXES: tuple[str, ...] = ("assert", "expect")
+
+#: Exception names whose raise declares a method unimplemented rather than
+#: checking anything. ``raise NotImplementedError`` is the Python abstract-stub
+#: idiom; counting it would make every unimplemented base-class method an
+#: oracle, which then suppresses -- by name, the receiver being dropped -- any
+#: test calling a same-named method on a subclass that does implement it.
+#: Matched against the head of the raised expression's identifier chain, so
+#: only the unqualified spelling. **No JS/TS entry exists**, that idiom being
+#: ``throw new Error('not implemented')``, a message rather than a type, which
+#: nothing here can tell from a real guard.
+STUB_EXCEPTIONS = frozenset({"notimplementederror"})
 
 
 @dataclass(frozen=True)

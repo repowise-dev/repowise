@@ -154,7 +154,13 @@ def _build(payload: Mapping[str, Any], repo_root: str | Path) -> Any:
         from repowise.core.savings.contracts import SavingsEvent
 
         return SavingsEvent.from_mapping(
-            {**payload, "repository_id": str(repo_root)}, accept_event_id=True
+            # Normalized through Path so the id a surface writes is the id the
+            # reader asks with. Surfaces hand this a Path or a raw string, and
+            # a string can carry a trailing separator or forward slashes on
+            # Windows; the report service normalizes the same way. A mismatch
+            # would not error -- it would report a confident zero.
+            {**payload, "repository_id": str(Path(repo_root))},
+            accept_event_id=True,
         )
     except Exception:
         logger.debug("savings event rejected before write", exc_info=True)

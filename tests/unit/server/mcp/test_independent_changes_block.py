@@ -1,4 +1,4 @@
-"""get_change_risk's change_shape.independent_changes block.
+"""get_change_risk's independent_changes block.
 
 The block says a diff is several changes the index does not connect. It is
 silent without an index, for a single changed file, and whenever the changed
@@ -16,7 +16,7 @@ from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, _
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server.tool_change_risk import (
     _UNGROUPED_FILES_LIMIT,
-    _change_shape,
+    _diff_shape_sentence,
     _independent_changes_block,
 )
 
@@ -221,13 +221,12 @@ async def test_get_change_risk_carries_the_split_end_to_end(tmp_path, monkeypatc
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
     payload = await module.get_change_risk("HEAD", baseline=0)
 
-    split = payload["change_shape"]["independent_changes"]
+    split = payload["independent_changes"]
     assert split["count"] == 2
     assert sorted(g["files"] for g in split["groups"]) == [["a.py"], ["b.py"]]
 
 
-def test_change_shape_carries_the_block_only_when_there_is_one():
-    payload = {"score": 3.0, "classification": "moderate"}
-    assert "independent_changes" not in _change_shape(payload, {})
-    shape = _change_shape(payload, {}, {"count": 2})
-    assert shape["independent_changes"] == {"count": 2}
+def test_the_diff_shape_line_ranks_without_naming_a_raw_score():
+    assert "42%" in _diff_shape_sentence({"risk_percentile": 42.0}, {})
+    assert "unranked" in _diff_shape_sentence({"risk_percentile": None}, {})
+    assert "diagnostics" in _diff_shape_sentence({"risk_percentile": 42.0}, {"score": 3.0})

@@ -2,8 +2,10 @@
 
 import * as React from "react";
 import {
+  ACCEPTER_KIND_LABELS,
   DECISION_CURRENCY_DESCRIPTIONS,
   DECISION_CURRENCY_LABELS,
+  DECISION_KIND_LABELS,
   DECISION_LANES,
   DECISION_SOURCES,
   decisionAcceptanceBlockers,
@@ -11,6 +13,7 @@ import {
   isRetiredDecisionSource,
 } from "@repowise-dev/types/decisions";
 import type {
+  AccepterKind,
   DecisionCurrency,
   DecisionLane,
   DecisionRecord,
@@ -273,6 +276,10 @@ function DecisionLaneRow({
   const currency = d.currency ?? null;
   const evidence = d.evidence_preview;
   const scope = [...d.affected_files, ...d.affected_modules];
+  // An agreement governs the repository rather than part of it, so naming no
+  // file is what it is. Saying "names nothing" about one reports the defining
+  // property of the noun as a gap in the record.
+  const isAgreement = d.kind === "agreement";
   // The same four checks the engine refuses on, asked before the button is
   // drawn. A candidate that names nothing already renders "names nothing"
   // beside an Accept that could only fail; predicting the refusal is what
@@ -295,6 +302,7 @@ function DecisionLaneRow({
           {currency !== null && currency !== "active" && (
             <CurrencyMark currency={currency as DecisionCurrency} />
           )}
+          <SignatureMark decision={d} />
           {d.verification && d.verification !== "exact" && (
             <VerificationBadge verification={d.verification} />
           )}
@@ -331,11 +339,13 @@ function DecisionLaneRow({
               list on the title, because the alternative is a row whose
               primary label is crowded off by its own metadata. */}
           <span className={MICRO_LABEL} title={scope.join(", ")}>
-            {scope.length === 0
-              ? "names nothing"
-              : scope.length === 1
-                ? scope[0]
-                : `${scope.length} paths`}
+            {isAgreement && scope.length === 0
+              ? DECISION_KIND_LABELS.agreement.toLowerCase()
+              : scope.length === 0
+                ? "names nothing"
+                : scope.length === 1
+                  ? scope[0]
+                  : `${scope.length} paths`}
           </span>
           {staleness.kind === "moved" && (
             <span className={MICRO_LABEL} title={staleness.sentence}>
@@ -396,6 +406,30 @@ function DecisionLaneRow({
         </div>
       )}
     </li>
+  );
+}
+
+/**
+ * Who signed the row's current authority record, marked only where it is not
+ * a person — the case this surface was built for, which carries no badge.
+ * `accepter` alone reads as a name, so an agent or an import would be taken
+ * for a colleague; an unrecorded kind would be taken for a person.
+ */
+function SignatureMark({ decision }: { decision: DecisionRecord }) {
+  const kind = decision.accepter_kind;
+  if (kind === null || kind === undefined || kind === "person") return null;
+  const label =
+    kind === "" ? "Signer not recorded" : ACCEPTER_KIND_LABELS[kind as AccepterKind];
+  const who = [decision.accepter, decision.accepter_session]
+    .filter(Boolean)
+    .join(", session ");
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-[var(--color-border-default)] px-1.5 text-[11px] text-[var(--color-text-tertiary)]"
+      title={who ? `${label}: ${who}` : label}
+    >
+      {label}
+    </span>
   );
 }
 

@@ -206,6 +206,7 @@ async def _performance_blocks(
     context: str | None,
     boundary: str | None,
     confidence: str | None,
+    actionability: str | None,
     sort: str | None,
 ) -> _PerformanceBlocks:
     """Read the materialized queue, its rollup, and the dashboard lead.
@@ -224,6 +225,7 @@ async def _performance_blocks(
             context=context,
             boundary=boundary,
             confidence=confidence,
+            actionability=actionability,
             view=view,
             sort=sort,
             file_paths=file_paths,
@@ -592,9 +594,12 @@ def _serialize_finding(f: HealthFinding, repository: str = "default") -> dict[st
         "biomarker_type": f.biomarker_type,
         "severity": f.severity,
         "file_path": f.file_path,
-        "function_name": f.function_name,
-        "line_start": f.line_start,
-        "line_end": f.line_end,
+        # A file-level finding has no symbol and no line span. Absent rather
+        # than null, on the same rule as ``rank`` below: three null keys on
+        # every such row is a bill, not a disclosure.
+        **({"function_name": f.function_name} if f.function_name else {}),
+        **({"line_start": f.line_start} if f.line_start is not None else {}),
+        **({"line_end": f.line_end} if f.line_end is not None else {}),
         "health_impact": round(f.health_impact, 3),
         "reason": f.reason,
         "details": details,
@@ -1552,6 +1557,7 @@ async def get_health(
     performance_context: str | None = None,
     performance_boundary: str | None = None,
     performance_confidence: str | None = None,
+    performance_actionability: str | None = None,
     performance_sort: str | None = None,
     scope: str = DEFAULT_SCOPE,
     counts: str = DEFAULT_COUNTS,
@@ -1563,15 +1569,16 @@ async def get_health(
     Every block and accepted value: docs/agent/MCP_TOOLS.md.
 
     Args:
-        targets: file paths or ``module:<name>``; empty means dashboard,
-            unmatched ones land in ``unresolved``.
+        targets: file paths or ``module:<name>``; unmatched ones land in
+            ``unresolved``.
         include: ``biomarkers``|``refactoring``|``trend``|``coverage``|
             ``accuracy``|``signals``|``churn_complexity``|``doc_drift``,
-            or a dimension; ``performance``/``refactoring`` add queues.
+            or a dimension incl. ``advisory``; ``performance`` and
+            ``refactoring`` add queues.
         only: keys to keep; identity, totals, recovery survive.
             ``biomarkers``/``accuracy``/``refactoring`` alias their block key;
-            ``performance``/``defect``/``maintainability`` do not: they filter
-            rows and land in ``unknown_only_keys``.
+            ``performance``/``defect``/``maintainability``/``advisory``
+            do not: they filter rows into ``unknown_only_keys``.
         repo: usually omitted.
         limit: max rows per ranked list, ``0`` for none.
         cursor: zero-based offset into a ranked list.
@@ -1580,11 +1587,11 @@ async def get_health(
             plan, evidence paged by ``only=["*_evidence"]``.
         refactoring_view: ``diversified`` (default)|``canonical``|
             ``file_spread``; _type/_confidence/_effort filter.
-        performance_view/_context/_boundary/_confidence/_sort: queue
-            projection and filters; the facets list them.
+        performance_view/_context/_boundary/_confidence/_actionability/_sort:
+            queue filters; a rejected value lists the accepted.
         scope / counts: default ``all``/``everything``. ``production`` drops
-            test files, which score higher; ``code_shape`` drops the
-            git-derived half of the score and its findings.
+            test files; ``code_shape`` drops the git-derived half of the
+            score and its findings.
 
     """
     started = perf_counter()
@@ -2198,6 +2205,7 @@ async def get_health(
             context=performance_context,
             boundary=performance_boundary,
             confidence=performance_confidence,
+            actionability=performance_actionability,
             sort=performance_sort,
         )
 

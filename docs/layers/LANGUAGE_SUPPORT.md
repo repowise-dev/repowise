@@ -254,7 +254,7 @@ bindings, heritage and a workspace resolver where their syntax supports them.
 |----------|-----------|--------------|
 | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
 | **Swift** | `.swift` | SPM `Package.swift` target → directory mapping, intra-module type references, `@main` entry points |
-| **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
+| **PHP** | `.php` | `use` declarations (grouped `use A\{B, C}` included) resolved through PSR-4 from the root and nested `composer.json` files, longest prefix first as composer does; same-namespace and `\Fully\Qualified` class references; Laravel edges (route files to controllers and aliased middleware, registered and discovered listeners, policies, providers, commands by signature), TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs, `package:` via every `pubspec.yaml`, Flutter route tables and `runApp()` edges. **Health markers included** |
 | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | Program IDs, sections, paragraphs and data levels; literal `CALL` and `PERFORM` targets resolve to program/procedure symbols. Dynamic calls and `COPY` edges are deliberately silent |
 
@@ -433,7 +433,10 @@ honestly cannot carry the marker at all:
 
 **Assertion-free test** asks whether a test case checks anything at all, so it
 needs two things the other markers do not: a per-function "is this a test case"
-rule, and an assertion count that misses nothing. The rules live in
+rule, and a way to tell that a test checks nothing. The second is deliberately not one
+count: `assertion_count` is calibrated and shared with a scored marker, so the
+shapes it cannot classify — a hand-rolled `throw`, an assertion bound to a name
+— are answered beside it rather than folded into it. The rules live in
 `analysis/health/complexity/test_case.py`, one data row per language — a name
 prefix for Python, `go test`'s own case-sensitive `TestXxx` rule for Go, the
 `it(...)` / `test(...)` callback for JS/TS, and `@Test` and its JUnit siblings
@@ -441,29 +444,130 @@ for Java. A language with no row classifies nothing. Go and Java are classified
 and counted, which is how their precision below was measured, but the marker
 does not report on them — the shipping set is a constant in the detector.
 
-Measured precision, hand-labelled: **51%** on TypeScript (51 findings, the
+Measured precision, hand-labelled: **71%** on TypeScript (31 findings, the
 complete population of two corpora) and **86%** on Python (29 findings, a
-systematic sample of 172). The marker ships advisory on both, because the bar
-below is a property of the marker rather than of one language, and TypeScript
-is at 51%.
+systematic sample of 172). **Both are now a floor rather than a current
+reading**, as `mock_saturated_test`'s are a ceiling: three false-positive
+families have been closed since they were labelled, which removed findings
+from the numerator's denominator without re-labelling what survives. On the
+TypeScript population the same 22 true findings now sit in 26 rather than 31,
+which is 84.6% if none of the five removals took a true finding with it — they
+were each read, and none did. The marker ships advisory on both: the bar below is a
+property of the marker rather than of one language, and neither reading settles
+it on a population this size.
 
 Twenty-nine items cannot settle a 70% bar: 86% on that sample carries a 95%
 interval of roughly 68% to 96%, whose lower bound sits below the bar it appears
 to clear. The reading is consistent with clearing it and does not demonstrate
 it. What moved Python is that a test's oracle now reaches it from a function it
-calls in the same file, described below. The same change barely moved
-TypeScript, for a reason worth recording: a JS/TS suite keeps its helpers in a
-separate module, so 19 of its 25 remaining false positives delegate across a
-file boundary rather than within one.
+calls in the same file, described below. That barely moved TypeScript, because a
+JS/TS suite keeps its helpers in a separate module; resolving the same
+delegation *across* a file is what took TypeScript from 43% to 71%, and how it
+is done is in the section after next.
 
 An earlier pass published 53% for Python. Re-labelling the pre-change findings
 of the same corpus, drawn the same way and read against this pass's rubric,
 gives 68.8% (22 of 32), so the gain below is that 68.8 to 86.2 and the 53% is
 superseded rather than contradicted. The two passes are not reconciled: 15
 points of the difference is labelling, on samples of about thirty, and the
-rubric behind the earlier number was not recorded. TypeScript read 52% then and
-51% here, which is the evidence that the two rubrics are close and Python's gap
-is sample noise rather than a changed standard.
+rubric behind the earlier number was not recorded. TypeScript read 52% then and 51% on
+the pass after it; re-labelled here it reads 43.1%, so the drift is on both
+languages and in the same direction rather than on Python alone. That withdraws
+the earlier reading of it as sample noise: what the three passes differ on is
+the rubric, and the only defence against that is to state the rubric and
+re-label both arms of a comparison together, which is what the section below
+does.
+
+### Resolving a test's oracle across a file boundary
+
+A test that hands its checks to a helper is not assertion-free, and the
+assertion count is per function, so the helper's checks are invisible from the
+test. Resolving that within one file took Python from 68.8% to 86.2%. A JS/TS
+suite keeps its helpers in another module, so the same question had to be asked
+of the call graph.
+
+It is asked in two lanes, because **a JS/TS test case is not a graph node**:
+every one of them is an anonymous callback handed to `it(...)`, and on one
+corpus 0 of 7,354 resolved to a symbol, against 5,212 of 5,212 for Python's
+named `def test_x`. Resolving from the enclosing module node instead would let
+one delegating test speak for every other test in its file, so it is not done.
+
+- **call-edge** — the test is a symbol; walk its own outgoing call edges, depth
+  bounded. Its job on Python is as much to answer *no* authoritatively as to
+  answer yes: while it answers, the looser lane below is never consulted.
+- **file-edge** — the test is a callback; require both that the *file* has a
+  resolved call edge to the asserting symbol and that the *function body* calls
+  it by name. The edge alone is file-scoped and the name alone is repo-scoped;
+  together they are neither.
+
+Only edges that bind **one** definition are read, which is a harder filter than
+the execution index applies. `import_merged` carries 0.85 confidence and means
+only "a function of this name exists in one of the files this file imports"; it
+was measured resolving `Silent().check()` to `Asserting.check` because the
+receiver could not be typed. An extra edge costs a performance pass a cheap
+false positive and costs this marker a hidden true finding, so the two filter
+differently on purpose.
+
+A suppression is available only where an edge is. An unresolved call is
+indistinguishable from a call to something that checks nothing, so it suppresses
+nothing and the marker fires — a missing edge leaves a false positive, where a
+wrong one would hide a real finding.
+
+Three consequences of that, all leaving findings in place rather than removing
+them, and all properties of a repository's layout as much as of the mechanism. A
+helper outside a test-named directory is not an oracle, so a suite keeping its
+helpers in `src/test-utils/` gets nothing from this while one using
+`src/testUtils.ts` does. A re-export is followed one hop, so a single barrel
+file works and a barrel of barrels does not. And an oracle living in a
+`beforeEach` is an anonymous callback with no symbol, so it is never in the sink
+set at all.
+
+Measured on the complete population of two corpora, both arms labelled in one
+pass against one rubric: **51 findings at 43.1% to 31 at 71.0%, with none of the
+22 true findings lost.** All 20 suppressions trace to three helpers, each read in
+full, and each does check something. The sharpest evidence that the oracle is
+per function rather than per file: `inspectTreeStructure` and
+`testParseSourceCodeDefinitions` live in the same helper module, and only the
+second asserts — the first's eleven callers all survive.
+
+An earlier pass published 51% for TypeScript. Re-labelling that same pre-change
+population against this pass's rubric gives 43.1%, so the gain is 43.1 to 71.0
+and the 51% is superseded rather than contradicted; the difference is that this
+pass counts a deliberate, commented "should not throw" as a false positive.
+
+Read that gain with its provenance. Both arms were labelled by one person in one
+unblinded pass, by the author of the change, and the re-label moved the baseline
+**down** -- the one direction that widens the reported gain. The post figure is
+the more defensible of the two, being a complete population rather than a
+sample; the 28-point delta is the part carrying the labeller. A second reader on
+the same population is the cheapest thing that would settle it. Note also that
+22 of 31 is a 95% interval of roughly 53% to 84%, whose lower bound sits below
+the 70% bar exactly as Python's 29-item reading does, so neither language
+demonstrates the bar on these populations. Four families accounted for the remainder, and three have since been closed
+by reading the test rather than the call graph — a wait helper that fails by
+throwing, a guard test whose body is a bare `throw`, and an `expect(...)` the
+statement scan declines because it is bound to a name or sits inside a nested
+function. What remains is a documented no-throw, which is a labelling question
+rather than a code one: every test that executes code already fails if that
+code raises, so a comment saying "should not throw" names an oracle the marker
+cannot distinguish from its absence. None of the four was introduced by
+resolving a call.
+
+Python moves on one corpus and not the other, and the split is the point. One
+corpus suppresses nothing: its tests keep their oracles inline or in the same
+file, where the existing rule already reaches them. The other goes from **501
+findings to 346**, and all 155 suppressions trace to just five helper methods --
+one of which, a `check_html` on a shared `SimpleTestCase` subclass, accounts for
+144 by itself. Every one of the five was read in full and every one asserts, so
+the verification is complete by oracle rather than sampled by finding.
+
+That is the base-class idiom listed below as Java's blocker, showing up in
+Python: the helper is inherited, so it is neither in the test's file nor named
+anything the assertion lexicon recognises. It is also why the depth is **2**
+rather than 1: depth 1 resolves only the single largest helper, missing eleven
+of the other four's callers, and depth 3 adds four more that reach
+`SimpleTestCase._assert_raises_or_warns_cm`, the framework's own `assertRaises`
+machinery, which is further than a test's oracle should have to be chased.
 
 A **mock verification counts as an assertion for this marker and not for the one
 above**, which is the deliberate inversion described in CODE_HEALTH.md. It
@@ -566,9 +670,11 @@ Every one of those 15 findings was the grammar rather than the test, which is
 why the marker declined `.tsx` files until now. The second corpus's one new
 finding is a test that genuinely asserts nothing, hidden by that same rule.
 
-Two calibrated markers read the same walk, and both read it through the
-name-keyed `function_metrics`, which keeps one row per distinct function name
-and so drops all but one of a file's anonymous `it` callbacks. That key is the
+Two calibrated markers read the same walk, and at the time both read it
+through the name-keyed `function_metrics`, which kept one row per distinct
+function name and so dropped all but one of a file's anonymous `it` callbacks.
+The section below removes that key; what follows here is the state as this
+grammar fix left it. That key is the
 thing to understand here. Recovery had been swallowing whole source spans into
 each callback's *name*, and those accidentally unique names were defeating it,
 so a `.tsx` file kept rows that a `.ts` file has always lost. Counting names
@@ -578,19 +684,19 @@ corpus, 0 after. Measured as the share of walked functions that survive the key,
 
 `large_assertion_block` does not move on either corpus (0 and 0, then 1 and 1).
 Its floor is fifteen assertions in one run and React cases are short, but the
-same name key drops most of the newly visible runs before that floor is ever
-consulted, so the floor is not the whole reason.
+same name key dropped most of the newly visible runs before that floor was
+ever consulted, so the floor was not the whole reason. Removing the key turns
+that marker's 0 into a 6 on the second corpus below.
 
 `duplicated_assertion_block` falls from 304 to 262 on the first corpus, and this
 is a loss rather than a correction. Six of the lost findings were read by hand
 and every one is a genuine run of consecutive assertions, correctly bounded; the
 rows were real and the clone partner was real. What was not real is the
 mechanism that kept them visible, which was a mangled name defeating a lossy
-key. So `.tsx` files now under-report duplicated assertion blocks exactly as
-`.ts` files always have. The corpus carries more real assertion runs after this
+key. So at this point `.tsx` files under-reported duplicated assertion blocks
+exactly as `.ts` files always had, which the next section then fixes for both. The corpus carries more real assertion runs after this
 change, 264 to 391, and the marker reports fewer of them. Re-keying
-`function_metrics` is the fix for that, it moves every calibrated marker at
-once, and it is a change of its own.
+`function_metrics` is the fix for that, and the next section is that change.
 
 Svelte and Vue stay `later` rather than following TypeScript: an SFC is walked as
 a TypeScript buffer, but a single-file component is essentially never a test
@@ -598,6 +704,96 @@ file, so the row would be untestable rather than useful.
 
 The marker is advisory and never deducts. See
 [CODE_HEALTH.md](CODE_HEALTH.md).
+
+### A marker reads the whole walked file, not one row per name
+
+Eleven markers used to read a `function_metrics` map keyed by function name. A
+map keyed that way keeps one row per distinct name, and a function name is not
+unique inside a file. Every `it(...)` callback in a spec file walks under the name
+`it callback`; `__init__` walks under one name on each class in a module. Every
+row after the first was dropped before a marker ever saw it. They read
+`all_functions` now, the whole walked list, which is what the two advisory
+test-quality markers already read for this reason.
+
+How much a file loses to that key is a property of how a language names its
+functions rather than of any marker. Measured across the walked functions of
+four corpora:
+
+| Corpus | Language | Walked functions | Survive the name key |
+|---|---|---|---|
+| 1,336 files | TypeScript / TSX | 12,257 | 37.8% |
+| 2,194 files | TypeScript / TSX | 17,261 | 72.3% |
+| 1,949 files | Python | 12,926 | 91.4% |
+| 1,714 files | Python | 30,747 | 87.9% |
+
+These count every walked file, so they do not line up with the test-file-only
+`.tsx` figures above and are not meant to.
+
+A JS/TS spec suite is the worst case by a wide margin, because its test bodies
+are anonymous callbacks that all walk under one name. Python loses about a tenth
+of its rows, mostly same-named methods on neighbouring classes.
+
+What each scoring marker sees, before the change and after. Note that the two
+assertion-block markers score but were never fitted on a defect corpus, and they
+are the two that move furthest:
+
+| Marker | TS/TSX (1,336 files) | TS/TSX (2,194 files) | Python (1,949 files) | Python (1,714 files) |
+|---|---|---|---|---|
+| `complex_method` | 496 to 506 | 1,005 to 1,015 | 443 to 468 | 483 to 537 |
+| `large_method` | 347 to 382 | 608 to 649 | 192 to 203 | 157 to 168 |
+| `nested_complexity` | 232 to 233 | 338 to 341 | 236 to 253 | 286 to 317 |
+| `bumpy_road` | 80 to 80 | 161 to 162 | 65 to 71 | 99 to 108 |
+| `complex_conditional` | 92 to 96 | 163 to 168 | 67 to 69 | 91 to 101 |
+| `primitive_obsession` | 54 to 54 | 106 to 107 | 685 to 859 | 449 to 599 |
+| `large_assertion_block` | 0 to 0 | 0 to 6 | 0 to 0 | 11 to 11 |
+| `duplicated_assertion_block` | 262 to 2,831 | 175 to 1,711 | 1,098 to 1,108 | 2,360 to 2,477 |
+
+Three markers are missing from that table because they need inputs this
+measurement does not build: `brain_method` needs graph centrality, and
+`code_age_volatility` and `function_hotspot` need git blame. They read the same
+list as the other eight, which is visible in the diff, but how far they move was
+not observed.
+
+Most of those cells are single-digit percentages. `complex_method`,
+`large_method`, `nested_complexity` and `complex_conditional` each clear ten
+percent on one corpus and stay below it on the other three. Two markers move
+much further, and they are the two worth reading carefully.
+
+`primitive_obsession` gains a quarter to a third of its findings on both Python
+corpora, 685 to 859 and 449 to 599, and almost nothing on either JS/TS one.
+Python modules define the same method name on several classes each, and the
+row that survived the key was the first of them in the file, so a wide signature
+on any of the others was invisible.
+
+`duplicated_assertion_block` is the large one: it rises about tenfold on both
+JS/TS corpora and barely moves on either Python one. That is the same fact as
+the survival table, seen from the other end.
+
+Six of the gained rows were read in the source, and each of those six is a
+correctly bounded run of consecutive assertions. Six labels cannot speak for
+2,569 rows, so that is evidence the marker is bounding blocks correctly, not a
+precision figure. What does speak for the population is its shape. On the first
+corpus the two arms' assertion-run-length histograms have closely matching
+profiles while the new arm is about eleven times larger, which is what uniform
+thinning looks like and not what a filter that selected for anything would look
+like. On that same corpus the marker goes from a median of one finding per test
+file to five, with one file at sixty. Neither measurement says whether a gained
+row is worth showing a reader; only counts and block lengths were measured.
+
+No floor was added to hold that number down. The name key was an accidental
+limiter and replacing it with a deliberate one is a calibration change, which
+needs its own defect-corpus evidence rather than a number that looks
+comfortable. What bounds the damage today is the `test_quality` category cap of
+0.5, which a single medium finding already exceeds: a test file with sixty of
+these loses the same half point as a test file with one, so the scores move far
+less than the counts do. Whether the finding list itself wants a cap is a
+question for the marker, not for the container it reads.
+
+The six findings `large_assertion_block` gains on the second JS/TS corpus were
+also read by hand. All six are runs of fifteen or more consecutive assertions in
+a single test, which is exactly what that marker declares it looks for, and all
+six are anonymous callbacks, so each sat in a file where another function of the
+same name had been holding the only row.
 
 Per-marker mechanics, every per-language precision ceiling and the reasoning
 behind each `n/a`: [CODE_HEALTH.md](CODE_HEALTH.md) and

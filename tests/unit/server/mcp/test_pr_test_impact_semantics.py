@@ -115,7 +115,11 @@ async def test_sealed_pr_payload_is_directive_first_typed_and_count_exact(setup_
         row["basis"] in {"measured", "inferred"} for row in directive["test_recommendations"]
     )
     assert all(row["evidence"] for row in directive["test_recommendations"])
-    assert all(row["repository_id"] == setup_mcp for row in full["recommendations"])
+    # Named once for the whole population, not on each row, in both the
+    # directive's capped copy and the full one here.
+    assert all("repository_id" not in row for row in full["recommendations"])
+    assert full["recommendations_repository_id"] == setup_mcp
+    assert directive["test_recommendations_repository_id"] == setup_mcp
     assert relation["dependency"]["source"] in directive["may_break"]
     assert relation["co_change"]["source"] not in directive["may_break"]
     assert external["_meta"]["contract_version"]

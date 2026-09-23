@@ -2,9 +2,12 @@ import { describe, it, expect, vi, beforeAll } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { CrossRepoBlastRadius, SystemEdge, SystemGraph, SystemNode } from "@repowise-dev/types";
 import { SystemMap } from "../../src/workspace/system-map/system-map";
-import { SystemMapFilters } from "../../src/workspace/system-map/system-map-filters";
+import { Segmented, SystemMapFilters } from "../../src/workspace/system-map/system-map-filters";
 import { SystemMapLegend } from "../../src/workspace/system-map/system-map-legend";
-import { SystemMapInspector } from "../../src/workspace/system-map/system-map-inspector";
+import { SystemMapDrawer, selectionRepo } from "../../src/workspace/system-map/system-map-drawer";
+import { SystemMapFindings } from "../../src/workspace/system-map/system-map-findings";
+import { resolveViewSelection } from "../../src/workspace/system-map/system-map-model";
+import { collapseToRepos } from "../../src/workspace/system-map/collapse";
 import { SystemMapBlastPanel } from "../../src/workspace/system-map/system-map-blast-panel";
 import { SystemMapBreakingPanel } from "../../src/workspace/system-map/system-map-breaking-panel";
 import type { BreakingChange, BreakingChangeReport } from "@repowise-dev/types";
@@ -75,99 +78,255 @@ describe("SystemMap empty states", () => {
 });
 
 describe("SystemMapFilters", () => {
-  it("only offers edge kinds present in the graph and toggles them", () => {
+  it("only offers edge kinds present in the graph, with counts, and toggles them", () => {
     const onToggleKind = vi.fn();
     render(
       <SystemMapFilters
-        availableKinds={new Set(["http", "co_change"])}
+        kindCounts={new Map([["http", 3], ["co_change", 10]])}
         visibleKinds={new Set(["http", "co_change"])}
         onToggleKind={onToggleKind}
+        canCollapse
         collapsed={false}
-        onToggleCollapsed={() => {}}
+        onCollapsedChange={() => {}}
       />,
     );
-    expect(screen.getByRole("button", { name: "HTTP" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Co-change" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "gRPC" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "HTTP" }));
+    expect(screen.getByTitle("Toggle HTTP edges")).toHaveTextContent("3");
+    expect(screen.getByTitle("Toggle Co-change edges")).toHaveTextContent("10");
+    expect(screen.queryByTitle("Toggle gRPC edges")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("Toggle HTTP edges"));
     expect(onToggleKind).toHaveBeenCalledWith("http");
   });
 
-  it("toggles the collapse view", () => {
-    const onToggleCollapsed = vi.fn();
-    render(
+  it("switches between services and repositories, and hides the switch when it would change nothing", () => {
+    const onCollapsedChange = vi.fn();
+    const { rerender } = render(
       <SystemMapFilters
-        availableKinds={new Set(["http"])}
+        kindCounts={new Map([["http", 1]])}
         visibleKinds={new Set(["http"])}
         onToggleKind={() => {}}
+        canCollapse
         collapsed={false}
-        onToggleCollapsed={onToggleCollapsed}
+        onCollapsedChange={onCollapsedChange}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /service view/i }));
-    expect(onToggleCollapsed).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("radio", { name: "Repositories" }));
+    expect(onCollapsedChange).toHaveBeenCalledWith(true);
+
+    rerender(
+      <SystemMapFilters
+        kindCounts={new Map([["http", 1]])}
+        visibleKinds={new Set(["http"])}
+        onToggleKind={() => {}}
+        canCollapse={false}
+        collapsed={false}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    );
+    expect(screen.queryByRole("radio", { name: "Repositories" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Segmented", () => {
+  it("keeps a disabled option visible with its reason", () => {
+    const onChange = vi.fn();
+    render(
+      <Segmented
+        label="Map lens"
+        value="none"
+        options={[
+          { value: "none", label: "None" },
+          { value: "breaking", label: "Breaking changes", count: "0", disabledReason: "No provider contract changed." },
+        ]}
+        onChange={onChange}
+      />,
+    );
+    const option = screen.getByRole("radio", { name: /breaking changes/i });
+    expect(option).toHaveAttribute("aria-disabled", "true");
+    expect(option).toHaveAccessibleDescription("No provider contract changed.");
+    fireEvent.click(option);
+    expect(onChange).not.toHaveBeenCalled();
+    // A tap shows the reason as visible text, not only a tooltip.
+    expect(screen.getByText("No provider contract changed.", { selector: "p" })).toBeInTheDocument();
+  });
+
+  it("keeps the group in the tab order when the active option is disabled", () => {
+    render(
+      <Segmented
+        label="Map lens"
+        value="breaking"
+        options={[
+          { value: "none", label: "None" },
+          { value: "breaking", label: "Breaking changes", disabledReason: "Nothing changed." },
+        ]}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: "None" })).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("radio", { name: /breaking changes/i })).toHaveAttribute("tabindex", "-1");
+  });
+});
+
+describe("SystemMapFindings", () => {
+  const g = graph([node("a"), node("b")], [edge("a", "b"), edge("b", "a", { id: "b->a" })]);
+  const base = { graph: g, onSelect: () => {}, onLensChange: () => {} };
+  const conformance = {
+    version: 1,
+    generated_at: "t",
+    rules_evaluated: 0,
+    violations: [],
+    cycles: [],
+    violation_count: 0,
+    cycle_count: 0,
+    total_cycles: 0,
+    violating_repos: [],
+  };
+  const breaking = {
+    version: 1,
+    generated_at: "t",
+    changes: [],
+    total: 0,
+    breaking_count: 0,
+    warning_count: 0,
+    impacted_repos: [],
+    impacted_services: [],
+    total_impacted_consumers: 0,
+  };
+
+  it("does not call the workspace clean while a report is loading or failed", () => {
+    const { rerender } = render(<SystemMapFindings {...base} conformance={null} breaking={breaking} />);
+    expect(screen.queryByText(/no dependency cycles/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/loading the conformance report/i)).toBeInTheDocument();
+
+    rerender(<SystemMapFindings {...base} conformance={null} conformanceError breaking={breaking} />);
+    expect(screen.getByText("Could not load the conformance report.")).toBeInTheDocument();
+    expect(screen.queryByText(/no dependency cycles/i)).not.toBeInTheDocument();
+
+    rerender(<SystemMapFindings {...base} conformance={conformance} breaking={breaking} />);
+    expect(screen.getByText(/no dependency cycles, rule violations or breaking changes/i)).toBeInTheDocument();
+  });
+
+  it("lists a cycle with a prompt to break it", () => {
+    render(
+      <SystemMapFindings
+        {...base}
+        conformance={{ ...conformance, cycles: [{ nodes: ["a", "b"], edge_ids: ["a->b", "b->a"], length: 2 }], cycle_count: 1, total_cycles: 1 }}
+        breaking={breaking}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Break the cycle" })).toBeInTheDocument();
+    expect(screen.queryByText(/no dependency cycles/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("resolveViewSelection", () => {
+  const raw = graph(
+    [node("api::svc/a", { repo: "api", service_path: "svc/a" }), node("api::svc/b", { repo: "api", service_path: "svc/b" }), node("web")],
+    [edge("web", "api::svc/a", { id: "web->api::svc/a:http" }), edge("api::svc/a", "api::svc/b", { id: "a->b:package", kind: "package" })],
+  );
+
+  it("maps a service onto its repository node in repo view", () => {
+    const view = collapseToRepos(raw);
+    expect(resolveViewSelection({ type: "node", id: "api::svc/a" }, raw, view, true).selection).toEqual({ type: "node", id: "api" });
+  });
+
+  it("maps a cross-repo edge onto the merged edge, and asks for services for an edge inside one repo", () => {
+    const view = collapseToRepos(raw);
+    expect(resolveViewSelection({ type: "edge", id: "web->api::svc/a:http" }, raw, view, true).selection).toEqual({
+      type: "edge",
+      id: "web->api::http",
+    });
+    expect(resolveViewSelection({ type: "edge", id: "a->b:package" }, raw, view, true).fix).toEqual({ kind: "expand" });
+  });
+
+  it("asks for a hidden edge kind to be shown", () => {
+    const view = { ...raw, edges: raw.edges.filter((e) => e.kind !== "package") };
+    expect(resolveViewSelection({ type: "edge", id: "a->b:package" }, raw, view, false).fix).toEqual({
+      kind: "show-edge-kind",
+      edgeKind: "package",
+    });
   });
 });
 
 describe("SystemMapLegend", () => {
-  it("explains every edge kind, the match-type dashes, and the health scale", () => {
-    render(<SystemMapLegend />);
-    expect(screen.getByText("HTTP")).toBeInTheDocument();
-    expect(screen.getByText("Co-change")).toBeInTheDocument();
-    expect(screen.getByText(/exact \/ manual/i)).toBeInTheDocument();
-    expect(screen.getByText(/at risk/i)).toBeInTheDocument();
+  it("keys only the line styles drawn, plus the three health bands", () => {
+    render(<SystemMapLegend matchTypes={new Set(["exact", "inferred"])} />);
+    expect(screen.getByText(/structural, exact match/i)).toBeInTheDocument();
+    expect(screen.getByText(/co-change from git history/i)).toBeInTheDocument();
+    expect(screen.queryByText(/candidate/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Healthy 8+")).toBeInTheDocument();
+    expect(screen.getByText("Alert below 4")).toBeInTheDocument();
   });
 });
 
-describe("SystemMapInspector", () => {
+describe("SystemMapDrawer", () => {
   const g = graph(
     [
       node("web", { kind: "frontend", consumer_count: 2, contract_types: ["http"] }),
-      node("api", { provider_count: 2, contract_types: ["http"], is_orphan_provider: true }),
+      node("api", { provider_count: 2, contract_types: ["http"] }),
     ],
-    [edge("web", "api", { contract_refs: ["http:GET /v1/users"] })],
+    [edge("web", "api", { weight: 2, contract_refs: ["http::GET::/v1/users", "http::GET::/v1/users"] })],
   );
+  const base = { graph: g, rawGraph: g, collapsed: false, onClose: () => {} };
 
-  it("renders a selected service with its counts and connections", () => {
-    const onSelectNode = vi.fn();
+  it("renders a service with its role, neighbours and contracts, and selects a neighbour", () => {
+    const onSelect = vi.fn();
     render(
-      <SystemMapInspector
+      <SystemMapDrawer
+        {...base}
         selection={{ type: "node", id: "api" }}
-        graph={g}
-        onClose={() => {}}
-        onSelectNode={onSelectNode}
+        onSelect={onSelect}
+        roleByNodeId={
+          new Map([
+            ["api", { id: "api", repo: "api", name: "api", visibility_fan_in: 2, visibility_fan_out: 1, role: "shared" as const }],
+          ])
+        }
+        repoContracts={{
+          contracts: [
+            { contract_id: "http::GET::/v1/users", contract_type: "http", role: "provider", repo: "api", file_path: "routes.py", line: 4 },
+          ],
+          links: [],
+          total: 1,
+        }}
+        contractHref={(r) => `/c?contract=${r.contract_id}&repo=${r.repo}&file=${r.file_path ?? ""}`}
       />,
     );
-    expect(screen.getByText("api")).toBeInTheDocument();
-    expect(screen.getByText("2 contracts")).toBeInTheDocument();
-    expect(screen.getByText(/orphan provider/i)).toBeInTheDocument();
-    // "Depended on by" lists web → clicking selects it
-    fireEvent.click(screen.getByText("web"));
-    expect(onSelectNode).toHaveBeenCalledWith("web");
+    expect(screen.getByText("Shared")).toBeInTheDocument();
+    expect(screen.getByText(/1 service reaches it/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "http::GET::/v1/users" })).toHaveAttribute(
+      "href",
+      "/c?contract=http::GET::/v1/users&repo=api&file=routes.py",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^web/ }));
+    expect(onSelect).toHaveBeenCalledWith({ type: "node", id: "web" });
   });
 
-  it("renders a selected edge and opens its contract evidence", () => {
-    const onOpenContract = vi.fn();
+  it("offers the blast radius for a service", () => {
+    const onShowBlastRadius = vi.fn();
     render(
-      <SystemMapInspector
-        selection={{ type: "edge", id: "web->api" }}
-        graph={g}
-        onClose={() => {}}
-        onSelectNode={() => {}}
-        onOpenContract={onOpenContract}
-      />,
+      <SystemMapDrawer {...base} selection={{ type: "node", id: "api" }} onSelect={() => {}} onShowBlastRadius={onShowBlastRadius} />,
     );
-    expect(screen.getByText(/http relationship/i)).toBeInTheDocument();
-    expect(screen.getByText("90%")).toBeInTheDocument(); // confidence
-    fireEvent.click(screen.getByText("http:GET /v1/users"));
-    expect(onOpenContract).toHaveBeenCalledWith("http:GET /v1/users");
+    fireEvent.click(screen.getByRole("button", { name: "Show blast radius" }));
+    expect(onShowBlastRadius).toHaveBeenCalledWith("api");
   });
 
-  it("renders nothing when there is no selection", () => {
-    const { container } = render(
-      <SystemMapInspector selection={null} graph={g} onClose={() => {}} onSelectNode={() => {}} />,
+  it("renders a relationship as a sentence with its weight unit and deduplicated evidence", () => {
+    render(
+      <SystemMapDrawer
+        {...base}
+        selection={{ type: "edge", id: "web->api" }}
+        onSelect={() => {}}
+        contractHref={(r) => `/c?contract=${r.contract_id}&repo=${r.repo}`}
+      />,
     );
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByText("web calls api over HTTP.")).toBeInTheDocument();
+    expect(screen.getByText("2 endpoints called")).toBeInTheDocument();
+    expect(screen.getByText("90%")).toBeInTheDocument();
+    // Two refs, one contract: listed once, linked to the provider side.
+    expect(screen.getAllByRole("link", { name: "http::GET::/v1/users" })).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "http::GET::/v1/users" })).toHaveAttribute(
+      "href",
+      "/c?contract=http::GET::/v1/users&repo=api",
+    );
   });
 
   it("shows co-change evidence as the file pair it is, not as a contract link", () => {
@@ -176,6 +335,7 @@ describe("SystemMapInspector", () => {
       [
         edge("web", "api", {
           kind: "co_change",
+          match_type: "inferred",
           structural: false,
           weight: 1,
           contract_refs: ["app/services/overview.py~src/lib/api/types.ts"],
@@ -183,34 +343,38 @@ describe("SystemMapInspector", () => {
       ],
     );
     render(
-      <SystemMapInspector
-        selection={{ type: "edge", id: "web->api" }}
+      <SystemMapDrawer
         graph={behavioral}
+        rawGraph={behavioral}
+        collapsed={false}
         onClose={() => {}}
-        onSelectNode={() => {}}
-        onOpenContract={vi.fn()}
+        onSelect={() => {}}
+        selection={{ type: "edge", id: "web->api" }}
+        contractHref={() => "/c"}
       />,
     );
-    // Both sides of the pair are shown, split on the "~" separator.
-    expect(screen.getByText("app/services/overview.py")).toBeInTheDocument();
-    expect(screen.getByText(/src\/lib\/api\/types\.ts/)).toBeInTheDocument();
-    expect(screen.getByText(/co-changed files/i)).toBeInTheDocument();
-    // A file pair cannot be resolved as a contract, so nothing offers to try.
-    expect(screen.queryByTitle(/contracts page/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("app/services/overview.py~src/lib/api/types.ts")).not.toBeInTheDocument();
+    expect(screen.getByText("web/app/services/overview.py")).toBeInTheDocument();
+    expect(screen.getByText("with api/src/lib/api/types.ts")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /overview\.py/ })).not.toBeInTheDocument();
   });
 
-  it("still offers the Contracts drill-down for structural evidence", () => {
-    render(
-      <SystemMapInspector
-        selection={{ type: "edge", id: "web->api" }}
-        graph={g}
-        onClose={() => {}}
-        onSelectNode={() => {}}
-        onOpenContract={vi.fn()}
-      />,
-    );
-    expect(screen.getByTitle(/contracts page/i)).toBeInTheDocument();
+  it("renders nothing when there is no selection", () => {
+    render(<SystemMapDrawer {...base} selection={null} onSelect={() => {}} />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});
+
+describe("selectionRepo", () => {
+  const g = graph(
+    [node("api::svc/a", { repo: "api", service_path: "svc/a" }), node("web")],
+    [edge("web", "api::svc/a")],
+  );
+  it("names the repository a node, edge or collapsed id lives in", () => {
+    expect(selectionRepo(g, { type: "node", id: "api::svc/a" })).toBe("api");
+    expect(selectionRepo(g, { type: "node", id: "api" })).toBe("api");
+    expect(selectionRepo(g, { type: "edge", id: "web->api::svc/a" })).toBe("web");
+    expect(selectionRepo(g, { type: "edge", id: "web->api::http" })).toBe("web");
+    expect(selectionRepo(g, null)).toBeNull();
   });
 });
 
@@ -220,34 +384,21 @@ describe("SystemMap chrome placement", () => {
     [edge("web", "api", { contract_refs: ["http:GET /v1/users"] })],
   );
 
-  it("puts the inspector in a rail beside the canvas, not on it", async () => {
+  it("opens the drawer outside the canvas for a selection", async () => {
     const { container } = render(
       <SystemMap graph={g} selection={{ type: "node", id: "api" }} onSelectionChange={() => {}} />,
     );
-    const rail = await screen.findByRole("complementary");
-    // The inspector renders inside the rail…
-    expect(within(rail).getByText("2 contracts")).toBeInTheDocument();
-    // …and the rail is a peer of the canvas, not a child of it.
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/api provides 2 contracts/i)).toBeInTheDocument();
     const flow = container.querySelector(".react-flow")!;
-    expect(flow.contains(rail)).toBe(false);
+    expect(flow.contains(dialog)).toBe(false);
   });
 
-  it("keeps host panels off the canvas too", async () => {
-    const { container } = render(
-      <SystemMap
-        graph={g}
-        selection={{ type: "node", id: "api" }}
-        onSelectionChange={() => {}}
-        rail={<div>host panel</div>}
-      />,
-    );
-    const rail = await screen.findByRole("complementary");
+  it("puts the host's toolbar in the section header, not on the canvas", () => {
+    const { container } = render(<SystemMap graph={g} toolbar={<div>lens bar</div>} />);
     const flow = container.querySelector(".react-flow")! as HTMLElement;
-    // The host's panel and the inspector share the rail rather than stacking on
-    // the same canvas corner, which is what they used to do.
-    expect(within(rail).getByText("host panel")).toBeInTheDocument();
-    expect(within(flow).queryByText("host panel")).toBeNull();
-    expect(within(flow).queryByText("2 contracts")).toBeNull();
+    expect(screen.getByText("lens bar")).toBeInTheDocument();
+    expect(within(flow).queryByText("lens bar")).toBeNull();
   });
 
   it("notifies the current onSelectionChange, not the one it mounted with", async () => {
@@ -256,50 +407,35 @@ describe("SystemMap chrome placement", () => {
     const { rerender } = render(
       <SystemMap graph={g} selection={{ type: "node", id: "api" }} onSelectionChange={stale} />,
     );
-    await screen.findByRole("complementary");
+    await screen.findByRole("dialog");
 
     rerender(<SystemMap graph={g} selection={{ type: "node", id: "api" }} onSelectionChange={fresh} />);
 
-    // "Depended on by" lists web; selecting it goes through a handler that is
-    // memoised once for the component's lifetime.
-    fireEvent.click(screen.getByText("web"));
+    // "Depended on by" lists web; selecting it goes through a lifetime-memoised handler.
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^web/ }));
 
     expect(fresh).toHaveBeenCalledWith({ type: "node", id: "web" });
     expect(stale).not.toHaveBeenCalled();
   });
 
-  it("resolves a toggle against the current selection, not the mounted one", async () => {
+  it("closing the drawer clears the selection the host holds", async () => {
     const onSelectionChange = vi.fn();
-    const { rerender } = render(
-      <SystemMap graph={g} selection={null} onSelectionChange={onSelectionChange} rail={<div>open</div>} />,
-    );
-    await screen.findByRole("complementary");
-
-    // Selection arrives from the host after mount (e.g. from the URL).
-    rerender(
-      <SystemMap
-        graph={g}
-        selection={{ type: "node", id: "api" }}
-        onSelectionChange={onSelectionChange}
-        rail={<div>open</div>}
-      />,
-    );
-
-    // Closing reads the live selection through the same lifetime-memoised path.
-    fireEvent.click(screen.getByLabelText("Close inspector"));
+    render(<SystemMap graph={g} selection={{ type: "node", id: "api" }} onSelectionChange={onSelectionChange} />);
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByLabelText("Close panel"));
     expect(onSelectionChange).toHaveBeenCalledWith(null);
   });
 
-  it("collapses the rail column when nothing is selected and no panel is open", () => {
-    const { container } = render(<SystemMap graph={g} rail={null} />);
-    expect(container.querySelector("aside")).toBeNull();
+  it("states what it draws", async () => {
+    render(<SystemMap graph={g} />);
+    expect(await screen.findByText(/drawing 2 services and 1 relationship\./i)).toBeInTheDocument();
   });
 
   it("resolves a collapsed-view selection against the graph actually drawn", async () => {
     const withServices = graph(
       [
-        node("api::svc/a", { repo: "api", provider_count: 2 }),
-        node("api::svc/b", { repo: "api", provider_count: 3 }),
+        node("api::svc/a", { repo: "api", service_path: "svc/a", provider_count: 2 }),
+        node("api::svc/b", { repo: "api", service_path: "svc/b", provider_count: 3 }),
         node("web", { repo: "web", kind: "frontend" }),
       ],
       [edge("web", "api::svc/a")],
@@ -307,43 +443,34 @@ describe("SystemMap chrome placement", () => {
     render(
       <SystemMap
         graph={withServices}
-        // A collapsed edge id: it exists only once services are merged. The
-        // uncollapsed graph spells the same edge "web->api::svc/a".
+        // A collapsed edge id: it exists only once services are merged.
         selection={{ type: "edge", id: "web->api::http" }}
         onSelectionChange={() => {}}
       />,
     );
-    // Service view: the id is not in the drawn graph, so there is no inspector.
-    expect(screen.queryByText(/http relationship/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/web calls api over HTTP/i)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Service view"));
+    fireEvent.click(await screen.findByRole("radio", { name: "Repositories" }));
 
-    // Repo view: the same id now resolves.
-    expect(await screen.findByText(/http relationship/i)).toBeInTheDocument();
+    expect(await screen.findByText(/web calls api over HTTP/i)).toBeInTheDocument();
   });
 
   it("shows the merged counts in repo view rather than a same-named service's", async () => {
     const withServices = graph(
       [
         node("api", { repo: "api", provider_count: 2 }),
-        node("api::svc/b", { repo: "api", provider_count: 3 }),
+        node("api::svc/b", { repo: "api", service_path: "svc/b", provider_count: 3 }),
         node("web", { repo: "web", kind: "frontend" }),
       ],
       [edge("web", "api")],
     );
-    render(
-      <SystemMap
-        graph={withServices}
-        selection={{ type: "node", id: "api" }}
-        onSelectionChange={() => {}}
-      />,
-    );
-    expect(await screen.findByText("2 contracts")).toBeInTheDocument();
+    render(<SystemMap graph={withServices} selection={{ type: "node", id: "api" }} onSelectionChange={() => {}} />);
+    expect(await screen.findByText(/api provides 2 contracts/i)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Service view"));
+    fireEvent.click(screen.getByRole("radio", { name: "Repositories" }));
 
     // 2 + 3, not 2: the repo node is the merge, not the same-named service.
-    expect(await screen.findByText("5 contracts")).toBeInTheDocument();
+    expect(await screen.findByText(/api provides 5 contracts/i)).toBeInTheDocument();
   });
 });
 

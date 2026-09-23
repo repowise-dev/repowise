@@ -353,11 +353,14 @@ async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
                 lst = top_by_file.setdefault(f.file_path, [])
                 if len(lst) >= 3:
                     continue
+                # ``function_name`` absent rather than null on a file-level
+                # biomarker, matching the coverage fields just below: an absent
+                # key and a null one say the same thing, and only one is billed.
                 lst.append(
                     {
                         "biomarker_type": f.biomarker_type,
                         "severity": f.severity,
-                        "function_name": f.function_name,
+                        **({"function_name": f.function_name} if f.function_name else {}),
                         "impact": round(f.health_impact, 2),
                     }
                 )

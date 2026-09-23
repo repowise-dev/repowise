@@ -87,7 +87,7 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
     assert result["risk_percentile"] is None
     assert result["review_priority"] is None
     assert result["classification"] is None
-    assert result["fallback_band"] in {"low", "moderate", "high"}
+    assert diagnostics["fallback_band"] in {"low", "moderate", "high"}
     assert diagnostics["baseline_sample_size"] == 0
     # The per-field dictionary is identical on every call, so it is opt-in.
     assert "risk_scales" not in result
@@ -142,9 +142,10 @@ async def test_get_change_risk_empty_diff_warns(tmp_path, monkeypatch) -> None:
     # Only a .py change exists; restricting to .md counts zero files.
     result = await module.get_change_risk(extensions=["md"], baseline=0)
 
-    assert result["change_shape"]["score"] is not None
-    assert "warning" in result
+    assert result["status"] == "nothing_to_score"
+    assert "score" not in result
     assert "no counted file changes" in result["warning"].lower()
+    assert result["scored_repo"]["root"] == str(repo)
 
 
 @pytest.mark.asyncio

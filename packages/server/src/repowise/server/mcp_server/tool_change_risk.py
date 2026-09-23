@@ -57,6 +57,7 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import read_live_head
 from repowise.server.mcp_server._test_impact import (
     _norm,
     cross_repo_tests,
@@ -105,6 +106,10 @@ _INCLUDE_BLOCKS = frozenset({"scales", "diagnostics", "findings"})
 
 #: Score mechanics that are identical or near-identical on every call. Moved
 #: behind ``include=["diagnostics"]`` so the action-first blocks lead.
+#: ``score`` and ``fallback_band`` sit here rather than on the wire: the score
+#: ranks 0.99 against lines added on every repository measured, so the
+#: percentile beside it already carries the ranking and the raw number only
+#: invited it being read as a danger verdict. Still recoverable, not deleted.
 _DIAGNOSTIC_FIELDS = (
     "risk_authority",
     "score_measures",
@@ -112,16 +117,8 @@ _DIAGNOSTIC_FIELDS = (
     "baseline_sample_size",
     "features",
     "drivers",
-)
-
-#: Compact supporting context: the ranked reading, not the model's workings.
-_CHANGE_SHAPE_FIELDS = (
     "score",
-    "risk_percentile",
-    "review_priority",
-    "classification",
     "fallback_band",
-    "is_fix",
 )
 
 
@@ -143,21 +140,18 @@ async def get_change_risk(
     """Review a commit, ``base..head`` range, or uncommitted work.
 
     Leads with ``directive`` (what to do) and ``health_delta`` (what this
-    change newly made worse across defect, maintainability, and performance).
-    Both sides are analysed from their own content, so a finding present at
-    head is only reported when the diff explains it; every finding names its
-    ``attribution`` basis and confidence.
+    change newly made worse). A finding is reported only when the diff explains
+    it, and each names its ``attribution`` basis; findings the change wrote
+    sort above pre-existing ones it only touched.
 
     Trust ``health_delta.status``: ``partial`` means files were skipped and the
-    change is not cleared. ``scope`` counts what was actually compared.
+    change is not cleared.
 
     ``impacted_tests`` keeps measured coverage and inferred candidates distinct.
-    ``prior_fixes`` counts past fixes overlapping this diff. ``change_shape``
-    ranks the diff's size and spread against recent commits.
-
-    ``branch_overlap`` names other open branches editing the same files, each
-    row stating its basis. ``change_shape.independent_changes`` says when the
-    diff is several changes the index does not connect.
+    ``fix_history`` is the changed files' bug-fix record, ``overlap`` the past
+    fixes on these exact lines. ``branch_overlap`` names other branches editing
+    them. ``diff_shape`` is one line on size, not a danger verdict. An empty
+    diff returns ``status: "nothing_to_score"`` and names the tree it read.
 
     Args:
         revspec: Commit or ``base..head`` range. Omit to review uncommitted
@@ -203,10 +197,7 @@ async def get_change_risk(
     else:
         diagnostics = {}
     if result.features.nf == 0:
-        payload["warning"] = (
-            f"No counted file changes in {payload['ref']!r} "
-            "(check the revspec, extensions, or exclusion filters)."
-        )
+        return await _nothing_to_score(ctx, payload["ref"], started)
     # Changed lines over the SAME file universe the score counted (its
     # extensions + riskignore + request excludes), so nothing downstream
     # disagrees with the score about which files the change touches. Read once
@@ -239,7 +230,10 @@ async def get_change_risk(
         )
         prior_fixes = await _prior_fixes_block(ctx, changed)
         if prior_fixes is not None:
-            payload["prior_fixes"] = prior_fixes
+            # One fix record, not two. The blocks answered the same question
+            # with different arithmetic (decayed pressure vs raw count) and a
+            # reader had to work out which was which.
+            payload.setdefault("fix_history", {})["overlap"] = prior_fixes
         alias = getattr(ctx, "alias", "")
         # The join needs an open index per consumer repo, so it runs once for
         # the whole change and the block distributes its rows.
@@ -263,8 +257,10 @@ async def get_change_risk(
     await _attach_health_references(ctx, delta)
     if finding_id is not None:
         return _drill_down(payload, delta, finding_id, revspec)
+    payload["diff_shape"] = _diff_shape_sentence(payload, diagnostics)
+    if independent is not None:
+        payload["independent_changes"] = independent
     _attach_health(payload, delta, revspec, expand="findings" in include_set)
-    payload["change_shape"] = _change_shape(payload, diagnostics, independent)
     # source: live_git marks that the *score* is computed from the working
     # checkout's git. The two blocks above are index-backed, so the freshness
     # fields do apply to them, scoped to the change's files. None (not []) when
@@ -296,8 +292,10 @@ def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
             _DELTA_SERVICES.move_to_end(repo_path)
             return service
     # Built outside the lock: the fingerprint reads config off disk.
+    from repowise.core.repo_config import health_rules_fingerprint
+
     service = ChangeHealthDeltaService(
-        repo_path=repo_path, rules_fingerprint=_rules_fingerprint(repo_path)
+        repo_path=repo_path, rules_fingerprint=health_rules_fingerprint(repo_path)
     )
     with _DELTA_SERVICES_LOCK:
         existing = _DELTA_SERVICES.get(repo_path)
@@ -308,16 +306,6 @@ def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
         while len(_DELTA_SERVICES) > _DELTA_SERVICE_CAPACITY:
             _DELTA_SERVICES.popitem(last=False)
     return service
-
-
-def _rules_fingerprint(repo_path: str) -> str:
-    """Identity of the effective health rules; empty when they cannot be read."""
-    try:
-        from repowise.core.repo_config import config_fingerprint
-
-        return config_fingerprint(repo_path)
-    except Exception:
-        return ""
 
 
 def _compare_health(
@@ -424,18 +412,43 @@ def _attach_health(payload: dict, delta: Any, revspec: str | None, *, expand: bo
     payload.update(ordered)
 
 
-def _change_shape(
-    payload: dict, diagnostics: dict, independent: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    """The ranked diff-shape reading, kept compact and clearly supporting."""
-    shape = {f: payload[f] for f in _CHANGE_SHAPE_FIELDS if f in payload}
-    shape["measures"] = "diff size and spread, not danger"
-    # How many changes this diff is belongs beside its size, not above it.
-    if independent is not None:
-        shape["independent_changes"] = independent
-    if diagnostics:
-        shape["diagnostics_via"] = "get_change_risk(include=['diagnostics'])"
-    return shape
+async def _nothing_to_score(ctx: Any, ref: str, started: float) -> dict:
+    """An empty diff, reported as one rather than scored.
+
+    Scoring it anyway produced a real-looking "Below typical" verdict, which
+    read as a clean bill of health on a tree the caller had not in fact pointed
+    at. Naming the tree makes a worktree mismatch visible here.
+    """
+    return {
+        "ref": ref,
+        "status": "nothing_to_score",
+        "warning": (
+            f"No counted file changes in {ref!r} "
+            "(check the revspec, extensions, or exclusion filters)."
+        ),
+        "scored_repo": {"root": str(ctx.path), "head": read_live_head(str(ctx.path))},
+        "_meta": _build_meta(
+            timing_ms=(time.perf_counter() - started) * 1000,
+            repository=await _repository(ctx),
+            extra={"source": "live_git"},
+        ),
+    }
+
+
+def _diff_shape_sentence(payload: dict, diagnostics: dict) -> str:
+    """One line for what the diff-shape rank says, and what it does not.
+
+    It replaced a block that restated four fields already at the top level and
+    was read in 2 of 118 recorded calls.
+    """
+    pct = payload.get("risk_percentile")
+    where = (
+        f"bigger than {round(pct)}% of this repo's recent commits"
+        if pct is not None
+        else "unranked (no baseline to compare against)"
+    )
+    tail = " Mechanics: get_change_risk(include=['diagnostics'])." if diagnostics else ""
+    return f"Diff shape: {where}. Size and spread, not danger.{tail}"
 
 
 def _drill_down(payload: dict, delta: Any, finding_id: str, revspec: str | None) -> dict:
@@ -944,7 +957,7 @@ async def _independent_changes_block(
         _UNGROUPED_FILES_LIMIT,
         collector,
         label=(
-            f"change_shape.independent_changes.ungrouped_files beyond cap={_UNGROUPED_FILES_LIMIT}"
+            f"independent_changes.ungrouped_files beyond cap={_UNGROUPED_FILES_LIMIT}"
         ),
     )
     return block

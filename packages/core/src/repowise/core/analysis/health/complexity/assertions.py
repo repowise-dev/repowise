@@ -8,7 +8,7 @@ count. Opt-in per language via the ``LanguageNodeMap`` ``assert_kinds`` /
 ``duplicated_assertion_block`` biomarkers, and by ``mock_saturated_test``,
 which divides mock setup by the total.
 
-Two tiers are counted in one walk, and which marker reads which is the whole
+Four counts come out of one walk, and which marker reads which is the whole
 design (``asserts/lexicon.py`` carries the vocabulary and the evidence):
 
 * ``blocks`` counts the **narrow** tier only — an ``assert``/``expect`` callee
@@ -24,14 +24,27 @@ design (``asserts/lexicon.py`` carries the vocabulary and the evidence):
   verification is an oracle, so it counts there; ``mock_saturated_test``
   measures verification itself, so counting it in that marker's denominator
   would blind it. The same call is read two ways on purpose.
+* ``raises`` counts the hand-rolled oracles no vocabulary can reach, a
+  ``raise`` / ``throw`` being a statement where the tiers match callee names.
+  Read only by ``asserts/predicate.py`` and only as a boolean, so it is in
+  none of the three counts above and moves nothing calibrated.
+
+``called_names`` rides along on the same traversal. Alone among these it is
+collected **through** nested function bodies, because nothing else ever
+collects them.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..asserts.lexicon import NARROW_PREFIXES, AssertDialect
-from .ast_utils import _IDENTIFIER_SUFFIX, _callee_names, _receiver_method_verdict
+from ..asserts.lexicon import NARROW_PREFIXES, STUB_EXCEPTIONS, AssertDialect
+from .ast_utils import (
+    _IDENTIFIER_SUFFIX,
+    _callee_names,
+    _identifier_chain,
+    _receiver_method_verdict,
+)
 from .languages import LanguageNodeMap
 
 if TYPE_CHECKING:
@@ -177,15 +190,41 @@ def _find_assert_call(stmt: Node, kinds: frozenset[str]) -> Node | None:
     return None
 
 
-def _find_context_manager_call(stmt: Node, lmap: LanguageNodeMap) -> Node | None:
-    """An assertion-shaped call in a ``with`` header, body excluded."""
-    stack = [c for c in stmt.children if c.is_named and c.type not in lmap.block_kinds]
+def _context_manager_tier(
+    stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None
+) -> int:
+    """The tier a ``with`` header asserts at, body excluded.
+
+    ``assert_call_kinds`` is the language's plain call node, so stopping at the
+    first one met answered on whichever item came first:
+    ``with self.assertRaises(E), atomic():`` was classified on ``atomic()``.
+    Every item is classified instead, and an assertion anywhere beats a
+    verification anywhere, so no verdict turns on the order they were typed in.
+    A header holding only a verification still reports one, as the single-item
+    form always has.
+
+    A declining call's own children are not scanned -- the *argument* half of
+    the bound :func:`_find_assert_call` puts on a statement. The depth half
+    does not carry over: a with-item's call sits under an ``as_pattern`` or a
+    ``with_clause``, so the descent must reach through any non-call node.
+    """
+
+    def _header_children(node: Node) -> list[Node]:
+        return [c for c in node.children if c.is_named and c.type not in lmap.block_kinds]
+
+    verification = _NOT_ASSERTION
+    stack = _header_children(stmt)[::-1]
     while stack:
         node = stack.pop()
         if node.type in lmap.assert_call_kinds:
-            return node
-        stack.extend(c for c in node.children if c.is_named and c.type not in lmap.block_kinds)
-    return None
+            tier = _tier_without_narrow(node, dialect)
+            if tier == _VERIFICATION:
+                verification = tier
+            elif tier != _NOT_ASSERTION:
+                return tier
+            continue
+        stack.extend(reversed(_header_children(node)))
+    return verification
 
 
 def _assertion_tier(stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None) -> int:
@@ -218,8 +257,7 @@ def _assertion_tier(stmt: Node, lmap: LanguageNodeMap, dialect: AssertDialect | 
         # ``with pytest.raises(...)`` / ``with self.assertRaises(...)`` is the
         # oracle, but the call sits in the header rather than in a statement of
         # its own, so every tier above misses it.
-        call = _find_context_manager_call(stmt, lmap)
-        return _NOT_ASSERTION if call is None else _tier_without_narrow(call, dialect)
+        return _context_manager_tier(stmt, lmap, dialect)
     else:
         return _NOT_ASSERTION
     if call is None:
@@ -261,10 +299,30 @@ def _is_assertion_statement(
     return _assertion_tier(stmt, lmap, dialect) in (_NARROW, _BROAD)
 
 
+def _is_oracle_raise(node: Node) -> bool:
+    """Whether a raise statement is the author checking something.
+
+    Two that are not, read off the first named child -- the raised expression,
+    the rest of the statement being a ``from`` clause:
+
+    * an abstract-stub exception, ``STUB_EXCEPTIONS``. Only the unqualified
+      spelling is matched, since the chain is read from its head.
+    * no raised expression at all. A Python bare ``raise`` re-raises whatever
+      is in flight, which is the enclosing ``except`` deciding not to swallow
+      it rather than a check the author wrote.
+    """
+    for child in node.children:
+        if not child.is_named:
+            continue
+        chain = _identifier_chain(child)
+        return bool(chain) and chain[0] not in STUB_EXCEPTIONS
+    return False
+
+
 def _collect_assertion_facts(
     body_node: Node, lmap: LanguageNodeMap, dialect: AssertDialect | None = None
-) -> tuple[list[tuple[int, int, int]], int, int, frozenset[str]]:
-    """``(blocks, total, verifications, called)`` facts for one function body.
+) -> tuple[list[tuple[int, int, int]], int, int, int, frozenset[str], frozenset[str]]:
+    """``(blocks, total, verifications, raises, called, bare)`` for one body.
 
     *blocks* are runs of ≥2 consecutive **narrow-tier** assertion statements,
     each recorded as ``(start_line, end_line, count)``. Runs are found per
@@ -285,20 +343,42 @@ def _collect_assertion_facts(
     *verifications* counts mock verifications, on the same block-level gate as
     *total* and in neither of the other two counts. See the module docstring.
 
-    *called* is every name called directly in this body, lowercased, excluding
-    nested function bodies on the same rule the assertion scan uses. It rides
-    along on this traversal because the traversal already reaches every call
-    node; collecting it separately would mean walking every function body
-    twice. It counts nothing and so cannot move a calibrated marker. Empty
-    under the early return above, which is fine only because the one reader
-    ships no language that takes it.
+    *bare* is the subset of *called* whose call site carried no receiver, so
+    ``checkOk()`` is in it and ``harness.checkOk()`` is not. The oracle
+    resolution in ``asserts/oracle_reach.py`` pairs a name with a file-scoped
+    call edge, and only an unqualified call is the one the file's imports
+    actually bind; a qualified one names a method on something else that
+    happens to share the name.
+
+    *raises* counts the ``raise`` / ``throw`` statements ``_is_oracle_raise``
+    admits, in this body only -- not in a nested function and not in a nested
+    lambda -- wherever the traversal reaches one rather than only at block
+    level: an unbraced ``if (x) throw
+    ...`` guard is a hand-rolled oracle too, and its only reader asks whether
+    the count is zero. In no other count, so no calibrated marker moves.
+
+    *called* is every name called directly in this body, lowercased,
+    **including nested function bodies**, which is where it parts company with
+    the counts beside it. Those stop at a nested function because its
+    assertions are its own. A name does not work that way here, because a
+    function nested inside an already-collected one is never collected as an
+    entry of its own -- ``ast_utils._collect_function_nodes`` does not descend
+    past a function -- so stopping would attribute its calls to nobody at all,
+    and an ``expect`` inside an inline ``function`` helper would be recorded
+    nowhere. It rides along on this traversal because the traversal already
+    reaches every call node; collecting it separately would mean walking every
+    function body twice. It counts nothing and so cannot move a calibrated
+    marker. Empty under the early return above, which is fine only because the
+    one reader ships no language that takes it.
     """
     if not lmap.assert_kinds and not lmap.assert_call_kinds:
-        return [], 0, 0, frozenset()
+        return [], 0, 0, 0, frozenset(), frozenset()
     blocks: list[tuple[int, int, int]] = []
     total = 0
     verifications = 0
+    raises = 0
     called: set[str] = set()
+    bare: set[str] = set()
     call_kinds = lmap.call_kinds or lmap.assert_call_kinds
 
     def _scan_siblings(parent: Node, *, count_total: bool) -> None:
@@ -327,7 +407,8 @@ def _collect_assertion_facts(
         if run_count >= 2:
             blocks.append((run_start, run_end, run_count))
 
-    def _visit(node: Node) -> None:
+    def _visit(node: Node, *, under_lambda: bool = False) -> None:
+        nonlocal raises
         # Lambda kinds join the block kinds because an expression-bodied arrow
         # has no statement at all: ``waitFor(() => expect(x).toBe(1))`` keeps
         # its assertion directly under the arrow. Run detection below is
@@ -338,14 +419,42 @@ def _collect_assertion_facts(
             or node.type in lmap.lambda_kinds
         )
         _scan_siblings(node, count_total=counts_here)
+        # ``under_lambda`` keeps the raise count on this body only. The
+        # assertion counts deliberately cross a lambda, because
+        # ``waitFor(() => expect(x).toBe(1))`` runs its assertion as part of
+        # this test. A raise does not follow: ``registry.add(() => { throw x })``
+        # hands the code under test something whose job is to fail *it*, and
+        # reading that as this test's oracle suppresses a real finding. Nested
+        # named functions are already excluded below; a lambda is the sibling
+        # shape, one token apart in JS and not covered by that branch.
+        if node.type in lmap.raise_kinds and not under_lambda and _is_oracle_raise(node):
+            raises += 1
         if node.type in call_kinds:
             names = _callee_names(node)
             if names is not None:
                 called.add(names[0])
+                if not names[1]:
+                    bare.add(names[0])
         for child in node.children:
+            child_under_lambda = under_lambda or child.type in lmap.lambda_kinds
             if child.type in lmap.function_kinds:
-                continue  # nested fn, not collected as its own entry either
-            _visit(child)
+                # Counts stop here: a nested function's assertions are its own,
+                # and so is a raise it makes -- a callable handed to the code
+                # under test to make it fail is not this body's oracle. Names
+                # do not stop, because nothing else collects them.
+                _visit_names_only(child)
+                continue
+            _visit(child, under_lambda=child_under_lambda)
+
+    def _visit_names_only(node: Node) -> None:
+        if node.type in call_kinds:
+            names = _callee_names(node)
+            if names is not None:
+                called.add(names[0])
+                if not names[1]:
+                    bare.add(names[0])
+        for child in node.children:
+            _visit_names_only(child)
 
     _visit(body_node)
     # A lambda with an expression body holds no statement: ``it("x", () =>
@@ -361,4 +470,4 @@ def _collect_assertion_facts(
                 verifications += 1
             elif tier != _NOT_ASSERTION:
                 total += 1
-    return blocks, total, verifications, frozenset(called)
+    return blocks, total, verifications, raises, frozenset(called), frozenset(bare)

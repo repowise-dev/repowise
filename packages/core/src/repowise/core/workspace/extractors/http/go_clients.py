@@ -27,14 +27,8 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from ..langs import GO
-from .client_calls import (
-    GO_SYNTAX,
-    ClientCallMatch,
-    call_arguments,
-    consumer_contracts,
-    method_from_argument,
-    string_constants,
-)
+from ..strings import GO_SYNTAX, call_arguments, string_constants
+from .client_calls import ClientCallMatch, consumer_contracts, method_from_argument
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract

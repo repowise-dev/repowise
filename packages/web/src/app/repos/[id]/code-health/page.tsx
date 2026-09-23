@@ -40,6 +40,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
+import { ReleaseNotice } from "@repowise-dev/ui/shared/release-notice";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Button } from "@repowise-dev/ui/ui/button";
@@ -531,6 +532,17 @@ export default function CodeHealthPage() {
         </div>
       }
     >
+      {/* Keyed by id alone: this notice is about one scoring change, so it is
+          dismissible for good and a later change introduces its own. */}
+      <ReleaseNotice id="health-cochange-scoring">
+        <span className="font-medium text-[var(--color-text-primary)]">
+          Health scores changed in this release.
+        </span>{" "}
+        Co-change coupling is now measured relative to your repository and decays with
+        commit history rather than calendar time, so roughly one file in ten moves a
+        band. Scores are not comparable to snapshots taken before this release.
+      </ReleaseNotice>
+
       {meta ? (
         <p className="-mt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           {meta.last_indexed_at

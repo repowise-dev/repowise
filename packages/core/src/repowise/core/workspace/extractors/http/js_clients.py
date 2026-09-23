@@ -14,7 +14,8 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from ..langs import JS_TS
-from .client_calls import JS_SYNTAX, ClientCallMatch, consumer_contracts, literal_span, matches_in
+from ..strings import JS_SYNTAX, literal_span
+from .client_calls import ClientCallMatch, consumer_contracts, matches_in
 from .dialect import METHODS
 
 if TYPE_CHECKING:

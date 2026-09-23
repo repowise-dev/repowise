@@ -41,10 +41,26 @@ def test_is_reversal():
 
 
 def test_contradicts_requires_shared_topic():
-    # Reversal + shared topic → contradiction.
-    assert contradicts("Replace sessions with JWT for auth", "Use sessions for auth")[0] is True
     # Opposing verbs but unrelated topics → not a contradiction.
     assert contradicts("Drop the Redis cache", "Adopt gRPC transport")[0] is False
+    # Opposing verbs on a shared topic → contradiction, on the default path.
+    assert contradicts("Drop the Redis cache layer", "Adopt the Redis cache layer")[0] is True
+
+
+def test_a_lone_reversal_signal_needs_a_caller_that_vouches_for_the_topic():
+    """A real reversal the default declines, and the reason it declines it.
+
+    "Replace sessions" against "Use sessions" is a true contradiction that no
+    opposing verb pair straddles, so requiring two-sided evidence gives it up.
+    That is a deliberate loss, taken because the one-sided branch is not
+    selective enough to keep: over this repository's whole injection corpus it
+    fired once, wrongly, and that firing is the layer's only published outcome
+    number. Supersession keeps the branch by opting in, having already
+    established the shared topic with a vector score.
+    """
+    pair = ("Replace sessions with JWT for auth", "Use sessions for auth")
+    assert contradicts(*pair)[0] is False
+    assert contradicts(*pair, lone_reversal_counts=True)[0] is True
 
 
 def test_supersession_confidence_bounds_and_bumps():

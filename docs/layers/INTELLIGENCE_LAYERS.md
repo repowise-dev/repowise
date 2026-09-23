@@ -194,7 +194,7 @@ your own repo six months later. This keeps it in the codebase.
 ## Code Health Intelligence
 
 repowise scores **every file 1–10** on three co-equal signals (defect risk,
-maintainability, and performance risk) from a roster of **49 deterministic
+maintainability, and performance risk) from a roster of **51 deterministic
 detectors**, of which only **26 are permitted to move the defect number**. Pure
 static analysis over tree-sitter and git data, budgeted (and CI-tested) to
 finish in **under 30 seconds on a 3,000-file repo**.
@@ -219,6 +219,11 @@ repowise health                       # KPIs + lowest-scoring files
 repowise health --refactoring-targets # ranked by impact / effort
 repowise health --trend               # snapshots + declining-health alerts
 ```
+
+The same layer also checks **documentation drift**: the claims your markdown
+makes about the tree (a path, a link, a heading, a command), resolved against
+the graph, with the refuted ones reported. No model, and it runs on every
+update. [`DOC_DRIFT.md`](DOC_DRIFT.md).
 
 Full guide, the calibration story and the head-to-head against CodeScene:
 [`CODE_HEALTH.md`](CODE_HEALTH.md).

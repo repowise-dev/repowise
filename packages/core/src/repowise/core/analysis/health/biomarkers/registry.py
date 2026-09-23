@@ -62,6 +62,7 @@ from .sql_high_complexity import SqlHighComplexityDetector
 from .sql_select_star import SqlSelectStarDetector
 from .sql_update_delete_without_where import SqlUpdateDeleteWithoutWhereDetector
 from .string_concat_in_loop import StringConcatInLoopDetector
+from .unbounded_read_reduced_in_memory import UnboundedReadReducedInMemoryDetector
 from .untested_hotspot import UntestedHotspotDetector
 
 _DETECTOR_FACTORIES: list[type[Biomarker]] = [
@@ -107,6 +108,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     LockInLoopDetector,  # type: ignore[list-item]
     SerialAwaitInLoopDetector,  # type: ignore[list-item]
     MembershipTestAgainstListInLoopDetector,  # type: ignore[list-item]
+    UnboundedReadReducedInMemoryDetector,  # type: ignore[list-item]
     # Phase 7b — centrality-gated moat markers.
     NestedLoopWithIoDetector,  # type: ignore[list-item]
     NestedLoopQuadraticDetector,  # type: ignore[list-item]

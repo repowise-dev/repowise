@@ -71,7 +71,8 @@ __all__ = ["DECAY_REFRESH_KEYS", "index_file", "new_meta"]
 # incremental update recomputes just these for idle (unchanged) files off the
 # repo-wide walk and persists a decay-only partial row, leaving ownership / age
 # / authorship (which need full history and are only correct from the init
-# walk) untouched. ``co_change_partners_json`` / ``change_entropy`` /
+# walk) untouched. ``co_change_partners_json`` / ``co_change_partner_count`` /
+# ``co_change_mass`` / ``change_entropy`` /
 # ``prior_defect_*`` are merged onto the metadata after the per-file pass, so
 # they refresh together with the window churn fields ``index_file`` computes.
 DECAY_REFRESH_KEYS = (
@@ -85,6 +86,8 @@ DECAY_REFRESH_KEYS = (
     "prior_defect_raw_count",
     "change_entropy",
     "co_change_partners_json",
+    "co_change_partner_count",
+    "co_change_mass",
 )
 
 
@@ -128,6 +131,8 @@ def new_meta(file_path: str) -> dict[str, Any]:
         # variant is the same walk before fix-shape filtering (fix_shape.py).
         "prior_defect_count": 0,
         "prior_defect_raw_count": 0,
+        # Repo-relative rank of prior_defect_count; see enrich.compute_percentiles.
+        "prior_defect_pct": 0.0,
         # Agent provenance rollup: how much of this file's indexed history is
         # agent-attributed (local channels only — see agent_provenance module).
         # agent_authored_pct stays None when the file has no commits at all.
@@ -147,6 +152,12 @@ def new_meta(file_path: str) -> dict[str, Any]:
         # the signal silent on the ESSENTIAL tier / files that never co-changed.
         "change_entropy": 0.0,
         "change_entropy_pct": 0.0,
+        # Co-change breadth over every partner the repo-wide walk found, not
+        # the length of the truncated partner list. Defaults leave
+        # ``co_change_scatter`` silent when the walk did not run.
+        "co_change_partner_count": 0,
+        "co_change_mass": 0.0,
+        "co_change_scatter_pct": 0.0,
     }
 
 

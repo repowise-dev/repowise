@@ -78,7 +78,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str]] = {
     "_build_visual_context": ("_graph_utils", "build_visual_context"),
     "_compute_alignment": ("_helpers", "_compute_alignment"),
     "_get_repo": ("_helpers", "_get_repo"),
-    "_is_path": ("_helpers", "_is_path"),
+    "_is_path": ("_query_shape", "_is_path"),
     "create_mcp_server": ("_server", "create_mcp_server"),
     "run_mcp": ("_server", "run_mcp"),
 }

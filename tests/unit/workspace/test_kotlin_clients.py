@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repowise.core.workspace.contracts import match_contracts
 from repowise.core.workspace.extractors.base import ScanContext
 from repowise.core.workspace.extractors.http import HttpExtractor
 from repowise.core.workspace.extractors.http.fastapi import FastApiDialect
@@ -20,6 +19,7 @@ from repowise.core.workspace.extractors.http.kotlin_clients import (
     KotlinClientsDialect,
     ktor_calls,
 )
+from repowise.core.workspace.matching import match_contracts
 
 LITERALS = """package com.example.sync
 

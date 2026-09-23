@@ -954,7 +954,9 @@ async def test_list_repos_discovers_workspace_aliases(workspace_mcp):
             assert probe in json.dumps(answer)
             change = await get_change_risk("HEAD", repo=identity, baseline=0)
             assert change.get("warning") is None
-            assert change["score"] >= 0
+            # The raw score is behind include=["diagnostics"] now; the
+            # percentile is what the default payload ranks with.
+            assert change["risk_percentile"] is None or change["risk_percentile"] >= 0
             expected_head = subprocess.run(
                 ["git", "rev-parse", "--short=12", "HEAD"],
                 cwd=workspace_mcp.workspace_root / emitted["path"],

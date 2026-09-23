@@ -23,9 +23,11 @@ from typing import Any
 
 from repowise.core.workspace.code_api import CODE_CONTRACT_TYPE
 from repowise.core.workspace.contracts import (
+    TOPIC_KIND_BINDING,
     Contract,
     ContractLink,
     normalize_contract_id,
+    same_service,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
 from repowise.core.workspace.signature_schema import SCHEMA_SOURCE
@@ -462,7 +464,7 @@ def _classify_unmatched(
     # A matching provider exists. If every one shares this consumer's repo AND
     # service boundary, the call is intra-service and was filtered on purpose.
     all_internal = all(
-        p.repo == consumer.repo and p.service == consumer.service for p in candidates
+        same_service(p.repo, p.service, consumer.repo, consumer.service) for p in candidates
     )
     return UnmatchedReason.INTERNAL_ONLY if all_internal else UnmatchedReason.UNLINKED
 
@@ -528,7 +530,8 @@ def build_diagnostics(
     matched_providers: set[tuple[str, str, str]] = set()
     weak_links = 0
     for lk in links:
-        matched_consumers.add(_contract_key(lk.consumer_repo, lk.consumer_file, lk.contract_id))
+        consumer_id = lk.consumer_contract_id or lk.contract_id
+        matched_consumers.add(_contract_key(lk.consumer_repo, lk.consumer_file, consumer_id))
         matched_providers.add(_contract_key(lk.provider_repo, lk.provider_file, lk.contract_id))
         if lk.confidence <= WEAK_LINK_CONFIDENCE_THRESHOLD:
             weak_links += 1
@@ -542,7 +545,8 @@ def build_diagnostics(
     by_reason: dict[str, int] = defaultdict(int)
     for c in consumers:
         key = _contract_key(c.repo, c.file_path, c.contract_id)
-        if key in matched_consumers:
+        # A binding is wiring its queue's consumers are matched through, not a call.
+        if key in matched_consumers or c.meta.get("kind") == TOPIC_KIND_BINDING:
             continue
         reason = _classify_unmatched(c, providers_by_norm_id)
         by_reason[reason] += 1

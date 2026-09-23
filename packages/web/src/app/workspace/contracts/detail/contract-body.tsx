@@ -19,10 +19,14 @@ import {
   contractMetaEntries,
   contractMetaLabel,
   flattenSchemaFields,
+  providerLinkedProse,
   schemaFieldConstraints,
+  unlinkedProviderProse,
+  unmatchedConsumerProse,
+  unmatchedReasonCopy,
 } from "@repowise-dev/ui/workspace/contract-facts";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
-import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { ContractPromptButton } from "@repowise-dev/ui/workspace/contract-prompt-button";
 
 /**
  * One contract, read top to bottom.
@@ -74,6 +78,13 @@ export function ContractBody({ detail, repoIds, testImpact, testImpactError }: P
         <p className="max-w-[68ch] text-base leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
           {contractLede(contract)}
         </p>
+        <div>
+          <ContractPromptButton
+            contract={contract}
+            links={links}
+            unmatchedReason={unmatchedReason}
+          />
+        </div>
       </header>
 
       <Section
@@ -100,7 +111,7 @@ export function ContractBody({ detail, repoIds, testImpact, testImpactError }: P
                 names the framework that matched, and shortening it would hide
                 the difference between a route declaration and a client call. */}
             <span className="font-mono text-xs [overflow-wrap:anywhere]">
-              {contract.symbol_name || "—"}
+              {contract.symbol_name || "None recorded"}
             </span>
           </Fact>
           <Fact label="Confidence">
@@ -172,7 +183,7 @@ function LinkSection({
   if (links.length === 0) {
     return (
       <Section
-        title={isProvider ? "No caller found" : unmatchedTitle(unmatchedReason)}
+        title={isProvider ? "No caller found" : unmatchedReasonCopy(unmatchedReason).title}
         description={
           isProvider
             ? unlinkedProviderProse(contract)
@@ -182,95 +193,18 @@ function LinkSection({
     );
   }
 
-  const otherRepos = new Set(links.map((l) => (isProvider ? l.consumer_repo : l.provider_repo)));
-  const sameRepoOnly = otherRepos.size === 1 && otherRepos.has(contract.repo);
-
   return (
     <Section
       title={isProvider ? "Callers" : "Served by"}
       description={
         isProvider
-          ? providerLinkedProse(links.length, otherRepos.size, sameRepoOnly, contract.repo)
+          ? providerLinkedProse(links, contract.repo)
           : "This call resolves to the code that serves it. A match joins a call site to a declaration; it does not mean the two were written against a shared schema."
       }
     >
       <LinkTable links={links} side={isProvider ? "consumer" : "provider"} repoIds={repoIds} />
     </Section>
   );
-}
-
-function providerLinkedProse(
-  linkCount: number,
-  repoCount: number,
-  sameRepoOnly: boolean,
-  repo: string,
-): string {
-  const one = linkCount === 1;
-  const head = `${countPhrase(linkCount, "call site", "call sites")} resolve${one ? "s" : ""} to this contract`;
-  if (sameRepoOnly) {
-    // Every provider in this state on a real workspace has exactly one caller,
-    // so the singular is the sentence that actually ships.
-    return `${head}, ${one ? `and it is inside ${repo}` : `all of them inside ${repo}`}. A pair is skipped only when the repository and the service are both the same, so ${one ? "that is a call" : "these are calls"} made from a different service in the same repository.`;
-  }
-  return `${head} across ${countPhrase(repoCount, "repository", "repositories")}.`;
-}
-
-/**
- * The state most contracts on this workspace are in, and the one most likely
- * to be misread.
- *
- * It is the expected condition for a route or an exported symbol in a small
- * workspace, so it gets a sentence rather than a colour: an unlinked provider
- * carries no health band, and green, amber and red are reserved for readouts
- * that do. A reader who correctly inferred a colour here would be taught a
- * rule that makes them wrong about the next mark they see.
- */
-function unlinkedProviderProse(contract: WorkspaceContractEntry): string {
-  // A pair is skipped when the repository *and* the service both match, so the
-  // excluded set is not "everything in this repo" unless this declaration sits
-  // outside a service too. Naming the wrong set here would send somebody
-  // looking for a caller the page had told them could not exist.
-  const excluded = contract.service
-    ? `a call made from inside ${contract.repo}/${contract.service}`
-    : `a call made from elsewhere in ${contract.repo} that also sits outside any service`;
-  return `Nothing in this workspace resolves to this contract. Read that as two possibilities rather than one. A call is joined to the code that serves it only when the two do not share both a repository and a service, so ${excluded} is excluded by construction and never appears here. And a call written in a form extraction could not follow looks exactly the same from this side. Neither reading makes this dead code.`;
-}
-
-/**
- * The heading names the state, not the absence.
- *
- * "No provider found" is true of only two of these. A call to a third party
- * and a call that never leaves its own service both matched nothing on
- * purpose, and heading them as a failure to find something invites the reader
- * to go looking for it.
- */
-function unmatchedTitle(reason: string | null): string {
-  switch (reason) {
-    case "external_host":
-      return "Outside this workspace";
-    case "internal_only":
-      return "Not a cross-repo link";
-    case "unlinked":
-      return "No link formed";
-    default:
-      return "No provider found";
-  }
-}
-
-function unmatchedConsumerProse(reason: string | null, contract: WorkspaceContractEntry): string {
-  const host = typeof contract.meta?.host === "string" ? contract.meta.host : null;
-  switch (reason) {
-    case "external_host":
-      return `This call goes to ${host ?? "a third-party host"}, which is not a service in this workspace. Calls to a literal external host are left out of matching on purpose, so there is nothing here to link it to and nothing to fix.`;
-    case "internal_only":
-      return `The only declarations matching this call live in the same repository and the same service as the call itself, so it never crosses a boundary. Intra-service calls are left out of the link set on purpose: a link is a claim that two services depend on each other.`;
-    case "no_provider":
-      return `Nothing in this workspace declares ${contract.contract_id}. Either it is served by something outside these repositories, or the declaration is written in a form extraction did not recognise.`;
-    case "unlinked":
-      return "A declaration with this id exists in another service, but no link was formed between the two. That is rare, and it points at a gap in the matcher rather than at the code.";
-    default:
-      return "This call matched no declaration, and no reason was recorded for it. Reasons come from the system graph, so a workspace that has not built one reports the count without the explanation.";
-  }
 }
 
 function LinkTable({
@@ -564,12 +498,4 @@ function FileRef({
       )}
     </span>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Copy
-// ---------------------------------------------------------------------------
-
-function countPhrase(n: number, one: string, many: string): string {
-  return `${formatNumber(n)} ${n === 1 ? one : many}`;
 }

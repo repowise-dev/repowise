@@ -1,4 +1,4 @@
-"""Tests for contract extraction — HTTP, gRPC, topic extractors, matching, persistence."""
+"""Tests for contract extraction — HTTP, gRPC, socket extractors, matching, persistence."""
 
 from __future__ import annotations
 
@@ -9,14 +9,12 @@ from repowise.core.workspace.contracts import (
     Contract,
     ContractLink,
     ContractStore,
-    annotate_consumer_targets,
     load_contract_store,
-    match_contracts,
     normalize_contract_id,
     save_contract_store,
 )
-from repowise.core.workspace.extractors.grpc_extractor import GrpcExtractor
-from repowise.core.workspace.extractors.http_extractor import (
+from repowise.core.workspace.extractors.grpc import GrpcExtractor
+from repowise.core.workspace.extractors.http import (
     HttpExtractor,
     normalize_http_path,
 )
@@ -25,8 +23,8 @@ from repowise.core.workspace.extractors.service_boundary import (
     assign_service,
     detect_service_boundaries,
 )
-from repowise.core.workspace.extractors.socket_extractor import SocketExtractor
-from repowise.core.workspace.extractors.topic_extractor import TopicExtractor
+from repowise.core.workspace.extractors.socket import SocketExtractor
+from repowise.core.workspace.matching import annotate_consumer_targets, match_contracts
 
 # ---------------------------------------------------------------------------
 # normalize_http_path
@@ -662,87 +660,6 @@ class TestGrpcExtractor:
         contracts = GrpcExtractor().extract(tmp_path, "game")
         consumers = [c for c in contracts if c.role == "consumer"]
         assert consumers == []
-
-
-# ---------------------------------------------------------------------------
-# TopicExtractor
-# ---------------------------------------------------------------------------
-
-
-class TestTopicExtractor:
-    def _write_file(self, repo: Path, rel: str, content: str) -> None:
-        fpath = repo / rel
-        fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath.write_text(content, encoding="utf-8")
-
-    def test_kafka_listener_consumer(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "Consumer.java", """
-            @KafkaListener(topics = "orders")
-            public void listen(String message) {}
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "worker")
-        consumers = [c for c in contracts if c.role == "consumer"]
-        assert len(consumers) == 1
-        assert consumers[0].contract_id == "topic::orders"
-        assert consumers[0].meta["broker"] == "kafka"
-
-    def test_kafka_template_provider(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "Publisher.java", """
-            kafkaTemplate.send("orders", payload);
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "api")
-        providers = [c for c in contracts if c.role == "provider"]
-        assert len(providers) == 1
-        assert providers[0].contract_id == "topic::orders"
-
-    def test_kafka_node_provider(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "producer.js", """
-            await producer.send({ topic: 'payments', messages });
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "svc")
-        providers = [c for c in contracts if c.role == "provider"]
-        assert len(providers) == 1
-        assert providers[0].contract_id == "topic::payments"
-
-    def test_rabbitmq_listener_consumer(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "Worker.java", """
-            @RabbitListener(queues = "jobs")
-            public void process(Message msg) {}
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "worker")
-        consumers = [c for c in contracts if c.role == "consumer"]
-        assert len(consumers) == 1
-        assert consumers[0].contract_id == "topic::jobs"
-        assert consumers[0].meta["broker"] == "rabbitmq"
-
-    def test_nats_subscribe_consumer(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "listener.go", """
-            nc.Subscribe("events.created", handler)
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "svc")
-        consumers = [c for c in contracts if c.role == "consumer"]
-        assert len(consumers) == 1
-        assert consumers[0].contract_id == "topic::events.created"
-        assert consumers[0].meta["broker"] == "nats"
-
-    def test_nats_publish_provider(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "notifier.go", """
-            nc.Publish("events.created", data)
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "notifier")
-        providers = [c for c in contracts if c.role == "provider"]
-        assert len(providers) == 1
-        assert providers[0].contract_id == "topic::events.created"
-
-    def test_dedup_same_pattern_in_file(self, tmp_path: Path) -> None:
-        self._write_file(tmp_path, "multi.java", """
-            kafkaTemplate.send("orders", payload1);
-            kafkaTemplate.send("orders", payload2);
-        """)
-        contracts = TopicExtractor().extract(tmp_path, "svc")
-        # Same topic, same role, same file → deduplicated
-        providers = [c for c in contracts if c.role == "provider"]
-        assert len(providers) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -568,6 +568,23 @@ async def delete_repo(
     fts=Depends(get_fts),
 ) -> dict:
     """Delete a repository and all its data."""
+    if repo_id.startswith("ws:"):
+        alias = repo_id[3:]
+        ws_config = getattr(request.app.state, "workspace_config", None)
+        ws_root = getattr(request.app.state, "workspace_root", None)
+        if ws_config is not None and ws_root is not None:
+            ws_root_path = Path(ws_root)
+            entry = ws_config.get_repo(alias)
+            if entry is not None:
+                repo_path_str = str((ws_root_path / entry.path).resolve())
+                ws_config.remove_repo(alias)
+                ws_config.save(ws_root_path)
+                request.app.state.workspace_config = ws_config
+                path_to_rid = getattr(request.app.state, "workspace_path_to_repo_id", None)
+                if path_to_rid and repo_path_str in path_to_rid:
+                    path_to_rid.pop(repo_path_str)
+                return {"ok": True, "deleted_pages": 0}
+
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")

@@ -58,6 +58,8 @@ import structlog
 
 from repowise.core.analysis.decisions.discovery.spans import SpanCollector
 from repowise.core.analysis.decisions.extractor import ExtractedDecision
+from repowise.core.analysis.decisions.kinds import classify_kind
+from repowise.core.analysis.decisions.lifecycle import AGREEMENT_KIND, bundles_decisions
 from repowise.core.analysis.decisions.policy import DEFAULT_HARNESSES, resolve_policy
 from repowise.core.analysis.decisions.provenance import (
     completeness,
@@ -66,7 +68,11 @@ from repowise.core.analysis.decisions.provenance import (
     verify_quote,
 )
 from repowise.core.analysis.decisions.rationale_comments import CAUSAL_MARKERS
-from repowise.core.analysis.decisions.scope import bind_scope_files, resolve_module_nodes
+from repowise.core.analysis.decisions.scope import (
+    bind_scope_files,
+    resolve_module_nodes,
+    session_scope_basis,
+)
 from repowise.core.distill.corrections import command_anchor
 from repowise.core.precedent.transcript_episodes import (
     TranscriptEpisodeRecorder,
@@ -326,23 +332,49 @@ def _result_anchor(name: str, use_input: dict[str, Any]) -> str:
     return name.lower()
 
 
+def _repo_relative_touches(
+    touches: list[tuple[str, str]], repo_root: Any
+) -> list[tuple[str, str]]:
+    """``(path, intent)`` with each path repo-relative POSIX, outsiders dropped.
+
+    A transcript records the path the tool call was given, which for every
+    agent this reads is an absolute one. Staging that verbatim writes a
+    machine's directory layout into a row the index later has to match
+    against repo-relative paths, so it is normalized here, at the single
+    point a touch enters the miner, rather than by each reader guessing.
+    """
+    out: list[tuple[str, str]] = []
+    for path, intent in touches:
+        relative = relative_files([path], repo_root)
+        if relative:
+            out.append((relative[0], intent))
+    return out
+
+
 def mine_events(
     events: Iterable[Event],
-    repo_prefix: str,
+    repo_root: Any,
     *,
     edit_tools: Container[str] = frozenset(),
 ) -> list[SessionCandidate]:
     """Run the deterministic candidate gates over one session's events.
 
-    *repo_prefix* is the lowercased resolved repo root; only events whose
-    ``cwd`` sits inside it count (same scoping as the distill miners). Pure
-    and streaming: state is bounded regardless of transcript size.
+    *repo_root* is the resolved repository root; only events whose ``cwd``
+    sits inside it count (same scoping as the distill miners), and every file
+    a candidate carries is stated relative to it. Pure and streaming: state
+    is bounded regardless of transcript size.
+
+    A file the session touched outside the root is dropped rather than kept
+    absolute. It names another checkout, a scratch directory, or the agent's
+    own state, none of which this index can resolve, and a scope built from
+    paths that resolve to nothing is worse than an empty one.
 
     *edit_tools* is the producing adapter's edit vocabulary. It orders each
     candidate's files, putting the ones the session changed ahead of the ones
     it only opened, because a decision is about the code that moved and the
     surrounding reads are how it got there.
     """
+    repo_prefix = str(repo_root).lower().rstrip("\\/")
     candidates: list[SessionCandidate] = []
     #: (path, intent) for the recent file-touching calls, so a candidate opened
     #: here knows which of the files in play were being changed at the time.
@@ -366,7 +398,9 @@ def mine_events(
             continue
 
         if event.kind == "assistant" and event.tool_uses:
-            touches = event_file_touches(event, edit_tools=edit_tools)
+            touches = _repo_relative_touches(
+                event_file_touches(event, edit_tools=edit_tools), repo_root
+            )
             files = [path for path, _ in touches]
             trailing_files.extend(touches)
             changed = {path for path, intent in touches if intent == "edit"}
@@ -568,7 +602,6 @@ def _sweep_harness(
     harness: str,
     *,
     repo_root: Path,
-    repo_prefix: str,
     projects_root: Path | None,
     store: SessionStagingStore,
     recorder: TranscriptEpisodeRecorder,
@@ -609,7 +642,7 @@ def _sweep_harness(
             if collector is not None:
                 stream = collector.observe(stream)
             for candidate in mine_events(
-                stream, repo_prefix, edit_tools=adapter.edit_tool_names
+                stream, repo_root, edit_tools=adapter.edit_tool_names
             ):
                 counts["found"] += 1
                 if store.add_raw(
@@ -792,6 +825,27 @@ def promotion_decisions(
         ),
     )
     sessions = row["sessions"][-_MAX_EVIDENCE_SESSIONS:] or [None]
+    # Flagged here rather than at staging, for the same reason binding and
+    # classification are: a row staged before the flag existed is judged on
+    # its way out instead of staying unflagged forever, which is the whole
+    # backlog. The discovery lane already decides this at grounding time, so
+    # its answer is kept and only ever raised -- the two lanes ask the same
+    # question of the same text and must not disagree by which ran first.
+    needs_split = bool(structured.get("needs_split")) or bundles_decisions(
+        structured.get("decision", "") or ""
+    )
+    # Classified here rather than at staging, for the same reason binding is:
+    # a candidate staged before the split existed is classified on its way out
+    # instead of staying one noun forever.
+    kind = classify_kind(
+        row["title"],
+        structured.get("decision", ""),
+        structured.get("rationale", "") or "",
+        source="session",
+    )
+    # The files stay on the record; whether they are a claim about those files
+    # is a separate question, and this is where both answers are known.
+    scope_basis = session_scope_basis(files, is_agreement=kind == AGREEMENT_KIND)
     return [
         ExtractedDecision(
             title=row["title"],
@@ -799,14 +853,16 @@ def promotion_decisions(
             rationale=structured.get("rationale", ""),
             affected_files=files,
             affected_modules=modules,
+            scope_basis=scope_basis,
             source="session",
             evidence_commits=[sid] if sid else [],
             confidence=confidence,
             status="proposed",
+            kind=kind,
             source_quote=structured.get("source_quote", ""),
             verification=structured.get("verification", "unverified"),
             lane=lane,
-            needs_split=bool(structured.get("needs_split")),
+            needs_split=needs_split,
         )
         for sid in sessions
     ]
@@ -819,6 +875,41 @@ def promotion_decisions(
 #: An injection is judged only after this long: the showing session must have
 #: had time to react (or end) before "no contradiction" reads as "followed".
 INJECTION_EVAL_MIN_AGE_SECONDS = 3600.0
+
+
+async def _records_by_alias(
+    db_session: Any, repository_id: str, alias_ids: list[str]
+) -> dict[str, Any]:
+    """Live records for retired ids, keyed by the **retired** id.
+
+    Keyed by the alias so the caller can look a sidecar row up under the id it
+    stored.
+
+    One hop, because re-keying does not chain: ``decision_aliases.decision_id``
+    is in ``_DEPENDENT_COLUMNS``, so re-keying a record that is already some
+    id's target repoints the existing alias rather than writing a hop beside
+    it. A merge *can* chain, since a merged candidate keeps its record, so
+    ``A -> B -> C`` is reachable with ``B`` live. One hop is still the right
+    answer there: ``A`` has no record, ``B`` has a real one, and ``B``'s text
+    is what was shown.
+    """
+    if not alias_ids:
+        return {}
+
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import DecisionAlias, DecisionRecord
+
+    rows = await db_session.execute(
+        select(DecisionAlias.alias_id, DecisionRecord)
+        .join(DecisionRecord, DecisionRecord.id == DecisionAlias.decision_id)
+        .where(
+            DecisionAlias.alias_id.in_(alias_ids),
+            DecisionAlias.repository_id == repository_id,
+            DecisionRecord.repository_id == repository_id,
+        )
+    )
+    return {alias_id: rec for alias_id, rec in rows.all()}
 
 
 async def apply_injection_feedback(
@@ -876,6 +967,11 @@ async def apply_injection_feedback(
         # would never reach them otherwise and the reported rate would stay
         # pinned at whatever the else branch produced.
         retired = store.retire_unjudgeable_verdicts()
+        # Beside it: rows another session's match settled, handed back to the
+        # judge below. **This order is load-bearing** -- both repairs ride one
+        # `PRAGMA user_version` and this one writes the higher number, so
+        # reversing them skips the retirement for good.
+        reopened = store.reopen_smeared_contradictions()
         # Commit even when nothing matched, because what is being persisted is
         # the "already repaired" mark, not the rows. Without this the mark is
         # rolled back by the early return below on any store with nothing to
@@ -883,8 +979,12 @@ async def apply_injection_feedback(
         # RAW_TTL_DAYS has pruned the corrections, it would fire on verdicts
         # that were earned. That is the exact decay the one-shot prevents.
         store.commit()
-        if retired:
-            logger.info("session_mining.injection_verdicts_retired", rows=retired)
+        if retired or reopened:
+            logger.info(
+                "session_mining.injection_verdicts_repaired",
+                retired=retired,
+                reopened=reopened,
+            )
 
         injections = store.unevaluated_injections(before=ts - INJECTION_EVAL_MIN_AGE_SECONDS)
         if not injections:
@@ -898,16 +998,20 @@ async def apply_injection_feedback(
             )
         )
         records = {rec.id: rec for rec in rows.scalars().all()}
+        # A record's id moves when its scope does and nothing rewrites the
+        # sidecar, so without the aliases those rows read as "the decision is
+        # gone" and are drained, discarding feedback already earned -- 372 of
+        # 421 settled rows on this store.
+        records |= await _records_by_alias(
+            db_session, repository_id, [d for d in decision_ids if d not in records]
+        )
 
         quotes_by_session: dict[str, list[str]] = {}
-        verdicts: dict[str, bool] = {}  # decision_id -> contradicted anywhere
-        #: (session_id, decision_id, this session had a correction to test it
-        #: against) for every row settled here. Judgeability is per *row*, not
-        #: per decision, because the totals count rows: one session that
-        #: happened to hold a correction would otherwise hand a free verdict
-        #: to every other session the same decision was shown to, which is the
-        #: bug this whole change is about, one level up.
-        judged: list[tuple[str, str, bool]] = []
+        #: (session_id, decision_id, judgeable, this session's own verdict).
+        #: **Both flags are per row**, because the totals count rows: a verdict
+        #: shared across every session a decision was shown to is multiplied by
+        #: however many that was.
+        judged: list[tuple[str, str, bool, bool]] = []
         for inj in injections:
             rec = records.get(inj["decision_id"])
             if rec is None:
@@ -921,18 +1025,12 @@ async def apply_injection_feedback(
             quotes = quotes_by_session[session_id]
             decision_text = f"{rec.title}. {rec.decision}"
             contradicted = any(contradicts(decision_text, quote)[0] for quote in quotes)
-            verdicts[rec.id] = verdicts.get(rec.id, False) or contradicted
-            judged.append((session_id, inj["decision_id"], bool(quotes)))
+            judged.append((session_id, inj["decision_id"], bool(quotes), contradicted))
 
-        # Settle the ledger after the aggregation, not during it: the verdict
-        # *value* is per decision across every session that saw it, so a row's
-        # own judgement is not final until the last of them has been read.
-        # Whether a row gets that value at all is per row, and the two are
-        # different questions — a decision contradicted in one session says
-        # nothing about a session that mined no correction at all. Storing it
-        # is what lets `repowise hook stats` report the split — until now the
-        # numbers existed only in one update run's console output.
-        for session_id, decision_id, judgeable in judged:
+        # Each row settles on its own session's corrections: a decision
+        # contradicted in one session says nothing about a session that mined
+        # different corrections, or none. Stored so `hook stats` can report it.
+        for session_id, decision_id, judgeable, contradicted in judged:
             if not judgeable:
                 # Settled, so it is not re-read every update, but with no
                 # verdict: this session mined nothing that could have
@@ -940,7 +1038,6 @@ async def apply_injection_feedback(
                 store.mark_injection_evaluated(session_id, decision_id)
                 summary["unjudgeable"] += 1
                 continue
-            contradicted = bool(verdicts.get(decision_id))
             store.mark_injection_evaluated(
                 session_id,
                 decision_id,
@@ -997,7 +1094,6 @@ async def mine_session_decisions(
     has no set does not start binding scope it cannot check.
     """
     repo_root = Path(repo_path).resolve()
-    repo_prefix = str(repo_root).lower().rstrip("\\/")
     # The caller's resolved policy wins; reading config again here would be a
     # second answer to a question it has already asked.
     names = registered_harnesses(harnesses) if harnesses is not None else harnesses_for(repo_path)
@@ -1024,7 +1120,6 @@ async def mine_session_decisions(
                 yields[name] = _sweep_harness(
                     name,
                     repo_root=repo_root,
-                    repo_prefix=repo_prefix,
                     projects_root=projects_root,
                     store=store,
                     recorder=recorder,

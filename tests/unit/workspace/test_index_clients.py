@@ -472,8 +472,8 @@ export class HostedApiClient {
         decorator paths, so the join runs against whatever normalisation the
         product actually applies rather than an id hand-written to match.
         """
-        from repowise.core.workspace.contracts import match_contracts
         from repowise.core.workspace.extractors.http.dialect import build_provider_contract
+        from repowise.core.workspace.matching import match_contracts
 
         consumers, _u, _c = _run(self.SSE_CLIENT, "src/lib/api/client.ts")
         backend_ctx = ScanContext("backend", "app/routers/chat.py", ".py", "", {})
@@ -681,9 +681,9 @@ class TestSupersedeCannotSubtract:
     ],
 )
 def test_literal_url_recognition(args: str, expected: str | None):
-    from repowise.core.workspace.extractors.http.client_calls import JS_SYNTAX, resolve_url
+    from repowise.core.workspace.extractors.strings import JS_SYNTAX, resolve_string
 
-    assert resolve_url(args, JS_SYNTAX) == expected
+    assert resolve_string(args, JS_SYNTAX) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -943,8 +943,8 @@ export class HostedApiClient {
 
     def test_it_now_reaches_the_provider_that_exists(self):
         """End to end against a provider built by the product's own normalizer."""
-        from repowise.core.workspace.contracts import match_contracts
         from repowise.core.workspace.extractors.http.dialect import build_provider_contract
+        from repowise.core.workspace.matching import match_contracts
 
         consumers, _u, _c = _run(self.QUERY_SUFFIX_TS)
         backend_ctx = ScanContext("backend", "app/routers/graph.py", ".py", "", {})

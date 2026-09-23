@@ -1,30 +1,29 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { BreakingChangesView } from "@repowise-dev/ui/workspace/breaking-changes-view";
+import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { fileEntityPath, symbolEntityPath } from "@repowise-dev/ui/shared/entity";
 import { useWorkspaceBreakingChanges } from "@/lib/hooks/use-workspace";
-import { contractDetailHref } from "./contract-href";
+import { useOpenContract } from "./contract-drawer-host";
 
 /**
  * The breaking-change report on the contracts page.
  *
  * A client boundary because the report is fetched per view rather than at build
  * time: it is written by the most recent workspace update, and a page cached for
- * 30 seconds would report a stale all-clear.
- *
- * The alias-to-repo-id map comes from the page, which already loads the
- * workspace. A change names a repo by its workspace alias; the per-repo routes
- * are keyed on the indexed repo id, and a repo that was never indexed has none,
- * so those references stay plain text instead of linking into a missing page.
+ * 30 seconds would report a stale all-clear. It owns its section heading so the
+ * explanation of what the list holds appears only when there is a list; with no
+ * findings the section is its heading and one sentence.
  */
 export function BreakingChangesSection({
   repoIds,
 }: {
+  /** Repo alias to indexed repo id; a never-indexed repo's references stay text. */
   repoIds: Record<string, string>;
 }) {
-  const router = useRouter();
+  const open = useOpenContract();
   const { data, isLoading } = useWorkspaceBreakingChanges();
+  const hasFindings = (data?.changes.length ?? 0) > 0;
 
   const prefixFor = (repo: string): string | null => {
     const id = repoIds[repo];
@@ -32,28 +31,36 @@ export function BreakingChangesSection({
   };
 
   return (
-    <BreakingChangesView
-      report={data}
-      loading={isLoading}
-      links={{
-        symbolHref: (repo, symbolId) => {
-          const prefix = prefixFor(repo);
-          return prefix ? symbolEntityPath(prefix, symbolId) : null;
-        },
-        fileHref: (repo, file) => {
-          const prefix = prefixFor(repo);
-          return prefix ? fileEntityPath(prefix, file) : null;
-        },
-      }}
-      onSelectContract={(_contractId, change) =>
-        router.push(
-          contractDetailHref({
+    <OverviewSection
+      title="Breaking changes"
+      {...(hasFindings
+        ? {
+            description:
+              "Provider contracts that changed in the most recent workspace update, and the consumers linked to them. Breaking first, then warnings.",
+          }
+        : {})}
+    >
+      <BreakingChangesView
+        report={data}
+        loading={isLoading}
+        links={{
+          symbolHref: (repo, symbolId) => {
+            const prefix = prefixFor(repo);
+            return prefix ? symbolEntityPath(prefix, symbolId) : null;
+          },
+          fileHref: (repo, file) => {
+            const prefix = prefixFor(repo);
+            return prefix ? fileEntityPath(prefix, file) : null;
+          },
+        }}
+        onSelectContract={(_contractId, change) =>
+          open({
             repo: change.provider_repo,
             file_path: change.provider_file,
             contract_id: change.contract_id,
-          }),
-        )
-      }
-    />
+          })
+        }
+      />
+    </OverviewSection>
   );
 }

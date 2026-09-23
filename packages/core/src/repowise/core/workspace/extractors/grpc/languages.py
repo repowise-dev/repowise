@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..base import line_at
+from ..dialect import build_contract
 from ..langs import CSHARP, GO, JAVA, JS_TS, PYTHON
-from .dialect import make_grpc_contract
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -142,8 +142,9 @@ class LanguageGrpcDialect:
                     continue
                 method = m.group(rule.method_group) if rule.method_group else None
                 out.append(
-                    make_grpc_contract(
+                    build_contract(
                         ctx,
+                        contract_type="grpc",
                         contract_id=f"grpc::{service}/{method or '*'}",
                         role=rule.role,
                         symbol_name=rule.symbol.format(service=service, method=method),

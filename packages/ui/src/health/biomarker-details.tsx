@@ -459,16 +459,20 @@ export function BiomarkerDetails({
       );
       break;
     }
-    case "co_change_scatter":
+    case "co_change_scatter": {
+      // The percentile is the gate, so it is what makes the count meaningful.
+      const p = num(details.co_change_scatter_pct);
       line = joinStats(
         num(details.scatter) != null
           ? `co-changes with ${num(details.scatter)} files`
           : null,
+        p != null ? `${formatTopPercentile(p)} coupling` : null,
         num(details.commit_count_90d) != null
           ? `${num(details.commit_count_90d)} commits/90d`
           : null,
       );
       break;
+    }
     case "prior_defect": {
       const count = num(details.prior_defect_count);
       const windowDays = num(details.window_days);

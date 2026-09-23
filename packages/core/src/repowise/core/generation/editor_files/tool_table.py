@@ -99,8 +99,9 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     ),
     "get_health": (
         "get_health(targets?, include?)",
-        "Defect / maintainability / performance scores and findings. Self-check the "
-        "files you touched before finishing.",
+        "Defect / maintainability / performance scores and findings, plus "
+        "documentation the code no longer supports. Self-check the files you "
+        "touched before finishing.",
     ),
     "get_dead_code": (
         "get_dead_code(tier?, min_confidence?, safe_only?)",

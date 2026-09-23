@@ -9,6 +9,9 @@ import json
 import re
 from pathlib import Path
 
+from ...ingestion.composer import COMPOSER_JSON, read_composer
+from ...ingestion.framework_facts import detect_php_framework
+from ...precedent.structural import declares_ruff_format
 from .data import TechStackItem
 
 # Node.js framework/library signatures to detect from package.json dependencies
@@ -314,27 +317,13 @@ def _detect_tech_stack_uncached(repo_path: Path) -> list[TechStackItem]:
         add("Ruby", None, "language")
 
     # --- composer.json (PHP) ---
-    composer_json = repo_path / "composer.json"
+    composer_json = repo_path / COMPOSER_JSON
     if composer_json.exists():
         add("PHP", None, "language")
-        try:
-            composer = json.loads(composer_json.read_text(encoding="utf-8"))
-        except Exception:
-            composer = None
-        if isinstance(composer, dict):
-            requires = {
-                **(composer.get("require") or {}),
-                **(composer.get("require-dev") or {}),
-            }
-            if (
-                composer.get("type") == "typo3-cms-extension"
-                or "typo3/cms-core" in requires
-            ):
-                add("TYPO3", None, "framework")
-            elif "symfony/framework-bundle" in requires or "symfony/symfony" in requires:
-                add("Symfony", None, "framework")
-            elif "laravel/framework" in requires:
-                add("Laravel", None, "framework")
+        composer = read_composer(composer_json)
+        framework = detect_php_framework(composer) if composer is not None else None
+        if framework is not None:
+            add(framework.name, None, "framework")
 
     # --- .NET / C# (.csproj / .sln / Directory.Build.props) ---
     # Walk the tree (bounded) so monorepos whose projects live under
@@ -455,7 +444,7 @@ def detect_build_commands(repo_path: Path) -> dict[str, str]:
             commands["test"] = "pytest"
         if "lint" not in commands and "ruff" in text:
             commands["lint"] = "ruff check ."
-        if "format" not in commands and "ruff" in text and "format" in text:
+        if "format" not in commands and declares_ruff_format(repo_path):
             commands["format"] = "ruff format ."
         if "typecheck" not in commands and "mypy" in text:
             commands["typecheck"] = "mypy ."

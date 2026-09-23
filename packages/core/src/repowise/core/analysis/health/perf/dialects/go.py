@@ -98,6 +98,11 @@ GO_RESOURCE_CTORS: frozenset[tuple[str, str]] = frozenset(
 )
 # ``sync.Mutex`` / ``sync.RWMutex`` acquisition (the contention side only).
 GO_LOCK_METHODS: frozenset[str] = frozenset({"Lock", "RLock"})
+# ``slices.Chunk`` (Go 1.23) and hand-rolled peers, matched on the call's
+# rightmost name so a local helper (``Batch(xs, n)``) counts too.
+GO_CHUNK_CALLS: frozenset[str] = frozenset(
+    {"Chunk", "chunk", "Batch", "batch", "Chunks", "chunks"}
+)
 
 
 class GoPerfDialect(BasePerfDialect):
@@ -216,6 +221,21 @@ class GoPerfDialect(BasePerfDialect):
         if named and named[-1].type in ("identifier", "selector_expression"):
             return self._dotted_path(named[-1])
         return None
+
+    def is_chunked_loop(self, node: Node) -> bool:
+        """``for i := 0; i < n; i += step``, or ``range slices.Chunk(xs, n)``."""
+        if node.type != "for_statement":
+            return False
+        clause = next((c for c in node.children if c.type == "for_clause"), None)
+        if clause is not None:
+            return self._steps_by_chunk(clause.child_by_field_name("update"))
+        clause = next((c for c in node.children if c.type == "range_clause"), None)
+        if clause is None:
+            return False
+        right = clause.child_by_field_name("right")
+        if right is None or right.type != "call_expression":
+            return False
+        return self.callee_method_name(right) in GO_CHUNK_CALLS
 
     @staticmethod
     def _has_static_pattern_arg(node: Node) -> bool:

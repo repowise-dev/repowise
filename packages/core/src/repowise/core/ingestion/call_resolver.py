@@ -1033,6 +1033,25 @@ class CallResolver:
         local = parsed.export_aliases.get(name) if parsed else None
         return symbols.get(local) if local else None
 
+    def _published_by(self, file_path: str, owner: str, name: str) -> str | None:
+        """What *file_path* publishes under *name*, owned by *owner* where it can be.
+
+        ``_file_symbols`` is flat and last-wins, so a file that declares ``new``
+        on four types answers every ``Type::new()`` lookup with whichever came
+        last. That is the right file and the wrong owner. ``_file_methods``
+        already carries the owner, and until now was only ever asked about the
+        caller's own file.
+
+        A real module qualifier owns nothing — ``config::limits()`` has no
+        ``(config, limits)`` entry anywhere — so it falls through to the flat
+        lookup unchanged. This can only re-point an edge that was already
+        landing on the wrong owner of the right file.
+        """
+        owned = self._file_methods.get(file_path, {}).get((owner, name))
+        if owned is not None:
+            return owned
+        return self._published(file_path, name)
+
     def _merged_symbols_for(self, file_path: str) -> dict[str, str]:
         """Merged ``{name → symbol_id}`` across every file *file_path* imports.
 
@@ -1451,9 +1470,16 @@ class CallResolver:
         # A data member is not callable. Tier 3 already refuses one, but this
         # rung answered first and at 0.85, above the tier that declines it, so
         # the refusal only reached whichever sites tier 3 happened to see.
+        #
+        # A std-library name is refused for the same reason tier 3 refuses it:
+        # the name is in scope in every file without an import, so a repo
+        # symbol that merely shares it is not what the call site named. Being
+        # reachable through an import says nothing, because the guess never
+        # attributed the name to one imported file in the first place.
         if (
             target_name in merged_syms
             and merged_syms[target_name] not in self._non_callable_ids
+            and target_name not in get_builtin_methods(self._language_of(file_path) or "")
         ):
             return ResolvedCall(
                 caller_id, merged_syms[target_name], 0.85, call.line, "import_merged"
@@ -1574,7 +1600,7 @@ class CallResolver:
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
         if module_file:
-            published = self._published(module_file, method_name)
+            published = self._published_by(module_file, receiver_name, method_name)
             if published is not None:
                 return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
             # A namespace over a barrel names a file that declares nothing of
@@ -1598,7 +1624,7 @@ class CallResolver:
         name_to_file = self._import_names.get(file_path, {})
         if receiver_name in name_to_file and not module_file:
             source_file = name_to_file[receiver_name]
-            published = self._published(source_file, method_name)
+            published = self._published_by(source_file, receiver_name, method_name)
             if published is not None:
                 return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
 

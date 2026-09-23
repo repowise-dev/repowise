@@ -17,7 +17,12 @@ Optional ``include`` parameter widens the response:
   - include=["last_change"]→ last commit date and author
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
-  - include=["decisions"] → full decision records (default returns titles only)
+  - include=["decisions"] → decisions governing the target, in three labelled
+                            lanes: ``decisions`` (accepted and binding),
+                            ``candidates`` (proposed, nobody has agreed),
+                            ``history`` (accepted then withdrawn). The last
+                            two appear only when non-empty, and are capped.
+                            A dismissed record is in none of them.
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
   - include=["health"]    → code-health scores and biomarkers for the target
   - include=["doc_drift"] → documents that name this file, and their drift
@@ -48,11 +53,11 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
     attach_ignored_arguments,
+    drop_echoed_target,
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
-from repowise.server.mcp_server._meta import context_hint as _context_hint
 from repowise.server.mcp_server.tool_context.enrichment import attach_doc_references
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
@@ -60,9 +65,8 @@ _log = logging.getLogger("repowise.mcp.context")
 
 # Every value ``include_set`` is tested against downstream, in ``targets.py``.
 # ``docs`` and ``freshness`` are always on but remain legal to pass explicitly.
-# ``source`` is tested in ``_meta.context_hint`` and left out deliberately: both
-# branches there return None, so accepting it would promise a block that does
-# nothing.
+# ``source`` is omitted: get_context serves triage cards and structural metadata,
+# not raw source bodies (which are served via include=["skeleton"] or the Read tool).
 _INCLUDE_BLOCKS = frozenset(
     {
         "docs",
@@ -246,7 +250,6 @@ async def get_context(
         "targets": {r["target"]: r for r in results},
         "_meta": _build_meta(
             timing_ms=(_time.perf_counter() - _t0) * 1000,
-            hint=_context_hint(targets, compact, include_set),
             repository=repository,
             targets=targets,
         ),
@@ -307,6 +310,7 @@ async def get_context(
             if cross_repo:
                 target_data["cross_repo"] = cross_repo
 
+    drop_echoed_target(response.get("targets"))
     attach_ignored_arguments(response, ignored)
     collector.attach(response)
     return response

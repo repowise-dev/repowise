@@ -33,6 +33,20 @@ It is a recommendation, not a requirement. Nothing is wiped until you choose to 
 
 ## Behaviour changes worth knowing about
 
+### 0.52.0: decision capture is stricter, and health re-scores once
+
+Three changes you may notice after upgrading to 0.52.0.
+
+**Transcript mining is off by default.** Decisions are no longer mined from coding-agent transcripts unless you ask for it. The lane was binding records to files the repository does not have, so it now stays quiet until you turn it on:
+
+```bash
+repowise decision source set session --on
+```
+
+**A decision needs a stated reason to be accepted.** `repowise decision confirm` refuses a record whose body only restates its own title. Existing records are untouched, but ids that used to pass may now be rejected; add a reason with `repowise decision add --rationale`, or re-record it.
+
+**Your first `update` re-scores the whole repository.** The health analyzer version moved from 11 to 21 over this cycle, because new test-quality markers, a per-language assertion vocabulary, a `.tsx` grammar fix and re-ranked history gates all change how a stored health number is computed. Rather than wait out the decay timer, the first update after upgrading re-scores every file, so it takes longer than usual. On a 171-file repository that was 10.2 seconds against a 5.8 second baseline, with the next update back to normal. Nothing needs re-indexing: the store format and parser schema are unchanged.
+
 ### `health-rules.json` globs now match like `.gitignore`
 
 Per-path rules in `.repowise/health-rules.json` used to be matched with

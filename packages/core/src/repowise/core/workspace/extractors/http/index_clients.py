@@ -32,16 +32,15 @@ from typing import TYPE_CHECKING
 
 from ..base import line_at
 from ..langs import PYTHON
-from .client_calls import (
+from ..strings import (
     JS_SYNTAX,
     PYTHON_SYNTAX,
-    VERBS,
-    is_rooted_url,
     match_paren,
-    resolve_url,
+    resolve_string,
     split_first_arg,
     string_constants,
 )
+from .client_calls import VERBS, is_rooted_url
 from .dialect import build_consumer_contract
 from .wrappers import (
     DEFAULT_HOP_BUDGET,
@@ -98,7 +97,7 @@ def _first_arg_url(arg: str, is_python: bool, constants: dict[str, str]) -> str 
     to a string literal, then faces the same concreteness test as every other
     language.
     """
-    url = resolve_url(arg, PYTHON_SYNTAX if is_python else JS_SYNTAX, constants)
+    url = resolve_string(arg, PYTHON_SYNTAX if is_python else JS_SYNTAX, constants)
     return url if url is not None and is_rooted_url(url) else None
 
 

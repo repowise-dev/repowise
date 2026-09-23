@@ -11,6 +11,7 @@ from repowise.cli.helpers import (
     get_db_url_for_repo,
     resolve_repo_path,
     run_async,
+    warn,
 )
 from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
 
@@ -177,9 +178,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                 failed += 1
                 warned += 1
                 if warned <= 3:
-                    console.print(
-                        f"[yellow]  Warning: failed to embed {page_id} during {stage}: {exc}[/yellow]"
-                    )
+                    warn(f"  failed to embed {page_id} during {stage}: {exc}")
 
             for page_id, text, meta in retry_items:
                 try:
@@ -189,9 +188,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                     failed += 1
                     warned += 1
                     if warned <= 3:
-                        console.print(
-                            f"[yellow]  Warning: failed to embed {page_id}: {exc}[/yellow]"
-                        )
+                        warn(f"  failed to embed {page_id}: {exc}")
             return next((exc for _item, stage, exc in terminal if stage == "embedding"), None)
 
         # Pages — one batched embed per slice instead of one embedder
@@ -208,10 +205,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                     failed += 1
                     warned += 1
                     if warned <= 3:
-                        console.print(
-                            f"[yellow]  Warning: skipped {page.id}: no title to index it by"
-                            "[/yellow]"
-                        )
+                        warn(f"  skipped {page.id}: no title to index it by")
                     continue
                 item = embed_item(
                     page.id,

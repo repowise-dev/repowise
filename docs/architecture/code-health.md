@@ -296,9 +296,9 @@ returning a list of `BiomarkerResult`s.
 
 ### The full roster
 
-`biomarkers/registry.py` registers **49 detectors**; counting the three
+`biomarkers/registry.py` registers **51 detectors**; counting the three
 governance findings written by the additive pass (`governance.py`) there
-are **52 marker ids**. They divide by what each is permitted to affect:
+are **54 marker ids**. They divide by what each is permitted to affect:
 
 | Group | Count | Scores into |
 |---|---:|---|
@@ -306,6 +306,7 @@ are **52 marker ids**. They divide by what each is permitted to affect:
 | Performance | 20 | `performance` only |
 | SQL | 3 | `maintainability` only |
 | Governance | 3 | nothing — the finding surfaces, the score is untouched |
+| Advisory | 2 | nothing — measured by construction, kept out of impact-ranked lists unless requested |
 
 The authority is `scoring._BIOMARKER_DIMENSIONS`. Any biomarker **not** listed
 there defaults into `defect`, which is why every `sql_*` and every performance
@@ -775,7 +776,7 @@ module per surface, sharing `scope.py`, `counts.py`, `file_filters.py` and
 | `GET /files/breakdown` | one file's metric + score breakdown + findings + suggestions + per-file `trend` + `signals` |
 | `GET /files/trend` | one file's score-over-time series + current delta + `declining` flag (`?file_path=`) |
 | `GET /trend` | repo KPI history + alerts + last-two-snapshot per-file deltas |
-| `GET /findings` | findings list, filterable by `biomarker_type`, `file_path`, `dimension`, `status` and severity (`severity` exact, or the `min_severity` floor). Performance is excluded unless asked for by name |
+| `GET /findings` | findings list, filterable by `biomarker_type`, `file_path`, `dimension`, `status` and severity (`severity` exact, or the `min_severity` floor). The zero-impact dimensions, performance and advisory, are out of the ranked list: name one in `dimension`, name a marker in `biomarker_type`, or pass `include_zero_impact=true` |
 | `GET /coverage` | coverage summary + per-file rows |
 | `POST /coverage` | ingest a coverage report (used by some CI integrations) |
 | `GET /refactoring-targets` | the work queue: files carrying findings, ranked by `total_impact / effort_bucket`. Takes the findings filters plus `search`, `module` and the `only_hotspots` / `only_untested` / `only_failing` row filters, pages by `limit` + `offset`, and returns `total` with `finding_total` beside it. Impact counts open findings only, so dismissing work moves a file down |
@@ -945,7 +946,7 @@ phases may revisit; the constraints kept v1 shippable.
   flag.
 - **No symbol-level scoring.** Score lives at the file granularity to
   match how engineers think about refactor units. Symbol-level CCN
-  still feeds the file score via `function_metrics`.
+  still feeds the file score via `all_functions`.
 - **No `complexity_estimate` propagation backfill.** The walker writes
   the field as a side effect during the current run; old indexes don't
   get touched until a re-index.

@@ -204,7 +204,7 @@ That does silently reclassify some files: a high-traffic file with 3 fixes in
 
 ### `get_change_risk`
 
-A diff or commit range gains a `prior_fixes` block: per changed file, how many
+A diff or commit range gains a `fix_history.overlap` block: per changed file, how many
 past fixes it carries and how many of the change's lines fall inside a past
 fix's replaced ranges. The per-file counts are exact (counted by
 `COUNT(DISTINCT fix_sha)`, so one commit fixing three files reports one fix, not

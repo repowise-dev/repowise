@@ -1,8 +1,10 @@
 """Shared helpers and the ``FrameworkHandler`` protocol for framework-edge detection.
 
 Split out of ``framework_edges.py`` (PR 3.5). Holds the cross-framework
-primitives: the dedup ``_add_edge_if_new`` guard, the unified ``read_text``
-file reader (collapses the old ``_read_text`` / ``_read_cs_text`` variants),
+primitives: the dedup ``_add_edge_if_new`` guard, the ``framework:`` anchor
+edges, the unified ``read_text`` file reader (collapses the old ``_read_text``
+/ ``_read_cs_text`` variants) and ``source_text``, which prefers the bytes
+ingestion already read,
 the class/function-name → file maps, and the ``FrameworkHandler`` protocol the
 dispatcher iterates over.
 """
@@ -16,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     import networkx as nx
 
+    from ..framework_facts import FrameworkFacts
     from ..resolvers import ResolverContext
 
 
@@ -94,6 +97,22 @@ def add_symbol_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
     return True
 
 
+def add_entry_edges(graph: nx.DiGraph, facts: FrameworkFacts, root: str, path_set: set[str]) -> int:
+    """Anchor every file *facts* says its runtime loads under *root*.
+
+    The ``framework:`` anchor is what dead-code liveness reads: a file it
+    points at is reached from outside the import graph.
+    """
+    return sum(anchor_edge(graph, facts, target) for target in facts.entry_files(root, path_set))
+
+
+def anchor_edge(graph: nx.DiGraph, facts: FrameworkFacts, target: str) -> bool:
+    """Link *facts*' ``framework:`` anchor to *target*; True when the edge is new."""
+    if facts.anchor not in graph:
+        graph.add_node(facts.anchor, language="external")
+    return _add_edge_if_new(graph, facts.anchor, target)
+
+
 def read_text(parsed: Any, encoding: str = "utf-8") -> str:
     """Read a parsed file's source text, returning ``""`` on read failure.
 
@@ -104,6 +123,20 @@ def read_text(parsed: Any, encoding: str = "utf-8") -> str:
         return Path(parsed.file_info.abs_path).read_text(encoding=encoding, errors="ignore")
     except OSError:
         return ""
+
+
+def source_text(
+    path: str, parsed: Any, source_map: dict[str, bytes], encoding: str = "utf-8"
+) -> str:
+    """Source text for *path*, preferring the bytes ingestion already read.
+
+    A handler whose file set is the repo's dominant language would otherwise
+    make a second full pass over the tree.
+    """
+    raw = source_map.get(path)
+    if raw is not None:
+        return raw.decode(encoding, errors="replace")
+    return read_text(parsed, encoding=encoding)
 
 
 def _build_class_to_file(

@@ -35,7 +35,7 @@ class LargeMethodDetector:
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
-        for fn in ctx.function_metrics.values():
+        for fn in ctx.all_functions:
             if fn.nloc < self._NLOC_THRESHOLD or fn.ccn < self._CCN_FLOOR:
                 continue
             severity = (

@@ -73,6 +73,12 @@ class CodexAdapter(HarnessAdapter):
     #: nothing scrapes the ``*** Update File:`` markers out of it yet, so no
     #: Codex edit currently reaches a consumer of this set.
     edit_tool_names: ClassVar[frozenset[str]] = frozenset({"edit_file"})
+    #: ``bash`` is what _normalize_tool_name folds ``exec``/``run_command``
+    #: onto; the other three are Codex's interactive shell, where one command
+    #: opens a session and its output arrives across later calls.
+    shell_tool_names: ClassVar[frozenset[str]] = frozenset(
+        {"bash", "shell_command", "exec_command", "write_stdin", "wait"}
+    )
 
     def __init__(self):
         self._tool_calls: dict[str, ToolUse] = {}

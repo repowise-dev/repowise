@@ -288,9 +288,7 @@
       "biomarker_type": "resource_construction_in_loop",
       "boundary_kind": "network",
       "case": "resource_construction",
-      "extra": {
-        "resource_invariant": true
-      },
+      "extra": {},
       "file_path": "src/app/clients.py",
       "finding_ref": "resource_construction-16",
       "function_name": "each",
@@ -305,9 +303,7 @@
       "biomarker_type": "resource_construction_in_loop",
       "boundary_kind": "network",
       "case": "resource_construction",
-      "extra": {
-        "resource_invariant": false
-      },
+      "extra": {},
       "file_path": "src/app/clients.py",
       "finding_ref": "resource_construction-17",
       "function_name": "each_varying",
@@ -606,6 +602,78 @@
       "reason": "sink_without_caller: io_in_loop at src/app/lone.py:9 repeats work per iteration.",
       "reliable_entry_reachability": null,
       "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "db",
+      "case": "batch_form_equivalent",
+      "extra": {
+        "batch_equivalent": true,
+        "batch_form": ".in_(\"repo_id\", keys)",
+        "loop_magnitude": "grows_with_data"
+      },
+      "file_path": "src/app/owners.py",
+      "finding_ref": "batch_form_equivalent-34",
+      "function_name": "load_owners",
+      "line_end": 22,
+      "line_start": 20,
+      "path": [],
+      "reason": "batch_form_equivalent: io_in_loop at src/app/owners.py:20 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "direct"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "db",
+      "case": "batch_form_limited",
+      "extra": {
+        "batch_equivalent": false,
+        "batch_form": ".in_(\"repo_id\", keys)"
+      },
+      "file_path": "src/app/commits.py",
+      "finding_ref": "batch_form_limited-35",
+      "function_name": "first_commit_each",
+      "line_end": 32,
+      "line_start": 30,
+      "path": [],
+      "reason": "batch_form_limited: io_in_loop at src/app/commits.py:30 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "direct"
+    },
+    {
+      "biomarker_type": "serial_await_in_loop",
+      "boundary_kind": "network",
+      "case": "bounded_fan_out",
+      "extra": {
+        "concurrency_bound": "self._sem",
+        "dataflow_verified": true
+      },
+      "file_path": "src/app/fetch.py",
+      "finding_ref": "bounded_fan_out-36",
+      "function_name": "fetch_each",
+      "line_end": 42,
+      "line_start": 40,
+      "path": [],
+      "reason": "bounded_fan_out: serial_await_in_loop at src/app/fetch.py:40 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "direct"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "network",
+      "case": "retry_loop",
+      "extra": {
+        "loop_magnitude": "bounded"
+      },
+      "file_path": "src/app/retry.py",
+      "finding_ref": "retry_loop-37",
+      "function_name": "post_with_retry",
+      "line_end": 52,
+      "line_start": 50,
+      "path": [],
+      "reason": "retry_loop: io_in_loop at src/app/retry.py:50 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "direct"
     }
   ]
 }

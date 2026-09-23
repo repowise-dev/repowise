@@ -143,6 +143,10 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         "read_whole": [],
         "skeleton_edit_warned": [],
         "decisions_shown": [],
+        # Whether this session has already been asked to record a decision.
+        # One ask per session is the whole cost control on a hook nobody can
+        # decline, so it is claimed on the ask and never cleared.
+        "capture_prompted": False,
         # File ranges served by repowise MCP responses this session, kept for
         # the read-after-served KPI (see read_enrich; rel -> [[start, end]]).
         "served": {},

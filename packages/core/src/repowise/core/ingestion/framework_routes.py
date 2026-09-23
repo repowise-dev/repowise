@@ -18,7 +18,7 @@ the other way round.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
 #: Verbs the contract layer records as an HTTP method. A consumer that sees a
@@ -58,14 +58,6 @@ class GroupMatch:
 
 def _opt(value: str | None) -> str | None:
     return value or None
-
-
-def _next_top_level_comma(args: str, *, hash_comments: bool = False) -> int:
-    """Index just past the first comma separating *args*, or -1."""
-    for i, c, depth in scan_code(args, hash_comments=hash_comments):
-        if c == "," and depth == 0:
-            return i + 1
-    return -1
 
 
 def _groups(pattern: re.Pattern[str], content: str) -> Iterator[GroupMatch]:
@@ -274,11 +266,21 @@ def scan_code(
 def match_paren(
     text: str, open_idx: int, *, quotes: str = "\"'`", hash_comments: bool = False
 ) -> int:
-    """Index of the ``)`` closing the ``(`` at *open_idx*, or -1."""
-    for i, c, depth in scan_code(text, open_idx, quotes=quotes, hash_comments=hash_comments):
-        if c == ")" and depth == 0:
-            return i
+    """Index of the bracket closing the ``(``, ``[`` or ``{`` at *open_idx*, or -1."""
+    opener = text[open_idx]
+    closer = _CLOSERS.get(opener, ")")
+    nest = 0
+    for i, c, _depth in scan_code(text, open_idx, quotes=quotes, hash_comments=hash_comments):
+        if c == opener:
+            nest += 1
+        elif c == closer:
+            nest -= 1
+            if nest == 0:
+                return i
     return -1
+
+
+_CLOSERS = {"(": ")", "[": "]", "{": "}"}
 
 
 # ---------------------------------------------------------------------------
@@ -329,18 +331,57 @@ def go_groups(content: str) -> Iterator[GroupMatch]:
 # Laravel
 # ---------------------------------------------------------------------------
 
-# `resource`/`apiResource`/`any`/`match` name no single verb; the contract
-# consumer drops them, the graph consumer wants their controller.
-_LARAVEL_VERBS = "get|post|put|patch|delete|any|match|resource|apiResource"
-
-_LARAVEL_CALL_RE = re.compile(
-    rf"Route::(?P<verb>{_LARAVEL_VERBS})\s*(?P<paren>\()", re.IGNORECASE
+# A `Route::` call and the fluent chain hanging off it: `Route::prefix('v1')
+# ->middleware('auth')->group(function () { ... })`, `Route::middleware('x')
+# ->get(...)`, `Route::apiResource(...)->only([...])`.
+_LARAVEL_HEAD_RE = re.compile(r"\bRoute::(?P<name>\w+)\s*(?P<paren>\()")
+# Comments may sit between the links of a chain.
+_LARAVEL_LINK_RE = re.compile(
+    r"(?:\s|//[^\n]*|\#(?!\[)[^\n]*|/\*[\s\S]*?\*/)*->\s*(?P<name>\w+)\s*(?P<paren>\()"
 )
+# What may come before the verb or `group` of a chain: the route registrar's
+# attributes. Anything else (`Route::getRoutes()->get('GET')`) is not a route.
+_LARAVEL_REGISTRAR = frozenset({
+    "as", "can", "controller", "domain", "middleware", "missing", "name", "namespace",
+    "prefix", "scopebindings", "where", "withoutmiddleware", "withoutscopedbindings",
+})  # fmt: skip
+
+# PHP method names are case-insensitive, so chain names are compared lower-cased.
+# `any` names no single verb and `match` lists its own; the contract consumer
+# keeps only HTTP_METHODS, the graph consumer wants every controller.
+_LARAVEL_VERBS = frozenset({"get", "post", "put", "patch", "delete", "options", "any", "match"})
+_LARAVEL_RESOURCES = frozenset({"resource", "apiresource", "resources", "apiresources"})
+
+# What `Route::resource` registers, in Laravel's order: (action, verbs, suffix,
+# on the member). `apiResource` drops the two HTML-form actions.
+_RESOURCE_ACTIONS: tuple[tuple[str, tuple[str, ...], str, bool], ...] = (
+    ("index", ("GET",), "", False),
+    ("create", ("GET",), "/create", False),
+    ("store", ("POST",), "", False),
+    ("show", ("GET",), "", True),
+    ("edit", ("GET",), "/edit", True),
+    ("update", ("PUT", "PATCH"), "", True),
+    ("destroy", ("DELETE",), "", True),
+)
+_FORM_ACTIONS = frozenset({"create", "edit"})
 
 # The path literal, when the first argument is one. It often is not:
 # `Route::post('/hook/'.config('x'), ...)` truncates to the literal head, which
 # is what the matcher this replaces recorded too.
-_LARAVEL_PATH_RE = re.compile(r"""\s*(?P<q>["'])(?P<path>[^"']*)(?P=q)""")
+_LARAVEL_LITERAL_RE = re.compile(r"""\s*(?P<q>["'])(?P<text>[^"']*)(?P=q)\s*""")
+_LARAVEL_CLASS_RE = re.compile(r"\s*(?P<cls>[\w\\]+)\s*::\s*class\s*")
+_LARAVEL_WORD_RE = re.compile(r"""["'](\w+)["']""")
+# One `'key' => value` entry of an attribute array.
+_LARAVEL_ENTRY_RE = re.compile(r"""\s*["'](?P<key>[\w.-]+)["']\s*=>\s*(?P<value>.*)""", re.DOTALL)
+_LARAVEL_CLOSURE_RE = re.compile(r"\s*(?:static\s+)?(?:function|fn)\b")
+# A route file named in an expression (`base_path('routes/api.php')`,
+# `__DIR__.'/../routes/api.php'`), by basename.
+_LARAVEL_FILE_RE = re.compile(r"""["'][^"']*?(?P<name>[\w.-]+\.php)["']""")
+_LARAVEL_REQUIRE_RE = re.compile(
+    r"""\b(?:require|include)(?:_once)?\b[^;]*?["'][^"']*?(?P<name>[\w.-]+\.php)["']"""
+)
+_LARAVEL_WITH_ROUTING_RE = re.compile(r"->\s*withRouting\s*(?P<paren>\()")
+_LARAVEL_NAMED_ARG_RE = re.compile(r"(?P<key>\w+)\s*:(?!:)\s*(?P<value>.*)", re.DOTALL)
 
 # Three handler spellings co-exist: the array form, the legacy
 # 'Controller@method' string, and the bare `Controller::class` of a resource
@@ -352,8 +393,305 @@ _LARAVEL_HANDLER_RE = re.compile(
 )
 
 
-def laravel_routes(content: str) -> Iterator[RouteMatch]:
-    """``Route::verb(...)`` registrations in *content*.
+@dataclass(frozen=True, slots=True)
+class _Call:
+    """One call of a `Route::` chain, by lower-cased name and its paren span."""
+
+    name: str
+    paren: int
+    close: int
+
+
+@dataclass(frozen=True, slots=True)
+class _Group:
+    """A closure group: the span its routes sit in, and what it adds to them.
+
+    ``prefix`` is ``None`` when the group declares one this cannot read, which
+    refuses every route inside rather than serving it at the outer prefix.
+    """
+
+    start: int
+    end: int
+    prefix: str | None
+    controller: str | None
+
+
+def _php_args(text: str, max_split: int = -1) -> list[tuple[int, int]]:
+    """``(start, end)`` of each top-level argument of a PHP argument list.
+
+    Commas inside strings, comments, parens and array literals do not split.
+    After *max_split* commas the rest is one span, unscanned: a closure body
+    need not be walked to read the arguments before it.
+    """
+    spans: list[tuple[int, int]] = []
+    start, nest = 0, 0
+    for i, c, depth in scan_code(text, hash_comments=True):
+        if c in "[{":
+            nest += 1
+        elif c in "]}":
+            nest -= 1
+        elif c == "," and depth == 0 and nest == 0:
+            spans.append((start, i))
+            start = i + 1
+            if len(spans) == max_split:
+                break
+    if text[start:].strip() or spans:
+        spans.append((start, len(text)))
+    return spans
+
+
+def _literal(text: str) -> str | None:
+    """The body of *text* when it is exactly one string literal.
+
+    A double-quoted body with a ``$`` interpolates, so it is not one.
+    """
+    m = _LARAVEL_LITERAL_RE.fullmatch(text)
+    if m is None or (m.group("q") == '"' and "$" in m.group("text")):
+        return None
+    return m.group("text")
+
+
+def _class_ref(text: str) -> str | None:
+    """``Foo\\Bar`` when *text* is exactly ``Foo\\Bar::class``."""
+    m = _LARAVEL_CLASS_RE.fullmatch(text)
+    return m.group("cls") if m else None
+
+
+def _join_segments(segments: Iterable[str | None]) -> str | None:
+    """Slash-joined non-empty *segments*, or ``None`` when any is unreadable."""
+    parts: list[str] = []
+    for s in segments:
+        if s is None:
+            return None
+        if s.strip("/"):
+            parts.append(s.strip("/"))
+    return "/".join(parts)
+
+
+def _chain(content: str, head: re.Match[str]) -> list[_Call]:
+    calls: list[_Call] = []
+    name, paren = head.group("name"), head.start("paren")
+    while True:
+        close = match_paren(content, paren, hash_comments=True)
+        if close == -1:
+            return calls
+        calls.append(_Call(name.lower(), paren, close))
+        link = _LARAVEL_LINK_RE.match(content, close + 1)
+        if link is None:
+            return calls
+        name, paren = link.group("name"), link.start("paren")
+
+
+def _entries(text: str) -> dict[str, str]:
+    """``key -> value source`` of the attribute array *text* (``['prefix' => 'x']``)."""
+    body = text.strip()
+    if not (body.startswith("[") and body.endswith("]")):
+        return {}
+    body = body[1:-1]
+    out: dict[str, str] = {}
+    for a, b in _php_args(body):
+        m = _LARAVEL_ENTRY_RE.fullmatch(body[a:b])
+        if m:
+            out[m.group("key")] = m.group("value").strip()
+    return out
+
+
+def _apply_attrs(
+    attrs: dict[str, str], prefix: str | None, controller: str | None
+) -> tuple[str | None, str | None]:
+    if "prefix" in attrs:
+        prefix = _join_segments([prefix, _literal(attrs["prefix"])])
+    if "controller" in attrs:
+        controller = _class_ref(attrs["controller"]) or controller
+    return prefix, controller
+
+
+def _chain_attrs(content: str, calls: Iterable[_Call]) -> tuple[str | None, str | None]:
+    """The ``(prefix, controller)`` the modifier *calls* declare."""
+    prefix: str | None = ""
+    controller: str | None = None
+    for call in calls:
+        args = content[call.paren + 1 : call.close]
+        if call.name == "prefix":
+            prefix = _join_segments([prefix, _literal(args)])
+        elif call.name == "controller":
+            controller = _class_ref(args) or controller
+        elif call.name == "group":
+            # `Route::group(['prefix' => 'x'], ...)`: the attribute array.
+            spans = _php_args(args, max_split=1)
+            if len(spans) > 1:
+                a, b = spans[0]
+                prefix, controller = _apply_attrs(_entries(args[a:b]), prefix, controller)
+    return prefix, controller
+
+
+@dataclass
+class _LaravelScan:
+    """Every route chain, closure group and loaded route file in one file."""
+
+    routes: list[tuple[int, list[_Call], int]]  # (head offset, chain, verb index)
+    groups: list[_Group]
+    files: list[tuple[int, str, str | None]]  # (offset, route file, own prefix)
+
+    def enclosing(self, offset: int) -> list[_Group]:
+        """The groups around *offset*, outermost first."""
+        return [g for g in self.groups if g.start < offset < g.end]
+
+
+def _laravel_scan(content: str) -> _LaravelScan:
+    scan = _LaravelScan([], [], [])
+    if "Route::" not in content:
+        return scan  # a substring test is far cheaper than the head regex
+    for head in _LARAVEL_HEAD_RE.finditer(content):
+        calls = _chain(content, head)
+        at = next((i for i, c in enumerate(calls) if c.name not in _LARAVEL_REGISTRAR), None)
+        if at is None:
+            continue
+        if calls[at].name in _LARAVEL_VERBS or calls[at].name in _LARAVEL_RESOURCES:
+            scan.routes.append((head.start(), calls, at))
+            continue
+        if calls[at].name != "group":
+            continue
+        group = calls[at]
+        prefix, controller = _chain_attrs(content, calls[: at + 1])
+        args = content[group.paren + 1 : group.close]
+        spans = _php_args(args, max_split=1)  # `group` takes at most two arguments
+        if not spans:
+            continue
+        a, b = spans[-1]
+        body = args[a:b]
+        if _LARAVEL_CLOSURE_RE.match(body):
+            scan.groups.append(_Group(group.paren, group.close, prefix, controller))
+        elif file := _LARAVEL_FILE_RE.search(body):
+            scan.files.append((head.start(), file.group("name"), prefix))
+    return scan
+
+
+def _resource_paths(name: str, shallow: bool) -> tuple[str, str]:
+    """``(collection, member)`` paths of resource *name* (``photos.comments``).
+
+    Parameter names are the naive singular; path normalization erases them.
+    """
+    *parents, last = name.strip("/").split(".")
+    nested = "".join(f"/{p}/{{{_singular(p)}}}" for p in parents)
+    collection = f"{nested}/{last}"
+    member_base = f"/{last}" if shallow and parents else collection
+    return collection, f"{member_base}/{{{_singular(last)}}}"
+
+
+def _singular(segment: str) -> str:
+    word = segment.rsplit("/", 1)[-1]
+    return word[:-1] if word.endswith("s") else word
+
+
+def _resource_routes(
+    content: str,
+    calls: list[_Call],
+    at: int,
+    segments: list[str | None],
+    controller: str | None,
+    offset: int,
+) -> Iterator[RouteMatch]:
+    call = calls[at]
+    args = content[call.paren + 1 : call.close]
+    spans = [args[a:b] for a, b in _php_args(args)]
+    declared: list[tuple[str | None, str | None]]  # (resource name, controller)
+    if call.name in ("resources", "apiresources"):
+        declared = [
+            (k, _class_ref(v)) for k, v in (_entries(spans[0]) if spans else {}).items()
+        ]
+        options: dict[str, str] = {}
+    else:
+        declared = [
+            (
+                _literal(spans[0]) if spans else None,
+                _class_ref(spans[1]) if len(spans) > 1 else None,
+            )
+        ]
+        options = _entries(spans[2]) if len(spans) > 2 else {}
+    only = _LARAVEL_WORD_RE.findall(options["only"]) if "only" in options else None
+    excluded = set(_LARAVEL_WORD_RE.findall(options.get("except", "")))
+    shallow = False
+    for mod in calls[at + 1 :]:
+        mod_args = content[mod.paren + 1 : mod.close]
+        if mod.name == "only":
+            only = _LARAVEL_WORD_RE.findall(mod_args)
+        elif mod.name == "except":
+            excluded |= set(_LARAVEL_WORD_RE.findall(mod_args))
+        elif mod.name == "shallow":
+            shallow = True
+    actions = [
+        a
+        for a in _RESOURCE_ACTIONS
+        if not (call.name.startswith("api") and a[0] in _FORM_ACTIONS)
+        and (only is None or a[0] in only)
+        and a[0] not in excluded
+    ]
+    for name, cls in declared:
+        handler = cls or controller
+        if not name:
+            # A computed name still names its controller for the graph.
+            yield RouteMatch("RESOURCE", None, None, handler, offset, call.paren)
+            continue
+        collection, member = _resource_paths(name, shallow)
+        for _action, verbs, suffix, on_member in actions:
+            path = _join_segments([*segments, (member if on_member else collection) + suffix])
+            for verb in verbs:
+                yield RouteMatch(
+                    verb, None if path is None else f"/{path}", None, handler, offset, call.paren
+                )
+
+
+def _verb_routes(
+    content: str,
+    calls: list[_Call],
+    at: int,
+    segments: list[str | None],
+    controller: str | None,
+    offset: int,
+) -> Iterator[RouteMatch]:
+    call = calls[at]
+    args = content[call.paren + 1 : call.close]
+    spans = _php_args(args, max_split=2 if call.name == "match" else 1)
+    if call.name == "match":
+        verbs = [w.upper() for w in _LARAVEL_WORD_RE.findall(args[slice(*spans[0])])] if spans else []
+        spans = spans[1:]
+    else:
+        verbs = [call.name.upper()]
+    head = _LARAVEL_LITERAL_RE.match(args, spans[0][0]) if spans else None
+    raw = head.group("text") if head else None
+    if raw is None or None in segments:
+        path = None
+    elif not any(segments):
+        path = raw or None  # no prefix in scope: the literal as written
+    else:
+        joined = _join_segments([*segments, raw])
+        path = None if joined is None else f"/{joined}"
+    # Only past the path argument: it can itself contain `X::class` or a quoted
+    # 'word@word', neither of which is the handler
+    # (`Route::get(trans('Contact@us'), [PageController::class, ...])`).
+    handler: str | None = None
+    if len(spans) > 1:
+        m = _LARAVEL_HANDLER_RE.search(args, spans[1][0])
+        if m:
+            handler = m.group("array") or m.group("legacy") or m.group("cls")
+        elif _literal(args[slice(*spans[1])]) is not None:
+            handler = controller  # a bare method name, inside `controller(...)`
+    for verb in verbs:
+        yield RouteMatch(verb, path, None, handler, offset, call.paren)
+
+
+def laravel_routes(content: str, prefix: str = "") -> Iterator[RouteMatch]:
+    """Route registrations in *content*, served under *prefix*.
+
+    Reads `Route::verb(...)`, the chained `Route::middleware(...)->verb(...)`,
+    `Route::match`, and expands `resource` / `apiResource` / `resources` into
+    the routes they register (honouring `only`, `except` and `shallow`). Paths
+    carry every enclosing group prefix (`Route::prefix('x')->group`,
+    `Route::group(['prefix' => 'x'], ...)`, nested), and a bare method name
+    inside `Route::controller(C::class)->group` takes that controller. *prefix*
+    is where the file itself is served (``api`` for ``routes/api.php``, see
+    :func:`laravel_route_prefix`).
 
     The arguments are delimited by the call's own parens: a route's path is
     routinely a concatenation containing a call of its own, which a scan to the
@@ -362,29 +700,82 @@ def laravel_routes(content: str) -> Iterator[RouteMatch]:
     ``handler`` is the controller class only; the member name the array form
     also carries is dropped, since the graph consumer links to the class's file.
     """
-    for m in _LARAVEL_CALL_RE.finditer(content):
-        close = match_paren(content, m.start("paren"), hash_comments=True)
-        if close == -1:
-            continue
-        args = content[m.end() : close]
-        path = _LARAVEL_PATH_RE.match(args)
-        # Only past the first top-level comma: the path expression can itself
-        # contain `X::class` or a quoted 'word@word', neither of which is the
-        # handler (`Route::get(trans('Contact@us'), [PageController::class, ...])`).
-        second = _next_top_level_comma(args, hash_comments=True)
-        handler = _LARAVEL_HANDLER_RE.search(args, second) if second != -1 else None
-        yield RouteMatch(
-            verb=m.group("verb").upper(),
-            path=path.group("path") or None if path else None,
-            receiver=None,
-            handler=(
-                handler.group("array") or handler.group("legacy") or handler.group("cls")
-                if handler
-                else None
-            ),
-            offset=m.start(),
-            paren_offset=m.start("paren"),
+    scan = _laravel_scan(content)
+    for offset, calls, at in scan.routes:
+        enclosing = scan.enclosing(offset)
+        chain_prefix, chain_controller = _chain_attrs(content, calls[:at])
+        segments = [prefix, *(g.prefix for g in enclosing), chain_prefix]
+        controller = chain_controller or next(
+            (g.controller for g in reversed(enclosing) if g.controller), None
         )
+        expand = _resource_routes if calls[at].name in _LARAVEL_RESOURCES else _verb_routes
+        yield from expand(content, calls, at, segments, controller, offset)
+
+
+def laravel_route_file_prefixes(content: str) -> dict[str, str | None]:
+    """``route file basename -> prefix`` for each route file *content* loads.
+
+    Three registrations: `withRouting(api: ..., apiPrefix: ...)` in
+    ``bootstrap/app.php``; a group given a file (`Route::prefix('api')
+    ->group(base_path('routes/api.php'))`); and a file required inside a
+    closure group. A prefix this cannot read maps to ``None``.
+
+    Deliberate ceiling: a file loaded from inside another route file does not
+    inherit that file's own prefix, and files are keyed by basename, so two
+    route files of one name share a key (the merge drops them when they
+    disagree).
+    """
+    out: dict[str, str | None] = {}
+    if ".php" not in content:
+        return out
+    routing = _LARAVEL_WITH_ROUTING_RE.search(content) if "withRouting" in content else None
+    if routing:
+        close = match_paren(content, routing.start("paren"), hash_comments=True)
+        args = content[routing.end() : close] if close != -1 else ""
+        named = {
+            m.group("key"): m.group("value")
+            for a, b in _php_args(args)
+            if (m := _LARAVEL_NAMED_ARG_RE.fullmatch(args[a:b].strip()))
+        }
+        api_prefix = _literal(named["apiPrefix"]) if "apiPrefix" in named else "api"
+        for key, prefix in (("web", ""), ("api", api_prefix)):
+            for f in _LARAVEL_FILE_RE.finditer(named.get(key, "")):
+                out[f.group("name")] = prefix
+    if "Route::" not in content or ("group" not in content and "require" not in content):
+        return out  # nothing here can load a route file
+    scan = _laravel_scan(content)
+    for offset, name, own in scan.files:
+        out[name] = _join_segments([*(g.prefix for g in scan.enclosing(offset)), own])
+    for m in _LARAVEL_REQUIRE_RE.finditer(content):
+        enclosing = scan.enclosing(m.start())
+        if enclosing:
+            out[m.group("name")] = _join_segments(g.prefix for g in enclosing)
+    return out
+
+
+def laravel_route_file(rel_path: str) -> bool:
+    """Whether *rel_path* is a route file: a PHP file under a ``routes`` directory.
+
+    Case-insensitive, as module packages spell it ``Routes``.
+    """
+    return rel_path.endswith(".php") and "routes" in rel_path.lower().split("/")[:-1]
+
+
+def laravel_route_prefix(rel_path: str, declared: Mapping[str, str | None]) -> str | None:
+    """The prefix Laravel serves the route file at *rel_path* under.
+
+    *declared* is :func:`laravel_route_file_prefixes` merged over the repo, by
+    basename; declarations that disagree were dropped by the merge, so the
+    default applies. Undeclared, ``routes/api.php`` is served under ``api``
+    (the framework default) and every other route file at the root. ``None``
+    refuses the file.
+    """
+    if not laravel_route_file(rel_path):
+        return ""
+    folder, _, name = rel_path.rpartition("/")
+    if name in declared:
+        return declared[name]
+    return "api" if name == "api.php" and folder.rpartition("/")[2].lower() == "routes" else ""
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,9 @@ const fixture: BlastRadiusResponse = {
       path: "src/auth/login.py",
       structural_score: 0.82,
       risk_score: 0.82,
-      temporal_hotspot: 0.74,
+      temporal_hotspot: 8.4,
+      churn_percentile: 0.93,
+      is_hotspot: true,
       centrality: 0.045,
     },
   ],
@@ -160,10 +162,12 @@ describe("TableSection", () => {
 });
 
 describe("DirectRisksTable", () => {
-  it("shows the raw structural weight instead of inventing a 0–10 scale", () => {
+  it("prints the raw churn sum and bars its repo-relative rank", () => {
     render(<DirectRisksTable rows={fixture.direct_risks} />);
     expect(screen.getByText("0.8200")).toBeTruthy();
-    expect(screen.getByText("7.4")).toBeTruthy();
+    // The raw sum, not raw * 10: it is unbounded and reached 42 on this repo.
+    expect(screen.getByText("8.4")).toBeTruthy();
+    expect(screen.queryByText("84.0")).toBeNull();
   });
 });
 

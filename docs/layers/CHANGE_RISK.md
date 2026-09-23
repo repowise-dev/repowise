@@ -180,7 +180,10 @@ Read the result in this order:
 - **`fix_history`**: uncalibrated historical evidence about where the change
   lands, reported separately rather than folded into a probability.
 - **`score`** (0–10 normalized points): supporting diff size and spread,
-  offline-calibrated and corpus-anchored to a single commit.
+  offline-calibrated and corpus-anchored to a single commit. It ranks 0.99
+  against lines added on every repository measured, so `get_change_risk` keeps
+  it behind `include=["diagnostics"]` rather than on the wire; the CLI and the
+  REST range endpoint still report it.
 - **`fallback_band`**: the heuristic-thresholded absolute `low` / `moderate` /
   `high` model-score band. Present
   *only* when there was no baseline to rank against (a shallow repo, or
@@ -300,7 +303,7 @@ no report.
 It surfaces in two places. `repowise risk` prints the groups under the driver
 table, naming each group's files, its bridging files, and the first ten ungrouped
 paths; `--format json` carries the same object under `independent_changes`. In
-`get_change_risk` it is `change_shape.independent_changes`, which needs an index
+`get_change_risk` it is `independent_changes`, which needs an index
 and is absent without one.
 
 ## Calibration & accuracy
@@ -377,7 +380,9 @@ and all three bands are occupied. The corpus lives in
 | `get_risk` `health_score` | Indexed code-health model | health points, 0-10; higher is healthier | Benchmarked file-health signal, not interchangeable with change-risk points |
 | `structural_impact_score` | PR structural formula above | normalized points, 0-10 | Deterministic and uncalibrated; not authoritative. `overall_risk_score` is an exact deprecated alias |
 | `direct_risks[].structural_score` | `pagerank * (1 + temporal_hotspot)` | raw pagerank-weighted-hotspot value, unbounded | Uncalibrated within-change structural weight. `risk_score` is an exact deprecated alias |
-| `direct_risks[].temporal_hotspot` | Exponentially-decayed sum of per-commit churn (halflife 180 d); each commit contributes up to 3.0 | raw decayed churn, unbounded (observed max ~23); use `churn_percentile` for a normalised 0–1 rank | Intermediate input to `structural_score`; not a ratio|
+| `direct_risks[].temporal_hotspot` | Exponentially-decayed sum of per-commit churn (halflife 180 d); each commit contributes up to 3.0 | raw decayed churn, unbounded (observed max 42.6 on this repository); use `churn_percentile` for a normalised 0–1 rank | Intermediate input to `structural_score`; not a ratio|
+| `direct_risks[].churn_percentile` | Rank of `temporal_hotspot` among the repository's files | percentile rank, 0–1 | Comparable across repositories as a rank, not as activity; reported beside `structural_score`, never folded into it |
+| `direct_risks[].is_hotspot` | The index's hotspot verdict: top-quartile churn AND its absolute activity floors | boolean | Read this rather than re-deriving a hotspot from `churn_percentile`, which omits the floors |
 | `cochange_warnings[].score` | Number of historical commits in which the pair co-changed | raw commit count, 0+ | Historical evidence only; cannot become structural or runtime-breakage evidence |
 | workspace `impacted[].score` | Strongest path product of edge confidence, edge-kind weight, and `0.6` per hop | relative path weight, 0-1 | Deterministic, uncalibrated ranking heuristic; not a probability or change-review authority |
 | dashboard hotspot triage index | `40% * churn percentile + 35% * bus-factor tier + 25% * bounded temporal activity` | heuristic points, 0-100 | Client-side, uncalibrated orientation only; labelled adjacent to the chart |

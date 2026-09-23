@@ -26,14 +26,12 @@ class FileContext:
     nloc: int
     has_test_file: bool
     module: str | None
-    # Map symbol-name → complexity metrics for functions/methods in this
-    # file. Symbols without a complexity row default to CCN=1, nesting=0.
-    function_metrics: dict[str, FunctionComplexity] = field(default_factory=dict)
-    # Every walked function, in document order and NOT keyed by name, because
-    # name-keying drops all but one of a file's anonymous ``it`` callbacks.
-    # Read by the advisory test-quality markers only: re-keying
-    # ``function_metrics`` is the real fix and would change what every
-    # calibrated marker sees, so it needs its own defect-corpus evidence.
+    # Every walked function in this file, in document order. Not keyed by
+    # name: a name key drops all but one of a file's anonymous ``it``
+    # callbacks, and every same-named method on a second class beside it.
+    # This replaced the name-keyed ``function_metrics`` map every marker used
+    # to read. Empty for SQL, whose routine metrics are text-counted and
+    # defect-uncalibrated.
     all_functions: tuple[FunctionComplexity, ...] = ()
     # Per-class aggregate metrics (LCOM4, method count, size). Empty for
     # languages whose walker map doesn't opt into class-level analysis
@@ -115,6 +113,12 @@ class FileContext:
     # cross-function reachability; the same-function perf biomarkers read the
     # already-resolved ``perf_hits`` instead.
     io_boundary_names: set[str] = field(default_factory=set)
+    # Start lines of the test cases in this file that hand their oracle to an
+    # asserting function in ANOTHER file, resolved on a call edge by
+    # ``asserts.oracle_reach``. Lines rather than names: a name would collapse
+    # a file's same-named functions, which is the collision #2408 removed.
+    # Empty without a call graph, which leaves the marker as it was.
+    cross_file_oracle_lines: frozenset[int] = frozenset()
 
 
 # A repo whose trailing-90-day window has at most this many active human

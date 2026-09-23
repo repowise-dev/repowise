@@ -15,6 +15,7 @@ import hashlib
 import sqlite3
 import time
 import zlib
+from collections.abc import Sequence
 from pathlib import Path
 
 import structlog
@@ -55,6 +56,31 @@ def default_store_path(start: Path | None = None) -> Path:
         if (candidate / ".repowise").is_dir():
             return candidate / ".repowise" / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
     return home / ".repowise" / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
+
+
+#: Kept under SQLite's 999-variable ceiling with room to spare.
+_REF_QUERY_BATCH = 400
+
+
+def omission_sources(conn: sqlite3.Connection, refs: Sequence[str]) -> dict[str, str]:
+    """``ref -> source`` for the refs *conn* still holds, batched.
+
+    ``source`` reads ``"<origin>:<filter>"`` -- ``cli:git_diff``,
+    ``hook-codex:test_output`` -- and is the only record of which filter
+    produced a ref. Rows are TTL-pruned, so a ref may legitimately be absent.
+    """
+    found: dict[str, str] = {}
+    for start in range(0, len(refs), _REF_QUERY_BATCH):
+        batch = refs[start : start + _REF_QUERY_BATCH]
+        placeholders = ",".join("?" for _ in batch)
+        found.update(
+            (ref, str(source))
+            for ref, source in conn.execute(
+                f"SELECT ref, source FROM omissions WHERE ref IN ({placeholders})",
+                list(batch),
+            )
+        )
+    return found
 
 
 def content_ref(content: str) -> str:
@@ -242,6 +268,10 @@ class OmissionStore:
     def savings_rollup(self, *, by: str = "filter", since: float | None = None) -> list[dict]:
         """Grouped ledger totals (see :func:`tracking.savings_rollup`)."""
         return tracking.savings_rollup(self._conn, by=by, since=since)
+
+    def omission_sources(self, refs: Sequence[str]) -> dict[str, str]:
+        """``ref -> source`` for the refs still held. Pruned refs are absent."""
+        return omission_sources(self._conn, refs)
 
     def savings(self) -> SavingsRepository:
         """The canonical event ledger, sharing this store's connection.

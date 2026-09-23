@@ -5,7 +5,10 @@ calls (consumers). Each framework / client library is an independent *dialect*
 module registered in :data:`PROVIDER_DIALECTS` / :data:`CONSUMER_DIALECTS`; the
 :class:`HttpExtractor` orchestrator owns only the file walk and dispatch. Adding
 a framework means dropping one dialect module and appending it to a registry —
-no orchestrator edits.
+no orchestrator edits. HTTP keeps its own orchestrator rather than the shared
+:class:`..dialect.DialectExtractor` because it runs two passes the others do
+not: router mounts collected across files, and the index-backed routes and
+client calls.
 """
 
 from __future__ import annotations
@@ -13,10 +16,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, select_files
+from ..dialect import ContractDialect, union_extensions
 from ..langs import PYTHON
 from .aspnet import AspNetDialect
 from .csharp_http import CSharpHttpDialect
-from .dialect import HttpDialect
 from .django import DjangoDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
@@ -50,7 +53,7 @@ if TYPE_CHECKING:
     from ..base import SourceFile
 
 # Route-declaration recognisers (one framework each).
-PROVIDER_DIALECTS: tuple[HttpDialect, ...] = (
+PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     ExpressDialect(),
     FastApiDialect(),
     FlaskDialect(),
@@ -67,7 +70,7 @@ PROVIDER_DIALECTS: tuple[HttpDialect, ...] = (
 )
 
 # HTTP-client call recognisers (one client/language each).
-CONSUMER_DIALECTS: tuple[HttpDialect, ...] = (
+CONSUMER_DIALECTS: tuple[ContractDialect, ...] = (
     JsClientsDialect(),
     PythonClientsDialect(),
     CSharpHttpDialect(),
@@ -93,25 +96,16 @@ _INDEX_BACKED_DIALECTS = frozenset({"fastapi"})
 _INDEX_BACKED_CONSUMER_DIALECTS = frozenset({"js-clients"})
 
 
-def _union_extensions(dialects: tuple[HttpDialect, ...]) -> frozenset[str]:
-    out: set[str] = set()
-    for d in dialects:
-        out |= d.extensions
-    return frozenset(out)
-
-
 class HttpExtractor:
     """Extract HTTP route contracts from source files via registered dialects."""
 
-    provider_dialects: tuple[HttpDialect, ...] = PROVIDER_DIALECTS
-    consumer_dialects: tuple[HttpDialect, ...] = CONSUMER_DIALECTS
+    provider_dialects: tuple[ContractDialect, ...] = PROVIDER_DIALECTS
+    consumer_dialects: tuple[ContractDialect, ...] = CONSUMER_DIALECTS
 
     @classmethod
     def source_extensions(cls) -> frozenset[str]:
         """Every extension this extractor's dialects claim."""
-        return _union_extensions(cls.provider_dialects) | _union_extensions(
-            cls.consumer_dialects
-        )
+        return union_extensions(cls.provider_dialects + cls.consumer_dialects)
 
     def extract(
         self,

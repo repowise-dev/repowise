@@ -117,6 +117,19 @@ class TestDetectFileCommunitiesLabels:
         assert "ingestion" in joined and "web" in joined
 
 
+class TestExternalNodesNeverName:
+    def test_third_party_stem_does_not_label_a_community(self):
+        # One production file per folder (no dominant segment, no keyword),
+        # all importing four `external:rich.*` nodes. Those share the stem
+        # "external:rich", so the stem fallback used to pick it.
+        prod = [f"pkg/area{i}/f{i}.py" for i in range(12)]
+        rich = [f"external:rich.{m}" for m in ("console", "panel", "table", "text")]
+        edges = list(itertools.pairwise(prod)) + [(p, r) for p in prod for r in rich]
+        assignment, info, _ = detect_file_communities(_graph(prod + rich, edges))
+        ci = info[assignment["pkg/area0/f0.py"]]
+        assert not ci.label.startswith("external:")
+
+
 class TestRootFirstLabels:
     def test_sub_label_follows_path_order(self):
         # Frequency picks "ingestion" (in every path) as primary and "engine"

@@ -156,17 +156,39 @@ def is_prose_user_text(event: Event) -> bool:
 
 
 def relative_files(files: Iterable[str], repo_root: Any) -> list[str]:
-    """Repo-relative POSIX paths, in first-seen order; outsiders dropped."""
-    import os.path
+    """Repo-relative POSIX paths, in first-seen order; outsiders dropped.
 
+    Idempotent, and that is the point: a path already relative is returned as
+    it stands rather than resolved again. Resolving it would make the answer
+    depend on the process working directory, which is right only while that
+    happens to be the repository root and silently drops every file
+    otherwise, so a caller that stores relative paths and one reading rows
+    stored absolute before it get the same answer from the same call.
+
+    Compares as text rather than through :mod:`os.path`, because the store it
+    serves is written by whichever machine ran the agent: a Windows path has
+    to read as a path on any interpreter, not as a relative name that happens
+    to begin with a drive letter. The root match is case-insensitive for the
+    same reason, and to agree with the ``cwd`` scoping the miners already do;
+    the cost is two directories under a case-sensitive filesystem that differ
+    only in case, which the miner could not have told apart either.
+    """
+    import posixpath
+
+    root = str(repo_root).replace("\\", "/").rstrip("/")
+    prefix = root.lower() + "/"
     out: list[str] = []
     for f in files:
-        try:
-            rel = os.path.relpath(f, str(repo_root))
-        except (ValueError, OSError):
+        if not f:
             continue
-        if not rel.startswith(".."):
-            out.append(rel.replace("\\", "/"))
+        path = posixpath.normpath(f.replace("\\", "/"))
+        if path.startswith("/") or (len(path) > 1 and path[1] == ":"):
+            if not path.lower().startswith(prefix):
+                continue
+            path = path[len(prefix) :]
+        if path == ".." or path.startswith("../"):
+            continue
+        out.append(path)
     return list(dict.fromkeys(out))
 
 

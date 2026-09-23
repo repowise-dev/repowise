@@ -28,7 +28,7 @@ from ._constants import (
     _FILE_INDEX_TIMEOUT_SECS,
     _MAX_PARTNERS_PER_FILE,
 )
-from .co_change import compute_co_changes_and_entropy
+from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import DECAY_REFRESH_KEYS, index_file
 from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
@@ -325,7 +325,7 @@ class GitIndexer:
 
         file_tasks = [index_one(fp) for fp in indexable_files]
 
-        async def _co_change_task() -> tuple[dict[str, list[dict]], dict[str, float]]:
+        async def _co_change_task() -> CoChangeWalk:
             # ESSENTIAL tier defers co-change entirely (the expensive repo-wide
             # walk) — return empty and let a FULL backfill fill it in. Change
             # entropy rides the same walk, so it's deferred together.
@@ -333,7 +333,7 @@ class GitIndexer:
                 if on_co_change_done is not None:
                     with contextlib.suppress(Exception):
                         on_co_change_done()
-                return {}, {}
+                return CoChangeWalk()
             result = await loop.run_in_executor(
                 executor,
                 compute_co_changes_and_entropy,
@@ -351,7 +351,7 @@ class GitIndexer:
             return result
 
         try:
-            metadata_list, (co_changes, change_entropy) = await asyncio.gather(
+            metadata_list, walk = await asyncio.gather(
                 asyncio.gather(*file_tasks, return_exceptions=True),
                 _co_change_task(),
             )
@@ -402,10 +402,13 @@ class GitIndexer:
         # share into metadata.
         for meta in results:
             fp = meta["file_path"]
-            if fp in co_changes:
-                meta["co_change_partners_json"] = json.dumps(co_changes[fp])
-            if fp in change_entropy:
-                meta["change_entropy"] = change_entropy[fp]
+            if fp in walk.partners:
+                meta["co_change_partners_json"] = json.dumps(walk.partners[fp])
+            if fp in walk.entropy:
+                meta["change_entropy"] = walk.entropy[fp]
+            if fp in walk.partner_count:
+                meta["co_change_partner_count"] = walk.partner_count[fp]
+                meta["co_change_mass"] = walk.partner_mass.get(fp, 0.0)
             if fp in prior_defects.counts:
                 meta["prior_defect_count"] = prior_defects.counts[fp]
             if fp in prior_defects.raw_counts:
@@ -422,13 +425,19 @@ class GitIndexer:
         # in rename-tracking mode (no batched commit index) and failure-isolated
         # so a change_risk hiccup never breaks file-level git metadata.
         commit_rows: list[dict] = []
+        commit_file_rows: list[dict] = []
         if commit_sink:
             try:
-                from .commit_rows import build_commit_rows
+                from .commit_rows import build_commit_file_rows, build_commit_rows
 
-                commit_rows = build_commit_rows(commit_sink)
+                built = build_commit_rows(commit_sink)
+                built_files = build_commit_file_rows(commit_sink)
             except Exception as exc:
                 logger.debug("commit_rows_build_failed", error=str(exc))
+            else:
+                # Assigned together: a half-built pair would write commits
+                # whose file detail describes a different set.
+                commit_rows, commit_file_rows = built, built_files
 
         duration = time.monotonic() - start
         hotspots = sum(1 for m in results if m.get("is_hotspot", False))
@@ -440,6 +449,7 @@ class GitIndexer:
             stable_files=stable,
             duration_seconds=duration,
             commit_rows=commit_rows,
+            commit_file_rows=commit_file_rows,
             fix_event_rows=fix_event_rows,
             fix_oldest_ts=fix_walk.oldest_fix_ts,
             fix_events_built=built_ok,
@@ -714,7 +724,7 @@ class GitIndexer:
         if self.tier.includes_co_change and all_files:
             try:
                 with timed(timings, "rebuild.git.co_change"):
-                    co_changes, change_entropy = await loop.run_in_executor(
+                    walk = await loop.run_in_executor(
                         executor,
                         compute_co_changes_and_entropy,
                         repo,
@@ -727,12 +737,15 @@ class GitIndexer:
                     )
                 for meta in results:
                     fp = meta["file_path"]
-                    if fp in co_changes:
-                        meta["co_change_partners_json"] = json.dumps(co_changes[fp])
-                    if fp in change_entropy:
-                        meta["change_entropy"] = change_entropy[fp]
+                    if fp in walk.partners:
+                        meta["co_change_partners_json"] = json.dumps(walk.partners[fp])
+                    if fp in walk.entropy:
+                        meta["change_entropy"] = walk.entropy[fp]
+                    if fp in walk.partner_count:
+                        meta["co_change_partner_count"] = walk.partner_count[fp]
+                        meta["co_change_mass"] = walk.partner_mass.get(fp, 0.0)
                 if co_change_sink is not None:
-                    co_change_sink.update(co_changes)
+                    co_change_sink.update(walk.partners)
 
                 # Idle-file decay refresh (#728): recompute only the
                 # anchor-dependent window/decay fields for every idle file with
@@ -751,8 +764,7 @@ class GitIndexer:
                                 commit_index,
                                 as_of_ts,
                                 prov_clf,
-                                co_changes,
-                                change_entropy,
+                                walk,
                                 prior_defects,
                             )
                         )
@@ -777,8 +789,7 @@ class GitIndexer:
         commit_index: dict[str, list[_CommitRec]],
         as_of_ts: float | None,
         prov_clf: Any,
-        co_changes: dict[str, list[dict]],
-        change_entropy: dict[str, float],
+        walk: CoChangeWalk,
         prior_defects: PriorDefects,
     ) -> dict[str, dict]:
         """Decay-only partial rows for *idle_paths* (see ``index_changed_files``).
@@ -804,15 +815,22 @@ class GitIndexer:
                 as_of_ts=as_of_ts,
                 provenance_classifier=prov_clf,
             )
-            meta["change_entropy"] = change_entropy.get(fp, 0.0)
-            meta["co_change_partners_json"] = json.dumps(co_changes.get(fp, []))
+            meta["change_entropy"] = walk.entropy.get(fp, 0.0)
+            meta["co_change_partners_json"] = json.dumps(walk.partners.get(fp, []))
+            meta["co_change_partner_count"] = walk.partner_count.get(fp, 0)
+            meta["co_change_mass"] = walk.partner_mass.get(fp, 0.0)
             meta["prior_defect_count"] = prior_defects.counts.get(fp, 0)
             meta["prior_defect_raw_count"] = prior_defects.raw_counts.get(fp, 0)
             out[fp] = {"file_path": fp, **{k: meta[k] for k in DECAY_REFRESH_KEYS}}
         return out
 
-    def capture_new_commit_rows(self, *, since_ts: int | None = None) -> list[dict]:
+    def capture_new_commit_rows(
+        self, *, since_ts: int | None = None, file_rows_sink: list[dict] | None = None
+    ) -> list[dict]:
         """Build ``git_commits`` rows for commits newer than *since_ts*.
+
+        *file_rows_sink*, when given, is extended with the matching
+        ``git_commit_files`` rows from the same walk.
 
         The incremental counterpart to the ``commit_sink`` capture on
         ``index_repo``: walks the repo-wide commit index (one ``git log`` pass,
@@ -831,7 +849,7 @@ class GitIndexer:
                 return []
 
             from ..git_commit_index import load_commit_index
-            from .commit_rows import build_commit_rows
+            from .commit_rows import build_commit_file_rows, build_commit_rows
 
             sink: list[dict] = []
             # Empty indexable set: we only want the full-footprint sink, not the
@@ -844,7 +862,13 @@ class GitIndexer:
                 since_ts=since_ts,
                 provenance_classifier=self._provenance_classifier(),
             )
-            return build_commit_rows(sink)
+            rows = build_commit_rows(sink)
+            files = build_commit_file_rows(sink)
+            # Only after both succeed: the sink is the caller's list, and a
+            # partial extend would outlive the failure that caused it.
+            if file_rows_sink is not None:
+                file_rows_sink.extend(files)
+            return rows
         except Exception as exc:
             logger.debug("incremental_commit_rows_failed", error=str(exc))
             return []

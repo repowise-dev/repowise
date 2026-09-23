@@ -38,7 +38,7 @@ import asyncio
 import contextlib
 import json
 import re
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,15 +47,23 @@ from typing import Any
 import structlog
 
 from repowise.core.analysis.decisions.gate import apply_substring_gate
+from repowise.core.analysis.decisions.lifecycle import ARCHITECTURAL_KIND
 from repowise.core.analysis.decisions.policy import (
     INDEX_SOURCE_KEYS,
     DecisionPolicy,
     resolve_policy,
 )
-from repowise.core.analysis.decisions.scope import commit_scope_files, resolve_module_nodes
+from repowise.core.analysis.decisions.scope import (
+    SCOPE_BASIS_SELECTED,
+    commit_scope_basis,
+    commit_scope_files,
+    resolve_module_nodes,
+    selected_scope_files,
+)
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.ingestion.traverser import load_gitignore_spec
 
+from .commit_signals import count_decision_signals
 from .prompts import (
     _SYSTEM_PROMPT,
     COMMENT_ARCHAEOLOGY_PROMPT,
@@ -133,6 +141,48 @@ def _coerce_dt(value: datetime | str) -> datetime:
 # ---------------------------------------------------------------------------
 
 
+#: The output budget for one batch of either commit prompt. Reasoning tokens
+#: are charged to it, so a budget that only fits the answer buys an empty
+#: body rather than a short one. Roughly twice the largest completion measured
+#: on this repository; see decision ``1c228ed8``.
+_BATCH_MAX_TOKENS = 8000
+
+#: How many of a commit's files either commit prompt will show. The model has
+#: to read the list to pick from it, and a commit that touched ninety files is
+#: not one whose decisions can be assigned by reading the list anyway.
+#:
+#: Sorted before truncating at both call sites, so which files the model is
+#: allowed to choose from is a property of the commit rather than of the order
+#: ``_git_meta_map`` happened to be built in.
+_MAX_PROMPT_FILES = 20
+
+
+def _coerce_paths(value: object) -> list[str] | None:
+    """A list of path-ish strings out of whatever the model returned.
+
+    ``None`` for an absent *or malformed* key, so that a model which answered
+    ``[]`` is told apart from one that never usefully answered: the first is a
+    decision about none of the commit's files, which binds the record to
+    nothing, and the second is a provider that has not seen the new prompt,
+    which falls back to the commit list. A list of dicts or numbers is the
+    second case, not the first -- reading it as "chose nothing" would silently
+    make the record govern nothing forever on a shape error.
+
+    Models return a bare string for a one-element list often enough to be
+    worth handling.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return None
+    kept = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+    if value and not kept:
+        return None
+    return kept
+
+
 @dataclass
 class ExtractedDecision:
     title: str
@@ -142,14 +192,33 @@ class ExtractedDecision:
     alternatives: list[str] = field(default_factory=list)
     consequences: list[str] = field(default_factory=list)
     affected_files: list[str] = field(default_factory=list)
+    #: What the mining model named, before the commit's own file list has
+    #: validated it. Mining-time only: the two commit miners intersect it into
+    #: :attr:`affected_files` and clear it, so nothing downstream ever reads a
+    #: path the model produced and the commit does not list.
+    #:
+    #: ``None`` means the model was never asked or did not answer, which is
+    #: not the same as an empty list. An empty list is the model saying this
+    #: decision is about none of the commit's files, and that answer binds the
+    #: record to nothing; ``None`` falls back to the old breadth rule.
+    proposed_files: list[str] | None = None
     affected_modules: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     source: str = "inline_marker"
+    #: See :class:`~repowise.core.persistence.models.DecisionRecord.scope_basis`.
+    #: Set by the commit-derived miners, which are the only ones that take a
+    #: file list they did not choose per file.
+    scope_basis: str = ""
     evidence_commits: list[str] = field(default_factory=list)
     evidence_file: str | None = None
     evidence_line: int | None = None
     confidence: float = 0.5
     status: str = "proposed"
+    # Which of the two nouns this is. Defaulted rather than classified per
+    # extractor: every other source reads an artifact already written about the
+    # code, and only the session lane mines the prose where an agreement about
+    # conducting the work gets stated.
+    kind: str = ARCHITECTURAL_KIND
     # The verbatim claimed quote (LLM/parser output) and the verdict from the
     # anti-hallucination substring gate (Phase 1D).
     source_quote: str = ""
@@ -173,6 +242,15 @@ class DecisionSourceError(RuntimeError):
     Raised so :meth:`DecisionExtractor.extract_all` records the source as
     failed rather than empty. A source that loses *some* batches still
     returns what it has and only logs, because partial supply beats none.
+    """
+
+
+class EmptyModelResponseError(DecisionSourceError):
+    """The model returned no body at all for one batch.
+
+    Distinct from ``[]``, which is a real answer and the common one. Raised so
+    the batch lands in :func:`_collect_batches` as a failure rather than as a
+    source with nothing in it.
     """
 
 
@@ -298,31 +376,6 @@ _BINARY_EXTENSIONS = frozenset(
     }
 )
 
-# ---------------------------------------------------------------------------
-# Decision signal keywords for git archaeology
-# ---------------------------------------------------------------------------
-
-DECISION_SIGNAL_KEYWORDS = [
-    "migrate",
-    "migration",
-    "switch to",
-    "replace",
-    "replaced",
-    "refactor to",
-    "move from",
-    "adopt",
-    "introduce",
-    "deprecate",
-    "remove",
-    "drop",
-    "upgrade",
-    "rewrite",
-    "extract",
-    "split",
-    "convert",
-    "transition",
-    "revert",
-]
 
 # ---------------------------------------------------------------------------
 # ADR / PR / comment source configuration
@@ -405,6 +458,34 @@ _MARKERS_PER_CALL = 5
 # ---------------------------------------------------------------------------
 # Main extractor
 # ---------------------------------------------------------------------------
+
+
+def _scope_from_selection(
+    decision: ExtractedDecision,
+    commit_files: Sequence[str] | None,
+) -> tuple[list[str], str]:
+    """The files and basis for one decision mined out of one commit.
+
+    Returns the model's own selection, validated against the commit's file
+    list, under :data:`SCOPE_BASIS_SELECTED`. Falling back to the commit's
+    whole footprint when the model selected nothing would reinstate exactly
+    what this replaces, so an empty selection stays empty: the record keeps
+    its commit, its evidence and its place in repository-wide answers, and
+    stops answering "what governs this file". Roughly one record in six lands
+    here, and every one of them measured as a record whose subject was not in
+    the commit's list to begin with.
+
+    The old breadth rule is the fallback for a *missing* answer rather than an
+    empty one -- a provider that ignored the new key, or a cached response
+    written before it existed. There the record is scoped as it always was and
+    the legacy basis says so.
+    """
+    if decision.proposed_files is None:
+        return (commit_scope_files(commit_files), commit_scope_basis(commit_files))
+    chosen = selected_scope_files(decision.proposed_files, commit_files)
+    decision.proposed_files = None
+    return (chosen, SCOPE_BASIS_SELECTED)
+
 
 
 class DecisionExtractor:
@@ -662,7 +743,7 @@ class DecisionExtractor:
                 # Scan subject + body for signals — squash-merge repos carry the
                 # decision rationale in the body, not the one-line subject.
                 signal_text = f"{msg}\n{body}".lower()
-                signal_count = sum(1 for kw in DECISION_SIGNAL_KEYWORDS if kw in signal_text)
+                signal_count = count_decision_signals(signal_text)
                 if signal_count > 0:
                     commit_map[sha] = {
                         "sha": sha,
@@ -701,13 +782,14 @@ class DecisionExtractor:
                     f"{body_block}"
                     f"Author: {c['author']}\n"
                     f"Date: {c['date']}\n"
-                    f"Files changed: {', '.join(files[:20])}\n"
+                    f"Files changed: "
+                    f"{', '.join(sorted(files)[:_MAX_PROMPT_FILES])}\n"
                 )
                 source_by_sha[c["sha"]] = f"{c['message']}\n{body}".strip()
 
             prompt = GIT_ARCHAEOLOGY_PROMPT.format(commits_block=commits_block)
             response = await provider.generate(
-                _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
+                _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
             extracted = self._parse_decisions_json(response.content)
 
@@ -722,8 +804,14 @@ class DecisionExtractor:
                             break
                 if sha:
                     d.evidence_commits = [sha]
-                    d.affected_files = commit_scope_files(commit_files.get(sha))
+                    d.affected_files, d.scope_basis = _scope_from_selection(
+                        d, commit_files.get(sha)
+                    )
                     d.source_text = source_by_sha.get(sha, "")
+                # Cleared whether or not the sha resolved: an unattributed
+                # decision has no commit to validate paths against, so the
+                # model's list is unusable rather than merely unused.
+                d.proposed_files = None
                 d.source = "git_archaeology"
                 d.status = "proposed"
                 signal = max(
@@ -939,7 +1027,7 @@ class DecisionExtractor:
                     continue
                 low = body.lower()
                 is_prish = c.get("pr_number") is not None or any(m in low for m in _PR_BODY_MARKERS)
-                has_signal = any(k in low for k in DECISION_SIGNAL_KEYWORDS)
+                has_signal = count_decision_signals(low) > 0
                 if is_prish and has_signal:
                     candidates[sha] = {
                         "sha": sha,
@@ -959,10 +1047,16 @@ class DecisionExtractor:
             source_by_sha: dict[str, str] = {}
             for c in batch:
                 pr_label = f" (PR #{c['pr']})" if c.get("pr") else ""
+                # The file list is what makes "affected_files" answerable.
+                # This miner asked for a decision without ever showing which
+                # files the commit touched, and scored 20% on topic against
+                # git archaeology's 45% on the same store.
+                files = files_by_sha.get(c["sha"], [])
                 bodies_block += (
                     f"\n--- Commit {c['sha'][:8]}{pr_label} ---\n"
                     f"Subject: {c['subject']}\n"
                     f"Body:\n{c['body'][:2000]}\n"
+                    f"Files changed: {', '.join(sorted(files)[:_MAX_PROMPT_FILES])}\n"
                 )
                 source_by_sha[c["sha"]] = f"{c['subject']}\n{c['body']}"
             prompt = PR_BODY_MINING_PROMPT.format(bodies_block=bodies_block)
@@ -972,7 +1066,7 @@ class DecisionExtractor:
             # requests" — the exact zero-that-means-failure this change exists
             # to remove.
             response = await provider.generate(
-                _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
+                _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
             extracted = self._parse_decisions_json(response.content)
             for d in extracted:
@@ -984,8 +1078,11 @@ class DecisionExtractor:
                             break
                 if sha:
                     d.evidence_commits = [sha]
-                    d.affected_files = commit_scope_files(files_by_sha.get(sha))
+                    d.affected_files, d.scope_basis = _scope_from_selection(
+                        d, files_by_sha.get(sha)
+                    )
                     d.source_text = source_by_sha.get(sha, "")
+                d.proposed_files = None
                 d.source = "pr"
                 d.status = "proposed"
                 d.confidence = 0.80
@@ -1592,9 +1689,17 @@ class DecisionExtractor:
         return tags
 
     def _parse_decisions_json(self, content: str) -> list[ExtractedDecision]:
-        """Parse LLM response as JSON array of decisions."""
+        """Parse LLM response as JSON array of decisions.
+
+        A blank body raises :class:`EmptyModelResponseError`; every caller
+        sits inside a gather or a fallback that counts that as a lost batch.
+        """
         # Extract JSON from response (may be wrapped in markdown code blocks)
         content = content.strip()
+        if not content:
+            raise EmptyModelResponseError(
+                "the model returned no content for this batch"
+            )
         if content.startswith("```"):
             # Remove markdown code fences
             lines = content.split("\n")
@@ -1634,6 +1739,10 @@ class DecisionExtractor:
                     alternatives=item.get("alternatives", []),
                     consequences=item.get("consequences", []),
                     tags=item.get("tags", []),
+                    # Only the two commit prompts ask for this. Every other
+                    # prompt omits the key, so this stays None and the miner
+                    # that owns those decisions keeps scoping them its own way.
+                    proposed_files=_coerce_paths(item.get("affected_files")),
                     evidence_commits=[item["commit_sha"]] if "commit_sha" in item else [],
                     # Which marker this came from, for the inline-marker miner's
                     # per-marker attribution. Absent (and left None) for every
