@@ -41,6 +41,8 @@ MULTIPLIER_POINTS = {
     "goroutine_in_unbounded_loop": 4,
     "hot_path_sync_io": 4,
     "unbounded_read_reduced_in_memory": 4,
+    # One round trip per iteration, same shape as io_in_loop.
+    "lazy_load_in_loop": 4,
     # In-loop CPU or allocation: real, and orders below a round-trip.
     "membership_test_against_list_in_loop": 3,
     "string_concat_in_loop": 3,
@@ -60,6 +62,14 @@ MULTIPLIER_POINTS = {
 Exhaustive over every detector declaring the performance category, because
 both the observation order and the opportunity order read it and a marker
 missing from here would silently take the floor on both.
+"""
+
+NON_LEADING_MARKERS = frozenset({"lazy_load_in_loop"})
+"""Markers that rank normally but never lead the performance directive.
+
+``lazy_load_in_loop`` measured 81% on held-out Django (47/58, 2026-09-26), inside the
+80-90% tier whose pre-registered rule is "advisory, never leads". Remove a marker once a
+held-out sample puts it at 90% or above.
 """
 
 UNKNOWN_MULTIPLIER_POINTS = 1

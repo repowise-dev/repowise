@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import textwrap
 import uuid
 from pathlib import Path
 
@@ -15,8 +16,8 @@ from repowise.core.pipeline.incremental import load_stored_performance_callers
 from tests.unit.persistence.helpers import insert_repo
 
 
-def _repo(tmp_path: Path):
-    files = {
+def _repo(tmp_path: Path, files: dict[str, str] | None = None):
+    files = files or {
         "db.py": (
             "from sqlalchemy import select\n\n"
             "def fetch_one(session, rid):\n"
@@ -124,3 +125,57 @@ async def test_old_side_performance_paths_recover_callers_of_deleted_sink(tmp_pa
 
     assert await load_stored_performance_callers(tmp_path, {"deleted.py"}) == {"caller.py"}
     await engine.dispose()
+
+
+
+_UNBOUNDED = textwrap.dedent(
+    """
+    def get_repos(supabase, repo_ids):
+        builds = (
+            supabase.table("builds")
+            .select("*")
+            .in_("repo_id", repo_ids)
+            .eq("status", "ready")
+            .order("completed_at", desc=True)
+            .execute()
+        )
+        latest_by_repo = {}
+        for build in builds.data:
+            rid = build["repo_id"]
+            latest_by_repo.setdefault(rid, build)
+        return latest_by_repo
+    """
+)
+_LAZY_MODELS = textwrap.dedent(
+    """
+    class Incident(Base):
+        owner = relationship("User")
+    """
+)
+_LAZY_LOOP = textwrap.dedent(
+    """
+    def names(session):
+        for i in session.query(Incident).all():
+            print(i.owner.name)
+    """
+)
+
+
+@pytest.mark.asyncio
+async def test_init_and_update_paths_run_the_same_post_walk_perf_passes(tmp_path: Path):
+    """``analyze_async`` (init) once skipped ``collect_unbounded_reductions`` that
+    ``analyze`` (update) ran; both markers must now come out of both paths."""
+    parsed, graph = _repo(
+        tmp_path, {"repos.py": _UNBOUNDED, "models.py": _LAZY_MODELS, "loop.py": _LAZY_LOOP}
+    )
+    wanted = {"unbounded_read_reduced_in_memory", "lazy_load_in_loop"}
+
+    def _kinds(report):
+        return sorted(f.biomarker_type for f in report.findings if f.biomarker_type in wanted)
+
+    sync_report = HealthAnalyzer(graph, parsed_files=parsed, repo_root=tmp_path).analyze()
+    async_report = await HealthAnalyzer(
+        graph, parsed_files=parsed, repo_root=tmp_path
+    ).analyze_async()
+    assert _kinds(sync_report) == sorted(wanted)
+    assert _kinds(async_report) == sorted(wanted)

@@ -58,6 +58,7 @@ from .perf import (
     collect_crossfn_io_in_loop,
     link_performance_findings,
 )
+from .perf.lazy_load import collect_lazy_loads
 from .perf.unbounded_reduction import collect_unbounded_reductions
 from .refactoring import (
     PerformancePlanPolicy,
@@ -110,6 +111,11 @@ log = structlog.get_logger(__name__)
 # ``with atomic(), pytest.raises(E):`` counted one. Each item is classified now,
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
+#
+# v27: a new marker, ``lazy_load_in_loop`` (a lazy relationship read on each
+# iteration of a loop over its rows); and ``unbounded_read_reduced_in_memory`` now
+# runs on ``init`` too, where it never ran before. A v26 store built by ``init`` has
+# neither marker; one built by ``update`` has the second.
 #
 # v26: ``.all()`` on an imported or module-global name (a plugin registry) is not a
 # db sink, a SQL string saying ``LIMIT n`` caps a read, and a batched read is never
@@ -257,7 +263,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 26
+HEALTH_ANALYZER_VERSION = 27
 
 
 def walked_functions(
@@ -675,9 +681,6 @@ class HealthAnalyzer:
             repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
             repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
-        # Cross-function N+1: augment perf_hits before the biomarker stage.
-        with timed(timings, "analysis.health.crossfn"):
-            self._apply_crossfn_perf(walked)
         # Cross-file test oracles, same rule: resolve before the marker runs.
         with timed(timings, "analysis.health.oracle_reach"):
             self._apply_cross_file_oracles(walked)
@@ -685,13 +688,7 @@ class HealthAnalyzer:
         # and the Extract Method detector below read the same lazily parsed
         # per-file object, so no file is parsed twice for dataflow.
         dataflow_cache = FileDataflowCache(self.read_source)
-        # Dataflow promotion: mark advisory perf hits whose loop is provably
-        # iteration-independent (runs after the graph passes so the
-        # centrality-gated nested-loop hits are present to promote).
-        with timed(timings, "analysis.health.promotions"):
-            apply_perf_promotions(walked, dataflow=dataflow_cache)
-        with timed(timings, "analysis.health.unbounded_reduction"):
-            collect_unbounded_reductions(walked, read_source=self.read_source)
+        self._augment_perf_hits(walked, dataflow_cache, timings)
 
         timings_evaluate = timed(timings, "analysis.health.evaluate")
         timings_evaluate.__enter__()
@@ -894,16 +891,12 @@ class HealthAnalyzer:
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
-        # Cross-function N+1: augment perf_hits before the biomarker stage.
         walked = list(walked)
-        self._apply_crossfn_perf(walked)
         # Cross-file test oracles, same rule: resolve before the marker runs.
         self._apply_cross_file_oracles(walked)
         # One shared dataflow service per pass (see the sync path above).
         dataflow_cache = FileDataflowCache(self.read_source)
-        # Dataflow promotion: mark advisory perf hits whose loop is provably
-        # iteration-independent (after the graph passes populate the hits).
-        apply_perf_promotions(walked, dataflow=dataflow_cache)
+        self._augment_perf_hits(walked, dataflow_cache, timings=None)
 
         disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
         refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
@@ -1025,6 +1018,26 @@ class HealthAnalyzer:
         except Exception as exc:
             log.debug("health_cross_file_oracles_failed", error=str(exc))
             return
+
+    def _augment_perf_hits(
+        self,
+        walked: list[tuple[Any, FileComplexity]],
+        dataflow: FileDataflowCache,
+        timings: Any | None,
+    ) -> None:
+        """Every post-walk perf pass, shared by ``analyze`` and ``analyze_async`` so
+        the two paths cannot drift apart again. Promotions read the crossfn hits,
+        so crossfn runs first."""
+        from repowise.core.pipeline.phase_timing import timed
+
+        with timed(timings, "analysis.health.crossfn"):
+            self._apply_crossfn_perf(walked)
+        with timed(timings, "analysis.health.promotions"):
+            apply_perf_promotions(walked, dataflow=dataflow)
+        with timed(timings, "analysis.health.unbounded_reduction"):
+            collect_unbounded_reductions(walked, read_source=self.read_source)
+        with timed(timings, "analysis.health.lazy_load"):
+            collect_lazy_loads(walked, self.parsed_files, read_source=self.read_source)
 
     def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
         """Run the graph-dependent perf passes over the walked files, in place.

@@ -32,7 +32,10 @@ from repowise.core.analysis.health.grading import TARGET_SCORE, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
-from repowise.core.analysis.health.perf.opportunity_rank import observation_rank
+from repowise.core.analysis.health.perf.opportunity_rank import (
+    NON_LEADING_MARKERS,
+    observation_rank,
+)
 from repowise.core.analysis.health.ranking import deduction_by_path, sort_metrics_worst_first
 from repowise.core.analysis.health.refactoring.recommendations import (
     Recommendation,
@@ -2810,8 +2813,13 @@ async def get_health(
         }
 
     if {"performance", "refactoring"} <= include_set and wants("recommendation_lede"):
-        performance_lead = (
-            performance.page.items[0] if performance.page and performance.page.items else None
+        performance_lead = next(
+            (
+                item
+                for item in (performance.page.items if performance.page else [])
+                if item.get("biomarker_type") not in NON_LEADING_MARKERS
+            ),
+            None,
         )
         recommendation_lead = (
             refactoring_recommendations[0] if refactoring_recommendations else None

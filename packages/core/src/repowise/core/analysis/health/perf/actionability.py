@@ -33,6 +33,7 @@ FixStrategy = Literal[
     "batch_or_prefetch_io",
     "shrink_lock_scope",
     "push_reduction_into_query",
+    "eager_load_relationship",
 ]
 
 BATCHABLE_MARKERS = frozenset({"io_in_loop", "nested_loop_with_io"})
@@ -191,6 +192,17 @@ def assess_fix(
                 "selection (DISTINCT ON / a window function / a view) is not.",
             ),
             ("query_supports_group_selection",),
+        )
+    if marker == "lazy_load_in_loop":
+        return FixAssessment(
+            PerformanceFix(
+                "eager_load_relationship",
+                "advisory",
+                "The relationship is declared lazy and the query that produced the "
+                "rows does not load it; whether every iteration reaches the access, "
+                "and whether another layer loads it first, is not proven.",
+            ),
+            ("relationship_not_loaded_elsewhere",),
         )
     if set(markers) <= BATCHABLE_MARKERS:
         if details and all(detail.get("chunked_iteration") for detail in details):
