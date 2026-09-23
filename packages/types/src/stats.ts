@@ -5,8 +5,9 @@
  * (packages/server/.../routers/stats.py). Scope is defined by subtraction:
  * only signals no other page in the app already owns. Health scores belong to
  * Code Health, commit volume and categories to Commits, per-person ownership to
- * Contributors, dependencies and communities to Architecture — none of those
- * appear here.
+ * Contributors, dependencies and communities to Architecture. None of those
+ * appear here. The server derivations live in `repowise.core.stats_highlights`,
+ * shared by the OSS route and the hosted backend.
  *
  * Every section is independently built server-side and degrades to null/empty
  * rather than failing the page, so most leaf fields are nullable.
@@ -28,6 +29,9 @@ export interface StatsScale {
   symbol_count: number;
   module_count: number;
   total_nloc: number;
+  /** The share of `total_nloc` in files health analysis marked as tests. */
+  test_nloc?: number;
+  /** Code languages only: data and markup formats are not counted. */
   language_count: number;
   languages: StatsLanguage[];
   size_class: StatsSizeClass;
@@ -50,7 +54,7 @@ export interface StatsOrigin {
  * Lifetime lines written vs. taken back.
  *
  * Read from repo-level totals captured at index time, never summed from the
- * commit table — that table is bounded to the newest N commits, so summing it
+ * commit table: that table is bounded to the newest N commits, so summing it
  * would present a windowed figure as a lifetime one. Null when the history was
  * too deep to walk or the index predates the capture.
  */
@@ -66,7 +70,7 @@ export interface StatsChurn {
  * Coding-rhythm heatmap: commit counts by weekday (0=Monday) x hour (0-23).
  *
  * `timezone_mode` says which clock the matrix is drawn in. `author_local` means
- * every commit was shifted by its author's own UTC offset — the honest version
+ * every commit was shifted by its author's own UTC offset, the honest version
  * of "when do people work". `utc` is the fallback for indexes written before
  * the offset was captured; it resolves itself on the next `repowise update`.
  */
@@ -86,18 +90,37 @@ export interface StatsPunchCard {
 export interface StatsVelocity {
   recent_90d: number;
   prior_90d: number;
-  /** Percent change recent-vs-prior. Null when the prior window is empty. */
+  /** Percent change recent-vs-prior. Null when the prior window is empty or
+   *  reaches past the indexed commit sample. */
   pct_change: number | null;
+}
+
+/**
+ * How much history the rhythm and people sections were drawn from.
+ *
+ * The indexed commit table is bounded to the newest N commits. `complete` is
+ * false when the repo has more history than that, and the page then names the
+ * window instead of presenting a sample as the repo's whole life.
+ */
+export interface StatsWindow {
+  commits: number;
+  first_at: string | null;
+  last_at: string | null;
+  complete: boolean;
 }
 
 /** The time-shape of the work. Nothing else in the app has a clock. */
 export interface StatsRhythm {
+  window?: StatsWindow;
   punch_card: StatsPunchCard;
-  velocity: StatsVelocity;
+  /** Null when the 90-day window reaches past the indexed commit sample. */
+  velocity: StatsVelocity | null;
   busiest_month: { month: string; total: number } | null;
   busiest_day: { date: string; commits: number } | null;
   /** Longest run of consecutive days with at least one commit. */
   longest_streak: { days: number; start: string; end: string } | null;
+  /** Longest stretch between two consecutive commits. */
+  longest_silence?: { hours: number; start: string; end: string } | null;
   /** Distinct calendar days carrying at least one commit. */
   active_days: number;
   /** Median days since each file was last touched, anchored to the newest
@@ -105,7 +128,7 @@ export interface StatsRhythm {
   code_half_life_days: number | null;
 }
 
-/** A contributor's commit-hour habit. Only emitted in author-local mode —
+/** A contributor's commit-hour habit. Only emitted in author-local mode:
  *  awarding "night owl" off UTC would just name whoever lives furthest east. */
 export interface StatsChronotype {
   name: string;
@@ -134,13 +157,15 @@ export interface StatsArrival {
 export interface StatsPeople {
   owner_count: number;
   contributor_count: number;
+  /** Files with git history: the denominator for `single_owner_files`. */
+  tracked_files?: number;
   single_owner_files: number;
   silo_count: number;
   /** Fewest primary owners who together hold >50% of owned files. 1 means a
    *  single person owns most of the codebase. Null when no ownership data. */
   truck_factor: number | null;
   chronotypes: StatsChronotype[];
-  /** Contributors ordered by their first commit — the arrivals timeline. */
+  /** Contributors ordered by their first commit inside the window. */
   arrivals: StatsArrival[];
 }
 
@@ -155,11 +180,11 @@ export interface StatsRecords {
   gnarliest_file?: { path: string; max_ccn: number };
   most_complex_symbol?: { name: string; file_path: string; complexity: number };
   most_changed_file?: { path: string; commit_count: number };
-  oldest_file?: { path: string; first_commit_at: string | null };
+  /** Files whose first commit is the root commit, out of every dated file. */
+  day_one_files?: { count: number; of: number };
   /** `import_count` present when graph metrics were materialized — the award
    *  is then "most imported"; without it, it degrades to the PageRank pick. */
   most_central_file?: { path: string; pagerank: number; import_count?: number };
-  strongest_coupling?: { a: string; b: string; count: number };
   /** Biggest strongly-connected import cycle, and how many exist. */
   largest_cycle?: { files: number; cycle_count: number };
   /** What fraction of this codebase is async, and what fraction is documented. */
@@ -184,6 +209,20 @@ export interface StatsRecords {
     files_changed: number;
     lines_changed: number;
   };
+  /** Non-initial commit that removed the most lines net. */
+  biggest_purge?: {
+    sha: string;
+    subject: string;
+    lines_deleted: number;
+    lines_added: number;
+  };
+  /** Function and record awards skip test code. */
+  longest_function?: { name: string; file_path: string; lines: number };
+  longest_name?: { name: string; file_path: string };
+  most_common_name?: { name: string; count: number };
+  /** Distinct commits that own a surviving line of the function, from
+   *  function blame. High for many small patches, low for a rewrite. */
+  most_patched_function?: { name: string; file_path: string; mod_count: number };
 }
 
 export interface StatsRepo {
