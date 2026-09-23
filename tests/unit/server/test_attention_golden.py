@@ -24,6 +24,7 @@ from repowise.core.persistence.models import (
     RefactoringSuggestion,
     SecurityFinding,
 )
+from repowise.server.services import attention
 from repowise.server.services.attention import build_attention
 from tests.unit.server.conftest import create_test_repo
 
@@ -201,3 +202,30 @@ async def test_build_attention_matches_the_golden(
     assert result == golden
     # Dict equality ignores order; the wire keeps it.
     assert list(result["by_source"]) == list(golden["by_source"])
+
+
+@pytest.mark.anyio
+async def test_a_source_that_raises_is_dropped_with_its_count(
+    client: AsyncClient, session_factory, monkeypatch
+) -> None:
+    async def boom(session, repo_id):
+        raise RuntimeError("table missing")
+
+    fetchers = tuple(
+        (key, boom if key == "security_finding" else fetch) for key, fetch in attention._FETCHERS
+    )
+    monkeypatch.setattr(attention, "_FETCHERS", fetchers)
+    repo = await create_test_repo(client)
+    await _seed(session_factory, repo["id"])
+
+    async with get_session(session_factory) as session:
+        result = await build_attention(
+            session, repo["id"], decision_health=_DECISION_HEALTH, knowledge_silos=_SILOS
+        )
+
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    assert "security_finding" not in result["by_source"]
+    assert result["by_source"] == {
+        k: v for k, v in golden["by_source"].items() if k != "security_finding"
+    }
+    assert all(i["type"] != "security_finding" for i in result["items"])
