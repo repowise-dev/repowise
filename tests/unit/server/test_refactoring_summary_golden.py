@@ -1,7 +1,7 @@
 """Characterization of the refactoring board's summary chips.
 
-Pins every count and threshold edge, so moving the fold out of the router
-cannot change what the board or ``/refactoring/plans`` report.
+Pins every count, the by-type order, both threshold edges and the rounding of
+the best gain that the board and ``/refactoring/plans`` report.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ _RECS = [
     _rec("break_cycle", "c.py", "S", 0.5),
     _rec("performance_fix", "c.py", "XL", 1.23456),
     _rec("move_method", "d.py", "", 0.0),
-    _rec("extract_class", "e.py", "S", 2.0),
+    _rec("extract_class", "e.py", "S", 2.34567),
     _rec("extract_helper", "e.py", "M", 0.25),
 ]
 
@@ -49,7 +49,7 @@ def test_summary_counts_and_threshold_edges() -> None:
         "small_effort_total": 3,
         "health_recovery_total": 6,
         "negligible_health_total": 5,
-        "best_health_gain": 2.0,
+        "best_health_gain": 2.346,
     }
 
 

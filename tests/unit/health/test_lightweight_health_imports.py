@@ -24,6 +24,7 @@ import pytest
 
 _LIGHTWEIGHT = (
     "repowise.core.analysis.health.rows",
+    "repowise.core.analysis.health.refactoring_summary",
     "repowise.core.analysis.health.ranking",
     "repowise.core.analysis.health.aggregation",
     "repowise.core.analysis.health.trends",
