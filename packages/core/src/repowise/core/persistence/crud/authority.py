@@ -30,8 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.decisions.lifecycle import (
     ACCEPTANCE_ACTIONS,
     ACCEPTER_SESSION_MAX,
-    AGREEMENT_KIND,
-    AGREEMENT_SCOPE,
     NO_SCOPE_BLOCKER,
     STORED_CURRENCIES,
     AcceptanceRequirement,
@@ -39,8 +37,16 @@ from repowise.core.analysis.decisions.lifecycle import (
     accepter_kind_blocker,
     effective_currency,
     is_governing,
+    is_repo_wide,
     legacy_status_for_currency,
     machine_grant_blocker,
+    named_scope,
+    record_evidence,
+    record_scope,
+    requirement,
+)
+from repowise.core.analysis.decisions.lifecycle import (
+    record_blockers as _record_blockers,
 )
 from repowise.core.analysis.decisions.scope import SCOPE_BASIS_STATED
 
@@ -69,6 +75,7 @@ __all__ = [
     "count_decisions_by_lane",
     "current_currency",
     "decision_currencies",
+    "decision_fields",
     "decision_signatures",
     "dismiss_candidate",
     "is_accepted",
@@ -359,17 +366,16 @@ async def count_decisions_by_lane(
         if acceptance is None:
             counts["candidates"] += 1
             continue
-        # The same blank handling as _named_scope: a whitespace-only path is
-        # not a scope, and these two computations of one partition must not
-        # disagree about that.
-        named = _non_blank(_json_list(files_json)) or _non_blank(
-            _json_list(modules_json)
-        )
+        fields = {
+            "affected_files": files_json,
+            "affected_modules": modules_json,
+            "kind": kind,
+        }
         currency = effective_currency(
             acceptance,
-            has_scope=bool(named) or kind == AGREEMENT_KIND,
+            has_scope=bool(record_scope(fields)),
             staleness=staleness or 0.0,
-            repo_wide=kind == AGREEMENT_KIND and not named,
+            repo_wide=is_repo_wide(fields),
         )
         counts["history" if currency in ("superseded", "dismissed") else currency] += 1
         if is_governing(currency):
@@ -416,114 +422,41 @@ async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | 
 # ---------------------------------------------------------------------------
 
 
-def _json_list(value: Any) -> list[str]:
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value or "[]")
-        except (TypeError, ValueError):
-            return []
-        return [str(v) for v in parsed] if isinstance(parsed, list) else []
-    return [str(v) for v in (value or [])]
-
-
-def _non_blank(values: list[str]) -> list[str]:
-    return [v for v in values if v and v.strip()]
+def decision_fields(record: DecisionRecord) -> dict[str, Any]:
+    """*record* as the plain mapping the lifecycle readers take."""
+    return {
+        "affected_files": record.affected_files_json,
+        "affected_modules": record.affected_modules_json,
+        "kind": record.kind,
+        "rationale": record.rationale,
+        "context": record.context,
+        "source": record.source,
+        "evidence_commits": record.evidence_commits_json,
+        "evidence_file": record.evidence_file,
+    }
 
 
 def names_a_scope(record: DecisionRecord) -> list[str]:
     """The files or modules *record* names, for a caller asking what a
     re-statement would clear."""
-    return _named_scope(record)
-
-
-def _named_scope(record: DecisionRecord) -> list[str]:
-    """The files or modules *record* actually names, blanks dropped."""
-    # Blank entries fall through to the modules rather than short-circuiting on
-    # them, so this agrees with the TypeScript mirror about a whitespace path.
-    return _non_blank(_json_list(record.affected_files_json)) or _non_blank(
-        _json_list(record.affected_modules_json)
-    )
-
-
-def _is_repo_wide(record: DecisionRecord) -> bool:
-    """Whether *record* governs the repository as a whole rather than part of it.
-
-    Both halves are needed. An agreement that names files has been given a real
-    scope by something, and the ordinary rules apply to it: the noun says the
-    record is *allowed* to name nothing, not that anything it does name should
-    be ignored. Keying this off the kind alone would take a record with real
-    files out of staleness checking for good, and the classifier is a regex
-    with a measured false-positive rate.
-    """
-    return record.kind == AGREEMENT_KIND and not _named_scope(record)
+    return named_scope(decision_fields(record))
 
 
 def _record_scope(record: DecisionRecord) -> list[str]:
-    """What *record* claims to govern, for every reader of the contract.
+    return record_scope(decision_fields(record))
 
-    An agreement naming no file governs the repository rather than part of it,
-    so it reports that scope instead of an empty one. Written here rather than
-    at the three call sites because they are the acceptance contract, the review
-    flag and the currency, and those three disagreeing about what an agreement
-    governs is the failure :func:`accepted_predicate` exists to describe.
-    """
-    return _named_scope(record) or (
-        [AGREEMENT_SCOPE] if record.kind == AGREEMENT_KIND else []
-    )
+
+def _is_repo_wide(record: DecisionRecord) -> bool:
+    return is_repo_wide(decision_fields(record))
 
 
 def _record_evidence(record: DecisionRecord) -> list[str]:
-    evidence = _json_list(record.evidence_commits_json)
-    if record.evidence_file:
-        evidence.append(record.evidence_file)
-    return evidence
-
-
-def _first_non_blank(*values: str) -> str:
-    return next((v for v in values if v and v.strip()), "")
-
-
-def _requirement(
-    record: DecisionRecord,
-    *,
-    reason: str = "",
-    scope: list[str] | None = None,
-    evidence: list[str] | None = None,
-    accepter: str = "",
-    artifact: str = "",
-) -> AcceptanceRequirement:
-    """What the acceptance contract would be asked to take for *record*."""
-    # A record somebody typed is its own provenance: the accepter did not read
-    # an inference, they wrote the claim. Everything mined from a transcript, a
-    # commit or a document still has to say what it rests on.
-    self_authored = record.source == "cli" and bool(accepter.strip())
-    resolved_evidence = evidence if evidence is not None else _record_evidence(record)
-    if not resolved_evidence and self_authored:
-        resolved_evidence = [f"accepted by {accepter}"]
-    # The why may come from `rationale` or from `context` ("what forced this
-    # decision?"), never from `decision`, which is the what. Measured over the
-    # dev store's 513 acceptable records: 199 have a blank rationale, but 145
-    # of those give their reason in `context`, so stopping at `rationale` would
-    # block 145 records a hand-read sample of 20 judged worth keeping. Stopping
-    # at `context` blocks the other 54, each blank in both fields.
-    return AcceptanceRequirement(
-        reason=_first_non_blank(reason, record.rationale, record.context),
-        scope=scope if scope is not None else _record_scope(record),
-        evidence=resolved_evidence,
-        accepter=accepter,
-        artifact=artifact,
-        self_authored=self_authored,
-    )
+    return record_evidence(decision_fields(record))
 
 
 def record_blockers(record: DecisionRecord) -> list[str]:
-    """Why the contract would refuse *record* as it stands, empty if it would not.
-
-    The accepter and artifact are what a reviewer supplies at the moment they
-    act, so this asks with an identity in hand: what is left is what a person
-    has to go and fill in first.
-    """
-    return acceptance_blockers(_requirement(record, accepter="reviewer"))
+    """Why the contract would refuse *record* as it stands, empty if it would not."""
+    return _record_blockers(decision_fields(record))
 
 
 def candidate_review_signals(record: DecisionRecord) -> tuple[float, bool]:
@@ -533,7 +466,7 @@ def candidate_review_signals(record: DecisionRecord) -> tuple[float, bool]:
     with candidates a reviewer can act on and leaves confidence and recency to
     break ties.
     """
-    blockers = acceptance_blockers(_requirement(record, accepter="reviewer"))
+    blockers = record_blockers(record)
     return (0.0 if blockers else 1.0), NO_SCOPE_BLOCKER in blockers
 
 
@@ -571,8 +504,8 @@ async def record_acceptance(
     if currency not in STORED_CURRENCIES:
         raise ValueError(f"Unknown stored currency {currency!r}.")
 
-    req = _requirement(
-        record,
+    req = requirement(
+        decision_fields(record),
         reason=reason,
         scope=scope,
         evidence=evidence,
