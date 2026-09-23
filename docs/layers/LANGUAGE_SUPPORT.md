@@ -254,7 +254,7 @@ bindings, heritage and a workspace resolver where their syntax supports them.
 |----------|-----------|--------------|
 | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
 | **Swift** | `.swift` | SPM `Package.swift` target → directory mapping, intra-module type references, `@main` entry points |
-| **PHP** | `.php` | `use` declarations (grouped `use A\{B, C}` included) resolved through PSR-4 from the root and nested `composer.json` files, longest prefix first as composer does; same-namespace and `\Fully\Qualified` class references; Laravel, TYPO3 edges |
+| **PHP** | `.php` | `use` declarations (grouped `use A\{B, C}` included) resolved through PSR-4 from the root and nested `composer.json` files, longest prefix first as composer does; same-namespace and `\Fully\Qualified` class references; Laravel edges (route files to controllers and aliased middleware, registered and discovered listeners, policies, providers, commands by signature), TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs, `package:` via every `pubspec.yaml`, Flutter route tables and `runApp()` edges. **Health markers included** |
 | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | Program IDs, sections, paragraphs and data levels; literal `CALL` and `PERFORM` targets resolve to program/procedure symbols. Dynamic calls and `COPY` edges are deliberately silent |
 

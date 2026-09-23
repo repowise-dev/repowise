@@ -128,7 +128,9 @@ class TestOrmProviders:
             'def upgrade():\n    op.create_table("orders", sa.Column("id", sa.Integer))\n',
         )
         contracts = DataExtractor().extract(tmp_path, "api")
-        assert any(c.contract_id == "data::orders" for c in contracts)
+        (orders,) = [c for c in contracts if c.contract_id == "data::orders"]
+        # A migration defines the schema, which marks the owning repo.
+        assert orders.meta["schema"] == "create"
 
     def test_sqlmodel_table_true(self, tmp_path: Path) -> None:
         _write(
@@ -330,3 +332,190 @@ class TestDataMatching:
         contracts = DataExtractor().extract(backend, "backend")
         contracts += DataExtractor().extract(worker, "worker")
         assert len(match_contracts(contracts)) == 1
+
+
+_ELOQUENT_HEAD = "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\n"
+
+
+def _data(repo: Path, alias: str = "app") -> dict[tuple[str, str], dict]:
+    """``(contract_id, framework or client) -> meta`` for *repo*'s data contracts."""
+    return {
+        (c.contract_id, c.meta.get("framework") or c.meta["client"]): c.meta
+        for c in DataExtractor().extract(repo, alias)
+    }
+
+
+class TestLaravelData:
+    def test_model_table_follows_the_naming_convention(self, tmp_path: Path) -> None:
+        _write(tmp_path, "app/Models/GuestlistEntry.php", _ELOQUENT_HEAD + "class GuestlistEntry extends Model {}\n")
+        _write(
+            tmp_path,
+            "app/Models/User.php",
+            "<?php\nuse Illuminate\\Foundation\\Auth\\User as Authenticatable;\n"
+            "class User extends Authenticatable {}\n",
+        )
+        assert set(_data(tmp_path)) == {
+            ("data::guestlist_entries", "eloquent"),
+            ("data::users", "eloquent"),
+        }
+
+    def test_an_explicit_table_wins_over_the_convention(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "app/Models/Table.php",
+            _ELOQUENT_HEAD + "class Table extends Model {\n    protected $table = 'venue_tables';\n}\n",
+        )
+        assert set(_data(tmp_path)) == {("data::venue_tables", "eloquent")}
+
+    def test_the_convention_needs_eloquent_and_a_concrete_class(self, tmp_path: Path) -> None:
+        # Another library's `Model`, and an abstract base, name no table.
+        _write(tmp_path, "src/Widget.php", "<?php\nuse Acme\\Model;\nclass Widget extends Model {}\n")
+        _write(tmp_path, "app/Models/Base.php", _ELOQUENT_HEAD + "abstract class Base extends Model {}\n")
+        assert _data(tmp_path) == {}
+
+    def test_migrations_create_and_alter_with_schema_meta(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "database/migrations/2024_01_01_000000_create_orders_table.php",
+            "<?php\nreturn new class extends Migration {\n"
+            "    public function up(): void {\n"
+            "        Schema::create('orders', function (Blueprint $t) { $t->id(); });\n"
+            "        Schema::connection('audit')->table('order_log', function (Blueprint $t) {});\n"
+            "    }\n"
+            "    public function down(): void { Schema::dropIfExists('orders'); }\n"
+            "};\n",
+        )
+        found = _data(tmp_path)
+        assert found[("data::orders", "laravel-migration")]["schema"] == "create"
+        assert found[("data::order_log", "laravel-migration")]["schema"] == "alter"
+        assert len(found) == 2
+
+    def test_query_builder_reads_and_writes(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "app/Services/Stats.php",
+            "<?php\nclass Stats {\n    public function run() {\n"
+            "        DB::table('tickets')->where('event_id', 1)->count();\n"
+            "        DB::table('event_scan_stats')->updateOrInsert(['id' => 1], ['n' => 2]);\n"
+            "        DB::table('audit as a')->insert(['x' => 1]);\n"
+            "        DB::table('sessions')->where('old', true)->delete();\n"
+            "        DB::table('counters')->increment('hits');\n"
+            "    }\n}\n",
+        )
+        verbs = {cid: meta["verb"] for (cid, _), meta in _data(tmp_path).items()}
+        assert verbs == {
+            "data::tickets": "select",
+            "data::event_scan_stats": "update",
+            "data::audit": "insert",
+            "data::sessions": "delete",
+            "data::counters": "update",
+        }
+
+    def test_less_common_spellings(self, tmp_path: Path) -> None:
+        _write(tmp_path, "app/Models/Seat.php", _ELOQUENT_HEAD + "final class Seat extends Model {}\n")
+        _write(
+            tmp_path,
+            "app/Jobs/Sync.php",
+            "<?php\nclass Sync { public function run() {\n"
+            "    DB::connection('reporting')->table('rollups')->upsert([], ['id']);\n"
+            "    DB::table('scratch')->truncate();\n"
+            "    Schema::connection('audit')->create('audit_log', function ($t) {});\n"
+            "} }\n",
+        )
+        found = _data(tmp_path)
+        assert ("data::seats", "eloquent") in found
+        assert found[("data::rollups", "laravel-db")]["verb"] == "insert"
+        assert found[("data::scratch", "laravel-db")]["verb"] == "delete"
+        assert found[("data::audit_log", "laravel-migration")]["schema"] == "create"
+
+    def test_a_semicolon_in_a_string_does_not_end_the_statement(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "app/Jobs/Purge.php",
+            "<?php\nDB::table('tokens')->where('note', 'a;b')->delete();\n",
+        )
+        assert _data(tmp_path)[("data::tokens", "laravel-db")]["verb"] == "delete"
+
+    def test_a_write_inside_a_callback_is_not_the_outer_statement(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "app/Jobs/Backfill.php",
+            "<?php\nDB::table('orders')->orderBy('id')->each(function ($o) {\n"
+            "    DB::table('ledger')->insert(['order' => $o->id]);\n});\n",
+        )
+        verbs = {cid: meta["verb"] for (cid, _), meta in _data(tmp_path).items()}
+        assert verbs == {"data::orders": "select", "data::ledger": "insert"}
+
+    def test_an_aliased_eloquent_base_is_missed_not_guessed(self, tmp_path: Path) -> None:
+        # Deliberate ceiling: only the framework's own base-class names count.
+        _write(
+            tmp_path,
+            "app/Models/Seat.php",
+            "<?php\nuse Illuminate\\Database\\Eloquent\\Model as Eloquent;\nclass Seat extends Eloquent {}\n",
+        )
+        assert _data(tmp_path) == {}
+
+    def test_a_ddl_create_carries_schema_meta(self, tmp_path: Path) -> None:
+        _write(tmp_path, "schema.sql", "CREATE TABLE a (id INT);\nALTER TABLE b ADD COLUMN x INT;")
+        found = _data(tmp_path)
+        assert found[("data::a", "sql-ddl")]["schema"] == "create"
+        assert found[("data::b", "sql-ddl")]["schema"] == "alter"
+
+
+class TestSharedTables:
+    def _extract(self, root: Path, *aliases: str) -> list:
+        return [c for a in aliases for c in DataExtractor().extract(root / a, a)]
+
+    def test_a_model_is_linked_to_the_service_owning_the_migration(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path / "api",
+            "database/migrations/2024_create_events.php",
+            "<?php\nSchema::create('events', function ($t) {});\n",
+        )
+        _write(tmp_path / "api", "app/Models/Event.php", _ELOQUENT_HEAD + "class Event extends Model {}\n")
+        _write(tmp_path / "admin", "app/Models/Event.php", _ELOQUENT_HEAD + "class Event extends Model {}\n")
+        links = match_contracts(self._extract(tmp_path, "admin", "api"))
+        assert [(k.consumer_repo, k.consumer_file, k.provider_repo, k.provider_file) for k in links] == [
+            ("admin", "app/Models/Event.php", "api", "database/migrations/2024_create_events.php")
+        ]
+        assert links[0].contract_type == "data"
+
+    def test_models_alone_say_nothing(self, tmp_path: Path) -> None:
+        # Nobody defines the schema, so nothing says whose table it is.
+        for alias in ("a", "b"):
+            _write(tmp_path / alias, "app/Models/Venue.php", _ELOQUENT_HEAD + "class Venue extends Model {}\n")
+        assert match_contracts(self._extract(tmp_path, "a", "b")) == []
+
+    def test_two_apps_migrating_one_table_name_are_not_linked(self, tmp_path: Path) -> None:
+        # Every stock Laravel app creates `users`; two of them are two databases.
+        for alias in ("shop", "blog"):
+            _write(
+                tmp_path / alias,
+                "database/migrations/0001_create_users_table.php",
+                "<?php\nSchema::create('users', function ($t) {});\n",
+            )
+            _write(tmp_path / alias, "app/Models/User.php", _ELOQUENT_HEAD + "class User extends Model {}\n")
+        assert match_contracts(self._extract(tmp_path, "shop", "blog")) == []
+
+    def test_an_alter_only_owner_still_owns(self, tmp_path: Path) -> None:
+        _write(tmp_path / "api", "db/002.sql", "ALTER TABLE seats ADD COLUMN row INT;")
+        _write(tmp_path / "admin", "app/Models/Seat.php", _ELOQUENT_HEAD + "class Seat extends Model {}\n")
+        links = match_contracts(self._extract(tmp_path, "admin", "api"))
+        assert [(k.consumer_repo, k.provider_repo) for k in links] == [("admin", "api")]
+
+    def test_one_service_declaring_twice_shares_nothing(self, tmp_path: Path) -> None:
+        _write(tmp_path / "api", "db/schema.sql", "CREATE TABLE zones (id INT);")
+        _write(tmp_path / "api", "app/Models/Zone.php", _ELOQUENT_HEAD + "class Zone extends Model {}\n")
+        assert match_contracts(self._extract(tmp_path, "api")) == []
+
+    def test_readers_and_models_both_link(self, tmp_path: Path) -> None:
+        # The shared-table pass adds to the exact pass; it does not replace it.
+        _write(tmp_path / "api", "db/schema.sql", "CREATE TABLE refunds (id INT);")
+        _write(tmp_path / "admin", "app/Models/Refund.php", _ELOQUENT_HEAD + "class Refund extends Model {}\n")
+        _write(tmp_path / "worker", "job.py", 'q = "SELECT id FROM refunds WHERE x = 1"\n')
+        links = match_contracts(self._extract(tmp_path, "api", "admin", "worker"))
+        assert sorted((k.consumer_repo, k.provider_repo) for k in links) == [
+            ("admin", "api"),
+            ("worker", "admin"),
+            ("worker", "api"),
+        ]

@@ -108,3 +108,39 @@ def test_without_the_framework_the_same_files_are_flagged(tmp_path: Path) -> Non
         assert dead in flagged, dead
     # The base class is reached through its subclasses either way.
     assert "app/Http/Controllers/Controller.php" not in flagged
+
+
+_REGISTERED = {
+    "app/Events/TicketSold.php": "<?php\nnamespace App\\Events;\nclass TicketSold {}\n",
+    "app/Http/Controllers/SaleController.php": (
+        "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Events\\TicketSold;\n"
+        "class SaleController extends Controller {\n"
+        "    public function store() { event(new TicketSold()); }\n}\n"
+    ),
+    "app/Listeners/SendReceipt.php": (
+        "<?php\nnamespace App\\Listeners;\nuse App\\Events\\TicketSold;\n"
+        "class SendReceipt { public function handle(TicketSold $event): void {} }\n"
+    ),
+    "app/Listeners/Orphan.php": (
+        "<?php\nnamespace App\\Listeners;\nclass Orphan { public function handle($event): void {} }\n"
+    ),
+    "app/Policies/TicketPolicy.php": "<?php\nnamespace App\\Policies;\nclass TicketPolicy {}\n",
+    "app/Policies/NoModelPolicy.php": "<?php\nnamespace App\\Policies;\nclass NoModelPolicy {}\n",
+}
+
+
+def test_discovered_listeners_and_policies_live_and_orphans_do_not(tmp_path: Path) -> None:
+    # Listeners and policies are linked from what registers or discovers them,
+    # not anchored by directory, so one nothing reaches still reads as unused.
+    _write_app(tmp_path, {"laravel/framework": "^11.0"})
+    for rel, text in _REGISTERED.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    flagged = {path for _kind, path in _analyze(tmp_path)}
+
+    assert "app/Listeners/SendReceipt.php" not in flagged
+    assert "app/Policies/TicketPolicy.php" not in flagged
+    assert "app/Listeners/Orphan.php" in flagged
+    assert "app/Policies/NoModelPolicy.php" in flagged

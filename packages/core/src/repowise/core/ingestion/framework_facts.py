@@ -88,9 +88,11 @@ LARAVEL = FrameworkFacts(
     name="Laravel",
     anchor="framework:laravel",
     composer_packages=("laravel/framework",),
-    # Jobs, middleware and events are left out on purpose: code names them
-    # (``Job::dispatch``, the middleware list, ``event(new ...)``), so one
-    # with no importer really is unused.
+    # Jobs, middleware, events, listeners and policies are left out on
+    # purpose: code names or registers them (``Job::dispatch``, an alias
+    # array, ``$listen``, a typed ``handle`` in ``app/Listeners``, the model a
+    # policy is named after), and ``framework_edges/laravel.py`` links them
+    # from there, so one nothing names really is unused.
     entry_globs=(
         "routes/*.php",
         "bootstrap/app.php",
@@ -101,8 +103,6 @@ LARAVEL = FrameworkFacts(
         "app/Console/Commands/*.php",  # auto-discovered artisan commands
         "app/Http/Kernel.php",
         "app/Exceptions/Handler.php",
-        "app/Listeners/*.php",  # event discovery
-        "app/Policies/*.php",  # policy discovery by model name
         "database/migrations/*.php",
         "database/factories/*.php",  # resolved from the model by HasFactory
         "database/seeders/*.php",

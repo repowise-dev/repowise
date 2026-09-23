@@ -56,6 +56,30 @@ def file_namespace(text: str) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
+def php_use_aliases(parsed: Any) -> dict[str, str]:
+    """Local name -> imported FQN for every ``use`` in a parsed PHP file."""
+    return {
+        binding.local_name: binding.exported_name
+        for imp in parsed.imports
+        for binding in imp.bindings
+        if binding.local_name and binding.exported_name
+    }
+
+
+def qualify_php_name(name: str, namespace: str | None, aliases: dict[str, str]) -> str:
+    """The FQN class *name* denotes in a file with *namespace* and ``use`` *aliases*.
+
+    A leading separator makes it absolute; otherwise its first segment goes
+    through a ``use`` alias, else it is relative to the file's namespace.
+    """
+    if name.startswith("\\"):
+        return name[1:]
+    head, sep, rest = name.partition("\\")
+    if head in aliases:
+        return aliases[head] + sep + rest
+    return f"{namespace}\\{name}" if namespace else name
+
+
 def resolve_php_same_namespace_refs(
     graph: nx.DiGraph,
     parsed_files: dict[str, Any],
@@ -81,35 +105,19 @@ def resolve_php_same_namespace_refs(
     if not index:
         return 0
 
-    def aliases(path: str) -> dict[str, str]:
-        """Local name -> imported FQN for every ``use`` in *path*."""
-        return {
-            binding.local_name: binding.exported_name
-            for imp in parsed_files[path].imports
-            for binding in imp.bindings
-            if binding.local_name and binding.exported_name
-        }
-
     def declarers(fqn: str) -> list[str]:
         ns, _, name = fqn.rpartition("\\")
         return index.get(ns, {}).get(name, [])
 
     def plan(path: str, _text: str) -> FileScope:
-        ns, bound = namespaces[path], aliases(path)
+        ns, bound = namespaces[path], php_use_aliases(parsed_files[path])
         types = index.get(ns or "", {})
 
         def same_namespace(ident: str) -> list[str]:
             return [] if "\\" in ident else types.get(ident, [])
 
         def qualified(ident: str) -> list[str]:
-            if "\\" not in ident:
-                return []
-            if ident.startswith("\\"):
-                return declarers(ident[1:])
-            head, _, rest = ident.partition("\\")
-            if head in bound:
-                return declarers(f"{bound[head]}\\{rest}")
-            return declarers(f"{ns}\\{ident}" if ns else ident)
+            return declarers(qualify_php_name(ident, ns, bound)) if "\\" in ident else []
 
         return FileScope(
             tiers=(

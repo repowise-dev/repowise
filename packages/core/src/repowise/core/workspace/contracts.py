@@ -52,7 +52,10 @@ CONTRACTS_FILENAME = "contracts.json"
 # Version 8 adds bounded OpenAPI 3.x schemas and their extraction diagnostics.
 # Version 9 gives topic contracts a kind and routing key, and adds RabbitMQ
 # queue bindings.
-CONTRACTS_VERSION = 9
+# Version 10 serves Laravel routes under their group and route-file prefixes
+# with resources expanded, and adds Laravel migration, model-convention and
+# query-builder table contracts.
+CONTRACTS_VERSION = 10
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic or subject fans out; an

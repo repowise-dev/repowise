@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from . import http, topic
+from . import data, http, topic
 from .common import MatchState, find_matching_keys, internal, prefer_target_repo
 from .http import annotate_consumer_targets
 
@@ -41,6 +41,7 @@ MATCHERS: dict[str, TypeMatcher] = {
     "topic": TypeMatcher(
         deferred=topic.is_binding, accepts=topic.accepts, passes=(topic.binding_pass,)
     ),
+    "data": TypeMatcher(passes=(data.shared_table_pass,)),
 }
 
 _NO_RULES = TypeMatcher()

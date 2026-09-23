@@ -9,8 +9,11 @@ scheme (``data::<normalized table>``) and the normalization rules stay in
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..dialect import build_contract
 from .names import normalize_table_name
 
@@ -27,12 +30,15 @@ def build_table_provider(
     framework: str,
     line: int | None = None,
     confidence: float = 0.85,
+    schema: str | None = None,
 ) -> Contract | None:
     """Build a provider contract for a declared table, or ``None``.
 
     Providers are declarations of ownership: a ``CREATE TABLE``, an ORM entity,
     a migration. ``None`` when the raw token does not normalize to a concrete
-    table name.
+    table name. *schema* (``create`` / ``alter``) marks a declaration that
+    defines the table's schema rather than modelling it, which is how the
+    repo owning a shared table is told from the repos reading it.
     """
     table = normalize_table_name(table_raw)
     if table is None:
@@ -45,7 +51,7 @@ def build_table_provider(
         symbol_name=f"{framework}:{table_raw}",
         confidence=confidence,
         line=line,
-        meta={"table": table, "framework": framework},
+        meta={"table": table, "framework": framework, **({"schema": schema} if schema else {})},
     )
 
 
@@ -77,3 +83,60 @@ def build_table_consumer(
         line=line,
         meta={"table": table, "verb": verb, "client": client},
     )
+
+
+EXPLICIT_CONFIDENCE = 0.85
+CONVENTION_CONFIDENCE = 0.6
+# A declaration that evolves a table (``ALTER TABLE``, ``Schema::table``).
+ALTER_CONFIDENCE = 0.8
+
+
+#: One table declaration: ``(raw_name, confidence, line)``.
+_Found = tuple[str, float, int]
+
+
+def found_names(
+    pattern: re.Pattern[str],
+    content: str,
+    confidence: float,
+    transform: Callable[[str], str] = str,
+) -> list[_Found]:
+    r"""Every match of *pattern*'s first group, with the line it sits on.
+
+    The line comes from the group, not the match: three of these patterns open
+    with ``^\s*`` under ``MULTILINE``, where ``^`` matches at a preceding blank
+    line and ``\s*`` eats the newlines, putting ``m.start()`` above the
+    declaration.
+    """
+    return [
+        (transform(m.group(1)), confidence, line_at(content, m.start(1)))
+        for m in pattern.finditer(content)
+    ]
+
+
+def dedup_emit(
+    ctx: ScanContext,
+    framework: str,
+    found: list[_Found],
+    *,
+    schema: str | None = None,
+    seen: set[str] | None = None,
+) -> list[Contract]:
+    """One provider per raw name in *found*, skipping names already in *seen*."""
+    out: list[Contract] = []
+    seen = set() if seen is None else seen
+    for raw, confidence, line in found:
+        if raw in seen:
+            continue
+        seen.add(raw)
+        contract = build_table_provider(
+            ctx,
+            table_raw=raw,
+            framework=framework,
+            line=line,
+            confidence=confidence,
+            schema=schema,
+        )
+        if contract is not None:
+            out.append(contract)
+    return out

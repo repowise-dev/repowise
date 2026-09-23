@@ -1060,7 +1060,7 @@ exchange) registers its extra passes in `matching.MATCHERS`.
 | **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
 | **Topic** | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika), NATS | The same libraries' consumers, plus RabbitMQ queue bindings |
 | **Socket** | SignalR `MapHub`, FastAPI `@app.websocket` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp |
-| **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, ORM entities (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback) |
+| **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, ORM entities (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent `$table` or the class-name convention) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table` |
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
 workspace guide.

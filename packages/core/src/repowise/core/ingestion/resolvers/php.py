@@ -32,6 +32,15 @@ def resolve_php_import(module_path: str, importer_path: str, ctx: ResolverContex
             return root_candidate
         return ctx.add_external_node(module_path)
 
+    return resolve_php_class(module_path, ctx) or ctx.add_external_node(module_path)
+
+
+def resolve_php_class(module_path: str, ctx: ResolverContext) -> str | None:
+    """The first-party file declaring class *module_path* (an FQN), or None.
+
+    None for a class that lives in a dependency. Adds nothing to the graph,
+    so a framework handler can resolve a class name it read from code.
+    """
     # composer.json autoload.psr-4 is the authoritative mapping in real
     # Laravel/Symfony/etc. apps; consult before stem fallback so non-conventional
     # prefix maps (``"App\\": "src/"``) resolve correctly.
@@ -55,4 +64,4 @@ def resolve_php_import(module_path: str, importer_path: str, ctx: ResolverContex
         result = next(iter(basename_index(ctx).get(f"{local}.php", ())), None)
     if result and (not unclaimed or in_classmap(result, ctx)):
         return result
-    return ctx.add_external_node(module_path)
+    return None

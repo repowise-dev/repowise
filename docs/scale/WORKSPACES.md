@@ -233,7 +233,7 @@ Scans source files for HTTP route handlers, gRPC service definitions, and messag
 |------|-----------|-----------|
 | HTTP | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal API), Rust (Axum routes, Actix/Rocket attribute macros) | fetch/axios/URL-literal wrappers (JS/TS), requests/httpx (Python), HttpClient/UnityWebRequest/Best.HTTP (C#), reqwest (Rust) |
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
-| Data / DB | DDL (`CREATE TABLE`/`VIEW`/`MATERIALIZED VIEW`), ORM dialects (SQLAlchemy, Django, JPA, EF Core, ActiveRecord, Eloquent) | Raw SQL string literals in app code (verb-anchored: `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`MERGE`) |
+| Data / DB | DDL (`CREATE TABLE`/`VIEW`/`MATERIALIZED VIEW`), Alembic `op.create_table`, Laravel migrations (`Schema::create` / `Schema::table`), ORM dialects (SQLAlchemy, Django, JPA, EF Core, ActiveRecord, Eloquent `$table` or the class-name convention) | Raw SQL string literals in app code (verb-anchored: `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`MERGE`), Laravel `DB::table(...)` |
 | Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika), NATS producers | The corresponding consumers, plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)` |
 
@@ -252,11 +252,14 @@ nothing). Such a link carries the exchange as its `contract_id` and the queue as
 binding site itself is linked. A publish to the default exchange
 (`publish('', 'jobs')`) is a publish to the queue `jobs`.
 
-Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](#system-graph). The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
+Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](#system-graph). A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
 
 HTTP routes are matched on their **full** path: a router mount prefix
 (`APIRouter(prefix=...)`, `include_router(prefix=...)`, Express `app.use('/x', router)`,
-Go route groups) is stitched onto each handler path before matching. A client call
+Go route groups, Laravel `Route::prefix(...)->group(...)` and `Route::group(['prefix' => ...])`)
+is stitched onto each handler path before matching. Laravel's `routes/api.php` is
+served under `/api` unless `bootstrap/app.php` (`apiPrefix`) or a route provider says
+otherwise, and `Route::resource` / `apiResource` expand into the routes they register. A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path and a lower-confidence **candidate** when the target is ambiguous.
