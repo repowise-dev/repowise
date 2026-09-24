@@ -610,7 +610,13 @@ async def run_pipeline(
         if knowledge_graph_result is None:
             if progress:
                 progress.on_phase_start("knowledge_graph.skeleton", None)
-            knowledge_graph_result = build_knowledge_graph_skeleton(
+            # Off the event loop like external_systems/graph.flows above: on a
+            # large repo this synchronous call can run past the job heartbeat's
+            # staleness cutoff, and a call not awaited blocks the loop outright
+            # (the heartbeat's own timer task can't wake up mid-call, no matter
+            # the cutoff — see JobProgressCallback in server/job_executor.py).
+            knowledge_graph_result = await asyncio.to_thread(
+                build_knowledge_graph_skeleton,
                 parsed_files=parsed_files,
                 graph_builder=graph_builder,
                 repo_structure=repo_structure,
