@@ -16,6 +16,7 @@ function pair(overrides: Partial<WorkspaceCoChangeEntry> = {}): WorkspaceCoChang
     strength: 0.694,
     frequency: 3,
     last_date: "2026-09-01",
+    evidence: null,
     ...overrides,
   };
 }
