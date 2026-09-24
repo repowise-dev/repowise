@@ -475,10 +475,11 @@ def _renderer_inputs(repo_path):
     """
     from repowise.cli.helpers import load_config
     from repowise.core.generation.styles import resolve_style
+    from repowise.core.repo_config import resolve_language
 
     cfg = load_config(repo_path)
     style = resolve_style(cfg.get("wiki_style", "comprehensive"), repo_path=repo_path)
-    return cfg.get("language", "en"), style.fingerprint, style.template_dir
+    return resolve_language(repo_path, config=cfg), style.fingerprint, style.template_dir
 
 
 def _head_commit_ts(repo_path) -> float | None:
@@ -1722,8 +1723,9 @@ def run_update(
     # above the index-only branch would make every index-only update (the
     # post-commit hook's hot path) pay the import for code it never runs.
     from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
+    from repowise.core.repo_config import resolve_language
 
-    language = cfg.get("language", "en")
+    language = resolve_language(repo_path, config=cfg)
     # Config-driven (saved by `repowise init`); CLI override not surfaced
     # on update yet — defaults to on to keep the onboarding collection
     # fresh as the codebase evolves.

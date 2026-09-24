@@ -616,10 +616,11 @@ def upgrade_to_full(
         and persisted_model == provider.model_name
     )
 
+    from repowise.core.repo_config import resolve_language
     config = GenerationConfig.from_repo_config(
         cfg,
         max_concurrency=concurrency,
-        language=cfg.get("language", "en"),
+        language=resolve_language(repo_path, config=cfg),
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
         # A whole-repo selection, so the file-page cap chosen at init applies

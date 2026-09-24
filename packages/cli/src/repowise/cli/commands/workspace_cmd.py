@@ -763,7 +763,7 @@ def _generate_docs_for_added_repo(
     wire_tsconfig_resolver(graph_builder, repo_path)
     graph_builder.build()
 
-    from repowise.core.repo_config import load_repo_config
+    from repowise.core.repo_config import load_repo_config, resolve_language
 
     repo_cfg = load_repo_config(repo_path)
     config = GenerationConfig.from_repo_config(
@@ -771,7 +771,7 @@ def _generate_docs_for_added_repo(
         max_concurrency=concurrency,
         reasoning=reasoning,
         wiki_style=repo_cfg.get("wiki_style", "comprehensive"),
-        language=repo_cfg.get("language", "en"),
+        language=resolve_language(repo_path, config=repo_cfg),
         # Whole-repo selection, so honour the per-repo file-page cap.
         max_file_pages=resolve_max_file_pages(config=repo_cfg),
     )

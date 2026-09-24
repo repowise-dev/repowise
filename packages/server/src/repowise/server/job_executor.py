@@ -986,7 +986,7 @@ def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> 
     from repowise.core.generation import GenerationConfig
     from repowise.core.generation.styles import resolve_style
     from repowise.core.reasoning import resolve_reasoning
-    from repowise.core.repo_config import load_repo_config
+    from repowise.core.repo_config import load_repo_config, resolve_language
 
     repo_cfg = load_repo_config(repo_path)
     effective_style = resolve_style(config.get("style") or wiki_style, repo_path=repo_path).name
@@ -994,7 +994,7 @@ def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> 
         repo_cfg,
         reasoning=resolve_reasoning(config=repo_cfg),
         wiki_style=effective_style,
-        language=repo_cfg.get("language", "en"),
+                language=resolve_language(repo_path, config=repo_cfg),
         enable_onboarding=bool(repo_cfg.get("enable_onboarding", True)),
         max_concurrency=int(config.get("concurrency") or 12),
     )
@@ -1240,7 +1240,7 @@ async def _incremental_page_regen(
         # the regenerate endpoint, D10) wins over the repo's default style.
         from repowise.core.generation.styles import resolve_style
         from repowise.core.reasoning import resolve_reasoning
-        from repowise.core.repo_config import load_repo_config
+        from repowise.core.repo_config import load_repo_config, resolve_language
 
         effective_style = resolve_style(
             job_config.get("style") or repo_wiki_style, repo_path=repo_path
@@ -1252,7 +1252,7 @@ async def _incremental_page_regen(
             wiki_style=effective_style,
             # Regenerate in the repo's configured output language, not default
             # English (PageGenerator picks the language up from the config).
-            language=repo_cfg.get("language", "en"),
+            language=resolve_language(repo_path, config=repo_cfg),
             # A sync feeds generate_all a parsed_files filtered to the changed
             # files. Levels 3 and up describe the whole repository from
             # parsed_files, so without this a one-commit sync would rewrite the

@@ -710,7 +710,7 @@ async def run_pipeline(
         if resolved_generation_config is None:
             from repowise.core.generation import GenerationConfig
             from repowise.core.reasoning import resolve_reasoning
-            from repowise.core.repo_config import load_repo_config
+            from repowise.core.repo_config import load_repo_config, resolve_language
 
             _cfg = load_repo_config(repo_path)
             # Wiki style precedence: explicit param (server passes the DB-settings
@@ -721,7 +721,7 @@ async def run_pipeline(
                 max_concurrency=concurrency,
                 reasoning=resolve_reasoning(config=_cfg),
                 wiki_style=_style,
-                language=_cfg.get("language", "en"),
+                language=resolve_language(repo_path, config=_cfg),
             )
 
         # The mode decides how pages are rendered, not the caller's config.

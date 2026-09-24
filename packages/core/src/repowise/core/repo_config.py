@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,22 @@ class RepoConfigError(ValueError):
 def get_repowise_dir(repo_path: Path | str) -> Path:
     """Return the repo-local ``.repowise`` directory."""
     return Path(repo_path) / ".repowise"
+
+
+def resolve_language(repo_path: Path | str, config: dict[str, Any] | None = None) -> str:
+    """Generation language, in precedence order (issue #1756).
+
+    repo-local ``config.yaml`` > ``REPOWISE_LANGUAGE`` env (so a Docker or UI
+    deploy can pin the language without a CLI flag) > default ``"en"``.
+
+    Lives here, beside :func:`load_repo_config`, because every path that answers
+    this question must answer it the same way. Wiring it into generation alone
+    made the variable stop working one click later: the UI's initial index
+    honoured it and the regenerate button did not.
+    """
+    if config is None:
+        config = load_repo_config(repo_path)
+    return config.get("language") or os.environ.get("REPOWISE_LANGUAGE") or "en"
 
 
 def load_repo_config(repo_path: Path | str) -> dict[str, Any]:

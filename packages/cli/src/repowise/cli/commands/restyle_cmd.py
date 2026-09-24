@@ -239,11 +239,11 @@ def restyle_command(
         return
 
     from repowise.core.generation import GenerationConfig
-
+    from repowise.core.repo_config import resolve_language
     config = GenerationConfig.from_repo_config(
         cfg,
         max_concurrency=concurrency,
-        language=cfg.get("language", "en"),
+        language=resolve_language(repo_path, config=cfg),
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
         wiki_style=style,
