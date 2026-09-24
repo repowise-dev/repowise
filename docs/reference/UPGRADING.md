@@ -33,6 +33,14 @@ It is a recommendation, not a requirement. Nothing is wiped until you choose to 
 
 ## Behaviour changes worth knowing about
 
+### 0.53.0: health re-scores once, and workspace contracts re-extract
+
+**Your first `update` re-scores the whole repository.** The health analyzer version moved from 21 to 31 over this cycle: performance plans now claim only what the loop proves, two new performance markers landed, and Pascal gained loop, performance and assertion coverage. Each of those changes how a stored health number is computed, so the first update after upgrading re-scores every file and takes longer than usual. The next one is back to normal.
+
+**Workspace contracts are re-extracted on the next workspace update.** The contract format moved from version 8 to 13 (Laravel, NestJS, Node clients and ORMs, Angular, queues, sockets and RabbitMQ bindings), so `repowise update --workspace` rebuilds the stored contract maps instead of reusing them.
+
+Nothing needs re-indexing: the store format and parser schema are unchanged. The PHP tree-sitter query did change, so that same first update re-parses files instead of reading them from the parse cache. It happens once and needs no action.
+
 ### 0.52.0: decision capture is stricter, and health re-scores once
 
 Three changes you may notice after upgrading to 0.52.0.

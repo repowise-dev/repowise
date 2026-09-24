@@ -2,6 +2,14 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.53.0
+
+### Changed
+- Version bump only. No command, skill or hook changed this cycle: the server
+  still lists the same 18 tools, every tool named in a command or skill is one
+  of them, no CLI flag a command documents changed, and `hooks.json` still
+  mirrors the augment matcher in `claude_config.py`.
+
 ## 0.52.0
 
 ### Changed
