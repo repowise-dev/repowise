@@ -79,6 +79,10 @@ meaningless for a script invoked by name. See
 [Beyond code files](#beyond-code-files), along with
 [config and data formats](#config-and-data).
 
+Cross-repo contracts (HTTP routes and calls, database tables, queues, sockets)
+are listed per language and framework in
+[WORKSPACES.md](../scale/WORKSPACES.md#api-contract-extraction).
+
 ## What the pipeline gives each tier
 
 | Stage | Full | Good | Partial | Lightweight | Structural |
@@ -217,7 +221,7 @@ their relationships:
 | C# | ASP.NET (attribute + minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
 | Go | net/http, gin, echo, chi, gRPC server registration |
 | Rust | Axum, Actix route → handler |
-| JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS |
+| JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS, Angular |
 | C++ | GoogleTest, Catch2, Boost.Test, doctest, Google Benchmark, libFuzzer |
 
 The dead-code analyzer knows each ecosystem's entry points, generated-file
@@ -254,7 +258,7 @@ bindings, heritage and a workspace resolver where their syntax supports them.
 |----------|-----------|--------------|
 | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
 | **Swift** | `.swift` | SPM `Package.swift` target → directory mapping, intra-module type references, `@main` entry points |
-| **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
+| **PHP** | `.php` | `use` declarations (grouped `use A\{B, C}` included) resolved through PSR-4 from the root and nested `composer.json` files, longest prefix first as composer does; same-namespace and `\Fully\Qualified` class references; Laravel edges (route files to controllers and aliased middleware, registered and discovered listeners, policies, providers, commands by signature), TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs, `package:` via every `pubspec.yaml`, Flutter route tables and `runApp()` edges. **Health markers included** |
 | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | Program IDs, sections, paragraphs and data levels; literal `CALL` and `PERFORM` targets resolve to program/procedure symbols. Dynamic calls and `COPY` edges are deliberately silent |
 
@@ -289,8 +293,8 @@ than tree-sitter.
   import edges, so model-level lineage, hotspots, co-change, ownership and
   communities all fall out free.
 - **App-to-database contracts** (workspace mode), table *providers* (DDL,
-  Alembic, ORM entities) pair with table *consumers* (SQL literals in app code)
-  on the Live System Map. See [WORKSPACES.md](../scale/WORKSPACES.md).
+  migrations, ORM models) pair with table *consumers* (SQL literals and query
+  builders in app code) on the Live System Map. See [WORKSPACES.md](../scale/WORKSPACES.md).
 - **Health markers**: stored routines get cyclomatic complexity, plus
   `sql_select_star`, `sql_update_delete_without_where` and `sql_cartesian_join`.
   All of them are **uncalibrated by construction** (no defect corpus covers

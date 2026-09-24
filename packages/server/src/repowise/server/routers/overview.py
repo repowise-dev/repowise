@@ -427,7 +427,7 @@ async def overview_summary(
     onboarding_targets = await compute_onboarding_targets(session, repo_id)
     # Every finding store, merged and ranked worst-first. This used to read
     # three stores and rank them by which store they came from; see
-    # `services/attention.py` for what changed and why.
+    # `core/analysis/attention` for what changed and why.
     attention_result = await build_attention(
         session,
         repo_id,

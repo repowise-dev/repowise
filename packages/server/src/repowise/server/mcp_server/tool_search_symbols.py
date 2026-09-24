@@ -33,6 +33,7 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     is_excluded,
 )
+from repowise.server.mcp_server._query_shape import _qual_norm
 
 # Candidate ceiling: scoring/sorting happens in Python, so the SQL pre-filter
 # caps how many rows we pull. Generous enough that the true top-`limit` is
@@ -60,14 +61,6 @@ def _tokens(text: str | None) -> set[str]:
             if len(t) >= 2:
                 out.add(t)
     return out
-
-
-def _qual_norm(name: str | None) -> str:
-    """Normalize a qualified name's separators (``::``/``/`` -> ``.``), lowered."""
-    s = name or ""
-    for sep in ("::", "/"):
-        s = s.replace(sep, ".")
-    return s.lower()
 
 
 def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], qnorm: str) -> float:

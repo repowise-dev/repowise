@@ -298,6 +298,12 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A database read with no limit/range/single bound, run once, whose result a loop then dedups down to one row per key (setdefault, a seen-set, a not-in guard). The table can grow without bound while the code still pays to transfer and decode every row. Move the selection into the query: DISTINCT ON, a window function, or a view.",
   },
+  lazy_load_in_loop: {
+    label: "Lazy load in loop",
+    category: "performance",
+    description:
+      "A relationship declared lazy (no selectinload / joinedload, no select_related / prefetch_related) read on every iteration of a loop over its parent rows, one query per row. Load the relationship with the rows instead. Advisory: whether every iteration reaches the access, and whether another layer already loaded it, is not proven.",
+  },
   membership_test_against_list_in_loop: {
     label: "List membership in loop",
     category: "performance",
@@ -436,6 +442,7 @@ export const PERFORMANCE_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "goroutine_in_unbounded_loop",
   "sql_cartesian_join",
   "unbounded_read_reduced_in_memory",
+  "lazy_load_in_loop",
 ]);
 
 /**

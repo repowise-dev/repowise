@@ -53,6 +53,7 @@ from .opportunity_rank import (
     dominant_marker,
     exposure,
     leverage,
+    loop_magnitude,
     rank_factors,
     rank_sort_key,
     weakest_provenance,
@@ -164,6 +165,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         cross_function=key_is_cross_function(key),
     )
     acted = actionability(assessment, evidence_confidence)
+    magnitude = loop_magnitude(marker, [facts.details for facts in members])
     factors = rank_factors(
         marker=marker,
         boundary=boundary,
@@ -171,6 +173,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
         reachable=reachable,
         site_count=len(sites),
         provenance=provenance,
+        magnitude=magnitude,
     )
     return PerformanceOpportunity(
         opportunity_id=stable_id(key),
@@ -199,6 +202,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
             "amplification": amplification(marker),
             "leverage": leverage(len(sites)),
             "change_risk": change_risk(len(files)),
+            "loop_magnitude": magnitude,
         },
         actionability_state=acted.state,
         actionability_reason=acted.reason,
@@ -214,6 +218,7 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
                 "entry_reachability": reachable,
                 "affected_call_sites": len(sites),
                 "provenance": provenance,
+                "loop_magnitude": magnitude,
             },
         ),
         fix=acted.fix,

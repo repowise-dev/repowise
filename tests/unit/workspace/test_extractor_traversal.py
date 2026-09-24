@@ -14,7 +14,7 @@ from pathlib import Path
 
 from repowise.core.workspace.extractors.base import iter_source_files
 from repowise.core.workspace.extractors.service_boundary import detect_service_boundaries
-from repowise.core.workspace.extractors.topic_extractor import TopicExtractor
+from repowise.core.workspace.extractors.topic import TopicExtractor
 
 _PY = frozenset({".py"})
 

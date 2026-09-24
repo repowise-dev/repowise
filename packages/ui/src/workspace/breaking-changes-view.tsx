@@ -11,10 +11,11 @@
  * to avoid.
  */
 
+import type { ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import type { BreakingChange, BreakingChangeReport } from "@repowise-dev/types";
 import { Card } from "../ui/card";
-import { EmptyState } from "../shared/empty-state";
+import { formatRelativeTimeOrNull } from "../lib/format";
 import {
   BreakingChangeRow,
   breakingChangeKey,
@@ -33,10 +34,6 @@ export interface BreakingChangesViewProps {
   onSelectNode?: (nodeId: string) => void;
 }
 
-const NOT_RUN_TITLE = "Breaking-change detection has not run";
-const NOT_RUN_BODY =
-  "Detection compares each update against the previously indexed contracts. Run a workspace update to produce a first result.";
-
 export function BreakingChangesView({
   report,
   loading,
@@ -44,27 +41,32 @@ export function BreakingChangesView({
   onSelectContract,
   onSelectNode,
 }: BreakingChangesViewProps) {
+  // Every state without findings is one quiet sentence. A tinted box around
+  // "nothing found" reads as the loudest thing on the page, and healthy is the
+  // state that should be quiet.
   if (loading) {
-    return (
-      <Card className="px-3 py-4 text-xs text-[var(--color-text-tertiary)]">
-        Checking the latest update…
-      </Card>
-    );
+    return <Quiet>Checking the latest update...</Quiet>;
   }
 
   // No report at all and a report with no timestamp are the same fact: nothing
   // has been compared yet, so an empty change list is not an all-clear.
   if (!report || !report.generated_at) {
-    return <EmptyState className="p-6" title={NOT_RUN_TITLE} description={NOT_RUN_BODY} />;
+    return (
+      <Quiet>
+        Breaking-change detection has not run. It compares each update against the previously
+        indexed contracts, so the first result appears after the next workspace update.
+      </Quiet>
+    );
   }
 
   if (report.changes.length === 0) {
+    const when = formatRelativeTimeOrNull(report.generated_at, "");
     return (
-      <EmptyState
-        className="p-6"
-        title="No contract compatibility findings in the most recent update"
-        description="No provider incompatibility or comparison uncertainty was found."
-      />
+      <Quiet>
+        No contract compatibility findings in the most recent update
+        {when ? ` (${when})` : ""}: no provider changed in a way that breaks, or might break, a
+        linked consumer.
+      </Quiet>
     );
   }
 
@@ -86,5 +88,13 @@ export function BreakingChangesView({
         />
       ))}
     </Card>
+  );
+}
+
+function Quiet({ children }: { children: ReactNode }) {
+  return (
+    <p className="max-w-[68ch] text-xs leading-relaxed text-[var(--color-text-secondary)]">
+      {children}
+    </p>
   );
 }

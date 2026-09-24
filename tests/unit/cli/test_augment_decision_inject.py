@@ -278,7 +278,7 @@ async def test_agreement_is_global_whatever_mined_it(tmp_path, monkeypatch):
 async def test_agreement_that_names_files_is_scored_on_them(tmp_path, monkeypatch):
     """The noun says a record may name nothing, not that its files are noise.
 
-    Mirrors ``crud.authority._is_repo_wide``: both halves are required, so a
+    Mirrors ``decisions.lifecycle.is_repo_wide``: both halves are required, so a
     misclassified record that does carry links keeps competing on overlap
     instead of being injected everywhere.
     """

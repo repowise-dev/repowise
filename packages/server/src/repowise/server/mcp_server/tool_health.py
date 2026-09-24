@@ -32,7 +32,10 @@ from repowise.core.analysis.health.grading import TARGET_SCORE, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
-from repowise.core.analysis.health.perf.opportunity_rank import observation_rank
+from repowise.core.analysis.health.perf.opportunity_rank import (
+    NON_LEADING_MARKERS,
+    observation_rank,
+)
 from repowise.core.analysis.health.ranking import deduction_by_path, sort_metrics_worst_first
 from repowise.core.analysis.health.refactoring.recommendations import (
     Recommendation,
@@ -206,6 +209,7 @@ async def _performance_blocks(
     context: str | None,
     boundary: str | None,
     confidence: str | None,
+    actionability: str | None,
     sort: str | None,
 ) -> _PerformanceBlocks:
     """Read the materialized queue, its rollup, and the dashboard lead.
@@ -224,6 +228,7 @@ async def _performance_blocks(
             context=context,
             boundary=boundary,
             confidence=confidence,
+            actionability=actionability,
             view=view,
             sort=sort,
             file_paths=file_paths,
@@ -1555,6 +1560,7 @@ async def get_health(
     performance_context: str | None = None,
     performance_boundary: str | None = None,
     performance_confidence: str | None = None,
+    performance_actionability: str | None = None,
     performance_sort: str | None = None,
     scope: str = DEFAULT_SCOPE,
     counts: str = DEFAULT_COUNTS,
@@ -1584,8 +1590,8 @@ async def get_health(
             plan, evidence paged by ``only=["*_evidence"]``.
         refactoring_view: ``diversified`` (default)|``canonical``|
             ``file_spread``; _type/_confidence/_effort filter.
-        performance_view/_context/_boundary/_confidence/_sort: queue
-            projection and filters; a rejected value lists the accepted.
+        performance_view/_context/_boundary/_confidence/_actionability/_sort:
+            queue filters; a rejected value lists the accepted.
         scope / counts: default ``all``/``everything``. ``production`` drops
             test files; ``code_shape`` drops the git-derived half of the
             score and its findings.
@@ -2202,6 +2208,7 @@ async def get_health(
             context=performance_context,
             boundary=performance_boundary,
             confidence=performance_confidence,
+            actionability=performance_actionability,
             sort=performance_sort,
         )
 
@@ -2806,8 +2813,13 @@ async def get_health(
         }
 
     if {"performance", "refactoring"} <= include_set and wants("recommendation_lede"):
-        performance_lead = (
-            performance.page.items[0] if performance.page and performance.page.items else None
+        performance_lead = next(
+            (
+                item
+                for item in (performance.page.items if performance.page else [])
+                if item.get("biomarker_type") not in NON_LEADING_MARKERS
+            ),
+            None,
         )
         recommendation_lead = (
             refactoring_recommendations[0] if refactoring_recommendations else None

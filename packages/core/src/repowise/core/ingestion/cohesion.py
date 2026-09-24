@@ -29,6 +29,10 @@ from typing import Any
 #: Hint stamped on an edge between two files of one package / build target.
 SAME_PACKAGE_HINT = "same_package"
 
+#: Hint stamped on an edge to a type declared in the file's own namespace
+#: (C#, VB.NET, PHP), where the language needs no import to name it.
+SAME_NAMESPACE_HINT = "same_namespace"
+
 #: Languages whose import statement names a *compilation unit* that is exactly a
 #: directory, so a fan-out landing in the importer's own directory landed on its
 #: siblings — and a unit cannot depend on itself.
@@ -62,7 +66,7 @@ UNIT_FANOUT_LANGUAGES: frozenset[str] = frozenset({"go", "java"})
 COHESION_HINTS: frozenset[str] = frozenset(
     {
         SAME_PACKAGE_HINT,  # JVM siblings; Go/JVM/C++ unit fan-out onto siblings
-        "same_namespace",  # C# same-namespace types
+        SAME_NAMESPACE_HINT,  # C# / VB.NET / PHP same-namespace types
         "global_using",  # C# project-wide global usings
         "same_module",  # Swift SPM target siblings
         "partial_class",  # C# fragments of one partial type

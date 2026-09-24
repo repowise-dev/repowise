@@ -196,6 +196,7 @@ __all__ = [
     "call_graph_from_graph",
     "files_reached_by_tests",
     "load_test_files",
+    "rank_tests",
     "tests_matching_by_name",
     "tests_reaching",
     "tests_reaching_by_tier",
@@ -211,9 +212,9 @@ class ReachedBy:
 
     ``total`` is how many the walk actually found, before
     ``MAX_TESTS_PER_TARGET`` trimmed ``tests``. A surface that prints
-    ``len(tests)`` as the answer is stating a cap as a measurement, and the cut
-    is alphabetical, so *which* ones survive is arbitrary. Carry the total and
-    say the bound.
+    ``len(tests)`` as the answer is stating a cap as a measurement. The cut keeps
+    the test named for the target and its directory neighbours first
+    (:func:`rank_tests`). Carry the total and say the bound.
     """
 
     tests: list[str]
@@ -386,7 +387,7 @@ async def tests_reaching_by_tier(
             session, repo_id, seeds, test_files, call_depth, symbol_seeds=symbol_seeds
         )
         for seed, tests in found.items():
-            ordered = tuple(sorted(tests))
+            ordered = tuple(rank_tests(seed, tests))
             out[seed] = ReachedBy(
                 list(ordered[:MAX_TESTS_PER_TARGET]), "call-graph", len(ordered), ordered
             )
@@ -395,7 +396,7 @@ async def tests_reaching_by_tier(
     if unanswered and import_depth >= 1:
         found = await _import_reaching(session, repo_id, unanswered, test_files, import_depth)
         for seed, tests in found.items():
-            ordered = tuple(sorted(tests))
+            ordered = tuple(rank_tests(seed, tests))
             out[seed] = ReachedBy(
                 list(ordered[:MAX_TESTS_PER_TARGET]), "import-graph", len(ordered), ordered
             )
@@ -579,6 +580,19 @@ async def _edges_into(
     return [(s, t) for s, t in rows]
 
 
+def rank_tests(target: str, tests: Collection[str]) -> list[str]:
+    """*tests* with the one named for *target* first, then by how much of its directory
+    path each mirrors, so a capped list keeps the test most likely to exercise it."""
+    names = paired_test_names(target)
+    dirs = set(target.split("/")[:-1])
+
+    def key(test: str) -> tuple[bool, int, str]:
+        path = test.split("::", 1)[0]
+        return path.rsplit("/", 1)[-1] not in names, -len(dirs & set(path.split("/")[:-1])), test
+
+    return sorted(tests, key=key)
+
+
 def tests_matching_by_name(targets: list[str], test_files: Collection[str]) -> dict[str, ReachedBy]:
     """Tests named for each target by convention: the fallback when no edge answered.
 
@@ -591,8 +605,8 @@ def tests_matching_by_name(targets: list[str], test_files: Collection[str]) -> d
         by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
     out: dict[str, ReachedBy] = {}
     for target in targets:
-        found = sorted(
-            path for name in paired_test_names(target) for path in by_name.get(name, ())
+        found = rank_tests(
+            target, [path for name in paired_test_names(target) for path in by_name.get(name, ())]
         )
         if found:
             out[target] = ReachedBy(

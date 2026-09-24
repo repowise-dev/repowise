@@ -66,8 +66,11 @@ like the current product concept.
 CANONICAL_SORTS = ("rank", "leverage", "observations")
 CANONICAL_VIEWS = ("detail", "summary")
 _CONFIDENCES = ("high", "medium", "low")
-_ACTIONABILITIES = ("plan_ready", "advisory", "investigate")
+_ACTIONABILITIES = ("plan_ready", "advisory", "investigate", "expected")
 _BOUNDARIES = ("db", "network", "filesystem", "subprocess", "lock", "none")
+
+_DEFAULT_ACTIONABILITIES = frozenset({"plan_ready", "advisory", "investigate"})
+"""``expected`` rows are true but offer nothing to change, so they are asked for, not queued."""
 
 _PLAN_REASONS = {
     "available": "A stored performance plan addresses this exact opportunity.",
@@ -115,6 +118,13 @@ class PerformanceQuery:
             return None
         alias = _DEPRECATED_CONTEXTS.get(self.context)
         return alias if alias is not None else frozenset({self.context})
+
+    @property
+    def actionabilities(self) -> frozenset[str]:
+        """The set the queue is filtered to: one explicit state, or the default three."""
+        if self.actionability is None:
+            return _DEFAULT_ACTIONABILITIES
+        return frozenset({self.actionability})
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,7 +247,7 @@ class PerformanceHealthService:
             contexts=query.contexts,
             boundary=query.boundary,
             confidence=query.confidence,
-            actionability=query.actionability,
+            actionabilities=query.actionabilities,
             file_paths=query.file_paths,
             sort=query.sort,
             limit=query.limit,
@@ -402,6 +412,7 @@ class PerformanceHealthService:
             "plan_ready_total": counts.get("plan_ready", 0),
             "advisory_total": counts.get("advisory", 0),
             "investigate_total": counts.get("investigate", 0),
+            "expected_total": counts.get("expected", 0),
         }
         if summary["status"] == "stale_model":
             return {
@@ -551,6 +562,7 @@ class PerformanceHealthService:
                 "strategy": fix_strategy,
                 "safety": row.fix_safety,
                 "rationale": details.get("fix_rationale") or "",
+                **({"api": details["fix_api"]} if details.get("fix_api") else {}),
             },
         }
 

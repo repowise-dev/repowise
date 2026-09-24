@@ -342,8 +342,51 @@ def test_a_loop_that_already_chunks_is_not_told_to_batch():
     )[0]
 
     assert opportunity.fix is None
-    assert opportunity.actionability_state == "investigate"
+    assert opportunity.actionability_state == "expected"
     assert opportunity.actionability_reason == "loop_already_chunked"
+    assert opportunity.prerequisites == ()
+
+
+def test_a_repeated_call_at_a_non_batchable_boundary_is_expected_not_investigate():
+    """Filesystem/subprocess repetition is real, but no detector could ever
+
+    supply a batch API for it, so it is a fact to read rather than a queued
+    investigation.
+    """
+    opportunity = build_performance_opportunities(
+        [_finding("fs.py", 8, boundary="filesystem", call_path=("fs.py::run", "fs.py::read"))]
+    )[0]
+
+    assert opportunity.fix is None
+    assert opportunity.actionability_state == "expected"
+    assert opportunity.actionability_reason == "inherent_to_boundary"
+    assert opportunity.prerequisites == ()
+
+
+def test_expected_sorts_after_investigate_regardless_of_raw_rank():
+    """``ACTIONABILITY_ORDER`` is compared before ``rank_score``, so an
+    ``expected`` fact never leads an ``investigate`` cause, whichever one this
+    corpus would otherwise score higher.
+    """
+    opportunities = build_performance_opportunities(
+        [
+            _finding("sync.py", 5, chunked_iteration=True),
+            _finding(
+                "a.py",
+                3,
+                marker="blocking_io_under_lock",
+                call_path=("a.py::critical", "store.py::flush", "db.py::fetch"),
+            ),
+            _finding(
+                "b.py",
+                4,
+                marker="blocking_io_under_lock",
+                call_path=("b.py::critical", "store.py::flush", "db.py::fetch"),
+            ),
+        ]
+    )
+    states = [item.actionability_state for item in opportunities]
+    assert states.index("investigate") < states.index("expected")
 
 
 def test_two_causes_on_one_line_name_each_other_and_the_stronger_fix_leads():

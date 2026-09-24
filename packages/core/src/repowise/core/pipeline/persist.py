@@ -1613,24 +1613,11 @@ async def persist_security_findings(result: Any, session: Any, repo_id: str) -> 
     it off ``file_info`` yields empty text and a scan that can never fire.
     Resume views without a ``source_map`` degrade to the symbol-name scan.
     """
-    from repowise.core.analysis.security_scan import SecurityScanner
+    from repowise.core.analysis.security_scan import SecurityScanner, scan_source_map
 
-    scanner = SecurityScanner(session, repo_id)
     source_map = getattr(result, "source_map", None) or {}
-    findings_by_file: dict[str, list[dict]] = {}
-    scanned_paths: list[str] = []
-    for pf in result.parsed_files:
-        path = pf.file_info.path
-        raw = source_map.get(path, b"")
-        if isinstance(raw, (bytes, bytearray)):
-            source_text = raw.decode("utf-8", errors="replace")
-        else:
-            source_text = raw or ""
-        scanned_paths.append(path)
-        findings = await scanner.scan_file(path, source_text, pf.symbols)
-        if findings:
-            findings_by_file[path] = findings
-    await scanner.replace_findings(findings_by_file, scanned_paths)
+    findings_by_file, scanned_paths = scan_source_map(result.parsed_files, source_map)
+    await SecurityScanner(session, repo_id).replace_findings(findings_by_file, scanned_paths)
 
 
 async def persist_git(result: Any, session: Any, repo_id: str) -> None:

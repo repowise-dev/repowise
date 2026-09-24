@@ -239,6 +239,68 @@ async def test_facets_keep_the_alternatives_a_selected_filter_would_erase(
     assert (await _page(client, repo_id, boundary="network"))["facets"]["context"] == []
 
 
+def _filesystem_finding(path: str, line: int, path_nodes: list[str]) -> HealthFindingData:
+    """A repetition with no batch API to offer: this is what ``expected`` is for."""
+    return HealthFindingData(
+        biomarker_type="io_in_loop",
+        severity=Severity.MEDIUM,
+        file_path=path,
+        function_name="run",
+        line_start=line,
+        line_end=line,
+        details={
+            "boundary_kind": "filesystem",
+            "cross_function": True,
+            "path": path_nodes,
+            "resolution_basis": "reliable-edge",
+        },
+        health_impact=0.0,
+        reason="A file is read for every loop iteration.",
+        dimension="performance",
+    )
+
+
+async def test_expected_sits_out_of_the_default_queue_but_not_the_facet(
+    app, client: AsyncClient
+) -> None:
+    """466 of a real corpus's rows are exactly this: real, but nothing to do.
+
+    The default page must not show them, the facet must still count them (so a
+    reader can find them), and asking for them explicitly must return only
+    them.
+    """
+    findings = [
+        *_findings(),
+        _filesystem_finding("src/fs.py", 1, ["src/fs.py::run", "src/fs.py::read"]),
+    ]
+    repo_id, _ = await _seed(app, client, findings)
+
+    default = await _page(client, repo_id)
+    assert all(item["actionability_state"] != "expected" for item in default["items"])
+    assert default["summary"]["repository_total"] >= default["total"]
+
+    facets = default["facets"]
+    assert {entry["value"]: entry["total"] for entry in facets["actionability"]}.get(
+        "expected"
+    ) == 1
+
+    only_expected = await _page(client, repo_id, actionability="expected")
+    assert only_expected["total"] == 1
+    assert only_expected["items"][0]["actionability_state"] == "expected"
+    assert only_expected["items"][0]["actionability_reason"] == "inherent_to_boundary"
+
+
+async def test_an_expected_row_never_leads_the_directive(app, client: AsyncClient) -> None:
+    from repowise.server.services.performance_health import PerformanceHealthService
+
+    finding = _filesystem_finding("src/fs.py", 1, ["src/fs.py::run", "src/fs.py::read"])
+    repo_id, _ = await _seed(app, client, [finding])
+    async with app.state.session_factory() as session:
+        directive = await PerformanceHealthService(session, repo_id, "repo").directive()
+    assert directive["status"] == "clear"
+    assert directive["expected_total"] == 1
+
+
 async def test_an_id_from_an_older_model_reports_stale_rather_than_no_plan(
     app, client: AsyncClient
 ) -> None:
@@ -275,6 +337,7 @@ async def test_detail_carries_the_facets_and_evidence_for_one_cause(
         "amplification",
         "leverage",
         "change_risk",
+        "loop_magnitude",
     }
     assert body["evidence_total"] == 2
     assert body["evidence_emitted"] == 1
@@ -370,3 +433,28 @@ async def test_a_file_with_no_cause_scopes_to_an_empty_queue(app, client):
     page = await _page(client, repo_id, context="all", file_paths="src/nothing-here.py")
     assert page["total"] == 0
     assert page["items"] == []
+
+
+async def test_the_bulk_call_a_plan_names_is_served(app, client: AsyncClient) -> None:
+    finding = HealthFindingData(
+        biomarker_type="io_in_loop",
+        severity=Severity.MEDIUM,
+        file_path="src/owners.py",
+        function_name="load",
+        line_start=12,
+        line_end=12,
+        details={
+            "boundary_kind": "db",
+            "batch_form": '.in_("repo_id", keys)',
+            "batch_equivalent": True,
+        },
+        health_impact=0.0,
+        reason="Database work repeats for every loop iteration.",
+        dimension="performance",
+    )
+    repo_id, opportunity_id = await _seed(app, client, [finding])
+    body = (
+        await client.get(f"/api/repos/{repo_id}/health/performance-opportunities/{opportunity_id}")
+    ).json()
+    assert body["actionability_state"] == "plan_ready"
+    assert body["fix"]["api"] == '.in_("repo_id", keys)'

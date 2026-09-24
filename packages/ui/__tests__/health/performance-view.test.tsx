@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { PerformanceView } from "../../src/health/performance-view";
@@ -11,10 +11,6 @@ import {
   resolvedDetail,
   sibling,
 } from "./fixtures/performance";
-
-beforeAll(() => {
-  Element.prototype.scrollIntoView = vi.fn();
-});
 
 const rows = () => screen.findAllByRole("listitem");
 const openFirstRow = async () => {
@@ -69,6 +65,13 @@ describe("PerformanceView queue", () => {
     await waitFor(() =>
       expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ boundary: "db" })),
     );
+  });
+
+  it("labels the actionability select's empty option as excluding expected", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await rows();
+    const actionability = screen.getByLabelText("Actionability");
+    expect(within(actionability).getByRole("option", { name: "All but expected" })).toBeTruthy();
   });
 
   it("states a facet with one value instead of offering a control that cannot narrow", async () => {
@@ -214,6 +217,28 @@ describe("PerformanceView drawer", () => {
     expect(within(panel).getByText("Fix safety")).toBeTruthy();
     expect(within(panel).getByText("Proven")).toBeTruthy();
     expect(within(panel).getByText(/How reliably the call path resolved/)).toBeTruthy();
+  });
+
+  it("shows the loop magnitude facet and the fix's concrete api", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await openFirstRow();
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).getByText("Loop magnitude")).toBeTruthy();
+    expect(within(panel).getByText("Grows with data")).toBeTruthy();
+    expect(within(panel).getByText("self._sem")).toBeTruthy();
+  });
+
+  it("hides the loop magnitude field for a n/a magnitude", async () => {
+    const getDetail = vi.fn(async () =>
+      resolvedDetail({
+        facets: { ...opportunity().facets, loop_magnitude: "n/a" },
+      }),
+    );
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunity: getDetail })} />);
+    await openFirstRow();
+    await waitFor(() => expect(getDetail).toHaveBeenCalled());
+    const panel = await screen.findByRole("dialog");
+    expect(within(panel).queryByText("Loop magnitude")).toBeNull();
   });
 
   it("carries the exact drill-down an agent should call", async () => {

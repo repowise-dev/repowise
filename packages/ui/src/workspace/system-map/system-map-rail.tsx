@@ -1,16 +1,10 @@
 "use client";
 
 /**
- * Shared shell for everything in the System Map's rail: the inspector and the
- * blast-radius / breaking-change / conformance panels.
- *
- * These were four independently-written `position: absolute` cards floating on
- * the canvas, three of which claimed the same top-right corner and physically
- * stacked on each other whenever a selection and an overlay were both active.
- * A diagram is the one thing on its page that cannot be read past, so the rail
- * is now a grid peer of the canvas (see `SystemMap`) and a panel is just a card
- * in a column. Nothing here positions itself; the rail owns placement and the
- * single scroll region, so panels never grow their own nested scrollbar.
+ * Card shell for the blast-radius, breaking-change and conformance rail panels.
+ * The OSS map lists lens results below the canvas instead; these stay for
+ * hosts that still render a rail beside it. `RailChip` is also used by
+ * `BreakingChangeRow`.
  */
 
 import { X } from "lucide-react";
@@ -35,24 +29,6 @@ export function RailEyebrow({ children }: { children: React.ReactNode }) {
     <span className="text-[10px] font-bold uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
       {children}
     </span>
-  );
-}
-
-/** Label/value row used by the inspector's fact lists. */
-export function RailField({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
-  return (
-    <div className="flex justify-between gap-3 py-[3px]">
-      <span className="text-[var(--color-text-tertiary)]">{label}</span>
-      <span className="break-words text-right text-[var(--color-text-primary)]">
-        {value}
-      </span>
-    </div>
   );
 }
 

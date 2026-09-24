@@ -412,6 +412,6 @@ def test_a_sink_in_a_chunked_loop_carries_the_fact(header: str, chunked: bool):
     fc = walk_file("f.py", "python", source)
     loop_hits = [h for h in fc.perf_hits if h.kind in {"io_in_loop", "serial_await_in_loop"}]
     assert loop_hits
-    assert all(h.chunked is chunked for h in loop_hits)
+    assert all((h.loop is not None and h.loop.chunked) is chunked for h in loop_hits)
     finding = IoInLoopDetector().detect(_ctx(loop_hits))[0]
     assert finding.details.get("chunked_iteration", False) is chunked

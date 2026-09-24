@@ -9,7 +9,7 @@ from an empty recommendation population.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import select
@@ -98,25 +98,115 @@ async def analyze_test_impact(
     """Return one typed, untruncated recommendation population.
 
     The same result is consumed by MCP PR mode and the REST blast-radius route.
-    Coverage and graph inference are both evaluated; de-duplication keeps every
-    evidence basis on the surviving recommendation.
-
-    *change_status* maps path to ``added``/``modified``/``deleted``/``renamed``.
-    A deleted path has no head side to cover, so "no measured tests" there is a
-    consequence of the deletion and not a coverage gap. Without it every path is
-    treated as present, which is the historical behaviour.
+    Reads the coverage map and graph reachability for *changed_files*, then
+    hands both to :func:`assemble_test_impact`.
     """
     from repowise.core.analysis.test_reachability import tests_reaching_by_tier
     from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
 
-    changed = sorted(
+    changed = _changed_paths(changed_files, exclude_spec)
+    fold = {
+        "repository_id": repository_id,
+        "repository": repository_alias,
+        "exclude_spec": exclude_spec,
+        "change_status": change_status,
+    }
+    if not changed:
+        return assemble_test_impact([], {}, {}, {}, **fold)
+
+    try:
+        summary = await get_test_coverage_summary(session, repository_id)
+        coverage_error: str | None = None
+    except Exception as exc:  # analysis must degrade without losing graph candidates
+        summary = {}
+        coverage_error = type(exc).__name__
+
+    try:
+        indexed_commit = (
+            await session.execute(
+                select(Repository.head_commit).where(Repository.id == repository_id)
+            )
+        ).scalar_one_or_none()
+    except Exception:
+        indexed_commit = None
+
+    measured: dict[str, list[Mapping[str, Any]]] = {}
+    if summary.get("pair_count", 0) > 0:
+        for path in changed:
+            try:
+                measured[path] = await tests_covering(
+                    session, repository_id, path, lines=None
+                )
+            except Exception as exc:
+                coverage_error = type(exc).__name__
+
+    inference_error: str | None = None
+    try:
+        reached_by_file = await tests_reaching_by_tier(session, repository_id, changed)
+    except Exception as exc:
+        reached_by_file = {}
+        inference_error = type(exc).__name__
+    inferred = {
+        path: {"tests": list(reached.all_tests or reached.tests), "via": reached.via}
+        for path, reached in reached_by_file.items()
+    }
+
+    return assemble_test_impact(
+        changed,
+        measured,
+        inferred,
+        summary,
+        indexed_commit=indexed_commit,
+        coverage_error=coverage_error,
+        inference_error=inference_error,
+        **fold,
+    )
+
+
+def _changed_paths(changed_files: Iterable[str], exclude_spec: Any) -> list[str]:
+    return sorted(
         {
             path
             for path in changed_files
             if path and not (exclude_spec and is_excluded(path, exclude_spec))
         }
     )
-    repository = repository_alias or repository_id
+
+
+def assemble_test_impact(
+    changed_files: Iterable[str],
+    measured_by_file: Mapping[str, Sequence[Mapping[str, Any]]],
+    inferred_by_file: Mapping[str, Mapping[str, Any]],
+    coverage_summary: Mapping[str, Any],
+    *,
+    repository_id: str,
+    repository: str | None = None,
+    indexed_commit: str | None = None,
+    exclude_spec: Any = None,
+    change_status: Mapping[str, str] | None = None,
+    coverage_error: str | None = None,
+    inference_error: str | None = None,
+) -> dict[str, Any]:
+    """Fold coverage and reachability evidence into the test-impact result.
+
+    Pure: no I/O. *measured_by_file* maps a changed path to its coverage-map
+    rows (``test_id``, optional ``test_file`` and ``source_format``), read only
+    when *coverage_summary* reports pairs. *inferred_by_file* maps a changed path
+    to ``{"tests": [...], "via": tier}``, both keys required, with ``tests`` the
+    uncapped list (``ReachedBy.all_tests``, not the display-capped ``tests``);
+    paths outside *changed_files* are ignored. *coverage_summary* carries
+    ``pair_count``, ``test_count``, ``source_file_count``, ``ingested_at``,
+    ``source_format`` and ``ingested_commit_sha``. The two ``*_error`` arguments
+    are the exception type names of a failed read, which mark that side degraded.
+    *changed_files* is filtered by *exclude_spec* here too.
+
+    *change_status* maps path to ``added``/``modified``/``deleted``/``renamed``.
+    A deleted path has no head side to cover, so "no measured tests" there is a
+    consequence of the deletion and not a coverage gap. Without it every path is
+    treated as present, which is the historical behaviour.
+    """
+    changed = _changed_paths(changed_files, exclude_spec)
+    repository = repository or repository_id
     if not changed:
         return {
             "recommendations": [],
@@ -164,43 +254,23 @@ async def analyze_test_impact(
                 "basis_categories": [],
             },
         }
-    measured_by_file: dict[str, list[str]] = {path: [] for path in changed}
-    inferred_by_file: dict[str, list[str]] = {path: [] for path in changed}
+    measured_tests_by_file: dict[str, list[str]] = {path: [] for path in changed}
+    inferred_tests_by_file: dict[str, list[str]] = {path: [] for path in changed}
     evidence: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     test_files: dict[tuple[str, str], set[str]] = defaultdict(set)
 
-    try:
-        summary = await get_test_coverage_summary(session, repository_id)
-        map_present = summary.get("pair_count", 0) > 0
-        coverage_error: str | None = None
-    except Exception as exc:  # analysis must degrade without losing graph candidates
-        summary = {}
-        map_present = False
-        coverage_error = type(exc).__name__
-
-    try:
-        indexed_commit = (
-            await session.execute(
-                select(Repository.head_commit).where(Repository.id == repository_id)
-            )
-        ).scalar_one_or_none()
-    except Exception:
-        indexed_commit = None
+    summary = coverage_summary
+    map_present = summary.get("pair_count", 0) > 0
 
     if map_present:
         for path in changed:
-            try:
-                rows = await tests_covering(session, repository_id, path, lines=None)
-            except Exception as exc:
-                coverage_error = type(exc).__name__
-                rows = []
-            for row in rows:
+            for row in measured_by_file.get(path, ()):
                 test_id = str(row["test_id"])
                 test_file = row.get("test_file")
                 runnable_file = str(test_file or test_id.split("::", 1)[0])
                 if exclude_spec and is_excluded(runnable_file, exclude_spec):
                     continue
-                measured_by_file[path].append(test_id)
+                measured_tests_by_file[path].append(test_id)
                 key = (repository_id, test_id)
                 if test_file:
                     test_files[key].add(str(test_file))
@@ -213,32 +283,31 @@ async def analyze_test_impact(
                 if detail not in evidence[key]:
                     evidence[key].append(detail)
 
-    try:
-        inferred = await tests_reaching_by_tier(session, repository_id, changed)
+    if inference_error:
+        inference_status = "degraded"
+        inference_reason: str | None = f"{inference_error}: test_reachability_failed"
+    else:
         inference_status = "available"
         inference_reason = None
-    except Exception as exc:
-        inferred = {}
-        inference_status = "degraded"
-        inference_reason = f"{type(exc).__name__}: test_reachability_failed"
 
     inferred_totals_by_file: dict[str, int] = {}
-    for path, reached in inferred.items():
-        all_tests = list(reached.all_tests or tuple(reached.tests))
+    for path, reached in inferred_by_file.items():
+        if path not in inferred_tests_by_file:
+            continue
         kept_tests = [
             test_id
-            for test_id in all_tests
+            for test_id in reached["tests"]
             if not (exclude_spec and is_excluded(test_id, exclude_spec))
         ]
         inferred_totals_by_file[path] = len(kept_tests)
         for test_id in kept_tests:
-            inferred_by_file[path].append(test_id)
+            inferred_tests_by_file[path].append(test_id)
             key = (repository_id, test_id)
             test_files[key].add(test_id)
             detail = {
                 "basis": "inferred",
                 "source_file": path,
-                "via": reached.via,
+                "via": reached["via"],
                 "source_format": None,
             }
             if detail not in evidence[key]:
@@ -270,7 +339,7 @@ async def analyze_test_impact(
         )
     recommendations.sort(key=_recommendation_sort_key)
 
-    matched_files = sum(bool(tests) for tests in measured_by_file.values())
+    matched_files = sum(bool(tests) for tests in measured_tests_by_file.values())
     coverage_reason: str | None
     if coverage_error:
         coverage_status = "degraded"
@@ -304,15 +373,15 @@ async def analyze_test_impact(
         "status": inference_status,
         "reason": inference_reason,
         "changed_files_total": len(changed),
-        "changed_files_with_candidates": sum(bool(tests) for tests in inferred_by_file.values()),
+        "changed_files_with_candidates": sum(bool(tests) for tests in inferred_tests_by_file.values()),
         "candidates_before_dedup": sum(inferred_totals_by_file.values()),
     }
 
     statuses = dict(change_status or {})
     files = []
     for path in changed:
-        measured_tests = sorted(set(measured_by_file[path]))
-        inferred_tests = sorted(set(inferred_by_file[path]))
+        measured_tests = sorted(set(measured_tests_by_file[path]))
+        inferred_tests = sorted(set(inferred_tests_by_file[path]))
         deleted = statuses.get(path) == "deleted"
         if measured_tests:
             status = "measured"

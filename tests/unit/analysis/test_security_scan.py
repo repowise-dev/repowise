@@ -17,7 +17,12 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
-from repowise.core.analysis.security_scan import SecurityScanner, _mask_secret_snippet
+from repowise.core.analysis.security_scan import (
+    SecurityScanner,
+    _redaction,
+    scan_source,
+    scan_source_map,
+)
 
 SNIPPY = b"""import pickle
 
@@ -242,6 +247,100 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file(file_path, source, symbols=[]))
         hits = [f for f in findings if f["kind"] in {"hardcoded_password", "hardcoded_secret"}]
+        assert len(hits) == 1
+        assert hits[0]["severity"] == "low"
+
+    # -- Vendor credential shapes (#2117) ----------------------------------
+
+    @pytest.mark.parametrize(
+        ("source", "expected_kind"),
+        [
+            ('AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n', "aws_access_key"),
+            (
+                'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n',
+                "github_token",
+            ),
+            (
+                "GH_APP_TOKEN = 'ghu_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ'\n",
+                "github_token",
+            ),
+            (
+                'GH_FINE_GRAINED = "github_pat_'
+                + "abcdefghijklmnopqrstuvwxyzABCDEFGHIJabcdefghijklmnopqrstuvwxyzABCDEFGHIJabcdefghij"
+                + '"\n',
+                "github_token",
+            ),
+            ('SLACK_BOT_TOKEN = "xoxb-4721609583-T5Rk9mPz2Qa"\n', "slack_token"),
+            (
+                'GOOGLE_MAPS_API_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"\n',
+                "google_api_key",
+            ),
+            (
+                # Built from parts so the literal "sk_" + "live_" prefix pair
+                # never appears contiguous in source: GitHub's push
+                # protection flags that Stripe prefix on sight, independent
+                # of body entropy.
+                'stripe.api_key = "' + "sk_" + "live_" + "A" * 24 + '"\n',
+                "stripe_key",
+            ),
+        ],
+    )
+    def test_vendor_key_shapes_fire_regardless_of_variable_name(
+        self, source: str, expected_kind: str
+    ) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
+        kinds = {f["kind"] for f in findings}
+        assert expected_kind in kinds
+
+    def test_token_and_access_key_keywords_are_detected(self) -> None:
+        """#2117: ``token`` and ``access_key`` were not in the keyword list."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        for source in (
+            'TOKEN = "a_real_looking_token_value_123"\n',
+            'access_key = "a_real_looking_access_key_456"\n',
+        ):
+            findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
+            assert any(f["kind"] == "hardcoded_secret" for f in findings), source
+
+    def test_client_id_vendor_key_is_caught_by_shape_not_name(self) -> None:
+        """A vendor key is invisible to the keyword list under a name like
+        ``client_id``, so it must be caught by the value shape alone."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'client_id = "AKIAQZXNRTVYWMPKLBHG"\n'
+        findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
+        assert any(f["kind"] == "aws_access_key" for f in findings)
+
+    def test_pem_private_key_with_body_is_flagged(self) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n"
+            "-----END RSA PRIVATE KEY-----\n"
+        )
+        findings = asyncio.run(scanner.scan_file("id_rsa.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "private_key_pem"]
+        assert len(hits) == 1
+        assert hits[0]["line"] == 1
+
+    def test_pem_header_without_body_does_not_fire(self) -> None:
+        """Code that assembles PEM text from the header string alone (no key
+        material) must not be reported."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = (
+            'PEM_HEADER = "-----BEGIN RSA PRIVATE KEY-----"\n'
+            'PEM_FOOTER = "-----END RSA PRIVATE KEY-----"\n'
+        )
+        findings = asyncio.run(scanner.scan_file("pem_templates.py", source, symbols=[]))
+        assert not any(f["kind"] == "private_key_pem" for f in findings)
+
+    def test_vendor_key_shapes_are_gated_by_credential_value_rules(self) -> None:
+        """#2121's value gate must apply to the new vendor kinds too: a
+        low-severity path downgrades severity, same as the keyword kinds."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'AWS_ACCESS_KEY_ID = "AKIAQZXNRTVYWMPKLBHG"\n'
+        findings = asyncio.run(scanner.scan_file("tests/fixtures/keys.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "aws_access_key"]
         assert len(hits) == 1
         assert hits[0]["severity"] == "low"
 
@@ -530,29 +629,16 @@ class TestPersistSecurityFindings:
 class TestSecretMasking:
     """Credential snippets must be masked; non-credential snippets must not."""
 
-    # ------------------------------------------------------------------ #
-    # _mask_secret_snippet — pure-function unit tests                      #
-    # ------------------------------------------------------------------ #
-
     @pytest.mark.parametrize(
-        ("snippet", "val", "expected"),
+        ("val", "expected"),
         [
-            # Normal case: first 4 chars kept, rest replaced.
-            ("password = 'super_secret_pass_99'", "super_secret_pass_99", "password = 'supe****'"),
-            # Short-ish value: still 4 chars kept.
-            ("api_key = 'abcd1234'", "abcd1234", "api_key = 'abcd****'"),
-            # Value exactly 4 chars: keep all 4, append ****.
-            ("secret = 'abcd'", "abcd", "secret = 'abcd****'"),
-            # Value shorter than 4 chars: replace entirely.
-            ("secret = 'abc'", "abc", "secret = '****'"),
-            # Empty val: snippet unchanged.
-            ("password = 'something'", "", "password = 'something'"),
+            ("super_secret_pass_99", "supe****"),
+            ("abcd", "abcd****"),
+            ("abc", "****"),
         ],
     )
-    def test_mask_secret_snippet_helper(
-        self, snippet: str, val: str, expected: str
-    ) -> None:
-        assert _mask_secret_snippet(snippet, val) == expected
+    def test_redaction_keeps_four_chars(self, val: str, expected: str) -> None:
+        assert _redaction(val) == expected
 
     # ------------------------------------------------------------------ #
     # scan_file — credential kinds are masked                              #
@@ -596,16 +682,11 @@ class TestSecretMasking:
                 f"expected masked form {expected_mask!r} not found in {hit['snippet']!r}"
             )
 
-    def test_credential_finding_has_no_internal_secret_val_key(self) -> None:
-        """The internal ``_secret_val`` key must be consumed by _mask_findings
-        and must never appear in a returned finding."""
+    def test_credential_finding_carries_no_raw_value_field(self) -> None:
+        """A finding holds only the persisted keys, so no raw value rides along."""
         source = "password = 'super_secret_password_123'\n"
-        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        findings = asyncio.run(scanner.scan_file("config.py", source, symbols=[]))
-        for f in findings:
-            assert "_secret_val" not in f, (
-                f"internal key '_secret_val' leaked out of scan_file: {f}"
-            )
+        for f in scan_source("config.py", source):
+            assert set(f) == {"kind", "severity", "snippet", "line"}
 
     # ------------------------------------------------------------------ #
     # scan_file — non-credential kinds are NOT masked                      #
@@ -635,3 +716,223 @@ class TestSecretMasking:
         assert hits[0]["severity"] == "low"
         assert "super_secret_real_password_99" not in hits[0]["snippet"]
         assert "supe****" in hits[0]["snippet"]
+
+
+class TestScanSource:
+    """The session-free entry points, and masking that survives the length cap."""
+
+    def test_long_token_is_masked_before_the_snippet_is_trimmed(self) -> None:
+        """A value running past the 120-char cut must not ship its head raw."""
+        token = "".join(chr(ord("a") + (i * 7) % 26) for i in range(220))
+        findings = scan_source("config.py", f'API_KEY = "{token}"\n')
+        hits = [f for f in findings if f["kind"] == "hardcoded_secret"]
+        assert hits
+        snippet = hits[0]["snippet"]
+        assert len(snippet) <= 120
+        assert token[:4] + "****" in snippet
+        leaked = [token[i : i + 5] for i in range(len(token) - 4) if token[i : i + 5] in snippet]
+        assert not leaked, f"raw token substrings in snippet: {leaked[:3]}"
+
+    def test_recurring_value_is_masked_everywhere_on_the_line(self) -> None:
+        source = "password = 'hunter2hunter2'  # was hunter2hunter2\n"
+        (hit,) = [f for f in scan_source("a.py", source) if f["kind"] == "hardcoded_password"]
+        assert "hunter2hunter2" not in hit["snippet"]
+
+    @pytest.mark.parametrize(
+        ("source", "raw"),
+        [
+            ("NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_0123456789abcdef\n", "sk_live_0123456789abcdef"),
+            ('  "VITE_API_KEY": "abcdef0123456789",\n', "abcdef0123456789"),
+            ("export const NEXT_PUBLIC_AUTH_TOKEN = 'tok_9876543210';\n", "tok_9876543210"),
+        ],
+    )
+    def test_public_env_secret_value_is_redacted(self, source: str, raw: str) -> None:
+        hits = [f for f in scan_source("config.ts", source) if f["kind"] == "public_env_secret"]
+        assert hits, "the finding must still be emitted"
+        assert raw not in hits[0]["snippet"]
+        assert raw[:4] + "****" in hits[0]["snippet"]
+
+    def test_public_env_secret_without_a_value_is_unchanged(self) -> None:
+        source = "const k = process.env.NEXT_PUBLIC_N8N_API_KEY;\n"
+        (hit,) = [f for f in scan_source("config.ts", source) if f["kind"] == "public_env_secret"]
+        assert hit["snippet"] == source.strip()
+
+    def test_secret_kinds_and_history_gate_are_unchanged(self) -> None:
+        from repowise.core.analysis.history_scan import HistorySecurityScanner
+        from repowise.core.analysis.security_scan import SECRET_KINDS
+
+        assert (
+            frozenset(
+                {
+                    "hardcoded_password",
+                    "hardcoded_secret",
+                    "aws_access_key",
+                    "github_token",
+                    "slack_token",
+                    "google_api_key",
+                    "stripe_key",
+                    "private_key_pem",
+                }
+            )
+            == SECRET_KINDS
+        )
+        assert not HistorySecurityScanner._passes_gate("public_env_secret", secrets_only=True)
+
+    def test_scan_file_wraps_scan_source(self) -> None:
+        source = SNIPPY.decode()
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        sym = SimpleNamespace(name="auth", start_line=2)
+        assert asyncio.run(scanner.scan_file("a.py", source, [sym])) == scan_source(
+            "a.py", source, [sym]
+        )
+
+    def test_scan_source_map_returns_replace_findings_inputs(self) -> None:
+        result = _fake_result({"a.py": SNIPPY, "clean.py": CLEAN, "s.py": "x = 1\n"})
+        findings_by_file, scanned = scan_source_map(result.parsed_files, result.source_map)
+        assert scanned == ["a.py", "clean.py", "s.py"]
+        assert set(findings_by_file) == {"a.py"}
+        assert findings_by_file["a.py"] == scan_source("a.py", SNIPPY.decode())
+
+
+def _assert_no_raw(snippet: str, raw: str) -> None:
+    leaked = [raw[i : i + 5] for i in range(len(raw) - 4) if raw[i : i + 5] in snippet]
+    assert not leaked, f"raw value in {snippet!r}"
+
+
+class TestEverySnippetIsMasked:
+    """A secret leaks through whichever finding on its line shows the line."""
+
+    PW, KEY = "Qz8vK2mW9xL4pR7t", "Hj3nB6cX1vM5kS8d"
+
+    def test_two_secrets_on_one_line(self) -> None:
+        line = f'password = "{self.PW}"; api_key = "{self.KEY}"\n'
+        findings = scan_source("a.py", line)
+        assert {f["kind"] for f in findings} >= {"hardcoded_password", "hardcoded_secret"}
+        for f in findings:
+            _assert_no_raw(f["snippet"], self.PW)
+            _assert_no_raw(f["snippet"], self.KEY)
+
+    @pytest.mark.parametrize(
+        ("source", "kind"),
+        [
+            (f'API_KEY = "{KEY}"  # md5\n', "weak_hash"),
+            (f'os.system(cmd); secret = "{KEY}"\n', "os_system"),
+            (f'x = eval(y); secret = "{KEY}"\n', "eval_call"),
+            (f'subprocess.run(cmd, secret = "{KEY}",\n    shell=True)\n', "subprocess_shell_true"),
+        ],
+    )
+    def test_secret_beside_another_pattern(self, source: str, kind: str) -> None:
+        (hit,) = [f for f in scan_source("a.py", source) if f["kind"] == kind]
+        _assert_no_raw(hit["snippet"], self.KEY)
+
+    def test_two_public_env_values_on_one_line(self) -> None:
+        line = "NEXT_PUBLIC_API_KEY=abcdef0123456789 VITE_AUTH_TOKEN=tok_9876543210\n"
+        (hit,) = [f for f in scan_source("a.env.ts", line) if f["kind"] == "public_env_secret"]
+        _assert_no_raw(hit["snippet"], "abcdef0123456789")
+        _assert_no_raw(hit["snippet"], "tok_9876543210")
+
+    def test_unterminated_value_with_trailing_space(self) -> None:
+        (hit,) = scan_source("a.py", f'password = "{self.PW}   \n')
+        _assert_no_raw(hit["snippet"], self.PW)
+
+    @pytest.mark.parametrize("pad", range(95, 120))
+    def test_trim_never_ends_inside_a_mask(self, pad: int) -> None:
+        from repowise.server.services.security_lines import check_finding_line
+
+        line = f'{"x" * pad} password = "{self.PW}"'
+        (hit,) = [f for f in scan_source("a.py", line + "\n") if f["kind"] == "hardcoded_password"]
+        assert not hit["snippet"].endswith(("*", "**", "***")) or hit["snippet"].endswith("****")
+        _assert_no_raw(hit["snippet"], self.PW)
+        assert check_finding_line([line], 1, hit["snippet"], hit["kind"]).verified
+
+    def test_a_repeated_value_masks_in_linear_time(self) -> None:
+        import time
+
+        line = " ".join(f'password = "{self.PW}";' for _ in range(5000))
+        started = time.perf_counter()
+        (hit,) = scan_source("a.py", line + "\n")
+        assert time.perf_counter() - started < 1.0
+        _assert_no_raw(hit["snippet"], self.PW)
+
+    def test_long_github_pat_straddling_the_cut_is_masked(self) -> None:
+        pat = "github_pat_" + "".join(chr(ord("A") + (i * 7) % 26) for i in range(82))
+        line = f'{"x" * 80} = Client(auth="{pat}")'
+        assert line.index(pat) < 120 < line.index(pat) + len(pat)
+        (hit,) = [f for f in scan_source("a.py", line + "\n") if f["kind"] == "github_token"]
+        assert "gith****" in hit["snippet"]
+        _assert_no_raw(hit["snippet"], pat)
+
+    def test_vendor_token_beside_a_weak_hash_is_masked_in_both(self) -> None:
+        token = "ghp_" + "Kq7mZ2xV9pL4rT8wN3bY6cH1jF5dS0gA2eUo"
+        findings = scan_source("a.py", f'digest = md5(body); auth = "{token}"\n')
+        assert {f["kind"] for f in findings} == {"weak_hash", "github_token"}
+        for f in findings:
+            _assert_no_raw(f["snippet"], token)
+
+    def test_inline_pem_body_is_masked(self) -> None:
+        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj"
+        line = (
+            '  "private_key": "-----BEGIN PRIVATE KEY-----\\n'
+            f'{body}\\n{body[::-1]}\\n-----END PRIVATE KEY-----\\n",'
+        )
+        (hit,) = [f for f in scan_source("sa.json", line + "\n") if f["kind"] == "private_key_pem"]
+        _assert_no_raw(hit["snippet"], body)
+        _assert_no_raw(hit["snippet"], body[::-1])
+
+    def test_stray_hit_on_a_pem_body_line_is_masked(self) -> None:
+        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgE+md5/AoIBAQC7VJTUt9Us8cKj"
+        source = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\n"
+        (hit,) = [f for f in scan_source("id_rsa", source) if f["kind"] == "weak_hash"]
+        assert hit["line"] == 2
+        _assert_no_raw(hit["snippet"], body)
+
+
+class TestVendorShapeEdges:
+    """Edges of the vendor-shape and keyword patterns."""
+
+    @staticmethod
+    def _kinds(source: str, path: str = "config.py") -> list[str]:
+        return [f["kind"] for f in scan_source(path, source)]
+
+    @pytest.mark.parametrize("prefix", ["sk_live_", "rk_live_", "sk_test_", "sk_prod_"])
+    def test_stripe_secret_and_restricted_keys_fire(self, prefix: str) -> None:
+        # Split so the contiguous prefix never sits in source for push protection.
+        key = prefix[:3] + prefix[3:] + "A" * 24
+        assert "stripe_key" in self._kinds(f'stripe_client = Stripe("{key}")\n')
+
+    def test_stripe_publishable_key_does_not_fire(self) -> None:
+        key = "pk_" + "live_" + "A" * 24
+        assert "stripe_key" not in self._kinds(f'const stripe = loadStripe("{key}");\n', "a.ts")
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'ACCESS_TOKEN = "access_token"\n',
+            'const token = "auth_token_key";\n',
+            'token = "{{ csrf_token }}"\n',
+            'API_KEY = "${STRIPE_API_KEY}"\n',
+        ],
+    )
+    def test_key_names_and_templates_are_not_secrets(self, source: str) -> None:
+        assert "hardcoded_secret" not in self._kinds(source)
+
+    def test_vendor_shape_and_keyword_report_one_finding(self) -> None:
+        source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'
+        assert self._kinds(source) == ["github_token"]
+
+    def test_pem_key_with_escaped_newline_is_flagged(self) -> None:
+        source = (
+            'PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\n'
+            'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\\n"\n'
+        )
+        assert "private_key_pem" in self._kinds(source, ".env")
+
+    def test_google_key_ending_in_a_dash_is_flagged(self) -> None:
+        source = 'MAPS_KEY = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9a-"\n'
+        assert "google_api_key" in self._kinds(source)
+
+    def test_google_shape_inside_an_integrity_hash_is_ignored(self) -> None:
+        run = "AIzaSyD9K2vQ7xR4mZ1pL8tY6wU3nB0cF5hD9aX"
+        for integrity in (f"sha512-{run}+Q==", f"sha512-Zm9v/{run}/b2=="):
+            source = f'      "integrity": "{integrity}",\n'
+            assert "google_api_key" not in self._kinds(source, "package-lock.json")

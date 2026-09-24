@@ -5,15 +5,86 @@
         "call_sites": 1,
         "file_count": 1,
         "files": [
-          "src/app/clients.py"
+          "src/app/owners.py"
         ]
       },
       "confidence": "high",
       "evidence": {
         "affected_files_total": 1,
-        "biomarker_type": "resource_construction_in_loop",
+        "biomarker_type": "io_in_loop",
         "biomarker_types": [
-          "resource_construction_in_loop"
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "loop_magnitude": 2,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 18,
+        "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) covers the same rows, and nothing else in the loop can observe the difference.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/owners.py",
+      "impact_delta": 0.0,
+      "line_end": 22,
+      "line_start": 20,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/owners.py",
+            "function_name": "load_owners",
+            "line_end": 22,
+            "line_start": 20
+          }
+        ],
+        "affected_locations_total": 1,
+        "api": ".in_(\"repo_id\", keys)",
+        "evidence_truncated": false,
+        "intervention_symbol": null,
+        "judgment_steps": 0,
+        "mechanical_steps": 1,
+        "opportunity_id": "perf2_e1734c647c3b26b6dfc4",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "proven",
+        "steps": [
+          {
+            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key call",
+            "applicability": "mechanical",
+            "file_path": "src/app/owners.py",
+            "line": 20,
+            "order": 1,
+            "symbol": "load_owners"
+          }
+        ],
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "load_owners"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
+          "src/app/fetch.py"
+        ]
+      },
+      "confidence": "high",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "serial_await_in_loop",
+        "biomarker_types": [
+          "serial_await_in_loop"
         ],
         "boundary_kind": "network",
         "execution_context": "production",
@@ -24,50 +95,52 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
-        "rationale": "Dataflow proves construction arguments and lifetime are loop invariant.",
+        "rank_score": 17,
+        "rationale": "Iterations are independent and each await already runs under self._sem.",
         "reliable_entry_reachability": null
       },
-      "file_path": "src/app/clients.py",
+      "file_path": "src/app/fetch.py",
       "impact_delta": 0.0,
-      "line_end": 172,
-      "line_start": 170,
+      "line_end": 42,
+      "line_start": 40,
       "plan": {
         "affected_locations": [
           {
-            "file_path": "src/app/clients.py",
-            "function_name": "each",
-            "line_end": 172,
-            "line_start": 170
+            "file_path": "src/app/fetch.py",
+            "function_name": "fetch_each",
+            "line_end": 42,
+            "line_start": 40
           }
         ],
         "affected_locations_total": 1,
+        "api": "self._sem",
         "evidence_truncated": false,
         "intervention_symbol": null,
         "judgment_steps": 0,
         "mechanical_steps": 1,
-        "opportunity_id": "perf2_386a99aa2876c0dd31bd",
+        "opportunity_id": "perf2_cc802c5285ea0c31b02a",
         "paths": [],
         "paths_total": 1,
         "safety": "proven",
         "steps": [
           {
-            "action": "Construct the resource once before the loop",
+            "action": "Run the independent awaits concurrently, each still inside self._sem",
             "applicability": "mechanical",
-            "file_path": "src/app/clients.py",
-            "line": 170,
+            "file_path": "src/app/fetch.py",
+            "line": 40,
             "order": 1,
-            "symbol": "each"
+            "symbol": "fetch_each"
           }
         ],
-        "strategy": "hoist_loop_invariant_resource"
+        "strategy": "parallelize_independent_awaits"
       },
       "refactoring_type": "performance_fix",
-      "source_biomarker": "resource_construction_in_loop",
-      "target_symbol": "each"
+      "source_biomarker": "serial_await_in_loop",
+      "target_symbol": "fetch_each"
     },
     {
       "blast_radius": {
@@ -93,10 +166,11 @@
           "boundary_kind": 4,
           "entry_reachability": 3,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 20,
+        "rank_score": 21,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
@@ -120,6 +194,7 @@
           }
         ],
         "affected_locations_total": 2,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/entry.py::_hit",
         "judgment_steps": 3,
@@ -195,10 +270,11 @@
           "boundary_kind": 4,
           "entry_reachability": 3,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 20,
+        "rank_score": 21,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": true
       },
@@ -222,6 +298,7 @@
           }
         ],
         "affected_locations_total": 2,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/repo.py::fetch_page",
         "judgment_steps": 3,
@@ -298,10 +375,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 6,
           "provenance": 3
         },
-        "rank_score": 19,
+        "rank_score": 20,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -325,6 +403,7 @@
           }
         ],
         "affected_locations_total": 2,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/reindex.py::_write",
         "judgment_steps": 3,
@@ -400,10 +479,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 18,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -427,6 +507,7 @@
           }
         ],
         "affected_locations_total": 2,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/sync.py::_load",
         "judgment_steps": 3,
@@ -502,10 +583,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 5,
           "provenance": 3
         },
-        "rank_score": 17,
+        "rank_score": 18,
         "rationale": "I/O under the lock is proven, but shared-state ordering must be validated before moving it.",
         "reliable_entry_reachability": null
       },
@@ -523,6 +605,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/cache.py::refresh",
         "judgment_steps": 1,
@@ -576,10 +659,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "Iteration independence is proven; the concurrency the fan-out would create is not bounded by anything this group can see.",
         "reliable_entry_reachability": null
       },
@@ -597,6 +681,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": null,
         "judgment_steps": 1,
@@ -645,10 +730,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": false
       },
@@ -666,6 +752,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/billing.py::handle",
         "judgment_steps": 2,
@@ -727,10 +814,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": false
       },
@@ -748,6 +836,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/orders.py::handle",
         "judgment_steps": 2,
@@ -809,10 +898,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": false
       },
@@ -830,6 +920,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/reports.py::handle",
         "judgment_steps": 2,
@@ -891,10 +982,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -912,6 +1004,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/job.py::run",
         "judgment_steps": 2,
@@ -954,6 +1047,77 @@
         "call_sites": 1,
         "file_count": 1,
         "files": [
+          "src/app/commits.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "db",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "loop_magnitude": 1,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 17,
+        "rationale": "Every call filters on the loop's own key, so .in_(\"repo_id\", keys) is the bulk form; the per-key call limits, orders or shares the loop with other I/O.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/commits.py",
+      "impact_delta": 0.0,
+      "line_end": 32,
+      "line_start": 30,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/commits.py",
+            "function_name": "first_commit_each",
+            "line_end": 32,
+            "line_start": 30
+          }
+        ],
+        "affected_locations_total": 1,
+        "api": ".in_(\"repo_id\", keys)",
+        "evidence_truncated": false,
+        "intervention_symbol": null,
+        "judgment_steps": 1,
+        "mechanical_steps": 0,
+        "opportunity_id": "perf2_820a695aba4fe3a6496a",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "advisory",
+        "steps": [
+          {
+            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key call",
+            "applicability": "judgment",
+            "file_path": "src/app/commits.py",
+            "line": 30,
+            "order": 1,
+            "symbol": "first_commit_each"
+          }
+        ],
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "first_commit_each"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
           "src/app/lone.py"
         ]
       },
@@ -973,10 +1137,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 16,
+        "rank_score": 17,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -994,6 +1159,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": null,
         "judgment_steps": 2,
@@ -1054,10 +1220,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 2,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 15,
+        "rank_score": 16,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1075,6 +1242,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "scripts/backfill.py::run",
         "judgment_steps": 2,
@@ -1136,10 +1304,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 2
         },
-        "rank_score": 15,
+        "rank_score": 16,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1157,6 +1326,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/edge.py::run",
         "judgment_steps": 2,
@@ -1199,6 +1369,85 @@
         "call_sites": 1,
         "file_count": 1,
         "files": [
+          "src/app/retry.py"
+        ]
+      },
+      "confidence": "medium",
+      "evidence": {
+        "affected_files_total": 1,
+        "biomarker_type": "io_in_loop",
+        "biomarker_types": [
+          "io_in_loop"
+        ],
+        "boundary_kind": "network",
+        "execution_context": "production",
+        "observations_total": 1,
+        "provenance": "direct",
+        "rank_factors": {
+          "affected_call_sites": 2,
+          "boundary_kind": 4,
+          "entry_reachability": 0,
+          "execution_context": 3,
+          "loop_magnitude": 0,
+          "multiplier_shape": 4,
+          "provenance": 3
+        },
+        "rank_score": 16,
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "reliable_entry_reachability": null
+      },
+      "file_path": "src/app/retry.py",
+      "impact_delta": 0.0,
+      "line_end": 52,
+      "line_start": 50,
+      "plan": {
+        "affected_locations": [
+          {
+            "file_path": "src/app/retry.py",
+            "function_name": "post_with_retry",
+            "line_end": 52,
+            "line_start": 50
+          }
+        ],
+        "affected_locations_total": 1,
+        "api": null,
+        "evidence_truncated": false,
+        "intervention_symbol": null,
+        "judgment_steps": 2,
+        "mechanical_steps": 0,
+        "opportunity_id": "perf2_dc58f1a585a816ec37e9",
+        "paths": [],
+        "paths_total": 1,
+        "safety": "advisory",
+        "steps": [
+          {
+            "action": "Add a form of the shared sink that takes every key at once",
+            "applicability": "judgment",
+            "file_path": null,
+            "line": null,
+            "order": 1,
+            "symbol": null
+          },
+          {
+            "action": "Collect the keys before the loop and call the batched form once",
+            "applicability": "judgment",
+            "file_path": "src/app/retry.py",
+            "line": 50,
+            "order": 2,
+            "symbol": "post_with_retry"
+          }
+        ],
+        "strategy": "batch_or_prefetch_io"
+      },
+      "refactoring_type": "performance_fix",
+      "source_biomarker": "io_in_loop",
+      "target_symbol": "post_with_retry"
+    },
+    {
+      "blast_radius": {
+        "call_sites": 1,
+        "file_count": 1,
+        "files": [
           "tests/test_job.py"
         ]
       },
@@ -1218,10 +1467,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 1,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 3
         },
-        "rank_score": 14,
+        "rank_score": 15,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1239,6 +1489,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "tests/test_job.py::run",
         "judgment_steps": 2,
@@ -1300,10 +1551,11 @@
           "boundary_kind": 4,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 4,
           "provenance": 0
         },
-        "rank_score": 13,
+        "rank_score": 14,
         "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
         "reliable_entry_reachability": null
       },
@@ -1321,6 +1573,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": "src/app/guess.py::run",
         "judgment_steps": 2,
@@ -1382,10 +1635,11 @@
           "boundary_kind": 0,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 3,
           "provenance": 3
         },
-        "rank_score": 11,
+        "rank_score": 12,
         "rationale": "The collection is proven list-backed; element hashability and ordering/identity use still require validation.",
         "reliable_entry_reachability": null
       },
@@ -1403,6 +1657,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": null,
         "judgment_steps": 1,
@@ -1451,10 +1706,11 @@
           "boundary_kind": 0,
           "entry_reachability": 0,
           "execution_context": 3,
+          "loop_magnitude": 1,
           "multiplier_shape": 3,
           "provenance": 3
         },
-        "rank_score": 11,
+        "rank_score": 12,
         "rationale": "Repeated string accumulation is proven; intermediate accumulator observations still require validation.",
         "reliable_entry_reachability": null
       },
@@ -1472,6 +1728,7 @@
           }
         ],
         "affected_locations_total": 1,
+        "api": null,
         "evidence_truncated": false,
         "intervention_symbol": null,
         "judgment_steps": 1,

@@ -49,11 +49,11 @@ class DjangoDialect:
     name = "django"
     extensions = PYTHON
 
-    def collect_mounts(self, content: str) -> dict[str, str]:
-        """``include("api.urls")`` mounts declared in *content*, keyed by module."""
-        if not any(mod in content for mod in _DJANGO_URLS_IMPORT):
+    def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
+        """``include("api.urls")`` mounts declared in the file, keyed by module."""
+        if not any(mod in ctx.content for mod in _DJANGO_URLS_IMPORT):
             return {}
-        return {_MOUNT_PREFIX + module: prefix for prefix, module in django_includes(content)}
+        return {_MOUNT_PREFIX + module: prefix for prefix, module in django_includes(ctx.content)}
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         if not any(mod in ctx.content for mod in _DJANGO_URLS_IMPORT):

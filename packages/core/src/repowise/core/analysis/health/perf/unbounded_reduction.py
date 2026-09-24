@@ -47,6 +47,7 @@ class _FileScan:
     scopes: frozenset[str]
 
     def is_db_read(self, call: Node) -> bool:
+        # The name lexicon, not ``call_sink_kind``: a ``session.get`` reads one row.
         return (
             self.dialect.sink_kind(
                 self.dialect.callee_root_name(call) or "",

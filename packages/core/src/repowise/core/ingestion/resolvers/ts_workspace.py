@@ -278,7 +278,7 @@ def _match_export_key(
     return best_targets
 
 
-def _read_workspaces_field(pkg_data: dict) -> list[str]:
+def read_workspaces_field(pkg_data: dict) -> list[str]:
     ws = pkg_data.get("workspaces")
     if isinstance(ws, list):
         return [str(p) for p in ws if isinstance(p, str)]
@@ -338,7 +338,7 @@ def _read_workspace_declaration(repo_path: Path) -> _WorkspaceDeclaration:
     if not isinstance(data, dict):
         return _WorkspaceDeclaration((), (), include_root=False)
     return _WorkspaceDeclaration(
-        tuple(_read_workspaces_field(data)), (), include_root=False
+        tuple(read_workspaces_field(data)), (), include_root=False
     )
 
 

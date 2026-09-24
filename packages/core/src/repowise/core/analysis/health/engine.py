@@ -58,6 +58,7 @@ from .perf import (
     collect_crossfn_io_in_loop,
     link_performance_findings,
 )
+from .perf.lazy_load import collect_lazy_loads
 from .perf.unbounded_reduction import collect_unbounded_reductions
 from .refactoring import (
     PerformancePlanPolicy,
@@ -111,7 +112,7 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
-# v26: Pascal opts into assertion detection (``assert_call_kinds``): DUnit's
+# v31: Pascal opts into assertion detection (``assert_call_kinds``): DUnit's
 # ``Check``/``CheckEquals``/``Fail`` family (a new ``asserts/lexicon.py`` row,
 # broad tier) and DUnitX's ``Assert.*`` plus the RTL's own ``Assert(cond, msg)``
 # (narrow tier, no row needed -- ``Assert`` itself is an assert-prefixed
@@ -128,7 +129,7 @@ log = structlog.get_logger(__name__)
 # deliberately does not -- it gates on a ``SHIPPING_LANGUAGES`` allowlist that
 # needs its own measured-precision pass before Pascal joins it.
 #
-# v25: a Pascal call to a zero-argument procedure may omit its parentheses
+# v30: a Pascal call to a zero-argument procedure may omit its parentheses
 # entirely (``Q.Open;``), which produces no ``exprCall`` node at all -- just a
 # bare ``identifier`` / ``exprDot`` under a ``statement`` wrapper, invisible to
 # the whole performance pass regardless of sink kind. The new
@@ -137,19 +138,37 @@ log = structlog.get_logger(__name__)
 # the wrapper's other tenants (``Exit;`` / ``inherited;``), so ``Q.Open;`` now
 # finds the same ``io_in_loop`` as ``Q.Open();`` already did.
 #
-# v24: Pascal's ``uses`` clause now feeds ``io_boundaries.collect_io_names``
+# v29: Pascal's ``uses`` clause now feeds ``io_boundaries.collect_io_names``
 # (``FireDAC`` / ``ADODB`` -> db, ``IdHTTP`` / ``System.Net.HttpClient`` ->
 # network), and the Pascal ``PerfDialect`` gates ``TDataSet.Open`` /
 # ``.ExecSQL`` / ``.Post`` and an HTTP client's ``.Get`` / ``.Post`` on that
 # evidence -- a loop calling one of these now produces a ``db`` / ``network``
 # ``io_in_loop`` where before it stayed silent (filesystem/subprocess only).
 #
-# v23: Pascal's ``foreach`` (``for x in collection do``) was absent from its
+# v28: Pascal's ``foreach`` (``for x in collection do``) was absent from its
 # ``loop_kinds``, so a for-in loop contributed no CCN and opened no nesting
 # level -- stored complexity / nesting for any Pascal function using one
 # understates both. Pascal also gained a ``PerfDialect`` (filesystem /
 # subprocess sinks by RTL/VCL/FPC name), so ``io_in_loop`` / ``hot_path_sync_io``
 # now fire for it instead of the pass silently skipping every Pascal file.
+#
+# v27: a new marker, ``lazy_load_in_loop`` (a lazy relationship read on each
+# iteration of a loop over its rows); and ``unbounded_read_reduced_in_memory`` now
+# runs on ``init`` too, where it never ran before. A v26 store built by ``init`` has
+# neither marker; one built by ``update`` has the second.
+#
+# v26: ``.all()`` on an imported or module-global name (a plugin registry) is not a
+# db sink, a SQL string saying ``LIMIT n`` caps a read, and a batched read is never
+# proven for ``session.get`` or beside a call made for its effect; a v25 store differs.
+#
+# v25: repetition with nothing to change (a filesystem or subprocess boundary, or
+# a loop already walking chunks) is stored as ``expected``; a v24 store says investigate.
+#
+# v24: ``session.get(Model, key)`` is a db sink, an awaited TS limiter closure runs
+# in its loop, and Go/Java loops report chunking; a v23 store has none of them.
+#
+# v23: loop-shaped perf findings carry the loop's magnitude, the bulk form of a
+# per-key sink and any concurrency bound around it; a v22 store has none.
 #
 # v22: perf findings in a chunked loop carry ``chunked_iteration``, and
 # ``unbounded_read_reduced_in_memory`` is a new marker; a v21 store has neither.
@@ -284,7 +303,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 26
+HEALTH_ANALYZER_VERSION = 31
 
 
 def walked_functions(
@@ -702,9 +721,6 @@ class HealthAnalyzer:
             repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
             repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
-        # Cross-function N+1: augment perf_hits before the biomarker stage.
-        with timed(timings, "analysis.health.crossfn"):
-            self._apply_crossfn_perf(walked)
         # Cross-file test oracles, same rule: resolve before the marker runs.
         with timed(timings, "analysis.health.oracle_reach"):
             self._apply_cross_file_oracles(walked)
@@ -712,13 +728,7 @@ class HealthAnalyzer:
         # and the Extract Method detector below read the same lazily parsed
         # per-file object, so no file is parsed twice for dataflow.
         dataflow_cache = FileDataflowCache(self.read_source)
-        # Dataflow promotion: mark advisory perf hits whose loop is provably
-        # iteration-independent (runs after the graph passes so the
-        # centrality-gated nested-loop hits are present to promote).
-        with timed(timings, "analysis.health.promotions"):
-            apply_perf_promotions(walked, dataflow=dataflow_cache)
-        with timed(timings, "analysis.health.unbounded_reduction"):
-            collect_unbounded_reductions(walked, read_source=self.read_source)
+        self._augment_perf_hits(walked, dataflow_cache, timings)
 
         timings_evaluate = timed(timings, "analysis.health.evaluate")
         timings_evaluate.__enter__()
@@ -921,16 +931,12 @@ class HealthAnalyzer:
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
-        # Cross-function N+1: augment perf_hits before the biomarker stage.
         walked = list(walked)
-        self._apply_crossfn_perf(walked)
         # Cross-file test oracles, same rule: resolve before the marker runs.
         self._apply_cross_file_oracles(walked)
         # One shared dataflow service per pass (see the sync path above).
         dataflow_cache = FileDataflowCache(self.read_source)
-        # Dataflow promotion: mark advisory perf hits whose loop is provably
-        # iteration-independent (after the graph passes populate the hits).
-        apply_perf_promotions(walked, dataflow=dataflow_cache)
+        self._augment_perf_hits(walked, dataflow_cache, timings=None)
 
         disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
         refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
@@ -1052,6 +1058,26 @@ class HealthAnalyzer:
         except Exception as exc:
             log.debug("health_cross_file_oracles_failed", error=str(exc))
             return
+
+    def _augment_perf_hits(
+        self,
+        walked: list[tuple[Any, FileComplexity]],
+        dataflow: FileDataflowCache,
+        timings: Any | None,
+    ) -> None:
+        """Every post-walk perf pass, shared by ``analyze`` and ``analyze_async`` so
+        the two paths cannot drift apart again. Promotions read the crossfn hits,
+        so crossfn runs first."""
+        from repowise.core.pipeline.phase_timing import timed
+
+        with timed(timings, "analysis.health.crossfn"):
+            self._apply_crossfn_perf(walked)
+        with timed(timings, "analysis.health.promotions"):
+            apply_perf_promotions(walked, dataflow=dataflow)
+        with timed(timings, "analysis.health.unbounded_reduction"):
+            collect_unbounded_reductions(walked, read_source=self.read_source)
+        with timed(timings, "analysis.health.lazy_load"):
+            collect_lazy_loads(walked, self.parsed_files, read_source=self.read_source)
 
     def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
         """Run the graph-dependent perf passes over the walked files, in place.

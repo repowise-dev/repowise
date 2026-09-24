@@ -91,7 +91,9 @@ interface NarrowingSpec {
 }
 
 const NARROWING: NarrowingSpec[] = [
-  { key: "actionability", facet: "actionability", anyLabel: "Any" },
+  // "expected" causes are real but offer nothing to change, so the default
+  // (no explicit selection) reads as "every other state" rather than "any".
+  { key: "actionability", facet: "actionability", anyLabel: "All but expected" },
   { key: "boundary", facet: "boundary", anyLabel: "Any" },
   { key: "confidence", facet: "confidence", anyLabel: "Any" },
 ];

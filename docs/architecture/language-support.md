@@ -1019,42 +1019,54 @@ language produces no findings rather than wrong ones.
 ## Workspace contract extraction
 
 In workspace mode (multiple repos indexed together), repowise links
-service-to-service API contracts (HTTP routes, gRPC services, and DB tables) so a
-provider endpoint in one repo connects to its consumers in another. The
-extractors live in `core/workspace/extractors/` and follow the same
-dialect-plugin shape: the orchestrator owns only the file walk, and each
-framework / client library is an independent module registered in a tuple.
+service-to-service contracts (HTTP routes, gRPC services, message topics,
+sockets, and DB tables) so a provider in one repo connects to its consumers in
+another. The extractors live in `core/workspace/extractors/` and share one
+dialect shape: each framework or client library is an independent module
+registered in a tuple, and one walk-and-dispatch loop runs them all.
 
 ```
 workspace/extractors/
   base.py            # iter_source_files walk + ScanContext (shared by all)
+  dialect.py         # ContractDialect protocol, build_contract, DialectExtractor
+  strings.py         # string expressions: argument scanning, constants, Arg selection
   langs.py           # registry-derived extension sets (JS_TS, PYTHON, RUST, …)
   http/
-    dialect.py       #   HttpDialect protocol + build_provider/consumer_contract
+    dialect.py       #   build_provider/consumer_contract
     paths.py         #   normalize_http_path + URL helpers
-    express.py  fastapi.py  spring.py  laravel.py  go.py  aspnet.py  # providers
-    js_clients.py  python_clients.py  csharp_http.py  rust_clients.py # consumers
-    rust_axum.py  mounts.py                                          # providers
-    __init__.py      #   HttpExtractor + PROVIDER_DIALECTS / CONSUMER_DIALECTS
-  grpc/
-    dialect.py       #   GrpcDialect protocol + make_grpc_contract
-    proto.py  go.py  java.py  python.py  typescript.py  csharp.py
-    __init__.py      #   GrpcExtractor + DIALECTS
+    client_calls.py  #   ClientCallMatch + consumer_contracts
+    express.py  nestjs.py  fastapi.py  spring.py  laravel.py  go.py  …  # providers
+    js_clients.py  node_clients.py  python_clients.py  php_clients.py  # consumers
+    __init__.py      #   HttpExtractor (adds router mounts + index passes)
+  grpc/              #   proto.py + languages.py (one table of stub shapes)
+  calls.py           #   call_sites / call_chain / decorated_member: the table reader every type shares
+  topic/             #   dialect.py (TopicCall table) + kafka.py rabbitmq.py nats.py redis.py
+                     #   bullmq.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
+  socket/            #   dialect.py (SocketCall table) + dotnet.py python.py socketio.py broadcasting.py
   data/              #   table providers (DDL / ORM entities) <-> SQL consumers
+workspace/matching/  # shared exact pass + per-type passes (http.py, topic.py, data.py)
 ```
 
 A dialect declares the file extensions it understands (via `langs.py`) and turns
-regex matches into `Contract`s through shared builders, so every dialect emits
-identically-shaped providers/consumers and path-normalization lives in one place.
-**Adding a framework or client** means dropping one module into `http/`, `grpc/`,
-or `data/` and appending its dialect to the relevant registry tuple, with no
-orchestrator edits.
+matches into `Contract`s through shared builders, so every dialect emits
+identically-shaped providers/consumers and normalization lives in one place.
+**Adding a framework or client** means dropping one module into `http/`,
+`grpc/`, `topic/`, `socket/` or `data/` and appending its dialect to the
+relevant registry tuple, with no orchestrator edits. A dialect whose contracts
+span files (a Laravel job dispatched in one file runs on the queue its class
+declares in another) offers a `repo_pass()` instead: it sees every file, then
+names its contracts once. A contract type whose two ends can name one thing
+differently (HTTP mount prefixes, a queue bound to an exchange, a pattern
+subscription) registers its extra passes, or its own `keys`, in
+`matching.MATCHERS`.
 
 | Contract | Providers | Consumers |
 |----------|-----------|-----------|
-| **HTTP** | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal), Rust (Axum routes, Actix/Rocket attribute macros) | `fetch` / `axios` / URL-literal wrappers (JS/TS), `requests` / `httpx` (Python), `HttpClient` / `UnityWebRequest` / Best.HTTP (C#), `reqwest` (Rust) |
+| **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |
 | **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
-| **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, ORM entities (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback) |
+| **Topic** | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
+| **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
+| **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
 workspace guide.

@@ -20,6 +20,7 @@ from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.test_reachability import (
     ReachedBy,
     load_test_files,
+    rank_tests,
     tests_matching_by_name,
     tests_reaching_by_tier,
 )
@@ -380,7 +381,7 @@ def _validation_target(
         identities_complete = (
             reached is None or reached.all_tests is not None or total == len(labels)
         )
-    ordered = sorted(labels)
+    ordered = rank_tests(file_path, labels)
     return (
         ValidationTarget(
             file_path=file_path,
@@ -405,13 +406,13 @@ def build_validation_plan(
     """Resolve target evidence in strict measured/call/import precedence."""
     cap = max(0, test_limit)
     target_rows: list[ValidationTarget] = []
-    union: set[str] = set()
+    ranked: dict[str, None] = {}
     identities_complete = True
     for file_path, lines in sorted(_line_ranges(suggestion).items()):
         target, labels, target_complete = _validation_target(
             file_path, lines, measured, inferred, cap
         )
-        union.update(labels)
+        ranked.update(dict.fromkeys(rank_tests(file_path, labels)))
         identities_complete = identities_complete and target_complete
         target_rows.append(target)
 
@@ -424,7 +425,7 @@ def build_validation_plan(
     aggregate_via: ValidationVia | None = (
         None if not vias else next(iter(vias)) if len(vias) == 1 else "mixed"
     )
-    ordered_tests = sorted(union)
+    ordered_tests = list(ranked)
     aggregate_total = (
         len(ordered_tests)
         if identities_complete

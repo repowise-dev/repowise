@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+from ..strings import match_paren
+
 
 def normalize_http_path(path: str) -> str:
     """Normalize an HTTP path for matching.
@@ -48,9 +50,36 @@ def _after_authority(url: str) -> str | None:
     """
     if url.startswith("//"):
         return url[2:]
-    if "://" in url:
-        return url.split("://", 1)[1]
-    return None
+    start = 0
+    if url.startswith("${"):
+        # A scheme inside a leading interpolation (`${prod ? 'https://x' : ''}/api`)
+        # is not this URL's; one after it (`${proto}://host/api`) is.
+        start = match_paren(url, 1, closer="}") + 1
+        if start == 0:
+            return None
+    scheme = url.find("://", start)
+    return url[scheme + 3 :] if scheme >= 0 else None
+
+
+def flatten_interpolations(path: str) -> str:
+    """*path* with each ``${...}`` holding braces of its own reduced to ``${expr}``.
+
+    ``/rate/${format(d, F, { in: utc })}`` is one parameter segment; the
+    brace-free patterns of :func:`normalize_http_path` would stop inside it.
+    An unbalanced interpolation is left for :func:`is_unusable_consumer_path`.
+    """
+    out: list[str] = []
+    pos = 0
+    while (start := path.find("${", pos)) >= 0:
+        end = match_paren(path, start + 1, closer="}")
+        if end < 0:
+            break
+        inner = path[start + 2 : end]
+        out.append(path[pos:start])
+        out.append("${expr}" if "{" in inner else path[start : end + 1])
+        pos = end + 1
+    out.append(path[pos:])
+    return "".join(out)
 
 
 def extract_path_from_url(url: str) -> str:

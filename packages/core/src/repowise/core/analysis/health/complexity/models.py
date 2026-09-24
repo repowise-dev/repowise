@@ -7,10 +7,11 @@ the health engine; see the per-class docstrings for the downstream reader.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..asserts.oracle_reach import OracleReach
+    from ..perf.loop_facts import LoopFacts
 
 
 @dataclass
@@ -271,12 +272,12 @@ class PerfHit:
     # proof is unavailable (no dialect, guard trip, non-convergence) or the loop
     # genuinely carries a dependence. The biomarker sharpens its message when set.
     promoted: bool = False
-    # Innermost loop walks its data in chunks (same-function hits only).
-    chunked: bool = False
+    # What the innermost enclosing loop proves (same-function hits only).
+    loop: LoopFacts | None = None
 
-    def loop_facts(self) -> dict[str, bool]:
+    def loop_facts(self) -> dict[str, Any]:
         """Loop facts for ``details``; absent when unset so old findings are unchanged."""
-        return {"chunked_iteration": True} if self.chunked else {}
+        return self.loop.as_details() if self.loop is not None else {}
 
 
 @dataclass(frozen=True)
@@ -322,6 +323,9 @@ class PerfFnFacts:
     nested_loop_line: int = 0
     blocking_sink_kind: str | None = None
     blocking_sink_line: int = 0
+    # ``(call_line, facts)`` for loop-nested calls whose loop settles a fact, so a
+    # cross-function hit reports the trip count and chunking of the loop that pays it.
+    loop_call_facts: tuple[tuple[int, LoopFacts], ...] = ()
 
 
 @dataclass

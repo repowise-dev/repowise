@@ -83,6 +83,7 @@ export function opportunity(
       amplification: "per_iteration",
       leverage: "local",
       change_risk: "moderate",
+      loop_magnitude: "grows_with_data",
     },
     actionability_state: "advisory",
     actionability_reason: "strategy_requires_validation",
@@ -142,6 +143,7 @@ export function page(overrides: Partial<PerformanceOpportunityPage> = {}): Perfo
           strategy: "parallelize_independent_awaits",
           safety: "proven",
           rationale: "Dataflow proves the iterations carry no dependence.",
+          api: "self._sem",
         },
       }),
       opportunity({

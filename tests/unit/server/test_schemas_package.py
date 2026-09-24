@@ -3,10 +3,19 @@
 These guard the split of the former single ``schemas.py`` module into a
 package: the public import surface must be unchanged, and the deduplicated
 graph-node models must serialize identically to their pre-split form
-(same field set, order, and JSON output).
+(same field set, order, and JSON output). Submodules load on first access,
+so the facade must not import them all.
 """
 
 from __future__ import annotations
+
+import ast
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 
 from repowise.server import schemas
 
@@ -89,3 +98,47 @@ def test_graph_node_serialization_unchanged() -> None:
         **expected_base,
         "commit_count": 7,
     }
+
+
+def test_lazy_map_matches_the_static_imports_and_all() -> None:
+    """The runtime map, the type-checking imports and ``__all__`` list one set."""
+    tree = ast.parse(Path(schemas.__file__).read_text(encoding="utf-8"))
+    guarded = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.If) and isinstance(n.test, ast.Name) and n.test.id == "TYPE_CHECKING"
+    )
+    static = {
+        alias.name: node.module
+        for node in guarded.body
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    assert static == schemas._SUBMODULE_OF
+    assert sum(map(len, schemas._EXPORTS.values())) == len(static)
+    assert sorted(schemas.__all__) == sorted(static)
+
+
+@pytest.mark.parametrize(
+    ("statement", "loaded"),
+    [
+        ("from repowise.server.schemas import ZoomMapResponse", "zoom"),
+        ("from repowise.server.schemas.risk_semantics import RiskScalarSemantics", "risk_semantics"),
+    ],
+)
+def test_one_model_does_not_load_every_submodule(statement: str, loaded: str) -> None:
+    probe = (
+        f"import sys; {statement}; "
+        "print(sorted(m for m in sys.modules if m.startswith('repowise.server.schemas.')))"
+    )
+    # Same sys.path as this process, so the child imports this checkout.
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+        timeout=60,
+    ).stdout
+    assert out.strip() == f"['repowise.server.schemas.{loaded}']"

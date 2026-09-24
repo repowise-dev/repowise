@@ -21,15 +21,19 @@ from typing import Any, Literal
 
 FixSafety = Literal["proven", "advisory"]
 OpportunityConfidence = Literal["high", "medium", "low"]
-ActionabilityState = Literal["plan_ready", "advisory", "investigate"]
+# ``expected``: the repetition is real and there is nothing to change.
+ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"]
+
+# Refusals that are facts about the code, not missing proofs: nothing to investigate.
+_EXPECTED_REFUSALS = frozenset({"inherent_to_boundary", "loop_already_chunked"})
 FixStrategy = Literal[
     "parallelize_independent_awaits",
     "replace_membership_collection",
     "buffer_string_accumulation",
-    "hoist_loop_invariant_resource",
     "batch_or_prefetch_io",
     "shrink_lock_scope",
     "push_reduction_into_query",
+    "eager_load_relationship",
 ]
 
 BATCHABLE_MARKERS = frozenset({"io_in_loop", "nested_loop_with_io"})
@@ -44,9 +48,20 @@ class PerformanceFix:
     strategy: FixStrategy
     safety: FixSafety
     rationale: str
+    # The concrete construct the edit uses (a bulk call, a bound), when one was found.
+    api: str | None = None
 
     def as_dict(self) -> dict[str, str]:
-        return {"strategy": self.strategy, "safety": self.safety, "rationale": self.rationale}
+        out = {"strategy": self.strategy, "safety": self.safety, "rationale": self.rationale}
+        if self.api:
+            out["api"] = self.api
+        return out
+
+
+def _shared(details: list[dict[str, Any]], key: str) -> Any:
+    """The one value every detail carries under *key*, else ``None``."""
+    values = {detail.get(key) for detail in details}
+    return values.pop() if len(values) == 1 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +111,53 @@ def provenance_confidence(provenance: str) -> OpportunityConfidence:
     return "low"
 
 
+# Markers whose FixAssessment depends on nothing but the marker itself: looked up
+# once, at the point in the gate order the first of them used to sit.
+_CONSTANT_FIXES: dict[str, FixAssessment] = {
+    "membership_test_against_list_in_loop": FixAssessment(
+        PerformanceFix(
+            "replace_membership_collection",
+            "advisory",
+            "The collection is proven list-backed; element hashability and "
+            "ordering/identity use still require validation.",
+        ),
+        ("element_hashability", "ordering_and_identity_use"),
+    ),
+    "string_concat_in_loop": FixAssessment(
+        PerformanceFix(
+            "buffer_string_accumulation",
+            "advisory",
+            "Repeated string accumulation is proven; intermediate accumulator "
+            "observations still require validation.",
+        ),
+        ("accumulator_not_observed",),
+    ),
+    "unbounded_read_reduced_in_memory": FixAssessment(
+        PerformanceFix(
+            "push_reduction_into_query",
+            "advisory",
+            "The read is proven unbounded and the per-key selection proven "
+            "Python-side; whether the query layer can express that "
+            "selection (DISTINCT ON / a window function / a view) is not.",
+        ),
+        ("query_supports_group_selection",),
+    ),
+    "lazy_load_in_loop": FixAssessment(
+        PerformanceFix(
+            "eager_load_relationship",
+            "advisory",
+            "The relationship is declared lazy and the query that produced the "
+            "rows does not load it; whether every iteration reaches the access, "
+            "and whether another layer loads it first, is not proven.",
+        ),
+        ("relationship_not_loaded_elsewhere",),
+    ),
+    # Hoisting needs per-argument dataflow plus a guard against attribute mutation
+    # (``Client(token=self.token)``); neither exists, so no strategy.
+    "resource_construction_in_loop": FixAssessment(None, ("loop_invariant_construction_proof",)),
+}
+
+
 def assess_fix(
     marker: str,
     markers: tuple[str, ...],
@@ -116,6 +178,19 @@ def assess_fix(
         if not all(detail.get("dataflow_verified") for detail in details):
             return FixAssessment(None, ("loop_carried_dependence_proof",))
         if boundary in CONCURRENCY_SENSITIVE_BOUNDARIES:
+            # A small fixed trip count is not a bound: that is what a retry loop
+            # looks like, and retries must stay sequential.
+            bound = _shared(details, "concurrency_bound")
+            if bound:
+                return FixAssessment(
+                    PerformanceFix(
+                        "parallelize_independent_awaits",
+                        "proven",
+                        f"Iterations are independent and each await already runs under {bound}.",
+                        bound,
+                    ),
+                    (),
+                )
             # Independence is proven; nothing here bounds the fan-out.
             return FixAssessment(
                 PerformanceFix(
@@ -134,37 +209,8 @@ def assess_fix(
             ),
             (),
         )
-    if marker == "membership_test_against_list_in_loop":
-        return FixAssessment(
-            PerformanceFix(
-                "replace_membership_collection",
-                "advisory",
-                "The collection is proven list-backed; element hashability and "
-                "ordering/identity use still require validation.",
-            ),
-            ("element_hashability", "ordering_and_identity_use"),
-        )
-    if marker == "string_concat_in_loop":
-        return FixAssessment(
-            PerformanceFix(
-                "buffer_string_accumulation",
-                "advisory",
-                "Repeated string accumulation is proven; intermediate accumulator "
-                "observations still require validation.",
-            ),
-            ("accumulator_not_observed",),
-        )
-    if marker == "unbounded_read_reduced_in_memory":
-        return FixAssessment(
-            PerformanceFix(
-                "push_reduction_into_query",
-                "advisory",
-                "The read is proven unbounded and the per-key selection proven "
-                "Python-side; whether the query layer can express that "
-                "selection (DISTINCT ON / a window function / a view) is not.",
-            ),
-            ("query_supports_group_selection",),
-        )
+    if marker in _CONSTANT_FIXES:
+        return _CONSTANT_FIXES[marker]
     if set(markers) <= BATCHABLE_MARKERS:
         if details and all(detail.get("chunked_iteration") for detail in details):
             # The loop is already the batch; "batch this" repeats advice taken.
@@ -172,7 +218,30 @@ def assess_fix(
         if boundary not in BATCHABLE_BOUNDARIES:
             # Filesystem and subprocess repetition is real, but there is no
             # batch or prefetch operation to point the caller at.
-            return FixAssessment(None, ("batch_operation_for_boundary",))
+            return FixAssessment(None, (), refusal="inherent_to_boundary")
+        form = _shared(details, "batch_form")
+        if form:
+            if _shared(details, "batch_equivalent") is True:
+                return FixAssessment(
+                    PerformanceFix(
+                        "batch_or_prefetch_io",
+                        "proven",
+                        f"Every call filters on the loop's own key, so {form} covers the same "
+                        "rows, and nothing else in the loop can observe the difference.",
+                        form,
+                    ),
+                    (),
+                )
+            return FixAssessment(
+                PerformanceFix(
+                    "batch_or_prefetch_io",
+                    "advisory",
+                    f"Every call filters on the loop's own key, so {form} is the bulk form; "
+                    "the per-key call limits, orders or shares the loop with other I/O.",
+                    form,
+                ),
+                ("result_equivalence",),
+            )
         return FixAssessment(
             PerformanceFix(
                 "batch_or_prefetch_io",
@@ -197,17 +266,6 @@ def assess_fix(
             ),
             ("shared_state_ordering",),
         )
-    if marker == "resource_construction_in_loop":
-        if not all(detail.get("resource_invariant") is True for detail in details):
-            return FixAssessment(None, ("loop_invariant_construction_proof",))
-        return FixAssessment(
-            PerformanceFix(
-                "hoist_loop_invariant_resource",
-                "proven",
-                "Dataflow proves construction arguments and lifetime are loop invariant.",
-            ),
-            (),
-        )
     return FixAssessment(None, ("supported_strategy_for_marker",))
 
 
@@ -223,9 +281,10 @@ def actionability(
     """
     fix = assessment.fix
     if fix is None:
-        return Actionability(
-            "investigate", assessment.refusal, "low", assessment.prerequisites, None
+        state: ActionabilityState = (
+            "expected" if assessment.refusal in _EXPECTED_REFUSALS else "investigate"
         )
+        return Actionability(state, assessment.refusal, "low", assessment.prerequisites, None)
     if evidence_confidence == "low":
         # A transformation proven against a path we could not resolve is not
         # proven against this code. The safety label moves with the verdict so

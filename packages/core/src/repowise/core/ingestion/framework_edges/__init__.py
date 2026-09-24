@@ -1,7 +1,7 @@
 """Framework-aware synthetic edge detection.
 
 Detects convention-based relationships (Django, FastAPI, Flask, ASP.NET, Rails,
-Laravel, Spring, Express/Nest, Gin/Echo/Chi, Axum/Actix/Rocket, TYPO3, Godot
+Laravel, Spring, Express/Nest, Angular, Gin/Echo/Chi, Axum/Actix/Rocket, TYPO3, Godot
 ``class_name`` globals, and pytest ``conftest.py``) and adds
 ``edge_type="framework"`` edges that no static import graph captures.
 
@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from . import (
     android_manifest,
+    angular,
     aspnet,
     django,
     express,
@@ -67,6 +68,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *android_manifest.HANDLERS,
     *flutter.HANDLERS,
     *express.HANDLERS,
+    *angular.HANDLERS,
     *next_app.HANDLERS,
     *hono.HANDLERS,
     *remix.HANDLERS,

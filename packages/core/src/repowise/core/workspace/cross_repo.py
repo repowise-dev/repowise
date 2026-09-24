@@ -1,4 +1,7 @@
-"""Cross-repo intelligence — co-change detection, manifest scanning, overlay persistence.
+"""Cross-repo intelligence: co-change detection, manifest edges, overlay persistence.
+
+Manifest scanning itself lives in :mod:`.manifests`; this module runs it and
+persists what it finds alongside the co-change edges.
 
 Runs during ``repowise update --workspace`` (write path).  The resulting JSON
 is loaded by :class:`CrossRepoEnricher` in the MCP server (read path).
@@ -20,11 +23,15 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
 
 from ..co_change import CO_CHANGE_DECAY_TAU
 from ..fsutils import atomic_write_text
 from .config import WorkspaceConfig, ensure_workspace_data_dir
+from .manifests import (
+    CrossRepoPackageDep,
+    CrossRepoPackageDiagnostic,
+    detect_package_dependencies_with_diagnostics,
+)
 
 _log = logging.getLogger("repowise.workspace.cross_repo")
 
@@ -60,18 +67,14 @@ _UBIQUITY_MIN_HISTORY: int = 30
 # 2-of-2 sessions (67% after smoothing) cannot outrank sustained coupling
 # like 30-of-40 (73%).
 _STRENGTH_SMOOTHING: float = 1.0
-_MAX_EDGES: int = 200
+# Public: the workspace API reports which of these caps trimmed the overlay.
+MAX_EDGES: int = 200
 # One hyperactive repo pair must not consume the whole edge budget and starve
 # the other pairs out of the overlay.
-_MAX_EDGES_PER_REPO_PAIR: int = 50
+MAX_EDGES_PER_REPO_PAIR: int = 50
 # Per-session cap on files paired per side, guarding the O(N*M) cross-product
 # against sprawling release/codemod sessions.
 _MAX_FILES_PER_SESSION_SIDE: int = 20
-# Package non-matches are useful evidence but ordinary workspaces can declare
-# thousands of external libraries. Persist a deterministic sample plus the
-# uncapped total so diagnostics cannot make the overlay unbounded.
-_MAX_PACKAGE_DIAGNOSTICS: int = 200
-
 
 # ---------------------------------------------------------------------------
 # Noise-file filtering
@@ -177,27 +180,6 @@ class CrossRepoCoChange:
 
 
 @dataclass
-class CrossRepoPackageDep:
-    source_repo: str
-    target_repo: str
-    source_manifest: str
-    kind: str  # npm_local_path, pip_path, cargo_path, go_replace, maven_coordinate
-    target_package: str = ""
-    target_manifest: str = ""
-    requested_version: str | None = None
-    scope: str = ""
-    resolution_basis: str = ""
-
-
-@dataclass
-class CrossRepoPackageDiagnostic:
-    repo: str
-    source_manifest: str
-    code: str
-    detail: str = ""
-
-
-@dataclass
 class CrossRepoOverlay:
     version: int = _OVERLAY_VERSION
     generated_at: str = ""
@@ -206,7 +188,7 @@ class CrossRepoOverlay:
     package_diagnostics: list[CrossRepoPackageDiagnostic] = field(default_factory=list)
     repo_summaries: dict[str, dict] = field(default_factory=dict)
     #: How many pairs cleared the strength/session thresholds before
-    #: ``_MAX_EDGES`` / ``_MAX_EDGES_PER_REPO_PAIR`` trimmed ``co_changes``.
+    #: ``MAX_EDGES`` / ``MAX_EDGES_PER_REPO_PAIR`` trimmed ``co_changes``.
     #: Equal to ``len(co_changes)`` when nothing was dropped. Not a count of
     #: every pair in git history: ``_MAX_FILES_PER_SESSION_SIDE`` bounds each
     #: session before pairing, so pairs involving an evicted file are in
@@ -579,559 +561,21 @@ def detect_cross_repo_co_changes(
     capped: list[CrossRepoCoChange] = []
     for r in results:
         pair_key = (r.source_repo, r.target_repo)
-        if per_pair[pair_key] >= _MAX_EDGES_PER_REPO_PAIR:
+        if per_pair[pair_key] >= MAX_EDGES_PER_REPO_PAIR:
             continue
         per_pair[pair_key] += 1
         capped.append(r)
-        if len(capped) >= _MAX_EDGES:
+        if len(capped) >= MAX_EDGES:
             break
     if len(capped) < len(results):
         _log.info(
             "Co-change mining kept %d of %d qualifying pairs (caps: %d total, %d per repo pair)",
             len(capped),
             len(results),
-            _MAX_EDGES,
-            _MAX_EDGES_PER_REPO_PAIR,
+            MAX_EDGES,
+            MAX_EDGES_PER_REPO_PAIR,
         )
     return capped, len(results)
-
-
-# ---------------------------------------------------------------------------
-# Package / manifest dependency detection
-# ---------------------------------------------------------------------------
-
-
-def _resolve_target_repo(
-    relative_ref: str,
-    source_repo_path: Path,
-    repo_paths: dict[str, Path],
-) -> str | None:
-    """Resolve a relative path reference to a repo alias, or None."""
-    try:
-        target_abs = (source_repo_path / relative_ref).resolve()
-        # Most-specific root first makes physically nested selected repos
-        # deterministic. Path.relative_to supplies the separator-aware
-        # containment check that string prefixes (``lib`` vs ``lib-old``) do not.
-        roots = sorted(
-            repo_paths.items(),
-            key=lambda item: len(item[1].parts),
-            reverse=True,
-        )
-        for alias, repo_path in roots:
-            try:
-                target_abs.relative_to(repo_path)
-            except ValueError:
-                continue
-            else:
-                return alias
-    except Exception:
-        # A manifest reference that cannot be resolved to a path is the one
-        # way this returns None without having compared anything, so it is
-        # worth distinguishing from "resolved fine, matched no repo".
-        _log.warning(
-            "Could not resolve manifest reference %r relative to %s",
-            relative_ref,
-            source_repo_path,
-            exc_info=True,
-        )
-    return None
-
-
-def _scan_package_json(
-    repo_path: Path,
-    repo_paths: dict[str, Path],
-    alias: str,
-) -> list[CrossRepoPackageDep]:
-    """Scan package.json for local file: references to sibling repos."""
-    results: list[CrossRepoPackageDep] = []
-    pkg_json = repo_path / "package.json"
-    if not pkg_json.is_file():
-        return results
-
-    try:
-        data = json.loads(pkg_json.read_text(encoding="utf-8"))
-    except Exception:
-        return results
-
-    for dep_key in ("dependencies", "devDependencies", "peerDependencies"):
-        deps = data.get(dep_key, {})
-        if not isinstance(deps, dict):
-            continue
-        for _name, version in deps.items():
-            if isinstance(version, str) and version.startswith("file:"):
-                rel_path = version[5:]  # strip "file:"
-                target = _resolve_target_repo(rel_path, repo_path, repo_paths)
-                if target and target != alias:
-                    results.append(
-                        CrossRepoPackageDep(
-                            source_repo=alias,
-                            target_repo=target,
-                            source_manifest="package.json",
-                            kind="npm_local_path",
-                        )
-                    )
-
-    # Check workspaces field
-    workspaces = data.get("workspaces", [])
-    if isinstance(workspaces, dict):
-        workspaces = workspaces.get("packages", [])
-    # Workspaces are globs — we just check if they point to sibling repos
-    for ws in workspaces if isinstance(workspaces, list) else []:
-        if isinstance(ws, str) and ".." in ws:
-            target = _resolve_target_repo(ws.rstrip("/*"), repo_path, repo_paths)
-            if target and target != alias:
-                results.append(
-                    CrossRepoPackageDep(
-                        source_repo=alias,
-                        target_repo=target,
-                        source_manifest="package.json",
-                        kind="npm_workspace",
-                    )
-                )
-
-    return results
-
-
-def _scan_pyproject_toml(
-    repo_path: Path,
-    repo_paths: dict[str, Path],
-    alias: str,
-) -> list[CrossRepoPackageDep]:
-    """Scan pyproject.toml for path dependencies."""
-    results: list[CrossRepoPackageDep] = []
-    toml_path = repo_path / "pyproject.toml"
-    if not toml_path.is_file():
-        return results
-
-    try:
-        # Use tomllib (Python 3.11+) or tomli
-        try:
-            import tomllib
-        except ImportError:
-            import tomli as tomllib  # type: ignore[no-redef]
-        with open(toml_path, "rb") as f:
-            data = tomllib.load(f)
-    except Exception:
-        return results
-
-    # Poetry path dependencies
-    poetry_deps = data.get("tool", {}).get("poetry", {}).get("dependencies", {})
-    for _name, spec in poetry_deps.items() if isinstance(poetry_deps, dict) else []:
-        if isinstance(spec, dict) and "path" in spec:
-            target = _resolve_target_repo(spec["path"], repo_path, repo_paths)
-            if target and target != alias:
-                results.append(
-                    CrossRepoPackageDep(
-                        source_repo=alias,
-                        target_repo=target,
-                        source_manifest="pyproject.toml",
-                        kind="pip_path",
-                    )
-                )
-
-    # PEP 621 dependencies with path (uncommon but possible via tool configs)
-    for group_key in ("dependencies", "optional-dependencies"):
-        group = data.get("project", {}).get(group_key, {})
-        if isinstance(group, dict):
-            for _name, spec in group.items():
-                if isinstance(spec, dict) and "path" in spec:
-                    target = _resolve_target_repo(spec["path"], repo_path, repo_paths)
-                    if target and target != alias:
-                        results.append(
-                            CrossRepoPackageDep(
-                                source_repo=alias,
-                                target_repo=target,
-                                source_manifest="pyproject.toml",
-                                kind="pip_path",
-                            )
-                        )
-
-    return results
-
-
-def _scan_cargo_toml(
-    repo_path: Path,
-    repo_paths: dict[str, Path],
-    alias: str,
-) -> list[CrossRepoPackageDep]:
-    """Scan Cargo.toml for path dependencies."""
-    results: list[CrossRepoPackageDep] = []
-    cargo_path = repo_path / "Cargo.toml"
-    if not cargo_path.is_file():
-        return results
-
-    try:
-        try:
-            import tomllib
-        except ImportError:
-            import tomli as tomllib  # type: ignore[no-redef]
-        with open(cargo_path, "rb") as f:
-            data = tomllib.load(f)
-    except Exception:
-        return results
-
-    for section in ("dependencies", "dev-dependencies", "build-dependencies"):
-        deps = data.get(section, {})
-        for _name, spec in deps.items():
-            if isinstance(spec, dict) and "path" in spec:
-                target = _resolve_target_repo(spec["path"], repo_path, repo_paths)
-                if target and target != alias:
-                    results.append(
-                        CrossRepoPackageDep(
-                            source_repo=alias,
-                            target_repo=target,
-                            source_manifest="Cargo.toml",
-                            kind="cargo_path",
-                        )
-                    )
-
-    return results
-
-
-def _scan_go_mod(
-    repo_path: Path,
-    repo_paths: dict[str, Path],
-    alias: str,
-) -> list[CrossRepoPackageDep]:
-    """Scan go.mod for replace directives pointing to sibling repos."""
-    results: list[CrossRepoPackageDep] = []
-    go_mod = repo_path / "go.mod"
-    if not go_mod.is_file():
-        return results
-
-    try:
-        content = go_mod.read_text(encoding="utf-8")
-    except Exception:
-        return results
-
-    # Parse "replace" directives: `replace foo => ../sibling`
-    in_replace_block = False
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("replace ("):
-            in_replace_block = True
-            continue
-        if in_replace_block and stripped == ")":
-            in_replace_block = False
-            continue
-
-        # Single-line replace or inside block
-        if stripped.startswith("replace ") or in_replace_block:
-            parts = stripped.replace("replace ", "").split("=>")
-            if len(parts) == 2:
-                target_path = parts[1].strip().split()[0]  # first token after =>
-                if target_path.startswith("..") or target_path.startswith("./"):
-                    target = _resolve_target_repo(target_path, repo_path, repo_paths)
-                    if target and target != alias:
-                        results.append(
-                            CrossRepoPackageDep(
-                                source_repo=alias,
-                                target_repo=target,
-                                source_manifest="go.mod",
-                                kind="go_replace",
-                            )
-                        )
-
-    return results
-
-
-_CSPROJ_SKIP_DIRS = frozenset(
-    {"bin", "obj", ".vs", "packages", "node_modules", ".git", "TestResults"}
-)
-_CSPROJ_SKIP_DIRS_LOWER = frozenset(name.lower() for name in _CSPROJ_SKIP_DIRS)
-
-
-@dataclass
-class _CsprojIndex:
-    """Project manifests in the workspace, walked and parsed exactly once.
-
-    ``_scan_csproj`` needs two things: the assembly-name → repo-alias map
-    (built from *all* repos) and the current repo's own project files. Built
-    per repo, the map is rebuilt identically for every alias, so an R-repo
-    workspace walked R*R + R trees and re-parsed every project file R times.
-    The map depends only on ``repo_paths``, never on the alias being scanned,
-    so hoisting it here is a pure de-duplication: same inputs, same map, R
-    walks instead of R*R + R.
-    """
-
-    # Parsed once and shared; ElementTree instances are only ever read.
-    trees: dict[Path, Any] = field(default_factory=dict)
-    by_repo: dict[str, list[Path]] = field(default_factory=dict)
-    poms_by_repo: dict[str, list[Path]] = field(default_factory=dict)
-    assembly_to_repo: dict[str, str] = field(default_factory=dict)
-
-
-def _walk_project_manifests(
-    repo_root: Path,
-    index: _CsprojIndex,
-) -> tuple[list[Path], list[Path]]:
-    """Collect Maven and .NET project manifests in one pruned repo walk."""
-    from xml.etree import ElementTree as ET
-
-    from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
-
-    csprojects: list[Path] = []
-    poms: list[Path] = []
-    # ``packages`` is a .NET package cache convention but also a legitimate
-    # Maven module directory, so it cannot be pruned for the shared walk.
-    prune = PRUNED_DIRS | {
-        "target",
-        "dist",
-        "build",
-        "bin",
-        "obj",
-        ".vs",
-        "TestResults",
-    }
-    for dirpath, _dirnames, filenames in walk_repo(repo_root, prune_dirs=prune):
-        for filename in sorted(filenames):
-            path = dirpath / filename
-            if filename == "pom.xml":
-                poms.append(path)
-            elif filename.lower().endswith(".csproj"):
-                relative_dirs = path.relative_to(repo_root).parts[:-1]
-                if any(part.lower() in _CSPROJ_SKIP_DIRS_LOWER for part in relative_dirs):
-                    continue
-                try:
-                    index.trees[path] = ET.parse(path)
-                except (ET.ParseError, OSError):
-                    continue
-                csprojects.append(path)
-    return csprojects, poms
-
-
-def _walk_csproj(repo_root: Path, index: _CsprojIndex) -> list[Path]:
-    """Compatibility wrapper for a standalone .NET project scan."""
-    projects, _poms = _walk_project_manifests(repo_root, index)
-    return projects
-
-
-def _assembly_name(tree: Any, csproj: Path) -> str:
-    """The project's assembly name, defaulting to the filename minus extension."""
-    for elem in tree.getroot().iter():
-        tag = elem.tag.split("}", 1)[1] if elem.tag.startswith("{") else elem.tag
-        if tag == "AssemblyName" and elem.text:
-            return elem.text.strip()
-    return csproj.stem
-
-
-def _index_csproj_files(repo_paths: dict[str, Path]) -> _CsprojIndex:
-    """Walk each repo once, parse each ``.csproj`` once, build the assembly map."""
-    index = _CsprojIndex()
-    # Insertion order matches the previous per-alias rebuild, so a name
-    # defined in two repos still resolves to the last repo in repo_paths.
-    for alias, path in repo_paths.items():
-        found, poms = _walk_project_manifests(path, index)
-        for csproj in found:
-            index.assembly_to_repo[_assembly_name(index.trees[csproj], csproj)] = alias
-        index.by_repo[alias] = found
-        index.poms_by_repo[alias] = poms
-    return index
-
-
-def _scan_csproj(
-    repo_path: Path,
-    repo_paths: dict[str, Path],
-    alias: str,
-    *,
-    csproj_index: _CsprojIndex | None = None,
-) -> list[CrossRepoPackageDep]:
-    """Scan every .csproj for cross-repo references.
-
-    Two patterns are recognised:
-
-    1. ``<ProjectReference Include="..\\..\\OtherRepo\\Foo.csproj"/>`` — a
-       relative path that resolves into a sibling indexed repo. Emits
-       ``kind="dotnet_project_ref"``.
-
-    2. ``<PackageReference Include="MyOrg.SharedLib"/>`` whose package id
-       matches a sibling repo's ``<AssemblyName>`` or ``.csproj`` filename.
-       Emits ``kind="dotnet_nuget_internal"`` — the "internal NuGet
-       feed" pattern enterprise teams use when their shared libs live
-       in a separate repo.
-
-    Skips ``bin``/``obj``/``packages``/``.vs``/``TestResults`` build outputs.
-
-    ``csproj_index`` lets a caller scanning several repos share one walk;
-    omitted, the scan builds its own and behaves exactly as a standalone call.
-    """
-    index = csproj_index if csproj_index is not None else _index_csproj_files(repo_paths)
-
-    own = index.by_repo.get(alias)
-    if own is None or repo_paths.get(alias) != repo_path:
-        # The index does not describe this exact tree — *alias* is absent from
-        # repo_paths, or the caller passed a repo_path that disagrees with it.
-        # Walk the tree we were actually handed, and leave assembly_to_repo
-        # alone: it is defined by repo_paths, and folding this repo's own
-        # names into it would let them shadow a sibling that legitimately
-        # owns the same assembly name.
-        own = _walk_csproj(repo_path, index)
-
-    assembly_to_repo = index.assembly_to_repo
-
-    results: list[CrossRepoPackageDep] = []
-
-    for csproj in own:
-        tree = index.trees[csproj]
-        try:
-            rel_manifest = csproj.relative_to(repo_path).as_posix()
-        except ValueError:
-            rel_manifest = csproj.name
-
-        for elem in tree.getroot().iter():
-            tag = elem.tag.split("}", 1)[1] if elem.tag.startswith("{") else elem.tag
-            include = elem.get("Include") if elem.attrib else None
-            if not include:
-                continue
-            if tag == "ProjectReference":
-                rel = include.replace("\\", "/")
-                target = _resolve_target_repo(rel, csproj.parent, repo_paths)
-                if target and target != alias:
-                    results.append(
-                        CrossRepoPackageDep(
-                            source_repo=alias,
-                            target_repo=target,
-                            source_manifest=rel_manifest,
-                            kind="dotnet_project_ref",
-                        )
-                    )
-            elif tag == "PackageReference":
-                pkg = include.strip()
-                target = assembly_to_repo.get(pkg)
-                if target and target != alias:
-                    results.append(
-                        CrossRepoPackageDep(
-                            source_repo=alias,
-                            target_repo=target,
-                            source_manifest=rel_manifest,
-                            kind="dotnet_nuget_internal",
-                        )
-                    )
-
-    return results
-
-
-def detect_package_dependencies(
-    repo_paths: dict[str, Path],
-) -> list[CrossRepoPackageDep]:
-    """Scan all repos for manifest-based cross-repo dependencies."""
-    dependencies, _diagnostics, _total_diagnostics = detect_package_dependencies_with_diagnostics(
-        repo_paths
-    )
-    return dependencies
-
-
-def detect_package_dependencies_with_diagnostics(
-    repo_paths: dict[str, Path],
-) -> tuple[
-    list[CrossRepoPackageDep],
-    list[CrossRepoPackageDiagnostic],
-    int,
-]:
-    """Scan package manifests and retain bounded Maven non-match evidence."""
-
-    results: list[CrossRepoPackageDep] = []
-    seen: set[tuple[str, str, str, str, str]] = set()
-    resolved_repo_paths = {alias: path.resolve() for alias, path in repo_paths.items()}
-
-    # One walk per repo, shared across every alias. The .csproj scan is the
-    # only existing manifest scanner that walks the tree rather than reading
-    # a fixed root file. The same pass now inventories Maven POMs as well.
-    project_index = _index_csproj_files(resolved_repo_paths)
-
-    for alias, path in resolved_repo_paths.items():
-        for scanner in (
-            _scan_package_json,
-            _scan_pyproject_toml,
-            _scan_cargo_toml,
-            _scan_go_mod,
-        ):
-            for dep in scanner(path, resolved_repo_paths, alias):
-                key = (
-                    dep.source_repo,
-                    dep.target_repo,
-                    dep.source_manifest,
-                    dep.kind,
-                    dep.target_package,
-                )
-                if key not in seen:
-                    seen.add(key)
-                    results.append(dep)
-        for dep in _scan_csproj(
-            path,
-            resolved_repo_paths,
-            alias,
-            csproj_index=project_index,
-        ):
-            key = (
-                dep.source_repo,
-                dep.target_repo,
-                dep.source_manifest,
-                dep.kind,
-                dep.target_package,
-            )
-            if key not in seen:
-                seen.add(key)
-                results.append(dep)
-
-    from .maven_dependencies import detect_maven_dependencies
-
-    maven_links, maven_diagnostics = detect_maven_dependencies(
-        resolved_repo_paths,
-        project_index.poms_by_repo,
-    )
-    for link in maven_links:
-        dep = CrossRepoPackageDep(
-            source_repo=link.source_repo,
-            target_repo=link.target_repo,
-            source_manifest=link.source_manifest,
-            kind="maven_coordinate",
-            target_package=link.target_package,
-            target_manifest=link.target_manifest,
-            requested_version=link.requested_version,
-            scope=link.scope,
-            resolution_basis=link.resolution_basis,
-        )
-        key = (
-            dep.source_repo,
-            dep.target_repo,
-            dep.source_manifest,
-            dep.kind,
-            dep.target_package,
-        )
-        if key not in seen:
-            seen.add(key)
-            results.append(dep)
-
-    results.sort(
-        key=lambda dep: (
-            dep.source_repo,
-            dep.target_repo,
-            dep.source_manifest,
-            dep.kind,
-            dep.target_package,
-        )
-    )
-    diagnostics = sorted(
-        (
-            CrossRepoPackageDiagnostic(
-                repo=item.repo,
-                source_manifest=item.manifest,
-                code=item.code,
-                detail=item.detail,
-            )
-            for item in maven_diagnostics
-        ),
-        key=lambda item: (
-            item.code == "external_coordinate",
-            item.repo,
-            item.source_manifest,
-            item.code,
-            item.detail,
-        ),
-    )
-    total_diagnostics = len(diagnostics)
-    return results, diagnostics[:_MAX_PACKAGE_DIAGNOSTICS], total_diagnostics
 
 
 # ---------------------------------------------------------------------------

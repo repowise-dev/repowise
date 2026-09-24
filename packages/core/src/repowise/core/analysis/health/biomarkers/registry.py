@@ -41,6 +41,7 @@ from .json_parse_in_loop import JsonParseInLoopDetector
 from .knowledge_loss import KnowledgeLossDetector
 from .large_assertion_block import LargeAssertionBlockDetector
 from .large_method import LargeMethodDetector
+from .lazy_load_in_loop import LazyLoadInLoopDetector
 from .list_insert_zero_in_loop import ListInsertZeroInLoopDetector
 from .lock_in_loop import LockInLoopDetector
 from .low_cohesion import LowCohesionDetector
@@ -109,6 +110,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     SerialAwaitInLoopDetector,  # type: ignore[list-item]
     MembershipTestAgainstListInLoopDetector,  # type: ignore[list-item]
     UnboundedReadReducedInMemoryDetector,  # type: ignore[list-item]
+    LazyLoadInLoopDetector,  # type: ignore[list-item]
     # Phase 7b — centrality-gated moat markers.
     NestedLoopWithIoDetector,  # type: ignore[list-item]
     NestedLoopQuadraticDetector,  # type: ignore[list-item]

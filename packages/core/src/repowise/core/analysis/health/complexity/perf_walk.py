@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
 from ..perf.io_boundaries import collect_io_names
+from ..perf.loop_facts import LoopFacts
 from .ast_utils import _dart_signature_sibling, _find_name
 from .languages import LanguageNodeMap
 from .models import PerfFnFacts, PerfHit
@@ -93,23 +94,6 @@ _HOT_PATH_SINK_KINDS = frozenset({"subprocess", "filesystem"})
 # (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
 _LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement", "do_block"})
 
-# Non-semantic wrapper nodes tree-sitter inserts between a ``call`` and its
-# enclosing ``await`` — parenthesising an awaited call (``await (foo())``) adds a
-# ``parenthesized_expression`` hop, so the immediate-parent ``await`` check would
-# miss it and wrongly read the call as un-awaited. Walk up through these before
-# testing for ``await``.
-_AWAIT_WRAPPER_KINDS = frozenset({"parenthesized_expression"})
-
-
-def _is_awaited(node: Node) -> bool:
-    """Whether ``node`` is (transitively, through parenthesising wrappers) the
-    operand of an ``await``. Mirrors the old immediate-parent substring test but
-    first skips non-semantic wrappers so ``await (foo())`` reads as awaited."""
-    parent = node.parent
-    while parent is not None and parent.type in _AWAIT_WRAPPER_KINDS:
-        parent = parent.parent
-    return parent is not None and "await" in parent.type
-
 
 def _perf_func_name(node: Node) -> str | None:
     if node.type == "function_body":
@@ -153,18 +137,24 @@ def _enclosing_loop_iterables(
     return names
 
 
-def _in_chunked_loop(
+def _enclosing_loops(
     node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
-) -> bool:
-    """Whether the innermost enclosing loop chunks; walked up only for rare sink hits."""
+) -> list[Node]:
+    """The data-dependent loops around *node* in its function, innermost first;
+    walked up only for hits."""
+    loops: list[Node] = []
     cur = node.parent
     for _ in range(64):
         if cur is None or cur.type in fn_kinds:
-            return False
-        if cur.type in loop_kinds and cur.is_named:
-            return dialect.is_chunked_loop(cur)
+            break
+        if cur.type in loop_kinds and cur.is_named and not dialect.is_constant_loop(cur):
+            loops.append(cur)
         cur = cur.parent
-    return False
+    return loops
+
+
+def _overrides(dialect: BasePerfDialect, hook: str) -> bool:
+    return getattr(type(dialect), hook) is not getattr(BasePerfDialectClass, hook)
 
 
 def _is_block_loop_body_scope(
@@ -246,15 +236,50 @@ def _collect_perf_hits(
     bare_call_wrapper_kinds = lmap.bare_call_wrapper_kinds
     # Block-iteration loops (Ruby ``items.each do … end``): only pay for the
     # per-call-node hook when the dialect actually overrides it.
-    do_block_loop = type(dialect).block_loop_body is not BasePerfDialectClass.block_loop_body
+    do_block_loop = _overrides(dialect, "block_loop_body")
     # Parenless calls (Pascal ``Q.Open;``): only probe a bare-call wrapper
     # (``statement``) when the dialect actually overrides the hook, same
     # pay-for-what-you-use posture as ``do_block_loop``.
     do_bare_stmt_call = (
         bool(bare_call_wrapper_kinds)
-        and type(dialect).bare_statement_call is not BasePerfDialectClass.bare_statement_call
+        and _overrides(dialect, "bare_statement_call")
     )
-    do_chunked = type(dialect).is_chunked_loop is not BasePerfDialectClass.is_chunked_loop
+    do_chunked = _overrides(dialect, "is_chunked_loop")
+    do_magnitude = _overrides(dialect, "loop_magnitude")
+    do_batch = _overrides(dialect, "batch_form")
+    do_bound = _overrides(dialect, "concurrency_bound")
+    do_loop_facts = do_chunked or do_magnitude or do_batch or do_bound
+
+    do_in_place = _overrides(dialect, "runs_in_place")
+
+    def probe(call: Node) -> str | None:
+        return dialect.call_sink_kind(
+            call, awaited=dialect.is_awaited(call), io_names=io_names, has_db_import=has_db_import
+        )
+
+    def magnitude(loops: list[Node]) -> str:
+        """Grows if any enclosing loop grows; bounded only if every one is, since a
+        retry loop inside a loop over rows still runs once per row."""
+        found = {dialect.loop_magnitude(loop, probe) or "unknown" for loop in loops}
+        if "grows_with_data" in found:
+            return "grows_with_data"
+        return "bounded" if found == {"bounded"} else "unknown"
+
+    def loop_facts(node: Node, sink: bool) -> LoopFacts | None:
+        """Facts of *node*'s innermost loop; batch and bound only mean something at a sink."""
+        if not do_loop_facts:
+            return None
+        loops = _enclosing_loops(node, dialect, loop_kinds, fn_kinds)
+        if not loops:
+            return None
+        loop = loops[0]
+        facts = LoopFacts(
+            chunked=do_chunked and dialect.is_chunked_loop(loop),
+            magnitude=magnitude(loops) if do_magnitude else "unknown",
+            batch=dialect.batch_form(node, loop, probe) if sink and do_batch else None,
+            concurrency_bound=dialect.concurrency_bound(node, loop) if sink and do_bound else None,
+        )
+        return facts if facts != LoopFacts() else None
 
     hits: list[PerfHit] = []
     # Per-enclosing-function accumulators keyed by the function's start line
@@ -270,6 +295,8 @@ def _collect_perf_hits(
     fn_acc: dict[
         int, tuple[str | None, dict[str, int], dict[str, int], list[str | None], list]
     ] = {}
+    # func_start -> {call_line: facts} for the loop-call targets above.
+    call_facts: dict[int, dict[int, LoopFacts]] = {}
 
     def _acc(
         func_start: int, func_name: str | None
@@ -319,9 +346,11 @@ def _collect_perf_hits(
         # inline invocation, so those are cleared too — accepted (favouring
         # precision), and the Go IIFE case is the idiomatic defer-in-loop fix.
         # …except the lambda a block-iteration combinator passes as its body,
-        # which runs per element rather than later (Kotlin ``ids.forEach { … }``).
-        body_scope = (
-            entering_fn and do_block_loop and _is_block_loop_body_scope(node, dialect, call_kinds)
+        # which runs per element rather than later (Kotlin ``ids.forEach { … }``),
+        # and a closure the dialect proves runs in place (an awaited limiter call).
+        body_scope = entering_fn and (
+            (do_block_loop and _is_block_loop_body_scope(node, dialect, call_kinds))
+            or (do_in_place and dialect.runs_in_place(node))
         )
         next_loop_depth = loop_depth if (body_scope or not entering_fn) else 0
         next_lock_depth = lock_depth if (body_scope or not entering_fn) else 0
@@ -372,7 +401,7 @@ def _collect_perf_hits(
         if call_node is not None:
             method = dialect.callee_method_name(call_node) or ""
             root_name = dialect.callee_root_name(call_node) or ""
-            awaited = _is_awaited(call_node)
+            awaited = dialect.is_awaited(call_node)
             line = call_node.start_point[0] + 1
             if do_bare_call_marker:
                 # A call that is its own iteration construct (``.reduce`` with an
@@ -380,22 +409,14 @@ def _collect_perf_hits(
                 bare = dialect.bare_call_marker(root_name, method, call_node)
                 if bare is not None:
                     hits.append(PerfHit(bare, line, next_func, "", func_start=next_start))
-            kind = dialect.sink_kind(
-                root_name,
-                method,
-                awaited=awaited,
-                is_attribute=dialect.callee_is_attribute(call_node),
-                io_names=io_names,
-                has_db_import=has_db_import,
+            kind = dialect.call_sink_kind(
+                call_node, awaited=awaited, io_names=io_names, has_db_import=has_db_import
             )
             if kind is not None:
                 if loop_depth >= 1:
-                    chunked = do_chunked and _in_chunked_loop(node, dialect, loop_kinds, fn_kinds)
+                    facts = loop_facts(call_node, sink=True)
                     hits.append(
-                        PerfHit(
-                            "io_in_loop", line, next_func, kind, func_start=next_start,
-                            chunked=chunked,
-                        )
+                        PerfHit("io_in_loop", line, next_func, kind, func_start=next_start, loop=facts)
                     )
                     if do_serial_await and awaited:
                         # An *awaited* sink in a loop body is additionally a
@@ -406,7 +427,7 @@ def _collect_perf_hits(
                         hits.append(
                             PerfHit(
                                 "serial_await_in_loop", line, next_func, kind,
-                                func_start=next_start, chunked=chunked,
+                                func_start=next_start, loop=facts,
                             )
                         )
                     if do_nested_io and loop_depth >= 2 and outer_iter:
@@ -420,7 +441,7 @@ def _collect_perf_hits(
                         hits.append(
                             PerfHit(
                                 "nested_loop_with_io", line, next_func, kind,
-                                func_start=next_start, chunked=chunked,
+                                func_start=next_start, loop=facts,
                             )
                         )
                 else:
@@ -464,7 +485,12 @@ def _collect_perf_hits(
                         else None
                     )
                     if marker is not None:
-                        hits.append(PerfHit(marker, line, next_func, "", func_start=next_start))
+                        hits.append(
+                            PerfHit(
+                                marker, line, next_func, "", func_start=next_start,
+                                loop=loop_facts(call_node, sink=False),
+                            )
+                        )
                     elif method:
                         # A loop-nested call to a non-sink helper: a candidate
                         # entry for cross-function reachability (PR4). Keep the
@@ -472,6 +498,9 @@ def _collect_perf_hits(
                         targets = _acc(next_start, next_func)[0]
                         if method not in targets:
                             targets[method] = line
+                            facts = loop_facts(call_node, sink=False)
+                            if facts is not None:
+                                call_facts.setdefault(next_start, {})[line] = facts
                 if do_lock_io and lock_depth >= 1 and method:
                     # A non-sink call under a held lock: a candidate entry for the
                     # cross-function ``blocking_io_under_lock`` reachability pass.
@@ -509,6 +538,7 @@ def _collect_perf_hits(
                             next_func,
                             "",
                             func_start=next_start,
+                            loop=loop_facts(node, sink=False),
                         )
                     )
                 elif do_loop_stmt_marker:
@@ -521,6 +551,7 @@ def _collect_perf_hits(
                                 next_func,
                                 "",
                                 func_start=next_start,
+                                loop=loop_facts(node, sink=False),
                             )
                         )
 
@@ -605,6 +636,7 @@ def _collect_perf_hits(
             nested_loop_line=misc[0],
             blocking_sink_kind=misc[1],
             blocking_sink_line=misc[2],
+            loop_call_facts=tuple(sorted(call_facts.get(start, {}).items())),
         )
         for start, (name, loop_targets, lock_targets, sink, misc) in fn_acc.items()
         if (loop_targets or lock_targets or sink[0] is not None or misc[0] or misc[1] is not None)

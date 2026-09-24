@@ -1,0 +1,297 @@
+{
+  "items": [
+    {
+      "id": "health-src/core.py",
+      "type": "health_finding",
+      "title": "src/core.py",
+      "description": "2 findings \u00b7 9.5 deducted",
+      "severity": "critical",
+      "target_id": "src/core.py",
+      "subtype": "god_class",
+      "weight": 9.5
+    },
+    {
+      "id": "security-1",
+      "type": "security_finding",
+      "title": "config/settings.py",
+      "description": "aws_access_key",
+      "severity": "high",
+      "target_id": "config/settings.py",
+      "subtype": "aws_access_key",
+      "weight": 1.0
+    },
+    {
+      "weight": 8.0,
+      "id": "stale-d-stale-1",
+      "type": "stale_decision",
+      "title": "Use SQLite for the local store",
+      "description": "Active decision drifting from the code it governs",
+      "severity": "high",
+      "target_id": "d-stale-1"
+    },
+    {
+      "id": "security-2",
+      "type": "security_finding",
+      "title": "old/keys.py",
+      "description": "hardcoded_secret in commit abcdef1",
+      "severity": "high",
+      "target_id": "old/keys.py",
+      "subtype": "hardcoded_secret",
+      "weight": 0.0
+    },
+    {
+      "weight": 7.0,
+      "id": "stale-d-stale-2",
+      "type": "stale_decision",
+      "title": "One worker per repo",
+      "description": "Active decision drifting from the code it governs",
+      "severity": "high",
+      "target_id": "d-stale-2"
+    },
+    {
+      "id": "refactor-ref1",
+      "type": "refactoring",
+      "title": "Engine.run",
+      "description": "+1.8 health, M effort \u00b7 src/core.py",
+      "severity": "medium",
+      "target_id": "src/core.py",
+      "subtype": "extract_method",
+      "weight": 1.8
+    },
+    {
+      "weight": 8.0,
+      "id": "ungoverned-src/core.py",
+      "type": "ungoverned_hotspot",
+      "title": "src/core.py",
+      "description": "High-churn file with no governing decision",
+      "severity": "medium",
+      "target_id": "src/core.py"
+    },
+    {
+      "id": "drift-1",
+      "type": "doc_drift",
+      "title": "README.md",
+      "description": "names a file that is not in the tree",
+      "severity": "medium",
+      "target_id": "README.md",
+      "subtype": "missing_path",
+      "weight": 0.95
+    },
+    {
+      "weight": 8.0,
+      "id": "proposed-d-prop-1",
+      "type": "proposed_decision",
+      "title": "Cache the graph",
+      "description": "Auto-proposed decision awaiting review",
+      "severity": "medium",
+      "target_id": "d-prop-1"
+    },
+    {
+      "id": "silo-src/core.py",
+      "type": "knowledge_silo",
+      "title": "src/core.py",
+      "description": "90% single-owner concentration, 25 commits in 90d",
+      "severity": "medium",
+      "target_id": "src/core.py",
+      "weight": 25.9
+    },
+    {
+      "weight": 7.0,
+      "id": "ungoverned-src/api.py",
+      "type": "ungoverned_hotspot",
+      "title": "src/api.py",
+      "description": "High-churn file with no governing decision",
+      "severity": "medium",
+      "target_id": "src/api.py"
+    },
+    {
+      "id": "silo-docker/entry.sh",
+      "type": "knowledge_silo",
+      "title": "docker/entry.sh",
+      "description": "100% single-owner concentration, not touched in 90 days",
+      "severity": "medium",
+      "target_id": "docker/entry.sh",
+      "weight": 1.0
+    },
+    {
+      "id": "security-3",
+      "type": "security_finding",
+      "title": "src/run.py",
+      "description": "eval_call",
+      "severity": "low",
+      "target_id": "src/run.py",
+      "subtype": "eval_call",
+      "weight": 1.0
+    },
+    {
+      "id": "health-src/util.py",
+      "type": "health_finding",
+      "title": "src/util.py",
+      "description": "1 finding \u00b7 3.0 deducted",
+      "severity": "low",
+      "target_id": "src/util.py",
+      "subtype": "nested_complexity",
+      "weight": 3.0
+    },
+    {
+      "id": "refactor-ref2",
+      "type": "refactoring",
+      "title": "src/util.py",
+      "description": "+0.6 health \u00b7 src/util.py",
+      "severity": "low",
+      "target_id": "src/util.py",
+      "subtype": "split_class",
+      "weight": 0.6
+    },
+    {
+      "id": "drift-2",
+      "type": "doc_drift",
+      "title": "docs/setup.md",
+      "description": "missing_symbol no longer matches the tree",
+      "severity": "low",
+      "target_id": "docs/setup.md",
+      "subtype": "missing_symbol",
+      "weight": 0.5
+    },
+    {
+      "id": "dead-dead1",
+      "type": "dead_code",
+      "title": "old_helper",
+      "description": "Unreachable function (12 lines)",
+      "severity": "low",
+      "target_id": "src/legacy.py",
+      "subtype": "unused_export",
+      "weight": 0.9
+    },
+    {
+      "id": "health-src/tiny.py",
+      "type": "health_finding",
+      "title": "src/tiny.py",
+      "description": "1 finding \u00b7 0.4 deducted",
+      "severity": "low",
+      "target_id": "src/tiny.py",
+      "subtype": "long_method",
+      "weight": 0.4
+    },
+    {
+      "id": "dead-dead2",
+      "type": "dead_code",
+      "title": "src/orphan.py",
+      "description": "Unreachable symbol (40 lines)",
+      "severity": "low",
+      "target_id": "src/orphan.py",
+      "subtype": "unreachable_file",
+      "weight": 0.7
+    }
+  ],
+  "total": 20,
+  "by_source": {
+    "health_finding": 4,
+    "security_finding": 3,
+    "refactoring": 2,
+    "doc_drift": 2,
+    "dead_code": 2,
+    "decisions": 5,
+    "knowledge_silo": 2
+  },
+  "areas": [
+    {
+      "key": "security",
+      "total": 3,
+      "severity": "high",
+      "detail": "2 in the working tree, 1 in git history",
+      "lead": {
+        "title": "config/settings.py",
+        "description": "aws_access_key",
+        "type": "security_finding",
+        "target_id": "config/settings.py",
+        "subtype": "aws_access_key",
+        "severity": "high"
+      }
+    },
+    {
+      "key": "health",
+      "total": 4,
+      "severity": "critical",
+      "detail": "",
+      "lead": {
+        "title": "src/core.py",
+        "description": "2 findings \u00b7 9.5 deducted",
+        "type": "health_finding",
+        "target_id": "src/core.py",
+        "subtype": "god_class",
+        "severity": "critical"
+      }
+    },
+    {
+      "key": "refactoring",
+      "total": 2,
+      "severity": "medium",
+      "detail": "",
+      "lead": {
+        "title": "Engine.run",
+        "description": "+1.8 health, M effort \u00b7 src/core.py",
+        "type": "refactoring",
+        "target_id": "src/core.py",
+        "subtype": "extract_method",
+        "severity": "medium"
+      }
+    },
+    {
+      "key": "doc_drift",
+      "total": 2,
+      "severity": "medium",
+      "detail": "",
+      "lead": {
+        "title": "README.md",
+        "description": "names a file that is not in the tree",
+        "type": "doc_drift",
+        "target_id": "README.md",
+        "subtype": "missing_path",
+        "severity": "medium"
+      }
+    },
+    {
+      "key": "decisions",
+      "total": 5,
+      "severity": "high",
+      "detail": "2 drifting from the code \u00b7 1 awaiting review \u00b7 2 hotspots ungoverned",
+      "lead": {
+        "title": "Use SQLite for the local store",
+        "description": "Active decision drifting from the code it governs",
+        "type": "stale_decision",
+        "target_id": "d-stale-1",
+        "subtype": null,
+        "severity": "high"
+      }
+    },
+    {
+      "key": "ownership",
+      "total": 2,
+      "severity": "medium",
+      "detail": "",
+      "lead": {
+        "title": "src/core.py",
+        "description": "90% single-owner concentration, 25 commits in 90d",
+        "type": "knowledge_silo",
+        "target_id": "src/core.py",
+        "subtype": null,
+        "severity": "medium"
+      }
+    },
+    {
+      "key": "dead_code",
+      "total": 2,
+      "severity": "low",
+      "detail": "",
+      "lead": {
+        "title": "old_helper",
+        "description": "Unreachable function (12 lines)",
+        "type": "dead_code",
+        "target_id": "src/legacy.py",
+        "subtype": "unused_export",
+        "severity": "low"
+      }
+    }
+  ]
+}

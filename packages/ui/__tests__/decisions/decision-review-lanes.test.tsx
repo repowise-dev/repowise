@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import {
   DECISION_LANES,
@@ -6,11 +6,6 @@ import {
   type DecisionLane,
 } from "../../src/decisions/decision-review-lanes";
 import type { DecisionRecord } from "@repowise-dev/types/decisions";
-
-// jsdom has no scrollIntoView; `ViewTabs` keeps the active tab in view on mount.
-beforeAll(() => {
-  Element.prototype.scrollIntoView = vi.fn();
-});
 
 function record(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
   return {

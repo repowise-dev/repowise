@@ -84,6 +84,7 @@ def opportunity_details(
         "rank_factors": dict(opportunity.rank_factors),
         "why_ranked": [dict(entry) for entry in opportunity.why_ranked],
         "fix_rationale": opportunity.fix.rationale if opportunity.fix else None,
+        **({"fix_api": opportunity.fix.api} if opportunity.fix and opportunity.fix.api else {}),
         "siblings": [dict(entry) for entry in opportunity.siblings],
     }
 
@@ -136,6 +137,8 @@ def _summary_payload(
     plans: dict[str, dict[str, Any]] | None = None,
 ) -> dict:
     """The compact current headline, written once and read by primary key."""
+    from ....analysis.health.perf.opportunity_rank import NON_LEADING_MARKERS
+
     counts: dict[str, int] = {}
     contexts: dict[str, int] = {}
     boundaries: dict[str, int] = {}
@@ -144,7 +147,16 @@ def _summary_payload(
         contexts[item.execution_context] = contexts.get(item.execution_context, 0) + 1
         key = item.boundary_kind or "none"
         boundaries[key] = boundaries.get(key, 0) + 1
-    lead = opportunities[0] if opportunities else None
+    # ``expected`` rows rank last and offer nothing to do, so they never lead; nor does a
+    # marker whose measured precision is below the bar for leading.
+    lead = next(
+        (
+            o
+            for o in opportunities
+            if o.actionability_state != "expected" and o.biomarker_type not in NON_LEADING_MARKERS
+        ),
+        None,
+    )
     return {
         "actionability": counts,
         "context": contexts,
@@ -422,7 +434,7 @@ def _predicates(
     contexts: frozenset[str] | None,
     boundary: str | None,
     confidence: str | None,
-    actionability: str | None,
+    actionabilities: frozenset[str] | None,
     file_paths: tuple[str, ...] | None,
 ) -> list[Any]:
     where: list[Any] = [
@@ -439,8 +451,8 @@ def _predicates(
         )
     if confidence is not None:
         where.append(PerformanceOpportunity.evidence_confidence == confidence)
-    if actionability is not None:
-        where.append(PerformanceOpportunity.actionability_state == actionability)
+    if actionabilities is not None:
+        where.append(PerformanceOpportunity.actionability_state.in_(sorted(actionabilities)))
     if file_paths is not None:
         where.append(PerformanceOpportunity.file_path.in_(list(file_paths)))
     return where
@@ -471,7 +483,7 @@ async def list_performance_opportunities(
     contexts: frozenset[str] | None = None,
     boundary: str | None = None,
     confidence: str | None = None,
-    actionability: str | None = None,
+    actionabilities: frozenset[str] | None = None,
     file_paths: tuple[str, ...] | None = None,
     sort: str = "rank",
     limit: int = 20,
@@ -487,7 +499,7 @@ async def list_performance_opportunities(
         contexts=contexts,
         boundary=boundary,
         confidence=confidence,
-        actionability=actionability,
+        actionabilities=actionabilities,
         file_paths=file_paths,
     )
     total = int(
@@ -530,7 +542,7 @@ async def performance_facet_counts(
         contexts=None,
         boundary=None,
         confidence=None,
-        actionability=None,
+        actionabilities=None,
         file_paths=file_paths,
     )
     result = await session.execute(
@@ -554,8 +566,8 @@ async def performance_facet_counts(
     return [tuple(row) for row in result.all()]
 
 
-_ACTIONABILITY_STATES = ("plan_ready", "advisory", "investigate")
-"""The states a rollup breaks down. Named, so a fourth cannot vanish silently."""
+_ACTIONABILITY_STATES = ("plan_ready", "advisory", "investigate", "expected")
+"""The states a rollup breaks down. Named, so a fifth cannot vanish silently."""
 
 
 class PerformanceFileRollup(NamedTuple):
@@ -567,6 +579,7 @@ class PerformanceFileRollup(NamedTuple):
     plan_ready: int
     advisory: int
     investigate: int
+    expected: int
     best_rank: int
     """Lowest ``rank_position`` on the file, so a map can rank files by cause."""
 
@@ -590,7 +603,7 @@ async def performance_file_rollups(
         contexts=None,
         boundary=None,
         confidence=None,
-        actionability=None,
+        actionabilities=None,
         file_paths=file_paths,
     )
     result = await session.execute(
@@ -619,6 +632,7 @@ async def performance_file_rollups(
                 "plan_ready": 0,
                 "advisory": 0,
                 "investigate": 0,
+                "expected": 0,
                 "best_rank": best_rank or 0,
             },
         )
@@ -635,6 +649,7 @@ async def performance_file_rollups(
             plan_ready=row["plan_ready"],
             advisory=row["advisory"],
             investigate=row["investigate"],
+            expected=row["expected"],
             best_rank=row["best_rank"],
         )
         for path, row in folded.items()

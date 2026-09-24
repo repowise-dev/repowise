@@ -187,6 +187,60 @@ async def test_the_queue_filters_before_it_caps(setup_mcp, materialized):
 
 
 @pytest.mark.asyncio
+async def test_performance_actionability_threads_through_and_defaults_off_expected(
+    setup_mcp, session, materialized
+):
+    """``performance_actionability`` reaches the service like the other filters,
+    and an unfiltered call still excludes ``expected`` (see performance_health's
+    default queue)."""
+    from repowise.server.mcp_server import get_health
+
+    session.add(
+        HealthFinding(
+            id=str(uuid.uuid4()),
+            repository_id=materialized,
+            file_path="src/fs.py",
+            biomarker_type="io_in_loop",
+            severity="medium",
+            function_name="run",
+            line_start=1,
+            line_end=1,
+            details_json=json.dumps(
+                {
+                    "boundary_kind": "filesystem",
+                    "cross_function": True,
+                    "path": ["src/fs.py::run", "src/fs.py::read"],
+                    "resolution_basis": "reliable-edge",
+                }
+            ),
+            health_impact=0.0,
+            reason="A file is read for every loop iteration.",
+            dimension="performance",
+            status="open",
+        )
+    )
+    await session.flush()
+    await finalize_performance_opportunities(session, materialized, analyzed_commit="d" * 40)
+    await session.commit()
+
+    default = await get_health(
+        include=["performance"], only=["performance_opportunities"]
+    )
+    assert all(
+        item["actionability_state"] != "expected"
+        for item in default["performance_opportunities"]
+    )
+
+    expected_only = await get_health(
+        include=["performance"],
+        only=["performance_opportunities"],
+        performance_actionability="expected",
+    )
+    assert expected_only["performance_opportunities_total"] == 1
+    assert expected_only["performance_opportunities"][0]["actionability_state"] == "expected"
+
+
+@pytest.mark.asyncio
 async def test_an_unrecognized_filter_value_is_named_not_silently_empty(
     setup_mcp, materialized
 ):

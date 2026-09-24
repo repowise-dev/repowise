@@ -11,8 +11,10 @@ cannot mean one thing in the database and another on the wire.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 __all__ = [
     "ACCEPTANCE_ACTIONS",
@@ -39,8 +41,14 @@ __all__ = [
     "currency_for_legacy_status",
     "effective_currency",
     "is_governing",
+    "is_repo_wide",
     "legacy_status_for_currency",
     "machine_grant_blocker",
+    "named_scope",
+    "record_blockers",
+    "record_evidence",
+    "record_scope",
+    "requirement",
     "status_rank",
 ]
 
@@ -322,6 +330,112 @@ def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     if not req.accepter.strip() and not req.artifact.strip():
         blockers.append("no accepter or tracked-artifact identity")
     return blockers
+
+
+# The readers below take a mapping keyed ``affected_files``, ``affected_modules``,
+# ``kind``, ``rationale``, ``context``, ``source``, ``evidence_commits``,
+# ``evidence_file``; list fields may be stored JSON text. ORM rows go through
+# ``crud.authority.decision_fields``.
+
+
+def _str_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value or "[]")
+        except (TypeError, ValueError):
+            return []
+        return [str(v) for v in parsed] if isinstance(parsed, list) else []
+    return [str(v) for v in (value or [])]
+
+
+def _non_blank(values: list[str]) -> list[str]:
+    return [v for v in values if v and v.strip()]
+
+
+def _first_non_blank(*values: str | None) -> str:
+    return next((v for v in values if v and v.strip()), "")
+
+
+def named_scope(rec: Mapping[str, Any]) -> list[str]:
+    """The files or modules *rec* actually names, blanks dropped."""
+    # Blank entries fall through to the modules rather than short-circuiting on
+    # them, so this agrees with the TypeScript mirror about a whitespace path.
+    return _non_blank(_str_list(rec.get("affected_files"))) or _non_blank(
+        _str_list(rec.get("affected_modules"))
+    )
+
+
+def is_repo_wide(rec: Mapping[str, Any]) -> bool:
+    """Whether *rec* governs the repository as a whole rather than part of it.
+
+    Both halves are needed. An agreement that names files has been given a real
+    scope by something, and the ordinary rules apply to it: the noun says the
+    record is *allowed* to name nothing, not that anything it does name should
+    be ignored. Keying this off the kind alone would take a record with real
+    files out of staleness checking for good, and the classifier is a regex
+    with a measured false-positive rate.
+    """
+    return rec.get("kind") == AGREEMENT_KIND and not named_scope(rec)
+
+
+def record_scope(rec: Mapping[str, Any]) -> list[str]:
+    """What *rec* claims to govern, for every reader of the contract.
+
+    An agreement naming no file governs the repository rather than part of it,
+    so it reports that scope instead of an empty one. The acceptance contract,
+    the review flag and the currency all read this, and those three disagreeing
+    about what an agreement governs is the failure this exists to prevent.
+    """
+    return named_scope(rec) or (
+        [AGREEMENT_SCOPE] if rec.get("kind") == AGREEMENT_KIND else []
+    )
+
+
+def record_evidence(rec: Mapping[str, Any]) -> list[str]:
+    """The evidence references *rec* already carries."""
+    evidence = _str_list(rec.get("evidence_commits"))
+    if rec.get("evidence_file"):
+        evidence.append(rec["evidence_file"])
+    return evidence
+
+
+def requirement(
+    rec: Mapping[str, Any],
+    *,
+    reason: str = "",
+    scope: list[str] | None = None,
+    evidence: list[str] | None = None,
+    accepter: str = "",
+    artifact: str = "",
+) -> AcceptanceRequirement:
+    """What the acceptance contract would be asked to take for *rec*."""
+    # A record somebody typed is its own provenance: the accepter did not read
+    # an inference, they wrote the claim. Everything mined from a transcript, a
+    # commit or a document still has to say what it rests on.
+    self_authored = rec.get("source") == "cli" and bool(accepter.strip())
+    resolved_evidence = evidence if evidence is not None else record_evidence(rec)
+    if not resolved_evidence and self_authored:
+        resolved_evidence = [f"accepted by {accepter}"]
+    # The why comes from `rationale` or `context` ("what forced this decision?"),
+    # never from `decision`, which is the what.
+    return AcceptanceRequirement(
+        reason=_first_non_blank(reason, rec.get("rationale"), rec.get("context")),
+        scope=scope if scope is not None else record_scope(rec),
+        evidence=resolved_evidence,
+        accepter=accepter,
+        artifact=artifact,
+        self_authored=self_authored,
+    )
+
+
+def record_blockers(rec: Mapping[str, Any]) -> list[str]:
+    """Why the contract would refuse *rec* as it stands, empty if it would not.
+
+    The accepter and artifact are what a reviewer supplies at the moment they
+    act, so this asks with an identity in hand: what is left is what a person
+    has to go and fill in first.
+    """
+    return acceptance_blockers(requirement(rec, accepter="reviewer"))
 
 
 #: How the pre-split ``decision_records.status`` column maps onto currency, and

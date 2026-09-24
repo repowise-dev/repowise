@@ -4,7 +4,7 @@ Repowise records a small set of security signals while it indexes: pattern
 matches over source text, and symbol names that look security-relevant. Pure
 regex and SQL, no LLM calls, no network, no dependency resolution.
 
-This is a floor, not a scanner. The registry holds sixteen patterns. It has no
+This is a floor, not a scanner. The registry holds twenty-two patterns. It has no
 model of your framework, no notion of which inputs are attacker-controlled, and
 no dataflow: it cannot tell a parameterised query from a concatenated one beyond
 what the surrounding characters give away, and it cannot tell whether a
@@ -44,9 +44,9 @@ Findings also appear on the Security tab of the code-health page, and at
 
 ## What the registry catches
 
-Sixteen patterns plus a symbol-name scan, giving seventeen kinds across three
-severities. Severity is a fixed property of the pattern; nothing is scored,
-ranked, or aggregated.
+Twenty-two patterns plus a symbol-name scan, giving twenty-three kinds across
+three severities. Severity is a fixed property of the pattern; nothing is
+scored, ranked, or aggregated.
 
 | Kind | Severity | Matches |
 |------|----------|---------|
@@ -56,7 +56,13 @@ ranked, or aggregated.
 | `subprocess_shell_true` | high | `subprocess.*` with `shell=True`, including across physical lines |
 | `os_system` | high | `os.system` |
 | `hardcoded_password` | high | an assignment of a quoted literal to a name containing `password`, any case |
-| `hardcoded_secret` | high | the same for `api_key`, `apikey` or `secret` |
+| `hardcoded_secret` | high | the same for a name containing `api_key`, `apikey`, `secret`, `token` or `access_key`. A snake_case value (a constant holding a key's name) or a template placeholder (`{{ ... }}`, `${...}`) is skipped, and a value one of the vendor kinds below already reports is not reported twice |
+| `aws_access_key` | high | an AWS access key ID (`AKIA`/`ASIA` + 16 chars), regardless of variable name |
+| `github_token` | high | a GitHub PAT, OAuth, app, or refresh token (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_`), regardless of variable name |
+| `slack_token` | high | a Slack token (`xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, `xoxs-`), regardless of variable name |
+| `google_api_key` | high | a Google API key (`AIza` + 35 chars), regardless of variable name, but not from the middle of a base64 run such as a lockfile integrity hash |
+| `stripe_key` | high | a Stripe secret or restricted key (`sk_` or `rk_`, then `live_`, `test_` or `prod_`), regardless of variable name. Publishable `pk_` keys are public by design and do not fire |
+| `private_key_pem` | high | a PEM header (`-----BEGIN ... PRIVATE KEY-----`) followed by a base64-looking body line, so assembling just the header string does not fire. The break may be an escaped `\n`, which catches keys held on one line in JSON or `.env` files |
 | `fstring_sql` | med | an f-string containing `SELECT` and an interpolation |
 | `concat_sql` | med | `.execute("SELECT ... +` |
 | `tls_verify_false` | med | `verify = False` |
@@ -83,7 +89,8 @@ searched in raw source because the module usually arrives as a string literal
 that masking would blank. Every other pattern in the table is a plain regex over
 one line of raw source, comments included.
 
-**One pattern sees across lines.** `subprocess.run(` opening on one line with
+**Two patterns see across lines.** `private_key_pem` needs the body line after
+its header, and `subprocess.run(` opening on one line with
 `shell=True` several lines down is invisible to a per-line scan, so
 `subprocess_shell_true` gets a second pass over the whole source. Continuation
 is restricted to lines that begin with indentation and capped at roughly 200
@@ -111,11 +118,12 @@ and this layer does not try.
 reaches a dangerous call is not computed. `eval_call` fires the same on a
 constant and on a request parameter.
 
-**Real secret detection.** The two secret patterns match a literal assignment to
-a variable named like a credential, in any case, so the constant spelling a
-pinned credential usually carries is covered. That is the whole of it: they do
-not know entropy, key formats, or provider prefixes, and a credential held in a
-name they do not list is invisible. For secret scanning proper, run gitleaks or
+**Real secret detection.** `hardcoded_password` / `hardcoded_secret` match a
+literal assignment to a variable named like a credential, in any case, and the
+six value-shape kinds above (AWS, GitHub, Slack, Google, Stripe, PEM) catch a
+handful of common vendor formats regardless of variable name. That is still far
+short of a real scanner: no entropy scoring, and any format or provider not in
+that short list is invisible. For secret scanning proper, run gitleaks or
 trufflehog; history mode below is complementary to those, not a replacement.
 
 **Dependencies.** No CVE lookup, no advisory feed, no SBOM. Nothing here looks
@@ -189,8 +197,10 @@ commit that introduced the match. This finds what the working tree cannot: a
 credential committed in March and removed in April is absent from HEAD and
 present in the clone forever.
 
-History mode reports **only `hardcoded_password` and `hardcoded_secret`** by
-default. The reasoning is asymmetry of decay. A commit that once called `eval()`
+History mode reports **only the `SECRET_KINDS` (genuine leaked-credential)
+kinds** by default — `hardcoded_password`, `hardcoded_secret`, and the six
+vendor value-shape kinds above. The reasoning is asymmetry of decay. A commit
+that once called `eval()`
 is history doing what history does — the code changed, that is the point, and
 reporting every such moment across every revision buries the surface in noise. A
 committed secret does not decay. It stays valid until someone rotates it, and
@@ -249,7 +259,8 @@ persistence silently; every other write failure is a real error.
 
 A useful way to read a repo's findings, in order:
 
-1. **Any `hardcoded_secret` or `hardcoded_password` from history mode.** These
+1. **Any `SECRET_KINDS` finding from history mode** (`hardcoded_secret`,
+   `hardcoded_password`, or one of the vendor value-shape kinds). These
    are the findings most likely to be both true and actionable. Rotate first,
    remove from history second.
 2. **The high-severity working-tree kinds**, as a list of places to read rather

@@ -151,6 +151,27 @@ async def test_symbol_name_finding_is_never_relocated_or_withdrawn(
 
 
 @pytest.mark.asyncio
+async def test_masked_credential_snippet_still_locates_its_line(
+    client: AsyncClient, app
+) -> None:
+    """A masked snippet is not verbatim on its line, but the code is still there."""
+    repo = await create_test_repo(client)
+    src = Path(repo["local_path"]) / "app.py"
+    src.write_text("import os\n\nAPI_KEY = 'sk_live_0123456789'\n")
+
+    await _insert(
+        app.state.session_factory,
+        repo["id"],
+        snippet="API_KEY = 'sk_l****'",
+        line_number=1,
+    )
+
+    row = (await client.get(f"/api/repos/{repo['id']}/security")).json()[0]
+    assert row["line_number"] == 3
+    assert row["line_verified"] is True
+
+
+@pytest.mark.asyncio
 async def test_path_outside_the_repo_is_not_read(client: AsyncClient, app) -> None:
     """A finding path is not a licence to read anywhere on disk."""
     repo = await create_test_repo(client)
@@ -216,3 +237,30 @@ async def test_working_tree_finding_has_no_commit_date(client: AsyncClient, app)
     row = (await client.get(f"/api/repos/{repo['id']}/security")).json()[0]
     assert row["found_in_history"] is False
     assert row["commit_at"] is None
+
+
+def test_snippet_cut_inside_a_mask_still_locates_its_line() -> None:
+    from repowise.server.services.security_lines import check_finding_line
+
+    line = 'API_KEY = "sk_live_0123456789"'
+    check = check_finding_line(["", line], 1, 'API_KEY = "sk_l**', "hardcoded_secret")
+    assert check.line_number == 2
+    assert check.verified is True
+
+
+def test_a_literal_star_run_is_matched_verbatim_first() -> None:
+    from repowise.server.services.security_lines import check_finding_line
+
+    snippet = "****md5**** is weak"
+    check = check_finding_line(["x = 1", snippet], 1, snippet, "weak_hash")
+    assert (check.line_number, check.verified) == (2, True)
+
+
+def test_a_short_prefix_before_stars_is_not_a_match() -> None:
+    """A deleted banner must not verify against any line starting with '/'."""
+    from repowise.server.services.security_lines import check_finding_line
+
+    snippet = "/******** md5 helpers ********/"
+    check = check_finding_line(["/* other */", "int x;"], 1, snippet, "weak_hash")
+    assert check.line_number is None
+    assert check.verified is False

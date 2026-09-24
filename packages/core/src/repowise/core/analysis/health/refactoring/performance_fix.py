@@ -26,11 +26,22 @@ _STEPS: dict[str, tuple[str | None, str]] = {
     ),
     "replace_membership_collection": (None, "Build a set once before the loop and probe it"),
     "buffer_string_accumulation": (None, "Accumulate into a list and join once after the loop"),
-    "hoist_loop_invariant_resource": (None, "Construct the resource once before the loop"),
     "shrink_lock_scope": ("Move the I/O in {sink} out of the locked section", ""),
     "push_reduction_into_query": (
         None,
         "Select one row per key in the query instead of reducing all rows here",
+    ),
+}
+# When the fix names the construct it uses, the step says it instead.
+_API_STEPS: dict[str, tuple[str | None, str]] = {
+    "batch_or_prefetch_io": (
+        None,
+        "Collect the keys before the loop and make one call with {api} in place of the "
+        "per-key call",
+    ),
+    "parallelize_independent_awaits": (
+        None,
+        "Run the independent awaits concurrently, each still inside {api}",
     ),
 }
 
@@ -54,9 +65,11 @@ def fix_steps(
     intervention: str | None,
     sink: str | None,
     locations: list[dict[str, object]],
+    api: str | None = None,
 ) -> list[dict[str, object]]:
     """Ordered edits for one plan; mechanical only when the strategy is proven."""
-    intro, per_site = _STEPS.get(strategy, (None, ""))
+    intro, per_site = (_API_STEPS if api else _STEPS).get(strategy, (None, ""))
+    per_site = per_site.format(api=api) if api else per_site
     applicability: Applicability = "mechanical" if safety == "proven" else "judgment"
     steps: list[dict[str, object]] = []
     if intro:
@@ -139,7 +152,9 @@ def _suggestion(
         }
         for item in opportunity.evidence
     ]
-    steps = fix_steps(fix.strategy, fix.safety, intervention, opportunity.terminal_sink, locations)
+    steps = fix_steps(
+        fix.strategy, fix.safety, intervention, opportunity.terminal_sink, locations, fix.api
+    )
     mechanical = sum(step["applicability"] == "mechanical" for step in steps)
     return RefactoringSuggestion(
         refactoring_type="performance_fix",
@@ -151,6 +166,7 @@ def _suggestion(
             "opportunity_id": opportunity.opportunity_id,
             "strategy": fix.strategy,
             "safety": fix.safety,
+            "api": fix.api,
             "intervention_symbol": intervention,
             "affected_locations": locations,
             "affected_locations_total": opportunity.affected_call_sites_total,

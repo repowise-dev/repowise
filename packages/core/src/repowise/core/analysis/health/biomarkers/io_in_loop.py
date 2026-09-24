@@ -96,6 +96,7 @@ class IoInLoopDetector:
                 "cross_function": True,
                 "path": list(hit.path),
                 "resolution_basis": hit.resolution_basis,
+                **hit.loop_facts(),
             },
             reason=(
                 f"{phrasing} is reached once per loop iteration through "

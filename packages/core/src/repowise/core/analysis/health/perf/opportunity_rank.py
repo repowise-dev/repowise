@@ -41,6 +41,8 @@ MULTIPLIER_POINTS = {
     "goroutine_in_unbounded_loop": 4,
     "hot_path_sync_io": 4,
     "unbounded_read_reduced_in_memory": 4,
+    # One round trip per iteration, same shape as io_in_loop.
+    "lazy_load_in_loop": 4,
     # In-loop CPU or allocation: real, and orders below a round-trip.
     "membership_test_against_list_in_loop": 3,
     "string_concat_in_loop": 3,
@@ -62,6 +64,14 @@ both the observation order and the opportunity order read it and a marker
 missing from here would silently take the floor on both.
 """
 
+NON_LEADING_MARKERS = frozenset({"lazy_load_in_loop"})
+"""Markers that rank normally but never lead the performance directive.
+
+``lazy_load_in_loop`` measured 81% on held-out Django (47/58, 2026-09-26), inside the
+80-90% tier whose pre-registered rule is "advisory, never leads". Remove a marker once a
+held-out sample puts it at 90% or above.
+"""
+
 UNKNOWN_MULTIPLIER_POINTS = 1
 """A detector added without a weight under-ranks rather than jumps the queue."""
 
@@ -70,6 +80,9 @@ CROSS_FUNCTION_POINTS = 1
 the loop, so it earns a point that an intra-function hit does not."""
 
 CONTEXT_POINTS = {"production": 3, "tooling": 2, "test": 1, "unknown": 1}
+MAGNITUDE_POINTS = {"grows_with_data": 2, "unknown": 1, "n/a": 1, "bounded": 0}
+"""A loop over a query result is paid again as the data grows; a retry loop or a
+constant-width slice is not. Unknown sits between, so a guess never outranks a fact."""
 PROVENANCE_POINTS = {"call-site": 3, "direct": 3, "reliable-edge": 2, "name-fallback": 0}
 
 AMPLIFICATION = {
@@ -88,12 +101,12 @@ listed and :func:`amplification` supplies the rest. A marker nobody has
 characterised reports ``unknown`` rather than borrowing a neighbour's shape.
 """
 
-ACTIONABILITY_ORDER = {"plan_ready": 0, "advisory": 1, "investigate": 2}
+ACTIONABILITY_ORDER = {"plan_ready": 0, "advisory": 1, "investigate": 2, "expected": 3}
 """Actionable work sorts above evidence, whatever the raw magnitude.
 
 A generic sink accumulates points through sheer volume. Left to the score
 alone it buries every group somebody could act on today, which is the wrong
-lead for both an agent and a person.
+lead for both an agent and a person. ``expected`` is never a lead.
 """
 
 _LEVERAGE_BANDS = ((1, "isolated"), (3, "local"), (9, "shared"))
@@ -127,6 +140,21 @@ def amplification(marker: str) -> str:
     if marker in AMPLIFICATION:
         return AMPLIFICATION[marker]
     return "per_iteration" if marker in MULTIPLIER_POINTS else "unknown"
+
+
+def loop_magnitude(marker: str, details: list[dict[str, Any]]) -> str:
+    """Whether the loop's trip count grows with data, read off every member.
+
+    One member proven to grow is enough to say the cause grows; ``bounded``
+    needs every member. Markers that are not paid per iteration have no loop
+    to measure.
+    """
+    if amplification(marker) not in {"per_iteration", "quadratic"}:
+        return "n/a"
+    values = {detail.get("loop_magnitude", "unknown") for detail in details}
+    if "grows_with_data" in values:
+        return "grows_with_data"
+    return "bounded" if values == {"bounded"} else "unknown"
 
 
 def exposure(reachable: bool | None) -> str:
@@ -177,6 +205,7 @@ def rank_factors(
     reachable: bool | None,
     site_count: int,
     provenance: str,
+    magnitude: str,
 ) -> dict[str, int]:
     """The additive rank terms, published verbatim on every opportunity.
 
@@ -190,6 +219,7 @@ def rank_factors(
         "entry_reachability": 3 if reachable is True else 0,
         "affected_call_sites": min(8, int(log2(site_count + 1) * 2)),
         "provenance": PROVENANCE_POINTS.get(provenance, 0),
+        "loop_magnitude": MAGNITUDE_POINTS[magnitude],
     }
 
 
@@ -230,6 +260,7 @@ __all__ = [
     "BOUNDARY_POINTS",
     "CONTEXT_POINTS",
     "CROSS_FUNCTION_POINTS",
+    "MAGNITUDE_POINTS",
     "MULTIPLIER_POINTS",
     "PROVENANCE_POINTS",
     "UNKNOWN_MULTIPLIER_POINTS",
@@ -239,6 +270,7 @@ __all__ = [
     "dominant_marker",
     "exposure",
     "leverage",
+    "loop_magnitude",
     "observation_rank",
     "rank_factors",
     "rank_sort_key",
