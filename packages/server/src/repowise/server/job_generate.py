@@ -91,11 +91,9 @@ def _ranked_coverage_pct(selection: dict, n_files: int) -> float:
 def _narrow_plan_to_model_written(plan: Any) -> Any:
     """Drop structural pages from a resolved plan so generate writes only prose.
 
-    A generate request resolves against every page type, but a structural page
-    has no model to write it: including it would re-render a template (a no-op
-    that leaves it "unwritten") and inflate the count. Keep only the
-    model-written pages in both the generate set and the cascade fallout, and
-    re-price from what remains. Mirrors the CLI's ``_narrow_to_model_written``.
+    A structural page has no model to write it, so including it would only
+    re-render a template and inflate the count. Mirrors the CLI's
+    ``_narrow_to_model_written``.
     """
     from dataclasses import replace
 
@@ -110,12 +108,9 @@ def _narrow_plan_to_model_written(plan: Any) -> Any:
 def _resolve_generate_scope(config: dict, rehydrated: Any, gen_config: Any) -> Any:
     """Resolve a generate config + rehydrated repo into a :class:`ScopePlan`.
 
-    The one place a ranked coverage seed is built, so the estimate endpoint and
-    the launched job resolve the *identical* page set — the estimate cannot
-    under-quote. A ranked selection runs the core ``build_ranked_seed`` (the same
-    importance model ``repowise init`` uses at that coverage); everything else
-    resolves its intent normally. The plan is then narrowed to the model-written
-    types, so generate works on the concept layer only, mirroring the CLI.
+    The one place a ranked coverage seed is built (with ``repowise init``'s
+    importance model), so the estimate and the job resolve the identical page
+    set. The plan is then narrowed to model-written types, as in the CLI.
     """
     from repowise.core.generation.scope import build_ranked_seed, resolve_scope
 
@@ -209,8 +204,7 @@ async def _run_generate_job(
     if rehydrated is None:
         raise RuntimeError("Repository has no wiki pages yet; run an index first.")
 
-    # Resolve the scope (ranked seed included) through the shared helper so the
-    # job writes exactly what its estimate priced.
+    # The shared helper, so the job writes exactly what its estimate priced.
     plan = _resolve_generate_scope(config, rehydrated, gen_config)
 
     generated_pages: list = []
@@ -225,14 +219,12 @@ async def _run_generate_job(
             plan=plan,
             provider=provider,
             generation_config=gen_config,
-            # The resolved server vector store carries its own embedder, exactly
-            # like the sync path — no separate embedder needed here.
+            # The server vector store carries its own embedder.
             embedder=None,
             vector_store=vector_store,
             fts=fts,
             progress=progress,
-            # The server derives spend from the generated pages' token counts
-            # rather than a per-repo CostTracker, so none is wired here.
+            # Spend comes from the generated pages' token counts.
             cost_tracker=None,
             concurrency=gen_config.max_concurrency,
         )
@@ -266,8 +258,7 @@ async def _run_generate_job(
                 "elapsed_seconds": round(elapsed, 1),
                 "pages_generated": pages_generated,
                 "pages_marked_stale": marked_stale,
-                # Surface requested-but-missing ids on the job record, not just in
-                # logs, so the UI can tell a caller a --page id resolved to nothing.
+                # On the job record so the UI can report an id that resolved to nothing.
                 "unknown_page_ids": list(plan.unknown_page_ids),
             },
             completed_pages=pages_generated - stub_fallbacks,
@@ -276,9 +267,8 @@ async def _run_generate_job(
         )
         total_pages, remaining_templates = await _repo_page_counts(session, repo_id)
 
-    # Keep state.json in step with what the server wrote: the sync baseline, the
-    # page count, and docs_mode — which flips to "llm" only once no template page
-    # remains, mirroring the CLI so a later `repowise update` reads the same mode.
+    # Keep state.json in step, as the CLI does: docs_mode flips to "llm" only
+    # once no template page remains.
     try:
         await asyncio.to_thread(
             _persist_generate_job_state,
@@ -302,10 +292,8 @@ async def _run_generate_job(
 async def _repo_page_counts(session: Any, repo_id: str) -> tuple[int, int]:
     """Return ``(total_pages, remaining_stub_pages)`` for a repo.
 
-    The stub count is scoped to the model-written page types: a structural page
-    is stamped ``template`` forever, so counting every template page would keep
-    the ``docs_mode -> llm`` flip below from ever firing once file pages exist.
-    A remaining stub is a concept/onboarding page a model has not written yet.
+    Stubs count only model-written page types: structural pages stay
+    ``template`` forever and would block the ``docs_mode -> llm`` flip.
     """
     from sqlalchemy import func as sa_func
     from sqlalchemy import select as sa_select

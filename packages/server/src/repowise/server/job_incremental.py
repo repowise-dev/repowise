@@ -60,10 +60,7 @@ async def _incremental_page_regen(
 
         generation_config = _incremental_generation_config(repo_path, job_config, repo_wiki_style)
         assembler = ContextAssembler(generation_config, repo_path=repo_path)
-        # D3: pass the vector store (re-embed re-rendered pages) and prior pages
-        # (reuse an unchanged page instead of re-billing it), matching the CLI
-        # incremental path. Without these, every sync re-billed the repo-wide
-        # pages and dropped them from semantic search.
+        # As in the CLI: re-embed re-rendered pages, reuse unchanged ones.
         generator = PageGenerator(
             llm_client,
             assembler,
@@ -92,11 +89,8 @@ async def _incremental_page_regen(
 
 
 async def _stale_page_ages(session_factory: Any | None, repo_id: str | None) -> dict[str, float]:
-    """Existing stale-page ages, fed into the cascade so a constrained
-    budget spends its LLM calls on the oldest stale pages rather than
-    reordering purely by importance (issues #847 / #851). Keep the DB
-    lookup async; the synchronous Git/graph planning is the unit
-    that belongs in a worker thread."""
+    """Stale-page ages, so a constrained cascade budget reaches the oldest stale
+    pages first (issues #847 / #851)."""
     if session_factory is None or repo_id is None:
         return {}
     try:
@@ -113,8 +107,7 @@ def _incremental_generation_config(repo_path: Path, job_config: dict, repo_wiki_
     """The ``GenerationConfig`` a sync's incremental regeneration runs with."""
     from repowise.core.generation import GenerationConfig
 
-    # Effective style: a per-page override carried in the job config (set by
-    # the regenerate endpoint, D10) wins over the repo's default style.
+    # A per-page style override in the job config wins over the repo default.
     from repowise.core.generation.styles import resolve_style
     from repowise.core.reasoning import resolve_reasoning
     from repowise.core.repo_config import load_repo_config
@@ -127,15 +120,9 @@ def _incremental_generation_config(repo_path: Path, job_config: dict, repo_wiki_
         repo_cfg,
         reasoning=resolve_reasoning(config=repo_cfg),
         wiki_style=effective_style,
-        # Regenerate in the repo's configured output language, not default
-        # English (PageGenerator picks the language up from the config).
         language=repo_cfg.get("language", "en"),
-        # A sync feeds generate_all a parsed_files filtered to the changed
-        # files. Levels 3 and up describe the whole repository from
-        # parsed_files, so without this a one-commit sync would rewrite the
-        # codebase map, module and overview pages from a truncated view (the
-        # D4 shape the CLI update path already fixed). Stop the ladder after
-        # level 2 and leave the repo-wide pages for a full run.
+        # parsed_files holds only the changed files, so repo-wide pages
+        # (level 3 and up) would be written from a truncated view.
         file_pages_only=True,
     )
 
@@ -148,10 +135,8 @@ def _plan_incremental_page_regen(
 ) -> tuple[list[Any], dict[str, Any], int, int, int] | None:
     """Build an incremental regeneration plan without blocking the event loop.
 
-    The caller runs this synchronous unit in a worker thread. Keeping the Git
-    command, GitPython-backed ``ChangeDetector``, graph ranking, and related
-    filesystem reads together avoids moving only the cheapest operation while
-    leaving the rest of change detection on the async server thread.
+    The caller runs this whole synchronous unit (git, ``ChangeDetector``, graph
+    ranking) in a worker thread.
     """
     base_ref = _load_state(repo_path).get("last_sync_commit") or job_config.get("before")
     if not base_ref:
