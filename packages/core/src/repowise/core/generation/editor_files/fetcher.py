@@ -20,6 +20,7 @@ from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
 from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
+from repowise.core.generation.declared_glossary import load_declared_glossary
 from repowise.core.generation.entry_points import rank_entry_points
 from repowise.core.index_scope import load_index_scope, resolve_index_scope
 from repowise.core.persistence import crud
@@ -33,6 +34,7 @@ from repowise.core.persistence.models import (
 )
 
 from .data import (
+    CanonicalTerm,
     CodeHealthBlock,
     DecisionSummary,
     EditorFileData,
@@ -48,6 +50,13 @@ _MAX_MODULES = 10
 _MAX_ENTRY_POINTS = 10
 _MAX_HOTSPOTS = 5
 _MAX_DECISIONS = 8
+#: How many declared terms reach the instruction file. The whole point is that
+#: an agent reads this without asking, so it is capped well below what a real
+#: glossary holds; the rest are served by ``get_glossary``.
+_MAX_CANONICAL_TERMS = 20
+#: Long enough for the team's own one-liner, short enough that the term list
+#: stays scannable in a prompt prefix every session pays for on every call.
+_MAX_CANONICAL_DEFINITION = 160
 
 
 def _signed_by(signature) -> str:
@@ -111,8 +120,42 @@ class EditorFileDataFetcher:
             code_health=await self._get_code_health(),
             kg_layers=kg_layers,
             kg_tour=kg_tour,
+            canonical_terms=self._get_canonical_terms(),
             index_scope=self._get_index_scope(),
         )
+
+    def _get_canonical_terms(self) -> list[CanonicalTerm]:
+        """The terms the team declared canonical, or none.
+
+        Read from the repository's own glossary file rather than the store,
+        because that file *is* the authority and is not persisted anywhere: it
+        is a document in the checkout, and the instruction file is regenerated
+        per index, so the two are always in step with each other.
+
+        Never raises. A repository with no declared glossary is the common case
+        and gets an empty list, so the section does not render at all.
+        """
+        try:
+            declared = load_declared_glossary(self._repo_path)
+        except Exception:
+            # The instruction-file generator must not take a run down over a
+            # glossary it could not read; the section just does not appear.
+            return []
+        terms: list[CanonicalTerm] = []
+        for term in declared[:_MAX_CANONICAL_TERMS]:
+            definition = term.definition
+            if definition and len(definition) > _MAX_CANONICAL_DEFINITION:
+                definition = _truncate_at_word(definition, _MAX_CANONICAL_DEFINITION)
+            terms.append(
+                CanonicalTerm(
+                    term=term.term,
+                    definition=definition,
+                    avoid=term.avoid,
+                    context=term.context,
+                    source_path=term.source_path,
+                )
+            )
+        return terms
 
     def _get_index_scope(self) -> dict:
         return load_index_scope(self._repo_path) or resolve_index_scope({})

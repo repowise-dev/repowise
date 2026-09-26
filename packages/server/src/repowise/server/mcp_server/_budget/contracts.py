@@ -454,6 +454,16 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "note",
         ),
     ),
+    # A lookup surface: the declared rows lead and are the answer, so the mined
+    # tail is what goes first. ``limit`` caps the whole list at 40 rows by
+    # construction, and the counts (``total``, ``emitted``) are what a reader
+    # needs to know a tail was dropped, so nothing here is protected beyond the
+    # terms that answer the call.
+    "get_glossary": ResponseBudgetContract(
+        "blocks",
+        ("terms[]",),
+        protected=("terms", "total", "emitted", "declared_count"),
+    ),
 }
 
 
