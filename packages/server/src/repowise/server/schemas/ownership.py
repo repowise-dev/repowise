@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from pydantic import BaseModel
+
+from repowise.server.schemas._datetime import UTCDateTime
 
 
 class KnowledgeMapOwner(BaseModel):
@@ -44,7 +44,7 @@ class OwnerListEntry(BaseModel):
     dead_code_files_owned: int
     dead_code_lines_owned: int
     commit_count_90d: int  # sum of per-file 90d commits attributed to this person
-    last_commit_at: datetime | None
+    last_commit_at: UTCDateTime | None
     bus_factor_risk_files: int  # files they own where bus_factor <= 1
 
 
@@ -61,7 +61,7 @@ class OwnerFileEntry(BaseModel):
     churn_percentile: float  # 0-100
     bus_factor: int
     is_hotspot: bool
-    last_commit_at: datetime | None
+    last_commit_at: UTCDateTime | None
     primary_owner_commit_pct: float | None
 
 
@@ -100,8 +100,8 @@ class OwnerProfileResponse(BaseModel):
     dead_code_files_owned: int
     dead_code_lines_owned: int
     commit_count_90d: int
-    last_commit_at: datetime | None
-    first_commit_at: datetime | None
+    last_commit_at: UTCDateTime | None
+    first_commit_at: UTCDateTime | None
     bus_factor_risk_files: int
 
     # 90d activity proxies (approximated from file-level totals weighted by
