@@ -110,6 +110,171 @@ def _skip_regex(raw: str, i: int) -> int:
     return i
 
 
+class _StringWalk:
+    """The state ``_walk_string_state`` carries from one line to the next.
+
+    Each ``_scan_*`` method owns one lexical state. It consumes characters until
+    the state changes or the line ends and returns the index to resume at, so
+    the per-line loop only dispatches on a transition, never per character.
+    """
+
+    __slots__ = ("backticks", "comments", "delim", "in_block", "open_line", "stack", "strings")
+
+    def __init__(self, backticks: bool) -> None:
+        self.backticks = backticks
+        self.strings: set[int] = set()
+        self.comments: set[int] = set()
+        self.delim: str | None = None
+        self.in_block = False
+        # Line the currently-open ``delim`` run or ``/* */`` block started on. The
+        # two are mutually exclusive (a frame is only ever opened at code level), so
+        # one variable serves both.
+        self.open_line = 0
+        self.stack: list[int | None] = []
+
+    def walk_line(self, n: int, raw: str) -> None:
+        stack = self.stack
+        # The three states are mutually exclusive: a frame is only ever pushed
+        # at code level, so an if/elif chain is faithful to the walk below.
+        if self.delim is not None or (stack and stack[-1] is None):
+            self.strings.add(n)
+        elif self.in_block:
+            self.comments.add(n)
+        elif not stack and not _QUOTEISH_RE.search(raw):
+            # Nothing on this line can open a string or comment, so the
+            # character walk below cannot change state. Most lines are this
+            # line, and skipping them is what keeps a whole-file scan cheap.
+            return
+        i = 0
+        # Last non-space character seen at CODE level, for the regex test below.
+        prev = "\n"
+        while i < len(raw):
+            if stack:
+                if stack[-1] is None:
+                    i = self._scan_template_text(raw, i)
+                else:
+                    i, prev = self._scan_interpolation(raw, i, prev)
+            elif self.delim is not None:
+                i = self._scan_to_close(raw, i, self.delim)
+            elif self.in_block:
+                i = self._scan_to_close(raw, i, "*/")
+            else:
+                i, prev = self._scan_code(raw, i, prev, n)
+
+    def _scan_to_close(self, raw: str, i: int, closer: str) -> int:
+        """Inside a ``delim`` run or a ``/* */`` block: find its terminator."""
+        j = raw.find(closer, i)
+        if j == -1:
+            return len(raw)
+        self.delim, self.in_block, self.open_line = None, False, 0
+        return j + len(closer)
+
+    def _scan_template_text(self, raw: str, i: int) -> int:
+        """Inside the string part of a backtick literal."""
+        stack = self.stack
+        while i < len(raw):
+            c = raw[i]
+            if c == "\\":
+                # An escaped backtick does not close the literal. Without
+                # this, `` `x\`y` `` closes early and re-opens on the real
+                # terminator, inverting the parity for the rest of the
+                # file with a balanced stack the containment cannot see.
+                i += 2
+            elif raw.startswith("${", i):
+                stack.append(1)
+                return i + 2
+            elif c == "`":
+                stack.pop()
+                return i + 1
+            else:
+                i += 1
+        return i
+
+    def _scan_interpolation(self, raw: str, i: int, prev: str) -> tuple[int, str]:
+        """Inside a ``${...}``: code, until its braces balance or a backtick nests.
+
+        The ordinary code tokens apply again here -- including the regex probe,
+        without which a backtick in a character class
+        (``${s.replace(/[`]/g, "")}``) opens the same phantom frame _skip_regex
+        exists to prevent.
+        """
+        stack = self.stack
+        while i < len(raw):
+            c = raw[i]
+            if c == "{":
+                stack[-1] += 1
+            elif c == "}":
+                stack[-1] -= 1
+                if stack[-1] <= 0:
+                    stack.pop()
+                    return i + 1, c
+            elif c == "`":
+                stack.append(None)
+                return i + 1, c
+            elif raw.startswith("//", i):
+                return len(raw), prev
+            elif c == "/" and _regex_position(raw, i, prev):
+                j = _skip_regex(raw, i)
+                if j > i:
+                    i, prev = j, "/"
+                    continue
+            elif c in ('"', "'"):
+                i = _skip_quoted(raw, i)
+                prev = '"'
+                continue
+            if not c.isspace():
+                prev = c
+            i += 1
+        return i, prev
+
+    def _scan_code(self, raw: str, i: int, prev: str, n: int) -> tuple[int, str]:
+        """At code level: skip ordinary strings and regexes until a frame opens."""
+        backticks = self.backticks
+        while i < len(raw):
+            if raw.startswith('"""', i) or raw.startswith("'''", i):
+                self.delim, self.open_line = raw[i : i + 3], n
+                return i + 3, prev
+            c = raw[i]
+            if backticks and c == "`":
+                self.stack.append(None)
+                return i + 1, prev
+            if raw.startswith("/*", i):
+                self.in_block, self.open_line = True, n
+                return i + 2, prev
+            if c == "#" or raw.startswith("//", i):
+                return len(raw), prev
+            if c == "/" and _regex_position(raw, i, prev):
+                j = _skip_regex(raw, i)
+                if j > i:
+                    i, prev = j, "/"
+                    continue
+            if c in ('"', "'"):
+                i = _skip_quoted(raw, i)
+                prev = '"'
+                continue
+            if not c.isspace():
+                prev = c
+            i += 1
+        return i, prev
+
+    def result(self) -> tuple[set[int], set[int], bool]:
+        # A run still open at EOF is a walk that lost track, not a file with an
+        # unterminated construct, and masking to EOF hides every definition below
+        # it. The template-literal stack has had this containment since the backtick
+        # work; ``delim`` and ``/* */`` never did, and both fire on the same shape --
+        # a delimiter belonging to another language, sitting inside a string this
+        # walk cannot see. Measured on Rust: ``${0%/*}`` in a raw string masked 103
+        # lines and cost 6 real ``fn``; ``description = """#`` masked 3,002 and cost
+        # 10. Discarding the trailing run under-masks instead, which costs a
+        # spurious name in a list rather than an absent real one.
+        strings, comments = self.strings, self.comments
+        if self.delim is not None:
+            strings = {n for n in strings if n < self.open_line}
+        elif self.in_block:
+            comments = {n for n in comments if n < self.open_line}
+        return strings, comments, bool(self.stack)
+
+
 def _walk_string_state(
     lines: tuple[str, ...], *, backticks: bool
 ) -> tuple[set[int], set[int], bool]:
@@ -143,125 +308,10 @@ def _walk_string_state(
     precision, measured as 1,926 fabrications against 60 on the 16 corpus files
     where a flat walk and this one disagree.
     """
-    strings: set[int] = set()
-    comments: set[int] = set()
-    delim: str | None = None
-    in_block = False
-    # Line the currently-open ``delim`` run or ``/* */`` block started on. The
-    # two are mutually exclusive (a frame is only ever opened at code level), so
-    # one variable serves both.
-    open_line = 0
-    stack: list[int | None] = []
+    walk = _StringWalk(backticks)
     for n, raw in enumerate(lines, 1):
-        # The three states are mutually exclusive: a frame is only ever pushed
-        # at code level, so an if/elif chain is faithful to the walk below.
-        if delim is not None or (stack and stack[-1] is None):
-            strings.add(n)
-        elif in_block:
-            comments.add(n)
-        elif not stack and not _QUOTEISH_RE.search(raw):
-            # Nothing on this line can open a string or comment, so the
-            # character walk below cannot change state. Most lines are this
-            # line, and skipping them is what keeps a whole-file scan cheap.
-            continue
-        i = 0
-        # Last non-space character seen at CODE level, for the regex test below.
-        prev = "\n"
-        while i < len(raw):
-            if stack:
-                if stack[-1] is None:
-                    if raw[i] == "\\":
-                        # An escaped backtick does not close the literal. Without
-                        # this, `` `x\`y` `` closes early and re-opens on the real
-                        # terminator, inverting the parity for the rest of the
-                        # file with a balanced stack the containment cannot see.
-                        i += 2
-                    elif raw.startswith("${", i):
-                        stack.append(1)
-                        i += 2
-                    elif raw[i] == "`":
-                        stack.pop()
-                        i += 1
-                    else:
-                        i += 1
-                    continue
-                # Inside ${...}, so the ordinary code tokens apply again --
-                # including the regex probe, without which a backtick in a
-                # character class here (``${s.replace(/[`]/g, "")}``) opens the
-                # same phantom frame _skip_regex exists to prevent.
-                if raw[i] == "{":
-                    stack[-1] += 1
-                elif raw[i] == "}":
-                    stack[-1] -= 1
-                    if stack[-1] <= 0:
-                        stack.pop()
-                elif raw[i] == "`":
-                    stack.append(None)
-                elif raw.startswith("//", i):
-                    break
-                elif raw[i] == "/" and _regex_position(raw, i, prev):
-                    j = _skip_regex(raw, i)
-                    if j > i:
-                        i, prev = j, "/"
-                        continue
-                elif raw[i] in ('"', "'"):
-                    i = _skip_quoted(raw, i)
-                    prev = '"'
-                    continue
-                if not raw[i].isspace():
-                    prev = raw[i]
-                i += 1
-                continue
-            if delim is not None:
-                if raw.startswith(delim, i):
-                    delim, open_line, i = None, 0, i + len(delim)
-                else:
-                    i += 1
-                continue
-            if in_block:
-                if raw.startswith("*/", i):
-                    in_block, open_line, i = False, 0, i + 2
-                else:
-                    i += 1
-                continue
-            if raw.startswith('"""', i) or raw.startswith("'''", i):
-                delim, open_line, i = raw[i : i + 3], n, i + 3
-                continue
-            if backticks and raw[i] == "`":
-                stack.append(None)
-                i += 1
-                continue
-            if raw.startswith("/*", i):
-                in_block, open_line, i = True, n, i + 2
-                continue
-            if raw[i] == "#" or raw.startswith("//", i):
-                break
-            if raw[i] == "/" and _regex_position(raw, i, prev):
-                j = _skip_regex(raw, i)
-                if j > i:
-                    i, prev = j, "/"
-                    continue
-            if raw[i] in ('"', "'"):
-                i = _skip_quoted(raw, i)
-                prev = '"'
-                continue
-            if not raw[i].isspace():
-                prev = raw[i]
-            i += 1
-    # A run still open at EOF is a walk that lost track, not a file with an
-    # unterminated construct, and masking to EOF hides every definition below
-    # it. The template-literal stack has had this containment since the backtick
-    # work; ``delim`` and ``/* */`` never did, and both fire on the same shape --
-    # a delimiter belonging to another language, sitting inside a string this
-    # walk cannot see. Measured on Rust: ``${0%/*}`` in a raw string masked 103
-    # lines and cost 6 real ``fn``; ``description = """#`` masked 3,002 and cost
-    # 10. Discarding the trailing run under-masks instead, which costs a
-    # spurious name in a list rather than an absent real one.
-    if delim is not None:
-        strings = {n for n in strings if n < open_line}
-    elif in_block:
-        comments = {n for n in comments if n < open_line}
-    return strings, comments, bool(stack)
+        walk.walk_line(n, raw)
+    return walk.result()
 
 
 def _has_backtick_strings(file_path: str) -> bool:
