@@ -179,8 +179,7 @@ _register_config_commands()
 async def _open_store(repo_path: Path):
     """Yield a session factory on the repo's store; the engine is disposed after.
 
-    A factory rather than a session, because ``add`` embeds after its session
-    has committed but while the engine is still open.
+    A factory, so ``add`` can embed after its session commits.
     """
     from repowise.core.persistence import create_engine, create_session_factory, init_db
 
@@ -307,8 +306,7 @@ def decision_add(
         )
 
     if fmt == "json":
-        # The full id, not the table's 8-char prefix — a caller that parses
-        # this is about to pass it back to `confirm` or `show`.
+        # The full id: a caller passes it back to `confirm` or `show`.
         emit_json(
             {
                 "repo": str(repo_path),
@@ -330,9 +328,7 @@ def decision_add(
 def _refuse_partial_flags(fmt: str, *given) -> None:
     """Stop a half-filled command line before it reaches the prompts.
 
-    Flags and prompts are the two paths, and a half-filled command line is
-    neither: falling through to the prompts would hang a caller that has no
-    stdin, which is the failure this command exists to stop having.
+    Falling through to the prompts would hang a caller that has no stdin.
     """
     if any(given) or fmt == "json":
         _ta.emit_error(
@@ -430,36 +426,23 @@ async def _persist_decision(
                 source="cli",
                 # No confidence: upsert_decision scores a manual entry.
             )
-            # An architectural decision that names nothing cannot be checked
-            # against the code and cannot reach the agent editing a governed
-            # file, so it cannot be accepted. Keeping it as a candidate is
-            # better than discarding eight answered questions; ``confirm
-            # --scope`` finishes the job. An agreement is the other noun: it
-            # names no file *because* it is not about one, its acceptance row
-            # records the repository as its scope, and SessionStart is how it
-            # reaches an agent. Refusing it for the files it is defined not to
-            # have would leave it unacceptable, which is the defect the split
-            # exists to fix.
+            # An architectural decision needs files to govern, so without them
+            # it stays a candidate for ``confirm --scope``. An agreement names no
+            # file by definition; its scope is the repository.
             if status == "active" and (fields.affected_files or fields.kind == AGREEMENT_KIND):
                 await _accept_answered_prompts(session, rec, repo_path)
 
             embed = (rec.id, rec.title, rec.decision or "", rec.evidence_file)
             stored_status = rec.status
 
-        # After the session closes, so a network embed does not hold the write
-        # transaction open and cannot leave a vector for an uncommitted record.
-        # ``cli`` is the rank a duplicate should fold into, so a manual entry
-        # with no vector is the worst one to leave unmatched.
+        # After the session commits, so a network embed never holds the write
+        # transaction or vectors an uncommitted record.
         await _embed_decision(repo_path, *embed)
     return embed[0], stored_status
 
 
 async def _accept_answered_prompts(session, rec, repo_path: Path) -> None:
-    """Answering the prompts is the acceptance; record it as one.
-
-    That is what makes this record indistinguishable from any other accepted
-    decision to every reader.
-    """
+    """Record the answered prompts as an acceptance, like any other."""
     from repowise.core.analysis.decisions.accepter import resolve_accepter
     from repowise.core.persistence.crud.authority import (
         AcceptanceRefusedError,
@@ -655,10 +638,8 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
         # scripting `show` cannot tell a missing id from an empty record.
         raise click.exceptions.Exit(1)
 
-    # The stored score is a proportion; this is the fact behind it, asked of
-    # git at read time. `show` is one record on demand, which is exactly where
-    # a subprocess is affordable — nothing on the hook or update path may do
-    # this. None means git could not decide, and then we say nothing.
+    # Asked of git at read time: affordable for one record on demand, never on
+    # the hook or update path. None means git could not decide.
     currency = describe_decision_currency(
         repo_path,
         created_at=rec.created_at,
@@ -700,9 +681,7 @@ def _decision_json(rec, signed, currency) -> dict:
         "rationale": rec.rationale,
         "alternatives": json.loads(rec.alternatives_json),
         "consequences": json.loads(rec.consequences_json),
-        # Not clipped to 10 the way the panel clips it: the panel
-        # clips to stay readable, and a caller asking for json is
-        # asking for the record, not a summary of it.
+        # Unclipped: json is the record, the panel a summary.
         "affected_files": json.loads(rec.affected_files_json),
         "tags": json.loads(rec.tags_json),
         "evidence_file": rec.evidence_file,
@@ -1008,9 +987,8 @@ async def _retire(
         except (AcceptanceRefusedError, ValueError) as exc:
             emit_refusal("supersede_refused", str(exc), fmt, decision_id=rec.id)
         return
-    # A candidate has no authority to retire, so this stays the plain status
-    # change it always was. An accepted record reaching it still logs a
-    # withdrawal, so the kind travels.
+    # A candidate has no authority to retire: a plain status change. An
+    # accepted record reaching here still logs a withdrawal, with its kind.
     await update_decision_status(
         session,
         rec.id,

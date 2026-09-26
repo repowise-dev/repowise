@@ -77,8 +77,7 @@ def seeded(repo: Path) -> Path:
 
 
 def _run(*args: str, input: str | None = None):
-    # Click 8.1 merges stderr into stdout unless told not to; 8.2 dropped the
-    # flag and always keeps them apart. The json tests need them apart.
+    # Keep stderr out of stdout on click 8.1 (8.2 always separates them).
     import inspect
 
     split = "mix_stderr" in inspect.signature(CliRunner.__init__).parameters

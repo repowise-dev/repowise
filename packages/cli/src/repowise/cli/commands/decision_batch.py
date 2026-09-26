@@ -1,9 +1,6 @@
 """Resolve decision ids, and apply one lifecycle verb to many of them.
 
-``confirm`` and ``dismiss`` take any number of ids and report each one's
-outcome; ``show`` and ``deprecate`` resolve a single id the same way. The
-command bodies live in ``decision_cmd``; this is the part they share that is
-about ids and runs rather than about any one verb.
+Shared by the ``decision`` commands in ``decision_cmd``.
 """
 
 from __future__ import annotations
@@ -228,7 +225,7 @@ def _print_batch(
 
 
 def _emit_single(result: dict, token: str, verb: str, fmt: str, note: str, remedy: str) -> None:
-    """The one-id document, unchanged from before these verbs took many."""
+    """Report a one-id run: the transition, or the refusal naming that id."""
     if result["ok"]:
         if fmt == "json":
             emit_json({"id": result["id"], "status": result["status"], "action": result["action"]})
@@ -242,8 +239,7 @@ def _emit_single(result: dict, token: str, verb: str, fmt: str, note: str, remed
         _emit_lifecycle(None, token, "", fmt)
         return
     if "id" not in result:
-        # An ambiguous prefix never resolved to a record, so there is nothing
-        # to name but the token the caller gave.
+        # An ambiguous prefix has no record, only the token the caller gave.
         emit_refusal(result["error"], result["message"], fmt)
         return
     extra: dict = {"decision_id": result["id"]}
