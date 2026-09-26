@@ -60,10 +60,10 @@ from repowise.core.analysis.decisions.scope import (
     resolve_module_nodes,
     selected_scope_files,
 )
-from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
-from repowise.core.ingestion.traverser import load_gitignore_spec
 
+from .adr import _ADR_FRONTMATTER_RE, _ADR_STATUS_MAP, bullets, find_adr_files, split_headings
 from .commit_signals import count_decision_signals
+from .markers import _CODE_FENCE_RE, MARKER_RE, strip_code_blocks
 from .prompts import (
     _SYSTEM_PROMPT,
     COMMENT_ARCHAEOLOGY_PROMPT,
@@ -71,6 +71,11 @@ from .prompts import (
     INLINE_MARKER_PROMPT,
     PR_BODY_MINING_PROMPT,
     README_MINING_PROMPT,
+)
+from .source_files import (
+    _BINARY_EXTENSIONS,
+    extract_leading_prose,
+    iter_source_files,
 )
 
 logger = structlog.get_logger(__name__)
@@ -312,107 +317,9 @@ def enabled_source_names(repo_config: dict[str, Any] | None) -> tuple[str, ...]:
 # Comment marker detection
 # ---------------------------------------------------------------------------
 
-# The keyword is deliberately case-SENSITIVE. These are annotation
-# conventions, written in caps like TODO:/FIXME:/HACK:, and matching them
-# case-insensitively turns ordinary prose into architectural decisions. Two
-# real examples from this repo, both of which reached the store as `active`
-# records: a wrapped sentence whose continuation line began "# decision:
-# namespace, batched like the pages", and a test's "# Rejected: nothing to
-# extract." Across 3,860 tracked files those were the ONLY two matches — a
-# 100% false-positive rate — because no genuine marker was written in lower
-# case. A missed marker costs one record; a false positive publishes a
-# sentence fragment as a decision governing every file it touches.
-MARKER_RE = re.compile(
-    r"^\s*(?:#|//|--|/\*|\*)\s*"
-    r"(?P<keyword>WHY|DECISION|TRADEOFF|ADR|RATIONALE|REJECTED)"
-    r"\s*:\s*(?P<text>.+)",
-)
-
-# fs_walk's never-source set plus the two derived-output names the decision
-# walks have always skipped: a bundled ``dist``/``build`` copy of a source file
-# would double every marker it contains.
-_SKIP_DIRS = PRUNED_DIRS | {"dist", "build"}
-
-# Regex to detect fenced code blocks in markdown files (``` or ~~~).
-_CODE_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
-
-_BINARY_EXTENSIONS = frozenset(
-    {
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".gif",
-        ".ico",
-        ".svg",
-        ".bmp",
-        ".webp",
-        ".woff",
-        ".woff2",
-        ".ttf",
-        ".eot",
-        ".otf",
-        ".zip",
-        ".tar",
-        ".gz",
-        ".bz2",
-        ".rar",
-        ".7z",
-        ".pdf",
-        ".doc",
-        ".docx",
-        ".xls",
-        ".xlsx",
-        ".pyc",
-        ".pyo",
-        ".so",
-        ".dll",
-        ".dylib",
-        ".exe",
-        ".db",
-        ".sqlite",
-        ".sqlite3",
-        ".lance",
-        ".lock",
-    }
-)
-
-
 # ---------------------------------------------------------------------------
 # ADR / PR / comment source configuration
 # ---------------------------------------------------------------------------
-
-# Conventional ADR homes, as repo-root-relative posix directories. Every ``.md``
-# directly inside one is a candidate regardless of filename; matching is on the
-# whole relative dir, so a stray ``vendor/x/adr/`` does not qualify.
-_ADR_DIRS = frozenset(
-    {
-        "adr",
-        "adrs",
-        "docs/adr",
-        "docs/adrs",
-        "docs/decisions",
-        "decisions",
-        "architecture",
-        "doc/adr",
-    }
-)
-_MAX_ADR_FILES = 60
-
-# Nygard/MADR section headings. Mapped to the ExtractedDecision fields they
-# populate during the deterministic (LLM-free) parse.
-_ADR_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
-_ADR_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-_ADR_STATUS_MAP = {
-    "accepted": "active",
-    "approved": "active",
-    "active": "active",
-    "proposed": "proposed",
-    "draft": "proposed",
-    "rejected": "deprecated",
-    "deprecated": "deprecated",
-    "superseded": "superseded",
-}
-
 
 # PR/squash body markers — a body containing any of these reads like a PR
 # description worth mining (vs an incidental multi-line commit message).
@@ -844,7 +751,7 @@ class DecisionExtractor:
         carry an ADR name but no recognizable structure fall back to the LLM
         prose miner when a provider is available. Highest source rank.
         """
-        adr_paths = self._find_adr_files()
+        adr_paths = find_adr_files(self._repo_path)
         if not adr_paths:
             return []
         provider = self._llm("adr")
@@ -867,7 +774,7 @@ class DecisionExtractor:
                 decisions.append(parsed)
             elif provider:
                 try:
-                    stripped = self._strip_code_blocks(content)
+                    stripped = strip_code_blocks(content)
                     prompt = README_MINING_PROMPT.format(file_path=rel, content=stripped[:15_000])
                     response = await provider.generate(
                         _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
@@ -886,57 +793,6 @@ class DecisionExtractor:
                     logger.warning("decision_extractor.adr_llm_failed", file=rel)
 
         return decisions
-
-    def _find_adr_files(self) -> list[Path]:
-        """Collect candidate ADR files from the conventional dirs + name match.
-
-        One :func:`walk_repo` pass answers both halves: files directly under a
-        conventional ADR directory (root-anchored, as the old shallow globs
-        were) rank ahead of loose ``*adr*.md`` name matches, and the cap is
-        applied to the two buckets in that order.
-
-        Ignored paths are excluded. :mod:`repowise.core.fs_walk` prunes junk
-        dirs and nested repos but deliberately reads no ignore files, so
-        gitignore/``info/exclude`` handling is this function's job: without it
-        a scratch dir that ``git status`` cannot see contributes ``active``
-        decision records citing files no clone of the repo contains.
-        """
-        ignore = load_gitignore_spec(self._repo_path)
-        conventional: list[Path] = []
-        loose: list[Path] = []
-        for dirpath, dirnames, filenames in walk_repo(self._repo_path, prune_dirs=_SKIP_DIRS):
-            rel_dir = dirpath.relative_to(self._repo_path).as_posix()
-            rel_dir = "" if rel_dir == "." else rel_dir
-            # Prune ignored and packaging-metadata subtrees in place. Ignored
-            # DIRECTORIES match with a trailing slash, as git matches them.
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if not d.endswith((".egg-info", ".dist-info"))
-                and not ignore.match_file(f"{rel_dir}/{d}/" if rel_dir else f"{d}/")
-            ]
-
-            in_adr_dir = rel_dir in _ADR_DIRS
-            for fname in filenames:
-                low = fname.lower()
-                if not low.endswith(".md"):
-                    continue
-                if in_adr_dir:
-                    bucket = conventional
-                elif "adr" in low and low != "readme.md" and "template" not in low:
-                    bucket = loose
-                else:
-                    continue
-                if ignore.match_file(f"{rel_dir}/{fname}" if rel_dir else fname):
-                    continue
-                bucket.append(dirpath / fname)
-
-            if len(conventional) + len(loose) >= _MAX_ADR_FILES:
-                break
-
-        # No dedup pass: walk_repo yields each directory once, and each file
-        # lands in exactly one bucket.
-        return [*conventional, *loose][:_MAX_ADR_FILES]
 
     def _parse_adr(self, content: str, rel_path: str) -> ExtractedDecision | None:
         """Deterministically parse a structured ADR. Returns None if unstructured.
@@ -961,7 +817,7 @@ class DecisionExtractor:
                         title = val
             body = content[fm.end() :]
 
-        sections = self._split_headings(body)
+        sections = split_headings(body)
         if not title:
             m = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
             if m:
@@ -993,7 +849,7 @@ class DecisionExtractor:
             context=context.strip(),
             decision=decision_txt.strip(),
             rationale=rationale.strip(),
-            consequences=self._bullets(consequences),
+            consequences=bullets(consequences),
             source="adr",
             status=mapped_status,
             confidence=0.90,
@@ -1116,7 +972,7 @@ class DecisionExtractor:
 
         snippets: list[tuple[str, str]] = []
         for fp in top_files:
-            prose = self._extract_leading_prose(fp)
+            prose = extract_leading_prose(self._repo_path, fp)
             if prose and any(cue in prose.lower() for cue in _COMMENT_RATIONALE_CUES):
                 snippets.append((fp, prose))
         if not snippets:
@@ -1219,41 +1075,6 @@ class DecisionExtractor:
                 out.append(node)
         return out
 
-    def _extract_leading_prose(self, file_path: str) -> str:
-        """Return the leading module docstring / header comment block of a file."""
-        p = self._repo_path / file_path
-        try:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        except (OSError, UnicodeDecodeError):
-            return ""
-        prose: list[str] = []
-        in_doc = False
-        for line in text.splitlines()[:120]:
-            s = line.strip()
-            if not in_doc and (s.startswith('"""') or s.startswith("'''")):
-                quote = s[:3]
-                inner = s.strip("\"' ")
-                if inner:
-                    prose.append(inner)
-                # Single-line docstring closes on the same line.
-                if s.count(quote) < 2:
-                    in_doc = True
-                continue
-            if in_doc:
-                if s.endswith('"""') or s.endswith("'''"):
-                    in_doc = False
-                    inner = s.strip("\"' ")
-                    if inner:
-                        prose.append(inner)
-                else:
-                    prose.append(s)
-                continue
-            if s.startswith(("#", "//", "*", "/*", "--")):
-                cleaned = re.sub(r"^\s*(?:#|//|--|/\*|\*/|\*)\s?", "", s)
-                if cleaned:
-                    prose.append(cleaned)
-        return "\n".join(prose).strip()[:2000]
-
     @staticmethod
     def _loads_commits(value: Any) -> list[dict]:
         """Parse a ``significant_commits_json`` blob into a list of dicts."""
@@ -1266,37 +1087,6 @@ class DecisionExtractor:
                 return []
             return data if isinstance(data, list) else []
         return []
-
-    @staticmethod
-    def _split_headings(text: str) -> dict[str, str]:
-        """Map lowercased markdown headings to their section bodies."""
-        sections: dict[str, str] = {}
-        current: str | None = None
-        buf: list[str] = []
-        for line in text.splitlines():
-            m = _ADR_HEADING_RE.match(line)
-            if m:
-                if current is not None:
-                    sections[current] = "\n".join(buf).strip()
-                current = m.group(1).strip().lower()
-                buf = []
-            elif current is not None:
-                buf.append(line)
-        if current is not None:
-            sections[current] = "\n".join(buf).strip()
-        return sections
-
-    @staticmethod
-    def _bullets(text: str) -> list[str]:
-        """Extract markdown bullet items from a section body."""
-        out: list[str] = []
-        for line in text.splitlines():
-            s = line.strip()
-            if s.startswith(("-", "*", "+")):
-                item = s[1:].strip()
-                if item:
-                    out.append(item)
-        return out
 
     # ------------------------------------------------------------------
     # Anti-hallucination substring gate (Phase 1D)
@@ -1522,7 +1312,7 @@ class DecisionExtractor:
                 yield rel_path, source.decode("utf-8", errors="replace")
             return
 
-        for file_path in self._iter_source_files():
+        for file_path in iter_source_files(self._repo_path):
             if not file_path.is_file():
                 continue
             try:
@@ -1553,70 +1343,6 @@ class DecisionExtractor:
         except (OSError, UnicodeDecodeError):
             return None
 
-    def _tracked_files(self) -> set[Path] | None:
-        """Resolved paths git tracks under ``repo_path``, or ``None``.
-
-        ``None`` means "no git scoping available" (not a git repo, git missing,
-        or the command failed) — callers then fall back to walking the tree.
-        Restricting to tracked files keeps untracked / gitignored / git-excluded
-        working directories (``local-stash/``, vendored dumps, scratch folders)
-        out of the harvest: their comments are not part of the indexed codebase
-        and must not become decision records.
-        """
-        import subprocess
-
-        try:
-            proc = subprocess.run(
-                ["git", "-C", str(self._repo_path), "ls-files", "-z"],
-                capture_output=True,
-                timeout=30,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        if proc.returncode != 0 or not proc.stdout:
-            return None
-        out = proc.stdout.decode("utf-8", errors="replace")
-        tracked: set[Path] = set()
-        for rel in out.split("\0"):
-            if not rel:
-                continue
-            try:
-                tracked.add((self._repo_path / rel).resolve())
-            except OSError:
-                continue
-        return tracked or None
-
-    def _iter_source_files(self):
-        """Yield source files under repo_path, skipping irrelevant dirs.
-
-        Walks via :func:`walk_repo`, which prunes junk subtrees and nested git
-        repos (separate codebases that must not contribute decisions to the
-        parent) without descending into them. When the repo is a git checkout,
-        the walk is further restricted to git-tracked files so untracked /
-        excluded working directories never contribute decisions; gitless
-        indexes fall back to the full walk.
-        """
-        tracked = self._tracked_files()
-
-        for dirpath, dirnames, filenames in walk_repo(self._repo_path, prune_dirs=_SKIP_DIRS):
-            # Skip setuptools build metadata: PKG-INFO embeds the README
-            # verbatim, so example marker lines in docs become spurious
-            # decisions. Same risk for *.dist-info from wheels.
-            dirnames[:] = [d for d in dirnames if not d.endswith((".egg-info", ".dist-info"))]
-
-            for fname in filenames:
-                fpath = Path(dirpath) / fname
-                if fpath.suffix.lower() in _BINARY_EXTENSIONS:
-                    continue
-                if tracked is not None:
-                    try:
-                        if fpath.resolve() not in tracked:
-                            continue
-                    except OSError:
-                        continue
-                yield fpath
-
     def _get_neighbors(self, file_path: str) -> list[str]:
         """Get 1-hop graph neighbors for a file."""
         if self._graph is None:
@@ -1627,20 +1353,6 @@ class DecisionExtractor:
             neighbors.update(self._graph.predecessors(file_path))
         neighbors.discard(file_path)
         return list(neighbors)[:20]  # Cap at 20
-
-    @staticmethod
-    def _strip_code_blocks(text: str) -> str:
-        """Remove fenced code blocks from markdown to avoid parsing examples."""
-        lines = text.splitlines()
-        out: list[str] = []
-        in_fence = False
-        for line in lines:
-            if _CODE_FENCE_RE.match(line):
-                in_fence = not in_fence
-                continue
-            if not in_fence:
-                out.append(line)
-        return "\n".join(out)
 
     def _infer_modules(self, file_paths: list[str]) -> list[str]:
         """Infer the module paths a record governs from the files it names."""
