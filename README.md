@@ -411,7 +411,7 @@ change, and the architecture rule the new dependency violates before it ships.
 | **Test impact** | Which tests in the consumer repos should run for this provider change, measured from coverage or inferred from the call graph, and which links could not be determined? |
 | **Architecture as code** | Does the live system graph violate declared dependency rules or contain cycles? `repowise workspace check` gates CI. |
 | **Architecture health** | How coupled is the estate? Track propagation cost, the cyclic core, service roles, and a deterministic 1–10 architecture score. |
-| **Federated context** | One dashboard and one MCP server answer across every repository while preserving repo-level evidence. |
+| **Federated context** | A self-hosted workspace runs one dashboard and one MCP server across every repository while preserving repo-level evidence. |
 
 The system map models **services**, not merely repository boxes, and never conflates a
 real contract with “these files often changed together.” HTTP field-level comparison
@@ -808,7 +808,7 @@ agent over MCP.
 | Command-output distillation | ✅ reversible | ❌ | ❌ | ❌ |
 | Learns from your usage (session-mined decisions, demand-weighted docs) | ✅ | ❌ | ❌ | ❌ |
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ |
-| Multi-repo workspace intelligence | ✅ contracts, co-change, federated MCP | ❌ | ❌ | ❌ |
+| Multi-repo workspace intelligence | ✅ contracts, co-change, federated MCP (self-hosted workspace mode) | ❌ | ❌ | ❌ |
 
 **The two cost rows answer different questions.** Building the call graph, we are
 the lightest tool measured, about ten times lighter than the next, and roughly as
@@ -939,8 +939,8 @@ processed transiently and is not persisted.
 
 **Past one repository.** Workspaces index an estate as one unit: API contracts
 matched producer to consumer so a breaking change is caught before it ships,
-cross-repo co-change, and one federated MCP endpoint that answers across all of
-it. *(Estate-scale dashboards: [in development](ROADMAP.md#multi-repo-and-workspace).)*
+cross-repo co-change, and, in self-hosted workspace mode, one federated MCP
+server that answers across all of it. *(Estate-scale dashboards: [in development](ROADMAP.md#multi-repo-and-workspace).)*
 
 **Not on git?** Only the history layer needs a commit log. Point `repowise init`
 at a plain directory, an export, or a Perforce or SVN workspace and the graph,
