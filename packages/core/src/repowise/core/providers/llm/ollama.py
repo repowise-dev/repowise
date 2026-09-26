@@ -20,10 +20,14 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
 import os
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 import structlog
 from openai import AsyncOpenAI
 from tenacity import RetryError, retry
@@ -34,18 +38,17 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
+    RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    normalize_stop_reason,
+    parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
     record_generation_cost,
 )
-from repowise.core.providers.llm.openai_compat import (
-    completion_to_response,
-    stream_openai_chat,
-    translate_openai_errors,
-)
+from repowise.core.providers.llm.openai_compat import stream_openai_chat
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
 
@@ -53,6 +56,10 @@ log = structlog.get_logger(__name__)
 
 _DEFAULT_BASE_URL = "http://localhost:11434"
 _OLLAMA_REASONING_MODES: tuple[ReasoningMode, ...] = ("off",)
+_MIN_NUM_CTX = 8192
+# Streamed, so the read timeout bounds silence between chunks, not the whole
+# page. It still has to cover prompt evaluation, which streams nothing.
+_STREAM_TIMEOUT = httpx.Timeout(1200.0, connect=10.0)
 
 
 def _normalize_base_url(url: str) -> str:
@@ -63,11 +70,9 @@ def _normalize_base_url(url: str) -> str:
     return url
 
 
-def _ollama_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
-    """Translate a validated repowise reasoning intent to Ollama kwargs."""
-    if reasoning == "off":
-        return {"reasoning_effort": "none"}
-    return {}
+def _positive_int_env(name: str) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else None
 
 
 def _ollama_model_options(
@@ -129,7 +134,8 @@ def _ollama_model_options(
 class OllamaProvider(BaseProvider):
     """Ollama provider for local, offline LLM inference.
 
-    Uses Ollama's OpenAI-compatible endpoint. No API key required.
+    Generation uses Ollama's native chat API; streaming chat uses the
+    OpenAI-compatible endpoint. No API key required.
 
     Args:
         model:        Ollama model name (e.g., 'qwen3.5:4b', 'llama3.2').
@@ -156,8 +162,13 @@ class OllamaProvider(BaseProvider):
         self._client = AsyncOpenAI(
             api_key="ollama", base_url=_normalize_base_url(resolved_base_url)
         )
+        self._native_url = self._base_url.removesuffix("/v1")
         self._model = model
         self._rate_limiter = rate_limiter
+        self._fixed_num_ctx = _positive_int_env("REPOWISE_OLLAMA_NUM_CTX")
+        self._num_ctx = _MIN_NUM_CTX
+        self._parallel = _positive_int_env("OLLAMA_NUM_PARALLEL") or 1
+        self._slots: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
 
     @property
     def provider_name(self) -> str:
@@ -171,7 +182,7 @@ class OllamaProvider(BaseProvider):
         return ("auto", *_OLLAMA_REASONING_MODES)
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
-        return _ollama_model_options(self._base_url, self._model)
+        return _ollama_model_options(self._native_url, self._model)
 
     async def generate(
         self,
@@ -189,8 +200,7 @@ class OllamaProvider(BaseProvider):
             reasoning,
             _OLLAMA_REASONING_MODES,
             detail=(
-                "Ollama maps reasoning='off' to reasoning_effort='none' "
-                "through its OpenAI-compatible chat completions API."
+                "Ollama maps reasoning='off' to think=false on its chat API."
             ),
         )
         if self._rate_limiter:
@@ -244,27 +254,111 @@ class OllamaProvider(BaseProvider):
         request_id: str | None,
         reasoning: ReasoningMode,
     ) -> GeneratedResponse:
-        request_kwargs: dict[str, Any] = {
-            "model": self._model,
-            "max_tokens": max_tokens,
+        # The native endpoint, because the OpenAI-compatible one ignores
+        # num_ctx and silently cuts every prompt to the server's default window.
+        options = {
+            "num_predict": max_tokens,
             "temperature": temperature,
+            "num_ctx": self._context_window(system_prompt, user_prompt, max_tokens),
+        }
+        payload: dict[str, Any] = {
+            "model": self._model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            "stream": True,
+            "options": options,
         }
-        request_kwargs.update(_ollama_reasoning_kwargs(reasoning))
-        with translate_openai_errors("ollama"):
-            response = await self._client.chat.completions.create(**request_kwargs)
+        if reasoning == "off":
+            payload["think"] = False
 
-        result = completion_to_response(response, include_total_tokens=False)
+        content, final = await self._stream_native_chat(payload)
+        input_tokens = int(final.get("prompt_eval_count") or 0)
+        output_tokens = int(final.get("eval_count") or 0)
+        stop_reason, provider_stop_reason = normalize_stop_reason(final.get("done_reason"))
+        result = GeneratedResponse(
+            content=content,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=0,
+            stop_reason=stop_reason,
+            provider_stop_reason=provider_stop_reason,
+            usage={"prompt_tokens": input_tokens, "completion_tokens": output_tokens},
+        )
         log.debug(
             "ollama.generate.done",
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
+            num_ctx=options["num_ctx"],
             request_id=request_id,
         )
         return result
+
+    async def _stream_native_chat(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """POST to /api/chat and return the streamed text and the final chunk."""
+        parts: list[str] = []
+        final: dict[str, Any] = {}
+        try:
+            async with (
+                self._request_slots(),
+                httpx.AsyncClient(timeout=_STREAM_TIMEOUT) as http,
+                http.stream("POST", f"{self._native_url}/api/chat", json=payload) as resp,
+            ):
+                if resp.status_code >= 400:
+                    body = (await resp.aread()).decode("utf-8", errors="replace")[:500]
+                    with contextlib.suppress(ValueError, KeyError, TypeError):
+                        body = str(json.loads(body)["error"])
+                    if resp.status_code == 429:
+                        raise RateLimitError(
+                            "ollama",
+                            body,
+                            status_code=429,
+                            retry_after=parse_retry_after(resp.headers),
+                        )
+                    raise ProviderError("ollama", body, status_code=resp.status_code)
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        continue
+                    chunk = json.loads(line)
+                    if chunk.get("error"):
+                        raise ProviderError("ollama", str(chunk["error"]))
+                    parts.append((chunk.get("message") or {}).get("content") or "")
+                    if chunk.get("done"):
+                        final = chunk
+        except httpx.HTTPError as exc:
+            raise ProviderError("ollama", f"{type(exc).__name__}: {exc}") from exc
+        except ValueError as exc:
+            raise ProviderError("ollama", f"unreadable response: {exc}") from exc
+        return "".join(parts), final
+
+    def _context_window(self, system_prompt: str, user_prompt: str, max_tokens: int) -> int:
+        """num_ctx that fits this request, never shrinking between calls.
+
+        Ollama reloads the model whenever num_ctx changes, so the window only
+        grows, in powers of two. Two characters per token overestimates prose
+        and all but the densest code.
+        """
+        if self._fixed_num_ctx:
+            return self._fixed_num_ctx
+        needed = (len(system_prompt) + len(user_prompt)) // 2 + max_tokens
+        window = _MIN_NUM_CTX
+        while window < needed:
+            window *= 2
+        self._num_ctx = max(self._num_ctx, window)
+        return self._num_ctx
+
+    def _request_slots(self) -> asyncio.Semaphore:
+        """Cap in-flight requests at what the server runs at once.
+
+        Requests past OLLAMA_NUM_PARALLEL queue inside the server, where the
+        wait counts against their timeout. Queueing here instead keeps the
+        timeout about generation. One semaphore per event loop.
+        """
+        loop = asyncio.get_running_loop()
+        if self._slots is None or self._slots[0] is not loop:
+            self._slots = (loop, asyncio.Semaphore(self._parallel))
+        return self._slots[1]
 
     # --- ChatProvider protocol implementation ---
 

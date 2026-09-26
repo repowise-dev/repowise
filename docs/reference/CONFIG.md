@@ -784,6 +784,12 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 repowise init --provider ollama --model llama3.2
 ```
 
+Repowise sizes the model's context window (`num_ctx`) to each prompt, so pages
+are not cut to Ollama's small default window. Set `REPOWISE_OLLAMA_NUM_CTX` to
+pin it instead, for example to stay within a machine's memory. Requests are sent
+one at a time; if the server runs with `OLLAMA_NUM_PARALLEL` above 1, set the
+same value where you run repowise to send that many at once.
+
 ### LiteLLM (100+ providers)
 
 ```bash
@@ -920,6 +926,8 @@ The `.repowise/.env` file is gitignored automatically.
 | `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang, 9router, and other compatible endpoints) |
 | `GEMINI_BASE_URL` | Override the Gemini API base URL |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
+| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; unset sizes it to each prompt |
+| `OLLAMA_NUM_PARALLEL` | Ollama requests repowise sends at once (default: 1) |
 | `DEEPSEEK_BASE_URL` | Override the DeepSeek API base URL |
 | `KIMI_BASE_URL` | Override the Kimi API base URL |
 | `LITELLM_BASE_URL` | Override the LiteLLM proxy base URL |

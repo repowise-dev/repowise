@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import io
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 
 from repowise.cli.commands import upgrade_flow
 from repowise.cli.helpers import load_state, save_state
@@ -146,3 +148,41 @@ def test_upgrade_cancellation_keeps_retryable_checkpoint(
     assert state["full_upgrade"]["status"] == "resumable"
     assert state["full_upgrade"]["retryable"] is True
     assert state["full_upgrade"]["next_stage"] == "search"
+
+
+def test_upgrade_with_placeholder_pages_completes_and_names_the_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    _provider(monkeypatch)
+    out = io.StringIO()
+    monkeypatch.setattr(upgrade_flow, "console", Console(file=out, width=200))
+
+    async def with_placeholders(*args, **kwargs):
+        for stage in ("git_backfill", "generation", "search", "health"):
+            kwargs["checkpoint"](stage)
+        return (
+            [],
+            10,
+            {
+                "git_history_coverage": None,
+                "file_pages": {"configured_cap": None},
+                "search": {"full_text": "available", "semantic": "available", "next_command": None},
+                "embedding_error": None,
+                "stub_fallbacks": 2,
+                "stub_reasons": ["ollama: model runner has unexpectedly stopped"],
+            },
+        )
+
+    monkeypatch.setattr(upgrade_flow, "_run_upgrade", with_placeholders)
+    upgrade_flow.upgrade_to_full(
+        repo, provider_name=None, model=None, reasoning=None, concurrency=1, yes=True
+    )
+
+    state = load_state(repo)
+    assert state["full_upgrade"]["status"] == "complete"
+    assert state["git_tier"] == "full"
+    printed = out.getvalue()
+    assert "2 page(s) could not be written" in printed
+    assert "model runner has unexpectedly stopped" in printed
+    assert "repowise generate" in printed
