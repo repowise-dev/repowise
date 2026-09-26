@@ -27,8 +27,7 @@ class GenerateSelectionBody(BaseModel):
     kind: Literal["all", "unwritten", "stale", "page_ids", "path_prefix", "ranked"] = "unwritten"
     page_ids: list[str] | None = None
     path_prefix: str | None = None
-    # Ranked selection only. ``coverage_pct`` is a fraction (0.2 == the top 20%);
-    # ``top_n`` targets ~N pages (mapped to a coverage fraction downstream).
+    # Ranked selection only.
     coverage_pct: float | None = None
     top_n: int | None = None
 
@@ -83,12 +82,7 @@ def _validate_ranked(sel: GenerateSelectionBody) -> None:
 
 
 def _validate_generate_selection(sel: GenerateSelectionBody) -> None:
-    """Reject an incoherent selection with an actionable 400.
-
-    Ranked and explicit selection are distinct philosophies (see
-    :class:`GenerateSelectionBody`) and may not be mixed; ``coverage_pct`` and
-    ``top_n`` are mutually exclusive and belong only to a ranked selection.
-    """
+    """Reject an incoherent selection (see :class:`GenerateSelectionBody`) with a 400."""
     if sel.kind == "page_ids":
         _reject_structural_page_ids(sel.page_ids or [])
 

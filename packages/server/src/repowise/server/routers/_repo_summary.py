@@ -28,16 +28,12 @@ _Figures = list[tuple[str, dict[str, Any]]]
 
 
 def _fresh_case(column: Any, value: Any) -> Any:
-    """Portable conditional count. ``count(...) FILTER (WHERE ...)`` needs
-    SQLite 3.30+ and this project ships no version floor, so every conditional
-    count in the codebase is a ``sum(case(...))`` — see ``routers/git.py``."""
+    """Portable conditional count: ``FILTER (WHERE ...)`` needs SQLite 3.30+."""
     return func.coalesce(func.sum(case((column == value, 1), else_=0)), 0)
 
 
 async def _file_figures(session: AsyncSession) -> _Figures:
-    # Files, symbols and entry points. `graph_nodes` holds symbol rows in the
-    # same table, so every count here is scoped to `node_type == "file"`; the
-    # unscoped count is what makes /stats report 38,813 "files" for 3,600.
+    # `graph_nodes` also holds symbol rows, so every count is scoped to files.
     result = await session.execute(
         select(
             GraphNode.repository_id,
@@ -77,7 +73,7 @@ async def _page_figures(session: AsyncSession) -> _Figures:
 
 
 async def _dead_export_figures(session: AsyncSession) -> _Figures:
-    # Open unused exports — the one dead-code figure the dashboard quotes.
+    # Open unused exports: the one dead-code figure the dashboard quotes.
     result = await session.execute(
         select(DeadCodeFinding.repository_id, func.count(DeadCodeFinding.id))
         .where(
@@ -109,13 +105,9 @@ def _rounded(score: Any) -> float | None:
 
 
 async def _health_figures(session: AsyncSession) -> _Figures:
-    # Latest health snapshot per repo. Three scalar columns only: a snapshot
-    # row carries `per_file_scores_json`, ~186 KB apiece, and selecting the
-    # entity would pull the whole retained history's worth of it for two
-    # floats (see crud.get_health_snapshot_headline's docstring). Reduced in
-    # Python rather than with a window function, because retention bounds the
-    # row count to tens per repo and window syntax is not uniform across the
-    # two supported backends.
+    # Latest snapshot per repo, scalar columns only: a row's per-file JSON is
+    # large. Reduced in Python because retention keeps tens of rows per repo and
+    # window syntax differs across the two backends.
     result = await session.execute(
         select(
             HealthSnapshot.repository_id,
@@ -148,16 +140,10 @@ _SECTIONS = (
 
 
 async def _summary_rows_for(session: AsyncSession) -> dict[str, dict[str, Any]]:
-    """Headline figures for every repo in one database, five queries total.
+    """Headline figures for every repo in one database: one grouped query per section.
 
-    Grouped by ``repository_id`` rather than filtered per repo: the route this
-    replaces ran six queries *per repository* for the stats alone, and
-    ``/git-summary`` hydrated every ``git_metadata`` row (one per file, ~3.5k on
-    this repo) to produce two integers.
-
-    A table that does not exist yet — a repo registered but never analysed, an
-    older store — degrades that section to zero rather than 500-ing the whole
-    dashboard, which is the same contract ``routers/stats.py`` documents.
+    A missing table (never analysed, older store) zeroes that section instead of
+    failing the dashboard, the same contract as ``routers/stats.py``.
     """
     out: dict[str, dict[str, Any]] = {}
     for section in _SECTIONS:
@@ -174,11 +160,9 @@ def _short(sha: str | None) -> str | None:
 def _freshness_for(repo: RepoResponse) -> tuple[str | None, str | None, bool | None]:
     """(indexed commit, live HEAD, is the index behind) for one repo.
 
-    Both reads are plain file I/O — `read_live_head` parses `.git/HEAD` and
-    follows at most one ref rather than spawning git — so this stays cheap
-    enough to run per repo on a page load. Returns ``None`` for
-    ``index_behind`` when either side is unavailable, so "current" and
-    "could not tell" never collapse into the same answer.
+    Plain file reads, no git subprocess, so it is cheap per repo. ``index_behind``
+    is ``None`` when either side is unknown, so "current" and "could not tell"
+    stay distinct.
     """
     if not repo.local_path:
         return None, None, None

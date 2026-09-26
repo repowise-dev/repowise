@@ -90,10 +90,7 @@ async def create_repo(
     as ``initial_job_id`` so clients can attach to its progress stream.
     """
     if not body.index:
-        # Metadata-only registration (kept for API compatibility and tests):
-        # the row lands in the ambient DB; per-repo storage is established
-        # when the repo is first indexed (here with index=true, or later via
-        # POST /api/repos/{id}/index).
+        # Metadata-only registration: per-repo storage is created on first index.
         repo = await crud.upsert_repository(
             session,
             name=body.name,
@@ -224,20 +221,12 @@ async def repos_summary(
 ) -> ReposSummaryResponse:
     """One-call payload for the multi-repo dashboard.
 
-    Replaces a `2N+1` waterfall — `/api/repos`, then `/stats` and
-    `/git-summary` per repository — with a single request whose cost does not
-    grow with the number of repos.
-
-    Declared **before** ``/{repo_id}``: FastAPI matches in declaration order,
-    so a literal path registered after the parameterised one is unreachable
-    and would answer 404 "Repository not found" instead.
+    Its cost does not grow with the number of repos. Declared **before**
+    ``/{repo_id}``: FastAPI matches in declaration order.
     """
     repos = await list_repos(request, session)
 
-    # Grouped aggregates from the ambient DB. In workspace mode each repo
-    # keeps its own wiki.db and the primary session cannot see those rows, so
-    # fan out the same way `list_repos` does. One unreadable DB drops that
-    # repo's figures to zero rather than failing the page.
+    # Workspace repos keep their own wiki.db, so fan out; an unreadable one reads as zeros.
     stats = await _summary_rows_for(session)
     ws_sessions: dict = getattr(request.app.state, "workspace_sessions", {})
     for repo_id, ws_factory in ws_sessions.items():
@@ -389,11 +378,7 @@ async def get_repo_stats(
     """Get aggregate stats for a repository."""
     await _get_repo_or_404(session, repo_id)
 
-    # File nodes only. `graph_nodes` holds symbol rows in the same table, so
-    # the unscoped count reported ~10x the real figure — 38,813 against 3,600
-    # on this codebase — under a field named `file_count`. Both surfaces that
-    # read it printed that as "N files": the multi-repo dashboard and the chat
-    # empty state.
+    # File nodes only: `graph_nodes` also holds symbol rows.
     file_count = await _scalar_or(
         session,
         select(func.count(GraphNode.id)).where(
@@ -888,10 +873,8 @@ async def get_file_content(
     """
     repo = await _get_repo_or_404(session, repo_id)
 
-    # Belt and braces alongside the index membership test below. Only the two
-    # directories that hold credentials are named: the traverser walks other
-    # dot-paths, so `.github/workflows/ci.yml` and `.eslintrc.json` are indexed
-    # files a reader can legitimately open.
+    # Backs up the index membership test below. Only credential directories are
+    # named; other dot-paths (e.g. `.github/`) are indexed and readable.
     segments = file_path.replace("\\", "/").split("/")
     if segments and segments[0] in (".git", ".repowise"):
         raise HTTPException(status_code=400, detail="Invalid file path")

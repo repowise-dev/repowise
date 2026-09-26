@@ -1,9 +1,5 @@
-"""Row assembly for ``GET /api/repos``.
-
-The listing merges repository rows from the primary database and every
-workspace database, marks which ones have been indexed, and in workspace mode
-decorates each row with its alias and state.json facts and adds placeholder
-rows for workspace members that are not registered yet.
+"""Row assembly for ``GET /api/repos``: merge primary and workspace databases,
+flag unindexed repos, and in workspace mode attach aliases and placeholders.
 """
 
 from __future__ import annotations
@@ -71,28 +67,20 @@ async def load_repositories(
         except Exception:
             pass
 
-    # Repository rows are merged across database backends in workspace mode.
-    # Normalize their timestamps before sorting because PostgreSQL returns aware
-    # datetimes while SQLite may return naive UTC values.
+    # Rows from different backends mix aware and naive timestamps; the key normalizes them.
     repos.sort(key=repository_sort_key, reverse=True)
     return repos, indexed_repo_ids
 
 
 def heal_indexed_commits(responses: list[RepoResponse]) -> None:
-    # Self-heal the freshness stamp on read: prefer each repo's state.json
-    # last_sync_commit over a possibly-stale DB head_commit, so a row left
-    # un-stamped by an older build doesn't make the extension report "index
-    # behind checkout". The DB row is repaired for good on the next update.
+    # Prefer state.json's last_sync_commit over a possibly stale DB head_commit.
     for resp in responses:
         if resp.local_path:
             resp.head_commit = resolve_indexed_commit(resp.head_commit, resp.local_path)
 
 
 def flag_unindexed(responses: list[RepoResponse], indexed_repo_ids: set[str]) -> None:
-    # Flag registered-but-never-indexed repos. head_commit can't signal this
-    # (registration stamps it from the live git HEAD), so the honest check is
-    # whether file-typed graph nodes exist in the database.
-    # Reuses the workspace "needs_index" / "missing_dir" contract the sidebar renders.
+    # head_commit is stamped at registration, so "indexed" means file nodes exist.
     for resp in responses:
         if resp.workspace_status is None and resp.local_path and resp.id not in indexed_repo_ids:
             try:
@@ -113,10 +101,7 @@ def _apply_state_file(resp: RepoResponse) -> None:
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
         resp.docs_mode = resolve_docs_mode(state)
-        # A state file predating every docs field used to report
-        # docs_enabled=True by default. Deriving the flag from the
-        # resolved mode alone would flip those old indexes to False,
-        # so keep the legacy default when nothing at all is recorded.
+        # A state file with no docs fields at all keeps the legacy docs_enabled=True.
         if not any(k in state for k in ("docs_mode", "docs_enabled", "provider", "model")):
             resp.docs_enabled = True
         else:
