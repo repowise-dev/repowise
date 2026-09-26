@@ -74,20 +74,14 @@ from repowise.server.mcp_server.tool_search import _prose_dominates
 def _extract_question_identifiers(question: str) -> set[str]:
     """Pull out Python-looking identifiers the question names explicitly.
 
-    Targets: snake_case (``_local_reachability_density``), CamelCase
-    (``NearestCentroid``), dotted paths (``BaseLabelPropagation.fit``).
-    Filtered to ≥3 chars, non-stopwords, non-pure-lowercase-English (unless
-    they contain an underscore or a digit — otherwise every common word
-    matches). The result drives question-aware symbol promotion in
-    ``_hydrate_symbols_for_hits``.
+    snake_case, CamelCase and dotted paths, at least 3 chars and not
+    stopwords. Drives question-aware promotion in ``_hydrate_symbols_for_hits``.
     """
     import re
 
     ids: set[str] = set()
-    # Match bare identifiers and dotted paths: first char letter/underscore,
-    # rest alnum/underscore, optionally with dotted continuations.
     for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", question):
-        # Split dotted paths into both the full thing and the leaf.
+        # A dotted path yields both the full thing and each part.
         parts = tok.split(".")
         candidates = [tok, *parts]
         for c in candidates:
@@ -95,12 +89,7 @@ def _extract_question_identifiers(question: str) -> set[str]:
                 continue
             if c.lower() in _STOPWORDS:
                 continue
-            # Heuristic: keep if it contains an uppercase letter anywhere
-            # (covers CamelCase and sentence-initial capitalised nouns like
-            # ``Version`` that are typically class names in Python), a
-            # digit, or an underscore. Pure-lowercase English words like
-            # ``method`` / ``class`` / ``dtype`` are dropped — they are
-            # poor promotion signals and match too broadly.
+            # Pure-lowercase words (``method``, ``class``) match too broadly.
             has_upper = any(ch.isupper() for ch in c)
             has_under = "_" in c
             has_digit = any(ch.isdigit() for ch in c)
@@ -114,24 +103,11 @@ def union_defers_to_synthesis(
 ) -> bool:
     """True when an answer-by-union should fall through to synthesis.
 
-    Answer-by-union is the right reply for a small set of genuine parallel
-    implementations the question is actually about (``_severity_for`` has 4
-    across the biomarkers). It is the WRONG reply when a prose question merely
-    *mentions* a generic method that happens to have many definitions: measured,
-    "how does a wiki page get its provider_name during indexing?" dumped 12
-    unrelated provider stubs as a confidence=high answer, and a ``to_dict``
-    mention dumped 28. Two signals must both hold before deferring, so the
-    narrowest population is affected:
+    A union answers a small set of parallel implementations, not a prose
+    question that merely mentions a generic many-def method. Both must hold:
 
-    * ``_prose_dominates`` — the query reads as prose, not a bare symbol lookup.
-      A bare ``provider_name`` (prose does not dominate) still unions: that
-      caller explicitly asked for every definition.
-    * the def count exceeds ``_HOMONYM_UNION_PROSE_DEF_CEILING`` — past a
-      handful, the name is a generic method, not a small parallel-impl set.
-
-    Small genuine unions and explicit lookups are untouched; only a prose
-    question naming a many-def generic method falls through to synthesis (which
-    grounds in the file the question is really about).
+    * ``_prose_dominates``: a bare symbol lookup still unions.
+    * The def count exceeds ``_HOMONYM_UNION_PROSE_DEF_CEILING``.
     """
     if not union_groups:
         return False
@@ -144,21 +120,13 @@ def union_defers_to_synthesis(
 def is_symbol_lookup_question(question: str, question_ids: set[str]) -> bool:
     """True when the question IS the symbol names, not prose that mentions them.
 
-    ``ModelAdmin`` is a lookup; "how does ModelAdmin dispatch a request" is
-    prose that merely names one. The distinction matters wherever the question
-    is whether a served BODY is the answer: for a lookup it is, so truncating
-    it is a loss on its own; for prose the body is evidence for a claim, and
-    truncation alone says little (22% of truncations withhold nothing the
-    response leans on).
+    For a lookup the served body is the answer, so truncating it is a loss on
+    its own; for prose the body is evidence for a claim.
 
-    **Stricter than ``_prose_dominates``, deliberately.** That predicate counts
-    ``[A-Za-z0-9_]+`` tokens, so a question written in Cyrillic, Japanese or
-    Chinese tokenises to nothing but its identifiers and reads as a bare
-    lookup — and repowise ships an output-language feature, so those callers
-    exist. It also misreads dense English ("Why does ModelAdmin call
-    get_queryset, get_form and save_model?" is 4 identifiers in 7 tokens).
-    Removing the identifiers and asking whether any word character survives is
-    script-independent and says what "bare lookup" actually means.
+    Stricter than ``_prose_dominates``, which counts ASCII tokens and so reads
+    non-Latin-script questions and identifier-dense English as bare lookups.
+    Removing the identifiers and checking for any surviving word character is
+    script-independent.
     """
     if not question_ids:
         return False
@@ -173,11 +141,9 @@ def is_symbol_lookup_question(question: str, question_ids: set[str]) -> bool:
 def _extract_value_answer(hits: list[dict], question_ids: set[str]) -> dict | None:
     """Verbatim-assignment answer for value-shaped questions (the C1 fast path).
 
-    When a question names an identifier and the hydrator matched a
-    constant/variable symbol in the top hits, the symbol's signature IS the
-    answer — the verbatim assignment line read from live source. No LLM
-    call, nothing to hedge, nothing to invent. Exact name matches win over
-    substring matches.
+    A matched constant/variable's signature is the verbatim assignment from
+    live source, so it is the answer, with no LLM call. Exact name matches win
+    over substring matches.
     """
     qids_lower = {q.lower() for q in question_ids}
     candidates: list[dict] = []
@@ -198,8 +164,7 @@ def _extract_value_answer(hits: list[dict], question_ids: set[str]) -> dict | No
                 "line": s.get("start_line"),
                 "answer": f"{sig}  ({path}:{s.get('start_line')})",
             }
-            # Multi-line values (dicts/arrays): the hydrator attached the
-            # live body — include it so the agent never needs a follow-up.
+            # Multi-line values: include the live body the hydrator attached.
             excerpt = s.get("source_excerpt")
             if excerpt and excerpt.strip() != sig.strip():
                 entry["value_source"] = excerpt
@@ -232,29 +197,19 @@ async def _anchor_symbol_hits(
 ) -> tuple[list[dict], dict[str, Any]]:
     """Inject the defining file of a question-named indexed symbol into hits.
 
-    BM25 / vector retrieval misses deep-path files even when the named symbol
-    is indexed — "explain DecisionExtractor.extract_all" ranks the pipeline
-    orchestrators above ``analysis/decisions/extractor.py`` and never surfaces
-    the definition, so synthesis hedges and ``symbol_bodies`` can't fire. When
-    a question identifier resolves to a single indexed function / method /
-    class, prepend (or boost) its defining file as the dominant hit so the
-    answer grounds in the actual definition.
+    Fuzzy retrieval can miss a deep-path file even when the named symbol is
+    indexed. A question identifier resolving to one indexed def makes its file
+    the dominant hit, so the answer grounds in the definition.
 
-    Homonyms (N>=2 defs of one name) split three ways:
+    Homonyms (several defs of one name) split three ways:
 
-    * The question names the parent / qualifies the name so exactly one def
-      survives → anchor that def (as before).
-    * The question does NOT qualify the name → the whole def set is returned in
-      ``homonyms["union"]`` so the caller can inline the UNION of bodies instead
-      of bailing to a best_guesses pointer list (the pointer list is exactly
-      what triggers the agent's get_symbol/get_context drill). This is the fix
-      for the retrieval-MISS class (``_severity_for`` x 4) - the defs are never
-      in the fuzzy candidate set, so an exact-name index scan is the only thing
-      that surfaces them.
-    * The question qualifies the name (``Parent.leaf``) but NO def matches that
-      qualifier → recorded in ``homonyms["qualified_miss"]`` so the caller can
-      return not-found instead of synthesizing from a same-named symbol
-      elsewhere (a precise query must never degrade to a confident wrong answer).
+    * The question narrows it to exactly one def: anchor that def.
+    * The question does not qualify the name: the defs go to
+      ``homonyms["union"]`` so the caller inlines the union of bodies, which
+      fuzzy retrieval would never surface.
+    * The question qualifies the name (``Parent.leaf``) but no def matches:
+      ``homonyms["qualified_miss"]``, so the caller answers not-found rather
+      than from a same-named symbol elsewhere.
 
     Returns ``(hits, homonyms)``; ``hits`` is re-sorted by score (mutated in
     place). ``homonyms = {"union": {name: [def_dict, ...]}, "qualified_miss":
@@ -273,19 +228,15 @@ async def _anchor_symbol_hits(
     )
     by_name: dict[str, list] = {}
     for row in res.scalars().all():
-        # A pathless row names nothing the reply can point at. Dropping it here
-        # keeps it out of every route below: the anchor, and both union branches
-        # that would otherwise read the live file at an empty path.
+        # A pathless row names nothing the reply can point at: drop it from
+        # every route below.
         if not row.file_path:
             continue
         by_name.setdefault(row.name, []).append(row)
 
-    # Verify bounds against the live file before any body is sliced from a
-    # stored range. Both the answer-by-union bodies (grounding=exact_symbol,
-    # confidence=high) and the anchored tier-0 symbol_bodies serve live source at
-    # these bounds, so a drifted row would otherwise ground the strongest-trust
-    # answer in the wrong lines. Cheap gate first (string check); a re-parse fires
-    # only on a genuine miss and heals the row. One live read per file, cached.
+    # Verify bounds before slicing: union and anchored bodies are served at
+    # high trust, so a drifted row would ground them in the wrong lines.
+    # One live read per file, cached.
     _text_cache: dict[str, str | None] = {}
 
     async def _verified_dict(row) -> dict:
@@ -367,25 +318,18 @@ async def _anchor_chosen_symbols(
     """Boost (or insert) each chosen def's file and stash the def on it."""
     by_path = {h.get("target_path"): h for h in hits}
     top_score = max((h.get("score", 0.0) for h in hits), default=0.0)
-    # Above the current top so an exact symbol match dominates the dominance
-    # gate (an exact name+parent hit is stronger evidence than a prose match).
+    # Above the current top: an exact symbol match is stronger than prose.
     anchor_score = max(top_score + 2.0, _HIGH_CONFIDENCE_SCORE_FLOOR + 1.0)
     for sym in chosen:
         fp = sym.file_path
         if not fp:
-            # The same guard the concept-anchoring twin applies to its winner.
-            # An anchor scores above every real hit by construction, so a
-            # pathless one takes rank 1 and serves a row carrying nothing but a
-            # score — no path, title, summary or excerpt — while displacing a
-            # real hit from the synthesis window.
+            # A pathless anchor would take rank 1 as an empty row.
             continue
         target = _boost_or_insert_file_hit(hits, by_path, fp, anchor_score)
         target["_symbol_anchored"] = True
-        # Stash the exact symbol the question named so symbol_bodies serves it
-        # directly — the fuzzy hydration cap drops a far-down method when the
-        # parent class name floods every sibling's qualified-name match. Serve
-        # verified bounds only: an unrelocatable (approximate) symbol still
-        # boosts its file's rank, but is not stashed for a live-body slice.
+        # Stash the named symbol so symbol_bodies serves it even when the
+        # hydration cap would drop it. Verified bounds only; an approximate
+        # symbol still boosts its file.
         vd = await verified_dict(sym)
         if vd.get("_approx"):
             continue
@@ -430,35 +374,15 @@ def attach_truncation_contract(
 ) -> None:
     """Mark an inlined body that was cut, and name what the cut withheld.
 
-    Every place that inlines a symbol body owes the consumer the same three
-    keys when the indexed body outruns what was served: ``truncated``, a
-    ``continuation`` naming the exact range holding the remainder, and the
-    ``withheld_symbols`` that range covers.
+    Every site that inlines a body owes the same keys when the indexed body
+    outruns what was served: ``truncated``, a ``continuation`` range, and the
+    ``withheld_symbols`` in it, so the consumer knows what it is missing. One
+    function, because the confidence cascade reads these keys and two copies
+    would drift.
 
-    Say WHAT was withheld, not just that something was. A bare truncated flag
-    plus a get_symbol pointer was followed zero times across the agent runs
-    measured, so the consumer needs the names in hand to decide whether it is
-    missing anything it cares about, and to continue inside this tool rather
-    than falling back to Read.
-
-    Both callers need it for the same reason and one of them needs it more: the
-    homonym union payload returns BEFORE synthesis, so it is served in no-LLM
-    mode and never reaches any of the confidence gates. Held in one function
-    because two copies of this contract drifting apart is a live risk: the
-    truncation keys are read by the confidence cascade, and the two sites have
-    co-changed ten times.
-
-    ``indexed_end`` is the end line the index recorded, ``end_served`` the last
-    line actually inlined. A falsy ``indexed_end`` means the index recorded no
-    end at all, which is never a cut: it is tested explicitly rather than left
-    to ``indexed_end > end_served``, which would only agree with it while
-    ``end_served`` stays non-negative.
-
-    ``indexed_end`` is trusted to lie within the live file, which is
-    ``check_symbol_bounds``'s job rather than this one's: it now clamps to
-    ``len(lines)`` on every return, so a stored end that overshoots cannot reach
-    here and flag a body served WHOLE as truncated (D8). Clamping again here
-    would be a second owner and a second disk read.
+    A falsy ``indexed_end`` means the index recorded no end, which is never a
+    cut. ``indexed_end`` is trusted to lie within the live file:
+    ``check_symbol_bounds`` owns that clamp.
     """
     if indexed_end and indexed_end > end_served:
         entry["truncated"] = True
@@ -504,10 +428,8 @@ def build_homonym_union_bodies(
         start = d.get("start_line") or 0
         end = d.get("end_line") or 0
         symbol_id = f"{path}::{name}"
-        # Bounds that failed live verification (symbol moved and could not be
-        # re-located): don't inline a slice at unreliable lines under a
-        # confidence=high envelope. Hand the agent a get_symbol pointer, which
-        # verifies on its own path.
+        # Unverified bounds: a get_symbol pointer instead of a slice at
+        # unreliable lines under a high-confidence envelope.
         body = (
             None
             if d.get("_approx")
@@ -550,24 +472,14 @@ async def _concept_anchor_hits(
 ) -> list[dict]:
     """Anchor the file whose rationale COMMENT explains a number-bearing question.
 
-    The symbol anchor above rescues questions that NAME an indexed symbol. This
-    rescues the other retrieval-miss class: a why/value question that pins a
-    literal number to a *described behaviour* (a cap / limit / batch size) but
-    names no symbol. Fuzzy retrieval lands on a same-vocabulary file and never
-    surfaces the one whose comment justifies the number, so it never enters the
-    candidate set and the agent re-reads. We grep tracked source for comment
-    lines carrying the number + a content noun, score the candidates with the
-    existing rationale miner, and inject the winner so retrieval includes it and
-    its comment reaches ``code_rationale``.
+    For a question that pins a literal number to a described behaviour (a cap,
+    a limit) but names no symbol. Greps comments carrying the number, scores
+    them with the rationale miner, and injects the winning file so its comment
+    reaches ``code_rationale``.
 
-    Fires only when the question pins a literal number (the high-precision case;
-    the prototype showed naive number-free grep is too noisy) and the winning
-    file is not already the top retrieval hit (i.e. retrieval genuinely missed
-    it). When the winner is already top, the existing confidence machinery decides
-    the label - we deliberately do NOT force it past the dominance gate, which
-    generalized only to the questions it was tuned on. The mined rationale + its
-    line are stashed on the hit so the downstream ``code_rationale`` surfacing
-    serves the exact comment without a second grep.
+    Fires only on number-bearing questions (number-free grep is too noisy) and
+    only when retrieval missed the winner; otherwise the confidence machinery
+    decides. The mined rationale is stashed on the hit to avoid a second grep.
 
     Returns ``hits`` re-sorted by score (mutated in place). Best-effort: any
     failure leaves ``hits`` untouched.
@@ -582,14 +494,11 @@ async def _concept_anchor_hits(
 
     if repo_root is None or not question:
         return hits
-    # Precision gate: only number-bearing questions. A bare "why is X limited"
-    # would grep the whole cap-family vocabulary and over-fire.
+    # Precision gate: only number-bearing questions.
     if not _salient_numbers(question):
         return hits
 
-    # The grep spawns a subprocess and mine reads files off disk - both blocking.
-    # Run them in a worker thread so they never stall the server's event loop
-    # (this can run inside a stdio MCP server driving the JSON-RPC transport).
+    # Blocking grep and file reads: keep them off the server's event loop.
     def _grep_and_mine() -> dict | None:
         candidates = grep_comment_candidates(repo_root, question)
         if not candidates:
@@ -603,26 +512,20 @@ async def _concept_anchor_hits(
     winner_path = winner.get("path")
     if not winner_path:
         return hits
-    # Retrieval-miss gate: only anchor when retrieval did NOT already lead with
-    # the winner. If it is already the top hit, leave the confidence label to the
-    # existing dominance/confidence machinery - forcing it past the gate only ever
-    # helped the questions it was tuned against. The mined comment still reaches
-    # the agent via the gated path's code_rationale.
+    # Retrieval-miss gate: if the winner already leads, leave it to the
+    # confidence machinery.
     if hits and hits[0].get("target_path") == winner_path:
         return hits
 
     near_line = (winner.get("lines") or [0])[0]
     by_path = {h.get("target_path"): h for h in hits}
     top_score = max((h.get("score", 0.0) for h in hits), default=0.0)
-    # Above the current top so the comment-justified file dominates the
-    # dominance gate and synthesis runs instead of gating low.
+    # Above the current top, so synthesis runs instead of gating low.
     anchor_score = max(top_score + 1.5, _HIGH_CONFIDENCE_SCORE_FLOOR + 0.5)
     target = _boost_or_insert_file_hit(hits, by_path, winner_path, anchor_score)
     target["_concept_anchored"] = True
     target["_concept_near_line"] = near_line
-    # Stash the mined comment so the code_rationale surfacing can serve it
-    # verbatim on any exit path - including the high path, where the comment IS
-    # the answer the agent would otherwise re-read for.
+    # Served verbatim as ``code_rationale`` on any exit path.
     target["_concept_rationale"] = winner
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
     return hits

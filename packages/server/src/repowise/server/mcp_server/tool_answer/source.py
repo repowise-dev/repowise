@@ -42,15 +42,8 @@ def _read_symbol_source(
 ) -> str | None:
     """Return the literal source body for a symbol, bounded to max_lines.
 
-    The bounded source is the key ingredient for question-matched symbols.
-    The LLM was already getting the file-level summary and a truncated
-    docstring; what it was missing was the actual code. With 40 lines of
-    the method body in front of it, the synthesis step can answer "how
-    does X work" without hedging back to "you should inspect the source".
-
-    ``text`` lets a caller that already read the file (the hydrator reads it
-    once for the bounds gate) pass the live source in, so a hydrated file is
-    read once instead of once per symbol.
+    The code itself, so synthesis can answer "how does X work" without hedging.
+    ``text`` passes in source the caller already read, so a file is read once.
     """
     if start_line < 1:
         return None
@@ -103,9 +96,7 @@ def _read_signature_from_source(
         sig_lines.append(line.strip())
         paren_depth += line.count("(") - line.count(")")
         stripped = line.rstrip()
-        # "ends with a colon" alone leaves a one-line body (``def go(self): pass``)
-        # and every brace language (``func f() error {``, ``render() {``) with no
-        # terminator at all, so the signature absorbs the lines after it.
+        # A trailing colon alone misses one-line bodies and brace languages.
         if paren_depth <= 0 and (
             stripped.endswith(":") or _SIG_TERMINATOR_RE.search(stripped)
         ):

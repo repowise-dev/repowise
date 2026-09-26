@@ -72,10 +72,9 @@ def _stem_hit(term: str, tokens: set[str]) -> bool:
 def _question_names_symbol(row, qids_lower: set[str]) -> bool:
     """Whether an identifier from the question names this symbol.
 
-    Substring-matching the whole qualified name marked every symbol in a package
-    whose path shares a word with the question, which flattened the promotion to
-    a no-op. Matching is against the symbol's own name, its full qualified name,
-    or its parent: asking about a class should still reach its methods.
+    Matches the symbol's own name, its full qualified name, or its parent (so a
+    class reaches its methods), never a substring of the qualified name, which
+    would match every symbol in a package sharing a word with the question.
     """
     if not qids_lower:
         return False
@@ -121,10 +120,9 @@ def _symbol_relevance(entry: dict, terms: set[str]) -> int:
     return score
 
 
-# Definition kinds worth naming in `defines`, best first. A file is
-# characterised by what it declares, so a class outranks a bare function and
-# both outrank a variable. Kinds absent from this map are not emitted at all:
-# imports and re-exports would fill the budget with names that answer nothing.
+# Definition kinds worth naming in `defines`, best first. Absent kinds (imports,
+# re-exports) are not emitted: they would fill the budget with names that
+# answer nothing.
 _DEFINE_KIND_RANK = {
     "class": 0,
     "interface": 1,
@@ -145,28 +143,15 @@ async def _hydrate_candidate_defines(
 ) -> None:
     """Mutate *hits* in place: attach ``_defines`` to the candidate-pool files.
 
-    ``candidates`` names the files retrieval ranked and, before this, said
-    nothing about any of them. An agent handed ``django/shortcuts.py`` and
-    nothing else has exactly one move available, which is to go and Grep it; the
-    Layer B taxonomy judged 89% of post-answer searches to be that move. Naming
-    the definitions a file contains turns "search this file" into "read this
-    line", and often answers a where-is-it question outright.
+    Naming a candidate file's definitions turns "search this file" into "read
+    this line", and often answers a where-is-it question outright.
 
-    Deliberately cheap and deliberately shallow:
+    Deliberately cheap and shallow: one batched, index-covered query over at
+    most ``_DEFINES_MAX_FILES`` paths; names and start lines only (bodies live
+    elsewhere); line numbers are index-recorded, not verified, a navigation hint.
 
-    * **One batched query**, on ``(repository_id, file_path)`` which the
-      ``uq_wiki_symbol`` index already covers, over at most
-      ``_DEFINES_MAX_FILES`` paths. No live file reads, no bounds verification.
-    * **Names and start lines only.** No signature, no docstring, no body. Those
-      already have homes (``retrieval[].key_symbols``, ``symbol_bodies``) and
-      this block must not compete with them for the payload's byte budget.
-    * **Line numbers are index-recorded, not verified.** Unlike ``get_symbol``,
-      nothing here checks the stored bounds against the live file. They are a
-      navigation hint; the serializer's field documentation says so.
-
-    Ordering within a file: question-named symbols first (they are what the
-    agent came for), then by declaration kind, then by position. Dunders and
-    private names are dropped unless the question named them.
+    Order within a file: question-named symbols, then declaration kind, then
+    position. Private names are dropped unless the question named them.
     """
     qids = {q.lower() for q in (question_ids or set())}
 
@@ -245,24 +230,15 @@ async def _hydrate_symbols_for_hits(
 ) -> None:
     """Mutate `hits` in place: attach `symbols` list to top-N file_page hits.
 
-    Question-aware promotion: if ``question_ids`` contains identifiers that
-    match symbols in the retrieved files, those symbols move to the top of
-    their file's symbol list, carry a longer docstring, and get a source
-    excerpt (``source_excerpt``). This is the difference between the LLM
-    seeing ``class LocalOutlierFactor`` at the file top (and hedging on a
-    question about ``_local_reachability_density``) vs. seeing the actual
-    method body and answering it.
+    Symbols the question names by identifier move to the top of their file's
+    list and get a ``source_excerpt``, so synthesis sees the body it is asked
+    about rather than only the enclosing class.
 
-    Top hit gets ``_MAX_SYMBOLS_TOP_HIT`` slots; secondaries get the smaller
-    ``_MAX_SYMBOLS_PER_HIT``. Symbols not matching a question id carry the
-    short 120-char docstring; matched symbols carry 400 chars + source body.
-
-    ``question`` decides which symbols fill those slots when the file holds more
-    than fit, and earns the leading few a source body: a question phrased in
-    prose names no identifier, so nothing matches and nothing would carry code.
+    The top hit gets ``_MAX_SYMBOLS_TOP_HIT`` slots, the rest
+    ``_MAX_SYMBOLS_PER_HIT``. ``question`` ranks which symbols fill them and
+    earns the leading few a body, since a prose question names no identifier.
     """
     question_ids = question_ids or set()
-    # Case-folded copy for matching.
     qids_lower = {q.lower() for q in question_ids}
     # Once per call: the question's terms, stemmed to match identifier roots.
     term_stems = {_stem(t) for t in content_terms(question)}
@@ -333,21 +309,16 @@ async def _symbol_entry(
     term_stems: set[str],
 ) -> dict[str, Any]:
     """One hydrated symbol: verified bounds, live signature, match and relevance."""
-    # Trust contract (shared with get_symbol): verify the stored bounds
-    # against the live file before slicing a signature or body out of it.
-    # Drift (an edit above the def, or an update lag) otherwise turns into a
-    # garbled signature / body served as if fresh. On a re-parse correction
-    # the row is healed; when the symbol can't be re-located we fall back to
-    # the stored signature and skip the live body — a stored-but-consistent
-    # signature beats a live slice at the wrong lines.
+    # Trust contract (shared with get_symbol): verify stored bounds before
+    # slicing live text. Unverified, fall back to the stored signature and no
+    # body: consistent beats a live slice at the wrong lines.
     if text is not None:
         check = await verify_and_heal(session_factory, row, text)
         start_line, end_line, verified = check.start_line, check.end_line, check.verified
     else:
         start_line, end_line, verified = row.start_line, row.end_line, False
-    # Constants/variables: the stored signature IS the verbatim assignment
-    # line. The disk re-read below walks forward looking for a ":"-closed
-    # def line and would join unrelated following lines for assignments.
+    # For constants/variables the stored signature is the verbatim assignment;
+    # the def-line reader would join unrelated following lines.
     if row.kind in ("constant", "variable") or not verified:
         rich_sig = None
     else:
@@ -365,8 +336,7 @@ async def _symbol_entry(
         "_matched": matched,
         "_verified": verified,
     }
-    # Scored once here, not in the sort key, so a dense file pays for it per
-    # symbol rather than per comparison.
+    # Scored once here, not per sort comparison.
     entry["_relevance"] = _symbol_relevance(entry, term_stems)
     if matched and verified:
         src = _read_symbol_source(
@@ -379,16 +349,10 @@ async def _symbol_entry(
 
 def _keep_symbols(syms: list[dict], hit: dict, cap: int) -> list[dict]:
     """The ``cap`` symbols of one file worth the synthesis context, in priority order."""
-    # Sort: matched symbols first, then by relevance to the question, then in
-    # start_line order. Cap per file — top hit gets more slots than secondary
-    # hits. This decides WHICH symbols are kept; the kept slice is put back into
-    # reading order below, so consumers still see document order.
+    # Decides which symbols are kept; the caller restores reading order.
     syms.sort(key=lambda s: (not s["_matched"], -s["_relevance"], s["start_line"]))
-    # Force-include the exact symbol the question named (via anchoring) so a
-    # class-name flood — where every sibling method "matches" through the
-    # parent's qualified name — can't evict the method the user asked about
-    # from the synthesis context. Without this the LLM never sees the body
-    # and hedges, which is exactly the failure anchoring exists to prevent.
+    # Anchored symbols first, so siblings matching through their parent's name
+    # cannot evict the one the question asked about.
     anchor_names = {a.get("name") for a in (hit.get("_anchor_symbols") or [])}
     kept: list[dict] = [s for s in syms if s["name"] in anchor_names][:cap]
     # Then the rest of the matched symbols, then unmatched, up to the cap.
@@ -407,10 +371,8 @@ def _attach_relevant_excerpts(
     kept: list[dict], repo_root: Path | None, path: str, text: str | None
 ) -> None:
     """Give the leading question-relevant symbols without an excerpt a body."""
-    # A prose question names no identifier, so nothing is `_matched` and the
-    # slate would carry signatures only. Give the leading few symbols the
-    # question scored against a body, so the excerpts hold the code the
-    # question is about. `kept` is still in priority order here.
+    # A prose question matches no identifier, so relevance earns the body.
+    # `kept` is still in priority order here.
     bodied = 0
     for s in kept:
         if bodied >= _RELEVANT_EXCERPT_MAX_SYMBOLS:
@@ -433,14 +395,9 @@ def _deepen_matched_excerpts(
     kept: list[dict], repo_root: Path | None, path: str, text: str | None
 ) -> None:
     """Re-read the leading matched excerpts at the inline-body depth."""
-    # Upgrade the top question-relevant symbols to the inline-body depth
-    # BEFORE the reading-order sort, while `kept` is still in priority order
-    # (anchors, then matched, then unmatched). The default 40-line excerpt
-    # truncates a docstring-heavy definition before its answer-bearing logic,
-    # so synthesis hedges on the exact symbol whose full 120-line body the
-    # response inlines in symbol_bodies. Reading the leading few at the same
-    # depth keeps the LLM's view and the served body consistent. Bounded so a
-    # class-name flood can't balloon the prompt; the rest keep the excerpt.
+    # Runs while `kept` is in priority order. Reading the leading few at the
+    # depth ``symbol_bodies`` serves keeps synthesis consistent with it; the
+    # short excerpt can stop before the logic. Bounded to protect the prompt.
     upgraded = 0
     for s in kept:
         if upgraded >= _SYNTH_FULL_BODY_MAX_SYMBOLS:

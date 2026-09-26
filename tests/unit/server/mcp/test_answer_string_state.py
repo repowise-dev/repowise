@@ -1,10 +1,7 @@
 """Characterization of the string/comment scanner behind withheld-symbol masking.
 
-``_walk_string_state`` is exercised end to end by the masking and containment
-suites, but always through ``withheld_definitions`` or the cached
-``_string_masked_lines``. These pin its raw three-part result directly, one
-lexical construct per case, so a restructuring of the scanner has to reproduce
-the exact line sets rather than just the symbols a fixture happens to surface.
+Pins ``_walk_string_state``'s raw three-part result, one lexical construct per
+case, so a restructured scanner must reproduce the exact line sets.
 """
 
 import pytest

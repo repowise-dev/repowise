@@ -28,11 +28,8 @@ _DECL_MODIFIERS = (
     r"unsafe|extern|partial|data|operator|const"
 )
 
-# Definition-line shapes, tried in order; each yields ``indent`` / ``kind`` /
-# ``name``. A Python-only regex was the first cut and it made this whole feature
-# inert on TS/Go/Java — which, at a 120-line body cap, is exactly where
-# truncation bites hardest, since a TS class or a React component is the shape
-# that overruns the cap in the first place.
+# Definition-line shapes across languages, tried in order; each yields
+# ``indent`` / ``kind`` / ``name``.
 _WITHHELD_DEF_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Python: def / async def / class.
     re.compile(
@@ -52,31 +49,23 @@ _WITHHELD_DEF_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"[ \t]+(?P<name>[A-Za-z_$][\w$]*)"
     ),
     # JS/TS function declarations, including ``export default`` and generators.
-    # The separator after ``function`` is REQUIRED (or a generator star). With
-    # ``[ \t]*`` the keyword matched as a mere prefix of a longer identifier, so
-    # ``function_name: Mapped[str] = ...`` reported a symbol called ``_name``:
-    # measured at 507 fabricated entries across this repo, the single largest
-    # source of ids that resolve to nothing.
+    # The separator after ``function`` is required, or ``function_name: ...``
+    # would report a symbol called ``_name``.
     re.compile(
         r"^(?P<indent>[ \t]*)(?:export[ \t]+)?(?:default[ \t]+)?(?:async[ \t]+)?"
         r"(?P<kind>function)(?:[ \t]*\*[ \t]*|[ \t]+)(?P<name>[A-Za-z_$][\w$]*)"
     ),
-    # JS/TS arrow bindings: ``export const Panel = (props) => {``. The arrow has
-    # to belong to the binding itself, with only an optional return annotation
-    # between: allowing slack before it turns every local initialised from a
-    # callback-taking call (``const pages = all.filter((p) => ...)``) into a
-    # "definition" with a symbol_id that resolves to nothing.
+    # JS/TS arrow bindings: ``export const Panel = (props) => {``. The arrow must
+    # belong to the binding, or ``const pages = all.filter((p) => ...)`` matches.
     re.compile(
         r"^(?P<indent>[ \t]*)(?:export[ \t]+)?(?P<kind>const|let|var)[ \t]+"
         r"(?P<name>[A-Za-z_$][\w$]*)[^=]*=[ \t]*(?:async[ \t]+)?"
         r"(?:\([^)]*\)(?:[ \t]*:[^=]*?)?|[A-Za-z_$][\w$]*)[ \t]*=>"
     ),
     # Brace-language members: ``  public void run(String a) {``, ``  render() {``.
-    # Between the parameter list and the brace only a return type or a throws
-    # clause may appear -- no parens, or an assertion call in a test file
-    # (``expect(x).toMatchObject({``) reads as a method declaration. The brace
-    # itself is optional so Allman style (``void Beta()`` with ``{`` on the next
-    # line, the C# default) is reachable; the caller supplies the next line.
+    # No parens after the parameter list, or ``expect(x).toMatchObject({``
+    # matches. The brace is optional for Allman style; the caller supplies the
+    # next line.
     re.compile(
         rf"^(?P<indent>[ \t]*)(?:(?:{_DECL_MODIFIERS})[ \t]+)*"
         r"(?:[A-Za-z_$][\w$<>,.\[\]]*[ \t]+)?(?P<name>[A-Za-z_$][\w$]*)[ \t]*"
@@ -85,12 +74,9 @@ _WITHHELD_DEF_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 _BRACE_MEMBER = len(_WITHHELD_DEF_PATTERNS) - 1
 
-# The brace-member shape above also matches control flow (``if (x) {``), a
-# statement whose keyword the optional type group swallows (``raise
-# ValueError(f"... {x}")`` reports ``ValueError``), and any call taking a
-# callback (``describe("x", () => {``, ``it("x", function () {``). Both the
-# matched NAME and the line's own first word are checked, because the type group
-# hides the keyword from a name-only guard.
+# Words that make a brace-member match control flow or a statement rather than
+# a definition. Checked against the matched name and the line's first word,
+# since the optional type group can swallow the keyword (``raise X(...{``).
 _NOT_A_DEFINITION = frozenset(
     {
         "if", "for", "while", "switch", "catch", "else", "do", "try", "return",
@@ -104,10 +90,8 @@ _NOT_A_DEFINITION = frozenset(
 
 _FIRST_WORD_RE = re.compile(r"[A-Za-z_$][\w$]*")
 
-# Words no language lets you NAME a definition, so a match producing one is a
-# parse accident whatever shape it came from: ``fn is not None`` reads as Rust's
-# ``fn <name>`` and reported a symbol called ``is``. Kept strictly to reserved
-# words -- ``match``, ``range`` and ``print`` are all real function names.
+# Words no language lets you name a definition (``fn is not None`` is not Rust).
+# Strictly reserved words: ``match``, ``range`` and ``print`` are real names.
 _RESERVED_NAMES = frozenset(
     {
         "is", "not", "and", "or", "in", "if", "else", "elif", "for", "while",
@@ -145,26 +129,13 @@ def _not_a_brace_member(raw: str, next_raw: str, m: re.Match[str]) -> bool:
     # An anonymous function passed as an argument, in either syntax.
     if "=>" in raw[: m.end()] or "function" in raw[: m.end()]:
         return True
-    # Go's third spelling of the same thing: ``func(req *http.Request)
-    # (*http.Response, error) {``. There is no space after ``func``, so
-    # the optional return-type group matches empty and the name group
-    # takes the keyword itself, yielding an unresolvable ``path::func``.
-    # This cannot be handled by either general-purpose set above:
-    # ``_RESERVED_NAMES`` is tested for every pattern and ``def func():``
-    # is a real Python definition (41 of them in django alone), while
-    # ``_NOT_A_DEFINITION`` is also tested against the line's FIRST
-    # word, which is ``func`` on every named Go function too.
-    #
-    # Requiring ``func`` to open the line is what keeps it to the Go
-    # literal: ``int func(int a) {`` is a real definition named ``func``
-    # in C, C++, Java, C# and Kotlin, and a name-only test suppresses
-    # all five.
+    # A Go function literal, ``func(req *http.Request) (...) {``. Neither set
+    # above fits: ``func`` is a real name elsewhere (``int func(int a) {``), so
+    # only a line that opens with it is the Go literal.
     if m.group("name") == "func" and head and head.group(0) == "func":
         return True
-    # Allman: the brace is on the next line. A declaration never ends in
-    # a comma, but an argument on its own line inside a multi-line call
-    # does -- and when the following argument is a dict literal, the
-    # next line really is ``{`` (``bool(matched_nums),`` then ``{``).
+    # Allman: the brace is on the next line. A trailing comma means a call
+    # argument followed by a dict literal, not a declaration.
     return not m.group("brace") and (
         next_raw.strip() != "{" or raw.rstrip().endswith(",")
     )
@@ -179,10 +150,8 @@ def _indent_width(raw: str) -> int:
 _UNBOUNDED_INDENT = 1 << 30
 
 
-# Cap on how many withheld definitions are surfaced. This block exists to let
-# the agent CONTINUE inside the tool rather than fall back to Read, so it has to
-# stay small enough that it never competes with the answer for the window: names
-# and signatures only, never bodies.
+# Cap on withheld definitions surfaced: names and signatures only, small enough
+# never to compete with the answer.
 _WITHHELD_MAX_SYMBOLS: int = 8
 
 
@@ -195,13 +164,8 @@ def withheld_definitions(
     truncated ``symbol_bodies`` entry, so this reads exactly the lines the
     payload admits it withheld.
 
-    Why this exists rather than just flagging the truncation: measured on the
-    transcripts on disk, when a body is truncated the withheld range contains a
-    symbol the answer goes on to talk about **78% of the time**, and the
-    responses are at ``confidence: high`` in most of those. A flag alone does
-    not help the consumer, and the ``get_symbol`` pointer the payload already
-    carries was followed ZERO times across the runs measured. Names and
-    signatures are cheap and keep the agent inside the tool.
+    More than a truncation flag: the withheld range often holds the symbol the
+    answer is about, and names and signatures are cheap.
 
     Returns ``[{name, kind, line, symbol_id, signature}]``, the boundary-cut
     symbol first, empty on any failure (a probe that cannot read must not
@@ -258,8 +222,7 @@ def _withheld_entry(
     cut: bool = False,
 ) -> dict:
     name = m.group("name")
-    # The brace-member shape has no keyword to report, so it is named for
-    # what it is rather than mislabelled as a Python `def`.
+    # The brace-member shape has no keyword to report.
     kind = m.groupdict().get("kind") or "member"
     sig = _read_signature_from_source(repo_root, path, line_no, text=text)
     e = {
@@ -279,12 +242,8 @@ def _cut_anchor_indent(lines: list[str], lo: int, end: int, mask: _Masked) -> in
 
     None when every withheld line is blank, so nothing can be continuing.
     """
-    # The anchor obeys the same two exclusions as the walk. Taking the first
-    # non-blank withheld line flatly is what put the walk one line short of
-    # reality: when the cut lands ON a multi-line signature's own ``) -> dict:``
-    # (or on a flush-left docstring line), the anchor reads as column 0, the
-    # walk dies at once, and the payload ships truncated with NO withheld
-    # symbols -- gate 8 inert on exactly the long entry points that truncate.
+    # Same exclusions as the walk: a cut on a signature's ``) -> dict:`` or a
+    # flush-left docstring line would otherwise read as column 0.
     usable = [
         n
         for n in range(lo, end + 1)
@@ -293,20 +252,13 @@ def _cut_anchor_indent(lines: list[str], lo: int, end: int, mask: _Masked) -> in
         and lines[n - 1].strip()[0] not in ")]}{"
     ]
     if lo in mask.strings:
-        # The cut is INSIDE a multi-line string, so the expression holding that
-        # string -- and everything enclosing it -- is still open at ``lo``.
-        # Without this the anchor reads from the first line BELOW the string,
-        # usually a top-level declaration at column 0, and the walk dies at once
-        # (D9: 8 real definitions lost across cli/cli and mui). A block COMMENT
-        # cannot stand in for this: one sitting between two methods would report
-        # the preceding method as continuing when it has already ended.
+        # A cut inside a multi-line string leaves everything enclosing it open.
+        # Not so for a block comment, which can sit between two methods.
         return _UNBOUNDED_INDENT
     if usable:
         return _indent_width(lines[usable[0] - 1])
     if any(lines[n - 1].strip() for n in range(lo, end + 1)):
-        # Every withheld line is a string body or a bracket tail, so whatever
-        # encloses the cut is certainly still open: let any preceding
-        # definition qualify.
+        # Only string bodies and bracket tails: whatever encloses the cut is open.
         return _UNBOUNDED_INDENT
     return None
 
@@ -316,21 +268,11 @@ def _definition_cut_by_boundary(
 ) -> tuple[int, re.Match[str]] | None:
     """The definition above ``lo`` whose body the cut splits, if any.
 
-    The symbol whose body is CUT BY the boundary, which is the case that
-    motivated this whole helper and the one a naive implementation misses.
-    In the reference defect the served range ended at 166 and `_validate`
-    starts at 164: its `def` line was served, so it does not appear anywhere
-    in the withheld range, while the line that actually causes the bug (176)
-    sits inside it. Reporting only defs that START after the cut would say
-    nothing about the symbol the answer is about.
-
-    Taking the nearest preceding definition unconditionally is wrong, though:
-    a symbol that ENDED before the cut was served whole, and reporting it as
-    continuing puts a fully-served name at the head of the note and into the
-    get_symbol pointer. A definition at indent I reaches line ``lo`` only if
-    every non-blank line from it up to the first non-blank withheld line is
-    indented deeper than I, so walking backwards while tracking the running
-    minimum indent decides it exactly, in one pass and with no re-scan.
+    Its ``def`` line was served, so it appears nowhere in the withheld range,
+    yet its body continues into it. Not simply the nearest preceding definition:
+    one that ended before the cut was served whole. A definition at indent I
+    reaches ``lo`` only if every non-blank line after it is deeper than I, so a
+    backward walk tracking the minimum indent decides it in one pass.
     """
     if anchor is None:
         return None
@@ -342,14 +284,9 @@ def _definition_cut_by_boundary(
         stripped = raw.strip()
         if not stripped:
             continue
-        # A line opening with a closing bracket is the tail of a multi-line
-        # construct, not a statement at its own indent. Folding it is what
-        # made this miss the live reference case: ``get_answer``'s signature
-        # spans lines and ends ``) -> dict:`` at column 0, so the running
-        # minimum hit zero on the signature's own closing paren and the walk
-        # gave up two lines short of the ``async def`` it was looking for.
-        # An Allman brace (``{`` alone) is likewise part of the declaration
-        # above it, not a statement.
+        # A closing-bracket line is the tail of a multi-line construct (e.g. a
+        # signature's ``) -> dict:``), and an Allman ``{`` belongs to the
+        # declaration above: neither is a statement at its own indent.
         if stripped[0] in ")]}{":
             continue
         ind = _indent_width(raw)
