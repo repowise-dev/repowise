@@ -134,7 +134,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: "Hidden coupling",
     category: "organizational",
     description:
-      "Two files co-change in git history but have no explicit import between them. The implicit contract is invisible at the source level, so changes slip out of sync and break in production.",
+      "Two files co-change in git history but have no explicit import between them. The implicit contract is invisible at the source level, so changes slip out of sync and break in production. Advisory: it costs this file no points.",
   },
   complex_conditional: {
     label: "Complex conditional",
@@ -382,13 +382,15 @@ export type BiomarkerDimension = "defect" | "maintainability" | "performance" | 
 
 /**
  * Biomarkers that home to the non-scoring `advisory` dimension. They measure
- * something real that no defect corpus labels, so they never deduct and the
- * chip has to say so rather than borrowing the defect pillar's label. Mirror of
+ * something real that no defect corpus labels, or that showed no defect signal
+ * when tested, so they never deduct and the chip has to say so rather than
+ * borrowing the defect pillar's label. Mirror of
  * ``_ADVISORY_HOME`` in core's `scoring.py`.
  */
 export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "assertion_free_test",
   "mock_saturated_test",
+  "hidden_coupling",
 ]);
 
 /**

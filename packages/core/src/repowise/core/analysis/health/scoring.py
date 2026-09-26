@@ -169,8 +169,8 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     # (0.3 x 0.5 = 0.15/finding) + the 0.5 category cap keep the impact
     # bounded at half a point per file regardless of hit count.
     "error_handling": 0.5,
-    # (coverage_gap, hidden_coupling, large_assertion_block,
-    #  duplicated_assertion_block default to 1.0 - kept at prior)
+    # (coverage_gap, large_assertion_block, duplicated_assertion_block
+    #  default to 1.0 - kept at prior)
     # Governance - additive pass, weights are informational
     "contradictory_decision": 1.0,
     "stale_governance": 0.9,
@@ -196,6 +196,7 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "coverage_gradient": "test_coverage_gradient",
     "developer_congestion": "organizational",
     "knowledge_loss": "organizational",
+    # Advisory (deducts nothing); kept here so history-grouped surfaces file it.
     "hidden_coupling": "organizational",
     "function_hotspot": "organizational",
     "code_age_volatility": "organizational",
@@ -237,8 +238,9 @@ DIMENSIONS: tuple[str, ...] = ("defect", "maintainability", "performance")
 # The one dimension that does not score. Deliberately NOT in ``DIMENSIONS``,
 # which is exactly the set ``score_file`` returns a number for: keeping it out
 # means there is no weight, category or cap table it can acquire. A marker homes
-# here when no defect corpus labels what it measures, so it can never be
-# calibrated. It still carries a severity, a reason and a home for display.
+# here when no defect corpus labels what it measures, or when a held-out test
+# found no defect signal in it. It still carries a severity, a reason and a home
+# for display.
 ADVISORY_DIMENSION: str = "advisory"
 
 # Every dimension label a finding may carry, scored or not. Surfaces that filter
@@ -316,6 +318,9 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # independent, and a marker in only one of them still deducts from defect.
     "assertion_free_test": {ADVISORY_DIMENSION},
     "mock_saturated_test": {ADVISORY_DIMENSION},
+    # Near-chance defect AUC alone, and dropping it was non-inferior on a fresh
+    # 12-repo pre-registered test (docs/architecture/code-health.md).
+    "hidden_coupling": {ADVISORY_DIMENSION},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -530,7 +535,9 @@ _PERFORMANCE_HOME: frozenset[str] = frozenset(
 
 # The display half of the pairing above; ``test_advisory_dimension.py`` locks
 # the two together for every registered biomarker.
-_ADVISORY_HOME: frozenset[str] = frozenset({"assertion_free_test", "mock_saturated_test"})
+_ADVISORY_HOME: frozenset[str] = frozenset(
+    {"assertion_free_test", "mock_saturated_test", "hidden_coupling"}
+)
 
 
 def severity_deduction(sev: Severity) -> float:

@@ -111,6 +111,9 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
+# v34: ``hidden_coupling`` is advisory: still detected and stored, it no longer
+# deducts from the defect score, so every stored score that carried one moves.
+#
 # v33: git history windows are measured from the indexed commit's committer
 # date instead of wall-clock time, by default. ``code_age_volatility`` and the
 # per-function blame rollup read line ages from the same anchor, so a store
@@ -312,7 +315,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 33
+HEALTH_ANALYZER_VERSION = 34
 
 
 def walked_functions(

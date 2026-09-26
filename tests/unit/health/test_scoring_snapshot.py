@@ -101,7 +101,7 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "coverage_gradient": "test_coverage_gradient",
     "developer_congestion": "organizational",
     "knowledge_loss": "organizational",
-    "hidden_coupling": "organizational",
+    "hidden_coupling": "organizational",  # advisory: moves no score
     "function_hotspot": "organizational",
     "code_age_volatility": "organizational",
     "ownership_risk": "organizational",

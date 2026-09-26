@@ -74,18 +74,18 @@ per-line blame index built for every file.
 
 ## The markers, and what each is allowed to do
 
-Repowise ships **51 registered detectors (54 marker ids)**, but only **26 are
+Repowise ships **51 registered detectors (54 marker ids)**, but only **25 are
 permitted to move the headline number**. That restriction is deliberate: the
 defect score carries published accuracy claims, so only markers that earned
 their weight against a bug corpus may affect it.
 
 | Tier | Markers | What it may do |
 |---|---:|---|
-| **Defect-scoring** | **26** | Calibrated weights; moves the 1-10 score |
+| **Defect-scoring** | **25** | Calibrated weights; moves the 1-10 score |
 | **Performance** | **20** | Own pillar, own cap; never touches the defect score |
 | **Maintainability-only (SQL)** | **3** | Maintainability only |
 | **Governance** | **3** | Surfaces as a finding; never deducts |
-| **Advisory** | **2** | Measured and reported; never deducts, and stays out of impact-ranked lists unless asked for |
+| **Advisory** | **3** | Measured and reported; never deducts, and stays out of impact-ranked lists unless asked for |
 
 Nothing is inert, but "doesn't move the number" means three different things:
 
@@ -446,6 +446,12 @@ editor, or a list already filtered to one marker -- gets it without asking.
 |---|---|---|
 | `assertion_free_test` | Python · TypeScript / JavaScript | A test case that runs the code under test and checks nothing |
 | `mock_saturated_test` | Python · TypeScript / JavaScript | Mock-setup statements per assertion in a test function |
+| `hidden_coupling` | every language with git history | Files that change together with no import between them |
+
+`hidden_coupling` is here for the other reason: it was measured and carried no
+signal. Alone it ranks defect-prone files near chance (AUC about 0.55), and a
+pre-registered test on 12 repositories no earlier health study used found the
+score without it non-inferior at predicting defects, so it stopped deducting.
 
 A marker earns weight by clearing the house precision bar (roughly 70%
 hand-labelled) on a real corpus. `mock_saturated_test` has not, and precision is

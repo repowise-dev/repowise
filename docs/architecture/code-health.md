@@ -302,11 +302,11 @@ are **54 marker ids**. They divide by what each is permitted to affect:
 
 | Group | Count | Scores into |
 |---|---:|---|
-| Defect-scoring | 26 | `defect` (8 of them also `maintainability`) |
+| Defect-scoring | 25 | `defect` (8 of them also `maintainability`) |
 | Performance | 20 | `performance` only |
 | SQL | 3 | `maintainability` only |
 | Governance | 3 | nothing — the finding surfaces, the score is untouched |
-| Advisory | 2 | nothing — measured by construction, kept out of impact-ranked lists unless requested |
+| Advisory | 3 | nothing — measured by construction, kept out of impact-ranked lists unless requested |
 
 The authority is `scoring._BIOMARKER_DIMENSIONS`. Any biomarker **not** listed
 there defaults into `defect`, which is why every `sql_*` and every performance
@@ -317,7 +317,7 @@ golden guarantee (§6).
 
 | Category               | Cap  | Markers |
 |------------------------|------|------------|
-| Organizational         | −3.5‡ | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect, ungoverned_hotspot†, stale_governance†, contradictory_decision† |
+| Organizational         | −3.5‡ | developer_congestion, knowledge_loss, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect, ungoverned_hotspot†, stale_governance†, contradictory_decision† |
 | Structural complexity  | −2.5 | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
 | Test coverage gradient | −2.0 | coverage_gradient |
@@ -335,6 +335,11 @@ number.
 ‡ A ceiling. The live cap is `history_cap(structure)`, `min(3.5, 1.0 + structure)`,
 where `structure` is the file's capped deduction from every other defect
 category, so git history alone costs a file at most 1.0.
+
+`hidden_coupling` is advisory: still detected, stored and listed, it deducts
+nothing. On its own it ranks defect-prone files near chance (AUC about 0.55), and
+a pre-registered test on 12 repositories no earlier health study used found the
+score without it non-inferior at predicting defects.
 
 The maintainability dimension has its own independent tables
 (`_MAINTAINABILITY_CATEGORY`, caps: structural_complexity 4.0,
