@@ -36,9 +36,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import re
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -56,12 +55,12 @@ from .adr import _ADR_STATUS_MAP, bullets, find_adr_files, read_front_matter, sp
 from .commit_mining import (
     _BATCH_MAX_TOKENS,
     _MAX_PR_BODIES,
-    _MAX_PROMPT_FILES,
-    _PR_BODY_MARKERS,
     _attribute_to_commit,
-    _signal_commit_info,
+    git_commit_block,
+    pr_candidates,
+    pr_commit_block,
+    signal_commits,
 )
-from .commit_signals import count_decision_signals
 from .markers import (  # noqa: F401  (MARKER_RE re-exported)
     MARKER_RE,
     find_markers,
@@ -70,9 +69,8 @@ from .markers import (  # noqa: F401  (MARKER_RE re-exported)
 from .model_answers import (  # noqa: F401  (_coerce_paths, _collect_batches re-exported)
     _coerce_paths,
     _collect_batches,
-    _decision_from_item,
-    _load_json_payload,
     _run_batches,
+    parse_decisions_json,
 )
 from .prompts import (
     _SYSTEM_PROMPT,
@@ -82,9 +80,9 @@ from .prompts import (
     PR_BODY_MINING_PROMPT,
     README_MINING_PROMPT,
 )
-from .records import (
+from .records import (  # noqa: F401  (the two errors are re-exported)
     DecisionExtractionReport,
-    DecisionSourceError,  # noqa: F401  (re-exported)
+    DecisionSourceError,
     EmptyModelResponseError,
     ExtractedDecision,
 )
@@ -155,6 +153,102 @@ _MAX_COMMENT_NODES = 30
 _MARKERS_PER_CALL = 5
 
 
+def _adr_title(front_matter_title: str, body: str) -> str:
+    """The ADR's title: front matter, else its first H1, less any ``ADR-0007:`` prefix."""
+    title = front_matter_title
+    if not title:
+        m = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
+        if m:
+            title = m.group(1).strip()
+    return re.sub(r"^ADR[-\s]*\d+[:\s-]*", "", title, flags=re.IGNORECASE).strip() or title
+
+
+def _first_section(sections: dict[str, str], *headings: str) -> str:
+    """The body of the first of *headings* the ADR fills in, else ``""``."""
+    for heading in headings:
+        if sections.get(heading):
+            return sections[heading]
+    return ""
+
+
+def _adr_status(declared: str) -> str:
+    """The record status for an ADR's declared status.
+
+    A document with no Status section has not said it is accepted, and a
+    committed ADR is the one artifact allowed to accept its own decision.
+    Defaulting to ``active`` therefore let any draft under docs/adr/ grant
+    itself authority.
+    """
+    status_key = declared.strip().lower().split()[0] if declared.strip() else ""
+    return _ADR_STATUS_MAP.get(status_key, "proposed")
+
+
+_TAG_KEYWORDS = {
+    "auth": ["auth", "jwt", "oauth", "token", "session", "login"],
+    "database": ["database", "sql", "postgres", "sqlite", "redis", "mongo", "db"],
+    "api": ["api", "rest", "graphql", "endpoint", "route"],
+    "performance": ["performance", "cache", "speed", "latency", "optimize"],
+    "security": ["security", "encrypt", "hash", "cors", "csrf", "xss"],
+    "infra": ["docker", "kubernetes", "deploy", "ci", "cd", "terraform"],
+    "testing": ["test", "mock", "fixture", "assert"],
+}
+
+
+def _infer_tags(text: str) -> list[str]:
+    """Infer tags from decision text."""
+    text_lower = text.lower()
+    return [
+        tag for tag, keywords in _TAG_KEYWORDS.items() if any(kw in text_lower for kw in keywords)
+    ]
+
+
+def _snippet_for(
+    decision: ExtractedDecision, batch: Sequence[tuple[str, str]]
+) -> tuple[str, str]:
+    """The ``(file, prose)`` a comment decision came from, by file stem in its text.
+
+    Best effort: the batch's first snippet when no stem matches.
+    """
+    hay = (decision.title + " " + decision.decision).lower()
+    for fp, prose in batch:
+        stem = Path(fp).stem.lower()
+        if stem and stem in hay:
+            return fp, prose
+    return batch[0]
+
+
+# Above this node count, skip the iterative PageRank solve and use degree
+# centrality (O(nodes)) instead — comment archaeology only needs a rough
+# "most depended-on files" ranking, not exact PageRank, and the iterative
+# solve would otherwise add seconds on very large graphs.
+_PAGERANK_NODE_CEILING = 20_000
+
+
+def _pagerank(g: Any) -> dict[str, float]:
+    """PageRank for a graph small enough to solve, else empty."""
+    try:
+        node_count = g.number_of_nodes()
+    except Exception:
+        node_count = 0
+    if not 0 < node_count <= _PAGERANK_NODE_CEILING:
+        return {}
+    try:
+        import networkx as nx
+
+        return nx.pagerank(g, max_iter=50, tol=1e-4)
+    except Exception:
+        return {}
+
+
+def _centrality_scores(g: Any) -> dict[str, float]:
+    """Node centrality: PageRank where affordable, else degree; empty when unreadable."""
+    scores = _pagerank(g)
+    if scores:
+        return scores
+    try:
+        return {node: float(g.degree(node)) for node in g.nodes}
+    except Exception:
+        return {}
 
 
 class DecisionExtractor:
@@ -305,7 +399,7 @@ class DecisionExtractor:
             evidence_line=marker["line"],
             affected_files=list({file_path} | set(affected)),
             affected_modules=self._infer_modules([file_path, *affected]),
-            tags=self._infer_tags(marker["text"]),
+            tags=_infer_tags(marker["text"]),
             source_quote=marker["text"],
             source_text=marker.get("context", marker["text"]),
         )
@@ -342,7 +436,7 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
             )
-            decisions.extend(self._parse_decisions_json(response.content))
+            decisions.extend(parse_decisions_json(response.content))
         return decisions
 
     # ------------------------------------------------------------------
@@ -355,7 +449,7 @@ class DecisionExtractor:
         if not provider or not self._git_meta_map:
             return []
 
-        commit_map, commit_files = self._signal_commits()
+        commit_map, commit_files = signal_commits(self._git_meta_map)
         if not commit_map:
             return []
 
@@ -371,25 +465,15 @@ class DecisionExtractor:
             commits_block = ""
             source_by_sha: dict[str, str] = {}
             for c in batch:
-                files = commit_files.get(c["sha"], [])
                 body = (c.get("body") or "").strip()
-                body_block = f"Body: {body[:1500]}\n" if body else ""
-                commits_block += (
-                    f"\n--- Commit {c['sha'][:8]} ---\n"
-                    f"Message: {c['message']}\n"
-                    f"{body_block}"
-                    f"Author: {c['author']}\n"
-                    f"Date: {c['date']}\n"
-                    f"Files changed: "
-                    f"{', '.join(sorted(files)[:_MAX_PROMPT_FILES])}\n"
-                )
+                commits_block += git_commit_block(c, body, commit_files.get(c["sha"], []))
                 source_by_sha[c["sha"]] = f"{c['message']}\n{body}".strip()
 
             prompt = GIT_ARCHAEOLOGY_PROMPT.format(commits_block=commits_block)
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
-            extracted = self._parse_decisions_json(response.content)
+            extracted = parse_decisions_json(response.content)
 
             # Enrich with commit metadata
             for d in extracted:
@@ -406,34 +490,6 @@ class DecisionExtractor:
             return extracted
 
         return await _run_batches("git_archaeology", ranked, 5, _process_batch)
-
-    def _signal_commits(self) -> tuple[dict[str, dict], dict[str, list[str]]]:
-        """Unique significant commits carrying decision signals, and each one's files.
-
-        Returns ``(sha -> commit info, sha -> files it touched)``.
-        """
-        commit_map: dict[str, dict] = {}  # sha → commit info
-        commit_files: dict[str, list[str]] = {}  # sha → files
-
-        for file_path, meta in self._git_meta_map.items():
-            commits_json = meta.get("significant_commits_json", "[]")
-            if isinstance(commits_json, str):
-                try:
-                    commits = json.loads(commits_json)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-            else:
-                commits = commits_json
-
-            for commit in commits:
-                sha = commit.get("sha", "")
-                if sha and sha not in commit_map:
-                    info = _signal_commit_info(commit)
-                    if info is None:
-                        continue
-                    commit_map[sha] = info
-                commit_files.setdefault(sha, []).append(file_path)
-        return commit_map, commit_files
 
     # ------------------------------------------------------------------
     # Source 3: ADR auto-discovery (deterministic-first)
@@ -455,40 +511,47 @@ class DecisionExtractor:
 
         decisions: list[ExtractedDecision] = []
         for path in adr_paths:
-            try:
-                content = path.read_text(encoding="utf-8", errors="replace")
-            except (OSError, UnicodeDecodeError):
+            loaded = self._read_adr(path)
+            if loaded is None:
                 continue
-            if len(content) > 50_000:
-                content = content[:50_000]
-            try:
-                rel = str(path.relative_to(self._repo_path))
-            except ValueError:
-                rel = str(path)
-
+            rel, content = loaded
             parsed = self._parse_adr(content, rel)
             if parsed is not None:
                 decisions.append(parsed)
             elif provider:
-                try:
-                    stripped = strip_code_blocks(content)
-                    prompt = README_MINING_PROMPT.format(file_path=rel, content=stripped[:15_000])
-                    response = await provider.generate(
-                        _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
-                    )
-                    for d in self._parse_decisions_json(response.content):
-                        d.source = "adr"
-                        d.status = "proposed"
-                        d.confidence = 0.80
-                        d.evidence_file = rel
-                        d.source_text = stripped
-                        d.affected_modules = self._infer_modules_from_text(
-                            d.title + " " + d.decision
-                        )
-                        decisions.append(d)
-                except Exception:
-                    logger.warning("decision_extractor.adr_llm_failed", file=rel)
+                decisions.extend(await self._mine_unstructured_adr(provider, rel, content))
 
+        return decisions
+
+    def _read_adr(self, path: Path) -> tuple[str, str] | None:
+        """An ADR's repo-relative path and its first 50k chars, or None when unreadable."""
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeDecodeError):
+            return None
+        return self._rel_path(path), content[:50_000]
+
+    async def _mine_unstructured_adr(
+        self, provider: Any, rel: str, content: str
+    ) -> list[ExtractedDecision]:
+        """The LLM fallback for a file named like an ADR that has no ADR structure."""
+        decisions: list[ExtractedDecision] = []
+        try:
+            stripped = strip_code_blocks(content)
+            prompt = README_MINING_PROMPT.format(file_path=rel, content=stripped[:15_000])
+            response = await provider.generate(
+                _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
+            )
+            for d in parse_decisions_json(response.content):
+                d.source = "adr"
+                d.status = "proposed"
+                d.confidence = 0.80
+                d.evidence_file = rel
+                d.source_text = stripped
+                d.affected_modules = self._infer_modules_from_text(d.title + " " + d.decision)
+                decisions.append(d)
+        except Exception:
+            logger.warning("decision_extractor.adr_llm_failed", file=rel)
         return decisions
 
     def _parse_adr(self, content: str, rel_path: str) -> ExtractedDecision | None:
@@ -500,45 +563,30 @@ class DecisionExtractor:
         """
         status, title, body = read_front_matter(content)
         sections = split_headings(body)
-        if not title:
-            m = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
-            if m:
-                title = m.group(1).strip()
-        # Strip an "ADR-0007:" style prefix from the title.
-        title = re.sub(r"^ADR[-\s]*\d+[:\s-]*", "", title, flags=re.IGNORECASE).strip() or title
+        title = _adr_title(title, body)
 
-        context = sections.get("context") or sections.get("context and problem statement", "")
-        decision_txt = sections.get("decision") or sections.get("decision outcome", "")
-        rationale = sections.get("rationale") or sections.get("decision drivers", "")
-        consequences = sections.get("consequences", "")
-        if not status:
-            status = sections.get("status", "")
+        context = _first_section(sections, "context", "context and problem statement")
+        decision_txt = _first_section(sections, "decision", "decision outcome")
+        rationale = _first_section(sections, "rationale", "decision drivers")
 
         # Require recognizable ADR structure — at minimum a Decision or Context
         # section — otherwise let the LLM fallback handle it.
         if not (decision_txt or context):
             return None
 
-        # A document with no Status section has not said it is accepted, and a
-        # committed ADR is the one artifact allowed to accept its own decision.
-        # Defaulting to ``active`` therefore let any draft under docs/adr/ grant
-        # itself authority.
-        status_key = status.strip().lower().split()[0] if status.strip() else ""
-        mapped_status = _ADR_STATUS_MAP.get(status_key, "proposed")
-
         return ExtractedDecision(
             title=_truncate_title(title or rel_path, 200),
             context=context.strip(),
             decision=decision_txt.strip(),
             rationale=rationale.strip(),
-            consequences=bullets(consequences),
+            consequences=bullets(sections.get("consequences", "")),
             source="adr",
-            status=mapped_status,
+            status=_adr_status(status or sections.get("status", "")),
             confidence=0.90,
             evidence_file=rel_path,
             source_quote=(decision_txt or context).strip()[:500],
             source_text=content,
-            tags=self._infer_tags(f"{title} {decision_txt}"),
+            tags=_infer_tags(f"{title} {decision_txt}"),
             affected_modules=self._infer_modules_from_text(f"{title} {decision_txt}"),
         )
 
@@ -552,28 +600,7 @@ class DecisionExtractor:
         if not provider or not self._git_meta_map:
             return []
 
-        candidates: dict[str, dict] = {}
-        files_by_sha: dict[str, list[str]] = {}
-        for fp, meta in self._git_meta_map.items():
-            for c in self._loads_commits(meta.get("significant_commits_json")):
-                sha = c.get("sha", "")
-                if not sha:
-                    continue
-                files_by_sha.setdefault(sha, []).append(fp)
-                body = (c.get("body") or "").strip()
-                if sha in candidates or not body:
-                    continue
-                low = body.lower()
-                is_prish = c.get("pr_number") is not None or any(m in low for m in _PR_BODY_MARKERS)
-                has_signal = count_decision_signals(low) > 0
-                if is_prish and has_signal:
-                    candidates[sha] = {
-                        "sha": sha,
-                        "subject": c.get("message", ""),
-                        "body": body,
-                        "pr": c.get("pr_number"),
-                    }
-
+        candidates, files_by_sha = pr_candidates(self._git_meta_map)
         if not candidates:
             return []
 
@@ -583,18 +610,11 @@ class DecisionExtractor:
             bodies_block = ""
             source_by_sha: dict[str, str] = {}
             for c in batch:
-                pr_label = f" (PR #{c['pr']})" if c.get("pr") else ""
                 # The file list is what makes "affected_files" answerable.
                 # This miner asked for a decision without ever showing which
                 # files the commit touched, and scored 20% on topic against
                 # git archaeology's 45% on the same store.
-                files = files_by_sha.get(c["sha"], [])
-                bodies_block += (
-                    f"\n--- Commit {c['sha'][:8]}{pr_label} ---\n"
-                    f"Subject: {c['subject']}\n"
-                    f"Body:\n{c['body'][:2000]}\n"
-                    f"Files changed: {', '.join(sorted(files)[:_MAX_PROMPT_FILES])}\n"
-                )
+                bodies_block += pr_commit_block(c, files_by_sha.get(c["sha"], []))
                 source_by_sha[c["sha"]] = f"{c['subject']}\n{c['body']}"
             prompt = PR_BODY_MINING_PROMPT.format(bodies_block=bodies_block)
             # Let this propagate to the gather below. Swallowed here, a total
@@ -605,7 +625,7 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
-            extracted = self._parse_decisions_json(response.content)
+            extracted = parse_decisions_json(response.content)
             for d in extracted:
                 _attribute_to_commit(d, batch, "subject", files_by_sha, source_by_sha)
                 d.source = "pr"
@@ -656,16 +676,9 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
             )
-            extracted = self._parse_decisions_json(response.content)
-            # Best-effort attribution to the originating file by token overlap.
+            extracted = parse_decisions_json(response.content)
             for d in extracted:
-                best_fp, best_prose = batch[0]
-                hay = (d.title + " " + d.decision).lower()
-                for fp, prose in batch:
-                    stem = Path(fp).stem.lower()
-                    if stem and stem in hay:
-                        best_fp, best_prose = fp, prose
-                        break
+                best_fp, best_prose = _snippet_for(d, batch)
                 d.source = "comment"
                 d.status = "proposed"
                 d.confidence = 0.55
@@ -691,12 +704,6 @@ class DecisionExtractor:
             self._graph, self._parsed_files, self._source_map, self._repo_path
         )
 
-    # Above this node count, skip the iterative PageRank solve and use degree
-    # centrality (O(nodes)) instead — comment archaeology only needs a rough
-    # "most depended-on files" ranking, not exact PageRank, and the iterative
-    # solve would otherwise add seconds on very large graphs.
-    _PAGERANK_NODE_CEILING = 20_000
-
     def _top_central_files(self, n: int) -> list[str]:
         """Top-*n* file nodes by centrality (existing on disk).
 
@@ -704,26 +711,9 @@ class DecisionExtractor:
         centrality on very large graphs (or if networkx is unavailable) so this
         never becomes an ingestion bottleneck.
         """
-        g = self._graph
-        if g is None:
+        if self._graph is None:
             return []
-        scores: dict[str, float] = {}
-        try:
-            node_count = g.number_of_nodes()
-        except Exception:
-            node_count = 0
-        if 0 < node_count <= self._PAGERANK_NODE_CEILING:
-            try:
-                import networkx as nx
-
-                scores = nx.pagerank(g, max_iter=50, tol=1e-4)
-            except Exception:
-                scores = {}
-        if not scores:
-            try:
-                scores = {node: float(g.degree(node)) for node in g.nodes}
-            except Exception:
-                return []
+        scores = _centrality_scores(self._graph)
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         out: list[str] = []
         for node, _score in ranked:
@@ -733,20 +723,6 @@ class DecisionExtractor:
             if p.is_file() and p.suffix.lower() not in _BINARY_EXTENSIONS:
                 out.append(node)
         return out
-
-    @staticmethod
-    def _loads_commits(value: Any) -> list[dict]:
-        """Parse a ``significant_commits_json`` blob into a list of dicts."""
-        if isinstance(value, list):
-            return value
-        if isinstance(value, str):
-            try:
-                data = json.loads(value)
-            except (json.JSONDecodeError, TypeError):
-                return []
-            return data if isinstance(data, list) else []
-        return []
-
     # ------------------------------------------------------------------
     # Anti-hallucination substring gate (Phase 1D)
     # ------------------------------------------------------------------
@@ -902,6 +878,10 @@ class DecisionExtractor:
                 yield rel_path, source.decode("utf-8", errors="replace")
             return
 
+        yield from self._iter_walked_files()
+
+    def _iter_walked_files(self) -> Iterator[tuple[str, str]]:
+        """``(rel_path, text)`` for every readable file the legacy tree walk finds."""
         for file_path in iter_source_files(self._repo_path):
             if not file_path.is_file():
                 continue
@@ -909,11 +889,14 @@ class DecisionExtractor:
                 text = file_path.read_text(encoding="utf-8", errors="replace")
             except (OSError, UnicodeDecodeError):
                 continue
-            try:
-                rel_path = str(file_path.relative_to(self._repo_path))
-            except ValueError:
-                rel_path = str(file_path)
-            yield rel_path, text
+            yield self._rel_path(file_path), text
+
+    def _rel_path(self, path: Path) -> str:
+        """*path* relative to the repo root, or as given when it lies outside it."""
+        try:
+            return str(path.relative_to(self._repo_path))
+        except ValueError:
+            return str(path)
 
     def _read_source_text(self, rel_path: str) -> str | None:
         """Decode one file's text, preferring ingestion's in-memory bytes.
@@ -971,44 +954,3 @@ class DecisionExtractor:
         # ``packages/core/.../decisions`` should not also claim every ancestor.
         deepest = {d for d in matched if not any(o != d and o.startswith(d + "/") for o in matched)}
         return sorted(deepest, key=lambda d: (-d.count("/"), d))[:5]
-
-    def _infer_tags(self, text: str) -> list[str]:
-        """Infer tags from decision text."""
-        tag_keywords = {
-            "auth": ["auth", "jwt", "oauth", "token", "session", "login"],
-            "database": ["database", "sql", "postgres", "sqlite", "redis", "mongo", "db"],
-            "api": ["api", "rest", "graphql", "endpoint", "route"],
-            "performance": ["performance", "cache", "speed", "latency", "optimize"],
-            "security": ["security", "encrypt", "hash", "cors", "csrf", "xss"],
-            "infra": ["docker", "kubernetes", "deploy", "ci", "cd", "terraform"],
-            "testing": ["test", "mock", "fixture", "assert"],
-        }
-        text_lower = text.lower()
-        tags = []
-        for tag, keywords in tag_keywords.items():
-            if any(kw in text_lower for kw in keywords):
-                tags.append(tag)
-        return tags
-
-    def _parse_decisions_json(self, content: str) -> list[ExtractedDecision]:
-        """Parse LLM response as JSON array of decisions.
-
-        A blank body raises :class:`EmptyModelResponseError`; every caller
-        sits inside a gather or a fallback that counts that as a lost batch.
-        """
-        # Extract JSON from response (may be wrapped in markdown code blocks)
-        content = content.strip()
-        if not content:
-            raise EmptyModelResponseError(
-                "the model returned no content for this batch"
-            )
-        data = _load_json_payload(content)
-        if isinstance(data, dict):
-            data = [data]
-        if not isinstance(data, list):
-            return []
-        return [
-            _decision_from_item(item)
-            for item in data
-            if isinstance(item, dict) and item.get("title", "")
-        ]

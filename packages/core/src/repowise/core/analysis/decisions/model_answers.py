@@ -10,7 +10,7 @@ from typing import Any
 
 import structlog
 
-from .records import DecisionSourceError, ExtractedDecision
+from .records import DecisionSourceError, EmptyModelResponseError, ExtractedDecision
 
 logger = structlog.get_logger(__name__)
 
@@ -112,8 +112,11 @@ def _load_json_payload(content: str) -> Any | None:
     try:
         return json.loads(content)
     except json.JSONDecodeError:
-        pass
-    # Try to find JSON array in the response
+        return _embedded_json_array(content)
+
+
+def _embedded_json_array(content: str) -> Any | None:
+    """The outermost ``[...]`` span inside surrounding prose, decoded, else None."""
     match = re.search(r"\[.*\]", content, re.DOTALL)
     if not match:
         return None
@@ -144,3 +147,27 @@ def _decision_from_item(item: dict) -> ExtractedDecision:
         evidence_line=_coerce_line(item.get("marker_line")),
         source_quote=item.get("source_quote", ""),
     )
+
+
+def parse_decisions_json(content: str) -> list[ExtractedDecision]:
+    """Parse LLM response as JSON array of decisions.
+
+    A blank body raises :class:`EmptyModelResponseError`; every caller
+    sits inside a gather or a fallback that counts that as a lost batch.
+    """
+    # Extract JSON from response (may be wrapped in markdown code blocks)
+    content = content.strip()
+    if not content:
+        raise EmptyModelResponseError(
+            "the model returned no content for this batch"
+        )
+    data = _load_json_payload(content)
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return []
+    return [
+        _decision_from_item(item)
+        for item in data
+        if isinstance(item, dict) and item.get("title", "")
+    ]

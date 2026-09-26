@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from typing import Any
 
 from repowise.core.analysis.decisions.scope import (
     SCOPE_BASIS_SELECTED,
@@ -125,3 +127,129 @@ def _attribute_to_commit(
     # than merely unused.
     decision.proposed_files = None
     return sha
+
+
+def _significant_commits(meta: dict) -> Any:
+    """A file's ``significant_commits_json`` as the miner reads it.
+
+    A string that does not decode yields no commits; anything else passes
+    through as-is.
+    """
+    commits_json = meta.get("significant_commits_json", "[]")
+    if not isinstance(commits_json, str):
+        return commits_json
+    try:
+        return json.loads(commits_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _admit_signal_commit(commit: dict, commit_map: dict[str, dict]) -> bool:
+    """Whether *commit*'s file should be counted, adding it to *commit_map* on first sight.
+
+    A new sha is admitted only when it carries decision signals.
+    """
+    sha = commit.get("sha", "")
+    if not sha or sha in commit_map:
+        return True
+    info = _signal_commit_info(commit)
+    if info is None:
+        return False
+    commit_map[sha] = info
+    return True
+
+
+def signal_commits(
+    git_meta_map: dict[str, dict],
+) -> tuple[dict[str, dict], dict[str, list[str]]]:
+    """Unique significant commits carrying decision signals, and each one's files.
+
+    Returns ``(sha -> commit info, sha -> files it touched)``.
+    """
+    commit_map: dict[str, dict] = {}
+    commit_files: dict[str, list[str]] = {}
+    for file_path, meta in git_meta_map.items():
+        for commit in _significant_commits(meta):
+            if _admit_signal_commit(commit, commit_map):
+                commit_files.setdefault(commit.get("sha", ""), []).append(file_path)
+    return commit_map, commit_files
+
+
+def _loads_commits(value: Any) -> list[dict]:
+    """Parse a ``significant_commits_json`` blob into a list of dicts."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            data = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return data if isinstance(data, list) else []
+    return []
+
+
+def _pr_candidate(commit: dict, body: str) -> dict | None:
+    """The prompt-ready record of a PR-shaped body with decision signals, else None."""
+    low = body.lower()
+    is_prish = commit.get("pr_number") is not None or any(m in low for m in _PR_BODY_MARKERS)
+    if not is_prish or count_decision_signals(low) <= 0:
+        return None
+    return {
+        "sha": commit["sha"],
+        "subject": commit.get("message", ""),
+        "body": body,
+        "pr": commit.get("pr_number"),
+    }
+
+
+def pr_candidates(
+    git_meta_map: dict[str, dict],
+) -> tuple[dict[str, dict], dict[str, list[str]]]:
+    """PR / squash bodies worth mining, and every commit's files.
+
+    Returns ``(sha -> candidate, sha -> files it touched)``.
+    """
+    candidates: dict[str, dict] = {}
+    files_by_sha: dict[str, list[str]] = {}
+    for fp, meta in git_meta_map.items():
+        for c in _loads_commits(meta.get("significant_commits_json")):
+            sha = c.get("sha", "")
+            if not sha:
+                continue
+            files_by_sha.setdefault(sha, []).append(fp)
+            body = (c.get("body") or "").strip()
+            if sha in candidates or not body:
+                continue
+            candidate = _pr_candidate(c, body)
+            if candidate is not None:
+                candidates[sha] = candidate
+    return candidates, files_by_sha
+
+
+def _prompt_files(files: list[str]) -> str:
+    return ", ".join(sorted(files)[:_MAX_PROMPT_FILES])
+
+
+def git_commit_block(commit: dict, body: str, files: list[str]) -> str:
+    """One commit's entry in the git archaeology prompt."""
+    body_block = f"Body: {body[:1500]}\n" if body else ""
+    return (
+        f"\n--- Commit {commit['sha'][:8]} ---\n"
+        f"Message: {commit['message']}\n"
+        f"{body_block}"
+        f"Author: {commit['author']}\n"
+        f"Date: {commit['date']}\n"
+        f"Files changed: "
+        f"{_prompt_files(files)}\n"
+    )
+
+
+def pr_commit_block(candidate: dict, files: list[str]) -> str:
+    """One PR body's entry in the PR mining prompt."""
+    pr_label = f" (PR #{candidate['pr']})" if candidate.get("pr") else ""
+    return (
+        f"\n--- Commit {candidate['sha'][:8]}{pr_label} ---\n"
+        f"Subject: {candidate['subject']}\n"
+        f"Body:\n{candidate['body'][:2000]}\n"
+        f"Files changed: {_prompt_files(files)}\n"
+    )

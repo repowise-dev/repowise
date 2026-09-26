@@ -1,7 +1,7 @@
 """An empty model response is a lost batch, not an empty repository.
 
 The defect these pin: a miner whose output budget was too small got an empty
-body back, ``_parse_decisions_json`` read that as "no decisions here", and a
+body back, ``parse_decisions_json`` read that as "no decisions here", and a
 lane that had lost every batch reported nothing found. The budget that caused
 it and the measurement behind its replacement are recorded in decision
 ``decision-batch-token-budget``.
@@ -20,6 +20,7 @@ from repowise.core.analysis.decisions.extractor import (
     DecisionSourceError,
     EmptyModelResponseError,
     _collect_batches,
+    parse_decisions_json,
 )
 
 _SHA = "9a0b27a7"
@@ -70,37 +71,33 @@ def _extractor(tmp_path, content: str) -> DecisionExtractor:
 # --- the guard -------------------------------------------------------------
 
 
-def test_a_blank_body_raises_rather_than_reading_as_no_decisions(tmp_path):
-    ex = _extractor(tmp_path, "")
+def test_a_blank_body_raises_rather_than_reading_as_no_decisions():
     with pytest.raises(EmptyModelResponseError):
-        ex._parse_decisions_json("")
+        parse_decisions_json("")
 
 
-def test_whitespace_is_blank_too(tmp_path):
-    ex = _extractor(tmp_path, "")
+def test_whitespace_is_blank_too():
     with pytest.raises(EmptyModelResponseError):
-        ex._parse_decisions_json("   \n\t ")
+        parse_decisions_json("   \n\t ")
 
 
-def test_an_empty_array_is_a_real_answer_and_does_not_raise(tmp_path):
+def test_an_empty_array_is_a_real_answer_and_does_not_raise():
     """The distinction the whole guard rests on.
 
     ``[]`` is the model saying these commits hold no architectural decision,
     which is correct for most commits. Only a missing body is a failure.
     """
-    ex = _extractor(tmp_path, "[]")
-    assert ex._parse_decisions_json("[]") == []
+    assert parse_decisions_json("[]") == []
 
 
-def test_unparseable_content_still_reads_as_nothing_found(tmp_path):
+def test_unparseable_content_still_reads_as_nothing_found():
     """Not every parse failure is a lost batch.
 
     Prose where JSON was asked for is the model declining in its own words,
     and that has always read as nothing found. Widening the guard to cover it
     would turn a working lane into a failing one.
     """
-    ex = _extractor(tmp_path, "x")
-    assert ex._parse_decisions_json("I could not find any decisions.") == []
+    assert parse_decisions_json("I could not find any decisions.") == []
 
 
 # --- what the miners do with it -------------------------------------------
