@@ -10,7 +10,7 @@ The detector is language-agnostic — it reads only the already-built graph
 (``defines`` / ``calls`` edges on ``ctx.graph``), exactly like Move Method
 and Break Cycle. No per-language module, no re-parse, no indexing change.
 
-Algorithm (all signals from ``ctx.graph`` for v1):
+Algorithm (all signals from ``ctx.graph``):
 
 - **Nodes:** the file's top-level symbols. A class collapses to one node
   (its methods roll up into it); each top-level function is a node; nested
@@ -38,10 +38,10 @@ Algorithm (all signals from ``ctx.graph`` for v1):
   when the partition has **high modularity** — the inter-group cut is small
   relative to intra-group cohesion. A big-but-cohesive file (one giant state
   machine, a generated registry) yields a low-modularity partition and
-  produces *nothing*. Better ten great splits than two hundred maybes.
+  produces *nothing*.
 
 Output is "split into these N files; here are the import edits in the M
-dependent files" — the blast-radius column nobody else has. Splitting Go
+dependent files". Splitting Go
 files in the same package is near-zero blast (no import edits); Python/TS
 need a back-compat re-export shim, surfaced as ``shim_required``.
 """
@@ -65,17 +65,14 @@ from .registry import RefactoringDetector, effort_bucket, register
 _DIRECT_CALL_WEIGHT = 3.0
 # Co-change weight is scaled by the commit-set Jaccard (0..1), so it peaks at
 # this value for two symbols that always change together and decays toward the
-# floor below. Tunable on dogfood evidence.
+# floor below.
 _COCHANGE_WEIGHT = 2.0
 # Only symbols whose commit sets overlap by at least this Jaccard get a
 # co-change edge. Same-file symbols share commit history freely, so an unfloored
 # (or low-floored) edge densifies the graph into a uniform glue that depresses
 # the partition modularity without sharpening any group. "These always change
 # together" means sharing the majority of their history, so the floor sits at
-# half. Dogfood on .repowise: an unfloored edge dropped mean modularity 0.42 ->
-# 0.40 and cut high-confidence splits from 14 to 6; at 0.5 the mean returns to
-# 0.42 (within noise of the call-only baseline) while co-change still reshapes
-# the strongly-coupled files.
+# half.
 _COCHANGE_MIN_JACCARD = 0.5
 _SHARED_HELPER_WEIGHT = 2.0
 # Per shared imported name (the true dependency-surface signal) and, as the
@@ -96,8 +93,7 @@ _MIN_GROUP_SYMBOLS = 2
 
 # The decomposability gate: the weighted partition must separate this cleanly
 # (Newman modularity over the weighted graph). Tuned toward suppression — a
-# cohesive big file scores well below this and yields nothing. Tunable on
-# dogfood evidence.
+# cohesive big file scores well below this and yields nothing.
 _MIN_MODULARITY = 0.30
 
 # Route single-dominant-class files to Extract Class instead: if one class is
@@ -445,12 +441,8 @@ class _CallSignals:
         if not fpath or fpath == ctx.file_path:
             return
         self.foreign_of[owner].add(ctx.community_label_map.get(fpath) or fpath)
-        # The imported names this file pulls from the callee's
-        # file approximate the dependency surface this symbol
-        # actually leans on (file-edge granularity; the precise
-        # per-call binding-name variant is a deferred index
-        # change). Empty on lightweight-tier languages -> the
-        # foreign-module proxy carries the signal instead.
+        # Names imported from the callee's file approximate this symbol's dependency
+        # surface; empty on lightweight-tier languages, where the module proxy stands in.
         names = _imported_names(graph, ctx.file_path, fpath)
         if names:
             self.imports_of[owner] |= names
@@ -639,9 +631,7 @@ class SplitFileDetector(RefactoringDetector):
                 "modularity": round(partition.modularity, 3),
                 "intra_edges": intra_edges,
                 "cut_edges": cut_edges,
-                # Optional: present only when the richer signals fired, so
-                # the surface layers can show "kept together by co-change /
-                # shared imports" without breaking older plan records.
+                # Present only when the signal fired, so older plan records stay valid.
                 **{k: v for k, v in partition.signal_counts.items() if v},
             },
             impact_delta=0.0,
@@ -755,9 +745,7 @@ class SplitFileDetector(RefactoringDetector):
         self_segments.add(stem.lower())
         for members in substantive:
             label = self._group_label(fg, members, self_segments)
-            # A group whose symbols share no name token has no honest filename.
-            # ``{stem}_part{idx}`` looked like one and named nothing, so the
-            # field is absent instead and the surfaces prompt for a name.
+            # No shared name token means no honest filename; the surfaces prompt for one.
             suggested = None
             if label:
                 filename = self._unique_filename(label, ext, used)
@@ -772,16 +760,12 @@ class SplitFileDetector(RefactoringDetector):
         return groups
 
     def _group_label(self, fg: _FileGraph, members: list[str], self_segments: set[str]) -> str:
-        """Deterministic file name for a group: the dominant shared name token
-        first (a plurality vote — the most semantically meaningful signal),
-        else a clean dominant foreign-module label, else ``""`` (the caller
-        falls back to ``<file>_partN``).
+        """Deterministic file name for a group: the plurality name token when it is
+        not part of the file's own path, else a clean dominant foreign-module
+        label, else the token (possibly ``""``, meaning no name).
 
-        Dogfood showed the foreign-module label is frequently the repo's own
-        package community (carrying a size suffix like ``repowise (290)``),
-        which sanitizes to noise like ``repowise__290``. So the name vote
-        leads, and a module label is used only when it is a clean identifier
-        that is not already part of the file's own path."""
+        Module labels often name the repo's own package with a size suffix, so
+        the name vote leads."""
         token = _dominant_token([self._sym_name(fg.defined, m) for m in members])
         if token and token not in self_segments:
             return token
