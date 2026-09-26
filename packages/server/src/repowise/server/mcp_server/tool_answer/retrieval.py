@@ -36,63 +36,29 @@ from repowise.server.mcp_server.tool_answer.config import (
 _log = logging.getLogger("repowise.mcp.answer")
 
 
-# How many files ``candidates`` names.
-#
-# Was 20, on the estimate that "twenty path lines cost roughly 800 characters
-# against the ~10k a get_answer response already spends". Measured on the wire
-# 2026-08-11 the block is **3,107-3,279 characters, up to 39.9% of a
-# get_answer payload** — four times the estimate, because ``defines`` and the
-# paths themselves are both longer than a bare path line. That estimate was
-# also made before ``defines`` existed.
-#
-# Five, not zero. Rows 6-20 appear in no other block, but nor are rows 1-5
-# redundant: on the repowise samples ``candidates`` is the only block naming
-# files outside the top-two ``citations``, and dropping it whole (which the
-# CLI projection does) pushes the agent into a Grep that costs more than the
-# rows saved. The head keeps the ``defines`` budget, so the navigational value
-# per character goes up.
+# How many files ``candidates`` names. Rows with ``defines`` are long, so a large
+# cap made this block a big share of the payload. Five, not zero: it is often the
+# only block naming files beyond the top ``citations``, and without it the agent
+# runs a Grep that costs more than the rows.
 _CANDIDATE_LIMIT = 5
 
 
 def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> list[dict]:
     """The files retrieval ranked, one line each, ordered best first.
 
-    Separate from ``retrieval`` on purpose, and deliberately not
-    confidence-gated. ``retrieval`` is *evidence*: enriched hits an agent reads
-    to check the prose, so it is right for it to shrink as the prose gets more
-    trustworthy. This block is *navigation*: the shortlist of files worth
-    opening next. Under the old shape a confident answer named zero files and a
-    medium one named two, which is backwards. The more sure we are of a
-    subsystem, the better placed we are to say which files it lives in.
+    Deliberately not confidence-gated: ``retrieval`` is *evidence* and shrinks
+    as the prose gets trustworthy, while this block is *navigation*, the files
+    worth opening next, and a confident answer is best placed to name them.
 
-    One entry per distinct path, ``{path, lines?}``. Line bounds are attached
-    only where a hit already carries hydrated symbols; nothing is fetched to
-    build this.
+    One entry per distinct **file** path (via ``hit_file_path``), ``{path,
+    lines?}``; line bounds come only from already-hydrated symbols. Pages that
+    name no file (module group keys, onboarding slots) are skipped, since they
+    look like paths but cannot be opened.
 
-    ``path`` is always a **file** path, resolved through ``hit_file_path``. A
-    ``symbol_spotlight`` hit's ``target_path`` is ``file.py::Symbol``, which is
-    a page identifier, not something a consumer can open; two distinct symbols
-    in one file are also one file to read, so they collapse to one entry here.
-
-    Pages naming no file at all are skipped rather than emitted (finding A15).
-    A module page's target_path is a structural group key that reads like a
-    directory and an onboarding page's is a slot name, so every "does this look
-    like a path" heuristic says yes and the agent that opens it gets an error.
-    Scoring impact is about zero, measured; it is wrong on the same argument
-    A14 was, which is that this field has one meaning and it is not "page id".
-
-    ``defines`` carries what the file declares, as ``name:line`` pairs, when
-    ``_hydrate_candidate_defines`` resolved any. That is the difference between
-    a path the agent has to Grep and a line it can read: 434 of the 499 paths a
-    get_answer response served on the 25 flow questions carried no content
-    whatsoever, and the Layer B taxonomy judged 89% of the agent's post-answer
-    searches to be exactly that expansion. **Line numbers here are as indexed
-    and are not verified against the live file** (unlike ``get_symbol``); they
-    are navigation, not a citation.
-
-    **Which paths are emitted, and in what order, is not affected by any of
-    this.** ``defines`` is attached to entries the existing loop already built,
-    so an added or exhausted budget can never add, drop or reorder a path.
+    ``defines`` lists what the file declares as ``name:line`` pairs, turning a
+    path to Grep into a line to read. **Line numbers are as indexed, not
+    verified** against the live file: navigation, not a citation. The
+    ``defines`` budget never adds, drops or reorders a path.
     """
     out: list[dict] = []
     seen: set[str] = set()
@@ -131,37 +97,24 @@ def serialize_hits(
 ) -> list[dict]:
     """Agent-facing view of retrieval hits — content only, no plumbing.
 
-    Internal scoring fields (``_coverage``, ``_coverage_multiplier``,
-    ``_confidence_score_factor``, ``_raw_score``, ``_sources``,
-    ``_pagerank``, …) and ``page_id`` are ranking debug an agent can do
-    nothing with; they were ~70% of a get_answer response by volume. Zero
-    information loss for the consumer: path, title, summary, snippet,
-    excerpt, score, and hydrated symbols all survive.
+    Internal scoring fields (``_coverage``, ``_raw_score``, ...) and
+    ``page_id`` are ranking debug an agent cannot use, so they are dropped.
 
-    ``summary_chars`` truncates summaries (medium-confidence diet);
-    ``symbols_for_expanded=False`` drops symbol enrichment from hits that
-    only entered via 1-hop graph expansion (they are routing material, not
-    answer material). ``lean_symbols=True`` keeps each symbol pipeable
-    (name/kind/signature/lines) but drops docstrings and excerpts — for the
-    gated low-confidence path, where the hits are candidates to pick between,
-    not answer material, and ``best_guesses`` + ``code_rationale`` already
-    carry the choosing signal.
+    ``summary_chars`` truncates summaries; ``symbols_for_expanded=False`` drops
+    symbols from hits that only entered via graph expansion (routing material);
+    ``lean_symbols=True`` keeps symbols pipeable but drops docstrings and
+    excerpts, for the low-confidence path where hits are candidates to pick.
 
-    ``excerpt_rows`` serves the page excerpt on the first N rows only. An
-    excerpt is ~1,500 characters against ~300 for the whole rest of a row, so it
-    is essentially the entire cost of this block; rows past the cut keep path,
-    title, summary, snippet and score, which is a described candidate rather
-    than a bare pointer. Deliberately a *field* cut and not a row cut: dropping
-    rows takes paths out of the response, and a named path costs almost nothing.
+    ``excerpt_rows`` serves the page excerpt on the first N rows only: the
+    excerpt is most of a row's cost. A *field* cut, not a row cut, because
+    dropping rows takes paths out and a named path costs almost nothing.
     """
     out: list[dict] = []
     for idx, h in enumerate(hits[: limit if limit is not None else len(hits)]):
         target = h.get("target_path")
         entry: dict[str, Any] = {"path": target}
-        # A symbol_spotlight page's target_path is ``file.py::Symbol``: a page
-        # id, not a path a consumer can open. Keep it (callers pipe it into
-        # get_symbol) and name the file too, so ``path`` never has to be
-        # guessed at by anything downstream.
+        # ``file.py::Symbol`` is a page id callers pipe into get_symbol; name
+        # the openable file beside it.
         if target and "::" in target:
             entry["file"] = target.split("::", 1)[0]
         if h.get("title"):
@@ -254,15 +207,11 @@ async def _intersection_boost(question: str, hits: list[dict], ctx: Any = None) 
 async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
     """Attach each top hit's real page content as ``excerpt``. Mutates `hits`.
 
-    Every consumer of a hit — the synthesis prompt and the pointer payload
-    alike — otherwise sees only the page's one-line LLM summary or a 200-char
-    opener, next to a symbol block carrying docstrings and source bodies. A
-    consumer given names but no prose reconstructs rationale from the names,
-    which is a confident wrong answer rather than a thin one.
+    Without it a consumer sees only a one-line summary beside symbol names, and
+    reconstructs rationale from the names: a confident wrong answer.
 
-    Returns the number of top hits left without page content. That count is
-    the point: a hit reaching synthesis with no body used to be invisible,
-    which is how this went unnoticed for as long as it did.
+    Returns the number of top hits left without page content, so a hit
+    reaching synthesis with no body is visible rather than silent.
     """
     if not hits:
         return 0
@@ -280,9 +229,7 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
             res = await session.execute(select(Page.id, Page.content).where(Page.id.in_(page_ids)))
             content_by_id = {row[0]: (row[1] or "") for row in res.all()}
     except Exception:
-        # Never fail the answer over an excerpt fetch — but never lose the
-        # fact either. Without this line the whole prompt silently degrades
-        # to summaries and the answer still looks confident.
+        # Never fail the answer over an excerpt fetch, but never hide it either.
         _log.warning(
             "get_answer: page-content fetch failed for %d hits; synthesis "
             "will read one-line summaries instead of page prose",
@@ -303,12 +250,9 @@ async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
 def _detect_question_domain(question: str) -> str | None:
     """Return ``"ui"``, ``"backend"``, or ``None`` when the question is ambiguous.
 
-    Used to break ties on retrievals where vocabulary overlaps across domains
-    (e.g. "how does indexing work" could plausibly retrieve a UI status-pill
-    component or the actual ingestion pipeline). The classifier is intentionally
-    conservative: if both domain token sets fire, or neither does, we return
-    ``None`` and apply no penalty — better to leave ranking alone than to
-    miscategorise a cross-cutting question.
+    Breaks ties where vocabulary overlaps across domains. Conservative: if both
+    token sets fire, or neither, no penalty applies rather than miscategorise a
+    cross-cutting question.
     """
     qlow = question.lower()
     has_ui = any(tok in qlow for tok in _UI_QUESTION_TOKENS)
@@ -346,11 +290,8 @@ def _apply_domain_penalty(hits: list[dict], question: str) -> None:
 def _candidate_justification(h: dict) -> str:
     """One-line reason this hit might answer the question.
 
-    Used on the low-confidence return path so the agent sees something
-    decision-shaped ("Read file X because it implements Y") instead of a
-    flat list of paths it has to scan into. Prefers the matched-symbol name
-    over the file summary because the matched symbol is what tied this hit
-    to the question in the first place.
+    Decision-shaped ("implements Y") rather than a bare path. Prefers the
+    matched symbol, which is what tied this hit to the question.
     """
     syms = h.get("symbols") or []
     matched = next((s for s in syms if s.get("_matched")), None)
@@ -360,8 +301,7 @@ def _candidate_justification(h: dict) -> str:
         return f"Implements {kind} {name}."
     summary = (h.get("summary") or h.get("snippet") or "").strip()
     if summary:
-        # First sentence only; trailing prose is mostly cache-write cost on
-        # the consumer side.
+        # First sentence only; the rest is mostly cache-write cost.
         first = summary.split(". ")[0]
         return (first[:160].rstrip() + ".") if first else ""
     title = h.get("title") or ""
@@ -376,12 +316,8 @@ def _rerank_by_coverage(hits: list[dict], question: str) -> list[dict]:
     so a generic lexical overlap such as ``coverage`` cannot beat a page that
     also agrees on ``PR``, ``test impact``, and ``changed files``. Raw fused
     retrieval remains the base signal; this is a bounded multiplier, not a
-    replacement score.
-
-    This addresses a common BM25 failure mode where a hit that matches one
-    constraint very strongly can outrank a hit that matches all constraints
-    moderately — the latter is usually the better answer for multi-constraint
-    questions.
+    replacement score. Counters BM25 ranking one strongly-matched constraint
+    above a hit that matches every constraint moderately.
     """
     return rerank_by_context_coverage(
         hits,
