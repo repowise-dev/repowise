@@ -22,6 +22,7 @@ Examples:
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import click
@@ -73,21 +74,20 @@ def impacted_tests_command(revspec: str | None, repo: str | None, staged: bool, 
         raise click.ClickException("Give a revision range or --staged, not both.")
 
     # json/list go to downstream tools; keep stdout clean of log noise.
-    if fmt != "table":
-        silence_logs_for_machine_output()
+    silencer = silence_logs_for_machine_output() if fmt != "table" else contextlib.nullcontext()
+    with silencer:
+        repo_path = _resolve_repo_path(repo)
 
-    repo_path = _resolve_repo_path(repo)
+        from repowise.core.analysis.changed_lines import changed_lines
 
-    from repowise.core.analysis.changed_lines import changed_lines
+        try:
+            changed, label = changed_lines(str(repo_path), revspec, staged=staged)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
 
-    try:
-        changed, label = changed_lines(str(repo_path), revspec, staged=staged)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    result = run_async(_collect(repo_path, changed))
-    result["diff"] = label
-    _render(result, fmt)
+        result = run_async(_collect(repo_path, changed))
+        result["diff"] = label
+        _render(result, fmt)
 
 
 async def _collect(repo_path, changed: dict[str, set[int]]) -> dict:

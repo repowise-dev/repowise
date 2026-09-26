@@ -139,8 +139,8 @@ def run(repo_path: Path, factory: Callable[[], Awaitable[dict]], tool_name: str)
     from repowise.cli.helpers import silence_logs_for_machine_output
     from repowise.cli.tool_bridge import call_tool
 
-    silence_logs_for_machine_output()
-    return call_tool(repo_path, factory, tool_name)
+    with silence_logs_for_machine_output():
+        return call_tool(repo_path, factory, tool_name)
 
 
 #: MCP tool name -> the CLI command that now does the same thing.
