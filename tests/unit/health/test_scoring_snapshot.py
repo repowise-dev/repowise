@@ -229,10 +229,41 @@ def test_error_handling_cap_bounds_stream():
 
 
 def test_organizational_cap_bounds_stream():
-    """The organizational cap (-3.5) bounds a high-volume finding stream. With
-    developer_congestion defect-calibrated down to 0.5 (it was a HEAD-leakage
-    artifact), three CRITICALs deduct under the cap rather than saturating it."""
+    """History alone is bounded by the structure-conditioned cap, not the 3.5
+    ceiling. Three CRITICAL developer_congestion findings weigh 3.0 (2.0 x 0.5
+    each); on a file with no code-shape finding the history cap is 1.0 + 1.0 x 0,
+    so the file keeps 9.0 (7.0 under the old flat 3.5 cap)."""
     findings = [_result("developer_congestion", Severity.CRITICAL) for _ in range(3)]
     scores, _ = score_file(findings)
-    # 3 * 2.0 * 0.5 = 3.0 weighted (< 3.5 cap) -> score = 7.0
-    assert scores["defect"] == 7.0
+    assert scores["defect"] == 9.0
+
+
+def test_history_cap_follows_structure():
+    """Each point of code-shape deduction lets history deduct one more, to 3.5."""
+    history = [_result("prior_defect", Severity.CRITICAL) for _ in range(3)]  # 6.0 raw
+    # structure 2.5 (brain_method x 3 -> structural cap) -> history cap 3.5
+    shaped = [*history, *(_result("brain_method", Severity.CRITICAL) for _ in range(3))]
+    scores, _ = score_file(shaped)
+    assert round(scores["defect"], 6) == round(10.0 - 2.5 - 3.5, 6)
+    # structure 0.847 (one MEDIUM complex_method) -> history cap 1.847
+    mid = [*history, _result("complex_method", Severity.MEDIUM)]
+    scores, ded = score_file(mid)
+    assert round(scores["defect"], 6) == round(10.0 - 0.847 - 1.847, 6)
+    # impacts still sum to the deduction the score was computed from
+    assert round(sum(ded), 6) == round(0.847 + 1.847, 6)
+
+
+def test_improving_code_never_lowers_score():
+    """Monotone in structure at fixed history: removing a code-shape finding
+    can only raise the score."""
+    history = [_result("change_entropy", Severity.HIGH) for _ in range(3)]
+    worse = [*history, _result("large_method", Severity.HIGH)]
+    better = list(history)
+    assert score_file(better)[0]["defect"] >= score_file(worse)[0]["defect"]
+
+
+def test_history_cap_constants_locked():
+    """The structure-conditioned history cap is a calibrated-scale constant pair."""
+    from repowise.core.analysis.health.scoring import HISTORY_CAP_BASE, HISTORY_CAP_PER_STRUCTURE
+
+    assert (HISTORY_CAP_BASE, HISTORY_CAP_PER_STRUCTURE) == (1.0, 1.0)

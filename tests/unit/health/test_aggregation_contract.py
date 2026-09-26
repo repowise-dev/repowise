@@ -256,6 +256,18 @@ def test_a_capped_category_is_flagged_and_holds_its_applied_total() -> None:
     assert category["capped"] is True
 
 
+def test_the_history_category_reports_the_cap_it_was_scored_under() -> None:
+    """The history cap follows the structure half, so the breakdown must show
+    the live cap (1.0 + structure), not the 3.5 ceiling it never reached."""
+    from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, history_cap
+
+    shape = _Finding(_category_biomarker("structural_complexity"), health_impact=0.5)
+    hist = _Finding("prior_defect", severity="critical", health_impact=1.5)
+    by_cat = {c["category"]: c for c in score_breakdown([shape, hist])["categories"]}
+    assert by_cat[HISTORY_CATEGORY]["cap"] == round(history_cap(0.5), 2) == 1.5
+    assert by_cat[HISTORY_CATEGORY]["capped"] is True
+
+
 def test_a_category_with_no_findings_is_absent_rather_than_zero_filled() -> None:
     biomarker = _category_biomarker("structural_complexity")
     out = score_breakdown([_Finding(biomarker, health_impact=1.0)])

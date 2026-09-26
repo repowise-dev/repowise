@@ -6,7 +6,7 @@ cap. Final score is clamped to [1.0, 10.0].
 
 The recalibrated category caps (plan §3.1):
 
-    organizational        -> -3.5   # was -1.0 (process-aware signals)
+    organizational        -> -3.5   # ceiling; the live cap is history_cap()
     structural_complexity -> -2.5   # was -3.5
     test_coverage         -> -2.0
     size_and_complexity   -> -1.5   # was -2.0
@@ -67,6 +67,33 @@ CATEGORY_CAPS: dict[str, float] = {
     # squeezed by - the predictive categories.
     "error_handling": 0.5,
 }
+
+# The one defect category derived from git rather than from the code itself.
+# Splitting on it is what lets a surface say which half of the score moved: a
+# refactor changes the structure half, and nothing a reader types today changes
+# the history half.
+HISTORY_CATEGORY = "organizational"
+
+# History markers read how a file has been changed, not what it is, so on their
+# own they measure activity: a simple file that changes often is busy, not
+# broken. History therefore amplifies code risk rather than standing alone: its
+# cap is 1.0 plus one point per point of structure deduction (every other defect
+# category, already capped), up to the category's 3.5. A file with no code-shape
+# finding keeps at least 9.0. Checked against the defect benchmark: no
+# measurable predictive cost. The weights are unchanged; fit the base and slope
+# with them in the next calibration pass.
+HISTORY_CAP_BASE: float = 1.0
+HISTORY_CAP_PER_STRUCTURE: float = 1.0
+
+
+def history_cap(structure: float) -> float:
+    """The most git history may deduct from a file whose other defect
+    categories deduct *structure* points."""
+    return min(
+        CATEGORY_CAPS[HISTORY_CATEGORY],
+        HISTORY_CAP_BASE + HISTORY_CAP_PER_STRUCTURE * max(structure, 0.0),
+    )
+
 
 # Per-biomarker deduction by severity. The scorer caps the per-category
 # total at the value in ``CATEGORY_CAPS``.
@@ -572,12 +599,17 @@ def _score_dimension(
     weight_fn: Callable[[str], float],
     category_fn: Callable[[str], str],
     caps: dict[str, float],
+    conditioned_cap: tuple[str, Callable[[float], float]] | None = None,
 ) -> tuple[float, list[float]]:
     """Aggregate one dimension's deductions -> ``(score, per_result_deductions)``.
 
     The single, shared scoring kernel: weight each finding, accumulate per
     category, cap each category, clamp to ``[1.0, 10.0]``. Every dimension runs
     the identical algorithm against its own weight / category / cap tables.
+
+    *conditioned_cap* ``(category, cap_fn)`` replaces that one category's cap
+    with ``cap_fn(sum of every other category's capped total)``; only the
+    defect dimension uses it, for the history category.
     """
     raw: dict[str, list[tuple[int, float]]] = {}
     for idx, r in enumerate(results_list):
@@ -592,8 +624,17 @@ def _score_dimension(
 
     per_result = [0.0] * len(results_list)
     total = 0.0
+    cap_for: dict[str, float] = {}
+    if conditioned_cap is not None:
+        cond_cat, cap_fn = conditioned_cap
+        others = sum(
+            min(sum(d for _, d in entries), caps.get(cat, 1.0))
+            for cat, entries in raw.items()
+            if cat != cond_cat
+        )
+        cap_for[cond_cat] = cap_fn(others)
     for cat, entries in raw.items():
-        cap = caps.get(cat, 1.0)
+        cap = cap_for.get(cat, caps.get(cat, 1.0))
         cat_sum = sum(d for _, d in entries)
         if cat_sum <= cap:
             for idx, d in entries:
@@ -666,7 +707,11 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     ]
     defect_results = [results_list[i] for i in defect_idx]
     defect_score, defect_sub = _score_dimension(
-        defect_results, biomarker_weight, biomarker_category, CATEGORY_CAPS
+        defect_results,
+        biomarker_weight,
+        biomarker_category,
+        CATEGORY_CAPS,
+        conditioned_cap=(HISTORY_CATEGORY, history_cap),
     )
     defect_deductions = [0.0] * len(results_list)
     for sub_i, orig_i in enumerate(defect_idx):
@@ -698,13 +743,6 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
         "performance": perf_score,
     }
     return scores, defect_deductions
-
-
-# The one defect category derived from git rather than from the code itself.
-# Splitting on it is what lets a surface say which half of the score moved: a
-# refactor changes the structure half, and nothing a reader types today changes
-# the history half.
-HISTORY_CATEGORY = "organizational"
 
 
 def deduction_split(findings: Iterable[Any]) -> tuple[float, float]:
