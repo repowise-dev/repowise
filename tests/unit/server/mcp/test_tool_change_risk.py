@@ -1,11 +1,7 @@
-"""Degraded-path tests for ``tool_change_risk`` that the scoring suites skip.
+"""How each ``get_change_risk`` enrichment degrades.
 
-``test_change_risk*.py`` run real git repos through ``get_change_risk`` and
-cover the happy shapes. What they leave out is how each enrichment degrades:
-a git failure while scoring, a health comparison that throws, an index that
-cannot be read, a changed-lines read that fails. Every one of those must turn
-into a named state rather than a crash or, worse, an empty list that reads as
-"nothing to worry about". These tests drive each helper into that state.
+A failed git call, health comparison, index read or changed-lines read must
+become a named state, never a crash or an empty list that reads as all-clear.
 """
 
 from __future__ import annotations
@@ -124,12 +120,8 @@ async def test_health_references_skip_the_index_when_there_is_nothing_to_match()
 
 @pytest.mark.asyncio
 async def test_health_references_on_an_index_with_no_repository_raise(factory):
-    """Pins a defect: every sibling helper treats ``LookupError`` as "no index".
-
-    ``_repository``, ``_impacted_tests_block``, ``_read_prior_fixes`` and
-    ``_independent_changes_block`` all catch it. This one catches only
-    ``SQLAlchemyError``, so a session factory over an empty store fails the
-    whole ``get_change_risk`` call whenever the delta has findings.
+    """Pins a defect: sibling helpers treat ``LookupError`` as "no index", but
+    this one catches only ``SQLAlchemyError``, so an empty store raises.
     """
     finding = _finding("a.py", "complex_method", "f", 1, 2)
     with pytest.raises(LookupError):

@@ -1,12 +1,6 @@
-"""``get_symbol`` paths the symbol suites leave unexercised.
-
-The existing suites (``test_tool_symbol.py``, ``test_symbol_*.py``) cover the
-lookup ladder, ranges, ambiguity and callee depth on healthy inputs. These pin
-what happens at the edges an agent still reaches in practice: an omission ref
-whose store is corrupt or whose query matches nothing, a range read on an
-excluded or unreadable path, a caller-supplied ``reference`` in workspace mode,
-an ambiguous id whose candidate file has gone, runaway ``context_lines``, and
-the note rewrite that keeps a budget-cut ambiguous answer honest.
+"""``get_symbol`` edge paths: corrupt or empty omission refs, excluded or
+missing range reads, workspace references, vanished ambiguous candidates,
+clamped ``context_lines`` and the budget-cut ambiguity note.
 """
 
 from __future__ import annotations
@@ -146,13 +140,8 @@ async def test_range_read_refuses_an_excluded_path(setup_mcp, tmp_path, monkeypa
 async def test_range_read_without_a_repo_path_crashes_before_its_guard(
     setup_mcp, factory, monkeypatch
 ):
-    """Pins a defect: the "no repo path configured" guard is unreachable.
-
-    ``_resolve_range_read`` builds the exclusion spec from ``ctx.path`` one
-    line before it checks ``ctx.path``, and ``build_exclude_spec(None)``
-    raises. A pathless context therefore surfaces a ``TypeError`` instead of
-    the named error. The resolved context normally falls back to the stored
-    ``local_path``, so a pathless one is forced here.
+    """Pins a defect: the exclusion spec is built from ``ctx.path`` before the
+    no-path guard runs, so a pathless context raises ``TypeError``.
     """
 
     async def _context(_repo):

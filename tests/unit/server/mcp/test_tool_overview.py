@@ -1,10 +1,7 @@
-"""Branch-level tests for ``tool_overview`` helpers the tool-level suites skip.
+"""``tool_overview`` helper branches the shared ``get_overview`` seed never reaches.
 
-``test_overview*.py`` drive ``get_overview`` end to end over the shared seed,
-which never carries a legacy title, a corrupt metadata blob, more than ten
-communities, a workspace registry, or a failing health read. Each of those is a
-path an agent's first call can take on a real index, so each is pinned here
-against the helper that owns it.
+Legacy titles, corrupt metadata, over ten communities, a workspace registry and
+a failing health read, each pinned against the helper that owns it.
 """
 
 from __future__ import annotations

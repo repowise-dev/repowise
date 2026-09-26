@@ -1,12 +1,7 @@
-"""Direct tests for the ``get_context`` include-block resolvers in ``tool_context/enrichment.py``.
+"""Edge paths of the ``get_context`` include-block resolvers in ``tool_context/enrichment.py``.
 
-The tool-level suites (``test_context*.py``) drive these through
-``get_context`` and cover the common shapes. What they leave unexercised is the
-per-helper edge behaviour: the fuzzy ``file::name`` fallback, a file target
-asked for callees, the measured-betweenness branch, community neighbours, and
-the whole ``health`` block. Each case here pins one of those against the shared
-``populated_db`` / ``health_data`` seeds, calling the helper directly so a
-regression names the helper rather than a 20-block response.
+Called directly so a regression names the helper; ``test_context*.py`` covers
+the end-to-end shapes.
 """
 
 from __future__ import annotations
@@ -248,9 +243,7 @@ async def test_metrics_for_an_unknown_target_is_null(session, populated_db):
 async def test_metrics_report_measured_betweenness_with_its_percentile(session, populated_db):
     """Once centrality has run, betweenness is a number with a peer percentile.
 
-    Peers are the four seeded file nodes: models.py (pagerank 0.6, betweenness
-    0.3) ranks above two of four on both, so both percentiles are 50. Its one
-    inbound dependency edge is service.py's import.
+    models.py ranks above two of the four seeded file nodes, so both percentiles are 50.
     """
     node = (
         await session.execute(select(GraphNode).where(GraphNode.node_id == "src/db/models.py"))
@@ -309,12 +302,8 @@ async def test_community_is_null_for_an_unknown_target(session, populated_db):
 
 @pytest.mark.asyncio
 async def test_community_of_a_node_never_clustered_reads_as_cluster_0(session, populated_db):
-    """Pins current behaviour, which is questionable.
-
-    ``graph_nodes.community_id`` is NOT NULL with default 0, so the helper's
-    ``community_id is None`` guard can never fire from a stored row. A node the
-    clustering pass never assigned is reported as a member of ``cluster_0``
-    beside every other default-0 node, not as "no community".
+    """Pins current behaviour: ``community_id`` is NOT NULL default 0, so the
+    ``is None`` guard never fires and an unclustered node reads as ``cluster_0``.
     """
     rid = populated_db
     session.add(
@@ -416,11 +405,8 @@ async def test_health_is_null_for_a_file_with_no_metric_row(session, health_data
 async def test_health_for_a_symbol_target_reads_its_file_with_stored_coverage_and_signals(
     session, health_data
 ):
-    """``file::Symbol`` resolves to the file's metric row.
-
-    The coverage block comes from the ingested ``CoverageFile`` row when one
-    exists, the top two open findings ride along by impact, and the process
-    signals join git history with dependency degree.
+    """``file::Symbol`` resolves to the file's metric row, with stored coverage,
+    the top two findings by impact, and process signals.
     """
     rid = health_data
     session.add(
