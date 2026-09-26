@@ -104,7 +104,7 @@ class KimiProvider(OpenAICompatibleProvider):
         "Kimi /models lists IDs only; reasoning controls are enabled "
         "from the documented K2 and K3 model-family contracts."
     )
-    # Kimi has never wrapped status-less SDK errors, so they are not retried.
+    # Status-less SDK errors are not retried for Kimi.
     wrap_connection_errors = False
 
     def __init__(

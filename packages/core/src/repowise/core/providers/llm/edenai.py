@@ -120,9 +120,8 @@ class EdenAIProvider(OpenAICompatibleProvider):
         "EdenAIProvider maps explicit efforts to the OpenAI reasoning_effort "
         "parameter for OpenAI reasoning model ids routed via Eden AI."
     )
-    # Differences from the other gateways that predate the shared base class:
-    # status-less SDK errors are not wrapped (so not retried), no stop reason
-    # is reported, and spend is always recorded as doc generation.
+    # Status-less SDK errors are not retried, no stop reason is reported, and
+    # spend is always recorded as doc generation.
     wrap_connection_errors = False
     reports_stop_reason = False
     cost_operation = "doc_generation"

@@ -412,12 +412,8 @@ def translate_sdk_errors(
 ) -> Iterator[None]:
     """Re-raise a vendor SDK's errors as repowise provider errors.
 
-    429s (*rate_limit_error*) become ``RateLimitError`` carrying the
-    ``retry-after`` hint, so the shared retry policy backs off patiently.
-    *status_error* keeps its HTTP status so non-retryable 4xx fail fast.
-    *api_error*, when given, also wraps the SDK's status-less errors
-    (connection failures, timeouts), which then retry as transient.
-    Anything else propagates untouched.
+    429s become ``RateLimitError`` with ``retry-after``; status errors keep
+    their code; *api_error*, when given, wraps status-less errors too.
     """
     # An empty tuple makes the last ``except`` match nothing.
     wrapped_api_errors = (api_error,) if api_error is not None else ()
@@ -442,13 +438,9 @@ async def record_generation_cost(
 ) -> None:
     """Record one generation's token spend on *tracker*, if one is attached.
 
-    Awaited inline rather than spawned as a detached task: a fire-and-forget
-    ``create_task`` can still be flushing its aiosqlite write when the event
-    loop is torn down (e.g. the ``asyncio.run`` teardown after doc generation),
-    which surfaces as a noisy "Event loop is closed" worker-thread traceback.
-    ``record()`` swallows its own persistence errors and anything else is
-    suppressed here, so generation is never failed by cost bookkeeping.
-    *operation* defaults to the tracker's current operation.
+    Awaited inline: a detached task can outlive the event loop. Failures are
+    suppressed so cost bookkeeping never fails a generation. *operation*
+    defaults to the tracker's current one.
     """
     if tracker is None:
         return
@@ -568,11 +560,7 @@ class ChatToolCall:
 
 
 def parse_tool_arguments(raw: str) -> dict[str, Any]:
-    """Decode a tool call's JSON arguments, treating empty or malformed as ``{}``.
-
-    A model that emits broken argument JSON still gets its call surfaced (with
-    no arguments) rather than failing the whole turn.
-    """
+    """Decode a tool call's JSON arguments; empty or malformed JSON reads as ``{}``."""
     try:
         return json.loads(raw) if raw else {}
     except Exception:
