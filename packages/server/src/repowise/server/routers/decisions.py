@@ -92,6 +92,51 @@ def _in_lane(currency: str | None, lane: str) -> bool:
 _LANE_SCAN_CAP = 500
 
 
+def _page_of_lane(decisions: list, currencies: dict, lane: str, page: slice) -> list:
+    """The records of *decisions* in *lane*, cut to *page*.
+
+    ``candidates`` was already paged in SQL. Every other lane was over-fetched
+    because its currency is derived, so its page is cut here.
+    """
+    in_lane = [d for d in decisions if _in_lane(currencies.get(d.id), lane)]
+    if lane == "candidates":
+        return in_lane
+    return in_lane[page]
+
+
+async def _attach_evidence(session: AsyncSession, items: list[DecisionRecordResponse]) -> None:
+    """Give each row its evidence count and its top-ranked quote as a preview."""
+    if not items:
+        return
+    rows = (
+        await session.execute(
+            select(DecisionEvidence)
+            .where(DecisionEvidence.decision_id.in_([item.id for item in items]))
+            .order_by(
+                DecisionEvidence.source_rank.desc(),
+                DecisionEvidence.confidence.desc(),
+            )
+        )
+    ).scalars()
+    counts: dict[str, int] = {}
+    best: dict[str, DecisionEvidence] = {}
+    for ev in rows:
+        counts[ev.decision_id] = counts.get(ev.decision_id, 0) + 1
+        # Rows arrive best-first, so the first row per decision wins.
+        best.setdefault(ev.decision_id, ev)
+    for item in items:
+        item.evidence_count = counts.get(item.id, 0)
+        top = best.get(item.id)
+        if top is not None and top.source_quote:
+            item.evidence_preview = EvidencePreview(
+                source=top.source,
+                source_quote=top.source_quote,
+                verification=top.verification,
+                evidence_file=top.evidence_file,
+                evidence_line=top.evidence_line,
+            )
+
+
 @router.get(
     "/api/repos/{repo_id}/decisions",
     response_model=list[DecisionRecordResponse],
@@ -163,44 +208,13 @@ async def list_decisions(
     )
     currencies = await crud.decision_currencies(session, repo_id, decisions)
     if lane is not None:
-        decisions = [d for d in decisions if _in_lane(currencies.get(d.id), lane)]
-    if derived:
-        decisions = decisions[offset : offset + limit]
+        decisions = _page_of_lane(decisions, currencies, lane, slice(offset, offset + limit))
     signatures = await crud.decision_signatures(session, repo_id, decisions)
     items = [DecisionRecordResponse.from_orm(d) for d in decisions]
     for item in items:
         item.currency = currencies.get(item.id)
         _attach_signature(item, signatures.get(item.id))
-
-    ids = [d.id for d in decisions]
-    if ids:
-        rows = (
-            await session.execute(
-                select(DecisionEvidence)
-                .where(DecisionEvidence.decision_id.in_(ids))
-                .order_by(
-                    DecisionEvidence.source_rank.desc(),
-                    DecisionEvidence.confidence.desc(),
-                )
-            )
-        ).scalars()
-        counts: dict[str, int] = {}
-        best: dict[str, DecisionEvidence] = {}
-        for ev in rows:
-            counts[ev.decision_id] = counts.get(ev.decision_id, 0) + 1
-            # Rows arrive best-first, so the first row per decision wins.
-            best.setdefault(ev.decision_id, ev)
-        for item in items:
-            item.evidence_count = counts.get(item.id, 0)
-            top = best.get(item.id)
-            if top is not None and top.source_quote:
-                item.evidence_preview = EvidencePreview(
-                    source=top.source,
-                    source_quote=top.source_quote,
-                    verification=top.verification,
-                    evidence_file=top.evidence_file,
-                    evidence_line=top.evidence_line,
-                )
+    await _attach_evidence(session, items)
     return items
 
 
@@ -401,6 +415,50 @@ def _provider_available(repo_path: Path) -> bool:
     return provider_available_for_repo(repo_path)
 
 
+@contextlib.contextmanager
+def _value_error_as_400():
+    """Report a policy the caller asked for but cannot have as a 400."""
+    try:
+        yield
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _apply_settings_update(policy, body: DecisionSettingsUpdate):
+    """*policy* with the fields *body* sent applied, preset first."""
+    from repowise.core.analysis.decisions.policy import preset_policy
+
+    if body.preset is not None:
+        with _value_error_as_400():
+            # A preset names source membership, not a budget and not which
+            # harnesses are read; what the caller did not send is theirs and
+            # survives.
+            policy = replace(
+                preset_policy(body.preset),
+                discovery=policy.discovery,
+                harnesses=policy.harnesses,
+                agent_acceptance=policy.agent_acceptance,
+                capture_prompt=policy.capture_prompt,
+            )
+    if body.enabled is not None:
+        policy = policy.with_enabled(body.enabled)
+    if body.llm is not None:
+        policy = policy.with_llm(body.llm)
+    if body.agent_acceptance is not None:
+        policy = policy.with_agent_acceptance(body.agent_acceptance)
+    return _apply_source_and_discovery_patches(policy, body)
+
+
+def _apply_source_and_discovery_patches(policy, body: DecisionSettingsUpdate):
+    with _value_error_as_400():
+        for key, patch in (body.sources or {}).items():
+            policy = policy.with_source(key, enabled=patch.enabled, llm=patch.llm)
+        discovery = body.discovery.model_dump(exclude_none=True) if body.discovery else {}
+        if discovery:
+            policy = policy.with_discovery(**discovery)
+    return policy
+
+
 @router.get(
     "/api/repos/{repo_id}/decisions/settings",
     response_model=DecisionSettings,
@@ -428,44 +486,10 @@ async def update_decision_settings(
     Omitted fields keep their current value, so a UI can send one switch.
     ``preset`` is applied before the per-source overrides.
     """
-    from repowise.core.analysis.decisions.policy import preset_policy
     from repowise.core.analysis.decisions.policy_store import PolicyConflictError, write_policy
 
     repo_path = await _local_repo_path(session, repo_id)
-    policy = _load_policy_or_400(repo_path).policy
-
-    if body.preset is not None:
-        try:
-            # A preset names source membership, not a budget and not which
-            # harnesses are read; what the caller did not send is theirs and
-            # survives.
-            policy = replace(
-                preset_policy(body.preset),
-                discovery=policy.discovery,
-                harnesses=policy.harnesses,
-                agent_acceptance=policy.agent_acceptance,
-                capture_prompt=policy.capture_prompt,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if body.enabled is not None:
-        policy = policy.with_enabled(body.enabled)
-    if body.llm is not None:
-        policy = policy.with_llm(body.llm)
-    if body.agent_acceptance is not None:
-        policy = policy.with_agent_acceptance(body.agent_acceptance)
-    for key, patch in (body.sources or {}).items():
-        try:
-            policy = policy.with_source(key, enabled=patch.enabled, llm=patch.llm)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    patch = body.discovery.model_dump(exclude_none=True) if body.discovery else {}
-    if patch:
-        try:
-            policy = policy.with_discovery(**patch)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
+    policy = _apply_settings_update(_load_policy_or_400(repo_path).policy, body)
     try:
         resolution = write_policy(repo_path, policy, expected_etag=body.etag)
     except PolicyConflictError as exc:
@@ -493,6 +517,14 @@ async def _live_decision_id(session: AsyncSession, decision_id: str) -> str:
     return await crud.resolve_decision_id(session, decision_id) or decision_id
 
 
+async def _decision_in_repo(session: AsyncSession, repo_id: str, decision_id: str):
+    """The record *decision_id* names today, or a 404 unless it is in *repo_id*."""
+    rec = await crud.get_decision(session, await _live_decision_id(session, decision_id))
+    if rec is None or rec.repository_id != repo_id:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    return rec
+
+
 @router.get(
     "/api/repos/{repo_id}/decisions/{decision_id}",
     response_model=DecisionRecordResponse,
@@ -503,10 +535,7 @@ async def get_decision(
     session: AsyncSession = Depends(get_db_session),
 ) -> DecisionRecordResponse:
     """Get a single decision record by ID."""
-    decision_id = await _live_decision_id(session, decision_id)
-    rec = await crud.get_decision(session, decision_id)
-    if rec is None or rec.repository_id != repo_id:
-        raise HTTPException(status_code=404, detail="Decision not found")
+    rec = await _decision_in_repo(session, repo_id, decision_id)
     return await _one_with_signature(session, repo_id, rec)
 
 
@@ -526,11 +555,8 @@ async def list_decision_evidence(
     badge (``exact`` | ``fuzzy`` | ``unverified``). 404 if the decision does not
     exist or belongs to a different repository.
     """
-    decision_id = await _live_decision_id(session, decision_id)
-    rec = await crud.get_decision(session, decision_id)
-    if rec is None or rec.repository_id != repo_id:
-        raise HTTPException(status_code=404, detail="Decision not found")
-    rows = await crud.list_decision_evidence(session, decision_id)
+    rec = await _decision_in_repo(session, repo_id, decision_id)
+    rows = await crud.list_decision_evidence(session, rec.id)
     return {"evidence": [DecisionEvidenceResponse.from_orm(r) for r in rows]}
 
 
@@ -549,12 +575,20 @@ async def get_decision_lineage(
     UI can render a timeline. An isolated decision returns a single-entry chain.
     404 if the decision does not exist or belongs to a different repository.
     """
-    decision_id = await _live_decision_id(session, decision_id)
-    rec = await crud.get_decision(session, decision_id)
-    if rec is None or rec.repository_id != repo_id:
-        raise HTTPException(status_code=404, detail="Decision not found")
-    chain = await decision_graph.build_lineage_chain(session, decision_id)
+    rec = await _decision_in_repo(session, repo_id, decision_id)
+    chain = await decision_graph.build_lineage_chain(session, rec.id)
     return {"lineage": [DecisionLineageEntry(**entry) for entry in chain]}
+
+
+async def _is_accepted_with_scope(session: AsyncSession, existing) -> bool:
+    """Whether *existing* is an accepted record that governs a scope.
+
+    Asks what the stored record would lose, not what either side calls it: an
+    agreement can be given a real scope.
+    """
+    if existing is None or not crud.names_a_scope(existing):
+        return False
+    return await crud.is_accepted(session, existing.id)
 
 
 @router.post(
@@ -598,14 +632,7 @@ async def create_decision(
     # An agreement names no file because its scope is the repository.
     # Requiring one would leave the noun permanently unacceptable.
     scoped = named or kind == AGREEMENT_KIND
-    # What the stored record would lose, not what either side calls it: an
-    # agreement can be given a real scope.
-    if (
-        existing is not None
-        and not named
-        and crud.names_a_scope(existing)
-        and await crud.is_accepted(session, existing.id)
-    ):
+    if not named and await _is_accepted_with_scope(session, existing):
         raise HTTPException(
             status_code=409,
             detail=(
@@ -646,6 +673,30 @@ async def create_decision(
     return await _one_with_signature(session, repo_id, rec)
 
 
+async def _transition_status(
+    session: AsyncSession, decision_id: str, status: str, superseded_by: str | None
+):
+    """Move a decision to *status* as a person on the web, or 400/404."""
+    # The successor is a caller-supplied id too, and storing a retired one
+    # would record a pointer that no longer resolves.
+    if superseded_by is not None:
+        superseded_by = await _live_decision_id(session, superseded_by)
+    try:
+        rec = await crud.update_decision_status(
+            session,
+            decision_id,
+            status,
+            superseded_by=superseded_by,
+            accepter="web",
+            kind="person",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    return rec
+
+
 @router.patch(
     "/api/repos/{repo_id}/decisions/{decision_id}",
     response_model=DecisionRecordResponse,
@@ -664,30 +715,11 @@ async def patch_decision(
     ``affected_files`` without ``affected_modules`` re-derives the modules
     from those files so the two halves of the scope cannot disagree.
     """
-    decision_id = await _live_decision_id(session, decision_id)
-    rec = await crud.get_decision(session, decision_id)
-    if rec is None or rec.repository_id != repo_id:
-        raise HTTPException(status_code=404, detail="Decision not found")
+    rec = await _decision_in_repo(session, repo_id, decision_id)
+    decision_id = rec.id
 
     if body.status is not None:
-        # The successor is a caller-supplied id too, and storing a retired one
-        # would record a pointer that no longer resolves.
-        superseded_by = body.superseded_by
-        if superseded_by is not None:
-            superseded_by = await _live_decision_id(session, superseded_by)
-        try:
-            rec = await crud.update_decision_status(
-                session,
-                decision_id,
-                body.status,
-                superseded_by=superseded_by,
-                accepter="web",
-                kind="person",
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if rec is None:
-            raise HTTPException(status_code=404, detail="Decision not found")
+        rec = await _transition_status(session, decision_id, body.status, body.superseded_by)
     elif body.superseded_by is not None:
         raise HTTPException(
             status_code=400,
