@@ -4,15 +4,72 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import GenerationJob
+from repowise.core.persistence.models import GenerationJob, Page
 from repowise.server.scheduler import _inspect_repository, setup_scheduler
+
+
+async def test_staleness_checker_counts_in_sql(
+    session_factory, test_engine, tmp_path, caplog
+) -> None:
+    """Report only stale/expired pages per repo without selecting their content."""
+    async with get_session(session_factory) as session:
+        first = await crud.upsert_repository(
+            session, name="first", local_path=str(tmp_path / "first")
+        )
+        second = await crud.upsert_repository(
+            session, name="second", local_path=str(tmp_path / "second")
+        )
+        for repo, statuses in ((first, ("stale", "expired", "fresh")), (second, ("stale",))):
+            for index, status in enumerate(statuses):
+                session.add(
+                    Page(
+                        id=f"file_page:{repo.name}:{index}",
+                        repository_id=repo.id,
+                        page_type="file_page",
+                        title=f"Page {index}",
+                        content="long rendered markdown " * 100,
+                        target_path=f"{repo.name}/{index}",
+                        source_hash="hash",
+                        model_name="test",
+                        provider_name="test",
+                        freshness_status=status,
+                        created_at=datetime.now(UTC),
+                        updated_at=datetime.now(UTC),
+                    )
+                )
+        await session.commit()
+
+    statements: list[str] = []
+
+    def capture_sql(_connection, _cursor, statement, _parameters, _context, _executemany) -> None:
+        if "wiki_pages" in statement:
+            statements.append(statement)
+
+    scheduler = setup_scheduler(session_factory)
+    staleness_job = next(job for job in scheduler.get_jobs() if job.id == "staleness_check")
+    event.listen(test_engine.sync_engine, "before_cursor_execute", capture_sql)
+    try:
+        with caplog.at_level(logging.INFO, logger="repowise.server.scheduler"):
+            await staleness_job.func()
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", capture_sql)
+
+    assert len(statements) == 2
+    assert all(
+        "count(" in statement.lower() and "wiki_pages.content" not in statement
+        for statement in statements
+    )
+    records = [record for record in caplog.records if record.msg == "staleness_check"]
+    assert {record.repo_name: record.stale_count for record in records} == {"first": 2, "second": 1}
 
 
 async def test_polling_fallback_launches_persisted_job(session_factory, tmp_path) -> None:
