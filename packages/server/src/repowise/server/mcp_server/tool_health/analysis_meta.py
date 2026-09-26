@@ -30,13 +30,9 @@ async def _attach_repository_analysis_meta(
 ) -> None:
     """The same block, computed over the repository rather than one file.
 
-    "Has this repository's health analysis recorded its commit" is a fact about
-    the analysis, but every detail mode used to answer it from the rows it
-    happened to be reporting on. A ``plan_id`` call scoped to a file whose row
-    carries a commit said ``available`` at the same instant the dashboard said
-    ``provenance_unknown (analysis_commit_not_recorded)`` from the repo-wide row,
-    and the reverse when the scoped file was the one missing it. Three bounded
-    aggregates, so agreeing costs no scan.
+    Whether the analysis recorded its commit is a fact about the repository, so
+    every mode must answer it from the repo-wide rows, not the rows it reports
+    on, or a scoped call and the dashboard disagree. Bounded aggregates, no scan.
     """
     latest = (
         await session.execute(

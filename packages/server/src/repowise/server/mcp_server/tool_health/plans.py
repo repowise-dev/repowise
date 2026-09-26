@@ -60,16 +60,8 @@ def _render_plans(
             finding=next(iter(data.findings.emitted), None),
             repo=req.repo,
         )
-    # The deterministic prose suggestion is the fallback for biomarkers
-    # that have no structured detector yet. It is emitted once per
-    # biomarker type as ``suggestion_legend`` (built later, after the
-    # dimension filter) rather than copied onto every finding: the text is
-    # keyed purely by type, so the per-row form repeated one ~40-word
-    # string up to 10x in a single response.
-    #
-    # (The old no-findings-anywhere fallback here was unreachable: targeted
-    # mode always sets ``findings`` and dashboard mode always sets
-    # ``top_findings``.)
+    # Prose suggestions for biomarkers without a structured plan ship once per
+    # type as ``suggestion_legend``, not per finding: the text is keyed by type.
 
 
 def _validation_profile(validation: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -173,9 +165,7 @@ def _prune_orphaned_validation_profiles(
 ) -> None:
     """Drop profiles whose plan the response budget removed.
 
-    A validation profile only means anything next to the plan referencing it,
-    so leaving one behind after its plan is shed hands the agent an id that
-    resolves to nothing.
+    A profile left behind by its shed plan is an id that resolves to nothing.
     """
     plans = result.get("refactoring_plans")
     profiles = result.get("validation_profiles")

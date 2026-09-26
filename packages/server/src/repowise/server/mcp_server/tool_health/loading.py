@@ -103,23 +103,12 @@ async def load_health_data(
     else:
         findings = await load_dashboard_findings(session, repository, pop, req, test_paths)
 
-    # Worst-first order, placed here because ranking needs the summed
-    # deduction per file and ``lead_rows`` is the first point that carries
-    # every open finding this response is entitled to see. Same comparator
-    # the crud layer applies to ``get_health_metrics``, so the REST
-    # dashboard and this tool cannot disagree about which file is worst —
-    # but fed from rows already in memory, so it costs no extra query.
-    #
-    # Deliberately ``lead_rows`` (the unfiltered open set) rather than
-    # ``emitted``: asking to *see* one dimension must not restate which
-    # files the repo's worst are.
+    # Same worst-first comparator as the crud layer, so REST and this tool
+    # agree on the worst file. From ``lead_rows``, the unfiltered open set:
+    # viewing one dimension must not change which files are worst.
     deductions = deduction_by_path(findings.lead_rows)
-    # Rebound rather than kept beside a sorted copy, and above every reader.
-    # ``kpis``, the leverage view and the churn quadrant all reduce with
-    # ``min()`` or a stable sort, which resolve ties by *input* order — so
-    # leaving them on the raw list would have one response name one file as
-    # the worst performer while the ``worst_files`` list printed below it
-    # led with another. The module rollup takes the map itself.
+    # Rebound before every reader: ``min()`` and stable sorts break ties by
+    # input order, so every block must see the same order as ``worst_files``.
     pop.all_metrics = sort_metrics_worst_first(pop.all_metrics, deductions)
     targets = set(pop.effective_targets)
     metric_rows = (
@@ -170,15 +159,9 @@ async def _read_test_paths(
 ) -> set[str]:
     """Test material, from the flag ingestion already decided per file.
 
-    Gated on ``needs_test_paths`` — see the note at its definition — and
-    placed after the ``module:`` expansion so targeted mode can scope it.
-
-    Targeted mode only ever asks ``path in test_paths`` for paths the
-    caller named, so it reads exactly those; dashboard mode partitions a
-    ranked finding list whose paths are not known until the read below
-    runs, so it keeps the repo-wide answer. Measured on this repo, that
-    is 32.9ms -> 0.6ms on a single-file target — a quarter of the whole
-    call, paid to answer "is this one file a test".
+    Gated on ``needs_test_paths`` and run after the ``module:`` expansion.
+    Targeted mode reads only the named paths; dashboard mode partitions a
+    finding list whose paths are not yet known, so it reads repo-wide.
     """
     if not req.needs_test_paths:
         return set()
@@ -190,11 +173,9 @@ async def _read_test_paths(
 async def _read_hotspot_paths(
     session: Any, repository: Any, pop: Population, req: HealthRequest
 ) -> set[str]:
-    """Hotspot health was the one repo KPI this tool never returned, while
-    ``get_overview`` invented its own definition for it — so the canonical
-    persisted number was surfaced by neither. One scalar column, gated the
-    same way as the language map below: ``targets`` mode builds no ``kpis``
-    block at all, so scoping the call must not pay for this read."""
+    """Hotspot paths for the canonical hotspot-health KPI.
+
+    Skipped in targeted mode, which builds no ``kpis`` block."""
     if pop.scoped or not req.wants("kpis"):
         return set()
     return await get_hotspot_file_paths(session, repository.id)
@@ -288,14 +269,9 @@ async def _read_coverage(
     if "coverage" not in req.include_set or pop.nothing_resolved:
         return [], {}
     rows = pop.in_scope_rows(
-        # ``effective_targets``, not ``targets`` — a raw ``module:foo``
-        # target is not a file path and matched nothing here.
-        #
-        # Only targeted mode serializes ``covered_lines``. The dashboard
-        # used to read every ``covered_lines_json`` blob, ``json.loads``
-        # each one, and then strip the field back out with a dict
-        # comprehension — 466,874 B of parse per call for a key it never
-        # emitted. Decline the column at the read instead.
+        # ``effective_targets``: a raw ``module:foo`` is not a file path.
+        # Only targeted mode serializes ``covered_lines``, so the dashboard
+        # declines that column at the read.
         await load_coverage_for_repo(
             session,
             repository.id,
@@ -304,9 +280,8 @@ async def _read_coverage(
         ),
         "file_path",
     )
-    # A repo-wide stored aggregate, not recomputed here, so it cannot
-    # describe a narrowed population. Omitted rather than served beside
-    # per-file rows that no longer match it; the rows themselves stay.
+    # A stored repo-wide aggregate cannot describe a narrowed population, so
+    # it is omitted there; the rows stay.
     summary = (
         {}
         if pop.reported_scope == "production"
@@ -318,17 +293,12 @@ async def _read_coverage(
 async def _read_signals(
     session: Any, repository: Any, pop: Population, req: HealthRequest
 ) -> dict[str, dict[str, Any]]:
-    """Per-file process/people/topology signals for targeted files — the
-    same join the file-detail drawer and REST breakdown use, so an agent
-    can read why a file is risky (prior defects, churn, owners, degree)
-    before touching it. Targeted mode only; the target set is small."""
+    """Per-file process/people/topology signals for targeted files.
+
+    The same join the file-detail drawer and REST breakdown use."""
     if "signals" not in req.include_set or not pop.effective_targets:
         return {}
-    # Batched, not per-file. This loop used to issue three round-trips
-    # per target (git metadata, graph node, degree counts) — the exact
-    # cross-function N+1 the tool's own ``io_in_loop`` biomarker flags
-    # here. ``module:`` targets expand to every file in the module, so
-    # the target set is not always small.
+    # Batched: ``module:`` targets expand to every file in the module.
     git_meta_by_path = await get_git_metadata_bulk(
         session, repository.id, list(pop.effective_targets)
     )
@@ -347,35 +317,24 @@ async def _read_signals(
 async def _read_doc_drift(
     session: Any, repository: Any, pop: Population, req: HealthRequest
 ) -> tuple[list[Any], str | None]:
-    """Documentation this repository's own tree no longer satisfies. A
-    finding is filed against the DOCUMENT, so ``targets`` narrows by the
-    document path: naming ``docs/a.md`` asks about drift in that file.
-    Targets are matched exactly, as everywhere else in this tool, so a
-    bare directory resolves to nothing and lands in ``unresolved``."""
+    """Documentation this repository's own tree no longer satisfies.
+
+    Findings are filed against the document, so ``targets`` narrows by
+    document path, matched exactly."""
     if "doc_drift" not in req.include_set:
         return [], None
     drift_rows: list[Any] = []
     drift_unavailable: str | None = None
     try:
-        # The savepoint is not decoration. This read raises on an index
-        # written before the drift table existed, and on Postgres a
-        # failed statement poisons the transaction, so without it one
-        # missing table would take every later read in this call down
-        # with it. ``replace_doc_drift_guarded`` guards the
-        # write side against the same hazard.
+        # The savepoint matters: on an index older than the drift table this
+        # raises, and on Postgres a failed statement poisons the transaction.
         async with session.begin_nested():
             rows = await get_doc_drift_findings(session, repository.id)
-        # Only the exclude config, NOT ``in_scope_rows``. That helper
-        # also applies the ``production`` scope, whose path set is the
-        # files carrying a health metric --- and no markdown file
-        # carries one. Routing drift through it made
-        # ``scope="production"`` report every document as clean, which
-        # is the one answer this detector must never give by accident.
+        # Exclude config only, not ``in_scope_rows``: the production scope
+        # keeps files with a health metric, and no document has one.
         drift_rows = filter_rows_by_attr(rows, "file_path", pop.exclude_spec)
     except (SQLAlchemyError, OSError, LookupError):
-        # Say the block could not be read rather than serve an empty
-        # list, which would read as a clean bill of health that was
-        # never taken.
+        # Unavailable, not empty: an empty list would read as clean.
         drift_unavailable = UNAVAILABLE_NO_TABLE
     if pop.scoped:
         drift_rows = [r for r in drift_rows if r.file_path in pop.effective_targets]
@@ -397,12 +356,10 @@ async def _read_snapshots(
     session: Any, repository: Any, pop: Population, req: HealthRequest
 ) -> list[Any]:
     """The snapshot window for the repo-level trend block and/or the
-    per-file trajectory attached in targeted mode ("should I touch this
-    file" context for agents)."""
+    per-file trajectory attached in targeted mode."""
     if "trend" not in req.include_set and not (pop.scoped and req.wants("trends")):
         return []
-    # Read through the same scope as the KPIs, or the two halves of one
-    # response would disagree about which files they describe.
+    # Same scope as the KPIs, so both describe the same files.
     return project_scope(
         await list_health_snapshots(session, repository.id, limit=20), pop.reported_scope
     )
@@ -416,21 +373,16 @@ def _rank_leverage_and_leads(
 ) -> tuple[list[HealthFileMetric], dict[str, dict[str, Any]]]:
     """Dominant-cause lead per file, and the leverage ranking it is printed beside.
 
-    Targeted mode wants one per target, so the reduction runs over the whole
-    (small) scoped set. Dashboard mode only ever prints a lead for the files it
-    emits, so it reduces just those rows instead of all ~10k — identical output,
-    and ``_leads_by_file`` measured ~148ms per call handed the full set.
+    Targeted mode reduces the whole (small) scoped set. Dashboard mode reduces
+    only the rows of files it prints: identical output at a fraction of the cost.
 
-    Computed inside the session because the directive's plan lookup
-    needs ``by_leverage`` and has to run before the session closes.
+    Computed inside the session because the directive's plan lookup needs
+    ``by_leverage``.
     """
     if pop.scoped:
         return [], _leads_by_file(findings.lead_rows)
-    # Leverage view: files ranked by NLOC-weighted deficit (how much
-    # each drags the headline), not by raw score. Distinct from
-    # worst_files — a big mid-band file outranks a tiny at-risk
-    # one here because fixing it moves the average far more. Computed
-    # before the leads so the set of printed files is known.
+    # Ranked by NLOC-weighted deficit, not raw score: a big mid-band file
+    # moves the average more than a tiny at-risk one.
     by_leverage = sorted(
         (m for m in pop.all_metrics if m.score < TARGET_SCORE),
         key=lambda m: max(TARGET_SCORE - m.score, 0.0) * max(m.nloc, 1),
@@ -438,13 +390,8 @@ def _rank_leverage_and_leads(
     )
     printed = {m.file_path for m in metric_rows[: req.limit]}
     printed |= {m.file_path for m in by_leverage[: req.limit]}
-    # The directive's three candidates, unconditionally — it reads
-    # ``by_leverage[:3]`` and is not a ranked list, so its leads must not
-    # depend on ``limit``. Before ``limit=0`` existed this was covered by
-    # the clamp to 1 only by accident; at 0 the lead set came back empty
-    # and the directive degraded to a fallback ``reason`` ("scores 1.0")
-    # *and* asserted ``plan_addresses_reason: false`` on every file —
-    # a wrong claim rather than a missing one.
+    # The directive's candidates, unconditionally: its leads must not depend
+    # on ``limit``, or ``limit=0`` would make it assert wrong claims.
     printed |= {m.file_path for m in by_leverage[:_DIRECTIVE_CANDIDATES]}
     return by_leverage, _leads_by_file([r for r in findings.lead_rows if r.file_path in printed])
 
@@ -458,19 +405,12 @@ async def _read_directive_plans(
 ) -> tuple[dict[str, set[str]], dict[str, int]]:
     """Which biomarkers the stored plans for the directive's candidates actually address.
 
-    The directive names a file and a ``reason``, then points at
-    ``include=['refactoring']`` for the fix — but no detector emits a plan for
-    ``coverage_gradient``, which is the dominant cause on most of this repo's
-    worst files, so that promise was unkeepable and silent about it. Read for
-    the three named files only (``fix_first`` plus the two in ``then``), and
-    only when the directive survives the projection, so ``only=["directive"]``
-    stays the cheapest useful call. Two columns, not whole rows: this reads one
-    field, and the ORM row carries ``plan_json`` + ``evidence_json`` +
-    ``blast_radius_json``. ``status == "open"`` mirrors
-    ``get_refactoring_suggestions`` so the directive cannot claim a plan the
-    ``refactoring`` block would not return. Candidate paths come from
-    ``by_leverage`` ⊆ ``all_metrics``, already exclude-filtered, so the ``IN``
-    needs no second pass through the exclude spec.
+    The directive points at ``include=['refactoring']`` for the fix, but some
+    biomarkers have no plan kind, so it must know whether a plan addresses the
+    cause it names. Read for the directive's candidates only, two columns, and
+    only when the directive survives the projection. ``status == "open"``
+    mirrors ``get_refactoring_suggestions``; candidates are already
+    exclude-filtered.
     """
     plan_biomarkers_by_path: dict[str, set[str]] = {}
     plan_count_by_path: dict[str, int] = {}
@@ -489,11 +429,8 @@ async def _read_directive_plans(
             )
         )
     ).all():
-        # Presence is counted separately from attribution. Every
-        # ``split_file`` and ``break_cycle`` plan stores an empty
-        # ``source_biomarker``, so keying "has plans" off the biomarker
-        # set would report no plans on a file while the highest-leverage
-        # plan kind sits on it.
+        # Counted apart from attribution: ``split_file`` and ``break_cycle``
+        # plans store an empty ``source_biomarker``.
         plan_count_by_path[path] = plan_count_by_path.get(path, 0) + 1
         if source:
             plan_biomarkers_by_path.setdefault(path, set()).add(source)

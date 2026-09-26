@@ -9,13 +9,8 @@ from repowise.core.analysis.health.scope import DEFAULT_SCOPE
 from repowise.server.mcp_server.tool_health.paging import _stamp_collection
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 
-# ``unresolved`` / ``known_modules`` survive any projection, for the same
-# reason ``mode`` does. They are the block that stops an empty result
-# reading as "this file is healthy" (A1), and projecting them away put a
-# typo'd target straight back to silent: ``targets=["does/not/exist.py"],
-# only=["metrics"]`` returned ``metrics: []`` and nothing else. A caller
-# who has to ask for the error report in order to see it does not have an
-# error report.
+# Orientation and caller-error reports survive any projection: without
+# ``unresolved``, a typo'd target would read as an empty, healthy result.
 _ALWAYS_KEPT = frozenset(
     {
         "mode",
@@ -31,8 +26,7 @@ _ALWAYS_KEPT = frozenset(
         "unknown_include_keys",
         "unknown_include_keys_total",
         "unknown_include_keys_emitted",
-        # A rejected filter value is a caller-error report, so it
-        # survives a projection for the same reason ``unresolved`` does.
+        # A rejected filter value is a caller-error report too.
         "ignored_arguments",
         "recovery",
     }
@@ -87,19 +81,12 @@ def _project(
 ) -> dict[str, Any]:
     """Keep only what ``only`` names, plus what a caller needs to orient in it.
 
-    ``include`` could only ever add blocks, so asking for one extra block
-    re-shipped the whole dashboard with it; ``only`` is the subtract half.
-    Applied last so it can drop anything above, and ``mode`` / ``_meta`` always
-    survive — a response the caller cannot orient in is not a saving.
+    ``include`` only adds blocks; ``only`` is the subtract half. Applied last
+    so it can drop anything above, while ``mode`` and ``_meta`` always survive.
     """
     if not req.only:
         return result
-    # Every capped list's ``*_total`` sibling survives with it. The tool
-    # documents "each carries a ``*_total`` sibling so truncation is never
-    # silent", and the projection was quietly breaking exactly that promise:
-    # ``only=["modules"]`` at ``limit=50`` returned 50 of 116 modules with
-    # no ``modules_total`` to say so. Retaining it is not the caller's job —
-    # a caller who knew to ask for the total would not need the guarantee.
+    # Each kept list keeps its ``*_total`` siblings, so truncation stays visible.
     keep = (
         set(req.only_list)
         | _ALWAYS_KEPT
@@ -113,20 +100,15 @@ def _project(
             )
         }
     )
-    # Which reading the kept numbers are on, but only once it is not the
-    # default: unconditionally would add three empty keys to every other
-    # projection.
+    # Which reading the numbers are on, only when it is not the default.
     if reported_scope != DEFAULT_SCOPE:
         keep |= {"scope"}
     if reported_counts != DEFAULT_COUNTS:
         keep |= {"counts", "unscored_files", "counts_not_applied_to"}
     if "refactoring_plans" in req.only_set:
         keep |= _PLAN_COMPANIONS
-    # A key that does not exist in this response is named rather than
-    # quietly yielding an empty one — same rule as ``unresolved`` above.
-    # A misspelled projection is otherwise indistinguishable from a block
-    # the repo genuinely has no data for. Reported against what the caller
-    # actually passed, so an alias resolving to a present key is not "unknown".
+    # Name absent keys, so a misspelling is not mistaken for missing data.
+    # Reported by what the caller passed, so a resolved alias is not "unknown".
     unknown = sorted(
         raw for raw, resolved in zip(req.only, req.only_list, strict=True) if resolved not in result
     )

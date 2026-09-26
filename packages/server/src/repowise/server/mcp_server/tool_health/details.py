@@ -102,8 +102,7 @@ async def _plan_detail_response(
 ) -> dict[str, Any]:
     """One stored plan, and the composed opportunity it is a step of, if any.
 
-    An indexed seek and one hydration, not a full load and a linear
-    scan: resolving one id used to cost every open plan in the repo.
+    An indexed seek and one hydration, not a scan of every open plan.
     """
     service = RefactoringHealthService(session, repository.id, reference_repository)
     resolved = await service.plan_detail(plan_id)
@@ -136,8 +135,7 @@ async def _plan_detail_response(
 def _selector_conflict(**selectors: str | None) -> dict[str, Any] | None:
     """Refuse two detail selectors instead of answering about one of them.
 
-    Preferring whichever was checked first gave a caller a confident answer to
-    a question they had not only asked, with no sign the other was dropped.
+    Answering the first one checked would silently drop the other.
     """
     named = sorted(name for name, value in selectors.items() if value)
     if len(named) < 2:
@@ -156,9 +154,8 @@ def _note_inapplicable_controls(
 ) -> dict[str, Any]:
     """Name ``scope`` / ``counts`` when a detail lookup cannot honour them.
 
-    These select a population; a lookup by id answers about one stored row and
-    is always the calibrated reading. Silently accepting the control returned
-    that row to a caller who believes they asked for a different one.
+    These select a population; a lookup by id returns one stored row, always
+    the calibrated reading, so a silent accept would mislead the caller.
     """
     inapplicable = {
         name: value

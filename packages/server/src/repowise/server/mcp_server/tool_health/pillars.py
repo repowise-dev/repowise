@@ -83,8 +83,7 @@ async def _performance_blocks(
     query = None
     ignored: dict[str, str] = {}
     if included:
-        # The lede quotes only the first row and no evidence, so a projection
-        # down to it reads one row rather than a page of six.
+        # The lede quotes only the first row, so projected down to it, read one.
         emits_queue = wants("performance_opportunities")
         query, ignored = parse_query(
             context=context,
@@ -100,22 +99,18 @@ async def _performance_blocks(
         page = await service.page(
             query,
             evidence_per_item=_PERFORMANCE_EVIDENCE_CAP if emits_queue else 0,
-            # Facets are rendered by the summary block alone, so a queue or a
-            # lede does not pay for the aggregate.
+            # Facets are rendered only by the summary block.
             with_facets=wants("performance_summary"),
         )
     return _PerformanceBlocks(
         page=page,
         summary=(
-            # Scoped to the same context as the queue beside it, so two blocks
-            # in one answer cannot state totals that contradict each other.
+            # Same context as the queue, so the two totals cannot contradict.
             await service.summary(query.contexts if query else None)
             if included and wants("performance_summary")
             else None
         ),
-        # The bare dashboard lead: one primary-key read of the current summary
-        # row, so it does not grow with the repository and never touches the
-        # queue.
+        # Dashboard lead: one primary-key read, independent of repo size.
         directive=(
             await service.directive() if not scoped and wants("performance_directive") else None
         ),
@@ -154,10 +149,8 @@ async def _refactoring_blocks(
     """
     page = None
     ignored: dict[str, str] = {}
-    # A scope that resolved to no file is not the dashboard. The queue below
-    # honours it through an ``IN ()``, but the rollup and its facets are read
-    # by repository id and have no scope to honour, so they have to be withheld
-    # rather than filtered — the same reason ``directive`` is dashboard-only.
+    # A scope that resolved to no file is not the dashboard: the rollup is read
+    # by repository id and cannot honour a scope, so it is withheld.
     resolved_scope = not (scoped and not file_paths)
     rollup_wanted = included and wants("refactoring_summary") and resolved_scope
     if included:
@@ -179,9 +172,7 @@ async def _refactoring_blocks(
     return _RefactoringBlocks(
         page=page,
         summary=await service.summary() if rollup_wanted else None,
-        # The dashboard lead only. A targeted call is already about a file the
-        # caller named, so pointing it at the repository's worst file elsewhere
-        # would be answering a question nobody asked.
+        # Dashboard only: a targeted call is about the files the caller named.
         directive=(
             await service.directive()
             if not scoped and wants("refactoring_directive")
@@ -314,9 +305,7 @@ def _recommendation_lede(
             if lead_payload
             else None
         ),
-        # The exact plan for the exact lead, from the one place that decides
-        # plan linkage. This used to match on a key the plan writer never
-        # wrote, so it was unconditionally null.
+        # The lead's plan, from the one place that decides plan linkage.
         "performance_plan_id": (
             performance_lead["plan_reference"] if performance_lead else None
         ),

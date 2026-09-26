@@ -219,20 +219,16 @@ async def get_health(
     add_optional_blocks(result, data, req, pager, str(ctx.path))
     result = _finish(result, data, req, pager, mode_totals)
 
-    # Targeted mode scopes the stale signal to the asked-about files; the
-    # dashboard (no targets) keeps the repo-level warning.
+    # Targeted mode scopes the stale signal to the asked-about files.
     result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
     if data.pop.scoped:
-        # Scoped calls used to answer repository freshness from the caller's own
-        # files, so one repo read two different statuses in the same second
-        # depending on which mode answered.
+        # Analysis freshness is repo-wide, so both modes report the same status.
         await _attach_repository_analysis_meta(session, repository, result["_meta"])
     else:
         _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
     pager.report_omissions(result, omission_collector, reference_repository)
     omission_collector.attach(result)
-    # Server-side wall clock, as ``get_context`` already reports. Without it a
-    # regression in here is invisible until someone profiles it by hand.
+    # Server-side wall clock, as ``get_context`` reports.
     result["_meta"]["timing_ms"] = round((perf_counter() - started) * 1000, 2)
     return result
 

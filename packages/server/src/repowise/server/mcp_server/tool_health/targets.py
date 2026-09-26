@@ -38,16 +38,11 @@ def _unresolved_targets(
 ) -> list[dict[str, str]]:
     """Name every requested target that produced no rows, with a reason.
 
-    A dropped target is otherwise indistinguishable from a clean file: an
-    empty ``findings`` list reads as "this file is healthy", which is the most
-    damaging default this tool can have. The reason is the actionable part —
-    ``not_indexed`` means run ``repowise update``, ``no_such_path`` means the
-    target was a typo, ``excluded`` means the repo config drops it on purpose,
-    and ``not_measured`` means the row is indexed but carries no stored split
-    for the reading ``counts`` asked for. That last one is why the projection
-    is passed in rather than inferred: an indexed file it could not answer for
-    would otherwise read as ``not_indexed`` and send the caller to run an
-    update that changes nothing.
+    Otherwise an empty ``findings`` list reads as "this file is healthy". The
+    reason is actionable: ``not_indexed`` (run ``repowise update``),
+    ``no_such_path`` (a typo), ``excluded`` (repo config), ``not_measured``
+    (indexed, but no stored split for the ``counts`` reading; passed in so it
+    is not misreported as ``not_indexed``).
     """
     out = [
         {"target": t, "reason": _miss_reason(t, excluded_paths, unscored_paths, repo_root)}

@@ -27,8 +27,7 @@ def _coverage_block(
         coverage_payload = [_serialize_coverage_row(r) for r in selected_coverage]
         _attach_coverage_decay(coverage_payload, selected_coverage, repo_path)
     else:
-        # Built narrow, not built wide and subtracted from. These rows came
-        # back without the column at all (see the read in ``loading``).
+        # Built narrow: these rows were read without the column (see ``loading``).
         full_coverage_payload = [_serialize_coverage_row(r, covered_lines=False) for r in rows]
         coverage_payload = pager.bound(full_coverage_payload, "coverage.files")
     # ``ingested_at`` is a datetime on the summary too — coerce.
@@ -54,13 +53,10 @@ def _attach_coverage_decay(payload: list[dict[str, Any]], rows: list[Any], repo_
     ``confirmed`` covered lines are unchanged since the report, ``invalidated``
     ones have moved and are now unknown rather than uncovered.
 
-    Targeted mode only. Dashboard mode declines ``covered_lines_json`` at the
-    read (see the load above), and re-reading every blob to compute drift for a
-    list nobody drilled into would undo that saving.
+    Targeted mode only: dashboard mode skips ``covered_lines_json`` at the read,
+    and computing drift there would undo that saving.
 
-    Silent when the measurement cannot be placed in history, when git cannot
-    read the range, or when the report predates every commit. A missing block
-    means "not checked", which is why it is absent rather than zero: a zero
+    Absent, not zero, when the measurement cannot be placed in history: a zero
     would read as a freshness claim.
     """
     if not rows:
@@ -108,8 +104,7 @@ def _serialize_coverage_row(row: Any, *, covered_lines: bool = True) -> dict[str
         "line_coverage_pct": row.line_coverage_pct,
         "branch_coverage_pct": row.branch_coverage_pct,
     }
-    # Inserted here rather than appended, so the wide form stays byte-identical
-    # to what callers already receive.
+    # Inserted here, not appended, so the wide form's key order is unchanged.
     if covered_lines:
         try:
             out["covered_lines"] = (

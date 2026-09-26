@@ -26,16 +26,9 @@ from repowise.server.mcp_server._references import (
 def _perf_rank(biomarker_type: str | None, details: Any) -> int:
     """Order-of-magnitude ordering key for one ``performance`` finding.
 
-    Every performance finding carries ``health_impact: 0`` by construction, so
-    without a key the list came back in file order and "which of these matters"
-    was unanswerable from the payload.
-
-    The weights live with the opportunity ranking rather than here. Two tables
-    used to answer "which marker costs more" and they had already drifted apart
-    on markers both named, so a finding and the opportunity built from it could
-    disagree about the same evidence. Nothing here is blended into ``score`` or
-    ``performance_score``; a caller who disagrees can re-rank from
-    ``biomarker_type`` and ``details`` on the same row.
+    Performance findings all carry ``health_impact: 0``, so they need their own
+    key. The weights live with the opportunity ranking, so a finding and its
+    opportunity cannot disagree. Never blended into ``score``.
     """
     if not isinstance(details, dict):
         details = {}
@@ -47,18 +40,9 @@ def _perf_rank(biomarker_type: str | None, details: Any) -> int:
 def _rank_emitted(rows: list[Any]) -> list[Any]:
     """Break the ``health_impact`` ties that the performance dimension is made of.
 
-    Rows arrive impact-ordered from SQL, which decides nothing among the
-    performance findings: they all carry ``0``, so the head was whatever the tie
-    broke to — file order. This re-sorts **within** each impact tier, so the
-    defect ordering every other block is built on is untouched (identical
-    impacts were already interchangeable) and the perf tier stops being
-    alphabetical.
-
-    ``file_path`` is the final key so the order is total and reproducible; two
-    findings that rank the same used to swap places between calls on nothing.
-    Rows with no ``details_json`` attribute — the narrow dashboard read, unless
-    the caller filtered to ``performance`` — rank on the marker alone, which is
-    exactly the tier where the rank cannot move a row anyway.
+    Re-sorts only within each impact tier, so the defect ordering is untouched.
+    ``file_path`` is the final key, so the order is total and reproducible.
+    Rows read without ``details_json`` rank on the marker alone.
     """
     if not rows:
         return rows
@@ -85,20 +69,15 @@ def _rank_emitted(rows: list[Any]) -> list[Any]:
 def _health_finding_id(f: Any, repository: str) -> str:
     """The finding's public id: the stored one, else the same kernel recomputed.
 
-    Storage row ids are republished on every analysis, so they cannot be quoted
-    back. This is the id evidence carries and the ``finding_id`` selector
-    resolves, and it is a column, so resolving it is a seek.
+    Storage row ids change on every analysis, so this is the id evidence
+    carries and ``finding_id`` resolves.
     """
     stored = getattr(f, "public_id", None)
     return stored if isinstance(stored, str) and stored else finding_public_id(f)
 
 
 def _legacy_health_finding_id(f: Any, repository: str) -> str:
-    """The pre-column id form, still accepted so a quoted one keeps resolving.
-
-    Its kernel held generated prose and derived detail keys, so it moved
-    whenever a detector reworded itself or a later model changed its mind.
-    """
+    """The pre-column id form, still accepted so a quoted one keeps resolving."""
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except (TypeError, json.JSONDecodeError):
@@ -134,9 +113,7 @@ def _serialize_finding(f: HealthFinding, repository: str = "default") -> dict[st
         "biomarker_type": f.biomarker_type,
         "severity": f.severity,
         "file_path": f.file_path,
-        # A file-level finding has no symbol and no line span. Absent rather
-        # than null, on the same rule as ``rank`` below: three null keys on
-        # every such row is a bill, not a disclosure.
+        # A file-level finding has no symbol or span: absent rather than null.
         **({"function_name": f.function_name} if f.function_name else {}),
         **({"line_start": f.line_start} if f.line_start is not None else {}),
         **({"line_end": f.line_end} if f.line_end is not None else {}),
@@ -144,12 +121,8 @@ def _serialize_finding(f: HealthFinding, repository: str = "default") -> dict[st
         "reason": f.reason,
         "details": details,
         "status": f.status,
-        # Health pillar this finding homes under (defect / maintainability /
-        # performance) for per-dimension filtering.
         "dimension": dimension,
-        # Performance rows only — see ``_perf_rank``. Absent everywhere else
-        # rather than zero: a defect finding ranks on ``weighted_deficit`` and a
-        # 0 here would read as "measured, and it is nothing".
+        # Performance rows only: a zero elsewhere would read as measured.
         **rank,
     }
 
@@ -190,41 +163,20 @@ def _serialize_metric(
         "max_ccn": m.max_ccn,
         "max_nesting": m.max_nesting,
         "nloc": m.nloc,
-        # Two different questions, deliberately both present: ``has_test_file``
-        # is "does something test this file", ``is_test`` is "is this file
-        # itself test material". Defect risk in a test reads differently from
-        # defect risk in the code it covers, and nothing in the payload used to
-        # say which one you were looking at.
+        # ``is_test``: this file is test material. ``has_test_file``: something
+        # tests this file. Different questions, both kept.
         "is_test": is_test,
         "has_test_file": m.has_test_file,
         "line_coverage_pct": m.line_coverage_pct,
         "branch_coverage_pct": m.branch_coverage_pct,
         "module": m.module,
-        # Leverage: NLOC-weighted points this file drags below the target score
-        # (``(8.0 - score) * nloc``, 0 once the file is at target). This is
-        # how much the repo headline recovers if the file reaches 8.0, so
-        # ranking by it — not by raw score — points at the files that actually
-        # move the average. A tiny 1.0 file and a 1200-line 1.0 file score the
-        # same but differ 40x here.
-        # The unit is score-points x NLOC, which is meaningless on its own — the
-        # docstring and ``gap_analysis.weighted_gap_points`` give it a
-        # denominator, and every ``high_leverage_files`` row carries the same
-        # quantity as ``share_of_repo_gap_pct``.
+        # Leverage: ``(8.0 - score) * nloc``, what the headline recovers if this
+        # file reaches target. See ``_gap_analysis`` for its denominator.
         "weighted_deficit": round(max(TARGET_SCORE - m.score, 0.0) * max(m.nloc, 1)),
-        # Per-dimension scores from the three-signal split. ``defect_score`` is
-        # deliberately absent: ``engine.py`` sets it and ``score`` from the same
-        # ``scores["defect"]`` value, so it was pure duplication on every row of
-        # every response — measured on this repo, 3,314 of 3,314 rows had
-        # ``score == defect_score`` and none was NULL. Two names for one number
-        # cost an agent a source read to decide which to rank on, and the one to
-        # rank on is neither (it is ``weighted_deficit``). ``score`` survives
-        # because every doc, skill and UI already names it.
-        # ``performance_score`` is computed but not yet surfaced as its own pillar.
+        # ``defect_score`` is deliberately absent: it always equals ``score``.
         "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
         "performance_score": _round_opt(getattr(m, "performance_score", None)),
-        # Dominant-cause lead + pre-clamp magnitude (null when no findings for
-        # this row). Lets a caller lead with the one reason and rank two floored
-        # files by depth without re-reading every finding.
+        # Dominant cause and pre-clamp magnitude; null when the file has no findings.
         "primary_biomarker": lead.get("primary_biomarker") if lead else None,
         "primary_reason": lead.get("primary_reason") if lead else None,
         "total_deduction": lead.get("total_deduction") if lead else None,

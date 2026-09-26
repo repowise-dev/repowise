@@ -25,22 +25,17 @@ def build_dashboard(
 ) -> tuple[dict[str, Any], ModeTotals]:
     """Top-N worst files + headline findings + the per-module rollup.
 
-    The rollup rides along so the overview page doesn't need a second
-    round-trip. ``by_leverage`` is built in ``loading``, before the leads.
-    Same serializer as worst_files, so every row carries weighted_deficit for
-    the caller to sort on further.
+    The rollup rides along so the overview page needs no second round-trip.
+    ``by_leverage`` is built in ``loading``, before the leads.
     """
     pop = data.pop
     all_metrics = pop.all_metrics
     findings = data.findings
     all_modules = _module_rollups(all_metrics, data.deductions)
     gap = _gap_analysis(all_metrics)
-    # KPIs keep test files in by default, and ``scope`` is what changes that.
-    # The default is not arbitrary: measured across this workspace, dropping
-    # test material moves NLOC-weighted ``average_health`` 7.52 -> 6.87 here,
-    # 7.07 -> 6.27 on the backend repo and 7.59 -> 7.46 on the frontend. Tests
-    # score better than production code, so a narrowed number is a lower number
-    # with no defect having been found — a caller should ask for it knowingly.
+    # KPIs keep test files unless ``scope`` narrows them. Tests score better
+    # than production code, so narrowing lowers the number with no new defect
+    # found: a caller should ask for it knowingly.
     kpis = _compute_kpis(
         all_metrics,
         hotspot_paths=data.hotspot_paths,
@@ -48,8 +43,7 @@ def build_dashboard(
         coverage=data.perf_coverage,
     )
     result: dict[str, Any] = {
-        # Lead with the call, not the data. Every block below ranks and
-        # describes; this one recommends.
+        # Lead with the recommendation; every block below ranks and describes.
         "directive": _directive(
             data.by_leverage,
             data.leads,
@@ -57,14 +51,8 @@ def build_dashboard(
             data.plan_biomarkers_by_path,
             data.plan_count_by_path,
         ),
-        # A second, additive lead for the performance pillar. The block
-        # above is unchanged: performance findings carry no defect impact,
-        # so they never competed for it and the dashboard said nothing an
-        # agent could act on about them.
-        # Two more additive leads, on the same terms: the block above ranks
-        # files by health deficit and cannot say which composed work to do,
-        # and it explicitly reports that no plan addresses the cause it
-        # names on most files. These say what there is to do about it.
+        # Additive leads for the refactoring and performance pillars, which
+        # the deficit-ranked directive above cannot express.
         **(
             {"refactoring_directive": data.refactoring.directive}
             if data.refactoring.directive is not None
@@ -81,16 +69,11 @@ def build_dashboard(
         "unscored_files": pop.unscored_files,
         "kpis": kpis,
         "distribution": health_distribution(all_metrics),
-        # Where the gap to the target concentrates — the "few files, not the
-        # long tail" reframe that turns a repo-wide number into a short list.
+        # Where the gap to the target concentrates: a short list of files.
         "gap_analysis": gap,
         "worst_files": pager.bound([_metric_row(data, m) for m in data.metric_rows], "worst_files"),
-        # Both ranked file lists deliberately keep test files in place, and
-        # both now say which rows are tests. Measured on this repo, 0 of the
-        # top 25 by the worst-first comparator are test material, so there
-        # is no crowding here to fix — and dropping them would quietly
-        # change which files the repo's "worst" are. The crowding is in the
-        # *finding* lists, which is where the split below happens.
+        # Ranked file lists keep test files in place and mark them; dropping
+        # them would change which files are "worst". Only finding lists split.
         "worst_files_total": len(data.metric_rows),
         "high_leverage_files": pager.bound(_high_leverage_rows(data, gap), "high_leverage_files"),
         "high_leverage_files_total": len(data.by_leverage),
@@ -99,16 +82,13 @@ def build_dashboard(
             "top_findings",
         ),
         "top_findings_total": findings.findings_total,
-        # The test half of the same ranked set, in its own bucket so a
-        # thrashing test suite stays visible without competing with
-        # production defect risk for the most-read list.
+        # The test half of the same ranked set, kept out of the production list.
         "test_findings": pager.bound(
             [_serialize_finding(f, data.reference_repository) for f in findings.test_finding_rows],
             "test_findings",
         ),
         "test_findings_total": findings.test_findings_total,
-        # Worst-first, so the cap keeps the modules worth looking at. On a
-        # monorepo the tail is dozens of single-file buckets.
+        # Worst-first, so the cap keeps the modules worth looking at.
         "modules": pager.bound(all_modules, "modules"),
         "modules_total": len(all_modules),
     }
@@ -117,15 +97,12 @@ def build_dashboard(
     if "churn_complexity" in req.include_set:
         result["churn_complexity"] = pager.bound(data.churn_points, "churn_complexity")
     if "accuracy" in req.include_set:
-        # Self-validation: does the score rank the buggy files first?
-        # Scored over the full open set (``accuracy_rows``), not the capped
-        # head — ranking quality measured on the top 20 would be circular.
-        # ``None`` when there isn't enough signal for an honest number.
+        # Does the score rank the buggy files first? Scored over the full open
+        # set, not the capped head, which would be circular.
         result["defect_accuracy"] = compute_defect_accuracy(
             all_metrics,
             [_serialize_finding(f, data.reference_repository) for f in data.accuracy_rows],
-            # The same map ``all_metrics`` was ranked with, so the stat
-            # measures exactly the ``worst_files`` this response printed.
+            # Same map ``all_metrics`` was ranked with, so it scores these ``worst_files``.
             deductions=data.deductions,
         )
     return result, ModeTotals(metrics=None, trends=None, modules=len(all_modules))
@@ -138,15 +115,10 @@ def _metric_row(data: HealthData, m: Any) -> dict[str, Any]:
 def _high_leverage_rows(data: HealthData, gap: dict[str, Any]) -> list[dict[str, Any]]:
     """The leverage ranking, each row with its share of the repository's gap.
 
-    The one list whose entire purpose is leverage ranking, so it is the
-    one place ``weighted_deficit`` gets a denominator. The bare number
-    is score-points x NLOC and answers "which is bigger" but never "is
-    this worth doing"; the same quantity as a share of the repo's total
-    gap does, and it is the unit ``directive`` already speaks. The
-    denominator is the gross deficit of all below-target files, so a
-    share is bounded by 100% and the rows sum to 100% by construction
-    — the net gap would let above-target files cushion the total and push a
-    single large file over 100% (issue #1437).
+    The one place ``weighted_deficit`` gets a denominator, in the unit
+    ``directive`` speaks. The denominator is the gross deficit of below-target
+    files, so shares stay within 100%; the net gap would let above-target files
+    shrink it and push one large file past 100% (issue #1437).
     """
     gross = gap.get("weighted_gross_gap_points")
     return [

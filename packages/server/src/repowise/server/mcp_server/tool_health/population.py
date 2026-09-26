@@ -69,17 +69,12 @@ async def load_population(
     exclude_spec = _get_exclude_spec(repo_path)
     indexed_rows = list((await session.execute(all_metrics_q)).scalars().all())
     all_metrics = filter_rows_by_attr(indexed_rows, "file_path", exclude_spec)
-    # Paths the index knows about but the exclude config drops. Kept so an
-    # unresolved target can report "excluded" (a config decision) rather
-    # than "no_such_path" (a typo) — the two need different responses.
-    # Computed before ``scope`` narrows the list, or a test file would be
-    # reported as dropped by a config that says nothing about it.
+    # Lets an unresolved target report "excluded" rather than "no_such_path".
+    # Computed before ``scope`` narrows, or test files would count as excluded.
     excluded_paths = {m.file_path for m in indexed_rows} - {m.file_path for m in all_metrics}
 
-    # Narrowing to production is the same shape of question as the exclude
-    # config: both drop whole files from every block at once. Folding it
-    # into one filter is what keeps a scoped dashboard from ranking a
-    # finding on a file its own file list no longer contains.
+    # The production scope drops whole files from every block at once, like
+    # the exclude config, so every block agrees on the file set.
     reported_scope = parse_scope(req.scope)
     scope_paths: set[str] | None = None
     if reported_scope == "production":
@@ -100,11 +95,8 @@ async def load_population(
     file_targets, matched_modules = _expand_module_targets(
         all_metrics, req.module_targets, req.file_targets
     )
-    # A non-empty ``targets`` means the caller asked for a scope, and that
-    # holds even when nothing resolves. Keying the mode off the *resolved*
-    # paths let ``targets=["module:typo"]`` fall through to dashboard mode
-    # and answer a module-scoped question with repo-wide numbers — an
-    # answer that reads as scoped and is not.
+    # Keyed off the raw targets, not the resolved ones: a target that resolves
+    # to nothing must not fall through to repo-wide numbers.
     scoped = bool(req.raw_targets)
     return Population(
         all_metrics=all_metrics,

@@ -37,26 +37,17 @@ def build_targeted(
     result: dict[str, Any] = {
         "mode": "targets",
         "targets": req.raw_targets,
-        # Deliberately NOT capped by ``limit``: the caller named these files
-        # and getting back fewer than they asked about would answer a
-        # different question. The response-size guard is what bounds it, and
-        # ``metrics_total`` is the ``*_total`` sibling that makes a trim
-        # visible — a ``module:`` target expands to every file in the module,
-        # so this is the one growable list whose length the caller cannot
-        # infer from what they passed.
+        # ``metrics_total`` makes a trim visible: a ``module:`` target expands
+        # to a file count the caller cannot infer from what they passed.
         **({"modules": module_rollup} if req.module_targets else {}),
         "metrics": pager.bound(metric_payload, "metrics"),
         "metrics_total": len(metric_payload),
-        # Capped like every other ranked list, with the total alongside so
-        # the truncation is visible rather than inferred from the length.
         "findings": pager.bound(
             [_serialize_finding(f, data.reference_repository) for f in data.findings.finding_rows],
             "findings",
         ),
         "findings_total": findings_total,
-        # Which reading these scores are on, last so the identity keys keep
-        # the head of the payload. Without it a projected score is
-        # indistinguishable from the calibrated one.
+        # Which reading the scores are on; last, so identity keys lead.
         "scope": pop.reported_scope,
         "counts": pop.reported_counts,
     }
@@ -72,8 +63,7 @@ def build_targeted(
     if unresolved:
         result["unresolved"] = unresolved
         if any(u["reason"] == "no_such_module" for u in unresolved):
-            # ``module:`` has no discovery call of its own, so a bad name
-            # would otherwise cost a full dashboard round-trip to correct.
+            # ``module:`` has no discovery call, so list the valid names.
             result["known_modules"] = sorted({m.module for m in pop.all_metrics if m.module})
     trends = _file_trends(data)
     if trends:
@@ -98,8 +88,8 @@ def _metric_payload(data: HealthData) -> list[dict[str, Any]]:
 
 
 def _file_trends(data: HealthData) -> list[dict[str, Any]]:
-    """Per-file score trajectory for each target — silent (omitted) when a
-    file has < 2 snapshots of history rather than a misleading flat line."""
+    """Per-file score trajectory for each target, omitted when a file has
+    fewer than 2 snapshots rather than drawn as a flat line."""
     trends = []
     for m in data.metric_rows:
         t = file_trend(data.snapshots, m.file_path)
@@ -113,11 +103,8 @@ def _file_trends(data: HealthData) -> list[dict[str, Any]]:
             "delta": t.delta,
             "declining": t.declining,
         }
-        # The score floors at 1.0, so a file deep enough to sit on it keeps
-        # a flat series however much of the work gets done. Where a
-        # snapshot recorded the real depth, carry the series that can still
-        # move — and only there, so the files the floor never touches pay
-        # nothing for it.
+        # The score floors at 1.0, flattening progress on the worst files.
+        # Carry the unclamped series only where it differs.
         unclamped = [round(p.unclamped_score, 2) for p in t.points]
         if unclamped != series:
             entry["unclamped_series"] = unclamped

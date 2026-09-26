@@ -55,10 +55,8 @@ def add_optional_blocks(
         )
     if "doc_drift" in include:
         result["doc_drift"] = _doc_drift_block(data, pager)
-    # (The dimension filter — ``include=["performance"]`` and friends, so an
-    # agent can ask "show me only the performance risk in this change" — is
-    # applied where the rows are selected, not here. Filtering the finished
-    # response meant filtering a list already capped by impact.)
+    # The dimension filter (``include=["performance"]`` etc.) is applied where
+    # rows are selected: filtering here would filter a list already capped.
     if "refactoring" in include and req.wants("suggestion_legend"):
         result["suggestion_legend"] = _suggestion_legend(data)
 
@@ -66,11 +64,9 @@ def add_optional_blocks(
 def _add_biomarkers(result: dict[str, Any], data: HealthData, pager: Pager) -> None:
     """Capped like every other ranked list.
 
-    Uncapped, this was the one block in the tool that could return the repo's
-    entire open finding set: on a 3.2k-file repo ``include=["biomarkers"]`` with
-    no targets served 10.3k rows / 4.7MB, which overflows an agent's context and
-    returns nothing usable. Findings arrive impact-ordered, so the cap keeps the
-    ones worth reading.
+    Uncapped, this block could return the repo's entire open finding set, far
+    past an agent's context. Findings arrive impact-ordered, so the cap keeps
+    the ones worth reading.
     """
     findings, repository = data.findings, data.reference_repository
     result["findings"] = pager.bound(
@@ -78,9 +74,8 @@ def _add_biomarkers(result: dict[str, Any], data: HealthData, pager: Pager) -> N
         "findings",
     )
     result["findings_total"] = findings.findings_total
-    # Same production/test split as ``top_findings``: this block only ever
-    # fires in dashboard mode (targeted mode set ``findings`` above), so it
-    # is describing the repo, not a file the caller named.
+    # Dashboard mode only (targeted mode already set ``findings``), so this
+    # uses the same production/test split as ``top_findings``.
     result["test_findings"] = pager.bound(
         [_serialize_finding(f, repository) for f in findings.test_finding_rows],
         "test_findings",
@@ -139,10 +134,8 @@ def _doc_drift_block(data: HealthData, pager: Pager) -> dict[str, Any]:
         return {"unavailable": data.drift_unavailable}
     drift_rows = data.drift_rows
     drift_payload = pager.bound(
-        # ``evidence=False``: its first line restates ``file_path``,
-        # ``line_number`` and ``raw``, and the rest is the resolver's
-        # own trace, which is a poor trade against this budget. The
-        # CLI, which has no budget, keeps it.
+        # Evidence restates the row plus a resolver trace: not worth this
+        # budget. The CLI, which has no budget, keeps it.
         [serialize_doc_drift_row(r, evidence=False) for r in drift_rows],
         "doc_drift.findings",
     )
@@ -152,10 +145,8 @@ def _doc_drift_block(data: HealthData, pager: Pager) -> dict[str, Any]:
         "findings_emitted": len(drift_payload),
         "documents": len({r.file_path for r in drift_rows}),
         "confidence": summarize_confidence_rows(drift_rows),
-        # The same sentence the CLI prints, under the house ``*_basis``
-        # name for "what this count does and does not cover". A surface
-        # that shows findings without it claims coverage and precision
-        # this detector does not have: most references are uncheckable.
+        # Without it, the findings would claim coverage this detector lacks:
+        # most references are uncheckable.
         "findings_basis": DETECTION_BASIS,
     }
     if len(drift_payload) < len(drift_rows):
@@ -167,22 +158,13 @@ def _suggestion_legend(data: HealthData) -> dict[str, str]:
     """One entry per biomarker type actually present in the findings this
     response carries.
 
-    Built from the ranked rows themselves, not from the serialized blocks
-    in ``result``. It used to read ``result["findings"]`` /
-    ``["top_findings"]``, which the ``only`` projection's ``wants()``
-    gating can skip building — so
-    ``only=["refactoring_plans","suggestion_legend"]`` returned an empty
-    legend and adding ``top_findings`` back to ``only`` refilled it. A
-    projection is supposed to subtract keys, never change what a surviving
-    key contains.
+    Built from the ranked rows, not the serialized blocks in ``result``: the
+    ``only`` projection can skip building those, and a projection must never
+    change what a surviving key contains.
 
-    Scope note, and it is a real limitation rather than an oversight: the
-    legend explains the *findings*, while it ships beside
-    ``refactoring_plans``. Those are different sets — no plan kind is
-    sourced from ``coverage_gradient``, the lead biomarker on this repo's
-    ten worst files — so a legend entry can describe a biomarker the plans
-    do not address. ``directive.plan_addresses_reason`` is what reports
-    that mismatch; the legend is not the place to paper over it.
+    The legend explains the findings, not ``refactoring_plans``, so an entry can
+    describe a biomarker no plan addresses. ``directive.plan_addresses_reason``
+    reports that mismatch.
     """
     present_types = {getattr(r, "biomarker_type", None) for r in data.findings.legend_rows}
     return {bt: suggestion_for(bt) for bt in sorted(t for t in present_types if t)}

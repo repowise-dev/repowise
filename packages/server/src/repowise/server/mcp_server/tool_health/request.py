@@ -8,12 +8,9 @@ from repowise.core.analysis.health.scoring import ALL_DIMENSIONS
 from repowise.server.services.refactoring_health import CANONICAL_VIEWS as _REFACTORING_VIEWS
 from repowise.server.services.refactoring_health import DEFAULT_VIEW as _REFACTORING_VIEW_DEFAULT
 
-# ``include`` and ``only`` were different vocabularies: the block a caller
-# switches on with ``include=["biomarkers"]`` lands under the key ``findings``,
-# so the obvious ``only=["biomarkers"]`` projected it away again. Alias the three
-# that have a 1:1 key rather than make the caller learn two names for one block.
-# ``signals`` is deliberately absent — it has no top-level key to alias to, it
-# merges into ``metrics[].signals``, so it stays reported in ``unknown_only_keys``.
+# ``include`` names that land under a different response key, so ``only`` can
+# use the same name. ``signals`` has no top-level key (it merges into
+# ``metrics[].signals``), so it is deliberately absent.
 _ONLY_ALIASES = {
     "biomarkers": "findings",
     "accuracy": "defect_accuracy",
@@ -78,9 +75,7 @@ class HealthRequest:
     file_targets: list[str] = field(init=False)
 
     def __post_init__(self) -> None:
-        # ``0`` means none, matching the ``module_limit`` convention on the REST
-        # coverage route. It used to clamp up to 1, so the documented way to ask for
-        # "the totals, none of the rows" silently returned a row.
+        # ``0`` means totals and no rows, as on the REST coverage route.
         self.limit = max(self.limit, 0)
         self.cursor = max(self.cursor, 0)
         if self.refactoring_view not in _REFACTORING_VIEWS:
@@ -89,28 +84,18 @@ class HealthRequest:
         self.unknown_include_keys = sorted(self.include_set - _KNOWN_INCLUDES)
         self.only_list = [_ONLY_ALIASES.get(k, k) for k in (self.only or [])]
         self.only_set = set(self.only_list)
-        # Resolved before the reads, not after them. Applied to the finished
-        # response, a dimension filter narrowed a list that had already been capped
-        # by impact — and performance findings carry low impact by construction, so
-        # ``include=["biomarkers", "performance"]`` filtered a defect-heavy head down
-        # to nothing while the total still reported the whole repo. The filter now
-        # decides which rows are eligible for the cap in the first place.
+        # Resolved before the reads, so the filter decides which rows are
+        # eligible for the impact cap rather than filtering an already-capped list.
         self.dimension_filter = self.include_set & set(ALL_DIMENSIONS)
-        # The ranked findings list is ordered by health impact, and every
-        # performance finding carries zero impact by construction, so leaving it
-        # in an unfiltered list appends rows that can never rank and cannot be
-        # compared against the ones above them. Asking for the dimension still
-        # returns it, and the performance blocks rank the same evidence by cause.
+        # Performance findings carry zero impact, so an impact-ranked list
+        # leaves them out unless asked for; the performance blocks rank them.
         self.ranked_dimensions = self.dimension_filter or _RANKED_DIMENSIONS_DEFAULT
-        # Split ``module:foo`` targets out of the path list. A target that
-        # matches one or more modules is expanded into the set of files
-        # belonging to those modules.
+        # ``module:foo`` targets expand later into the module's files.
         self.raw_targets = list(self.targets or [])
         self.module_targets = [
             t.split(":", 1)[1] for t in self.raw_targets if t.startswith("module:")
         ]
-        # Stored paths are POSIX-separated. Normalize so a Windows caller passing
-        # ``packages\core\x.py`` matches instead of coming back ``no_such_path``.
+        # Stored paths are POSIX-separated; accept Windows separators.
         self.file_targets = [
             t.replace("\\", "/") for t in self.raw_targets if not t.startswith("module:")
         ]
@@ -118,17 +103,13 @@ class HealthRequest:
     def wants(self, block: str) -> bool:
         """True when ``block`` survives the ``only`` projection.
 
-        ``only`` used to be applied to the finished response, so the cheapest
-        documented call — ``only=["directive"]`` — still paid for every block it
-        then discarded. Consulted before the expensive optional work so the
-        projection gates the work as well as the payload.
+        Consulted before expensive optional work, so the projection gates the
+        work as well as the payload.
         """
         return not self.only_set or block in self.only_set
 
     @property
     def wants_findings(self) -> bool:
-        # The serialized-rows read is the expensive optional one; skip it when no
-        # block that carries findings survives the projection.
         return self.wants("findings") or self.wants("top_findings")
 
     @property
@@ -155,15 +136,9 @@ class HealthRequest:
     def needs_test_paths(self) -> bool:
         """Everything downstream of the test/production split, in one place.
 
-        Keep this list exhaustive. The read it gates is not free (the column list
-        is narrow but the predicate is not indexed, so it scans this repo's graph
-        nodes — ~55 ms warm on a 35k-node index), and ``only=["directive"]`` /
-        ``["kpis"]`` / ``["modules"]`` serialize no metric row and no finding.
-        But a *missing* entry here is worse than the read: it makes the split
-        collapse for that projection, which is the same "a projection changed
-        what a surviving key holds" defect this change exists to close. Adding
-        ``suggestion_legend`` was not optional — the legend derives from the split
-        heads, and leaving it out silently reverted that fix.
+        Keep this list exhaustive. The read it gates scans graph nodes, but a
+        missing entry is worse: the split collapses for that projection, so a
+        projection changes what a surviving key holds.
         """
         return (
             self.wants_findings
@@ -178,16 +153,12 @@ class HealthRequest:
     def plans_requested(self) -> bool:
         """Structured refactoring plans (Extract Class, ...), loaded only when asked for.
 
-        Only when a caller names the plan list. ``include=["refactoring"]``
-        leads with composed opportunities now, and emitting both would ship
-        two representations of the same work in one response - 52k chars on
-        this repo, past the expanded budget, most of it duplicated. The
-        documented ``only=["refactoring_plans"]`` call is unchanged.
+        ``include=["refactoring"]`` leads with composed opportunities, and
+        emitting plans too would ship the same work twice.
         """
         return "refactoring" in self.include_set and (
             "refactoring_plans" in self.only_set
-            # The cross-pillar lede quotes one plan beside one performance
-            # opportunity, and only when both pillars were asked for.
+            # The cross-pillar lede quotes one plan.
             or self.wants_lede
         )
 
