@@ -16,8 +16,13 @@ from typing import Any, Protocol
 
 from ..ingestion.languages import REGISTRY
 from ..ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+from .dead_code.file_reachability import BARREL_FILENAMES
 
-__all__ = ["HasEdge", "ImportEdgeView", "can_carry_dependency"]
+__all__ = ["BARREL_DEPENDENCY", "HasEdge", "ImportEdgeView", "can_carry_dependency"]
+
+#: ``dependency_kind`` for a pair joined through a re-export barrel rather than
+#: by a direct edge: ``a -> index.ts -> b``.
+BARREL_DEPENDENCY = "barrel"
 
 
 def _language_of(path: str) -> str:
@@ -65,10 +70,11 @@ class ImportEdgeView:
     a caller pass ``None`` instead of branching.
     """
 
-    __slots__ = ("_graph",)
+    __slots__ = ("_barrels", "_graph")
 
     def __init__(self, graph: Any) -> None:
         self._graph = graph
+        self._barrels: dict[str, tuple[str, ...]] = {}
 
     def has_edge(self, src: str, dst: str, key: str = "imports") -> bool:
         g = self._graph
@@ -91,8 +97,41 @@ class ImportEdgeView:
         framework binding are different claims about why two files move
         together. Direction is not reported: the pair is undirected, and
         ``a -> b`` is tried first only to make the answer deterministic.
+
+        A consumer importing a package's barrel (``index.ts``, ``__init__.py``)
+        that re-exports the other file depends on it as surely as a direct
+        import, so a two-hop path whose middle node is a barrel answers
+        :data:`BARREL_DEPENDENCY`. Only a chain through the barrel counts: two
+        files a barrel merely re-exports side by side, or two consumers of one
+        barrel, share a neighbour and nothing more.
         """
-        return self._typed(a, b) or self._typed(b, a)
+        return self._typed(a, b) or self._typed(b, a) or self._via_barrel(a, b)
+
+    def _via_barrel(self, a: str, b: str) -> str | None:
+        for src, dst in ((a, b), (b, a)):
+            for barrel in self._barrels_of(src):
+                if self._typed(barrel, dst):
+                    return BARREL_DEPENDENCY
+        return None
+
+    def _barrels_of(self, path: str) -> tuple[str, ...]:
+        """The barrels *path* depends on directly, cached per file."""
+        cached = self._barrels.get(path)
+        if cached is not None:
+            return cached
+        found: tuple[str, ...] = ()
+        g = self._graph
+        if g is not None:
+            try:
+                found = tuple(
+                    mid
+                    for mid in g.successors(path)
+                    if PurePosixPath(mid).name in BARREL_FILENAMES and self._typed(path, mid)
+                )
+            except Exception:
+                found = ()
+        self._barrels[path] = found
+        return found
 
     def _typed(self, src: str, dst: str) -> str | None:
         g = self._graph

@@ -87,7 +87,8 @@ class CoChangePartner:
     zero on an index written before they were recorded.
 
     ``dependency_kind`` is the ``edge_type`` behind a ``corroborated``
-    verdict, and is ``None`` for every other verdict.
+    verdict, or ``"barrel"`` when the pair is joined through a re-export
+    barrel, and is ``None`` for every other verdict.
 
     ``record`` is the verbatim source record, for callers that put it back on
     the wire or read a field this module does not model; it is excluded from
