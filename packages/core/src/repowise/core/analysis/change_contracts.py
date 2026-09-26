@@ -40,12 +40,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..test_paths import is_test_related_path
 from .signature_diff import (
     EFFECT_COMPATIBLE,
     EFFECT_NONE,
     classify_signature_change,
 )
-from ..test_paths import is_test_related_path
 
 # Symbol kinds worth reporting on. Constants and variables produce enormous,
 # low-signal churn (every literal edit reads as a "signature change"), and the

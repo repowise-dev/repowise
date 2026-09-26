@@ -121,3 +121,4 @@ def test_classify_unparseable_degrades_to_unknown():
     head = "OTHER INVALID )"
     effect, reason = classify_signature_change(base, head)
     assert effect == EFFECT_UNKNOWN
+    assert reason == "unparseable signature format"
