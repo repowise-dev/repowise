@@ -7,7 +7,6 @@ must never collide, overwrite, or corrupt each other's version histories or swee
 
 from __future__ import annotations
 
-import pytest
 from sqlalchemy import select
 
 from repowise.core.generation.models import GeneratedPage
@@ -20,7 +19,7 @@ from repowise.core.persistence.crud import (
     upsert_repository,
 )
 from repowise.core.persistence.crud.pages import upsert_pages_from_generated
-from repowise.core.persistence.models import Page, PageVersion
+from repowise.core.persistence.models import Page
 from repowise.core.pipeline.persist import _sweep_stale_generated_pages
 from tests.unit.persistence.helpers import make_page_kwargs, make_repo_kwargs
 
@@ -35,7 +34,7 @@ async def test_upsert_page_same_path_different_repos_isolation(async_session):
     )
     await async_session.commit()
 
-    page1 = await upsert_page(
+    await upsert_page(
         async_session,
         **make_page_kwargs(
             repo1.id,
@@ -44,7 +43,7 @@ async def test_upsert_page_same_path_different_repos_isolation(async_session):
             content="Repo 1 Content",
         ),
     )
-    page2 = await upsert_page(
+    await upsert_page(
         async_session,
         **make_page_kwargs(
             repo2.id,
