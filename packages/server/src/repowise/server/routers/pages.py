@@ -41,7 +41,9 @@ router = APIRouter(
 REDIRECTED_FROM_HEADER = "X-Repowise-Redirected-From"
 
 
-async def _sole_page_of_type(session: AsyncSession, page_type: str, retired_id: str):
+async def _sole_page_of_type(
+    session: AsyncSession, page_type: str, retired_id: str, repo_id: str | None = None
+):
     """The store's single page of *page_type*, or ``None``.
 
     Some retirements hand off to "the repository's overview" rather than to a
@@ -58,7 +60,10 @@ async def _sole_page_of_type(session: AsyncSession, page_type: str, retired_id: 
 
     from repowise.core.persistence.models import Page
 
-    rows = (await session.execute(select(Page).where(Page.page_type == page_type))).scalars().all()
+    q = select(Page).where(Page.page_type == page_type)
+    if repo_id is not None:
+        q = q.where(Page.repository_id == repo_id)
+    rows = (await session.execute(q)).scalars().all()
     if len(rows) == 1:
         return rows[0]
     logger.warning(
@@ -70,7 +75,9 @@ async def _sole_page_of_type(session: AsyncSession, page_type: str, retired_id: 
     return None
 
 
-async def _get_page_or_successor(session: AsyncSession, page_id: str, response: Response):
+async def _get_page_or_successor(
+    session: AsyncSession, page_id: str, response: Response, repo_id: str | None = None
+):
     """The requested page, or the page that took over from it.
 
     Wiki pages are public and linkable, so an id that stops being generated has
@@ -80,7 +87,7 @@ async def _get_page_or_successor(session: AsyncSession, page_id: str, response: 
     Returns ``None`` when neither the page nor a successor exists — callers
     raise the 404, so a genuine miss can never be turned into a success here.
     """
-    page = await crud.get_page(session, page_id)
+    page = await crud.get_page(session, page_id, repository_id=repo_id)
     if page is not None:
         return page
 
@@ -94,7 +101,9 @@ async def _get_page_or_successor(session: AsyncSession, page_id: str, response: 
         return None
 
     if repo_wide_type is not None:
-        successor = await _sole_page_of_type(session, repo_wide_type, page_id)
+        successor = await _sole_page_of_type(
+            session, repo_wide_type, page_id, repo_id=repo_id
+        )
         if successor is None:
             return None
         logger.info("page_redirect_served", page_id=page_id, successor_id=successor.id)
@@ -104,7 +113,7 @@ async def _get_page_or_successor(session: AsyncSession, page_id: str, response: 
     if successor_id is None:
         return None
 
-    successor = await crud.get_page(session, successor_id)
+    successor = await crud.get_page(session, successor_id, repository_id=repo_id)
     if successor is None:
         # The table points at a page this index did not produce. Every inbound
         # link to the retired id is stranded, so say so rather than 404ing mute.
@@ -193,7 +202,7 @@ async def get_page_by_query(
     A retired page id resolves to whatever took over from it; the response then
     carries ``X-Repowise-Redirected-From``.
     """
-    page = await _get_page_or_successor(session, page_id, response)
+    page = await _get_page_or_successor(session, page_id, response, repo_id=repo_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
     return PageResponse.from_orm(page)
@@ -202,11 +211,14 @@ async def get_page_by_query(
 @router.get("/lookup/versions", response_model=list[PageVersionResponse])
 async def get_page_versions_by_query(
     page_id: str = Query(..., description="Page ID"),
+    repo_id: str | None = Query(None, description="Repository ID"),
     limit: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[PageVersionResponse]:
     """Get version history for a wiki page (page_id as query param)."""
-    versions = await crud.get_page_versions(session, page_id, limit=limit)
+    versions = await crud.get_page_versions(
+        session, page_id, repository_id=repo_id, limit=limit
+    )
     return [PageVersionResponse.from_orm(v) for v in versions]
 
 
@@ -220,11 +232,12 @@ class PageNotesUpdate(BaseModel):
 async def update_page_notes(
     body: PageNotesUpdate,
     page_id: str = Query(..., description="Page ID"),
+    repo_id: str | None = Query(None, description="Repository ID"),
     session: AsyncSession = Depends(get_db_session),
 ) -> PageResponse:
     """Set or clear the human-curated note pinned above a page's generated
     content. Notes survive regeneration, so this never touches versions."""
-    page = await crud.get_page(session, page_id)
+    page = await crud.get_page(session, page_id, repository_id=repo_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
     note = (body.human_notes or "").strip()
@@ -267,7 +280,7 @@ async def regenerate_page_by_query(
     """
     from repowise.server.routers.repos import _accepted, _ensure_no_active_job, _launch_job_task
 
-    page = await crud.get_page(session, page_id)
+    page = await crud.get_page(session, page_id, repository_id=repo_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
 

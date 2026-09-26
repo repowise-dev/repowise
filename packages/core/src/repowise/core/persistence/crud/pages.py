@@ -259,7 +259,9 @@ async def upsert_page(
     now = _now_utc()
     meta_json = json.dumps(metadata or {})
 
-    existing_result = await session.execute(select(Page).where(Page.id == page_id))
+    existing_result = await session.execute(
+        select(Page).where(Page.repository_id == repository_id, Page.id == page_id)
+    )
     existing = existing_result.scalar_one_or_none()
 
     page = _apply_page_upsert(
@@ -409,14 +411,20 @@ async def upsert_pages_from_generated(
         return []
 
     # Resolve all existing rows up front. page_id (== Page.id) is unique per
-    # page within the run and each row is resolved independently, so one SELECT
-    # is equivalent to the per-page loop's fresh SELECT-per-page. No repo filter
-    # here, matching ``upsert_page``'s ``WHERE Page.id == page_id``.
+    # page within the run and repository, so one SELECT is equivalent to the
+    # per-page loop's fresh SELECT-per-page. Scoped by repository_id, matching
+    # ``upsert_page``'s ``WHERE Page.repository_id == repository_id AND Page.id == page_id``.
     ids = [gp.page_id for gp in pages]
     existing_by_id: dict[str, Page] = {}
     for start in range(0, len(ids), _PAGE_SELECT_CHUNK):
         chunk = ids[start : start + _PAGE_SELECT_CHUNK]
-        rows = (await session.execute(select(Page).where(Page.id.in_(chunk)))).scalars().all()
+        rows = (
+            await session.execute(
+                select(Page).where(
+                    Page.repository_id == repository_id, Page.id.in_(chunk)
+                )
+            )
+        ).scalars().all()
         for row in rows:
             existing_by_id[row.id] = row
 
@@ -584,9 +592,14 @@ async def backfill_related_pages(
     return changed
 
 
-async def get_page(session: AsyncSession, page_id: str) -> Page | None:
-    """Return a Page by its page_id, or None."""
-    return await session.get(Page, page_id)
+async def get_page(
+    session: AsyncSession, page_id: str, repository_id: str | None = None
+) -> Page | None:
+    """Return a Page by its page_id and optional repository_id, or None."""
+    if repository_id is not None:
+        return await session.get(Page, (repository_id, page_id))
+    result = await session.execute(select(Page).where(Page.id == page_id).limit(1))
+    return result.scalar_one_or_none()
 
 
 async def list_pages(
@@ -645,14 +658,15 @@ async def get_page_versions(
     session: AsyncSession,
     page_id: str,
     *,
+    repository_id: str | None = None,
     limit: int = 50,
 ) -> list[PageVersion]:
     """Return historical versions of a page, newest first."""
+    q = select(PageVersion).where(PageVersion.page_id == page_id)
+    if repository_id is not None:
+        q = q.where(PageVersion.repository_id == repository_id)
     result = await session.execute(
-        select(PageVersion)
-        .where(PageVersion.page_id == page_id)
-        .order_by(PageVersion.version.desc())
-        .limit(limit)
+        q.order_by(PageVersion.version.desc()).limit(limit)
     )
     return list(result.scalars().all())
 
