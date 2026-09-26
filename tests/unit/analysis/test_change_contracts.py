@@ -119,10 +119,83 @@ def test_signature_change_with_outside_caller_is_breaking():
     assert len(impact.breaking) == 1
     change = impact.breaking[0]
     assert change.change == "signature"
+    assert change.signature_effect == "breaking"
+    assert change.signature_reason == "added required parameter 'y'"
     assert change.outside_callers == ["app/b.py::main"]
+    assert change.outside_production_callers == ["app/b.py::main"]
+    assert change.outside_test_callers == []
     assert change.inside_caller_count == 0
     assert change.callers_total == 1
     assert change.outside_callers_total == 1
+    assert change.outside_production_callers_total == 1
+    assert change.outside_test_callers_total == 0
+
+
+def test_compatible_signature_change_is_not_breaking():
+    base = [_file("app/a.py", [_sym("run", path="app/a.py", sig="run(x)")])]
+    head = [_file("app/a.py", [_sym("run", path="app/a.py", sig="run(x, timeout=30)")])]
+    impact = _compute(base, head, calls=[("app/b.py::main", "app/a.py::run")])
+
+    assert impact.status == "available"
+    assert len(impact.changes) == 1
+    change = impact.changes[0]
+    assert change.change == "signature"
+    assert change.signature_effect == "compatible"
+    assert change.signature_reason == "added optional parameter 'timeout'"
+    assert change.is_breaking is False
+    assert impact.breaking == []
+
+
+def test_whitespace_signature_change_with_body_overlap_is_body():
+    base = [_file("app/a.py", [_sym("run", path="app/a.py", sig="run(x, y)")])]
+    head = [_file("app/a.py", [_sym("run", path="app/a.py", sig="run(\n  x,\n  y,\n)")])]
+    impact = _compute(
+        base,
+        head,
+        calls=[("app/b.py::main", "app/a.py::run")],
+        ranges={"app/a.py": [(10, 15)]},
+    )
+
+    assert len(impact.changes) == 1
+    assert impact.changes[0].change == "body"
+    assert impact.breaking == []
+
+
+def test_caller_partitioning_production_and_test():
+    base = [_file("app/a.py", [_sym("run", path="app/a.py", sig="run(x)")])]
+    head = [_file("app/a.py", [_sym("run", path="app/a.py", sig="run(x, y)")])]
+    calls = [
+        ("tests/test_a.py::test_run", "app/a.py::run"),
+        ("app/service.py::handle", "app/a.py::run"),
+    ]
+    impact = _compute(base, head, calls=calls)
+
+    change = impact.changes[0]
+    assert change.outside_production_callers == ["app/service.py::handle"]
+    assert change.outside_test_callers == ["tests/test_a.py::test_run"]
+    assert change.outside_production_callers_total == 1
+    assert change.outside_test_callers_total == 1
+    # Production callers are sorted first in outside_callers
+    assert change.outside_callers == [
+        "app/service.py::handle",
+        "tests/test_a.py::test_run",
+    ]
+
+
+def test_capping_preserves_production_callers_first():
+    base = [_file("app/a.py", [_sym("run", path="app/a.py", sig="run(x)")])]
+    head = [_file("app/a.py", [_sym("run", path="app/a.py", sig="run(x, y)")])]
+    calls = [
+        ("tests/test_a.py::test_run", "app/a.py::run"),
+        ("app/service.py::handle", "app/a.py::run"),
+    ]
+    impact = _compute(base, head, calls=calls, callers_per_symbol=1)
+
+    change = impact.changes[0]
+    assert change.outside_callers == ["app/service.py::handle"]
+    assert change.outside_callers_total == 2
+    assert change.outside_production_callers_total == 1
+    assert change.outside_test_callers_total == 1
 
 
 def test_callers_inside_the_change_are_not_the_finding():
