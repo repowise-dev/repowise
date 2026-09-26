@@ -680,6 +680,304 @@ def _dart_mixin_parent(def_node: Node, config: LanguageConfig, src: str) -> str 
     return None
 
 
+def _pascal_imports(
+    stmt_node: Node, module_node: Node, src: str, seen_units: set[str]
+) -> list[Import]:
+    """One Pascal ``uses`` unit, deduped case-insensitively across the file.
+
+    pascal.scm fires once per unit name, so a 3-unit clause arrives as 3
+    matches sharing one statement span: deduping by raw text would drop all
+    but the first. A unit named in both ``uses`` clauses is one dependency.
+    ``uses`` exposes the unit's whole interface, hence the ``*`` wildcard.
+    """
+    raw = _node_text(stmt_node, src).strip()
+    unit_name = _node_text(module_node, src).strip()
+    if not unit_name or unit_name.lower() in seen_units:
+        return []
+    seen_units.add(unit_name.lower())
+    return [
+        Import(
+            raw_statement=raw,
+            module_path=unit_name,
+            imported_names=["*"],
+            is_relative=False,
+            resolved_file=None,
+            bindings=[],
+            is_reexport=False,
+        )
+    ]
+
+
+def _elixir_imports(
+    stmt_node: Node, module_node: Node, src: str, seen_modules: set[str]
+) -> list[Import]:
+    """Elixir directives, one Import per module and deduped by module path.
+
+    ``alias Foo.{Bar, Baz}`` names two modules in one statement. ``import``
+    pulls in every public function (``*``); alias/require/use bind the module.
+    """
+    raw = _node_text(stmt_node, src).split("\n", 1)[0].strip()
+    directive_node = stmt_node.child_by_field_name("target")
+    directive = _node_text(directive_node, src).strip() if directive_node else ""
+    imports: list[Import] = []
+    for module_path in elixir_import_modules(module_node, src):
+        if module_path in seen_modules:
+            continue
+        seen_modules.add(module_path)
+        imports.append(
+            Import(
+                raw_statement=raw,
+                module_path=module_path,
+                imported_names=["*"] if directive == "import" else [],
+                is_relative=False,
+                resolved_file=None,
+                bindings=[],
+                is_reexport=False,
+            )
+        )
+    return imports
+
+
+def _fsharp_imports(
+    stmt_node: Node, module_node: Node, src: str, seen_raws: set[str]
+) -> list[Import]:
+    """F# ``open``: every public name of the module (``*``), which bare-name
+    call resolution reads. ``open type A.B.T`` binds the type's static members,
+    so the module the file depends on is ``A.B``.
+    """
+    raw = _node_text(stmt_node, src).strip()
+    if raw in seen_raws:
+        return []
+    seen_raws.add(raw)
+    module_path = _node_text(module_node, src).strip()
+    if not module_path:
+        return []
+    names: list[str] = ["*"]
+    if any(child.type == "type" for child in stmt_node.children):
+        head, _, type_name = module_path.rpartition(".")
+        if head:
+            module_path, names = head, [type_name]
+        else:
+            names = []
+    return [
+        Import(
+            raw_statement=raw,
+            module_path=module_path,
+            imported_names=names,
+            is_relative=False,
+            resolved_file=None,
+            bindings=[],
+            is_reexport=False,
+        )
+    ]
+
+
+def _statement_imports(
+    stmt_node: Node,
+    module_node: Node,
+    module_text: str,
+    raw: str,
+    language: str,
+    src: str,
+) -> list[Import]:
+    """The imports one deduplicated statement declares."""
+    if language == "scala" and stmt_node.type == "import_declaration":
+        return _scala_imports(stmt_node, raw, src)
+    if language == "php" and stmt_node.type == "namespace_use_declaration":
+        return _php_imports(stmt_node, raw, src)
+    if language == "dart":
+        return [_dart_import(stmt_node, module_node, module_text, raw, src)]
+    if language in _TS_JS_LANGUAGES and _is_dynamic_esm_import(stmt_node):
+        # ``import('./mod')`` binds a module namespace at runtime, so it is a
+        # wildcard, which keeps the target's exports live.
+        return [
+            Import(
+                raw_statement=raw,
+                module_path=module_text,
+                imported_names=["*"],
+                is_relative=module_text.startswith("."),
+                resolved_file=None,
+                bindings=[],
+                is_reexport=False,
+            )
+        ]
+    if language in ("javascript", "typescript") and stmt_node.type in (
+        "assignment_expression",
+        "call_expression",
+    ):
+        return _cjs_imports(stmt_node, raw, src)
+    return [_generic_import(stmt_node, module_text, raw, language, src)]
+
+
+def _scala_imports(stmt_node: Node, raw: str, src: str) -> list[Import]:
+    """Scala: one Import per selected name, with full dotted paths.
+
+    The query's ``(identifier)`` capture is only the first path segment, and
+    one declaration can hold several clauses, brace selectors, renames and
+    wildcards.
+    """
+    from .extractors.bindings.scala import expand_scala_import_clauses
+    from .models import NamedBinding
+
+    imports: list[Import] = []
+    for clause_path, clause_names in expand_scala_import_clauses(stmt_node, src):
+        local = clause_names[0]
+        exported = None if local == "*" else clause_path.rsplit(".", 1)[-1]
+        imports.append(
+            Import(
+                raw_statement=raw,
+                module_path=clause_path,
+                imported_names=clause_names,
+                is_relative=False,
+                resolved_file=None,
+                bindings=[
+                    NamedBinding(
+                        local_name=local,
+                        exported_name=exported,
+                        source_file=None,
+                    )
+                ],
+                is_reexport=False,
+            )
+        )
+    return imports
+
+
+def _php_imports(stmt_node: Node, raw: str, src: str) -> list[Import]:
+    """PHP: one ``use`` declaration can name several classes, each its own file."""
+    from .extractors.bindings.php import php_use_clauses
+    from .models import NamedBinding
+
+    return [
+        Import(
+            raw_statement=raw,
+            module_path=fqn,
+            imported_names=[local],
+            is_relative=False,
+            resolved_file=None,
+            bindings=[NamedBinding(local_name=local, exported_name=fqn, source_file=None)],
+            is_reexport=False,
+        )
+        for fqn, local in php_use_clauses(stmt_node, src)
+    ]
+
+
+def _dart_import(
+    stmt_node: Node, module_node: Node, module_text: str, raw: str, src: str
+) -> Import:
+    """Dart: URIs are relative unless schemed, ``export`` re-exports, and the
+    dotted ``part of library.name;`` form resolves through ``library:``.
+    """
+    module_path = module_text
+    if module_node.type == "dotted_identifier_list":
+        module_path = f"library:{module_text}"
+    imported_names, bindings = extract_import_bindings(stmt_node, src, "dart")
+    return Import(
+        raw_statement=raw,
+        module_path=module_path,
+        imported_names=imported_names,
+        is_relative=not module_path.startswith(("package:", "dart:", "library:")),
+        resolved_file=None,
+        bindings=bindings,
+        is_reexport=stmt_node.type == "library_export",
+    )
+
+
+def _is_dynamic_esm_import(stmt_node: Node) -> bool:
+    if stmt_node.type != "call_expression":
+        return False
+    fn = stmt_node.child_by_field_name("function")
+    return fn is not None and fn.type == "import"
+
+
+def _cjs_imports(stmt_node: Node, raw: str, src: str) -> list[Import]:
+    """CommonJS: every ``require()`` in the statement, re-exports marked.
+
+    A hub like ``Object.assign(module.exports, require('./a'), ...)`` is
+    several imports, and ``module.exports`` shapes are barrels.
+    """
+    from .extractors.bindings.ts_js import (
+        cjs_statement_is_reexport,
+        collect_cjs_requires,
+    )
+
+    cjs_reexport = cjs_statement_is_reexport(stmt_node, src)
+    return [
+        Import(
+            raw_statement=raw,
+            module_path=cjs_module,
+            imported_names=["*"] if cjs_reexport else [],
+            is_relative=cjs_module.startswith("."),
+            resolved_file=None,
+            bindings=[],
+            is_reexport=cjs_reexport,
+        )
+        for cjs_module in collect_cjs_requires(stmt_node, src)
+    ]
+
+
+def _generic_import(
+    stmt_node: Node, module_text: str, raw: str, language: str, src: str
+) -> Import:
+    """The single Import of a statement no language-specific shape claims."""
+    if language == "rust" and stmt_node.type == "mod_item":
+        module_text = _rust_mod_path_attribute(stmt_node, src) or module_text
+
+    # JVM wildcard imports: the query captures the scoped identifier only,
+    # so ``import com.foo.*`` arrives as ``com.foo``. Restore the ``.*``.
+    if language in ("java", "kotlin") and not module_text.endswith("*"):
+        stmt_text = raw.rstrip().rstrip(";").rstrip()
+        if stmt_text.endswith(".*"):
+            module_text += ".*"
+
+    # Language-specific import name + binding extraction
+    imported_names, bindings = extract_import_bindings(stmt_node, src, language)
+    is_relative = (
+        module_text.startswith(".")
+        or module_text.startswith("./")
+        or module_text.startswith(("self::", "super::", "crate::"))
+    )
+    return Import(
+        raw_statement=raw,
+        module_path=module_text,
+        imported_names=imported_names,
+        is_relative=is_relative,
+        resolved_file=None,
+        bindings=bindings,
+        is_reexport=_is_reexport_import(stmt_node, raw, language),
+    )
+
+
+def _rust_mod_path_attribute(stmt_node: Node, src: str) -> str | None:
+    """The ``#[path = "..."]`` override on a Rust ``mod`` item, if any.
+
+    Outer attributes are preceding siblings of the item, not children.
+    """
+    parent = stmt_node.parent
+    if parent is None:
+        return None
+    siblings = parent.children
+    for j, sib in enumerate(siblings):
+        if sib.id != stmt_node.id:
+            continue
+        # Walk backward through preceding attribute_item siblings
+        k = j - 1
+        while k >= 0 and siblings[k].type == "attribute_item":
+            path_match = re.search(r'path\s*=\s*"([^"]+)"', _node_text(siblings[k], src))
+            if path_match:
+                return path_match.group(1)
+            k -= 1
+        return None
+    return None
+
+
+def _is_reexport_import(stmt_node: Node, raw: str, language: str) -> bool:
+    """``pub use`` (Rust) and ``@_exported import`` (Swift) re-export the module."""
+    if language == "rust" and stmt_node.type == "use_declaration":
+        return any(child.type == "visibility_modifier" for child in stmt_node.children)
+    return language == "swift" and raw.startswith("@_exported")
+
+
 class ASTParser:
     """Unified AST parser — works for all languages via .scm query files.
 
@@ -1248,6 +1546,7 @@ class ASTParser:
         file_info: FileInfo,
         src: str,
     ) -> list[Import]:
+        language = file_info.language
         imports: list[Import] = []
         seen_raws: set[str] = set()
         seen_pascal_units: set[str] = set()
@@ -1262,120 +1561,18 @@ class ASTParser:
 
             stmt_node = stmt_nodes[0]
 
-            # Pascal: `uses UnitA, UnitB, Ns.UnitC;` -- pascal.scm's
-            # unquantified pattern (see that file's comment on why) fires
-            # once PER moduleName, so a 3-unit clause arrives as 3 separate
-            # matches sharing one @import.statement span, each carrying a
-            # single-element ``module_nodes``. Handled before the
-            # ``seen_raws`` dedup below: that guard exists to skip a
-            # statement re-matched by an *overlapping* pattern (the normal
-            # case elsewhere), but here every match legitimately carries a
-            # different unit despite the identical raw statement text --
-            # dedup-by-raw would keep only the first and silently drop the
-            # rest, which is exactly the bug this branch fixes.
-            #
-            # Deduped separately by unit name (case-insensitive -- Pascal
-            # identifiers are): a unit named in both the ``interface`` and
-            # ``implementation`` ``uses`` clauses of the same file is a
-            # single logical dependency and must not become two Import
-            # entries for it.
-            if file_info.language == "pascal":
-                raw = _node_text(stmt_node, src).strip()
-                unit_name = _node_text(module_nodes[0], src).strip()
-                if unit_name and unit_name.lower() not in seen_pascal_units:
-                    seen_pascal_units.add(unit_name.lower())
-                    imports.append(
-                        Import(
-                            raw_statement=raw,
-                            module_path=unit_name,
-                            # ``uses UnitA;`` exposes UnitA's ENTIRE public
-                            # interface section, unlike Python/JS's
-                            # name-scoped `from x import y` -- Pascal has no
-                            # per-symbol import syntax to name a specific
-                            # one. ``imported_names=[]`` (empty, not
-                            # wildcard) meant dead_code/analyzer.py's
-                            # `sym_name in imported_names` / `"*" in
-                            # imported_names` file-level unused-export
-                            # rescue could structurally never fire for
-                            # Pascal -- every public symbol fell straight
-                            # through to the (now Phase-1-fixed, but still
-                            # best-effort) symbol-level call/type_use
-                            # rescue instead. ``["*"]`` is this codebase's
-                            # existing wildcard-import sentinel (see the
-                            # Python `import *` and CJS re-export branches
-                            # of this function) and is the semantically
-                            # correct value here, not a workaround: it says
-                            # exactly what a Pascal `uses` clause does.
-                            imported_names=["*"],
-                            is_relative=False,
-                            resolved_file=None,
-                            bindings=[],
-                            is_reexport=False,
-                        )
-                    )
+            # These three dedupe on their own key, before the raw-statement
+            # dedup below.
+            if language == "pascal":
+                imports.extend(_pascal_imports(stmt_node, module_nodes[0], src, seen_pascal_units))
                 continue
-
-            # Elixir: `alias Foo.{Bar, Baz}` names two modules in one
-            # statement, so dedup by raw statement text (below) would drop all
-            # but the first. Deduped by module path instead, which is also
-            # what makes a module aliased twice in one file one dependency.
-            if file_info.language == "elixir":
-                raw = _node_text(stmt_node, src).split("\n", 1)[0].strip()
-                directive_node = stmt_node.child_by_field_name("target")
-                directive = _node_text(directive_node, src).strip() if directive_node else ""
-                for module_path in elixir_import_modules(module_nodes[0], src):
-                    if module_path in seen_elixir_modules:
-                        continue
-                    seen_elixir_modules.add(module_path)
-                    imports.append(
-                        Import(
-                            raw_statement=raw,
-                            # `import Foo` pulls in every public function;
-                            # alias/require/use bind the module itself, which
-                            # is the same wildcard sentinel the regex tier
-                            # writes for this language.
-                            module_path=module_path,
-                            imported_names=["*"] if directive == "import" else [],
-                            is_relative=False,
-                            resolved_file=None,
-                            bindings=[],
-                            is_reexport=False,
-                        )
-                    )
-                continue
-
-            # F#: `open Foo.Bar` binds every public name in Foo.Bar, which is
-            # the wildcard sentinel this codebase already uses -- and which
-            # the call resolver reads to decide which imports a bare name may
-            # be looked up in (F# bare names are lexically scoped).
-            # `open type Foo.Bar.Baz` binds a TYPE's static members instead,
-            # so the module the file depends on is the path holding the type.
-            if file_info.language == "fsharp":
-                raw = _node_text(stmt_node, src).strip()
-                if raw in seen_raws:
-                    continue
-                seen_raws.add(raw)
-                module_path = _node_text(module_nodes[0], src).strip()
-                if not module_path:
-                    continue
-                names: list[str] = ["*"]
-                if any(child.type == "type" for child in stmt_node.children):
-                    head, _, type_name = module_path.rpartition(".")
-                    if head:
-                        module_path, names = head, [type_name]
-                    else:
-                        names = []
-                imports.append(
-                    Import(
-                        raw_statement=raw,
-                        module_path=module_path,
-                        imported_names=names,
-                        is_relative=False,
-                        resolved_file=None,
-                        bindings=[],
-                        is_reexport=False,
-                    )
+            if language == "elixir":
+                imports.extend(
+                    _elixir_imports(stmt_node, module_nodes[0], src, seen_elixir_modules)
                 )
+                continue
+            if language == "fsharp":
+                imports.extend(_fsharp_imports(stmt_node, module_nodes[0], src, seen_raws))
                 continue
 
             raw = _node_text(stmt_node, src).strip()
@@ -1387,204 +1584,11 @@ class ASTParser:
             if not module_text:
                 continue
 
-            # Scala: the query's ``(identifier)`` capture is only the FIRST
-            # path segment (``import com.foo.Bar`` arrived as ``com``), and
-            # one declaration can hold several clauses, brace selectors,
-            # renames, and wildcards. Reconstruct full dotted paths and emit
-            # one Import per selected name.
-            if file_info.language == "scala" and stmt_node.type == "import_declaration":
-                from .extractors.bindings.scala import expand_scala_import_clauses
-                from .models import NamedBinding
-
-                for clause_path, clause_names in expand_scala_import_clauses(stmt_node, src):
-                    local = clause_names[0]
-                    exported = None if local == "*" else clause_path.rsplit(".", 1)[-1]
-                    imports.append(
-                        Import(
-                            raw_statement=raw,
-                            module_path=clause_path,
-                            imported_names=clause_names,
-                            is_relative=False,
-                            resolved_file=None,
-                            bindings=[
-                                NamedBinding(
-                                    local_name=local,
-                                    exported_name=exported,
-                                    source_file=None,
-                                )
-                            ],
-                            is_reexport=False,
-                        )
-                    )
-                continue
-
-            # PHP: one ``use`` declaration can name several classes, each its
-            # own file (``use A\B, C\D;`` and the grouped ``use A\{B, C}``).
-            if file_info.language == "php" and stmt_node.type == "namespace_use_declaration":
-                from .extractors.bindings.php import php_use_clauses
-                from .models import NamedBinding
-
-                for fqn, local in php_use_clauses(stmt_node, src):
-                    imports.append(
-                        Import(
-                            raw_statement=raw,
-                            module_path=fqn,
-                            imported_names=[local],
-                            is_relative=False,
-                            resolved_file=None,
-                            bindings=[
-                                NamedBinding(local_name=local, exported_name=fqn, source_file=None)
-                            ],
-                            is_reexport=False,
-                        )
-                    )
-                continue
-
-            # Dart: URIs are relative unless schemed (``package:``/``dart:``),
-            # ``export`` directives are barrel re-exports, and the legacy
-            # dotted ``part of library.name;`` form resolves through the
-            # library-name index (the ``library:`` prefix is the resolver's
-            # contract, shared with the lightweight regex tier).
-            if file_info.language == "dart":
-                module_path = module_text
-                if module_nodes[0].type == "dotted_identifier_list":
-                    module_path = f"library:{module_text}"
-                imported_names, bindings = extract_import_bindings(
-                    stmt_node, src, file_info.language
-                )
-                imports.append(
-                    Import(
-                        raw_statement=raw,
-                        module_path=module_path,
-                        imported_names=imported_names,
-                        is_relative=not module_path.startswith(("package:", "dart:", "library:")),
-                        resolved_file=None,
-                        bindings=bindings,
-                        is_reexport=stmt_node.type == "library_export",
-                    )
-                )
-                continue
-
-            # Dynamic ESM import: ``import('./mod')``. The query captures the
-            # call_expression, which would otherwise fall into the CommonJS
-            # branch below and be dropped on the floor — a dynamic import
-            # holds no ``require()`` for ``collect_cjs_requires`` to find.
-            # The construct binds a module namespace at runtime, so record a
-            # wildcard rather than a static name.  Downstream unused-export
-            # analysis treats ``*`` as namespace consumption and therefore
-            # keeps the target's exports live without a broad analyzer
-            # exemption.
-            if (
-                file_info.language in _TS_JS_LANGUAGES
-                and stmt_node.type == "call_expression"
-                and (_fn := stmt_node.child_by_field_name("function")) is not None
-                and _fn.type == "import"
-            ):
-                imports.append(
-                    Import(
-                        raw_statement=raw,
-                        module_path=module_text,
-                        imported_names=["*"],
-                        is_relative=module_text.startswith("."),
-                        resolved_file=None,
-                        bindings=[],
-                        is_reexport=False,
-                    )
-                )
-                continue
-
-            # CommonJS assignment / Object.assign shapes: the query captures
-            # the outer statement once; walk it for every require() it
-            # contains (a hub like Object.assign(module.exports,
-            # require('./a'), require('./b')) is several imports) and mark
-            # module.exports/exports shapes as re-exports so barrel logic
-            # treats CJS hubs like ESM barrels.
-            if file_info.language in ("javascript", "typescript") and stmt_node.type in (
-                "assignment_expression",
-                "call_expression",
-            ):
-                from .extractors.bindings.ts_js import (
-                    cjs_statement_is_reexport,
-                    collect_cjs_requires,
-                )
-
-                cjs_reexport = cjs_statement_is_reexport(stmt_node, src)
-                for cjs_module in collect_cjs_requires(stmt_node, src):
-                    imports.append(
-                        Import(
-                            raw_statement=raw,
-                            module_path=cjs_module,
-                            imported_names=["*"] if cjs_reexport else [],
-                            is_relative=cjs_module.startswith("."),
-                            resolved_file=None,
-                            bindings=[],
-                            is_reexport=cjs_reexport,
-                        )
-                    )
-                continue
-
-            # Rust #[path = "..."] attribute overrides module file location.
-            # In tree-sitter-rust, outer attributes are preceding siblings of
-            # the item, not children.
-            if file_info.language == "rust" and stmt_node.type == "mod_item":
-                parent = stmt_node.parent
-                if parent is not None:
-                    siblings = parent.children
-                    for j, sib in enumerate(siblings):
-                        if sib.id == stmt_node.id:
-                            # Walk backward through preceding attribute_item siblings
-                            k = j - 1
-                            while k >= 0 and siblings[k].type == "attribute_item":
-                                attr_text = _node_text(siblings[k], src)
-                                path_match = re.search(r'path\s*=\s*"([^"]+)"', attr_text)
-                                if path_match:
-                                    module_text = path_match.group(1)
-                                    break
-                                k -= 1
-                            break
-
-            # JVM wildcard imports: the grammar query captures the scoped
-            # identifier only — the trailing ``*`` is a sibling node, so
-            # ``import com.foo.*`` arrives as ``com.foo`` and the resolvers'
-            # package fan-out branch can never fire. Restore it from the
-            # raw statement text.
-            if file_info.language in ("java", "kotlin") and not module_text.endswith("*"):
-                stmt_text = raw.rstrip().rstrip(";").rstrip()
-                if stmt_text.endswith(".*"):
-                    module_text += ".*"
-
-            # Language-specific import name + binding extraction
-            imported_names, bindings = extract_import_bindings(stmt_node, src, file_info.language)
-            is_relative = (
-                module_text.startswith(".")
-                or module_text.startswith("./")
-                or module_text.startswith(("self::", "super::", "crate::"))
+            imports.extend(
+                _statement_imports(stmt_node, module_nodes[0], module_text, raw, language, src)
             )
 
-            is_reexport = False
-            if file_info.language == "rust" and stmt_node.type == "use_declaration":
-                for child in stmt_node.children:
-                    if child.type == "visibility_modifier":
-                        is_reexport = True
-                        break
-            # Swift: ``@_exported import FooKit`` re-exports the module —
-            # importers of THIS module see FooKit's symbols too.
-            elif file_info.language == "swift" and raw.startswith("@_exported"):
-                is_reexport = True
-
-            imports.append(
-                Import(
-                    raw_statement=raw,
-                    module_path=module_text,
-                    imported_names=imported_names,
-                    is_relative=is_relative,
-                    resolved_file=None,
-                    bindings=bindings,
-                    is_reexport=is_reexport,
-                )
-            )
-
-        if file_info.language == "python":
+        if language == "python":
             imports = expand_bare_relative_imports(imports)
 
         return imports
