@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from repowise.core.support_paths import DOC_EXTENSIONS
+from repowise.core.support_paths import CONFIG_EXTENSIONS, DOC_EXTENSIONS, classification_token
 
 # Categories the file_page prompt knows how to adapt to.
 CATEGORY_CODE = "code"
@@ -57,7 +57,15 @@ def file_category(path: str, language: str = "", *, is_config: bool = False) -> 
     if suffix in _DATA_SUFFIXES or segments & _DATA_DIR_TOKENS:
         return CATEGORY_DATA
 
-    if is_config or (language or "").lower() in _CONFIG_LANGUAGES:
+    # `.env` has no pathlib suffix (pathlib only opens one at a dot after the
+    # first character), so resolve it through `classification_token` and match
+    # the token against the same `CONFIG_EXTENSIONS` set the sibling surfaces
+    # use for extensions (#2454).
+    if (
+        is_config
+        or (language or "").lower() in _CONFIG_LANGUAGES
+        or classification_token(path) in CONFIG_EXTENSIONS
+    ):
         return CATEGORY_CONFIG
 
     return CATEGORY_CODE

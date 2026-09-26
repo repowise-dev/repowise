@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.support_paths import is_example_path, is_support_path
+from repowise.core.support_paths import classification_token, is_example_path, is_support_path
 
 
 @pytest.mark.parametrize(
@@ -60,3 +60,10 @@ def test_doc_dirs_are_support_but_not_examples(path: str):
 def test_matching_is_case_insensitive():
     assert is_example_path("Examples/Demo.cs")
     assert is_support_path("Docs/Guide.md")
+
+
+def test_classification_token_prefers_suffix_and_falls_back_to_dotfile_name():
+    """#2454: `.env` has no pathlib suffix; its whole name is the token."""
+    assert classification_token("config.yaml") == ".yaml"
+    assert classification_token(".env") == ".env"
+    assert classification_token("proj/.ENV") == ".env"
