@@ -57,6 +57,7 @@ _SCOPE = (
     _INGESTION / "lang_helpers",
     _INGESTION / "type_ref_resolution.py",
     _INGESTION / "call_resolver.py",
+    _INGESTION / "call_receiver_typing.py",
     _INGESTION / "heritage_resolver.py",
     # Holds the shared symbol-ID splitter both resolvers used to keep a copy
     # of; in scope so moving it did not move it out of reach.
@@ -72,11 +73,13 @@ _KNOWN: dict[str, int] = {
     # Splits our own `path::Class::method` symbol IDs, which we mint. The
     # separator is ours rather than the language's, so the shared helper would
     # be answering about a type where these ask about an ID. `models.py` holds
-    # the one both resolvers used to duplicate. Six of `call_resolver.py`'s
-    # eight are symbol IDs; the other two are both an import's module path,
-    # which is a module name and not a type: one takes its tail and one takes
-    # its head, to ask whether the package it names is one of ours.
-    _PREFIX + "call_resolver.py": 8,
+    # the one both resolvers used to duplicate. In each call resolver module
+    # one site is an import's module path, which is a module name and not a
+    # type: `call_receiver_typing.py` takes its tail and `call_resolver.py`
+    # its head, to ask whether the package it names is one of ours. The rest
+    # are symbol IDs.
+    _PREFIX + "call_resolver.py": 6,
+    _PREFIX + "call_receiver_typing.py": 2,
     _PREFIX + "models.py": 1,
     # Reads the head to decide whether taking a bare name is safe at all: a
     # qualifier that is a type rather than a package must not be discarded.
