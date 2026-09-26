@@ -46,6 +46,7 @@ from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
 from .duplication import DuplicationReport
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
+from .history_refresh import BLAME_MARKERS, as_biomarker_result
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
     CallGraphIndex,
@@ -110,6 +111,11 @@ log = structlog.get_logger(__name__)
 # ``with atomic(), pytest.raises(E):`` counted one. Each item is classified now,
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
+#
+# v35: the update's full re-score reads every stored git column, so the
+# percentile gates of ``prior_defect`` and ``co_change_scatter`` see their
+# inputs, and it keeps the stored blame-marker findings it cannot recompute.
+# A store an older re-score wrote is missing those findings.
 #
 # v34: ``hidden_coupling`` is advisory: still detected and stored, it no longer
 # deducts from the defect score, so every stored score that carried one moves.
@@ -315,7 +321,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 34
+HEALTH_ANALYZER_VERSION = 35
 
 
 def walked_functions(
@@ -510,6 +516,7 @@ class HealthAnalyzer:
         duplication_cache_dir: Any | None = None,
         repo_root: Any | None = None,
         source_reader: SourceReader | None = None,
+        stored_blame_findings: dict[str, list[Any]] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -543,6 +550,10 @@ class HealthAnalyzer:
         # Every source read in the pass. Defaults to the working tree; a
         # revision comparison supplies bytes instead.
         self.read_source: SourceReader = source_reader or disk_source_reader
+        # Stored ``BLAME_MARKERS`` findings by path, replayed for a file scored
+        # without a blame index (a re-score from stored git metadata) so the
+        # pass does not delete what it cannot recompute.
+        self.stored_blame_findings = stored_blame_findings or {}
         self._package_roots_cache: set[str] | None = None
         self._tests_reach_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
@@ -1360,6 +1371,11 @@ class HealthAnalyzer:
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)
+        if blame_index is None:
+            for stored in self.stored_blame_findings.get(file_path, ()):
+                replayed = as_biomarker_result(stored)
+                if replayed.biomarker_type in BLAME_MARKERS and replayed.biomarker_type not in disabled:
+                    biomarker_results.append(replayed)
         biomarker_results = remap_severities(biomarker_results, severity_overrides)
         scores, deductions = score_file(biomarker_results)
         findings = attach_impacts(biomarker_results, deductions)
