@@ -301,19 +301,79 @@ def generate_command(
 
     _write_state(repo_path, state, provider, outcome)
 
-    elapsed = time.monotonic() - start
-    tail = (
-        f", {outcome.remaining_template_pages} still unwritten"
-        if outcome.remaining_template_pages
-        else " — every page is now written"
-    )
-    stale_note = f", {outcome.marked_stale} marked stale" if outcome.marked_stale else ""
-    console.print(
-        f"[bold green]Generated {len(outcome.generated_pages)} pages[/bold green] "
-        f"in {elapsed:.1f}s{stale_note}{tail}."
-    )
+    _report_outcome(outcome, time.monotonic() - start)
     if embedder_upgraded:
         _reembed_after_upgrade(repo_path, embedder_name)
+
+
+def _account_for_plan(
+    planned_ids: set[str], generated_pages: list[Any], swept_ids: list[str]
+) -> dict[str, int]:
+    """Sort every planned page into exactly one outcome bucket."""
+    from repowise.core.generation.models import STUB_FALLBACK_ERROR
+
+    counts = {"written": 0, "unchanged": 0, "failed": 0}
+    produced: set[str] = set()
+    for page in generated_pages:
+        produced.add(page.page_id)
+        meta = page.metadata or {}
+        if STUB_FALLBACK_ERROR in meta:
+            counts["failed"] += 1
+        elif meta.get("reused_from_prior_run"):
+            counts["unchanged"] += 1
+        else:
+            counts["written"] += 1
+    missing = planned_ids - produced
+    counts["retired"] = len(missing & set(swept_ids))
+    counts["not_produced"] = len(missing) - counts["retired"]
+    return counts
+
+
+def _report_outcome(outcome: Any, elapsed: float) -> None:
+    """Print where every planned page went, the actual cost, and what is left."""
+    planned = outcome.plan.generate_ids
+    c = _account_for_plan(planned, outcome.generated_pages, outcome.swept_page_ids)
+    done = c["written"] + c["unchanged"]
+    unchanged = f" ({c['unchanged']} unchanged, no model call)" if c["unchanged"] else ""
+    stale_note = f", {outcome.marked_stale} dependents marked stale" if outcome.marked_stale else ""
+    console.print(
+        f"[bold green]Generated {done} of {len(planned)} planned pages[/bold green]"
+        f"{unchanged} in {elapsed:.1f}s{stale_note}."
+    )
+    rest = [
+        f"{c['retired']} retired (merged into pages this run wrote)" if c["retired"] else "",
+        f"{c['not_produced']} not produced (the code no longer yields them)"
+        if c["not_produced"]
+        else "",
+        f"{c['failed']} failed (kept as a stub)" if c["failed"] else "",
+    ]
+    rest = [r for r in rest if r]
+    if rest:
+        console.print("  Not generated: " + ", ".join(rest) + ".")
+    console.print(f"Cost: [bold]${outcome.cost_usd:.3f}[/bold] ({outcome.tokens:,} tokens).")
+
+    if outcome.remaining_template_pages:
+        console.print(
+            f"[yellow]{outcome.remaining_template_pages} page(s) still unwritten.[/yellow] "
+            "Run [cyan]repowise generate --unwritten[/cyan] to write them."
+        )
+    else:
+        console.print("Every concept page is now written.")
+    # A planned page the code no longer yields stays stale however often it is
+    # retried, so only the rest are pointed at `generate --stale`.
+    stuck = outcome.stale_page_ids & (planned - {p.page_id for p in outcome.generated_pages})
+    stuck -= set(outcome.swept_page_ids)
+    retryable = len(outcome.stale_page_ids) - len(stuck)
+    if retryable:
+        console.print(
+            f"[yellow]{retryable} page(s) still stale.[/yellow] "
+            "Run [cyan]repowise generate --stale[/cyan] to regenerate them."
+        )
+    if stuck:
+        console.print(
+            f"[dim]{len(stuck)} stale page(s) were not produced this run; "
+            "regenerating will not refresh them.[/dim]"
+        )
 
 
 def _reembed_after_upgrade(repo_path: Path, embedder_name: str) -> None:
