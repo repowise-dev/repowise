@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import Any
 
 from repowise.core.analysis.decisions.scope import (
     SCOPE_BASIS_SELECTED,
@@ -112,19 +111,21 @@ def _attribute_to_commit(
     return sha
 
 
-def _significant_commits(meta: dict) -> Any:
-    """A file's ``significant_commits_json`` as the miner reads it.
+def _significant_commits(meta: dict) -> list[dict]:
+    """A file's ``significant_commits_json`` as the commit dicts both miners read.
 
-    A string that does not decode yields no commits; anything else passes
-    through as-is.
+    Accepts the stored JSON string or an already-decoded list. Any other shape,
+    or a string that does not decode to a list, reads as no commits.
     """
-    commits_json = meta.get("significant_commits_json", "[]")
-    if not isinstance(commits_json, str):
-        return commits_json
-    try:
-        return json.loads(commits_json)
-    except (json.JSONDecodeError, TypeError):
+    value = meta.get("significant_commits_json")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
         return []
+    return [c for c in value if isinstance(c, dict)]
 
 
 def _admit_signal_commit(commit: dict, commit_map: dict[str, dict]) -> bool:
@@ -158,19 +159,6 @@ def signal_commits(
     return commit_map, commit_files
 
 
-def _loads_commits(value: Any) -> list[dict]:
-    """Parse a ``significant_commits_json`` blob into a list of dicts."""
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str):
-        try:
-            data = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            return []
-        return data if isinstance(data, list) else []
-    return []
-
-
 def _pr_candidate(commit: dict, body: str) -> dict | None:
     """The prompt-ready record of a PR-shaped body with decision signals, else None."""
     low = body.lower()
@@ -195,7 +183,7 @@ def pr_candidates(
     candidates: dict[str, dict] = {}
     files_by_sha: dict[str, list[str]] = {}
     for fp, meta in git_meta_map.items():
-        for c in _loads_commits(meta.get("significant_commits_json")):
+        for c in _significant_commits(meta):
             sha = c.get("sha", "")
             if not sha:
                 continue
