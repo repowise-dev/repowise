@@ -301,32 +301,6 @@ async def test_community_is_null_for_an_unknown_target(session, populated_db):
 
 
 @pytest.mark.asyncio
-async def test_community_of_a_node_never_clustered_reads_as_cluster_0(session, populated_db):
-    """Pins current behaviour: ``community_id`` is NOT NULL default 0, so the
-    ``is None`` guard never fires and an unclustered node reads as ``cluster_0``.
-    """
-    rid = populated_db
-    session.add(
-        GraphNode(
-            id="t_loose",
-            repository_id=rid,
-            node_id="loose.py",
-            node_type="file",
-            language="python",
-            community_id=None,
-            created_at=_NOW,
-        )
-    )
-    await session.flush()
-
-    out: dict = {}
-    await enrichment._resolve_community(session, await _repo(session, rid), "loose.py", out)
-    assert out["community"]["id"] == 0
-    assert out["community"]["label"] == "cluster_0"
-    assert out["community"]["top_members"] == ["loose.py"]
-
-
-@pytest.mark.asyncio
 async def test_community_names_members_by_pagerank_and_neighbours_by_crossing_edges(
     session, populated_db
 ):

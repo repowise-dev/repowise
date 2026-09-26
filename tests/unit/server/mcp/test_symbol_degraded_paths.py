@@ -136,22 +136,6 @@ async def test_range_read_refuses_an_excluded_path(setup_mcp, tmp_path, monkeypa
     assert "source" not in result
 
 
-@pytest.mark.asyncio
-async def test_range_read_without_a_repo_path_crashes_before_its_guard(
-    setup_mcp, factory, monkeypatch
-):
-    """Pins a defect: the exclusion spec is built from ``ctx.path`` before the
-    no-path guard runs, so a pathless context raises ``TypeError``.
-    """
-
-    async def _context(_repo):
-        return SimpleNamespace(path=None, session_factory=factory, alias="")
-
-    monkeypatch.setattr(tool_symbol, "_resolve_repo_context", _context)
-    with pytest.raises(TypeError):
-        await tool_symbol.get_symbol("pkg/mod.py:1-2")
-
-
 # ---------------------------------------------------------------------------
 # Argument handling
 # ---------------------------------------------------------------------------

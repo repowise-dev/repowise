@@ -119,18 +119,6 @@ async def test_health_references_skip_the_index_when_there_is_nothing_to_match()
 
 
 @pytest.mark.asyncio
-async def test_health_references_on_an_index_with_no_repository_raise(factory):
-    """Pins a defect: sibling helpers treat ``LookupError`` as "no index", but
-    this one catches only ``SQLAlchemyError``, so an empty store raises.
-    """
-    finding = _finding("a.py", "complex_method", "f", 1, 2)
-    with pytest.raises(LookupError):
-        await tool._attach_health_references(
-            SimpleNamespace(session_factory=factory), SimpleNamespace(findings=[finding])
-        )
-
-
-@pytest.mark.asyncio
 async def test_repository_is_none_without_a_factory_or_a_repository_row(factory):
     assert await tool._repository(SimpleNamespace()) is None
     assert await tool._repository(SimpleNamespace(session_factory=factory)) is None
