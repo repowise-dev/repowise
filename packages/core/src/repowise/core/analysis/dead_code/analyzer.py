@@ -670,49 +670,28 @@ class _ExportFile:
 
 def _is_compiler_invoked(sym: dict, sym_name: str) -> bool:
     """Symbols the compiler or linker calls, which no graph edge can show."""
-    # Compiler-builtin macros defined as a fallback
-    # (``#if !defined(__has_include)\n#define __has_include(h) 0``).
-    # The tree-sitter cpp grammar emits the ``#define`` as a
-    # ``preproc_function_def`` symbol, but the name is a
-    # compiler intrinsic — there will never be a static caller
-    # because the real call sites are preprocessor
-    # ``#if __has_include(...)`` directives, not C/C++ calls.
+    # Fallback definitions of compiler intrinsics (``__has_include``) are only
+    # ever used from preprocessor directives.
     if sym.get("language") in ("cpp", "c") and sym_name in _CPP_BUILTIN_MACROS:
         return True
-    # Rust proc-macro entry points — invoked by the compiler,
-    # not by call edges in the dependency graph.
+    # Rust proc-macro entry points are invoked by the compiler.
     if sym.get("language") == "rust":
         decorators = sym.get("decorators") or []
         if any(d.startswith("proc_macro") for d in decorators):
             return True
-    # Explicit language-level export markers (C/C++
-    # ``__declspec(dllexport)``, GCC ``visibility("default")``)
-    # signal "called from outside this translation unit /
-    # binary" — never observable in the static graph.
+    # Explicit export markers (``dllexport``, ``visibility("default")``) mean
+    # callers outside this binary.
     return bool(sym.get("is_exported_symbol"))
 
 
 def _is_declaration_only(sym: dict) -> bool:
     """C/C++ declarations that are not a deletable unit of their own."""
-    # A C/C++ forward declaration whose definition was found is not
-    # independently deletable — the definition is the unit of
-    # deletion, and call resolution attaches the use edge there
-    # rather than to the header line, so reporting the declaration
-    # too would only restate what the definition says (#1601). A
-    # prototype with no definition anywhere is the opposite case:
-    # nothing else can carry the finding, so it still gets one.
+    # A prototype whose definition was found: the definition carries the
+    # finding. An unmatched prototype is still reported.
     if sym.get("is_declaration") and sym.get("defined_by"):
         return True
-    # A C/C++ *type* forward declaration is not a deletable unit at
-    # all, paired or not, so it is not held to the clause above.
-    # A prototype promises a body, and a body that exists nowhere
-    # makes the prototype itself the dead thing. ``class Env;``
-    # promises nothing: it exists so the declaring file can name
-    # the type without including its header, which makes that file
-    # the declaration's user. Deleting the line breaks it whether
-    # the definition lives in this repo or in a dependency — and
-    # when it is in the repo, the definition already carries the
-    # finding.
+    # A type forward declaration (``class Env;``) exists so its own file can
+    # name the type, which makes that file its user.
     return bool(
         sym.get("is_declaration")
         and sym.get("language") in ("cpp", "c")
@@ -1188,17 +1167,9 @@ class DeadCodeAnalyzer:
         node_data = self.graph.nodes[node]
         if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
             return None
-        # Framework-instantiated files (Spring stereotypes, JAX-RS
-        # resources, Quarkus components, Spring Data repos, …) have
-        # no source-level caller; the runtime constructs them via
-        # classpath scanning, so an ``@RestController`` class must not be
-        # reported as an unused export.
-        #
-        # Deliberately not ``is_file_reachable``, which the sibling
-        # unreachable-files pass uses: this pass asks about *symbols*, and
-        # the predicate's barrel rescue is scoped to files on purpose — a
-        # genuine symbol defined in a barrel nobody imports should still be
-        # flagged. See ``BARREL_FILENAMES``'s scope note.
+        # Entry points include framework-instantiated files the runtime constructs.
+        # Not ``is_file_reachable``: its barrel rescue is scoped to files, and an
+        # unused symbol defined in a barrel should still be flagged.
         if node_data.get("is_entry_point", False):
             return None
         if node_data.get("is_test", False):
@@ -1208,8 +1179,6 @@ class DeadCodeAnalyzer:
         if self._should_never_flag(str(node), whitelist):
             return None
 
-        # Pair each symbol's data with its node id so we can check
-        # incoming ``calls`` edges on the symbol itself further down.
         symbol_pairs = [
             (succ, self.graph.nodes[succ])
             for succ in self.graph.successors(node)
@@ -1219,21 +1188,9 @@ class DeadCodeAnalyzer:
         if not symbol_pairs:
             return None
 
-        # Dynamic-use edges (DI registration, reflection, event bus
-        # subscriptions, framework-mediated loading) target a file
-        # as a whole — the runtime resolves the class and reaches
-        # any public member. Treat the whole file as live so we
-        # don't flag e.g. ``BasketService`` (registered via
-        # ``MapGrpcService<BasketService>()``) as an unused export.
-        # Was ("dynamic_uses", "dynamic", "framework"): the bare "dynamic"
-        # matched nothing and dynamic_imports was absent, so a file reached
-        # only by a dynamic import was never rescued here.
-        # Deliberately NOT `is_dynamic_edge`: `dynamic_imports` and
-        # `dynamic_url_route` mean the module gets loaded, which is what a
-        # plain `imports` edge means, and that is not rescued here either.
-        # Only `dynamic_uses` carries "the runtime reached a member".
-        # Widening this to every dynamic_* hides an unused export in any
-        # package.json `main` target or Django INSTALLED_APPS module.
+        # A dynamic-use or framework edge means the runtime reaches any public
+        # member of the file. Only these two: ``dynamic_imports`` means the
+        # module is loaded, which a plain import edge does not rescue either.
         if any(
             self.graph.get_edge_data(pred, node, {}).get("edge_type")
             in ("dynamic_uses", "framework")
@@ -1241,9 +1198,7 @@ class DeadCodeAnalyzer:
         ):
             return None
 
-        # Bundler ``resolve.alias`` shim: the whole module is substituted
-        # for a package at build time — every public symbol is reachable
-        # through the aliased import.
+        # A bundler ``resolve.alias`` target stands in for a whole package.
         if str(node) in self._bundler_alias_targets:
             return None
 
@@ -1254,10 +1209,7 @@ class DeadCodeAnalyzer:
             symbol_pairs=symbol_pairs,
             file_has_importers=self.graph.in_degree(node) > 0,
             imported_as_namespace=self._imported_as_namespace(node, node_data),
-            # Function/method line ranges in this file — used to skip symbols
-            # whose definition is nested inside another function (closures,
-            # inner helpers).  Such symbols are only reachable from their
-            # enclosing scope and are guaranteed false positives.
+            # Function bodies, so nested defs (closures) can be skipped.
             enclosing_ranges=[
                 (sym.get("start_line", 0), sym.get("end_line", 0))
                 for sym in symbols
@@ -1269,21 +1221,8 @@ class DeadCodeAnalyzer:
     def _imported_as_namespace(self, node: Any, node_data: dict) -> bool:
         """Whether an importer pulled this file by its module name.
 
-        Dispatch-table / namespace-import rescue at the file level:
-        if any importer pulled this file by its module name
-        (``from . import cargo``, ``import * as cargo from
-        "./cargo"``), every public symbol in the file is reachable
-        via ``cargo.<attr>`` and we cannot tell statically which
-        attribute is being called. Treat all public symbols as live.
-        Generic across Python and TS/JS — no repo-specific assumptions.
-
-        Excluded for Go: every Go import names the *package*, and a
-        file commonly shares its package's name (``dynacache.go`` in
-        package ``dynacache``), which would blanket-rescue every public
-        symbol in such files. Go package-qualified calls are now
-        resolved precisely (call_resolver._resolve_go_package_call), so
-        the imprecise namespace rescue is both unnecessary and harmful
-        here — it would hide genuinely dead exports.
+        Then any public symbol may be reached as ``mod.<attr>``. Not for Go,
+        where every import names a package and package calls resolve precisely.
         """
         file_stem = Path(str(node)).stem
         if (
@@ -1314,25 +1253,10 @@ class DeadCodeAnalyzer:
         """False for symbols no importer can name: members, intrinsics, declarations."""
         node = file_ctx.node
         sym_name = sym.get("name", "")
-        # Skip symbol kinds that can't be independently imported
-        # (methods, properties, fields, enum members, namespace
-        # anchors). They're always reached through their enclosing
-        # class / module, so the unused-export pass can't observe
-        # their real usage and would report guaranteed false
-        # positives. C# auto-properties surface here as ``variable``.
+        # Members are reached through their container, never imported by name.
         if sym.get("kind") in _non_importable_kinds(sym.get("language", "unknown")):
             return False
-        # Types declared inside a ``namespace JSX`` block are
-        # integration points with the JSX transformer — referenced
-        # implicitly by every JSX expression, never imported by
-        # name. The tree-sitter extractor doesn't carry namespace
-        # parentage through to ``parent_name``, so the file-level
-        # ``namespace JSX`` source-scan is the working signal we
-        # have. Names like ``IntrinsicElements`` /
-        # ``ElementChildrenAttribute`` carry the canonical TS
-        # JSX-protocol meaning; anything else inside such a file
-        # is an HTML-attribute / CSS-property shape consumed by
-        # the same machinery.
+        # Types in a ``namespace JSX`` file are used implicitly by JSX expressions.
         if (
             sym.get("kind") in ("interface", "type_alias")
             and str(node) in self._jsx_namespace_files
@@ -1342,22 +1266,17 @@ class DeadCodeAnalyzer:
             return False
         if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
             return False
-        # VS Code extension lifecycle: the host calls ``activate`` /
-        # ``deactivate`` on the ``main`` module (conventionally
-        # ``extension.ts``) — no in-repo importer ever names them.
+        # VS Code calls ``activate``/``deactivate`` on the extension module.
         if sym_name in ("activate", "deactivate") and Path(str(node)).stem == "extension":
             return False
         if _is_compiler_invoked(sym, sym_name):
             return False
         if _is_declaration_only(sym):
             return False
-        # Names that contain a dot are namespace path fragments
-        # (e.g. ``eShop.ClientApp``), not user-visible exports.
+        # Dotted names are namespace path fragments, not exports.
         if "." in sym_name:
             return False
-        # Skip nested defs: a symbol whose start_line falls strictly
-        # inside another function/method's body cannot be imported
-        # by name from outside the enclosing scope.
+        # A def nested in another function's body cannot be imported.
         sym_start = sym.get("start_line", 0)
         return not any(
             start < sym_start < end
@@ -1380,30 +1299,13 @@ class DeadCodeAnalyzer:
         if self._name_matches_dynamic(sym_name, dynamic_patterns):
             return True
 
-        # Same-file type-position usage rescue (TS/JS): the
-        # type-ref strategy stamps ``local_type_uses`` on a file
-        # node with every type name referenced inside its own
-        # source — parameter / field / return / heritage /
-        # generic-constraint / type-alias-RHS positions. An
-        # ``interface DefaultRenderer`` consumed only as a
-        # ``type Renderer = ... : DefaultRenderer`` annotation in
-        # the same module is genuinely live; without this rescue
-        # the whole class of intra-module type protocols (Hono's
-        # ``Get``/``Set`` generics, AWS Lambda's per-adapter
-        # event-shape interfaces) reads as dead exports.
+        # TS/JS: type names referenced in type positions of the same file.
         local_type_uses = node_data.get("local_type_uses")
         if local_type_uses and sym_name in local_type_uses:
             return True
 
-        # Same-file reference rescue (Python): a top-level function
-        # or class consumed only within its own module in a non-call
-        # position carries no graph edge — passed as a first-class
-        # callable argument (``_score_dimension(.., weight_fn, ..)``),
-        # used purely as a type annotation (a Pydantic model that is
-        # only a FastAPI request-body param type), named in a
-        # decorator, or stored as a default/collection value. The
-        # parser stamps these intra-module references on the file node
-        # (see ``ingestion/python_local_refs.py``); treat them as live.
+        # Python: same-module references in non-call positions (callables passed
+        # as values, annotations, decorators), see ``ingestion/python_local_refs.py``.
         local_refs = node_data.get("local_refs")
         return bool(local_refs and sym_name in local_refs)
 
