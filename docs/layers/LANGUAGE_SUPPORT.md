@@ -129,12 +129,43 @@ vocabulary, and every origin has exactly one confidence:
 |--------|:---:|---|
 | `same_file` | 0.95 | Defined in the calling file. A certainty |
 | `self_scope` | 0.95 | `self` / `this`, a method on the caller's own class |
+| `enclosing_class` | 0.95 | A bare call bound to the caller's own class |
+| `receiver_same_file` | 0.93 | The receiver names a class in the calling file |
+| `receiver_typed_same_file` | 0.93 | The receiver's declared type is a class in this file |
+| `receiver_field_same_file` | 0.93 | The receiver is a field whose type is a class in this file |
+| `receiver_framework_same_file` | 0.93 | A framework decorator retyped the receiver to a class in this file |
+| `scoped_name` | 0.93 | The call names its class directly, and that class declares the method |
+| `receiver_extension_same_file` | 0.93 | An extension method in this file extends the receiver's type |
+| `return_type_same_file` | 0.93 | The inner call's declared return type is a class in this file |
+| `same_package` | 0.90 | The target is in a sibling file that needs no import |
 | `import_scoped` | 0.90 | The name was imported from the file that defines it |
+| `receiver_same_package` | 0.90 | The receiver is a class in the same package |
+| `receiver_typed_same_package` | 0.90 | The receiver's declared type is a class in the same package |
+| `receiver_field_same_package` | 0.90 | The receiver is a field whose type is a class in the same package |
+| `receiver_framework_same_package` | 0.90 | A framework decorator retyped the receiver to a class in the same package |
+| `return_type_same_package` | 0.90 | The inner call's declared return type is a class in the same package |
+| `self_inherited` | 0.90 | `self` / `this` names a method declared by one ancestor |
+| `enclosing_inherited` | 0.90 | A bare call names a method declared by one ancestor |
+| `package_alias` | 0.88 | The call is qualified by a package the repo declares |
+| `module_alias` | 0.88 | The receiver is an imported module |
+| `crate_root` | 0.88 | The reference is scoped to its Rust crate |
+| `receiver_import` | 0.88 | The receiver's class was found in an imported file |
 | `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file |
+| `receiver_field_import` | 0.88 | The receiver is a field whose type was found in an imported file |
+| `receiver_framework_import` | 0.88 | A framework decorator retyped the receiver to a class in an imported file |
+| `receiver_extension_import` | 0.88 | An imported file extends the receiver's type with this method |
+| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file |
+| `import_merged` | 0.85 | The name is in one of the imported files, but the file is unattributed |
+| `same_target` | 0.85 | The target is a sibling translation unit in the same build target |
 | `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |
+| `receiver_typed_global` | 0.75 | The inferred type and method pair exists somewhere in the repo |
+| `receiver_field_global` | 0.75 | The field's type and method pair exists somewhere in the repo |
+| `receiver_framework_global` | 0.75 | The framework type and method pair exists somewhere in the repo |
+| `receiver_extension_global` | 0.75 | One extension method in the repo extends this type with this name |
+| `return_type_global` | 0.75 | The returned type and method pair exists somewhere in the repo |
 | `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
 
-That is six of 29. You can filter a graph by confidence, and both
+That is the complete vocabulary of 37. You can filter a graph by confidence, and both
 the MCP tools and the web UI surface which origin produced an edge, so an agent
 reading an execution flow can tell a fact from an inference instead of treating
 both as source.

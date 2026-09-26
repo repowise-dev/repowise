@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -404,6 +405,17 @@ def test_each_resolution_origin_carries_one_confidence() -> None:
         + "\n".join(f"  {o}: {c}" for o, c in sorted(split.items()))
         + "\n\nSplit the origin, or give the strategies one confidence."
     )
+
+
+def test_graph_docs_origin_badge_matches_vocabulary() -> None:
+    from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    graph_doc = (root / "docs/layers/GRAPH.md").read_text(encoding="utf-8")
+    match = re.search(r"badge/(\d+)-resolution_origins-", graph_doc)
+
+    assert match is not None, "GRAPH.md resolution-origin badge is missing"
+    assert int(match.group(1)) == len(RESOLUTION_ORIGIN_VALUES)
 
 
 @pytest.mark.parametrize("phantom", ["has_property", "method_overrides", "dynamic"])
