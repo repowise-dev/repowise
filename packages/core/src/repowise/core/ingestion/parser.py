@@ -431,6 +431,79 @@ def _normalize_php_receiver(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _match_identity(
+    capture_dict: dict,
+    config: LanguageConfig,
+    language: str,
+    src: str,
+    cpp_exports: CppExportTypes,
+    seen: set[tuple[int, str]],
+) -> tuple[Node, list[Node], str, _CppExportType | None, int] | None:
+    """``(def_node, name_nodes, name, export_type, start_line)`` for a new symbol match.
+
+    None drops the match: no definition or name, a recovery match this file
+    does not support, a suppressed export macro, or a duplicate. The
+    ``(start_line, name)`` key is recorded in *seen* here.
+    """
+    def_nodes = capture_dict.get("symbol.def", [])
+    name_nodes = capture_dict.get("symbol.name", [])
+    captured_export_type_nodes = capture_dict.get("symbol.cpp_export_type", [])
+
+    if (
+        captured_export_type_nodes
+        and captured_export_type_nodes[0].id not in cpp_exports.capture_ids
+    ):
+        # The query also sees ordinary ``struct Tag variable;`` forms;
+        # discard only the unsupported recovery match.
+        return None
+
+    if not def_nodes or not name_nodes:
+        return None
+
+    def_node = def_nodes[0]
+    name = _language_symbol_name(
+        language, def_node, config.symbol_name_fn(_node_text(name_nodes[0], src), def_node.type), src
+    )
+    if name is None:
+        return None
+
+    export_type = cpp_exports.defs.get(def_node.id)
+    if export_type is not None and name != export_type.name:
+        # The ordinary struct/class query sees the same specifier, but
+        # tree-sitter calls the export macro its name. Keep only the
+        # dedicated match whose name is the outer declarator.
+        return None
+
+    if def_node.type == "preproc_def" and (
+        _cpp_normalize_identifier(name) in cpp_exports.macro_names
+        or def_node.id in cpp_exports.macro_def_ids
+    ):
+        # Body-form macros are suppressed by name as before #1901;
+        # ambiguous forward declarations suppress only the exact
+        # active definition that made recovery safe.
+        return None
+
+    start_line = def_node.start_point[0] + 1
+    if export_type is not None:
+        start_line = export_type.range_node.start_point[0] + 1
+    dedup_key = (start_line, name)
+    if dedup_key in seen:
+        return None
+    seen.add(dedup_key)
+    return def_node, name_nodes, name, export_type, start_line
+
+
+def _is_declaration(
+    def_node: Node, config: LanguageConfig, language: str, export_type: _CppExportType | None
+) -> bool:
+    node_type = def_node.type
+    if node_type in config.declaration_node_types:
+        return True
+    if export_type is not None:
+        return export_type.is_forward_declaration
+    return _is_bodiless_cpp_type(language, node_type, def_node)
+
+
 _FSHARP_BINDING_NODE_TYPES = ("function_declaration_left", "value_declaration_left")
 _DART_FUNCTION_NODE_TYPES = ("function_signature", "getter_signature", "setter_signature")
 
@@ -1262,51 +1335,10 @@ class ASTParser:
         name checks, so a later duplicate is dropped even if this one is.
         """
         language = file_info.language
-        def_nodes = capture_dict.get("symbol.def", [])
-        name_nodes = capture_dict.get("symbol.name", [])
-        captured_export_type_nodes = capture_dict.get("symbol.cpp_export_type", [])
-
-        if (
-            captured_export_type_nodes
-            and captured_export_type_nodes[0].id not in cpp_exports.capture_ids
-        ):
-            # The query also sees ordinary ``struct Tag variable;`` forms;
-            # discard only the unsupported recovery match.
+        identity = _match_identity(capture_dict, config, language, src, cpp_exports, seen)
+        if identity is None:
             return None
-
-        if not def_nodes or not name_nodes:
-            return None
-
-        def_node = def_nodes[0]
-        name = _language_symbol_name(
-            language, def_node, config.symbol_name_fn(_node_text(name_nodes[0], src), def_node.type), src
-        )
-        if name is None:
-            return None
-
-        export_type = cpp_exports.defs.get(def_node.id)
-        if export_type is not None and name != export_type.name:
-            # The ordinary struct/class query sees the same specifier, but
-            # tree-sitter calls the export macro its name. Keep only the
-            # dedicated match whose name is the outer declarator.
-            return None
-
-        if def_node.type == "preproc_def" and (
-            _cpp_normalize_identifier(name) in cpp_exports.macro_names
-            or def_node.id in cpp_exports.macro_def_ids
-        ):
-            # Body-form macros are suppressed by name as before #1901;
-            # ambiguous forward declarations suppress only the exact
-            # active definition that made recovery safe.
-            return None
-
-        start_line = def_node.start_point[0] + 1
-        if export_type is not None:
-            start_line = export_type.range_node.start_point[0] + 1
-        dedup_key = (start_line, name)
-        if dedup_key in seen:
-            return None
-        seen.add(dedup_key)
+        def_node, name_nodes, name, export_type, start_line = identity
 
         node_type = def_node.type
         kind = self._symbol_kind(def_node, config, language, src, cpp_exports.parent_ids)
@@ -1382,14 +1414,7 @@ class ASTParser:
             language=language,
             parent_name=parent_name,
             is_exported_symbol=is_exported_symbol,
-            is_declaration=(
-                node_type in config.declaration_node_types
-                or (export_type is not None and export_type.is_forward_declaration)
-                or (
-                    export_type is None
-                    and _is_bodiless_cpp_type(language, node_type, def_node)
-                )
-            ),
+            is_declaration=_is_declaration(def_node, config, language, export_type),
         )
         return symbol, def_node
 
