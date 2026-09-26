@@ -2,7 +2,7 @@
 
 Loaded once at MCP lifespan start from ``.repowise-workspace/cross_repo_edges.json``,
 or built with :meth:`CrossRepoEnricher.from_data` from payloads already parsed.
-Provides O(1) in-memory lookups — never blocks or slows MCP queries.
+Lookups are O(1) in memory and never block or slow MCP queries.
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ class CrossRepoEnricher:
         self._package_dep_reverse: dict[str, list[str]] = defaultdict(list)
         self._package_dep_reverse_links: dict[str, list[dict]] = defaultdict(list)
 
-        # Contract indexes (Phase 4)
+        # Contract indexes
         self._contracts: list[dict] = []
         self._contract_links: list[dict] = []
         self._contract_provider_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -120,17 +120,17 @@ class CrossRepoEnricher:
         self._contract_symbol_index: dict[str, list[dict]] = defaultdict(list)
         self._link_provider_symbol_index: dict[str, list[dict]] = defaultdict(list)
 
-        # System graph — the service-granular structure built during workspace
-        # update. Read-only pass-through; views over it live in core/types.
+        # Service-granular system graph from the workspace update. Read-only;
+        # views over it live in core/types.
         self._system_graph: dict | None = None
 
-        # Breaking-change report — provider changes from the most recent update
-        # that break consumers, with the impacted consumer files. Read-only.
+        # Provider changes from the latest update that break consumers, with the
+        # impacted consumer files. Read-only.
         self._breaking_changes: dict | None = None
         self._breaking_changes_by_repo: dict[str, list[dict]] = defaultdict(list)
 
-        # Conformance report — architecture rule violations + dependency cycles
-        # from the most recent update. Read-only pass-through.
+        # Architecture rule violations and dependency cycles from the latest
+        # update. Read-only.
         self._conformance: dict | None = None
 
     @classmethod
@@ -604,24 +604,19 @@ class CrossRepoEnricher:
         """
         repos: set[str] = set()
 
-        # From co-change partners
         for partner in self._co_change_index.get((repo_alias, file_path), []):
             repos.add(partner["repo"])
 
-        # From package deps: repos that depend on this repo
         for dep_repo in self._package_dep_reverse.get(repo_alias, []):
             repos.add(dep_repo)
 
-        # From contract links: repos that consume APIs this file provides
         for link in self._contract_provider_index.get((repo_alias, file_path), []):
             repos.add(link["consumer_repo"])
 
         repos.discard(repo_alias)
         return sorted(repos)
 
-    # ------------------------------------------------------------------
-    # Contract queries (Phase 4)
-    # ------------------------------------------------------------------
+    # Contract queries
 
     def get_contract_links_as_provider(self, repo_alias: str, file_path: str) -> list[dict]:
         """Contract links where this file is the provider (has consumers)."""
@@ -640,7 +635,7 @@ class CrossRepoEnricher:
         return self._contract_symbol_index.get(symbol_id, [])
 
     def get_contract_links_by_provider_symbol(self, symbol_id: str) -> list[dict]:
-        """Contract links whose provider is this symbol — the consumers it has."""
+        """Contract links whose provider is this symbol, i.e. its consumers."""
         return self._link_provider_symbol_index.get(symbol_id, [])
 
     def get_contract_summary(self) -> dict:
