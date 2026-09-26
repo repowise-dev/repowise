@@ -1,9 +1,8 @@
-"""Branches of /api/repos the per-feature test files leave unexercised.
+"""/api/repos branches the per-feature tests leave unexercised.
 
-Characterization tests: each pins what the router answers today on a path that
-is easy to break when the module is reorganised (workspace fan-out, state.json
-fallbacks, freshness when one side is unknown, the job-launch failure paths,
-the estimate and preflight edges, and the file-content guards).
+Pins current answers on the easily broken paths: workspace fan-out, state.json
+fallbacks, one-sided freshness, job-launch failures, estimate and preflight
+edges, and the file-content guards.
 """
 
 from __future__ import annotations
