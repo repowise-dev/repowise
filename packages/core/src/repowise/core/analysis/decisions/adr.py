@@ -1,8 +1,4 @@
-"""Architecture Decision Record discovery and section parsing.
-
-ADRs follow the Nygard/MADR templates, so a structured file is parsed
-without a model; see :meth:`DecisionExtractor.discover_adrs`.
-"""
+"""Architecture Decision Record discovery and Nygard/MADR section parsing."""
 
 from __future__ import annotations
 

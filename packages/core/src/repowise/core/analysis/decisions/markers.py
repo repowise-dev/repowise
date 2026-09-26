@@ -5,16 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# The keyword is deliberately case-SENSITIVE. These are annotation
-# conventions, written in caps like TODO:/FIXME:/HACK:, and matching them
-# case-insensitively turns ordinary prose into architectural decisions. Two
-# real examples from this repo, both of which reached the store as `active`
-# records: a wrapped sentence whose continuation line began "# decision:
-# namespace, batched like the pages", and a test's "# Rejected: nothing to
-# extract." Across 3,860 tracked files those were the ONLY two matches — a
-# 100% false-positive rate — because no genuine marker was written in lower
-# case. A missed marker costs one record; a false positive publishes a
-# sentence fragment as a decision governing every file it touches.
+# Case-sensitive on purpose: markers are caps conventions like TODO:, and a
+# lowercase match turns ordinary prose ("# decision: ...") into a decision.
 MARKER_RE = re.compile(
     r"^\s*(?:#|//|--|/\*|\*)\s*"
     r"(?P<keyword>WHY|DECISION|TRADEOFF|ADR|RATIONALE|REJECTED)"
