@@ -664,6 +664,18 @@ class PerTypeGenerationMixin:
                 tokens=ungrounded[:20],
             )
             response = replace(response, content=cleaned)
+        if spec.validate_generated_content and not spec.validate_generated_content(
+            ctx, response.content
+        ):
+            error = ValueError(f"incomplete generated content for onboarding slot {spec.slot}")
+            log.warning(
+                "onboarding.generated_content_rejected",
+                slot=spec.slot,
+                reason=str(error),
+            )
+            stub = self._stub_onboarding_page(spec, ctx, target)
+            page = _stub_fallback(stub, "onboarding", error)
+            return self._attach_source_evidence(page, page_key, evidence)
         page = self._build_generated_page(
             "onboarding",
             target,
