@@ -15,6 +15,7 @@ import networkx as nx
 import structlog
 
 from ..cohesion import SAME_PACKAGE_HINT, UNIT_FANOUT_LANGUAGES
+from ..languages.python_modules import dotted_module_for
 from ..models import ParsedFile
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
@@ -302,6 +303,30 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         )
         self._graph.add_edge(path, module_sym_id, edge_type="defines")
 
+    def _qualify_python_symbols(self) -> None:
+        """Rename Python symbols to their importable dotted module.
+
+        The parser sees one file, so it dots the raw repository path and a
+        src-layout symbol carries the layout prefix
+        (``packages.core.src.pkg.mod.f``). The importable name needs every
+        repository path, which only exists here. A file with no derivable
+        module keeps the path form. Derived from the path each time, so
+        re-running it, or running it on a cached parse, gives the same names.
+        ``Symbol.id`` is untouched.
+        """
+        path_set = set(self._parsed_files)
+        for path, parsed in self._parsed_files.items():
+            if parsed.file_info.language != "python":
+                continue
+            module = dotted_module_for(path, path_set)
+            if module is None:
+                module = PurePosixPath(path).with_suffix("").as_posix().replace("/", ".")
+            for sym in parsed.symbols:
+                prefix = f"{module}.{sym.parent_name}" if sym.parent_name else module
+                sym.qualified_name = f"{prefix}.{sym.name}"
+                if sym.id in self._graph:
+                    self._graph.nodes[sym.id]["qualified_name"] = sym.qualified_name
+
     def build(self, progress: Any | None = None) -> nx.DiGraph:
         """Resolve imports and calls, add edges. Returns the finalized graph.
 
@@ -311,6 +336,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         instead of a single opaque "0/1" bar over the whole build.
         """
         self._invalidate_metric_caches()
+        self._qualify_python_symbols()
 
         # Clear import/call edges but keep structural edges (defines, has_method)
         edges_to_remove = [
