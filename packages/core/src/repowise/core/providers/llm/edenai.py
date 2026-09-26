@@ -23,31 +23,31 @@ Set the EU endpoint for data residency:
 
 from __future__ import annotations
 
-import contextlib
 import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
-from openai import RateLimitError as _OpenAIRateLimitError
 from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
     ChatStreamEvent,
-    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
-    RateLimitError,
     ensure_reasoning_supported,
-    fallback_model_option,
-    parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    record_generation_cost,
+)
+from repowise.core.providers.llm.openai_compat import (
+    completion_to_response,
+    listed_model_options,
+    stream_openai_chat,
+    translate_openai_errors,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -112,57 +112,25 @@ def _edenai_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
     return {}
 
 
+def _edenai_notes(model_id: str, reasoning_modes: tuple[ReasoningMode, ...]) -> str:
+    if len(reasoning_modes) > 1:
+        return "reasoning_effort forwarded to the underlying OpenAI model"
+    return ""
+
+
 def _edenai_model_options(
     api_key: str,
     base_url: str,
     fallback_model: str,
 ) -> tuple[ProviderModelOption, ...]:
-    fallback = fallback_model_option(
+    return listed_model_options(
+        api_key,
+        base_url,
         fallback_model,
-        reasoning_modes=("auto", *_edenai_supported_reasoning_modes(fallback_model)),
+        reasoning_modes_for=_edenai_supported_reasoning_modes,
+        notes_for=_edenai_notes,
+        sort=True,
     )
-    try:
-        import httpx
-
-        response = httpx.get(
-            f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=5.0,
-        )
-        response.raise_for_status()
-        data = response.json().get("data", [])
-    except Exception:
-        return (fallback,)
-
-    if not isinstance(data, list):
-        return (fallback,)
-
-    options: list[ProviderModelOption] = []
-    for raw in data:
-        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
-            continue
-        model_id = raw["id"]
-        reasoning_modes = ("auto", *_edenai_supported_reasoning_modes(model_id))
-        options.append(
-            ProviderModelOption(
-                model=model_id,
-                label=model_id,
-                reasoning_modes=reasoning_modes,
-                recommended=model_id == fallback_model,
-                source="api",
-                notes=(
-                    "reasoning_effort forwarded to the underlying OpenAI model"
-                    if len(reasoning_modes) > 1
-                    else ""
-                ),
-            )
-        )
-
-    if not options:
-        return (fallback,)
-
-    options.sort(key=lambda option: option.model)
-    return tuple(options)
 
 
 class EdenAIProvider(BaseProvider):
@@ -269,42 +237,20 @@ class EdenAIProvider(BaseProvider):
         request_id: str | None,
         reasoning: ReasoningMode,
     ) -> GeneratedResponse:
-        try:
-            kwargs: dict[str, Any] = {
-                "model": self._model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            }
-            kwargs.update(_edenai_reasoning_kwargs(reasoning))
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        kwargs.update(_edenai_reasoning_kwargs(reasoning))
+        with translate_openai_errors("edenai", include_api_error=False):
             response = await self._client.chat.completions.create(**kwargs)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "edenai",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("edenai", str(exc), status_code=exc.status_code) from exc
 
-        usage = response.usage
-        result = GeneratedResponse(
-            content=response.choices[0].message.content or "",
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-            cached_tokens=0,
-            usage={
-                "prompt_tokens": usage.prompt_tokens if usage else 0,
-                "completion_tokens": usage.completion_tokens if usage else 0,
-                "total_tokens": usage.total_tokens if usage else 0,
-            },
-        )
+        result = completion_to_response(response, include_stop_reason=False)
         log.debug(
             "edenai.generate.done",
             input_tokens=result.input_tokens,
@@ -312,21 +258,9 @@ class EdenAIProvider(BaseProvider):
             request_id=request_id,
         )
 
-        if self._cost_tracker is not None:
-            # Await the cost record inline rather than spawning a detached task,
-            # a fire-and-forget create_task can still be flushing its aiosqlite
-            # write when the event loop is torn down, surfacing as a noisy
-            # "Event loop is closed" traceback. record() swallows its own
-            # persistence errors, so generation is unaffected.
-            with contextlib.suppress(Exception):
-                await self._cost_tracker.record(
-                    model=self._model,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    operation="doc_generation",
-                    file_path=None,
-                )
-
+        await record_generation_cost(
+            self._cost_tracker, model=self._model, result=result, operation="doc_generation"
+        )
         return result
 
     # --- ChatProvider protocol implementation ---
@@ -341,8 +275,6 @@ class EdenAIProvider(BaseProvider):
         request_id: str | None = None,
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        import json as _json
-
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -354,89 +286,5 @@ class EdenAIProvider(BaseProvider):
         if tools:
             kwargs["tools"] = tools
 
-        try:
-            stream = await self._client.chat.completions.create(**kwargs)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "edenai",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("edenai", str(exc), status_code=exc.status_code) from exc
-
-        # Track in-progress tool calls (OpenAI-compatible streaming)
-        tool_calls_acc: dict[int, dict[str, Any]] = {}
-
-        try:
-            async for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice:
-                    if chunk.usage:
-                        yield ChatStreamEvent(
-                            type="usage",
-                            input_tokens=chunk.usage.prompt_tokens or 0,
-                            output_tokens=chunk.usage.completion_tokens or 0,
-                        )
-                    continue
-
-                delta = choice.delta
-                finish = choice.finish_reason
-
-                # Text content
-                if delta and delta.content:
-                    yield ChatStreamEvent(type="text_delta", text=delta.content)
-
-                # Tool call fragments
-                if delta and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id": tc_delta.id or "",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        acc = tool_calls_acc[idx]
-                        if tc_delta.id:
-                            acc["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                acc["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                acc["arguments"] += tc_delta.function.arguments
-
-                if finish:
-                    # Emit accumulated tool calls
-                    for idx in sorted(tool_calls_acc.keys()):
-                        acc = tool_calls_acc[idx]
-                        try:
-                            args = _json.loads(acc["arguments"]) if acc["arguments"] else {}
-                        except Exception:
-                            args = {}
-                        yield ChatStreamEvent(
-                            type="tool_start",
-                            tool_call=ChatToolCall(
-                                id=acc["id"],
-                                name=acc["name"],
-                                arguments=args,
-                            ),
-                        )
-                    tool_calls_acc.clear()
-
-                    stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
-                    yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "edenai",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("edenai", str(exc), status_code=exc.status_code) from exc
+        async for event in stream_openai_chat(self._client, "edenai", kwargs, include_api_error=False):
+            yield event

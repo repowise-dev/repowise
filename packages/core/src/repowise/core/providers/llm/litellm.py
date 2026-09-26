@@ -19,7 +19,6 @@ Reference: https://docs.litellm.ai/docs/providers
 
 from __future__ import annotations
 
-import contextlib
 import os
 from collections.abc import AsyncIterator, Mapping
 from typing import TYPE_CHECKING, Any
@@ -30,22 +29,22 @@ from tenacity import RetryError, retry
 from repowise.core.providers.llm.base import (
     BaseProvider,
     ChatStreamEvent,
-    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
-    RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
     is_temperature_rejection,
     normalize_stop_reason,
-    parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    rate_limit_error_from,
+    record_generation_cost,
     remember_temperature_rejection,
     temperature_kwargs,
 )
+from repowise.core.providers.llm.openai_compat import iter_chat_stream_events
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -401,34 +400,13 @@ class LiteLLMProvider(BaseProvider):
             "max_tokens": max_tokens,
             **temperature_kwargs(self._model, temperature),
         }
-        if self._api_key:
-            call_kwargs["api_key"] = self._api_key
-        if self._api_base:
-            call_kwargs["api_base"] = self._api_base
+        self._add_endpoint_kwargs(call_kwargs)
         call_kwargs.update(_litellm_reasoning_kwargs(reasoning))
 
         try:
-            try:
-                response = await litellm.acompletion(**call_kwargs)
-            except litellm.APIError as exc:
-                # LiteLLM proxies arbitrary vendors, same as OpenRouter: the
-                # models that reject `temperature` cannot be enumerated up
-                # front, so learn from the rejection and retry once without it.
-                if "temperature" not in call_kwargs or not is_temperature_rejection(exc):
-                    raise
-                remember_temperature_rejection(self._model)
-                log.debug("litellm.temperature.unsupported", model=self._model)
-                call_kwargs.pop("temperature")
-                response = await litellm.acompletion(**call_kwargs)
+            response = await self._acompletion(litellm, call_kwargs)
         except litellm.RateLimitError as exc:
-            raise RateLimitError(
-                "litellm",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
+            raise rate_limit_error_from("litellm", exc) from exc
         except litellm.APIError as exc:
             raise ProviderError("litellm", str(exc)) from exc
         except Exception as exc:
@@ -454,23 +432,32 @@ class LiteLLMProvider(BaseProvider):
             request_id=request_id,
         )
 
-        if self._cost_tracker is not None:
-            # Await the cost record inline rather than spawning a detached
-            # task. A fire-and-forget create_task can still be flushing its
-            # aiosqlite write when the event loop is torn down (e.g. the
-            # asyncio.run teardown after doc generation), which surfaces as a
-            # noisy "Event loop is closed" worker-thread traceback. record()
-            # swallows its own persistence errors, so generation is unaffected.
-            with contextlib.suppress(Exception):
-                await self._cost_tracker.record(
-                    model=self._model,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    operation=self._cost_tracker.operation,
-                    file_path=None,
-                )
-
+        await record_generation_cost(self._cost_tracker, model=self._model, result=result)
         return result
+
+    def _add_endpoint_kwargs(self, call_kwargs: dict[str, Any]) -> None:
+        """Route the call with the configured key and base URL, when set."""
+        if self._api_key:
+            call_kwargs["api_key"] = self._api_key
+        if self._api_base:
+            call_kwargs["api_base"] = self._api_base
+
+    async def _acompletion(self, litellm: Any, call_kwargs: dict[str, Any]) -> Any:
+        """Complete, retrying once without a rejected ``temperature``.
+
+        LiteLLM proxies arbitrary vendors, same as OpenRouter: the models that
+        reject ``temperature`` cannot be enumerated up front, so learn from the
+        rejection and retry once without it.
+        """
+        try:
+            return await litellm.acompletion(**call_kwargs)
+        except litellm.APIError as exc:
+            if "temperature" not in call_kwargs or not is_temperature_rejection(exc):
+                raise
+            remember_temperature_rejection(self._model)
+            log.debug("litellm.temperature.unsupported", model=self._model)
+            call_kwargs.pop("temperature")
+            return await litellm.acompletion(**call_kwargs)
 
     # --- ChatProvider protocol implementation ---
 
@@ -484,8 +471,6 @@ class LiteLLMProvider(BaseProvider):
         request_id: str | None = None,
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        import json as _json
-
         import litellm  # type: ignore[import-untyped]
 
         litellm.set_verbose = False
@@ -501,80 +486,19 @@ class LiteLLMProvider(BaseProvider):
         }
         if tools:
             call_kwargs["tools"] = tools
-        if self._api_key:
-            call_kwargs["api_key"] = self._api_key
-        if self._api_base:
-            call_kwargs["api_base"] = self._api_base
+        self._add_endpoint_kwargs(call_kwargs)
 
         try:
             stream = await litellm.acompletion(**call_kwargs)
         except litellm.RateLimitError as exc:
-            raise RateLimitError(
-                "litellm",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
+            raise rate_limit_error_from("litellm", exc) from exc
         except litellm.APIError as exc:
             raise ProviderError("litellm", str(exc)) from exc
 
-        tool_calls_acc: dict[int, dict[str, Any]] = {}
-
         try:
-            async for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice:
-                    continue
-
-                delta = choice.delta
-                finish = choice.finish_reason
-
-                if delta and getattr(delta, "content", None):
-                    yield ChatStreamEvent(type="text_delta", text=delta.content)
-
-                if delta and getattr(delta, "tool_calls", None):
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id": getattr(tc_delta, "id", "") or "",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        acc = tool_calls_acc[idx]
-                        if getattr(tc_delta, "id", None):
-                            acc["id"] = tc_delta.id
-                        fn = getattr(tc_delta, "function", None)
-                        if fn:
-                            if getattr(fn, "name", None):
-                                acc["name"] = fn.name
-                            if getattr(fn, "arguments", None):
-                                acc["arguments"] += fn.arguments
-
-                if finish:
-                    for idx in sorted(tool_calls_acc.keys()):
-                        acc = tool_calls_acc[idx]
-                        try:
-                            args = _json.loads(acc["arguments"]) if acc["arguments"] else {}
-                        except Exception:
-                            args = {}
-                        yield ChatStreamEvent(
-                            type="tool_start",
-                            tool_call=ChatToolCall(id=acc["id"], name=acc["name"], arguments=args),
-                        )
-                    tool_calls_acc.clear()
-                    stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
-                    yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
+            async for event in iter_chat_stream_events(stream, emit_usage=False):
+                yield event
         except litellm.RateLimitError as exc:
-            raise RateLimitError(
-                "litellm",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
+            raise rate_limit_error_from("litellm", exc) from exc
         except Exception as exc:
             raise ProviderError("litellm", f"{type(exc).__name__}: {exc}") from exc

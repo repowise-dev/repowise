@@ -12,33 +12,31 @@ Models:
 
 from __future__ import annotations
 
-import contextlib
 import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from openai import APIError as _OpenAIAPIError
-from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
-from openai import RateLimitError as _OpenAIRateLimitError
 from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
     ChatStreamEvent,
-    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
-    RateLimitError,
     ensure_reasoning_supported,
-    fallback_model_option,
-    normalize_stop_reason,
-    parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    record_generation_cost,
+)
+from repowise.core.providers.llm.openai_compat import (
+    completion_to_response,
+    listed_model_options,
+    stream_openai_chat,
+    translate_openai_errors,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -106,56 +104,24 @@ def _deepseek_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
     }
 
 
+def _deepseek_notes(model_id: str, reasoning_modes: tuple[ReasoningMode, ...]) -> str:
+    if len(reasoning_modes) > 1:
+        return "thinking toggle and graded effort documented by DeepSeek"
+    return ""
+
+
 def _deepseek_model_options(
     api_key: str,
     base_url: str,
     fallback_model: str,
 ) -> tuple[ProviderModelOption, ...]:
-    fallback = fallback_model_option(
+    return listed_model_options(
+        api_key,
+        base_url,
         fallback_model,
-        reasoning_modes=("auto", *_deepseek_supported_reasoning_modes(fallback_model)),
+        reasoning_modes_for=_deepseek_supported_reasoning_modes,
+        notes_for=_deepseek_notes,
     )
-    try:
-        import httpx
-
-        response = httpx.get(
-            f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=5.0,
-        )
-        response.raise_for_status()
-        data = response.json().get("data", [])
-    except Exception:
-        return (fallback,)
-
-    if not isinstance(data, list):
-        return (fallback,)
-
-    options: list[ProviderModelOption] = []
-    for raw in data:
-        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
-            continue
-        model_id = raw["id"]
-        reasoning_modes = ("auto", *_deepseek_supported_reasoning_modes(model_id))
-        options.append(
-            ProviderModelOption(
-                model=model_id,
-                label=model_id,
-                reasoning_modes=reasoning_modes,
-                recommended=model_id == fallback_model,
-                source="api",
-                notes=(
-                    "thinking toggle and graded effort documented by DeepSeek"
-                    if len(reasoning_modes) > 1
-                    else ""
-                ),
-            )
-        )
-
-    if not options:
-        return (fallback,)
-
-    return tuple(options)
 
 
 class DeepSeekProvider(BaseProvider):
@@ -259,50 +225,20 @@ class DeepSeekProvider(BaseProvider):
         request_id: str | None,
         reasoning: ReasoningMode,
     ) -> GeneratedResponse:
-        try:
-            kwargs: dict[str, Any] = {
-                "model": self._model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            }
-            kwargs.update(_deepseek_reasoning_kwargs(reasoning))
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        kwargs.update(_deepseek_reasoning_kwargs(reasoning))
+        with translate_openai_errors("deepseek"):
             response = await self._client.chat.completions.create(**kwargs)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "deepseek",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("deepseek", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "deepseek", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
 
-        usage = response.usage
-        choice = response.choices[0]
-        stop_reason, provider_stop_reason = normalize_stop_reason(choice.finish_reason)
-        result = GeneratedResponse(
-            content=choice.message.content or "",
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-            cached_tokens=0,
-            stop_reason=stop_reason,
-            provider_stop_reason=provider_stop_reason,
-            usage={
-                "prompt_tokens": usage.prompt_tokens if usage else 0,
-                "completion_tokens": usage.completion_tokens if usage else 0,
-                "total_tokens": usage.total_tokens if usage else 0,
-            },
-        )
+        result = completion_to_response(response)
         log.debug(
             "deepseek.generate.done",
             input_tokens=result.input_tokens,
@@ -310,22 +246,7 @@ class DeepSeekProvider(BaseProvider):
             request_id=request_id,
         )
 
-        if self._cost_tracker is not None:
-            # Await the cost record inline rather than spawning a detached
-            # task. A fire-and-forget create_task can still be flushing its
-            # aiosqlite write when the event loop is torn down (e.g. the
-            # asyncio.run teardown after doc generation), which surfaces as a
-            # noisy "Event loop is closed" worker-thread traceback. record()
-            # swallows its own persistence errors, so generation is unaffected.
-            with contextlib.suppress(Exception):
-                await self._cost_tracker.record(
-                    model=self._model,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    operation=self._cost_tracker.operation,
-                    file_path=None,
-                )
-
+        await record_generation_cost(self._cost_tracker, model=self._model, result=result)
         return result
 
     async def stream_chat(
@@ -338,8 +259,6 @@ class DeepSeekProvider(BaseProvider):
         request_id: str | None = None,
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        import json as _json
-
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -357,93 +276,5 @@ class DeepSeekProvider(BaseProvider):
         if tools:
             kwargs["tools"] = tools
 
-        try:
-            stream = await self._client.chat.completions.create(**kwargs)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "deepseek",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("deepseek", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "deepseek", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
-
-        tool_calls_acc: dict[int, dict[str, Any]] = {}
-
-        try:
-            async for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice:
-                    if chunk.usage:
-                        yield ChatStreamEvent(
-                            type="usage",
-                            input_tokens=chunk.usage.prompt_tokens or 0,
-                            output_tokens=chunk.usage.completion_tokens or 0,
-                        )
-                    continue
-
-                delta = choice.delta
-                finish = choice.finish_reason
-
-                if delta and delta.content:
-                    yield ChatStreamEvent(type="text_delta", text=delta.content)
-
-                if delta and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id": tc_delta.id or "",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        acc = tool_calls_acc[idx]
-                        if tc_delta.id:
-                            acc["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                acc["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                acc["arguments"] += tc_delta.function.arguments
-
-                if finish:
-                    for idx in sorted(tool_calls_acc.keys()):
-                        acc = tool_calls_acc[idx]
-                        try:
-                            args = _json.loads(acc["arguments"]) if acc["arguments"] else {}
-                        except Exception:
-                            args = {}
-                        yield ChatStreamEvent(
-                            type="tool_start",
-                            tool_call=ChatToolCall(
-                                id=acc["id"],
-                                name=acc["name"],
-                                arguments=args,
-                            ),
-                        )
-                    tool_calls_acc.clear()
-
-                    stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
-                    yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "deepseek",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("deepseek", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "deepseek", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
+        async for event in stream_openai_chat(self._client, "deepseek", kwargs):
+            yield event
