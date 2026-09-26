@@ -118,30 +118,6 @@ def _render_defect_accuracy(result: Any) -> None:
     console.print()
 
 
-def _render_resume_decision_notice(
-    result: Any,
-    n_decisions: int,
-    effective_index_only: bool,
-) -> None:
-    """Print an advisory note when a resumed run reused pages and has 0 decisions.
-
-    Decision blocks are extracted during fresh page generation. When --resume
-    reuses prior pages by hash match, the model call is skipped and inline
-    harvesting does not run on the stripped stored pages. If the resulting
-    decision count is 0, alert the user so they know to re-run with --force
-    rather than concluding decision extraction is broken.
-    """
-    if effective_index_only:
-        return
-    preserved = getattr(result, "preserved_page_ids", None)
-    if preserved and n_decisions == 0:
-        console.print(
-            "  [dim]Note: Resumed generation reused existing pages without re-harvesting decisions. "
-            "Re-run with [bold]repowise init --force[/bold] to regenerate and populate decisions.[/dim]"
-        )
-        console.print()
-
-
 def show_completion(
     *,
     repo_path: Any,
@@ -345,7 +321,6 @@ def show_completion(
         )
         console.print()
         _render_defect_accuracy(result)
-        _render_resume_decision_notice(result, _n_decisions, effective_index_only)
         # A concise, dynamic MCP note (who is connected, how others connect)
         # replaces the old wall of manual per-client config: init already wrote
         # the Claude Code / VS Code registrations and repo `.mcp.json`.
