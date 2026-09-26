@@ -1,0 +1,129 @@
+import { bulletList, explorationCloser, FLAVOR_PREAMBLE, type AiPromptFlavor } from "./shared";
+
+// ─────────────────────────────────────────────────────────────────────
+// Coverage prompt
+// ─────────────────────────────────────────────────────────────────────
+
+export interface CoverageFilePromptInput {
+  file_path: string;
+  line_coverage_pct: number | null;
+  branch_coverage_pct?: number | null;
+  total_coverable_lines?: number;
+  covered_lines?: number[];
+  source_format?: string;
+  health_score?: number | null;
+  nloc?: number | null;
+  module?: string | null;
+}
+
+export interface BuildCoveragePromptOptions {
+  row: CoverageFilePromptInput;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+function uncoveredRanges(
+  covered: number[] | undefined,
+  total: number | undefined,
+): string {
+  if (!covered || !total || covered.length === 0) return "";
+  const set = new Set(covered);
+  const ranges: [number, number][] = [];
+  let start: number | null = null;
+  for (let i = 1; i <= total; i++) {
+    if (!set.has(i)) {
+      if (start === null) start = i;
+    } else if (start !== null) {
+      ranges.push([start, i - 1]);
+      start = null;
+    }
+  }
+  if (start !== null) ranges.push([start, total]);
+  if (ranges.length === 0) return "";
+  // Cap to ~20 ranges so the prompt stays readable.
+  const shown = ranges.slice(0, 20);
+  const more = ranges.length - shown.length;
+  return (
+    shown.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(", ") +
+    (more > 0 ? `, … (+${more} more ranges)` : "")
+  );
+}
+
+export function buildCoverageAiPrompt({
+  row,
+  flavor = "generic",
+  repoName,
+}: BuildCoveragePromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const linePct = row.line_coverage_pct;
+  const branchPct = row.branch_coverage_pct;
+  const ranges = uncoveredRanges(row.covered_lines, row.total_coverable_lines);
+
+  const constraintList = [
+    "**Read first, write second.** Read the source file, the existing tests directory, and at least one nearby test file so you adopt the project's conventions instead of inventing your own.",
+    "Use the project's existing test framework, fixtures, and naming conventions — don't introduce a new framework.",
+    "Cover the listed uncovered branches/lines explicitly; do not just pad coverage with trivial cases.",
+    "Each new test must have a clear behavior name (`should …` / `test_*_when_*`), one logical assertion focus, and no shared mutable state with other tests.",
+    "Mock external IO (network, filesystem outside fixtures, time, env) — but do not mock the file under test.",
+    "If you discover a real bug while writing the tests, add a failing test that documents it and call it out; do not silently fix.",
+    "Trust the real source code over the coverage numbers in this prompt. If a line marked uncovered turns out to be unreachable or dead, say so and move on.",
+  ];
+
+  const completionContract = [
+    "1. A short plan: which functions / branches you'll cover and in what order (3–6 bullets).",
+    "2. The new tests, in the same test file location convention the project already uses.",
+    "3. A coverage estimate: which uncovered ranges your new tests now hit, and which remain.",
+    "4. A list of any bugs or surprising behavior you found while writing the tests.",
+  ];
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Target file${repoLine}`,
+    "",
+    `\`${row.file_path}\``,
+    "",
+    "## Current coverage state",
+    "",
+    bulletList([
+      linePct == null
+        ? "Line coverage: **no data** — file is not covered by any test run."
+        : `Line coverage: **${linePct.toFixed(1)}%** (lower is worse)`,
+      branchPct == null
+        ? null
+        : `Branch coverage: ${branchPct.toFixed(1)}%`,
+      row.total_coverable_lines
+        ? `Coverable lines: ${row.total_coverable_lines}`
+        : null,
+      row.nloc ? `File size: ${row.nloc} NLOC` : null,
+      row.health_score != null
+        ? `Current health score: ${row.health_score.toFixed(1)}/10 — stronger defect indicators make focused tests especially valuable.`
+        : null,
+      row.module ? `Module: \`${row.module}\`` : null,
+      row.source_format ? `Coverage source: ${row.source_format.toUpperCase()}` : null,
+    ]),
+    "",
+    ranges
+      ? ["## Uncovered line ranges", "", "```", ranges, "```", ""].join("\n")
+      : "",
+    "## Your task",
+    "",
+    bulletList([
+      "Add tests that cover the uncovered lines/branches listed above, prioritizing the riskiest code paths.",
+      "If the file has no tests at all yet, create the test file in the project's standard location and seed it with the most important happy-path + edge cases first.",
+      "Aim for a meaningful coverage jump (≥ 70% line coverage as a target), but quality of assertions matters more than the number.",
+    ]),
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    explorationCloser(flavor, row.file_path, "coverage"),
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
