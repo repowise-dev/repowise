@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
@@ -173,9 +175,41 @@ def _register_config_commands() -> None:
 _register_config_commands()
 
 
+@asynccontextmanager
+async def _open_store(repo_path: Path):
+    """Yield a session factory on the repo's store; the engine is disposed after.
+
+    A factory rather than a session, because ``add`` embeds after its session
+    has committed but while the engine is still open.
+    """
+    from repowise.core.persistence import create_engine, create_session_factory, init_db
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        await init_db(engine)
+        yield create_session_factory(engine)
+    finally:
+        await engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # decision add
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class _DecisionFields:
+    """The answers ``add`` records, whether they came from flags or prompts."""
+
+    kind: str
+    title: str | None
+    context: str | None
+    decision: str | None
+    rationale: str | None
+    alternatives: list[str]
+    consequences: list[str]
+    affected_files: list[str]
+    tags: list[str]
 
 
 @decision_group.command("add")
@@ -235,155 +269,36 @@ def decision_add(
     inferring one from a diff has not, and the store should be able to tell
     them apart. Promote with `repowise decision confirm <id>`.
     """
-    # Flags and prompts are the two paths, and a half-filled command line is
-    # neither: falling through to the prompts would hang a caller that has no
-    # stdin, which is the failure this command exists to stop having.
     non_interactive = bool(title and decision_text)
     if not non_interactive:
-        flagged = any((title, context, decision_text, rationale)) or any(
-            (alternatives, consequences, affected, tags, evidence_commits)
+        _refuse_partial_flags(
+            fmt,
+            title, context, decision_text, rationale,
+            alternatives, consequences, affected, tags, evidence_commits,
         )
-        if flagged or fmt == "json":
-            _ta.emit_error(
-                {
-                    "error": "--title and --decision are both required to add a "
-                    "decision without prompting.",
-                    "guidance": "Run `repowise decision add` with no flags to be "
-                    "prompted for each field instead.",
-                },
-                fmt,
-            )
 
     repo_path = _resolve_decision_repo(path, fmt)
     ensure_repowise_dir(repo_path)
 
     status = "proposed" if non_interactive else "active"
-    alternatives_list = list(alternatives)
-    consequences_list = list(consequences)
-    affected_files = list(affected)
-    tags_list = list(tags)
-
-    if not non_interactive:
-        console.print("[bold]Add Decision[/bold]\n")
-
-        kind = click.prompt(
-            "Kind (architectural = about the code, agreement = about how we work)",
-            type=click.Choice(DECISION_KINDS),
-            # The flag, so `--kind agreement` alone is not silently discarded
-            # by falling through to the prompts.
-            default=kind,
+    if non_interactive:
+        fields = _DecisionFields(
+            kind=kind,
+            title=title,
+            context=context,
+            decision=decision_text,
+            rationale=rationale,
+            alternatives=list(alternatives),
+            consequences=list(consequences),
+            affected_files=list(affected),
+            tags=list(tags),
         )
-        title = click.prompt("Decision title (short)")
-        context = click.prompt("Context (what forced this decision?)", default="")
-        decision_text = click.prompt("Decision (what was chosen?)")
-        rationale = click.prompt("Rationale (why?)", default="")
+    else:
+        fields = _prompt_decision_fields(kind)
 
-        alternatives_raw = click.prompt(
-            "Rejected alternatives (comma-separated, optional)", default=""
-        )
-        alternatives_list = [a.strip() for a in alternatives_raw.split(",") if a.strip()]
-
-        consequences_raw = click.prompt(
-            "Tradeoffs/consequences (comma-separated, optional)", default=""
-        )
-        consequences_list = [c.strip() for c in consequences_raw.split(",") if c.strip()]
-
-        if kind == ARCHITECTURAL_KIND:
-            # An agreement names no file by definition, so asking is asking a
-            # question whose only right answer is blank.
-            affected_raw = click.prompt(
-                "Affected files/modules (comma-separated; required to make it govern)",
-                default="",
-            )
-            affected_files = [f.strip() for f in affected_raw.split(",") if f.strip()]
-
-        tags_raw = click.prompt(
-            "Tags (comma-separated: auth, database, api, performance, security, infra, testing)",
-            default="",
-        )
-        tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
-
-    async def _persist() -> str:
-        from repowise.core.persistence import (
-            create_engine,
-            create_session_factory,
-            get_session,
-            init_db,
-            upsert_decision,
-            upsert_repository,
-        )
-
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-
-        async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
-            rec = await upsert_decision(
-                session,
-                repository_id=repo.id,
-                title=title,
-                status=status,
-                context=context or "",
-                decision=decision_text,
-                rationale=rationale or "",
-                alternatives=alternatives_list,
-                consequences=consequences_list,
-                affected_files=affected_files,
-                # None derives them from the files; [] would clear them.
-                affected_modules=None,
-                tags=tags_list,
-                # What the capture hook suppresses on: without it, the hook
-                # asks again next session for a commit already recorded.
-                evidence_commits=list(evidence_commits),
-                kind=kind,
-                source="cli",
-                # No confidence: upsert_decision scores a manual entry.
-            )
-            decision_id = rec.id
-            # An architectural decision that names nothing cannot be checked
-            # against the code and cannot reach the agent editing a governed
-            # file, so it cannot be accepted. Keeping it as a candidate is
-            # better than discarding eight answered questions; ``confirm
-            # --scope`` finishes the job. An agreement is the other noun: it
-            # names no file *because* it is not about one, its acceptance row
-            # records the repository as its scope, and SessionStart is how it
-            # reaches an agent. Refusing it for the files it is defined not to
-            # have would leave it unacceptable, which is the defect the split
-            # exists to fix.
-            if status == "active" and (affected_files or kind == AGREEMENT_KIND):
-                # Answering the prompts is the acceptance; recording it as one
-                # is what makes this record indistinguishable from any other
-                # accepted decision to every reader.
-                from repowise.core.analysis.decisions.accepter import resolve_accepter
-                from repowise.core.persistence.crud.authority import (
-                    AcceptanceRefusedError,
-                    accept_decision,
-                )
-
-                try:
-                    await accept_decision(
-                        session, rec, accepter=resolve_accepter(repo_path)
-                    )
-                except AcceptanceRefusedError as exc:
-                    raise click.ClickException(
-                        f"Cannot accept this decision: {exc}."
-                    ) from exc
-
-            embed = (rec.id, rec.title, rec.decision or "", rec.evidence_file)
-            stored_status = rec.status
-
-        # After the session closes, so a network embed does not hold the write
-        # transaction open and cannot leave a vector for an uncommitted record.
-        # ``cli`` is the rank a duplicate should fold into, so a manual entry
-        # with no vector is the worst one to leave unmatched.
-        await _embed_decision(repo_path, *embed)
-
-        await engine.dispose()
-        return decision_id, stored_status
-
-    decision_id, stored_status = run_async(_persist())
+    decision_id, stored_status = run_async(
+        _persist_decision(repo_path, fields, status, list(evidence_commits))
+    )
     if stored_status != "active" and not non_interactive:
         console.print(
             "[yellow]Stored as a candidate: it names no files, so it cannot be "
@@ -399,9 +314,9 @@ def decision_add(
                 "repo": str(repo_path),
                 "decision": {
                     "id": decision_id,
-                    "title": title,
+                    "title": fields.title,
                     "status": status,
-                    "kind": kind,
+                    "kind": fields.kind,
                 },
             }
         )
@@ -410,6 +325,151 @@ def decision_add(
         f"\n[green]Decision recorded[/green] [dim]({status})[/dim] — "
         f"ID: [bold]{decision_id[:8]}[/bold]"
     )
+
+
+def _refuse_partial_flags(fmt: str, *given) -> None:
+    """Stop a half-filled command line before it reaches the prompts.
+
+    Flags and prompts are the two paths, and a half-filled command line is
+    neither: falling through to the prompts would hang a caller that has no
+    stdin, which is the failure this command exists to stop having.
+    """
+    if any(given) or fmt == "json":
+        _ta.emit_error(
+            {
+                "error": "--title and --decision are both required to add a "
+                "decision without prompting.",
+                "guidance": "Run `repowise decision add` with no flags to be "
+                "prompted for each field instead.",
+            },
+            fmt,
+        )
+
+
+def _split_csv(raw: str) -> list[str]:
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _prompt_decision_fields(kind: str) -> _DecisionFields:
+    """Ask for each field in turn; *kind* is the flag's value, offered as default."""
+    console.print("[bold]Add Decision[/bold]\n")
+
+    kind = click.prompt(
+        "Kind (architectural = about the code, agreement = about how we work)",
+        type=click.Choice(DECISION_KINDS),
+        # The flag, so `--kind agreement` alone is not silently discarded
+        # by falling through to the prompts.
+        default=kind,
+    )
+    title = click.prompt("Decision title (short)")
+    context = click.prompt("Context (what forced this decision?)", default="")
+    decision_text = click.prompt("Decision (what was chosen?)")
+    rationale = click.prompt("Rationale (why?)", default="")
+    alternatives = _split_csv(
+        click.prompt("Rejected alternatives (comma-separated, optional)", default="")
+    )
+    consequences = _split_csv(
+        click.prompt("Tradeoffs/consequences (comma-separated, optional)", default="")
+    )
+    affected_files: list[str] = []
+    if kind == ARCHITECTURAL_KIND:
+        # An agreement names no file by definition, so asking is asking a
+        # question whose only right answer is blank.
+        affected_files = _split_csv(
+            click.prompt(
+                "Affected files/modules (comma-separated; required to make it govern)",
+                default="",
+            )
+        )
+    tags = _split_csv(
+        click.prompt(
+            "Tags (comma-separated: auth, database, api, performance, security, infra, testing)",
+            default="",
+        )
+    )
+    return _DecisionFields(
+        kind=kind,
+        title=title,
+        context=context,
+        decision=decision_text,
+        rationale=rationale,
+        alternatives=alternatives,
+        consequences=consequences,
+        affected_files=affected_files,
+        tags=tags,
+    )
+
+
+async def _persist_decision(
+    repo_path: Path, fields: _DecisionFields, status: str, evidence_commits: list[str]
+) -> tuple[str, str]:
+    """Write the record, accept it when the prompts earned that; return id and status."""
+    from repowise.core.persistence import get_session, upsert_decision, upsert_repository
+
+    async with _open_store(repo_path) as sf:
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            rec = await upsert_decision(
+                session,
+                repository_id=repo.id,
+                title=fields.title,
+                status=status,
+                context=fields.context or "",
+                decision=fields.decision,
+                rationale=fields.rationale or "",
+                alternatives=fields.alternatives,
+                consequences=fields.consequences,
+                affected_files=fields.affected_files,
+                # None derives them from the files; [] would clear them.
+                affected_modules=None,
+                tags=fields.tags,
+                # What the capture hook suppresses on: without it, the hook
+                # asks again next session for a commit already recorded.
+                evidence_commits=evidence_commits,
+                kind=fields.kind,
+                source="cli",
+                # No confidence: upsert_decision scores a manual entry.
+            )
+            # An architectural decision that names nothing cannot be checked
+            # against the code and cannot reach the agent editing a governed
+            # file, so it cannot be accepted. Keeping it as a candidate is
+            # better than discarding eight answered questions; ``confirm
+            # --scope`` finishes the job. An agreement is the other noun: it
+            # names no file *because* it is not about one, its acceptance row
+            # records the repository as its scope, and SessionStart is how it
+            # reaches an agent. Refusing it for the files it is defined not to
+            # have would leave it unacceptable, which is the defect the split
+            # exists to fix.
+            if status == "active" and (fields.affected_files or fields.kind == AGREEMENT_KIND):
+                await _accept_answered_prompts(session, rec, repo_path)
+
+            embed = (rec.id, rec.title, rec.decision or "", rec.evidence_file)
+            stored_status = rec.status
+
+        # After the session closes, so a network embed does not hold the write
+        # transaction open and cannot leave a vector for an uncommitted record.
+        # ``cli`` is the rank a duplicate should fold into, so a manual entry
+        # with no vector is the worst one to leave unmatched.
+        await _embed_decision(repo_path, *embed)
+    return embed[0], stored_status
+
+
+async def _accept_answered_prompts(session, rec, repo_path: Path) -> None:
+    """Answering the prompts is the acceptance; record it as one.
+
+    That is what makes this record indistinguishable from any other accepted
+    decision to every reader.
+    """
+    from repowise.core.analysis.decisions.accepter import resolve_accepter
+    from repowise.core.persistence.crud.authority import (
+        AcceptanceRefusedError,
+        accept_decision,
+    )
+
+    try:
+        await accept_decision(session, rec, accepter=resolve_accepter(repo_path))
+    except AcceptanceRefusedError as exc:
+        raise click.ClickException(f"Cannot accept this decision: {exc}.") from exc
 
 
 async def _embed_decision(
@@ -486,37 +546,13 @@ def decision_list(
 ) -> None:
     """List architectural decision records."""
     repo_path = _resolve_decision_repo(path, fmt)
-
-    async def _query() -> list:
-        from repowise.core.persistence import (
-            create_engine,
-            create_session_factory,
-            get_session,
-            init_db,
-            list_decisions,
-            upsert_repository,
+    decisions = run_async(
+        _query_decisions(
+            repo_path,
+            status=status if status != "all" else ("proposed" if proposed else None),
+            source=source if source != "all" else None,
         )
-
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-
-        async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
-            decisions = await list_decisions(
-                session,
-                repo.id,
-                status=status if status != "all" else ("proposed" if proposed else None),
-                source=source if source != "all" else None,
-                include_proposed=True,
-                limit=100,
-            )
-
-        await engine.dispose()
-        return decisions
-
-    decisions = run_async(_query())
+    )
 
     if proposed:
         decisions = [d for d in decisions if d.status == "proposed"]
@@ -524,32 +560,54 @@ def decision_list(
         decisions = [d for d in decisions if d.staleness_score >= 0.5]
 
     if fmt == "json":
-        emit_json(
-            {
-                "repo": str(repo_path),
-                "decisions": [
-                    {
-                        # Full id, not the table's 8-char prefix: the prefix
-                        # exists to fit a column, and every id-taking
-                        # subcommand accepts either.
-                        "id": d.id,
-                        "title": d.title,
-                        "status": d.status,
-                        "source": d.source,
-                        "confidence": d.confidence,
-                        "staleness_score": d.staleness_score,
-                        "created_at": d.created_at.isoformat() if d.created_at else None,
-                    }
-                    for d in decisions
-                ],
-            }
-        )
+        emit_json({"repo": str(repo_path), "decisions": [_listed_json(d) for d in decisions]})
         return
 
     if not decisions:
         console.print("[dim]No decisions found.[/dim]")
         return
+    _print_decision_table(decisions)
 
+
+def _listed_json(d) -> dict:
+    return {
+        # Full id, not the table's 8-char prefix: the prefix exists to fit a
+        # column, and every id-taking subcommand accepts either.
+        "id": d.id,
+        "title": d.title,
+        "status": d.status,
+        "source": d.source,
+        "confidence": d.confidence,
+        "staleness_score": d.staleness_score,
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+    }
+
+
+async def _query_decisions(repo_path: Path, *, status: str | None, source: str | None) -> list:
+    from repowise.core.persistence import get_session, list_decisions, upsert_repository
+
+    async with _open_store(repo_path) as sf, get_session(sf) as session:
+        repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+        return await list_decisions(
+            session,
+            repo.id,
+            status=status,
+            source=source,
+            include_proposed=True,
+            limit=100,
+        )
+
+
+_STATUS_COLORS = {
+    "active": "green",
+    "proposed": "yellow",
+    "deprecated": "red",
+    "superseded": "dim",
+    "dismissed": "dim",
+}
+
+
+def _print_decision_table(decisions: list) -> None:
     table = Table(title="Architectural Decisions")
     table.add_column("ID", style="dim", width=8)
     table.add_column("Title", max_width=40)
@@ -559,16 +617,8 @@ def decision_list(
     table.add_column("Stale", justify="right")
     table.add_column("Created", style="dim")
 
-    status_colors = {
-        "active": "green",
-        "proposed": "yellow",
-        "deprecated": "red",
-        "superseded": "dim",
-        "dismissed": "dim",
-    }
-
     for d in decisions:
-        color = status_colors.get(d.status, "white")
+        color = _STATUS_COLORS.get(d.status, "white")
         stale_str = f"{d.staleness_score:.1f}" if d.staleness_score > 0 else "-"
         created = d.created_at.strftime("%Y-%m-%d") if d.created_at else ""
         table.add_row(
@@ -596,32 +646,7 @@ def decision_list(
 def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     """Show full details of a decision record."""
     repo_path = _resolve_decision_repo(path, fmt)
-
-    async def _query():
-        from repowise.core.persistence import (
-            create_engine,
-            create_session_factory,
-            get_decision,
-            get_session,
-            init_db,
-        )
-        from repowise.core.persistence.crud.authority import latest_acceptance
-
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-
-        async with get_session(sf) as session:
-            full_id = await _resolve_decision_id(session, decision_id)
-            rec = await get_decision(session, full_id) if full_id else None
-            acceptance = await latest_acceptance(session, rec.id) if rec else None
-            signed = _describe_signature(acceptance)
-
-        await engine.dispose()
-        return rec, signed
-
-    rec, signed = run_async(_query())
+    rec, signed = run_async(_load_decision(repo_path, decision_id))
     if rec is None:
         notice_console(fmt).print(f"[red]Decision not found: {decision_id}[/red]")
         if fmt == "json":
@@ -630,47 +655,6 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
         # scripting `show` cannot tell a missing id from an empty record.
         raise click.exceptions.Exit(1)
 
-    if fmt == "json":
-        emit_json(
-            {
-                "query": decision_id,
-                "decision": {
-                    "id": rec.id,
-                    "title": rec.title,
-                    "status": rec.status,
-                    "source": rec.source,
-                    "confidence": rec.confidence,
-                    "staleness_score": rec.staleness_score,
-                    "created_at": rec.created_at.isoformat() if rec.created_at else None,
-                    # Not "accepted_by": the same log records withdrawals.
-                    "signature": signed,
-                    "currency": describe_decision_currency(
-                        repo_path,
-                        created_at=rec.created_at,
-                        nodes=json.loads(rec.affected_files_json or "[]"),
-                    ),
-                    "context": rec.context,
-                    "decision": rec.decision,
-                    "rationale": rec.rationale,
-                    "alternatives": json.loads(rec.alternatives_json),
-                    "consequences": json.loads(rec.consequences_json),
-                    # Not clipped to 10 the way the panel clips it: the panel
-                    # clips to stay readable, and a caller asking for json is
-                    # asking for the record, not a summary of it.
-                    "affected_files": json.loads(rec.affected_files_json),
-                    "tags": json.loads(rec.tags_json),
-                    "evidence_file": rec.evidence_file,
-                    "evidence_line": rec.evidence_line,
-                },
-            }
-        )
-        return
-
-    lines = [
-        f"[bold]{rec.title}[/bold]",
-        f"Status: {rec.status}  |  Source: {rec.source}  |  Confidence: {rec.confidence:.0%}",
-        f"Staleness: {rec.staleness_score:.2f}",
-    ]
     # The stored score is a proportion; this is the fact behind it, asked of
     # git at read time. `show` is one record on demand, which is exactly where
     # a subprocess is affordable — nothing on the hook or update path may do
@@ -680,30 +664,85 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
         created_at=rec.created_at,
         nodes=json.loads(rec.affected_files_json or "[]"),
     )
+    if fmt == "json":
+        emit_json({"query": decision_id, "decision": _decision_json(rec, signed, currency)})
+        return
+    lines = _decision_header_lines(rec, signed, currency) + _decision_body_lines(rec)
+    console.print(Panel("\n".join(lines), title=f"Decision {rec.id[:8]}"))
+
+
+async def _load_decision(repo_path: Path, decision_id: str):
+    """The record *decision_id* names and its signature, or ``(None, None)``."""
+    from repowise.core.persistence import get_decision, get_session
+    from repowise.core.persistence.crud.authority import latest_acceptance
+
+    async with _open_store(repo_path) as sf, get_session(sf) as session:
+        full_id = await _resolve_decision_id(session, decision_id)
+        rec = await get_decision(session, full_id) if full_id else None
+        acceptance = await latest_acceptance(session, rec.id) if rec else None
+        return rec, _describe_signature(acceptance)
+
+
+def _decision_json(rec, signed, currency) -> dict:
+    return {
+        "id": rec.id,
+        "title": rec.title,
+        "status": rec.status,
+        "source": rec.source,
+        "confidence": rec.confidence,
+        "staleness_score": rec.staleness_score,
+        "created_at": rec.created_at.isoformat() if rec.created_at else None,
+        # Not "accepted_by": the same log records withdrawals.
+        "signature": signed,
+        "currency": currency,
+        "context": rec.context,
+        "decision": rec.decision,
+        "rationale": rec.rationale,
+        "alternatives": json.loads(rec.alternatives_json),
+        "consequences": json.loads(rec.consequences_json),
+        # Not clipped to 10 the way the panel clips it: the panel
+        # clips to stay readable, and a caller asking for json is
+        # asking for the record, not a summary of it.
+        "affected_files": json.loads(rec.affected_files_json),
+        "tags": json.loads(rec.tags_json),
+        "evidence_file": rec.evidence_file,
+        "evidence_line": rec.evidence_line,
+    }
+
+
+def _decision_header_lines(rec, signed, currency) -> list[str]:
+    lines = [
+        f"[bold]{rec.title}[/bold]",
+        f"Status: {rec.status}  |  Source: {rec.source}  |  Confidence: {rec.confidence:.0%}",
+        f"Staleness: {rec.staleness_score:.2f}",
+    ]
     if currency:
         lines.append(f"[dim]{currency}[/dim]")
     # A candidate has no line at all; status already says so.
     if signed:
         lines.append(f"{signed['verb']} by: {signed['label']}")
     lines.append("")
-    if rec.context:
-        lines.append(f"[cyan]Context:[/cyan] {rec.context}")
-    if rec.decision:
-        lines.append(f"[cyan]Decision:[/cyan] {rec.decision}")
-    if rec.rationale:
-        lines.append(f"[cyan]Rationale:[/cyan] {rec.rationale}")
+    return lines
 
-    alternatives = json.loads(rec.alternatives_json)
-    if alternatives:
-        lines.append("[cyan]Alternatives rejected:[/cyan]")
-        for a in alternatives:
-            lines.append(f"  - {a}")
 
-    consequences = json.loads(rec.consequences_json)
-    if consequences:
-        lines.append("[cyan]Consequences:[/cyan]")
-        for c in consequences:
-            lines.append(f"  - {c}")
+def _decision_body_lines(rec) -> list[str]:
+    """The record's prose and lists, each section only when it has content."""
+    lines = [
+        f"[cyan]{label}:[/cyan] {value}"
+        for label, value in (
+            ("Context", rec.context),
+            ("Decision", rec.decision),
+            ("Rationale", rec.rationale),
+        )
+        if value
+    ]
+    for heading, items in (
+        ("Alternatives rejected", json.loads(rec.alternatives_json)),
+        ("Consequences", json.loads(rec.consequences_json)),
+    ):
+        if items:
+            lines.append(f"[cyan]{heading}:[/cyan]")
+            lines.extend(f"  - {item}" for item in items)
 
     affected = json.loads(rec.affected_files_json)
     if affected:
@@ -718,8 +757,7 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
         if rec.evidence_line:
             loc += f":{rec.evidence_line}"
         lines.append(f"[cyan]Evidence:[/cyan] {loc}")
-
-    console.print(Panel("\n".join(lines), title=f"Decision {rec.id[:8]}"))
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -909,73 +947,78 @@ def decision_deprecate(
     kind, signing_session = _signer(agent, agent_session)
 
     async def _update():
-        from repowise.core.analysis.decisions.accepter import resolve_accepter
-        from repowise.core.persistence import (
-            create_engine,
-            create_session_factory,
-            get_session,
-            init_db,
-            update_decision_status,
-        )
-        from repowise.core.persistence.crud.authority import (
-            AcceptanceRefusedError,
-            is_accepted,
-            supersede_decision,
-        )
+        from repowise.core.persistence import get_session
         from repowise.core.persistence.models import DecisionRecord
 
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-
-        try:
-            async with get_session(sf) as session:
-                full_id = await _resolve_decision_id(session, decision_id)
-                rec = await session.get(DecisionRecord, full_id) if full_id else None
-                if rec is None:
-                    return None
-                successor = (
-                    await _resolve_decision_id(session, superseded_by)
-                    if superseded_by
-                    else None
+        async with _open_store(repo_path) as sf, get_session(sf) as session:
+            full_id = await _resolve_decision_id(session, decision_id)
+            rec = await session.get(DecisionRecord, full_id) if full_id else None
+            if rec is None:
+                return None
+            successor = (
+                await _resolve_decision_id(session, superseded_by) if superseded_by else None
+            )
+            if superseded_by and successor is None:
+                emit_refusal(
+                    "decision_not_found",
+                    f"Unknown successor: {superseded_by}",
+                    fmt,
+                    decision_id=superseded_by,
                 )
-                if superseded_by and successor is None:
-                    emit_refusal(
-                        "decision_not_found",
-                        f"Unknown successor: {superseded_by}",
-                        fmt,
-                        decision_id=superseded_by,
-                    )
-                if successor and await is_accepted(session, rec.id):
-                    try:
-                        await supersede_decision(
-                            session,
-                            rec,
-                            successor_id=successor,
-                            accepter=agent or resolve_accepter(repo_path),
-                            kind=kind,
-                            accepter_session=signing_session,
-                        )
-                    except (AcceptanceRefusedError, ValueError) as exc:
-                        emit_refusal("supersede_refused", str(exc), fmt, decision_id=rec.id)
-                else:
-                    # A candidate has no authority to retire, so this stays the
-                    # plain status change it always was. An accepted record
-                    # reaching it still logs a withdrawal, so the kind travels.
-                    await update_decision_status(
-                        session,
-                        rec.id,
-                        "deprecated",
-                        superseded_by=successor,
-                        accepter=agent or resolve_accepter(repo_path),
-                        kind=kind,
-                    )
-                return rec
-        finally:
-            await engine.dispose()
+            await _retire(
+                session,
+                rec,
+                successor,
+                agent=agent,
+                repo_path=repo_path,
+                kind=kind,
+                signing_session=signing_session,
+                fmt=fmt,
+            )
+            return rec
 
     _emit_lifecycle(run_async(_update()), decision_id, "deprecated", fmt)
+
+
+async def _retire(
+    session, rec, successor, *, agent, repo_path, kind, signing_session, fmt
+) -> None:
+    """Supersede an accepted record, or mark any other one deprecated.
+
+    An empty *agent* signs as the repository's person.
+    """
+    from repowise.core.analysis.decisions.accepter import resolve_accepter
+    from repowise.core.persistence import update_decision_status
+    from repowise.core.persistence.crud.authority import (
+        AcceptanceRefusedError,
+        is_accepted,
+        supersede_decision,
+    )
+
+    if successor and await is_accepted(session, rec.id):
+        try:
+            await supersede_decision(
+                session,
+                rec,
+                successor_id=successor,
+                accepter=agent or resolve_accepter(repo_path),
+                kind=kind,
+                accepter_session=signing_session,
+            )
+        except (AcceptanceRefusedError, ValueError) as exc:
+            emit_refusal("supersede_refused", str(exc), fmt, decision_id=rec.id)
+        return
+    # A candidate has no authority to retire, so this stays the plain status
+    # change it always was. An accepted record reaching it still logs a
+    # withdrawal, so the kind travels.
+    await update_decision_status(
+        session,
+        rec.id,
+        "deprecated",
+        superseded_by=successor,
+        accepter=agent or resolve_accepter(repo_path),
+        kind=kind,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -989,31 +1032,7 @@ def decision_deprecate(
 def decision_health(path: str | None, fmt: str) -> None:
     """Show decision health: stale decisions, proposed, ungoverned hotspots."""
     repo_path = _resolve_decision_repo(path, fmt)
-
-    async def _query():
-        from repowise.core.persistence import (
-            create_engine,
-            create_session_factory,
-            get_decision_health_summary,
-            get_session,
-            init_db,
-            upsert_repository,
-        )
-
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-
-        async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
-            health = await get_decision_health_summary(session, repo.id)
-
-        await engine.dispose()
-        return health
-
-    health = run_async(_query())
-    summary = health["summary"]
+    health = run_async(_query_health(repo_path))
 
     if fmt == "json":
         # The table caps each list (5 stale, 10 hotspots, 5 proposed) to keep
@@ -1021,7 +1040,7 @@ def decision_health(path: str | None, fmt: str) -> None:
         emit_json(
             {
                 "repo": str(repo_path),
-                "summary": summary,
+                "summary": health["summary"],
                 "stale_decisions": [
                     {"id": d.id, "title": d.title, "staleness_score": d.staleness_score}
                     for d in health["stale_decisions"]
@@ -1036,8 +1055,23 @@ def decision_health(path: str | None, fmt: str) -> None:
         return
 
     console.print("[bold]Decision Health[/bold]\n")
+    _print_health_summary(health["summary"])
+    _print_health_lists(health)
 
-    # Summary stats
+
+async def _query_health(repo_path: Path) -> dict:
+    from repowise.core.persistence import (
+        get_decision_health_summary,
+        get_session,
+        upsert_repository,
+    )
+
+    async with _open_store(repo_path) as sf, get_session(sf) as session:
+        repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+        return await get_decision_health_summary(session, repo.id)
+
+
+def _print_health_summary(summary: dict) -> None:
     stats_table = Table(show_header=False, box=None)
     stats_table.add_column("Metric", style="cyan")
     stats_table.add_column("Value", justify="right")
@@ -1052,21 +1086,21 @@ def decision_health(path: str | None, fmt: str) -> None:
     stats_table.add_row("Deprecated", str(summary.get("deprecated", 0)))
     console.print(stats_table)
 
-    # Stale decisions
+
+def _print_health_lists(health: dict) -> None:
+    """Stale, ungoverned and proposed, each capped so the report stays short."""
     stale = health["stale_decisions"]
     if stale:
         console.print(f"\n[red]Stale decisions ({len(stale)}):[/red]")
         for d in stale[:5]:
             console.print(f"  {d.id[:8]}  {d.title[:50]}  (staleness: {d.staleness_score:.2f})")
 
-    # Ungoverned hotspots
     ungoverned = health["ungoverned_hotspots"]
     if ungoverned:
         console.print(f"\n[yellow]Ungoverned hotspots ({len(ungoverned)}):[/yellow]")
         for fp in ungoverned[:10]:
             console.print(f"  {fp}")
 
-    # Proposed
     proposed = health["proposed_awaiting_review"]
     if proposed:
         console.print(f"\n[yellow]Proposed decisions ({len(proposed)}):[/yellow]")

@@ -136,7 +136,6 @@ async def _review_batch(repo_path, tokens, *, action: str, verb: str, preview: b
         get_session,
         init_db,
     )
-    from repowise.core.persistence.crud.authority import AcceptanceRefusedError
 
     engine = create_engine(get_db_url_for_repo(repo_path))
     try:
@@ -148,35 +147,44 @@ async def _review_batch(repo_path, tokens, *, action: str, verb: str, preview: b
     try:
         async with get_session(create_session_factory(engine)) as session:
             for token in tokens:
-                rec, failure = await _resolve_one(session, token)
-                if failure is not None:
-                    results.append(failure)
-                    continue
-                entry = {"given": token, "id": rec.id, "title": rec.title}
-                try:
-                    async with session.begin_nested():
-                        await apply_one(session, rec)
-                        if preview:
-                            raise _PreviewRollbackError
-                except _PreviewRollbackError:
-                    results.append({**entry, "ok": True, "action": f"would_{verb}"})
-                except AcceptanceRefusedError as exc:
-                    results.append(
-                        {
-                            **entry,
-                            "ok": False,
-                            "error": "acceptance_refused",
-                            "message": str(exc),
-                            "blockers": list(exc.blockers),
-                        }
+                # A token that resolves to nothing already carries its outcome.
+                rec, outcome = await _resolve_one(session, token)
+                if outcome is None:
+                    outcome = await _apply_in_savepoint(
+                        session, rec, token, action=action, verb=verb, preview=preview,
+                        apply_one=apply_one,
                     )
-                else:
-                    results.append({**entry, "ok": True, "action": action, "status": rec.status})
+                results.append(outcome)
             if preview:
                 await session.rollback()
     finally:
         await engine.dispose()
     return results
+
+
+async def _apply_in_savepoint(
+    session, rec, token: str, *, action: str, verb: str, preview: bool, apply_one
+) -> dict:
+    """One id's outcome: applied, would-apply under preview, or refused."""
+    from repowise.core.persistence.crud.authority import AcceptanceRefusedError
+
+    entry = {"given": token, "id": rec.id, "title": rec.title}
+    try:
+        async with session.begin_nested():
+            await apply_one(session, rec)
+            if preview:
+                raise _PreviewRollbackError
+    except _PreviewRollbackError:
+        return {**entry, "ok": True, "action": f"would_{verb}"}
+    except AcceptanceRefusedError as exc:
+        return {
+            **entry,
+            "ok": False,
+            "error": "acceptance_refused",
+            "message": str(exc),
+            "blockers": list(exc.blockers),
+        }
+    return {**entry, "ok": True, "action": action, "status": rec.status}
 
 
 def _emit_batch(
@@ -196,12 +204,17 @@ def _emit_batch(
                 **({"remedy": remedy} if failed and remedy else {}),
             }
         )
-        if failed:
-            raise click.exceptions.Exit(1)
-        return
+    else:
+        _print_batch(results, len(failed), action, verb, preview, remedy)
+    if failed:
+        raise click.exceptions.Exit(1)
 
+
+def _print_batch(
+    results: list[dict], failed: int, action: str, verb: str, preview: bool, remedy: str
+) -> None:
     headline = f"Would {verb}" if preview else action.capitalize()
-    table = Table(title=f"{headline} {len(results) - len(failed)} of {len(results)}")
+    table = Table(title=f"{headline} {len(results) - failed} of {len(results)}")
     for column in ("ID", "Title", "Outcome"):
         table.add_column(column)
     for result in results:
@@ -210,10 +223,8 @@ def _emit_batch(
     console.print(table)
     if preview:
         console.print("[dim]Nothing was written. Re-run without --preview.[/dim]")
-    if failed:
-        if remedy:
-            console.print(f"[dim]{remedy}[/dim]")
-        raise click.exceptions.Exit(1)
+    if failed and remedy:
+        console.print(f"[dim]{remedy}[/dim]")
 
 
 def _emit_single(result: dict, token: str, verb: str, fmt: str, note: str, remedy: str) -> None:
