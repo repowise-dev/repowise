@@ -185,9 +185,7 @@ derived.
 #### Step 1: Add a `LanguageSpec` module
 
 Language identity data lives in `languages/specs/`, **one module per language**.
-Create
-`packages/core/src/repowise/core/ingestion/languages/specs/mylang.py`
-exporting a single `SPEC`:
+Create a new module under `packages/core/src/repowise/core/ingestion/languages/specs/`, one module per language, exporting a single `SPEC`. For example, a new language can use a file named `mylang.py`:
 
 ```python
 """LanguageSpec for mylang."""
@@ -998,73 +996,3 @@ Method**. A `DefUseDialect` owns the read-vs-write classification of each
 statement and the parameter binders; the CFG builder, the reaching-definitions
 fixpoint and the Extract Method slicer stay language-agnostic (the control-flow
 grammar they branch on lives on the `LanguageNodeMap`). Requires
-`assignment_kinds` / `augmented_assign_kinds` / `local_decl_kinds` on that map.
-The full pass runs only for functions a structural marker already flagged
-(`large_method` / `brain_method` / `complex_method`), so it stays within the
-health-pass budget.
-
-A dialect is only half the requirement. See
-[what a new language does not get for free](#what-a-new-language-does-not-get-for-free)
-for the grammar-shaped reasons a dialect alone cannot serve a language.
-`find_extractions` also refuses a function whose subtree carries a parse error
-(`Node.has_error`): macro-heavy C/C++ headers make tree-sitter emit one bogus
-`function_definition` spanning a whole class, and proposing to lift "statements"
-out of that is a wrong suggestion.
-
-All three registries are purely additive and degrade to silence: an unmapped
-language produces no findings rather than wrong ones.
-
----
-
-## Workspace contract extraction
-
-In workspace mode (multiple repos indexed together), repowise links
-service-to-service API contracts (HTTP routes, gRPC services, and DB tables) so a
-provider endpoint in one repo connects to its consumers in another. The
-extractors live in `core/workspace/extractors/` and follow the same
-dialect-plugin shape: the orchestrator owns only the file walk, and each
-framework / client library is an independent module registered in a tuple.
-
-```
-workspace/extractors/
-  base.py            # iter_source_files walk + ScanContext (shared by all)
-  langs.py           # registry-derived extension sets (JS_TS, PYTHON, RUST, …)
-  http/
-    dialect.py       #   HttpDialect protocol + build_provider/consumer_contract
-    paths.py         #   normalize_http_path + URL helpers
-    express.py  fastapi.py  spring.py  laravel.py  go.py  aspnet.py  # providers
-    js_clients.py  python_clients.py  csharp_http.py  rust_clients.py # consumers
-    rust_axum.py  mounts.py                                          # providers
-    __init__.py      #   HttpExtractor + PROVIDER_DIALECTS / CONSUMER_DIALECTS
-  grpc/
-    dialect.py       #   GrpcDialect protocol + make_grpc_contract
-    proto.py  go.py  java.py  python.py  typescript.py  csharp.py
-    __init__.py      #   GrpcExtractor + DIALECTS
-  data/              #   table providers (DDL / ORM entities) <-> SQL consumers
-```
-
-A dialect declares the file extensions it understands (via `langs.py`) and turns
-regex matches into `Contract`s through shared builders, so every dialect emits
-identically-shaped providers/consumers and path-normalization lives in one place.
-**Adding a framework or client** means dropping one module into `http/`, `grpc/`,
-or `data/` and appending its dialect to the relevant registry tuple, with no
-orchestrator edits.
-
-| Contract | Providers | Consumers |
-|----------|-----------|-----------|
-| **HTTP** | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal), Rust (Axum routes, Actix/Rocket attribute macros) | `fetch` / `axios` / URL-literal wrappers (JS/TS), `requests` / `httpx` (Python), `HttpClient` / `UnityWebRequest` / Best.HTTP (C#), `reqwest` (Rust) |
-| **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
-| **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, ORM entities (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback) |
-
-See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
-workspace guide.
-
----
-
-## See also
-
-- [docs/layers/GRAPH.md](../layers/GRAPH.md) · user-facing graph page: edge vocabulary, origins, flows
-- [docs/layers/LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md) · user-facing support matrix
-- [docs/layers/CODE_HEALTH.md](../layers/CODE_HEALTH.md) · code-health markers and per-language precision hazards
-- [architecture/code-health.md](code-health.md) · code-health layer internals
-- [architecture/ARCHITECTURE.md](ARCHITECTURE.md) · full system architecture
