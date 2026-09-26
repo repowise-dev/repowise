@@ -144,6 +144,15 @@ function scoredDimensions(file: FileHealthPromptInput): string {
   ]);
 }
 
+function deductionLine(
+  totalDeduction: number | null | undefined,
+  categoryCount: number,
+): string | null {
+  if (totalDeduction == null) return null;
+  const categories = categoryCount === 1 ? "category" : "categories";
+  return `Total deduction: **−${totalDeduction.toFixed(2)}** across ${categoryCount} scoring ${categories}`;
+}
+
 function trendLine(trendDelta: number | null | undefined): string | null {
   if (trendDelta == null || trendDelta === 0) return null;
   return `Score moved ${trendDelta > 0 ? "up" : "down"} ${Math.abs(trendDelta).toFixed(2)} since the previous snapshot`;
@@ -156,11 +165,7 @@ function healthSnapshot(
 ): string {
   return bulletList([
     `Health score: **${file.score.toFixed(1)}/10** (lower is worse; 10.0 is clean)`,
-    file.total_deduction != null
-      ? `Total deduction: **−${file.total_deduction.toFixed(2)}** across ${categoryCount} scoring ${
-          categoryCount === 1 ? "category" : "categories"
-        }`
-      : null,
+    deductionLine(file.total_deduction, categoryCount),
     trendLine(trendDelta),
     file.nloc != null ? `Size: ${file.nloc} NLOC` : null,
     file.module ? `Module: \`${file.module}\`` : null,
@@ -202,10 +207,10 @@ function categoryBreakdown(categories: FileHealthPromptCategory[]): string | nul
   );
 }
 
-function processSignals(signals: FileHealthPromptSignals | null | undefined): string | null {
-  if (!signals) return null;
+/** How often the file changes and how many of those changes were fixes. */
+function churnFacts(signals: FileHealthPromptSignals): (string | null)[] {
   const lastFix = signals.last_fix_at ? `, most recently ${signals.last_fix_at.slice(0, 10)}` : "";
-  return bulletList([
+  return [
     signals.commit_count_90d != null
       ? `${signals.commit_count_90d} commits in the last 90 days`
       : null,
@@ -218,12 +223,23 @@ function processSignals(signals: FileHealthPromptSignals | null | undefined): st
     signals.bug_magnet
       ? "Flagged a **bug magnet**: fixes keep landing in this file, so treat a regression here as likely rather than unlucky."
       : null,
+  ];
+}
+
+/** Where the file sits in the import graph, and how long it has existed. */
+function topologyFacts(signals: FileHealthPromptSignals): (string | null)[] {
+  return [
     signals.in_degree != null
       ? `${signals.in_degree} file${pluralS(signals.in_degree)} import this one, so changing its public surface reaches all of them`
       : null,
     signals.out_degree != null ? `It imports ${signals.out_degree} others` : null,
     signals.age_days != null ? `First seen ${signals.age_days} days ago` : null,
-  ]);
+  ];
+}
+
+function processSignals(signals: FileHealthPromptSignals | null | undefined): string | null {
+  if (!signals) return null;
+  return bulletList([...churnFacts(signals), ...topologyFacts(signals)]);
 }
 
 function causeLine(c: PerformanceOpportunity): string {
