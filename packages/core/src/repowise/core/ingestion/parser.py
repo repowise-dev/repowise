@@ -615,18 +615,11 @@ def _refine_symbol_kind(
     if kind == "class" and language == "kotlin" and node_type == "class_declaration":
         kind = refine_kotlin_class_kind(def_node)
 
-    # Refine "class" kind for Pascal (declType wraps class / record /
-    # object / interface / class-helper / enum / set / array / alias
-    # in one node shape -- see the spec docstring and
-    # refine_pascal_type_kind's own docstring for the disambiguation).
+    # Pascal ``declType`` wraps class, record, interface, enum and more.
     if kind == "class" and language == "pascal" and node_type == "declType":
         kind = refine_pascal_type_kind(def_node)
 
-    # Elixir: every definition is a ``call``, so the node type cannot
-    # name the kind and the config maps it to a deliberately
-    # non-callable placeholder (see refine_elixir_call_kind). The
-    # keyword in the call's target is what actually says what was
-    # defined.
+    # Elixir: every definition is a ``call``; its keyword names the kind.
     if language == "elixir" and node_type == "call":
         kind = refine_elixir_call_kind(def_node, src)
 
@@ -650,10 +643,7 @@ def _symbol_end_line(
         end_line = config.symbol_end_line_fn(def_node, end_line)
     if export_type is not None:
         end_line = export_type.range_node.end_point[0] + 1
-    # F#: the captured node is the binding's left-hand side, so its
-    # own span stops at the parameter list. Extend it over the body
-    # (and any return-type annotation between the two) or every call
-    # in the body is attributed to whatever encloses the binding.
+    # F#: the captured left-hand side stops at the parameters; extend over the body.
     if _is_fsharp_binding(language, node_type):
         end_line = _fsharp_binding_end_line(def_node)
     if language == "dart" and node_type in _DART_FUNCTION_NODE_TYPES:
@@ -692,19 +682,11 @@ def _module_binding_kind(def_node: Node, name: str, language: str, src: str) -> 
     letters (``_``, ``__all__``) fall to "variable" rather than being
     mislabelled constants by ``name == name.upper()``.
     """
-    # TS/JS: the symbol query admits call_expression values so
-    # forwardRef / memo / onCall / styled() bindings exist at all,
-    # which also lets `const svc = require('./svc')` through. Those
-    # bind a module and are already imports — drop them here rather
-    # than in the query, which cannot see past the await / paren /
-    # non-null / member-pick shells.
+    # TS/JS: ``const svc = require('./svc')`` binds a module (already an
+    # import), so it is not a symbol.
     if language in _TS_JS_LANGUAGES and declarator_value_is_module_ref(def_node, src):
         return None
-    # A declarator whose value is structurally callable is not
-    # data, whatever its name looks like: `const C =
-    # forwardRef(fn)` and `const f = function(){}` are a component
-    # and a function. Naming decides only for the rest, which is
-    # what it was ever able to answer.
+    # A structurally callable value is a function whatever its name says.
     callable_kind = (
         declarator_binds_callable(def_node, src) if language in _TS_JS_LANGUAGES else None
     )
@@ -1487,27 +1469,16 @@ class ASTParser:
         if kind is None:
             return None
 
-        # Skip symbols nested inside another function/method body. The
-        # Tree-sitter query is recursive, so helpers defined inside a
-        # React component or an async orchestrator method get hoisted
-        # to the top-level symbol list and read as unused public
-        # exports. Filtering by callable ancestor restricts extraction
-        # to module-top-level + class-body members. Class bodies don't
-        # match (``class_definition`` is not callable), so methods are
-        # preserved. Module-anchored node types skip the check: their
-        # .scm patterns only match at module/program level, and a TS
-        # variable_declarator's parent (lexical_declaration → "function")
-        # would otherwise read as a callable ancestor.
+        # Only module-level and class-body members are symbols; the query is
+        # recursive, so defs nested in a callable are dropped. Module-anchored
+        # node types only match at module level and skip the check.
         if node_type not in _MODULE_ANCHORED_NODE_TYPES and _has_callable_ancestor(
             def_node, config.symbol_node_types, export_type_parent_ids
         ):
             return None
 
-        # F#: a ``let`` nested in another binding's body has the same node
-        # shape as a top-level one, so the ancestor filter above cannot
-        # see it -- what it captures is the binding's left-hand side, and
-        # a nested binding's left-hand side has no callable ancestor
-        # either. A ``let`` inside a type body is a field and stays.
+        # F#: a ``let`` nested in another binding has no callable ancestor, so
+        # it is checked separately. A ``let`` in a type body is a field and stays.
         if _is_fsharp_binding(language, node_type) and _fsharp_binding_is_nested(def_node):
             return None
         return _refine_symbol_kind(kind, def_node, config, language, src)
@@ -1545,33 +1516,19 @@ class ASTParser:
         if language == "fsharp":
             return _fsharp_parent_name(def_node, src)
 
-        # C/C++ qualified definitions: ``void Foo::method() { … }``
-        # carries the class as the scope of a ``qualified_identifier``
-        # parent of the name node. Without this resolution, every
-        # ``Class::method`` lands as a free function and bloats the
-        # unused_export pass with thousands of method symbols.
+        # C/C++ out-of-line ``void Foo::method()`` names its class in the scope.
         if language in ("cpp", "c") and name_nodes:
             return _qualified_cpp_parent(name_nodes[0], src)
 
-        # Pascal out-of-line implementation: ``function TFoo.Bar(...);``
-        # -- the ``defProc`` node lives in the unit's implementation
-        # section, outside the class's ``declType`` body declared in the
-        # interface section, so nesting-based ``_find_parent`` above
-        # can't see it. The qualifying class lives beside the captured
-        # name in the ``genericDot`` header instead.
+        # Pascal out-of-line ``function TFoo.Bar`` names its class in the header.
         if language == "pascal" and name_nodes:
             return _qualified_pascal_parent(name_nodes[0], src)
 
-        # Elixir: the enclosing ``defmodule`` is a ``call`` with no
-        # ``name`` field for the generic nesting walk to read, so the
-        # module name has to be dug out of its first argument.
+        # Elixir: ``defmodule`` is a ``call``; the name is its first argument.
         if language == "elixir":
             return _elixir_module_parent(def_node, src)
 
-        # Objective-C: an @interface / @implementation / @protocol names
-        # itself with a bare first identifier and no ``name`` field, so
-        # the nesting walk above finds the right ancestor and reads
-        # nothing off it.
+        # Objective-C containers name themselves with a bare first identifier.
         if language == "objectivec":
             return _objc_container_parent(def_node, config.parent_class_types, src)
         return None

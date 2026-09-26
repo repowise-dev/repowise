@@ -571,8 +571,7 @@ def _cpp_export_macro_parent(node: Node, parent_names: dict[int, str]) -> str | 
 class CppExportTypes:
     """Macro-decorated C++ types (``struct EXPORT Name``) recovered from one file.
 
-    tree-sitter-cpp names such a type after the macro; cpp.scm marks the
-    matches so the real name, range and member context can be restored.
+    tree-sitter-cpp names such a type after the macro; cpp.scm marks the matches.
     """
 
     defs: dict[int, _CppExportType] = field(default_factory=dict)
