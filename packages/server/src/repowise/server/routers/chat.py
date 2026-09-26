@@ -1,4 +1,4 @@
-"""Chat router — SSE streaming agentic loop and conversation management."""
+"""Chat router: the SSE agentic loop and conversation management."""
 
 from __future__ import annotations
 
@@ -352,25 +352,17 @@ class _AgentTurn:
 @router.post("/api/repos/{repo_id}/chat/messages")
 async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     """Stream an agentic chat response via SSE."""
-    # In workspace mode each repo has its own ``wiki.db``; the primary
-    # ``app.state.session_factory`` does NOT contain non-primary repos'
-    # rows, so resolving by ``repo_id`` is required for the
-    # ``_get_repo_info`` lookup (and every subsequent ``get_session``
-    # call inside ``event_stream``) to land in the right database.
+    # In workspace mode each repo has its own ``wiki.db``, so every session
+    # this request opens must come from the factory resolved by ``repo_id``.
     factory = resolve_request_session_factory(request)
 
-    # Resolve repo
     repo_name, repo_path = await _get_repo_info(factory, repo_id)
     # In workspace mode the MCP tools address repos by alias, not by the id
     # in this URL, so resolve it once and scope every tool call to it.
     repo_alias = _workspace_alias(request, repo_path, repo_name)
 
-    # Resolve provider. A per-request override (the UI model picker) applies to
-    # THIS request only and is not persisted — an explicit selection is
-    # persisted separately via PATCH /api/providers/active (scoped per-repo).
-    # Absent an override, the provider/model/key/base_url are taken from the
-    # repo's own ``.repowise/config.yaml`` + ``.env`` (what ``repowise init``
-    # configured), so chat matches ``repowise update`` seamlessly.
+    # An override (the UI model picker) applies to this request only; without
+    # one the repo's own config and ``.env`` pick the provider, as for update.
     try:
         provider = get_chat_provider_instance(
             repo_path=repo_path,
