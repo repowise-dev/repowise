@@ -506,7 +506,9 @@ def test_the_fallback_costs_at_most_one_extra_walk(tmp_path) -> None:
     disabled while a template frame is open and a pathological file therefore
     pays a full per-character walk twice.
     """
-    from repowise.server.mcp_server.tool_answer import symbols as mod
+    # Patch the module that owns the walk: a re-export's binding is not the
+    # one _string_masked_lines looks up.
+    from repowise.server.mcp_server.tool_answer import string_mask as mod
 
     calls = []
     real = mod._walk_string_state
