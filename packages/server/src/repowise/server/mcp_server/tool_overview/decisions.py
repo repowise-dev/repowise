@@ -82,25 +82,25 @@ async def _build_key_decisions(
         ][:5]
         if not top_decisions:
             return {}
-        key_decisions_list = []
-        for dr in top_decisions:
-            try:
-                affected_files = json.loads(dr.affected_files_json or "[]")[:3]
-            except (json.JSONDecodeError, TypeError):
-                affected_files = []
-            key_decisions_list.append(
-                {
-                    "id": dr.id,
-                    "title": dr.title,
-                    "status": dr.status,
-                    "confidence": dr.confidence,
-                    "verification": dr.verification,
-                    "affected_files": affected_files,
-                }
-            )
         return {
-            "top_active": key_decisions_list,
+            "top_active": [_decision_entry(dr) for dr in top_decisions],
             "recent_reversals": await _build_recent_reversals(session, repository),
         }
     except Exception:
         return {}
+
+
+def _decision_entry(dr: DecisionRecord) -> dict[str, Any]:
+    """One accepted decision, with at most three affected files."""
+    try:
+        affected_files = json.loads(dr.affected_files_json or "[]")[:3]
+    except (json.JSONDecodeError, TypeError):
+        affected_files = []
+    return {
+        "id": dr.id,
+        "title": dr.title,
+        "status": dr.status,
+        "confidence": dr.confidence,
+        "verification": dr.verification,
+        "affected_files": affected_files,
+    }

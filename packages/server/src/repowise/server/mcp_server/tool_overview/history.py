@@ -11,38 +11,39 @@ def _build_git_health(all_git: list) -> dict[str, Any]:
     if not all_git:
         return {}
 
-    hotspot_count = sum(1 for g in all_git if g.is_hotspot)
     bus_factors = [getattr(g, "bus_factor", 0) or 0 for g in all_git]
-    avg_bus = sum(bus_factors) / len(bus_factors) if bus_factors else 0
-    bf1 = sum(1 for b in bus_factors if b == 1)
-    c30_total = sum(g.commit_count_30d or 0 for g in all_git)
-    c90_total = sum(g.commit_count_90d or 0 for g in all_git)
-    baseline = c90_total - c30_total
-    if baseline > 0:
-        ratio = (c30_total / 30.0) / (baseline / 60.0)
-        churn_trend = "increasing" if ratio > 1.5 else ("decreasing" if ratio < 0.5 else "stable")
-    else:
-        churn_trend = "increasing" if c30_total > 0 else "stable"
-    # Top churn modules (group by first directory component)
-    module_churn: Counter = Counter()
-    for g in all_git:
-        parts = g.file_path.split("/")
-        mod = parts[0] if len(parts) == 1 else "/".join(parts[:2])
-        module_churn[mod] += g.commit_count_90d or 0
-    top_modules = [m for m, _ in module_churn.most_common(5) if module_churn[m] > 0]
-
     return {
         # Files that carry git history (churn/ownership), NOT the parsed file
         # total — a repo can parse more files than git attributes (vendored,
         # generated, or newly added files have no 90-day history). Named
         # explicitly so the two counts don't read as a discrepancy.
         "files_git_attributed": len(all_git),
-        "hotspot_count": hotspot_count,
-        "avg_bus_factor": round(avg_bus, 1),
-        "files_with_bus_factor_1": bf1,
-        "churn_trend": churn_trend,
-        "top_churn_modules": top_modules,
+        "hotspot_count": sum(1 for g in all_git if g.is_hotspot),
+        "avg_bus_factor": round(sum(bus_factors) / len(bus_factors), 1),
+        "files_with_bus_factor_1": sum(1 for b in bus_factors if b == 1),
+        "churn_trend": _churn_trend(all_git),
+        "top_churn_modules": _top_churn_modules(all_git),
     }
+
+
+def _churn_trend(all_git: list) -> str:
+    """Last-30-day commit rate against the 60 days before it."""
+    c30_total = sum(g.commit_count_30d or 0 for g in all_git)
+    baseline = sum(g.commit_count_90d or 0 for g in all_git) - c30_total
+    if baseline <= 0:
+        return "increasing" if c30_total > 0 else "stable"
+    ratio = (c30_total / 30.0) / (baseline / 60.0)
+    if ratio > 1.5:
+        return "increasing"
+    return "decreasing" if ratio < 0.5 else "stable"
+
+
+def _top_churn_modules(all_git: list) -> list[str]:
+    """Five busiest modules by 90-day commits, keyed on the first two path segments."""
+    module_churn: Counter = Counter()
+    for g in all_git:
+        module_churn["/".join(g.file_path.split("/")[:2])] += g.commit_count_90d or 0
+    return [m for m, _ in module_churn.most_common(5) if module_churn[m] > 0]
 
 
 def _owner_display_name(name: str | None, email: str) -> str:

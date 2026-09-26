@@ -21,17 +21,10 @@ def _tool_surface_guide(
         if enabled_names is None
         else enabled_names
     )
-    default_key = "default_workspace" if is_workspace else "default_single_repo"
-    eligible_key = "eligible_workspace" if is_workspace else "eligible_single_repo"
+    mode = "workspace" if is_workspace else "single_repo"
+    default_key = f"default_{mode}"
+    eligible_key = f"eligible_{mode}"
     selected = [row for row in rows if row["name"] in enabled]
-    recipes: list[dict[str, str]] = []
-    seen_recipes: set[str] = set()
-    for row in selected:
-        for recipe in row["recipes"]:
-            if recipe["name"] in seen_recipes or not set(recipe["requires"]) <= enabled:
-                continue
-            seen_recipes.add(recipe["name"])
-            recipes.append({"name": recipe["name"], "call": recipe["call"]})
     opt_in = [
         {
             "name": row["name"],
@@ -42,7 +35,7 @@ def _tool_surface_guide(
         if row["tier"] == "specialist" and row[eligible_key]
     ]
     return {
-        "mode": "workspace" if is_workspace else "single_repo",
+        "mode": mode,
         "counts": {
             "enabled": len(selected),
             "default": sum(row[default_key] for row in rows),
@@ -61,5 +54,18 @@ def _tool_surface_guide(
             for row in selected
         ],
         "opt_in": opt_in,
-        "recipes": recipes,
+        "recipes": _runnable_recipes(selected, enabled),
     }
+
+
+def _runnable_recipes(selected: list[dict[str, Any]], enabled: set[str]) -> list[dict[str, str]]:
+    """Each recipe once, in tool order, when every tool it requires is enabled."""
+    recipes: list[dict[str, str]] = []
+    seen_recipes: set[str] = set()
+    for row in selected:
+        for recipe in row["recipes"]:
+            if recipe["name"] in seen_recipes or not set(recipe["requires"]) <= enabled:
+                continue
+            seen_recipes.add(recipe["name"])
+            recipes.append({"name": recipe["name"], "call": recipe["call"]})
+    return recipes

@@ -79,32 +79,15 @@ def _build_guided_tour(
     want_tour: bool,
 ) -> None:
     """Attach the layer order always; the tour steps only behind include=["tour"]."""
-    from repowise.core.generation.models import compute_page_id
-
     try:
         ov_meta = json.loads(overview_page.metadata_json or "{}")
     except (json.JSONDecodeError, TypeError):
         ov_meta = {}
     tour = _dedupe_tour_steps(ov_meta.get("guided_tour") or []) if want_tour else []
     if tour:
-        steps = []
-        for n, s in enumerate(tour, start=1):
-            page_id = compute_page_id(s.get("page_type", "file_page"), s.get("target_path", ""))
-            steps.append(
-                {
-                    "order": n,
-                    "title": s.get("title"),
-                    "kind": s.get("kind"),
-                    "reason": s.get("reason"),
-                    "target_path": s.get("target_path"),
-                    "page_id": page_id,
-                    # A tour step is a walk of the import graph, so it crosses
-                    # the outline rather than following it; the section says
-                    # which part of the tree each stop landed in.
-                    "section": sections.get(page_id),
-                }
-            )
-        result["guided_tour"] = steps
+        result["guided_tour"] = [
+            _tour_step(n, s, sections) for n, s in enumerate(tour, start=1)
+        ]
         result["guided_tour_hint"] = (
             "Topology-ordered walk of the codebase: read these page_ids "
             "in order — entry points first, then the files they import, "
@@ -113,3 +96,22 @@ def _build_guided_tour(
     layer_order = ov_meta.get("layer_order") or []
     if layer_order:
         result.setdefault("architecture", {})["layer_order"] = layer_order
+
+
+def _tour_step(n: int, s: dict[str, Any], sections: dict[str, str | None]) -> dict[str, Any]:
+    """One numbered tour stop, resolved to the page it lands on."""
+    from repowise.core.generation.models import compute_page_id
+
+    page_id = compute_page_id(s.get("page_type", "file_page"), s.get("target_path", ""))
+    return {
+        "order": n,
+        "title": s.get("title"),
+        "kind": s.get("kind"),
+        "reason": s.get("reason"),
+        "target_path": s.get("target_path"),
+        "page_id": page_id,
+        # A tour step is a walk of the import graph, so it crosses
+        # the outline rather than following it; the section says
+        # which part of the tree each stop landed in.
+        "section": sections.get(page_id),
+    }

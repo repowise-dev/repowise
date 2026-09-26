@@ -37,6 +37,20 @@ def _compact_overview_content(content: str) -> str:
     return _H2_SPLIT_RE.split(text, maxsplit=1)[0].strip()
 
 
+def _overview_content(overview_page: Page | None, want_full: bool) -> tuple[str, str | None]:
+    """The essay served as ``content_md``, and the hint to show when it was trimmed."""
+    full_content = overview_page.content if overview_page else "No overview generated yet."
+    if want_full:
+        return full_content, None
+    content_md = _compact_overview_content(full_content)
+    if content_md == full_content:
+        return content_md, None
+    return content_md, (
+        "Overview essay trimmed to its summary section. "
+        'Call get_overview(include=["content"]) for the full walkthrough.'
+    )
+
+
 async def _load_overview_page(session: Any, repository: Any) -> Page | None:
     """Repo overview page, preferring the canonical target_path=<repo_name> row."""
     result = await session.execute(

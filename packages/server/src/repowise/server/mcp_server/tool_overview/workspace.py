@@ -8,11 +8,12 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import GraphNode, Page
+from repowise.core.persistence.models import GraphNode
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import _get_repo, _resolve_all_contexts
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server.tool_overview.pages import _load_overview_page
 from repowise.server.mcp_server.tool_overview.surface import _tool_surface_guide
 
 
@@ -20,87 +21,15 @@ async def _workspace_overview() -> dict:
     """Build a concise workspace-level overview across all repos."""
     contexts = await _resolve_all_contexts()
     registry = _state._registry
-
-    repos_info: list[dict] = []
-    total_files = 0
-    total_symbols = 0
-
-    for ctx in contexts:
-        async with get_session(ctx.session_factory) as session:
-            repo_obj = await _get_repo(session)
-
-            # One-line summary from repo_overview page. Same multi-row
-            # safety as the single-repo path below.
-            ov_result = await session.execute(
-                select(Page.content)
-                .where(
-                    Page.repository_id == repo_obj.id,
-                    Page.page_type == "repo_overview",
-                )
-                .order_by(
-                    (Page.target_path == repo_obj.name).desc(),
-                    Page.updated_at.desc(),
-                )
-            )
-            ov_content = ov_result.scalars().first() or ""
-            summary = ov_content.split("\n")[0].strip("# ").strip()[:200] if ov_content else ""
-
-            # File and symbol counts
-            file_count_res = await session.execute(
-                select(sa_func.count())
-                .select_from(GraphNode)
-                .where(
-                    GraphNode.repository_id == repo_obj.id,
-                    GraphNode.node_type == "file",
-                )
-            )
-            file_count = file_count_res.scalar_one()
-
-            symbol_count_res = await session.execute(
-                select(sa_func.count())
-                .select_from(GraphNode)
-                .where(
-                    GraphNode.repository_id == repo_obj.id,
-                    GraphNode.node_type == "symbol",
-                )
-            )
-            symbol_count = symbol_count_res.scalar_one()
-
-            total_files += file_count
-            total_symbols += symbol_count
-
-            is_default = registry is not None and ctx.alias == registry.get_default_alias()
-
-            repos_info.append(
-                {
-                    "alias": ctx.alias,
-                    "path": str(ctx.path),
-                    "summary": summary,
-                    "file_count": file_count,
-                    "symbol_count": symbol_count,
-                    "is_default": is_default,
-                }
-            )
-
-    # Cross-repo topology (Phase 3 + 4)
-    cross_repo_topology: dict[str, Any] = {}
-    enricher = _state._cross_repo_enricher
-    if enricher is not None and enricher.has_data:
-        cross_repo_topology = enricher.get_cross_repo_summary()
-        if enricher.has_contract_data:
-            cross_repo_topology["contracts"] = enricher.get_contract_summary()
-        # Add per-repo package deps
-        for repo_info in repos_info:
-            deps = enricher.get_package_deps(repo_info["alias"])
-            if deps:
-                repo_info["depends_on"] = sorted(set(d["target_repo"] for d in deps))
+    repos_info = [await _repo_entry(ctx, registry) for ctx in contexts]
+    cross_repo_topology = _cross_repo_topology(repos_info)
 
     result: dict[str, Any] = {
         "workspace": True,
         "workspace_root": str(registry.workspace_root) if registry else "",
         "total_repos": len(repos_info),
-        "total_files": total_files,
-        "total_symbols": total_symbols,
+        "total_files": sum(r["file_count"] for r in repos_info),
+        "total_symbols": sum(r["symbol_count"] for r in repos_info),
         "repos": repos_info,
         "hint": ("Use repo='<alias>' to query a specific repo. Omit repo to use the default."),
         "tool_surface": _tool_surface_guide(is_workspace=True),
@@ -114,6 +43,55 @@ async def _workspace_overview() -> dict:
     )
     collector.attach(result)
     return result
+
+
+async def _repo_entry(ctx: Any, registry: Any) -> dict[str, Any]:
+    """One repo's line in the workspace summary: overview headline and graph size."""
+    async with get_session(ctx.session_factory) as session:
+        repo_obj = await _get_repo(session)
+        # Same multi-row safety as the single-repo overview.
+        overview_page = await _load_overview_page(session, repo_obj)
+        ov_content = (overview_page.content if overview_page else None) or ""
+        return {
+            "alias": ctx.alias,
+            "path": str(ctx.path),
+            "summary": ov_content.split("\n")[0].strip("# ").strip()[:200],
+            "file_count": await _count_nodes(session, repo_obj.id, "file"),
+            "symbol_count": await _count_nodes(session, repo_obj.id, "symbol"),
+            "is_default": registry is not None and ctx.alias == registry.get_default_alias(),
+        }
+
+
+async def _count_nodes(session: Any, repository_id: str, node_type: str) -> int:
+    result = await session.execute(
+        select(sa_func.count())
+        .select_from(GraphNode)
+        .where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == node_type,
+        )
+    )
+    return result.scalar_one()
+
+
+def _cross_repo_topology(repos_info: list[dict[str, Any]]) -> dict[str, Any]:
+    """Cross-repo summary and contracts; also tags each repo with the repos it depends on."""
+    enricher = _enricher_with_data()
+    if enricher is None:
+        return {}
+    topology = enricher.get_cross_repo_summary()
+    if enricher.has_contract_data:
+        topology["contracts"] = enricher.get_contract_summary()
+    for repo_info in repos_info:
+        deps = enricher.get_package_deps(repo_info["alias"])
+        if deps:
+            repo_info["depends_on"] = sorted(set(d["target_repo"] for d in deps))
+    return topology
+
+
+def _enricher_with_data() -> Any | None:
+    enricher = _state._cross_repo_enricher
+    return enricher if enricher is not None and enricher.has_data else None
 
 
 def _build_workspace_footer() -> dict | None:
@@ -139,9 +117,8 @@ def _build_workspace_footer() -> dict | None:
         ),
     }
 
-    # Cross-repo intelligence (Phase 3 + 4)
-    enricher = _state._cross_repo_enricher
-    if enricher is not None and enricher.has_data:
+    enricher = _enricher_with_data()
+    if enricher is not None:
         footer["cross_repo"] = enricher.get_cross_repo_summary()
         if enricher.has_contract_data:
             footer["contract_links"] = enricher.get_contract_summary()

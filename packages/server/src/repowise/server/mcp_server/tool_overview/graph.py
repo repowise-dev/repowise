@@ -64,28 +64,27 @@ def _build_community_summary(all_nodes: list[GraphNode]) -> list[dict[str, Any]]
             community_groups[n.community_id].append(n)
 
     generic_labels = {"packages", "src", "lib", "core", "app", ""}
-    community_summary: list[dict[str, Any]] = []
-    for cid, members in sorted(community_groups.items(), key=lambda x: -len(x[1])):
-        if len(community_summary) >= 10:
-            break
-        label = ""
-        if members:
-            try:
-                meta = json.loads(members[0].community_meta_json or "{}")
-                label = meta.get("label", "")
-            except (json.JSONDecodeError, TypeError):
-                pass
+    largest = sorted(community_groups.items(), key=lambda x: -len(x[1]))[:10]
+    # No cohesion in the payload: a 3-decimal internal clustering metric
+    # gives an agent nothing to act on. Label + size carry the map.
+    return [
+        {
+            "id": cid,
+            "label": _community_display_label(
+                _stored_label(members[0]), members, cid, generic_labels
+            ),
+            "size": len(members),
+        }
+        for cid, members in largest
+    ]
 
-        # No cohesion in the payload: a 3-decimal internal clustering metric
-        # gives an agent nothing to act on. Label + size carry the map.
-        community_summary.append(
-            {
-                "id": cid,
-                "label": _community_display_label(label, members, cid, generic_labels),
-                "size": len(members),
-            }
-        )
-    return community_summary
+
+def _stored_label(node: GraphNode) -> str:
+    """The label community detection stored on a member, or "" when unreadable."""
+    try:
+        return json.loads(node.community_meta_json or "{}").get("label", "")
+    except (json.JSONDecodeError, TypeError):
+        return ""
 
 
 async def _build_architecture(session: Any, repository: Any) -> dict[str, Any]:

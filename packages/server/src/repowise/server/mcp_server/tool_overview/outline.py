@@ -38,27 +38,32 @@ async def _load_tree_rows(session: Any, repository: Any) -> list[Any]:
 
 def _outline_index(rows: list[Any]) -> tuple[Any | None, dict[str, list[Any]]]:
     """Root row and parent → children map, or ``(None, {})`` for an unbuilt tree."""
-    by_id = {r.id: r for r in rows}
-    children: dict[str, list[Any]] = defaultdict(list)
-    claimed: set[str] = set()
-    for row in rows:
-        parent = row.parent_page_id
-        if parent and parent != row.id and parent in by_id:
-            children[parent].append(row)
-            claimed.add(row.id)
-    if not claimed:
+    children = _children_by_parent(rows)
+    if not children:
         # Every parent is null: the store predates the tree, or it has not been
         # rebuilt since. An outline built from that would be a flat list
         # dressed up as a hierarchy, so none is served.
         return None, {}
-    for siblings in children.values():
-        siblings.sort(key=lambda r: (r.display_order or 0, r.target_path or "", r.id))
+    claimed = {kid.id for kids in children.values() for kid in kids}
     candidates = [r for r in rows if r.id not in claimed and r.id in children]
     root = next(
         (r for r in candidates if r.page_type == "repo_overview"),
         candidates[0] if candidates else None,
     )
     return root, children
+
+
+def _children_by_parent(rows: list[Any]) -> dict[str, list[Any]]:
+    """Rows grouped under a parent that exists and is not the row itself, siblings ordered."""
+    by_id = {r.id: r for r in rows}
+    children: dict[str, list[Any]] = defaultdict(list)
+    for row in rows:
+        parent = row.parent_page_id
+        if parent and parent != row.id and parent in by_id:
+            children[parent].append(row)
+    for siblings in children.values():
+        siblings.sort(key=lambda r: (r.display_order or 0, r.target_path or "", r.id))
+    return children
 
 
 def _count_descendants(row: Any, children: dict[str, list[Any]], seen: set[str]) -> int:
