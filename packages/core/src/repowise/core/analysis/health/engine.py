@@ -112,6 +112,10 @@ log = structlog.get_logger(__name__)
 # and a declining call's arguments are not scanned, so an assertion passed as an
 # argument still does not stand in for the header's oracle.
 #
+# v32: the history (organizational) cap follows the file's structure half,
+# ``history_cap(structure)`` in scoring.py, so every stored score that carries
+# a history deduction, and the refactoring impact figures, move.
+#
 # v31: Pascal opts into assertion detection (``assert_call_kinds``): DUnit's
 # ``Check``/``CheckEquals``/``Fail`` family (a new ``asserts/lexicon.py`` row,
 # broad tier) and DUnitX's ``Assert.*`` plus the RTL's own ``Assert(cond, msg)``
@@ -303,7 +307,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 31
+HEALTH_ANALYZER_VERSION = 32
 
 
 def walked_functions(
