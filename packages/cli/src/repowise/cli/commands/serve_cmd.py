@@ -627,7 +627,20 @@ def serve_command(
     # Auto-detect local .repowise/ directory if REPOWISE_DB_URL is not set.
     # repowise init writes to <repo>/.repowise/wiki.db, so honour it when
     # the user runs `repowise serve` from the same directory.
-    if not os.environ.get("REPOWISE_DB_URL"):
+    #
+    # Skip this when cwd is inside a workspace (has an upstream
+    # .repowise-workspace.yaml). Setting REPOWISE_DB_URL here is read back
+    # by the workspace-detection code in app.py as "the user explicitly
+    # configured one shared database for the whole workspace" (the real,
+    # separate shared-DB/Postgres feature), which then routes every repo
+    # lookup through the workspace root's own near-empty coordinator
+    # wiki.db instead of each repo's own <repo>/.repowise/wiki.db. Every
+    # repo in the workspace then reports needs_index with zeroed stats,
+    # and the UI can't open any of them even though each repo's own index
+    # is complete and correct on disk.
+    from repowise.core.workspace.config import find_workspace_root
+
+    if not os.environ.get("REPOWISE_DB_URL") and find_workspace_root() is None:
         local_repowise = Path.cwd() / ".repowise"
         if local_repowise.exists():
             local_db = local_repowise / "wiki.db"
