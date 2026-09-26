@@ -8,6 +8,7 @@ of :mod:`kg_curation`, which calls :func:`_curate_tour`.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -351,32 +352,10 @@ def _curate_tour(
     if not file_nodes:
         return None
 
-    paths = [n["filePath"] for n in file_nodes]
-    type_by_path = {n["filePath"]: n.get("type", "file") for n in file_nodes}
-    lang_by_path = {n["filePath"]: (n.get("language") or "").lower() for n in file_nodes}
-    code_langs = [
-        lang
-        for p, lang in lang_by_path.items()
-        if lang and type_by_path.get(p) not in {"config", "document"}
-    ]
-    dominant_lang = _dominant_language(code_langs)
+    ctx = _TourContext.build(kg, file_nodes, parsed_files, graph_builder)
     # How much may the tour honestly claim? Exported additively so
     # consumers (UI, harness) can see the degradation level.
-    graph_mode = _graph_mode(dominant_lang, lang_by_path, graph_builder)
-    kg.project["graph_mode"] = graph_mode
-    file_layers = {p: infer_layer(p, lang_by_path.get(p)) for p in paths}
-    order = compute_layer_order(file_layers, _file_import_edges(graph_builder))
-
-    pagerank = graph_builder.pagerank() or {}
-    rank = {path: s for s, path in score_entry_points(parsed_files, pagerank)}
-    barrels = {
-        pf.file_info.path
-        for pf in parsed_files
-        if getattr(pf, "file_info", None) and _is_barrel(pf)
-    }
-
-    # Infra files (Docker/CI/etc.) close the tour; everything else is code.
-    infra_paths = [p for p in paths if type_by_path.get(p) in {"service", "pipeline"}]
+    kg.project["graph_mode"] = ctx.graph_mode
 
     # The overview step retargets to the root README — keep that file out of
     # the walk so the tour never visits it twice. Tests and example programs
@@ -387,9 +366,9 @@ def _curate_tour(
     overview_target = readme["filePath"] if readme is not None else None
     walk_universe = [
         p
-        for p in paths
+        for p in ctx.paths
         if p != overview_target
-        and file_layers.get(p) not in ADJACENT_LAYERS
+        and ctx.file_layers.get(p) not in ADJACENT_LAYERS
         and not is_support_path(p)
         and not PurePosixPath(p).parts[0].startswith(".")  # dot-dir tooling
     ]
@@ -400,13 +379,14 @@ def _curate_tour(
     # and infra stops.
     base = build_tour(
         parsed_files,
-        pagerank,
+        ctx.pagerank,
         _file_import_edges(graph_builder),
-        file_page_paths=[] if graph_mode == "structural" else walk_universe,
-        infra_paths=infra_paths,
+        file_page_paths=[] if ctx.graph_mode == "structural" else walk_universe,
+        # Infra files (Docker/CI/etc.) close the tour; everything else is code.
+        infra_paths=[p for p in ctx.paths if ctx.type_by_path.get(p) in {"service", "pipeline"}],
         repo_name=project_name,
         max_stops=DEFAULT_MAX_STOPS,
-        graph_mode=graph_mode,
+        graph_mode=ctx.graph_mode,
         anchor_rank=_anchor_fanout_rank(graph_builder),
     )
 
@@ -416,23 +396,127 @@ def _curate_tour(
     if not overview:
         overview_target = None
 
-    by_layer: dict[str, list[str]] = defaultdict(list)
-    for p in paths:
-        by_layer[file_layers[p]].append(p)
+    closing_paths = _closing_stop_paths(ctx, graph_builder)
+    budget = max(0, DEFAULT_MAX_STOPS - len(overview) - len(closing_paths) - len(infra))
 
-    # One closing stop per adjacent layer present (the test suite) — tests
-    # verify the system, they don't start it, so they never lead the walk.
-    # Face = the shallowest suite anchor when present (conftest /
-    # spec_helper / test_helper — registry-declared suite roots), else the
-    # best code file, else anything (never a stray Cargo.toml if avoidable).
-    #
-    # Shared test harness files — base classes and helpers imported by two
-    # or more other test files (AbstractFileSystemTest, BaseTestCase,
-    # SpecUtil) — are what the suite runs ON, not where tests start. Their
-    # heavy in-degree otherwise wins the pagerank tie-break on every repo
-    # with shared fixtures.
+    if ctx.graph_mode == "structural":
+        # Structure, not flow: evidence-ranked anchor + one face per
+        # top-level code area. No layer-coverage swaps — the directory walk
+        # IS the diversity, and "most depended-on" claims need edges.
+        walk, structural_reasons = _structural_walk(
+            walk_universe,
+            ctx.type_by_path,
+            ctx.dominant_lang,
+            ctx.pagerank,
+            graph_builder,
+            project_name=project_name,
+        )
+        walk = walk[:budget]
+        flow = _FlowWalk(walk=walk)
+    else:
+        structural_reasons = {}
+        flow = _flow_walk(
+            ctx, base, base_code, walk_universe, overview_target, budget, hotspot_commits
+        )
+
+    # --- Assemble the exported tour --------------------------------------
+    tour: list[dict] = []
+    if overview:
+        tour.append(_overview_step(overview[0], readme, ctx.file_layers))
+    walk_steps, max_depth = _walk_steps(
+        flow, structural_reasons, base_code, ctx, first_order=len(tour) + 1
+    )
+    tour.extend(walk_steps)
+    tour.extend(
+        _closing_steps(closing_paths, ctx, first_order=len(tour) + 1, depth_after=max_depth)
+    )
+    for s in infra:
+        step = s.as_dict()
+        step["order"] = len(tour) + 1
+        step["layer_id"] = f"layer:{_slugify(ctx.file_layers.get(s.target_path, 'Config'))}"
+        tour.append(step)
+    return tour
+
+
+@dataclass
+class _TourContext:
+    """Per-file facts every stage of the tour reads."""
+
+    paths: list[str]
+    type_by_path: dict[str, str]
+    lang_by_path: dict[str, str]
+    code_langs: list[str]
+    dominant_lang: str
+    graph_mode: str
+    file_layers: dict[str, str]
+    order: list[str]
+    pagerank: dict[str, float]
+    rank: dict[str, float]
+    barrels: set[str]
+    by_layer: dict[str, list[str]]
+
+    @classmethod
+    def build(
+        cls,
+        kg: KnowledgeGraphResult,
+        file_nodes: list[dict],
+        parsed_files: list[Any],
+        graph_builder: Any,
+    ) -> _TourContext:
+        paths = [n["filePath"] for n in file_nodes]
+        type_by_path = {n["filePath"]: n.get("type", "file") for n in file_nodes}
+        lang_by_path = {n["filePath"]: (n.get("language") or "").lower() for n in file_nodes}
+        code_langs = [
+            lang
+            for p, lang in lang_by_path.items()
+            if lang and type_by_path.get(p) not in {"config", "document"}
+        ]
+        dominant_lang = _dominant_language(code_langs)
+        graph_mode = _graph_mode(dominant_lang, lang_by_path, graph_builder)
+        file_layers = {p: infer_layer(p, lang_by_path.get(p)) for p in paths}
+        order = compute_layer_order(file_layers, _file_import_edges(graph_builder))
+
+        pagerank = graph_builder.pagerank() or {}
+        rank = {path: s for s, path in score_entry_points(parsed_files, pagerank)}
+        barrels = {
+            pf.file_info.path
+            for pf in parsed_files
+            if getattr(pf, "file_info", None) and _is_barrel(pf)
+        }
+        by_layer: dict[str, list[str]] = defaultdict(list)
+        for p in paths:
+            by_layer[file_layers[p]].append(p)
+        return cls(
+            paths=paths,
+            type_by_path=type_by_path,
+            lang_by_path=lang_by_path,
+            code_langs=code_langs,
+            dominant_lang=dominant_lang,
+            graph_mode=graph_mode,
+            file_layers=file_layers,
+            order=order,
+            pagerank=pagerank,
+            rank=rank,
+            barrels=barrels,
+            by_layer=by_layer,
+        )
+
+
+def _closing_stop_paths(ctx: _TourContext, graph_builder: Any) -> list[str]:
+    """One closing stop per adjacent layer present (the test suite).
+
+    Tests verify the system, they don't start it, so they never lead the
+    walk. Face = the shallowest suite anchor when present (conftest /
+    spec_helper / test_helper — registry-declared suite roots), else the best
+    code file, else anything (never a stray Cargo.toml if avoidable).
+
+    Shared test harness files — base classes and helpers imported by two or
+    more other test files (AbstractFileSystemTest, BaseTestCase, SpecUtil) —
+    are what the suite runs ON, not where tests start. Their heavy in-degree
+    otherwise wins the pagerank tie-break on every repo with shared fixtures.
+    """
     adjacent_paths = {
-        p for layer in ADJACENT_LAYERS for p in by_layer.get(layer, [])
+        p for layer in ADJACENT_LAYERS for p in ctx.by_layer.get(layer, [])
     }
     # Fan-out groups (one import statement expanded to many sibling targets
     # — Go/JVM package imports) are *not* evidence that a specific file is
@@ -443,223 +527,240 @@ def _curate_tour(
         if src != dst and src in adjacent_paths and dst in adjacent_paths:
             harness_in[dst] += 1
     closing_paths: list[str] = []
-    for layer in order:
-        cands = by_layer.get(layer)
+    for layer in ctx.order:
+        cands = ctx.by_layer.get(layer)
         if layer not in ADJACENT_LAYERS or not cands:
             continue
-        anchors = sorted(
-            (p for p in cands if PurePosixPath(p).stem.lower() in _SUITE_ANCHOR_STEMS),
-            key=lambda p: (len(PurePosixPath(p).parts), p),
-        )
-        if anchors:
-            closing_paths.append(anchors[0])
-            continue
-        code_cands = [
-            p
-            for p in cands
-            if type_by_path.get(p) not in {"config", "document"}
-            # Declaration descriptors (module-info.java) are source files
-            # that describe a module, not tests — gson's shallow JPMS
-            # descriptor must never face the suite.
-            and PurePosixPath(p).name not in _DESCRIPTOR_FILENAMES
-            # Fixture-shaped files (FooFixtures.java) hold test data; the
-            # suite's face must be something that verifies behavior.
-            and not _is_fixture_shaped(p)
-        ]
-        # Drop harness files unless that would leave nothing. One
-        # single-target import from another test file is already harness
-        # evidence — leaf tests have zero (okio's CipherFactory.kt had
-        # exactly one cipher-test importer and still faced the suite).
-        non_harness = [p for p in code_cands if harness_in.get(p, 0) < 1]
-        if non_harness:
-            code_cands = non_harness
-        # When the repo declares test *projects* (.NET's Foo.Tests/ or
-        # Foo.Specs/ sibling-project convention), the suite lives there —
-        # a test/Shared/ helper dir next to them is auxiliary compile-time
-        # plumbing, not where a maintainer says tests start.
-        in_test_project = [
-            p
-            for p in code_cands
-            if any(
-                seg.endswith(_TEST_PROJECT_DIR_SUFFIXES) and len(seg) > 1
-                for seg in PurePosixPath(p).parts[:-1]
-            )
-        ]
-        if in_test_project:
-            code_cands = in_test_project
-        if code_cands:
-            # No suite anchor (non-pytest/rspec suites): prefer the repo's
-            # dominant language (gson's suite face is a .java, not a stray
-            # .proto), then the shallowest test-root file (django's
-            # tests/runtests.py), most-imported as the tie-break.
-            code_cands.sort(
-                key=lambda p: (
-                    lang_by_path.get(p, "") != dominant_lang,
-                    len(PurePosixPath(p).parts),
-                    -pagerank.get(p, 0.0),
-                    p,
-                )
-            )
-            closing_paths.append(code_cands[0])
-        else:
-            closing_paths.append(_best_in_layer(cands, rank, pagerank))
+        closing_paths.append(_suite_face(cands, ctx, harness_in))
+    return closing_paths
 
-    budget = max(0, DEFAULT_MAX_STOPS - len(overview) - len(closing_paths) - len(infra))
-    swapped_depth: dict[str, int] = {}  # rep path -> depth of the slot it fills
-    structural_reasons: dict[str, str] = {}
+
+def _suite_face(cands: list[str], ctx: _TourContext, harness_in: Counter[str]) -> str:
+    """The file that stands for one adjacent layer's suite in the tour."""
+    anchors = sorted(
+        (p for p in cands if PurePosixPath(p).stem.lower() in _SUITE_ANCHOR_STEMS),
+        key=lambda p: (len(PurePosixPath(p).parts), p),
+    )
+    if anchors:
+        return anchors[0]
+    code_cands = [
+        p
+        for p in cands
+        if ctx.type_by_path.get(p) not in {"config", "document"}
+        # Declaration descriptors (module-info.java) are source files
+        # that describe a module, not tests — gson's shallow JPMS
+        # descriptor must never face the suite.
+        and PurePosixPath(p).name not in _DESCRIPTOR_FILENAMES
+        # Fixture-shaped files (FooFixtures.java) hold test data; the
+        # suite's face must be something that verifies behavior.
+        and not _is_fixture_shaped(p)
+    ]
+    # Drop harness files unless that would leave nothing. One
+    # single-target import from another test file is already harness
+    # evidence — leaf tests have zero (okio's CipherFactory.kt had
+    # exactly one cipher-test importer and still faced the suite).
+    non_harness = [p for p in code_cands if harness_in.get(p, 0) < 1]
+    if non_harness:
+        code_cands = non_harness
+    # When the repo declares test *projects* (.NET's Foo.Tests/ or
+    # Foo.Specs/ sibling-project convention), the suite lives there —
+    # a test/Shared/ helper dir next to them is auxiliary compile-time
+    # plumbing, not where a maintainer says tests start.
+    in_test_project = [p for p in code_cands if _in_test_project(p)]
+    if in_test_project:
+        code_cands = in_test_project
+    if not code_cands:
+        return _best_in_layer(cands, ctx.rank, ctx.pagerank)
+    # No suite anchor (non-pytest/rspec suites): prefer the repo's
+    # dominant language (gson's suite face is a .java, not a stray
+    # .proto), then the shallowest test-root file (django's
+    # tests/runtests.py), most-imported as the tie-break.
+    return min(
+        code_cands,
+        key=lambda p: (
+            ctx.lang_by_path.get(p, "") != ctx.dominant_lang,
+            len(PurePosixPath(p).parts),
+            -ctx.pagerank.get(p, 0.0),
+            p,
+        ),
+    )
+
+
+def _in_test_project(path: str) -> bool:
+    return any(
+        seg.endswith(_TEST_PROJECT_DIR_SUFFIXES) and len(seg) > 1
+        for seg in PurePosixPath(path).parts[:-1]
+    )
+
+
+@dataclass
+class _FlowWalk:
+    """The code stops of the tour and how each one got there."""
+
+    walk: list[str]
+    swapped_depth: dict[str, int] = field(default_factory=dict)  # rep -> depth of its slot
     hotspot_added: str | None = None  # churn hotspot given a reserved slot
 
-    if graph_mode == "structural":
-        # Structure, not flow: evidence-ranked anchor + one face per
-        # top-level code area. No layer-coverage swaps — the directory walk
-        # IS the diversity, and "most depended-on" claims need edges.
-        walk, structural_reasons = _structural_walk(
-            walk_universe,
-            type_by_path,
-            dominant_lang,
-            pagerank,
-            graph_builder,
-            project_name=project_name,
-        )
-        walk = walk[:budget]
-    else:
-        # The walk = build_tour's execution order minus adjacent-layer stops
-        # and example programs (documentation-by-code, not the system),
-        # truncated up front so later swaps land inside the kept window.
-        walk_all = [
-            s.target_path
-            for s in base
-            if s.kind == "code"
-            and s.target_path != overview_target
-            and file_layers.get(s.target_path) not in ADJACENT_LAYERS
-            and not is_support_path(s.target_path)
+
+def _flow_walk(
+    ctx: _TourContext,
+    base: list[Any],
+    base_code: dict[str, Any],
+    walk_universe: list[str],
+    overview_target: str | None,
+    budget: int,
+    hotspot_commits: dict[str, int] | None,
+) -> _FlowWalk:
+    """build_tour's execution order, trimmed to the budget and diversified.
+
+    The walk = build_tour's execution order minus adjacent-layer stops and
+    example programs (documentation-by-code, not the system), truncated up
+    front so later swaps land inside the kept window.
+    """
+    walk_all = [
+        s.target_path
+        for s in base
+        if s.kind == "code"
+        and s.target_path != overview_target
+        and ctx.file_layers.get(s.target_path) not in ADJACENT_LAYERS
+        and not is_support_path(s.target_path)
+    ]
+    # A genuine churn hotspot off the hot import path (a constantly-edited
+    # pipeline file buried in a large catch-all layer) earns one reserved
+    # slot — picked from the whole code universe, not just build_tour's
+    # selection, and only when it is not already a stop. Repos without git
+    # history pass an empty map, so the reserve is a no-op there.
+    hotspot_path: str | None = None
+    if hotspot_commits:
+        hotspot_pool = [
+            p
+            for p in walk_universe
+            if p not in ctx.barrels
+            and ctx.file_layers.get(p) not in ADJACENT_LAYERS
+            and ctx.type_by_path.get(p) not in {"config", "document"}
         ]
-        # A genuine churn hotspot off the hot import path (a constantly-edited
-        # pipeline file buried in a large catch-all layer) earns one reserved
-        # slot — picked from the whole code universe, not just build_tour's
-        # selection, and only when it is not already a stop. Repos without git
-        # history pass an empty map, so the reserve is a no-op there.
-        hotspot_path: str | None = None
-        if hotspot_commits:
-            hotspot_pool = [
-                p
-                for p in walk_universe
-                if p not in barrels
-                and file_layers.get(p) not in ADJACENT_LAYERS
-                and type_by_path.get(p) not in {"config", "document"}
-            ]
-            hotspot_path = select_hotspot_stop(hotspot_pool, hotspot_commits)
-        budgeted = _drop_extra_barrels(walk_all, barrels)[:budget]
-        reserve = 1 if (hotspot_path is not None and hotspot_path not in budgeted) else 0
+        hotspot_path = select_hotspot_stop(hotspot_pool, hotspot_commits)
+    # One re-export barrel earns a stop; the rest are demoted so real code
+    # fills the budget instead of a run of identical "public surface" hubs.
+    code_order = _drop_extra_barrels(walk_all, ctx.barrels)
+    reserve = 1 if (hotspot_path is not None and hotspot_path not in code_order[:budget]) else 0
+    flow = _FlowWalk(walk=code_order[: max(0, budget - reserve)])
 
-        # One re-export barrel earns a stop; the rest are demoted so real code
-        # fills the budget instead of a run of identical "public surface" hubs.
-        walk = _drop_extra_barrels(walk_all, barrels)[: max(0, budget - reserve)]
+    _diversify_layers(flow, ctx, base_code, overview_target)
 
-        # --- Diversify for layer coverage (swap slots, never re-sort) -----
-        seen_layers: set[str] = set()
-        redundant_positions: list[int] = []
-        for i, p in enumerate(walk):
-            layer = file_layers.get(p)
-            if layer in seen_layers:
-                redundant_positions.append(i)
-            else:
-                seen_layers.add(layer)
+    # Spend the reserved slot last so layer-coverage swaps keep priority.
+    if reserve and hotspot_path is not None and hotspot_path not in flow.walk:
+        flow.walk.append(hotspot_path)
+        flow.hotspot_added = hotspot_path
+    return flow
 
-        uncovered = [
-            name for name in order if name not in seen_layers and name not in ADJACENT_LAYERS
-        ]
-        for layer in uncovered:
-            if not redundant_positions:
-                break
-            # Manifests (mix.exs, project.clj, Setup.lhs) are code-shaped
-            # but describe the project rather than implement it — never a
-            # layer's face, same rule as the structural anchor.
-            manifest_names = _LANG_REGISTRY.manifest_filenames()
-            candidates = [
-                p
-                for p in by_layer.get(layer, [])
-                if p not in walk
-                and p != overview_target
-                and not is_support_path(p)
-                and p not in barrels  # a re-export shell is never a layer's face
-                and not PurePosixPath(p).parts[0].startswith(".")  # never a layer face
-                and PurePosixPath(p).name not in manifest_names
-            ]
-            if not candidates:
-                continue
-            # A layer's face must be code. A layer holding only configs/docs
-            # (a plugins/ dir of JSON manifests) gets no manufactured stop —
-            # except Config itself, where "this is where configuration
-            # lives" is the point.
-            # Infra-language scripts (run-hlint.sh, deploy.sh) wire the
-            # project, they don't implement a layer — never its face.
-            infra_langs = _LANG_REGISTRY.infra_languages()
-            code_candidates = [
-                p
-                for p in candidates
-                if type_by_path.get(p) not in {"config", "document"}
-                and lang_by_path.get(p) not in infra_langs
-            ]
-            if not code_candidates and layer != "Config":
-                continue
-            rep = _best_in_layer(code_candidates or candidates, rank, pagerank)
-            pos = redundant_positions.pop()
-            replaced = base_code.get(walk[pos])
-            swapped_depth[rep] = replaced.depth if replaced is not None else 0
-            walk[pos] = rep
+
+def _diversify_layers(
+    flow: _FlowWalk,
+    ctx: _TourContext,
+    base_code: dict[str, Any],
+    overview_target: str | None,
+) -> None:
+    """Swap redundant same-layer stops for faces of uncovered layers.
+
+    Swaps slots, never re-sorts, so the walk keeps its execution order.
+    """
+    walk = flow.walk
+    seen_layers: set[str] = set()
+    redundant_positions: list[int] = []
+    for i, p in enumerate(walk):
+        layer = ctx.file_layers.get(p)
+        if layer in seen_layers:
+            redundant_positions.append(i)
+        else:
             seen_layers.add(layer)
 
-        # Spend the reserved slot last so layer-coverage swaps keep priority.
-        if reserve and hotspot_path is not None and hotspot_path not in walk:
-            walk.append(hotspot_path)
-            hotspot_added = hotspot_path
+    uncovered = [
+        name for name in ctx.order if name not in seen_layers and name not in ADJACENT_LAYERS
+    ]
+    for layer in uncovered:
+        if not redundant_positions:
+            break
+        rep = _layer_face(layer, ctx, walk, overview_target)
+        if rep is None:
+            continue
+        pos = redundant_positions.pop()
+        replaced = base_code.get(walk[pos])
+        flow.swapped_depth[rep] = replaced.depth if replaced is not None else 0
+        walk[pos] = rep
+        seen_layers.add(layer)
 
-    # --- Assemble the exported tour --------------------------------------
-    tour: list[dict] = []
-    order_n = 0
 
-    if overview:
-        order_n += 1
-        ov = overview[0].as_dict()
-        ov["order"] = order_n
-        if readme is not None:
-            ov["target_path"] = readme["filePath"]
-            ov["title"] = PurePosixPath(readme["filePath"]).name
-            ov["layer_id"] = f"layer:{_slugify(file_layers[readme['filePath']])}"
-        else:
-            ov["layer_id"] = None
-        tour.append(ov)
+def _layer_face(
+    layer: str, ctx: _TourContext, walk: list[str], overview_target: str | None
+) -> str | None:
+    """The stop that represents *layer* in the walk, or None if it has no face."""
+    # Manifests (mix.exs, project.clj, Setup.lhs) are code-shaped
+    # but describe the project rather than implement it — never a
+    # layer's face, same rule as the structural anchor.
+    manifest_names = _LANG_REGISTRY.manifest_filenames()
+    candidates = [
+        p
+        for p in ctx.by_layer.get(layer, [])
+        if p not in walk
+        and p != overview_target
+        and not is_support_path(p)
+        and p not in ctx.barrels  # a re-export shell is never a layer's face
+        and not PurePosixPath(p).parts[0].startswith(".")  # never a layer face
+        and PurePosixPath(p).name not in manifest_names
+    ]
+    if not candidates:
+        return None
+    # A layer's face must be code. A layer holding only configs/docs
+    # (a plugins/ dir of JSON manifests) gets no manufactured stop —
+    # except Config itself, where "this is where configuration
+    # lives" is the point.
+    # Infra-language scripts (run-hlint.sh, deploy.sh) wire the
+    # project, they don't implement a layer — never its face.
+    infra_langs = _LANG_REGISTRY.infra_languages()
+    code_candidates = [
+        p
+        for p in candidates
+        if ctx.type_by_path.get(p) not in {"config", "document"}
+        and ctx.lang_by_path.get(p) not in infra_langs
+    ]
+    if not code_candidates and layer != "Config":
+        return None
+    return _best_in_layer(code_candidates or candidates, ctx.rank, ctx.pagerank)
 
+
+def _overview_step(overview: Any, readme: dict | None, file_layers: dict[str, str]) -> dict:
+    ov = overview.as_dict()
+    ov["order"] = 1
+    if readme is not None:
+        ov["target_path"] = readme["filePath"]
+        ov["title"] = PurePosixPath(readme["filePath"]).name
+        ov["layer_id"] = f"layer:{_slugify(file_layers[readme['filePath']])}"
+    else:
+        ov["layer_id"] = None
+    return ov
+
+
+def _walk_steps(
+    flow: _FlowWalk,
+    structural_reasons: dict[str, str],
+    base_code: dict[str, Any],
+    ctx: _TourContext,
+    *,
+    first_order: int,
+) -> tuple[list[dict], int]:
+    """The walk's code steps, and the deepest import depth among them."""
+    steps: list[dict] = []
     max_depth = 0
-    for p in walk:
-        order_n += 1
-        layer = file_layers.get(p, "")
-        step = base_code.get(p)
-        if p in structural_reasons:
-            depth = 0  # import depth is meaningless without an import graph
-            reason = structural_reasons[p]
-        elif p in swapped_depth:
-            depth = swapped_depth[p]
-            reason = f"The {layer} layer's anchor — its most depended-on file."
-        elif p == hotspot_added:
-            depth = 0
-            reason = (
-                "A top churn hotspot — one of the most frequently changed files "
-                "in the repo; worth understanding early."
-            )
-        elif step is not None:
-            depth = step.depth
-            reason = step.reason
-        else:  # pragma: no cover - walk paths come from base or swaps
-            depth = 0
-            reason = f"A key {layer} file on the walk from the entry points."
-        if p in barrels:
+    for order_n, p in enumerate(flow.walk, start=first_order):
+        layer = ctx.file_layers.get(p, "")
+        depth, reason = _walk_step_basis(p, layer, flow, structural_reasons, base_code)
+        if p in ctx.barrels:
             # A re-export shell may seed the walk (imports genuinely fan out
             # from it), but it must not claim to be an execution entry point.
             reason = "A re-export hub — the package's public surface fans out from here."
         max_depth = max(max_depth, depth)
-        tour.append(
+        steps.append(
             {
                 "order": order_n,
                 "target_path": p,
@@ -671,56 +772,80 @@ def _curate_tour(
                 "layer_id": f"layer:{_slugify(layer)}",
             }
         )
+    return steps, max_depth
 
-    # Polyglot fairness: languages holding ≥20% of the code with
-    # their own test files get named in the closing-stop reason — the stop
-    # faces the dominant suite, but the others must not vanish.
-    lang_counts = Counter(code_langs)
+
+def _walk_step_basis(
+    path: str,
+    layer: str,
+    flow: _FlowWalk,
+    structural_reasons: dict[str, str],
+    base_code: dict[str, Any],
+) -> tuple[int, str]:
+    """``(depth, reason)`` for one walk stop, by how it earned its place."""
+    if path in structural_reasons:
+        # Import depth is meaningless without an import graph.
+        return 0, structural_reasons[path]
+    if path in flow.swapped_depth:
+        return flow.swapped_depth[path], f"The {layer} layer's anchor — its most depended-on file."
+    if path == flow.hotspot_added:
+        return 0, (
+            "A top churn hotspot — one of the most frequently changed files "
+            "in the repo; worth understanding early."
+        )
+    step = base_code.get(path)
+    if step is None:  # pragma: no cover - walk paths come from base or swaps
+        return 0, f"A key {layer} file on the walk from the entry points."
+    return step.depth, step.reason
+
+
+def _closing_steps(
+    closing_paths: list[str], ctx: _TourContext, *, first_order: int, depth_after: int
+) -> list[dict]:
+    """The suite's closing stops, each one step deeper than the one before."""
+    closing_reason = _closing_reason(ctx)
+    return [
+        {
+            "order": first_order + i,
+            "target_path": p,
+            "page_type": "file_page",
+            "title": PurePosixPath(p).name,
+            "depth": depth_after + i + 1,
+            "kind": "code",
+            "reason": closing_reason,
+            "layer_id": f"layer:{_slugify(ctx.file_layers.get(p, 'Test'))}",
+        }
+        for i, p in enumerate(closing_paths)
+    ]
+
+
+def _closing_reason(ctx: _TourContext) -> str:
+    """The closing stops' reason, naming other sizeable languages' suites.
+
+    Polyglot fairness: languages holding ≥20% of the code with their own test
+    files get named in the closing-stop reason — the stop faces the dominant
+    suite, but the others must not vanish.
+    """
+    lang_counts = Counter(ctx.code_langs)
     total_code = sum(lang_counts.values()) or 1
     test_langs = {
-        lang_by_path.get(p, "")
+        ctx.lang_by_path.get(p, "")
         for layer in ADJACENT_LAYERS
-        for p in by_layer.get(layer, [])
+        for p in ctx.by_layer.get(layer, [])
     }
     other_suites = sorted(
         spec.display_name
         for tag, n in lang_counts.items()
-        if tag != dominant_lang
+        if tag != ctx.dominant_lang
         and n / total_code >= 0.20
         and tag in test_langs
         and (spec := _LANG_REGISTRY.get(tag)) is not None
     )
-    closing_reason = "The test suite — how the system's behavior is verified."
-    if other_suites:
-        closing_reason = (
-            "The test suite — how the system's behavior is verified "
-            f"(the {' and '.join(other_suites)} test suite"
-            f"{'s' if len(other_suites) > 1 else ''} live"
-            f"{'' if len(other_suites) > 1 else 's'} alongside it)."
-        )
-
-    for p in closing_paths:
-        order_n += 1
-        layer = file_layers.get(p, "Test")
-        max_depth += 1
-        tour.append(
-            {
-                "order": order_n,
-                "target_path": p,
-                "page_type": "file_page",
-                "title": PurePosixPath(p).name,
-                "depth": max_depth,
-                "kind": "code",
-                "reason": closing_reason,
-                "layer_id": f"layer:{_slugify(layer)}",
-            }
-        )
-
-    for s in infra:
-        order_n += 1
-        step = s.as_dict()
-        step["order"] = order_n
-        step["layer_id"] = f"layer:{_slugify(file_layers.get(s.target_path, 'Config'))}"
-        tour.append(step)
-
-    return tour
+    if not other_suites:
+        return "The test suite — how the system's behavior is verified."
+    return (
+        "The test suite — how the system's behavior is verified "
+        f"(the {' and '.join(other_suites)} test suite"
+        f"{'s' if len(other_suites) > 1 else ''} live"
+        f"{'' if len(other_suites) > 1 else 's'} alongside it)."
+    )

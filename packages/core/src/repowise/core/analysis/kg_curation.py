@@ -948,6 +948,58 @@ def validate_kg(kg: KnowledgeGraphResult) -> KGValidation:
     summary_by_id = {n["id"]: n.get("summary") for n in file_nodes}
 
     layers = kg.layers or []
+    shape = _check_layers(layers, file_ids, file_count, errors, warnings)
+
+    entry_points = kg.project.get("entry_points", []) if isinstance(kg.project, dict) else []
+    _check_entry_points(entry_points, tags_by_path, errors)
+
+    tour = kg.tour or []
+    tour_coverage = _check_tour(tour, layers, errors, warnings)
+
+    # Modules are only checked when the curated artifact carries them.
+    modules = getattr(kg, "modules", None) or []
+    module_covered = _check_modules(modules, file_ids, errors, warnings) if modules else set()
+
+    # -- Summaries ---------------------------------------------------------
+    empty_summaries = [nid for nid, s in summary_by_id.items() if not s]
+    if empty_summaries:
+        errors.append(f"{len(empty_summaries)} file nodes have an empty summary")
+    summary_completeness = 1.0 - len(empty_summaries) / file_count if file_count else 1.0
+
+    metrics = {
+        "file_count": file_count,
+        "layer_count": len(layers),
+        "module_count": len(modules),
+        "module_coverage_pct": round(
+            (len(module_covered) / file_count * 100) if (modules and file_count) else 0.0, 1
+        ),
+        "singleton_layer_pct": round(shape.singleton_frac * 100, 1),
+        "largest_layer_pct": round(shape.largest_frac * 100, 1),
+        "application_pct": round(shape.catchall_frac * 100, 1),
+        "entry_point_count": len(entry_points),
+        "tour_steps": len(tour),
+        "tour_coverage_pct": round(tour_coverage * 100, 1),
+        "summary_completeness_pct": round(summary_completeness * 100, 1),
+    }
+
+    return KGValidation(ok=not errors, errors=errors, warnings=warnings, metrics=metrics)
+
+
+@dataclass(frozen=True)
+class _LayerShape:
+    singleton_frac: float
+    largest_frac: float
+    catchall_frac: float
+
+
+def _check_layers(
+    layers: list[dict],
+    file_ids: set[str],
+    file_count: int,
+    errors: list[str],
+    warnings: list[str],
+) -> _LayerShape:
+    """Layer count, partition, singleton spam and mega-layer balance."""
     n_layers = len(layers)
 
     # -- Layer count -------------------------------------------------------
@@ -984,82 +1036,67 @@ def validate_kg(kg: KnowledgeGraphResult) -> KGValidation:
     )
     if catchall_frac > _MAX_CATCHALL_FRACTION:
         warnings.append(f"Application catch-all {catchall_frac:.0%} > {_MAX_CATCHALL_FRACTION:.0%}")
+    return _LayerShape(singleton_frac, largest_frac, catchall_frac)
 
-    # -- Entry points ------------------------------------------------------
-    entry_points = kg.project.get("entry_points", []) if isinstance(kg.project, dict) else []
+
+def _check_entry_points(
+    entry_points: list[str], tags_by_path: dict[str, list[str]], errors: list[str]
+) -> None:
     if len(entry_points) > _MAX_ENTRY_POINTS:
         errors.append(f"too many entry points: {len(entry_points)} > {_MAX_ENTRY_POINTS}")
     barrels_surfaced = [p for p in entry_points if "barrel" in tags_by_path.get(p, [])]
     if barrels_surfaced:
         errors.append(f"barrels surfaced as entry points: {barrels_surfaced}")
 
-    # -- Tour --------------------------------------------------------------
-    tour = kg.tour or []
-    tour_coverage = 0.0
-    if tour:
-        if len(tour) > DEFAULT_MAX_STOPS:
-            errors.append(f"tour too long: {len(tour)} > {DEFAULT_MAX_STOPS}")
-        if tour[0].get("kind") != "overview":
-            errors.append("tour does not open with an overview/README step")
-        layer_ids = {layer.get("id") for layer in layers}
-        covered = {
-            s.get("layer_id")
-            for s in tour
-            if s.get("kind") != "overview" and s.get("layer_id") in layer_ids
-        }
-        tour_coverage = (len(covered) / len(layer_ids)) if layer_ids else 0.0
-        if tour_coverage < _MIN_TOUR_COVERAGE:
-            warnings.append(f"tour covers {tour_coverage:.0%} of layers < {_MIN_TOUR_COVERAGE:.0%}")
 
-    # -- Modules (only when the curated artifact carries them) -------------
-    modules = getattr(kg, "modules", None) or []
-    module_covered: set[str] = set()
-    if modules:
-        module_member_lists = [m.get("nodeIds", []) for m in modules]
-        flat = [nid for ids in module_member_lists for nid in ids]
-        module_covered = set(flat)
-        if len(flat) != len(module_covered):
-            errors.append("modules: a file appears in more than one module")
-        if not module_covered <= file_ids:
-            errors.append(
-                f"modules: {len(module_covered - file_ids)} unknown ids in modules"
-            )
-        module_names = [m.get("name", "") for m in modules]
-        if len(set(module_names)) != len(module_names):
-            errors.append("modules: names not unique")
-        size_suffixed = [n for n in module_names if _SIZE_SUFFIX_RE.search(n)]
-        if size_suffixed:
-            errors.append(f"modules: size-suffixed names: {size_suffixed}")
-        oversized = sum(
-            1 for ids in module_member_lists if len(ids) > _MODULE_TARGET_MAX
-        )
-        if oversized:
-            # Flat dirs may honestly exceed the window — soft signal only.
-            warnings.append(f"{oversized} modules above target_max (flat dirs?)")
-
-    # -- Summaries ---------------------------------------------------------
-    empty_summaries = [nid for nid, s in summary_by_id.items() if not s]
-    if empty_summaries:
-        errors.append(f"{len(empty_summaries)} file nodes have an empty summary")
-    summary_completeness = 1.0 - len(empty_summaries) / file_count if file_count else 1.0
-
-    metrics = {
-        "file_count": file_count,
-        "layer_count": n_layers,
-        "module_count": len(modules),
-        "module_coverage_pct": round(
-            (len(module_covered) / file_count * 100) if (modules and file_count) else 0.0, 1
-        ),
-        "singleton_layer_pct": round(singleton_frac * 100, 1),
-        "largest_layer_pct": round(largest_frac * 100, 1),
-        "application_pct": round(catchall_frac * 100, 1),
-        "entry_point_count": len(entry_points),
-        "tour_steps": len(tour),
-        "tour_coverage_pct": round(tour_coverage * 100, 1),
-        "summary_completeness_pct": round(summary_completeness * 100, 1),
+def _check_tour(
+    tour: list[dict], layers: list[dict], errors: list[str], warnings: list[str]
+) -> float:
+    """Tour budget and opening, returning the fraction of layers it visits."""
+    if not tour:
+        return 0.0
+    if len(tour) > DEFAULT_MAX_STOPS:
+        errors.append(f"tour too long: {len(tour)} > {DEFAULT_MAX_STOPS}")
+    if tour[0].get("kind") != "overview":
+        errors.append("tour does not open with an overview/README step")
+    layer_ids = {layer.get("id") for layer in layers}
+    covered = {
+        s.get("layer_id")
+        for s in tour
+        if s.get("kind") != "overview" and s.get("layer_id") in layer_ids
     }
+    tour_coverage = (len(covered) / len(layer_ids)) if layer_ids else 0.0
+    if tour_coverage < _MIN_TOUR_COVERAGE:
+        warnings.append(f"tour covers {tour_coverage:.0%} of layers < {_MIN_TOUR_COVERAGE:.0%}")
+    return tour_coverage
 
-    return KGValidation(ok=not errors, errors=errors, warnings=warnings, metrics=metrics)
+
+def _check_modules(
+    modules: list[dict], file_ids: set[str], errors: list[str], warnings: list[str]
+) -> set[str]:
+    """Module partition, naming and size, returning the file ids modules cover."""
+    module_member_lists = [m.get("nodeIds", []) for m in modules]
+    flat = [nid for ids in module_member_lists for nid in ids]
+    module_covered = set(flat)
+    if len(flat) != len(module_covered):
+        errors.append("modules: a file appears in more than one module")
+    if not module_covered <= file_ids:
+        errors.append(
+            f"modules: {len(module_covered - file_ids)} unknown ids in modules"
+        )
+    module_names = [m.get("name", "") for m in modules]
+    if len(set(module_names)) != len(module_names):
+        errors.append("modules: names not unique")
+    size_suffixed = [n for n in module_names if _SIZE_SUFFIX_RE.search(n)]
+    if size_suffixed:
+        errors.append(f"modules: size-suffixed names: {size_suffixed}")
+    oversized = sum(
+        1 for ids in module_member_lists if len(ids) > _MODULE_TARGET_MAX
+    )
+    if oversized:
+        # Flat dirs may honestly exceed the window — soft signal only.
+        warnings.append(f"{oversized} modules above target_max (flat dirs?)")
+    return module_covered
 
 
 # ---------------------------------------------------------------------------
