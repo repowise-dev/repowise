@@ -219,6 +219,7 @@ async def delete_repository(session: AsyncSession, repo_id: str) -> bool:
     if repo is None:
         return False
     await session.execute(delete(PageVersion).where(PageVersion.repository_id == repo_id))
+    await session.execute(delete(Page).where(Page.repository_id == repo_id))
     await session.delete(repo)
     await session.flush()
     return True

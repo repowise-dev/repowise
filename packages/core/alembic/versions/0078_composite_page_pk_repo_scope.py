@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
@@ -54,6 +55,7 @@ def upgrade() -> None:
         )
     elif dialect == "sqlite":
         with op.batch_alter_table("wiki_pages") as batch_op:
+            batch_op.alter_column("id", existing_type=sa.Text(), primary_key=False)
             batch_op.create_primary_key("pk_wiki_pages", ["repository_id", "id"])
         with op.batch_alter_table("wiki_page_versions") as batch_op:
             batch_op.create_foreign_key(
@@ -97,4 +99,5 @@ def downgrade() -> None:
                 ["id"],
             )
         with op.batch_alter_table("wiki_pages") as batch_op:
+            batch_op.alter_column("repository_id", primary_key=False)
             batch_op.create_primary_key("pk_wiki_pages", ["id"])

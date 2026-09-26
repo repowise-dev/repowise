@@ -507,13 +507,13 @@ class GeneratedPage:
     source_hash: str
     model_name: str
     provider_name: str
-    input_tokens: int
-    output_tokens: int
-    cached_tokens: int
-    generation_level: int
-    target_path: str
-    created_at: str  # ISO-8601 UTC
-    updated_at: str  # ISO-8601 UTC
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    generation_level: int = 0
+    target_path: str = ""
+    created_at: str = ""  # ISO-8601 UTC
+    updated_at: str = ""  # ISO-8601 UTC
     confidence: float = 1.0
     freshness_status: str = "fresh"  # FreshnessStatus literal
     metadata: dict[str, object] = field(default_factory=dict)

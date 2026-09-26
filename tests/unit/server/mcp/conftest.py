@@ -84,7 +84,7 @@ async def repo_id(session: AsyncSession, tmp_path) -> str:
         updated_at=_NOW,
     )
     session.add(repo)
-    await session.flush()
+    await session.commit()
     return repo.id
 
 
@@ -559,7 +559,7 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
     for d in decisions:
         session.add(d)
 
-    await session.flush()
+    await session.commit()
     return rid
 
 

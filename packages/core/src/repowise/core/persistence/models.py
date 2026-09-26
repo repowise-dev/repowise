@@ -185,13 +185,13 @@ class Page(Base):
 
     __tablename__ = "wiki_pages"
 
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
     repository_id: Mapped[str] = mapped_column(
         String(32),
         ForeignKey("repositories.id", ondelete="CASCADE"),
         primary_key=True,
         nullable=False,
     )
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
     page_type: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)

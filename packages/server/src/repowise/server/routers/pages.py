@@ -321,6 +321,7 @@ async def regenerate_page_by_query(
 async def get_page(
     page_id: str,
     response: Response,
+    repo_id: str | None = Query(None, description="Repository ID"),
     session: AsyncSession = Depends(get_db_session),
 ) -> PageResponse:
     """Get a single wiki page by ID in path (e.g. ``file_page:src/main.py``).
@@ -330,7 +331,7 @@ async def get_page(
     A retired page id resolves to whatever took over from it; the response then
     carries ``X-Repowise-Redirected-From``.
     """
-    page = await _get_page_or_successor(session, page_id, response)
+    page = await _get_page_or_successor(session, page_id, response, repo_id=repo_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
     return PageResponse.from_orm(page)
