@@ -19,7 +19,8 @@ labels as fixes (product == benchmark):
   merged into HEAD since then — so feature-branch fixes count, matching the
   benchmark's ``prior_sha..t0_sha`` range, not a date-pruned ``--since`` walk);
 * classify each commit subject with the shared ``is_fix_commit`` keyword rule;
-* attribute a fix to every indexable file it touched.
+* attribute a fix to every indexable file it touched, under the path that file
+  has at HEAD, so a rename inside the window does not reset the count.
 
 Reachable-from-HEAD means a T0 worktree never sees post-T0 fixes → leakage-free.
 
@@ -39,7 +40,7 @@ import structlog
 
 from ._constants import PRIOR_DEFECT_WINDOW_DAYS, _truncate_body, is_fix_commit
 from .fix_shape import classify_fix_shape
-from .records import _RECORD_SEP, _extract_rename_paths
+from .records import _RECORD_SEP, RenameTrail, name_status_path
 
 if TYPE_CHECKING:
     # Type-only: ``analysis.change_risk`` imports back into this package, so a
@@ -51,10 +52,10 @@ logger = structlog.get_logger(__name__)
 __all__ = ["FixCommit", "FixWalk", "PriorDefects", "collect_fix_commits", "compute_prior_defects"]
 
 # sha <US> committer-time <US> subject <US> body <STX>, one record per commit
-# (NUL-separated); --name-only then emits the touched paths on the lines that
+# (NUL-separated); --name-status then emits the touched paths on the lines that
 # follow. The body (``%b``) is the only multi-line field, so it is captured last
 # and terminated explicitly: unlike the numstat block ``records.py`` disentangles
-# by shape, a ``--name-only`` path line is indistinguishable from a line of prose,
+# by shape, a ``--name-status`` path line is indistinguishable from a line of prose,
 # so the boundary has to be a byte git will never emit inside a message.
 _PRIOR_LOG_FORMAT = "%x00%H%x1f%ct%x1f%s%x1f%b%x02"
 _FIELD_SEP = "\x1f"
@@ -94,6 +95,10 @@ class FixCommit:
     consumers read neither: they exist for consumers that quote a change rather
     than count it, and they cost no extra git work because the walk already
     parses the subject to classify the commit.
+
+    *history_paths* is what the counts are keyed by: each touched file under the
+    path it has at HEAD. ``None`` means the same as *paths*. *paths* stays as the
+    commit wrote it, because *files* and the SZZ blame are keyed that way.
     """
 
     sha: str
@@ -103,6 +108,7 @@ class FixCommit:
     files: dict[str, FileDiff] = field(default_factory=dict)
     subject: str = ""
     body: str = ""
+    history_paths: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +186,7 @@ def collect_fix_commits(
             files=diffs.get(fix.sha, {}),
             subject=fix.subject,
             body=fix.body,
+            history_paths=fix.history_paths,
         )
         for fix in fixes
     ]
@@ -214,11 +221,12 @@ def compute_prior_defects(
     raw_counts: dict[str, int] = {}
     counts: dict[str, int] = {}
     for fix in walk.fixes:
-        for path in fix.paths:
+        paths = fix.paths if fix.history_paths is None else fix.history_paths
+        for path in paths:
             raw_counts[path] = raw_counts.get(path, 0) + 1
         if fix.shape_kind != "code_fix":
             continue
-        for path in fix.paths:
+        for path in paths:
             counts[path] = counts.get(path, 0) + 1
 
     return PriorDefects(counts=counts, raw_counts=raw_counts)
@@ -267,7 +275,7 @@ def _walk_fix_commits(repo: Any, rev_range: str, indexable_files: set[str]) -> l
         raw = repo.git.log(
             rev_range,
             "--no-merges",
-            "--name-only",
+            "--name-status",
             f"--format={_PRIOR_LOG_FORMAT}",
         )
     except Exception as exc:
@@ -278,25 +286,32 @@ def _walk_fix_commits(repo: Any, rev_range: str, indexable_files: set[str]) -> l
         return []
 
     fixes: list[FixCommit] = []
+    renames = RenameTrail()
     for record in raw.split(_RECORD_SEP):
         record = record.strip("\n")
         if not record:
             continue
         fields, path_block = _split_record(record)
         sha, committed, subject, body = fields
-        if not is_fix_commit(subject):
-            continue
-        paths = [p for p in _record_paths(path_block) if p in indexable_files]
-        if paths:
-            fixes.append(
-                FixCommit(
-                    sha=sha,
-                    ts=_as_ts(committed),
-                    paths=paths,
-                    subject=_truncate_body(subject.strip()),
-                    body=_truncate_body(body.strip()),
+        entries = _record_paths(path_block)
+        if is_fix_commit(subject):
+            paths = [p for p, _ in entries if p in indexable_files]
+            history = [renames.resolve(p) for p, _ in entries]
+            history = [p for p in dict.fromkeys(history) if p in indexable_files]
+            if history:
+                fixes.append(
+                    FixCommit(
+                        sha=sha,
+                        ts=_as_ts(committed),
+                        paths=paths,
+                        subject=_truncate_body(subject.strip()),
+                        body=_truncate_body(body.strip()),
+                        history_paths=history,
+                    )
                 )
-            )
+        for path, renamed_from in entries:
+            if renamed_from:
+                renames.record(renamed_from, path)
     return fixes
 
 
@@ -333,18 +348,9 @@ def _as_ts(raw: str) -> int:
         return 0
 
 
-def _record_paths(body: str) -> list[str]:
-    """The ``--name-only`` path lines of one log record, renames resolved."""
-    paths: list[str] = []
-    for line in body.split("\n"):
-        path = line.strip()
-        if not path:
-            continue
-        if "=>" in path:  # rename marker {old => new}
-            _old, new = _extract_rename_paths(path, set())
-            path = new or path
-        paths.append(path)
-    return paths
+def _record_paths(body: str) -> list[tuple[str, str | None]]:
+    """``(path, renamed_from)`` for each ``--name-status`` line of one log record."""
+    return [name_status_path(line) for line in body.split("\n") if line.strip()]
 
 
 # ---------------------------------------------------------------------------

@@ -74,10 +74,16 @@ builds a single repo-wide commit index once (`git_commit_index.load_commit_index
 from that dict. This caps depth at `_DEFAULT_COMMIT_LIMIT` (the newest N commits)
 to keep `init` inside its time/memory budget.
 
+**Renames keep history.** Every shared walk (commit index, co-change, prior
+defects) reads git's rename rows newest first and files older commits under the
+path the file has at HEAD (`records.RenameTrail`), so churn, age, authorship,
+co-change partners and fix counts carry across a rename. A path reused by a
+different file after the move keeps only its own commits.
+
 **Caveat the prior-defect pass works around:** that cap bounds the index by
 *commit count*, so on a hyperactive repo a hot file's slice under-represents a
 wide window. `compute_prior_defects` therefore does NOT read the index — it runs
-its own date-bounded `git log prior_sha..HEAD --name-only` pass, which reaches
+its own date-bounded `git log prior_sha..HEAD --name-status` pass, which reaches
 the full window at a fraction of the cost of lifting the global cap (it scales
 with window activity, not total repo age). Windowed-but-decayed signals
 (90d counts, entropy) tolerate the cap because old commits contribute ~nothing.

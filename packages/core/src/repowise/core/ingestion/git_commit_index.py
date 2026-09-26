@@ -12,9 +12,10 @@ Python dicts — so any future debugging only has one log format to
 understand.
 
 The batched path is only used when ``follow_renames=False`` (the
-default). Rename-tracking still falls back to the per-file ``--follow``
-path because git's rename heuristics are evaluated against a single
-input file, not retro-fittable from a repo-wide log.
+default). It still keeps a file's history across a rename: the walk reads
+git's rename rows newest first and files older commits under the current
+name (see :class:`~.git_indexer.records.RenameTrail`). ``follow_renames``
+switches to the per-file ``--follow`` path instead.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 if TYPE_CHECKING:
-    from .git_indexer import _CommitRec
+    from .git_indexer import RenameTrail, _CommitRec
 
 logger = structlog.get_logger(__name__)
 
@@ -219,6 +220,7 @@ def load_commit_index(
     trace_index: object | None = None,
     cache_dir: Path | None = None,
     stats_sink: dict[str, int | bool] | None = None,
+    renames: RenameTrail | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
@@ -260,6 +262,10 @@ def load_commit_index(
     only the commits since the last walk are asked of git (see
     :func:`_window_records`). Ignored with *since_ts*, whose own bound already
     keeps that walk short.
+
+    *renames*, when given, files each commit under the path its file has at
+    HEAD and learns the window's renames, so a deeper walk can continue it.
+    The commit sink keeps the paths as the commit wrote them.
 
     Failures (git unavailable, corrupt log output, etc.) return an
     empty dict so the caller can fall back to per-file indexing.
@@ -358,6 +364,7 @@ def load_commit_index(
         # agent-trace channel needs the changed-path set for its file-overlap
         # check; the same list feeds the commit sink.
         commit_changes: list[tuple[str, int, int]] = []
+        moved: list[tuple[str, str]] = []
 
         for line in numstat_lines:
             cols = line.split("\t")
@@ -371,8 +378,10 @@ def load_commit_index(
             # attribute the churn to the new path.
             if "=>" in stat_path:
                 seen: set[str] = set()
-                _old_path, new_path = _extract_rename_paths(stat_path, seen)
+                old_path, new_path = _extract_rename_paths(stat_path, seen)
                 target = new_path or stat_path
+                if old_path and new_path:
+                    moved.append((old_path, new_path))
             else:
                 target = stat_path
 
@@ -404,6 +413,8 @@ def load_commit_index(
         )
 
         for target, added, deleted in commit_changes:
+            if renames is not None:
+                target = renames.resolve(target)
             if target not in indexable_files:
                 continue
 
@@ -447,6 +458,9 @@ def load_commit_index(
                     ),
                 }
             )
+        if renames is not None:
+            for old_path, new_path in moved:
+                renames.record(old_path, new_path)
 
     logger.debug(
         "repo_commit_index_built",
@@ -469,6 +483,7 @@ def load_deep_commit_index(
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
     stats_sink: dict[str, int | bool] | None = None,
+    renames: RenameTrail | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket commits OLDER than the recent window for *wanted_files* only.
 
@@ -490,9 +505,10 @@ def load_deep_commit_index(
     shows a rename as a whole-file addition). All three rename-free lanes use
     ``--no-merges`` so changing lanes cannot change the retained commit set.
     That makes deep-bucketed files CONSISTENT with window-indexed files,
-    which always had repo-walk semantics. Files absent from this bucket
-    (pre-rename names the marker parser cannot resolve, or history deeper
-    than *deep_limit*) keep the per-file fallback path.
+    which always had repo-walk semantics. *renames* continues the newer
+    walks' rename trail, so a pre-rename commit here lands under the current
+    name. Files absent from this bucket (history deeper than *deep_limit*)
+    keep the per-file fallback path.
 
     Failures return an empty dict; every missed file then falls back to
     the per-file path exactly as before.
@@ -555,6 +571,7 @@ def load_deep_commit_index(
         # provenance work (the window walk classifies every commit because
         # the commit sink needs the labels).
         changes: list[tuple[str, int, int]] = []
+        moved: list[tuple[str, str]] = []
         touches_wanted = False
 
         for line in numstat_lines:
@@ -564,10 +581,14 @@ def load_deep_commit_index(
             stat_path = cols[2]
             if "=>" in stat_path:
                 seen: set[str] = set()
-                _old_path, new_path = _extract_rename_paths(stat_path, seen)
+                old_path, new_path = _extract_rename_paths(stat_path, seen)
                 target = new_path or stat_path
+                if old_path and new_path:
+                    moved.append((old_path, new_path))
             else:
                 target = stat_path
+            if renames is not None:
+                target = renames.resolve(target)
 
             try:
                 added = int(cols[0]) if cols[0] != "-" else 0
@@ -580,6 +601,9 @@ def load_deep_commit_index(
             if target in wanted_files:
                 touches_wanted = True
 
+        if renames is not None:
+            for old_path, new_path in moved:
+                renames.record(old_path, new_path)
         if not touches_wanted:
             continue
 
@@ -653,6 +677,11 @@ def load_sampled_commit_index(
     tops it up, and a per-file walk remains required when the shared walks
     neither fill the cap nor reach the repository root.
     """
+    from .git_indexer import RenameTrail
+
+    # One trail across the recent and deep walks: they partition one
+    # newest-first history, so a rename seen in the window applies below it.
+    renames = RenameTrail()
     recent_stats: dict[str, int | bool] = {}
     recent = load_commit_index(
         repo,
@@ -663,6 +692,7 @@ def load_sampled_commit_index(
         trace_index=trace_index,
         cache_dir=cache_dir,
         stats_sink=recent_stats,
+        renames=renames,
     )
     sample = HistorySample(
         commits={path: list(records[:per_file_limit]) for path, records in recent.items()},
@@ -696,6 +726,7 @@ def load_sampled_commit_index(
             provenance_classifier=provenance_classifier,
             trace_index=trace_index,
             stats_sink=deep_stats,
+            renames=renames,
         )
         for path, records in deep.items():
             remaining = per_file_limit - len(sample.commits.get(path, ()))
@@ -733,6 +764,9 @@ def load_sampled_commit_index(
         path for path in indexable_files if len(sample.commits.get(path, ())) < per_file_limit
     }
     if not shared_walk_complete:
+        # Ceiling: the per-file fallback log does not follow renames, so a
+        # fallback file's history still starts at its last rename. Passing the
+        # trail's old names as extra pathspecs, cut at the rename time, lifts it.
         sample.fallback_files = underfilled
         sample.deep_files.difference_update(sample.fallback_files)
 
