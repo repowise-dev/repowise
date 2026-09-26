@@ -1,7 +1,8 @@
 """Per-language call strategies mixed into ``CallResolver``.
 
 Each resolves what a language-neutral tier cannot: package siblings, build
-targets and crate roots that no import statement names."""
+targets and crate roots that no import statement names.
+"""
 
 from __future__ import annotations
 
@@ -51,19 +52,14 @@ _CPP_STRATEGIES = _LanguageCallStrategies(
 # today, and gating it here would drop crate-name receivers in mixed repos.
 _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # Go's package tier runs first and claims ``pkg.Func()`` outright, so a
-    # package qualifier never reaches the typed fallback — 41% of gitleaks'
-    # lowercase-receiver misses are package names, and this is what keeps them
-    # out of it.
+    # package qualifier never reaches the typed fallback.
     "go": _LanguageCallStrategies(
         free=("_resolve_go_same_package",),
         member=("_resolve_go_package_call",),
         member_fallback=_TYPED_RECEIVER,
     ),
-    # Kotlin shares the JVM tiers and, since its declaration shapes landed,
-    # the typed-receiver fallback too. One `name: Type` shape reaches its
-    # typed vals, vars and parameters alike, so the language gate no longer
-    # declines the moment the fallback asks.
-    # Java takes the uniqueness-gated package tier, Kotlin the open one; see
+    # Kotlin shares the JVM tiers and the typed-receiver fallback. Java takes
+    # the uniqueness-gated package tier, Kotlin the open one; see
     # ``_resolve_java_same_package_unique`` for why that is a language rule.
     "java": replace(
         _JVM_STRATEGIES,
@@ -192,9 +188,7 @@ class LanguageStrategiesMixin:
         """Resolve ``Qualifier::name()`` against the class the qualifier names.
 
         The qualifier is written at the call site, so this infers nothing: the
-        repository either declares ``Qualifier::name`` or it does not. Before
-        it existed only the leaf name survived extraction, and `DB::Open()`
-        bound to a test class's `Open`.
+        repository either declares ``Qualifier::name`` or it does not.
 
         It declines rather than refusing when the pair is unknown, because a
         qualifier may equally name a NAMESPACE and C++ namespaces are recorded
@@ -295,11 +289,8 @@ class LanguageStrategiesMixin:
         Java-only because Kotlin has package-scope top-level and extension
         functions, so a bare name there really is a package lookup; Java has
         none, so it is a static import, an inherited member, or a member call
-        whose receiver the grammar dropped. Hand-read, the removals agree:
-        20 of 20 wrong on caffeine, 16 of 20 right on exposed and ktor.
-
-        Refusing is not deleting. The chain continues into the import tiers,
-        which answer 14,307 of caffeine's 18,390 refused sites.
+        whose receiver the grammar dropped. Refusing is not deleting: the chain
+        continues into the import tiers.
         """
         return self._jvm_same_package(file_path, call, caller_id, unique_only=True)
 
@@ -321,9 +312,7 @@ class LanguageStrategiesMixin:
                 if not unique_only:
                     return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
                 if found is not None:
-                    # Two siblings declare it and nothing here can tell them
-                    # apart; this used to answer with whichever the index
-                    # walked first.
+                    # Two siblings declare it and nothing here can tell them apart.
                     return None
                 found = sym_id
         if found is None:
@@ -361,10 +350,9 @@ class LanguageStrategiesMixin:
     ) -> ResolvedCall | None:
         """Resolve ``pkg.Func()`` against *every* file in the package.
 
-        The legacy module-alias strategy resolves only against the single
-        representative file the import resolved to; a function defined in a
-        sibling file of that package is missed. Look it up across the whole
-        package directory via the GoPackageIndex.
+        The module-alias strategy resolves only against the single file the
+        import resolved to, which misses a function in a sibling file of the
+        package, so look across the whole package via the GoPackageIndex.
         """
         index = self._get_go_index()
         if index is None:

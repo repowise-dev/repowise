@@ -69,30 +69,20 @@ log = structlog.get_logger(__name__)
 _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
 
 # Languages where a call the caller's own class cannot answer is looked for on
-# its ancestors. Both shapes — an explicit ``self``/``this`` receiver and an
-# implicit one — end in the same walk.
+# its ancestors, for an explicit ``self``/``this`` receiver and an implicit one.
 #
-# C++ is absent because its heritage binds a qualified external
-# parent to a same-named local type, which puts unrelated siblings in one
-# hierarchy before this walk even runs. Java is absent because `java.scm`'s
-# bare-call pattern also matches `this.field.m()`, which no receiver-carrying
-# pattern claims, so such a call arrives here indistinguishable from a real
-# implicit receiver — and its measured population on two Java repos was zero,
-# so the tier could only cost.
+# C++ is absent because its heritage binds a qualified external parent to a
+# same-named local type, putting unrelated siblings in one hierarchy. Java is
+# absent because `java.scm`'s bare-call pattern also matches `this.field.m()`,
+# which then arrives here indistinguishable from a real implicit receiver.
 #
-# C# is present, and was once wrongly removed: a name's overloads all share one
-# symbol id, so a declaration line read back out of the graph names an
-# arbitrary overload. That reads as a wrong target and is not one — the id
-# these calls resolve to is the id C# binds.
+# C# is present: a name's overloads all share one symbol id, so a declaration
+# line read back out of the graph may name another overload of the right id.
 _INHERITED_LANGUAGES = frozenset({"kotlin", "python", "typescript", "swift", "csharp"})
 
 # Languages where a bare name is scoped lexically: it can only mean the
-# caller's own module, an explicit ``import``, or the prelude. Elixir's
-# ``alias`` / ``require`` / ``use`` bind a module name, never a function name,
-# so repo-wide uniqueness is no evidence and only wildcard imports may merge
-# names. F# is the same rule with different spelling: a bare name means the
-# enclosing scope, a module the file has ``open``ed, or FSharp.Core, and
-# nothing else -- a name unique across the repo is not thereby in scope.
+# caller's own module, an explicit ``import`` or ``open``, or the prelude, so
+# repo-wide uniqueness is no evidence and only wildcard imports may merge names.
 _LEXICAL_BARE_NAME_LANGUAGES = frozenset({"elixir", "fsharp"})
 
 # The sentinel an import that binds a whole module's public names carries.
@@ -103,22 +93,14 @@ _WILDCARD_IMPORTED_NAMES = ["*"]
 _MAX_ANCESTOR_EXPAND_DEPTH = 3
 
 
-# Kinds that can never be the callee of a call, used to keep the bare-name
-# Tier 3 index from offering a data member as a function.
+# Kinds that can never be the callee of a call, so the bare-name tiers never
+# offer a data member as a function.
 #
-# This is deliberately NOT the complement of ``_FUNCTION_KINDS``. Measured over
-# the corpus, plenty of non-function kinds are legitimately called: ``class``
-# is a constructor in python/java/c#/typescript; ``variable`` is both a rust
-# tuple ``enum_variant`` (309 grounded call edges on goose) and a typescript
-# const whose initialiser is not syntactically a function, such as a factory
-# result or a ``.bind()`` handle (2,173 on zod); ``type_alias`` is a Go
-# conversion. Denying by function-ness would delete thousands of real edges.
-#
-# ``property`` is the one kind in the whole of ``language_configs.py`` that
-# means "data member" and nothing else: it is emitted by exactly one mapping,
-# rust's ``field_declaration``. Every other language spells its fields
-# ``variable``, which is why this fix cannot be extended to them — there a
-# field is indistinguishable from a callable value by kind alone.
+# Deliberately NOT the complement of ``_FUNCTION_KINDS``: a ``class`` is a
+# constructor, a ``variable`` may be a rust tuple enum variant or a typescript
+# const holding a function, and a ``type_alias`` is a Go conversion.
+# ``property`` is the only kind that means "data member" and nothing else; every
+# other language spells its fields ``variable``, indistinguishable by kind.
 _NON_CALLABLE_KINDS = frozenset({"property"})
 
 # A getter and its setter are two declarations under one id, which reads as an
@@ -135,8 +117,8 @@ def _is_property_accessor(sym: Any) -> bool:
     return False
 
 
-# Phase admission is intentionally explicit. P16 lands the behavior-preserving
-# substrate with no language enabled; later phases add only measured lanes.
+# Languages admitted to the full return-type chain lane; each is admitted
+# explicitly, once measured.
 PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp"})
 
 # Chain lanes that need a file or import/re-export identity for the head type:
@@ -313,12 +295,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Module alias mapping: {file_path: {alias: source_file}}
         self._module_aliases: dict[str, dict[str, str]] = import_maps.module_aliases
 
-        # Lazy per-file merged views of every imported file's symbol /
-        # method tables — turns the Tier-2b "scan each imported file"
-        # loops into single dict lookups. Built on first miss per file;
-        # merge order is sorted(import paths) with first-wins so shadowed
-        # names resolve deterministically (the old set-iteration order was
-        # hash-randomized per process).
+        # Lazy per-file merged views of every imported file's symbol and
+        # method tables, merged in sorted import order with first-wins so
+        # shadowed names resolve deterministically.
         self._merged_import_symbols: dict[str, dict[str, str]] = {}
         self._merged_import_methods: dict[str, dict[tuple[str, str], str]] = {}
 
@@ -358,10 +337,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         for path, name_to_file in self._import_names.items():
             file_syms = self._file_symbols.get(path, {})
             for name, source_file in name_to_file.items():
-                # An origin outside the repo names no file any reader of this
-                # map can look up, and the wildcard pass below already refuses
-                # one. Holding the invariant in one pass and not its twin is
-                # what makes a later reader look safe when it is not.
+                # An origin outside the repo names no file a reader of this
+                # map can look up; the wildcard pass refuses one too.
                 if name not in file_syms and not source_file.startswith("external:"):
                     self._barrel_origins[path][name] = source_file
 
@@ -427,14 +404,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             for name, declaring in sorted(self._barrel_origins.get(source, {}).items()):
                 if name in file_syms or name in origins or declaring == path:
                     continue
-                # The map keys a name as the source file spells it and
-                # records only the declaring file, never the name the
-                # symbol has there. A hop that renames therefore hands
-                # on a key the declaring file may coincidentally
-                # declare as something unrelated, and the receiving
-                # file carries no binding to undo it with. Refuse those
-                # rather than forward a name that means something else
-                # at the far end; it costs reach, never correctness.
+                # The map records only the declaring file, not the name the
+                # symbol has there, so a renaming hop could forward a key that
+                # means something else at the far end. Refuse it.
                 if _renames_on_the_way(source_bindings.get(name), name):
                     continue
                 origins[name] = declaring
@@ -580,11 +552,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         A header declares ``double Area(double)`` and a .cpp defines it, so the
         two land as separate same-named symbols. Every tier below Tier 1 looks
-        the name up in the *header's* symbol table — the header is what the
-        caller includes — so the call edge attached to the declaration and left
-        the definition with no inbound edge at all, which read as dead code
-        (#1601). Resolving the pairing here lets ``resolve_file`` move the edge
-        onto the definition, where it belongs.
+        the name up in the *header's* symbol table, the file the caller
+        includes, so without the pairing the definition gets no inbound edge
+        and reads as dead code. ``resolve_file`` moves the edge onto it.
 
         Pairing prefers a definition whose translation unit includes the
         declaring header, which is the one-definition rule C++ actually means
@@ -675,14 +645,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         ``_file_symbols`` is flat and last-wins, so a file that declares ``new``
         on four types answers every ``Type::new()`` lookup with whichever came
-        last. That is the right file and the wrong owner. ``_file_methods``
-        already carries the owner, and until now was only ever asked about the
-        caller's own file.
-
-        A real module qualifier owns nothing — ``config::limits()`` has no
-        ``(config, limits)`` entry anywhere — so it falls through to the flat
-        lookup unchanged. This can only re-point an edge that was already
-        landing on the wrong owner of the right file.
+        last: the right file and the wrong owner. ``_file_methods`` carries the
+        owner. A module qualifier owns nothing, so it falls through to the flat
+        lookup unchanged.
         """
         owned = self._file_methods.get(file_path, {}).get((owner, name))
         if owned is not None:
@@ -765,10 +730,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             resolved = self._resolve_one(file_path, call)
             if resolved:
                 resolved = self._redirect_to_definition(resolved)
-                # Stamped once here rather than in each tier: what a site
-                # produces is a property of the syntax, not of the strategy
-                # that answered it. No tier sets it, so this compares against
-                # the default rather than against a tier's opinion.
+                # The edge type is a property of the call syntax, not of the
+                # tier that answered, so it is stamped once here.
                 if call.edge_type != "calls":
                     resolved = replace(resolved, edge_type=call.edge_type)
                 results.append(resolved)
@@ -817,8 +780,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         ``handled`` distinguishes a proven refusal from missing evidence. A
         known repository type that does not declare the outer method disproves
-        the legacy bare-name fallback; an absent/external type leaves legacy
-        behavior untouched.
+        the bare-name fallback; an absent or external type leaves it to run.
         """
 
         inner = call.receiver_call
@@ -836,9 +798,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
         if language == "cpp" and not _admitted_cpp_chain(type_name, call.target_name):
-            # P17 admits only the measured Seastar debt family.  Broader C++
-            # return-name matching remains probe evidence, not production
-            # behaviour.
+            # C++ admits only ``future.get()``; broader return-name matching
+            # is not admitted.
             return False, None
         if found is None or (found[1] == "global" and language in _BOUND_CHAIN_LANGUAGES):
             return self._chain_refusal_is_proven(language, type_name, from_table), None
@@ -849,14 +810,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     def _chain_refusal_is_proven(self, language: str, type_name: str, from_table: bool) -> bool:
         """Whether a chain with no usable target disproves the bare-name fallback."""
         if language == "java":
-            # A simple type name is not repository-unique.  Java package and
-            # import binding settle its identity; the global tier does not.
-            #
-            # When the name came from the table it is external *in this file*,
-            # and java has no extension methods, so the repository cannot
-            # declare that type's method either.  That makes the bare-name
-            # answer disproved rather than merely unevidenced, which is the
-            # difference between refusing the site and falling through to it.
+            # A table type is external in this file and java has no extension
+            # methods, so the repository cannot declare its method: the
+            # bare-name answer is disproved, not merely unevidenced.
             return from_table
         if language in ("csharp", "typescript"):
             return False
@@ -870,24 +826,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> str | None:
         """The table's return type for ``Type.method(..)`` at the head of a chain.
 
-        None when the head is not a table entry, and — the part the rust half of
-        this phase bought — when this file rebinds the name to something the
-        repository owns. Java imports resolve to repository files, so
-        ``_import_names`` answers that directly, where rust needs its raw import
-        text read against the workspace index.
+        None when the head is not a table entry, or when this file binds the
+        name to something the repository owns. The bound value has to be read,
+        not merely tested: an unresolved import is an ``external:`` marker.
 
-        The bound value has to be read, not merely tested: an unresolved import
-        is recorded as an ``external:`` marker, so a truthiness check exempts
-        ``import com.google.common.collect.Maps`` and silently drops 36 of
-        caffeine's 96 measured sites.
-
-        The import list alone is not enough, because java's same-package types
-        need no import. A repository declaring its own ``Duration`` anywhere is
-        exempted outright rather than same-package-checked: the table records
-        the *JDK's* return type, which is the wrong answer for a repository
-        type whose factory returns something else, and refusing on it would
-        drop a correct edge. Costs nothing measured - 0 of the 106 sites has a
-        repo-declared receiver name, by construction of the population.
+        A repository declaring a type of that name anywhere is exempted
+        outright, because java's same-package types need no import and the
+        table records the external type's return type, not the repository's.
         """
         receiver = inner.receiver_name
         if not receiver:
@@ -912,9 +857,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> str | None:
         """The head's type read off the repository symbol the inner call resolves to."""
         if language not in self._return_type_chain_languages:
-            # Admitted by its table alone. Inferring the head's type from the
-            # declared return type of a repository symbol is a separate and much
-            # larger population, and it is unmeasured here.
+            # Admitted by its table alone; inferring from repository return
+            # types is not admitted for this language.
             return None
         inner_call = CallSite(
             target_name=inner.target_name,
@@ -971,8 +915,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         receiver-less site.
 
         Keyed on the line because a ``CallSite`` carries no column, so
-        ``foo(bar.foo())`` suppresses the tier for its own bare ``foo()``. That
-        costs the fix on that site, never a wrong edge; a column would fix it.
+        ``foo(bar.foo())`` suppresses the tier for its own bare ``foo()``: a
+        missed edge, never a wrong one.
         """
         sites = self._member_shaped.get(file_path)
         if sites is None:
@@ -992,8 +936,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """The caller's own class's method of this name, or None.
 
         ``_file_symbols`` is flat and last-wins, so a bare ``foo()`` inside
-        class ``A`` bound to class ``B``'s ``foo`` when ``B`` came later in the
-        file. ``_file_methods`` already carries the class.
+        class ``A`` would bind to class ``B``'s ``foo`` when ``B`` came later in
+        the file. ``_file_methods`` carries the class.
         """
         parsed = self._parsed_files.get(file_path)
         if parsed is None or parsed.file_info.language not in _IMPLICIT_RECEIVER_LANGUAGES:
@@ -1022,9 +966,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if handled:
             return resolved
 
-        # The caller's language may see names no import statement mentions —
-        # a Go or JVM package sibling, a C/C++ translation unit in the same
-        # build target — and those beat the weaker import/global tiers.
+        # A language may see names no import mentions (a package sibling, a
+        # C/C++ build target), and those beat the import and global tiers.
         if declared:
             hit = self._first_strategy_hit(
                 self._strategies_for(file_path).free, file_path, call, caller_id
@@ -1129,16 +1072,11 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         """2b: the symbol in any imported file (pre-merged lookup)."""
         target_name = call.target_name
         sym_id = self._merged_symbols_for(file_path).get(target_name)
-        # A data member is not callable. Tier 3 already refuses one, but this
-        # rung answered first and at 0.85, above the tier that declines it, so
-        # the refusal only reached whichever sites tier 3 happened to see.
+        # A data member is not callable, here as in tier 3.
         if sym_id is None or sym_id in self._non_callable_ids:
             return None
-        # A std-library name is refused for the same reason tier 3 refuses it:
-        # the name is in scope in every file without an import, so a repo
-        # symbol that merely shares it is not what the call site named. Being
-        # reachable through an import says nothing, because the guess never
-        # attributed the name to one imported file in the first place.
+        # A std-library name is in scope everywhere without an import, so a
+        # repo symbol that merely shares it is not what the call site named.
         if target_name in get_builtin_methods(self._language_of(file_path) or ""):
             return None
         return ResolvedCall(caller_id, sym_id, 0.85, call.line, "import_merged")
@@ -1151,21 +1089,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     ) -> ResolvedCall | None:
         """Tier 3 and what follows it: answers not grounded in this file or its imports."""
         target_name = call.target_name
-        # Tier 3: global unique match — only within the same language.
-        # A data member is not callable, so it must not be the unique answer
-        # that mints an edge. Filtered here rather than at index build
-        # so the `declared` gate above and the member gate in
-        # ``_resolve_member_call`` keep seeing the whole repo.
-        # Uniqueness is judged on the unfiltered list on purpose. Filtering the
-        # pool *before* the length test would re-uniquify a name that a field
-        # and a method both declare, firing the tier where it used to refuse —
-        # measured at +916 new 0.50-confidence edges on goose, on the one tier
-        # hand-read at 28.6% precision.
-        #
-        # A std-library name is refused the same way, and for the same reason
-        # one rung up: the name is in scope in every file without an import,
-        # so the repo symbol that happens to share it is not what the call
-        # site named. `Ok(())` and a chained `.unwrap()` are the shape.
+        # Tier 3: global unique match, only within the same language.
+        # Uniqueness is judged on the unfiltered list on purpose: filtering data
+        # members out first would re-uniquify a name a field and a method share.
         candidates = self._global_symbols.get(target_name, [])
         if len(candidates) == 1 and candidates[0] != caller_id:
             return self._global_unique_match(
@@ -1176,11 +1102,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if inherited is not None:
             return inherited
 
-        # An overload set is several declarations under one id, which the row
-        # count reads as an ambiguity that is not there. Not the filtering
-        # refused above: a field and a method sharing a name stay two ids.
-        # Last on purpose - ahead of the tier above it restated 1,027 edges
-        # the caller's own hierarchy already answered, at half the confidence.
+        # An overload set is several declarations under one id, not an
+        # ambiguity. Asked after the inherited tier, which answers with more
+        # confidence when the caller's own hierarchy declares the name.
         collapsed = self._collapse_declarations(candidates)
         if len(candidates) <= 1 or len(collapsed) != 1:
             return None
@@ -1228,9 +1152,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if target_name in get_builtin_methods(language):
             return None
         if candidate in self._non_callable_ids:
-            # Refused here rather than by falling through, so "this tier can
-            # lose an edge but never gain one" is true of the control flow and
-            # not only of the corpus.
+            # Refused rather than falling through, so this tier can lose an
+            # edge but never gain one.
             return None
         caller_lang = symbol_id_language(self._parsed_files, caller_id)
         callee_lang = symbol_id_language(self._parsed_files, candidate)
@@ -1250,19 +1173,12 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         assert receiver_name is not None
 
         # Every strategy below ends in a lookup keyed on the method name, so a
-        # name the repo declares nowhere cannot resolve. That is most member
-        # calls — the callee is usually external — and this is the whole of
-        # what those call sites now cost.
+        # name the repo declares nowhere cannot resolve.
         if method_name not in self._global_symbols:
             return None
 
-        # The caller's own file first. Every other tier is ordered narrow-first
-        # and this one was not: the language strategies below run before
-        # ``_receiver_pair_match``, so ``_resolve_jvm_receiver_same_package``
-        # claimed ``new Builder<>(...).build()`` for any same-package class of
-        # that name — a test-source-set one included — while the caller's own
-        # file declared a private inner ``Builder`` on the same page. The
-        # narrowest scope that can answer is the one the call actually means.
+        # The caller's own file first, ahead of the language strategies: a
+        # private inner class here outranks a same-named package sibling.
         own_file = self._file_methods.get(file_path, {}).get((receiver_name, method_name))
         if own_file is not None and own_file != caller_id:
             return ResolvedCall(caller_id, own_file, 0.93, call.line, "receiver_same_file")
@@ -1335,15 +1251,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         published = self._published_by(module_file, call.receiver_name, method_name)
         if published is not None:
             return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
-        # A namespace over a barrel names a file that declares nothing of
-        # its own, so the lookup above can only ever miss. Chase the
-        # re-export map, as free calls and typed receivers already do.
-        #
-        # Keyed on the name the declaring file uses, not the one written
-        # here: a member access cannot rename, but the re-export it arrives
-        # through can, and the map records only the file. Without this an
-        # ``export { foo as bar }`` binds any unrelated ``bar`` the
-        # declaring file happens to hold.
+        # A namespace over a barrel declares nothing of its own, so chase the
+        # re-export map, keyed on the name the declaring file uses: the
+        # re-export may rename, and the map records only the file.
         origin = self._barrel_origins.get(module_file, {}).get(method_name)
         if origin is None or origin == module_file:
             return None
@@ -1355,7 +1265,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
 
     def _crate_root_call(self, call: CallSite, caller_id: str) -> ResolvedCall | None:
-        """Strategy 1c: Rust crate-scoped reference (e.g. typst_html::module).
+        """Strategy 1c: Rust crate-scoped reference (e.g. ``my_crate::module``).
 
         The receiver is a crate name, the target is a symbol in that crate's lib.rs.
         """
@@ -1377,9 +1287,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         call: CallSite,
         caller_id: str,
     ) -> tuple[bool, ResolvedCall | None]:
-        """Strategies 2 and 2b, as ``(handled, edge)``: the receiver names a class
-        that declares the method — in this file, in an imported one, or anywhere
-        at all.
+        """Strategies 2 and 2b, as ``(handled, edge)``.
+
+        The receiver names a class that declares the method: in this file, in
+        an imported one, or anywhere at all.
         """
         receiver_name = call.receiver_name
         match = self._receiver_pair_match(file_path, (receiver_name, call.target_name))
@@ -1400,7 +1311,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         call: CallSite,
         caller_id: str,
     ) -> ResolvedCall | None:
-        """Strategy 3: receiver is "self" or "this" — look in same class.
+        """Strategy 3: receiver is "self" or "this", so look in the same class.
 
         Only the caller's own file can hold the match, so index straight
         into it instead of scanning every file's method dict.
@@ -1452,10 +1363,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         class_id = _extract_class_id(caller_id)
         if class_id is None:
             return None
-        # The caller's own class answers, even when the earlier tier declined
-        # it. Recursion is the case: Strategy 3 refuses to point a call at its
-        # own symbol, and without this that refusal fell through to an
-        # ancestor's bodiless declaration of the same name.
+        # The caller's own class answers even when Strategy 3 declined it for
+        # recursion; an ancestor's declaration of the name is not the target.
         if self._declares(class_id, method_name) is not None:
             return None
         hits = set()
@@ -1470,10 +1379,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         Splitting on the *first* separator, not the last: a nested class is
         ``path::Outer::Inner`` and ``_file_methods`` keys it under ``Inner``
-        in ``path``. Taking the last would look for a file called
-        ``path::Outer``, miss silently, and — worse than a missed edge — hide
-        an ancestor from the ambiguity check above, letting a wrong single
-        candidate through as if it were unopposed.
+        in ``path``. A missed lookup would hide an ancestor from the ambiguity
+        check above and let a wrong single candidate through.
         """
         file_path, _, name = class_id.partition("::")
         return self._file_methods.get(file_path, {}).get((name.rpartition("::")[2], method_name))
@@ -1483,10 +1390,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         if got is None:
             from .heritage_resolver import heritage_ancestors
 
-            # Sorted, because the walk stops expanding an anchor after its
-            # first visit: which branch reaches it first decides how much of
-            # its own chain is expanded, and a set's order is not stable
-            # across processes.
+            # Sorted: the walk expands an anchor only on its first visit, so
+            # branch order decides the result and must be stable.
             reached = heritage_ancestors(
                 class_id,
                 lambda t: sorted(self._heritage_parents.get(t, ())),
@@ -1533,14 +1438,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         Asked only of the ``global`` tier, which takes the first file-order
         match for a ``(type, method)`` pair with no uniqueness check. A
-        repository that writes ``impl RelationshipSourceCollection for
-        Vec<Entity>`` declares a ``Vec::new``, and without this the tier hands
-        it to every ``Vec::new()`` in the tree whatever the element type is.
-
-        The narrower tiers above are deliberately left alone: both are grounded
-        in the caller's own file or its imports, and a same-file ``impl
-        From<LocalIndex> for usize`` really is what ``usize::from(i)`` means
-        there.
+        repository that writes ``impl Trait for Vec<Entity>`` declares a
+        ``Vec::new``, and without this every ``Vec::new()`` in the tree would
+        bind to it. The narrower tiers are grounded in the caller's own file or
+        its imports and are left alone.
         """
         if receiver_name not in get_external_receiver_types(
             self._language_of(file_path) or ""
@@ -1551,17 +1452,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
     def _names_rebound_from_a_repo_package(self, file_path: str) -> frozenset[str]:
         """Names this file imports from one of the repository's own packages.
 
-        A file writing ``use bevy_platform::collections::HashMap`` means its own
-        ``HashMap``, so the repo answer is right and the refusal above must not
-        fire. The import list is what separates that from
-        ``use std::collections::HashMap`` two files away; the name cannot.
+        A file writing ``use my_crate::collections::HashMap`` means its own
+        ``HashMap``, so the refusal above must not fire; only the import list
+        separates that from ``use std::collections::HashMap``.
 
         Read off the raw import statements because a rust import resolves to no
-        repository file at all - measured 0 of 843 candidate rows - so
-        ``_import_names`` cannot answer this. The package index is what does,
-        and the exemption is only ever as good as the one the language has: a
-        language given a non-empty ``external_receiver_types`` without a
-        workspace index would refuse where it should exempt.
+        repository file, so ``_import_names`` cannot answer. A language with
+        ``external_receiver_types`` but no workspace index would refuse where
+        it should exempt.
         """
         cached = self._repo_rebound_names.get(file_path)
         if cached is not None:

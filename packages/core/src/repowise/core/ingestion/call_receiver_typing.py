@@ -51,11 +51,9 @@ class ReceiverTypingMixin:
     """Typed-receiver and C# extension strategies, with the source caches they read."""
 
     def _init_receiver_typing_caches(self) -> None:
-        # Receiver typing reads source text, so both caches are capped rather
-        # than per-repo: files resolve one at a time, so a few slots always
-        # hit, and the cap is what keeps a whole repo's source out of memory.
-        # Scanning is memoised per *function*, not per reference — one scan
-        # answers every unresolved receiver in a body.
+        # Source-derived caches are capped: files resolve one at a time, so a
+        # few slots always hit and a whole repo's source never stays resident.
+        # Scans are memoised per function, not per reference.
         self._source_text: dict[str, str] = {}
         self._declarations: dict[str, tuple[Declaration, ...]] = {}
         self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
@@ -122,10 +120,8 @@ class ReceiverTypingMixin:
         if language not in RECEIVER_TYPE_LANGUAGES:
             return None
 
-        # Reading a file is the expensive half, so refuse before it rather than
-        # after. Nothing here can resolve unless some class declares a method of
-        # this name; the gate above only proves some *symbol* does, which a free
-        # function satisfies.
+        # Refuse before reading the file: nothing resolves unless some class
+        # declares a method of this name, which a free function does not prove.
         if call.target_name not in self._method_names():
             return None
         return language
@@ -152,23 +148,19 @@ class ReceiverTypingMixin:
             sym_id = self._import_bound_method(file_path, bound, key)
             return None if sym_id is None else (sym_id, "import")
 
-        # Bound to something outside the repo and there is no edge to find,
-        # however many local classes share the simple name. A compatibility
-        # test that imports a third-party `Cache` is otherwise read as calling
-        # ours, and it looks right in every sample that does not check imports.
+        # Bound to something outside the repo: there is no edge to find,
+        # however many local classes share the simple name.
         if type_name in self._externally_bound_names(file_path):
             return None
 
-        # The caller's own file first. A nested class here outranks a
-        # same-named one in a package sibling, which is the whole ambiguity in
-        # a repo that keeps near-duplicate implementations side by side.
+        # The caller's own file first: a nested class here outranks a
+        # same-named one in a package sibling.
         sym_id = self._file_methods.get(file_path, {}).get(key)
         if sym_id is not None:
             return sym_id, "same_file"
 
         # Only the JVM registers both a member strategy and these fallbacks, so
-        # the scope that answers here is its same-package one. A second
-        # language pairing the two needs an origin word of its own.
+        # the scope that answers here is its same-package one.
         typed_call = replace(call, receiver_name=type_name)
         hit = self._first_strategy_hit(
             self._strategies_for(file_path).member, file_path, typed_call, caller_id
@@ -185,17 +177,9 @@ class ReceiverTypingMixin:
         sym_id = self._file_methods.get(bound, {}).get(key)
         if sym_id is not None:
             return sym_id
-        # An import names the module it was written against, which in
-        # Python is usually a package ``__init__`` that re-exports the
-        # type rather than declaring it. Free calls already chase that
-        # chain; without it the import settles which type this is and
-        # then refuses every method of it.
-        #
-        # Keyed on the *exported* name, as the free-call chase is: the
-        # map holds each file's own local names, so an alias would ask
-        # the bound file about a name that means something else there.
-        # ``!= bound`` because a mutual re-export can leave an entry
-        # naming its own file.
+        # The bound module may be a package ``__init__`` that re-exports the
+        # type, so chase the re-export map by the *exported* name; a mutual
+        # re-export can leave an entry naming its own file.
         type_name, method_name = key
         binding = self._import_bindings.get(file_path, {}).get(type_name)
         exported = (binding.exported_name if binding else None) or type_name
@@ -269,8 +253,7 @@ class ReceiverTypingMixin:
             )
             scope = "field"
         # Third scope: a module-level def a framework decorator turned into an
-        # instance. Neither of the two above can see it — it is not in the body
-        # and not a field.
+        # instance, which is neither in the body nor a field.
         if type_name is None and language in FRAMEWORK_DECORATOR_LANGUAGES:
             return (
                 self._framework_receiver_type(file_path, caller_id, language, receiver_name),
@@ -285,9 +268,8 @@ class ReceiverTypingMixin:
         language: str,
         receiver_name: str,
     ) -> str | None:
-        # The type lookup is a dict hit and the shadowing scan reads the
-        # whole file, so the cheap half decides first: only a receiver this
-        # scope would actually answer for is worth scanning a body for.
+        # The type lookup is a dict hit and the shadowing scan reads the file,
+        # so the cheap half decides first.
         type_name = self._framework_type_of(file_path, receiver_name, language)
         if type_name is not None and receiver_name in self._bound_names_in(
             file_path, caller_id, language
@@ -536,11 +518,8 @@ class ReceiverTypingMixin:
         caller never imports is not this receiver, and reaching for it would be
         the bare-name match this tier exists to avoid.
         """
-        # One pass over the repo's symbols answers for every call site that
-        # names nothing decorated, which is all of them in a repo that uses no
-        # framework in the table. Without it every unresolved member call pays
-        # a per-file symbol walk and three dict lookups: 15% of django's build
-        # for a repo that gains no edge at all.
+        # One repo-wide pass answers every call site that names nothing
+        # decorated, sparing each a per-file symbol walk.
         if receiver_name not in self._framework_names(language):
             return None
 
