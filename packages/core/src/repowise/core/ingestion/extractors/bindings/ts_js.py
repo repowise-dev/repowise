@@ -67,6 +67,57 @@ def _extract_require_bindings(
     return names, bindings
 
 
+def extract_dynamic_import_bindings(
+    object_pattern: Node, src: str
+) -> tuple[list[str], list[NamedBinding]] | None:
+    """Bindings for an ``object_pattern`` that is the LHS of a dynamic import.
+
+    ``const { a, b: c } = await import('./mod')`` → ``(["a", "b"], [...])``.
+
+    Returns ``None`` when the pattern contains a rest element
+    (``{ fn, ...rest }``), because the rest element consumes the remaining
+    namespace and a wildcard is the only honest representation.  Callers must
+    fall back to ``imported_names=["*"]`` and ``bindings=[]`` in that case.
+
+    Language-neutral: works for JavaScript, TypeScript, Vue, and Svelte
+    projections, which all share the same dynamic-import parser branch in
+    ``_extract_imports``.
+    """
+    names: list[str] = []
+    bindings: list[NamedBinding] = []
+
+    for el in object_pattern.children:
+        if el.type == "rest_pattern":
+            # Any rest element means the remaining namespace is consumed —
+            # fall back to wildcard so no exported symbol is incorrectly
+            # flagged as unused.
+            return None
+        if el.type == "shorthand_property_identifier_pattern":
+            local = node_text(el, src).strip()
+            if local:
+                names.append(local)
+                bindings.append(
+                    NamedBinding(local_name=local, exported_name=local, source_file=None)
+                )
+        elif el.type == "pair_pattern":
+            key = el.child_by_field_name("key")
+            val = el.child_by_field_name("value")
+            if key is not None and val is not None:
+                exported = node_text(key, src).strip()
+                local = node_text(val, src).strip()
+                if exported:
+                    names.append(exported)
+                    bindings.append(
+                        NamedBinding(
+                            local_name=local or exported,
+                            exported_name=exported,
+                            source_file=None,
+                        )
+                    )
+
+    return names, bindings
+
+
 def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
     """Extract bindings from TypeScript/JavaScript import and re-export statements.
 
@@ -113,9 +164,7 @@ def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[N
                         local = node_text(alias_node, src) if alias_node else exported
                         names.append(exported)
                         bindings.append(
-                            NamedBinding(
-                                local_name=local, exported_name=exported, source_file=None
-                            )
+                            NamedBinding(local_name=local, exported_name=exported, source_file=None)
                         )
             elif child.type == "namespace_export":
                 # ``export * as ns from "x"`` — forwards the whole module, but
@@ -156,9 +205,7 @@ def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[N
                         local = node_text(alias_node, src) if alias_node else exported
                         names.append(exported)
                         bindings.append(
-                            NamedBinding(
-                                local_name=local, exported_name=exported, source_file=None
-                            )
+                            NamedBinding(local_name=local, exported_name=exported, source_file=None)
                         )
             elif sub.type == "namespace_import":
                 ns_name = None
