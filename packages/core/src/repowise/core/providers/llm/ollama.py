@@ -20,33 +20,31 @@ Usage:
 
 from __future__ import annotations
 
-import contextlib
 import os
 from collections.abc import AsyncIterator
 from typing import Any
 
 import structlog
-from openai import APIError as _OpenAIAPIError
-from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
-from openai import RateLimitError as _OpenAIRateLimitError
 from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
     ChatStreamEvent,
-    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
-    RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
-    normalize_stop_reason,
-    parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    record_generation_cost,
+)
+from repowise.core.providers.llm.openai_compat import (
+    completion_to_response,
+    stream_openai_chat,
+    translate_openai_errors,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
@@ -226,16 +224,9 @@ class OllamaProvider(BaseProvider):
         # (not the @retry-wrapped inner one) so a retry can never double-count.
         # The tracker is attached externally by the orchestrator, so it may be
         # absent.
-        tracker = getattr(self, "_cost_tracker", None)
-        if tracker is not None:
-            with contextlib.suppress(Exception):
-                await tracker.record(
-                    model=f"ollama/{self._model}",
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    operation=tracker.operation,
-                    file_path=None,
-                )
+        await record_generation_cost(
+            getattr(self, "_cost_tracker", None), model=f"ollama/{self._model}", result=result
+        )
         return result
 
     @retry(
@@ -253,49 +244,20 @@ class OllamaProvider(BaseProvider):
         request_id: str | None,
         reasoning: ReasoningMode,
     ) -> GeneratedResponse:
-        try:
-            request_kwargs: dict[str, Any] = {
-                "model": self._model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            }
-            request_kwargs.update(_ollama_reasoning_kwargs(reasoning))
+        request_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        request_kwargs.update(_ollama_reasoning_kwargs(reasoning))
+        with translate_openai_errors("ollama"):
             response = await self._client.chat.completions.create(**request_kwargs)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "ollama",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("ollama", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "ollama", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
 
-        usage = response.usage
-        choice = response.choices[0]
-        stop_reason, provider_stop_reason = normalize_stop_reason(choice.finish_reason)
-        result = GeneratedResponse(
-            content=choice.message.content or "",
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-            cached_tokens=0,
-            stop_reason=stop_reason,
-            provider_stop_reason=provider_stop_reason,
-            usage={
-                "prompt_tokens": usage.prompt_tokens if usage else 0,
-                "completion_tokens": usage.completion_tokens if usage else 0,
-            },
-        )
+        result = completion_to_response(response, include_total_tokens=False)
         log.debug(
             "ollama.generate.done",
             input_tokens=result.input_tokens,
@@ -317,8 +279,6 @@ class OllamaProvider(BaseProvider):
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream chat via Ollama's OpenAI-compatible endpoint."""
-        import json as _json
-
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -330,82 +290,5 @@ class OllamaProvider(BaseProvider):
         if tools:
             kwargs["tools"] = tools
 
-        try:
-            stream = await self._client.chat.completions.create(**kwargs)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "ollama",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("ollama", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "ollama", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
-
-        tool_calls_acc: dict[int, dict[str, Any]] = {}
-
-        try:
-            async for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice:
-                    continue
-
-                delta = choice.delta
-                finish = choice.finish_reason
-
-                if delta and delta.content:
-                    yield ChatStreamEvent(type="text_delta", text=delta.content)
-
-                if delta and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id": tc_delta.id or "",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        acc = tool_calls_acc[idx]
-                        if tc_delta.id:
-                            acc["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                acc["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                acc["arguments"] += tc_delta.function.arguments
-
-                if finish:
-                    for idx in sorted(tool_calls_acc.keys()):
-                        acc = tool_calls_acc[idx]
-                        try:
-                            args = _json.loads(acc["arguments"]) if acc["arguments"] else {}
-                        except Exception:
-                            args = {}
-                        yield ChatStreamEvent(
-                            type="tool_start",
-                            tool_call=ChatToolCall(id=acc["id"], name=acc["name"], arguments=args),
-                        )
-                    tool_calls_acc.clear()
-                    stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
-                    yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
-        except _OpenAIRateLimitError as exc:
-            raise RateLimitError(
-                "ollama",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
-        except _OpenAIAPIStatusError as exc:
-            raise ProviderError("ollama", str(exc), status_code=exc.status_code) from exc
-        except _OpenAIAPIError as exc:
-            raise ProviderError(
-                "ollama", str(exc), status_code=getattr(exc, "status_code", None)
-            ) from exc
+        async for event in stream_openai_chat(self._client, "ollama", kwargs, emit_usage=False):
+            yield event
