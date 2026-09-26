@@ -277,7 +277,7 @@ async def test_code_health_read_failure_degrades_to_an_empty_block(
     async def boom(*_a, **_k):
         raise RuntimeError("health tables unreadable")
 
-    monkeypatch.setattr(ov, "_get_health_metrics", boom)
+    monkeypatch.setattr(ov.health, "_get_health_metrics", boom)
     repo = SimpleNamespace(id=populated_db)
     assert await ov._build_code_health(session, repo) == {}
 
