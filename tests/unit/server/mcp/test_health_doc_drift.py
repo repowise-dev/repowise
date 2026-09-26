@@ -128,7 +128,7 @@ async def test_an_index_without_the_drift_table_says_so(
     setup_mcp, health_data, drift_rows, monkeypatch
 ):
     """"Could not read" must never render as "nothing to report"."""
-    import repowise.server.mcp_server.tool_health as th
+    import repowise.server.mcp_server.tool_health.tool as th
     from repowise.server.mcp_server import get_health
 
     async def _raise(*_a, **_k):

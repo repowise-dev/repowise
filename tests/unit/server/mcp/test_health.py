@@ -1518,7 +1518,7 @@ async def test_targeted_mode_asks_only_about_the_files_it_was_given(
     test. Dashboard mode partitions a ranked finding list whose paths are not
     known until that list is built, so it must stay repo-wide.
     """
-    import repowise.server.mcp_server.tool_health as th
+    import repowise.server.mcp_server.tool_health.tool as th
     from repowise.server.mcp_server import get_health
 
     asked: list[object] = []
@@ -1594,7 +1594,8 @@ async def test_dashboard_coverage_declines_the_covered_lines_column(setup_mcp, h
     dict comprehension. So a test that only checked the payload would pass on
     the unfixed code; the waste is invisible from the outside.
     """
-    from repowise.server.mcp_server import get_health, tool_health
+    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server.tool_health import tool as tool_health
 
     seen: list[bool] = []
     real = tool_health.load_coverage_for_repo

@@ -1,0 +1,186 @@
+"""Performance and refactoring pillar blocks for get_health: the queue, rollup and lead."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from repowise.server.services.performance_health import (
+    PerformanceHealthService,
+    PerformancePage,
+    parse_query,
+)
+from repowise.server.services.refactoring_health import RefactoringHealthService
+from repowise.server.services.refactoring_health import parse_query as parse_refactoring_query
+
+# The opportunity id space is shared with the performance pillar's, and told
+# apart by prefix alone, so ``opportunity_id`` stays one selector.
+_REFACTORING_OPPORTUNITY_PREFIX = "refop"
+
+_REFACTORING_COLLECTION_CAP = 6
+"""Opportunities per response, independent of ``limit``. ``cursor`` pages it."""
+
+_REFACTORING_STEP_CAP = 3
+"""Steps per row in the queue. The detail call pages the rest."""
+
+_REFACTORING_STEP_PAGE_CAP = 20
+"""Ceiling on one page of a detail call's ordered steps."""
+
+_REFACTORING_EVIDENCE_CAP = 3
+"""Evidence rows beside a detail response. ``only=['refactoring_evidence']`` pages more."""
+
+_REFACTORING_EVIDENCE_PAGE_CAP = 20
+"""Ceiling on one evidence page."""
+
+_PERFORMANCE_COLLECTION_CAP = 6
+"""Opportunities per response, independent of ``limit``. ``cursor`` pages it."""
+
+_PERFORMANCE_EVIDENCE_CAP = 3
+"""Evidence rows per opportunity in the collection. The detail call pages more."""
+
+_PERFORMANCE_EVIDENCE_PAGE_CAP = 20
+"""Ceiling on one evidence page. ``limit`` still means what it says below it,
+including ``limit=0`` for the totals and no rows."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PerformanceBlocks:
+    """Everything the performance pillar contributes to one response."""
+
+    page: PerformancePage | None = None
+    summary: dict[str, Any] | None = None
+    directive: dict[str, Any] | None = None
+    ignored: dict[str, str] = field(default_factory=dict)
+
+
+async def _performance_blocks(
+    service: PerformanceHealthService,
+    *,
+    wants: Any,
+    included: bool,
+    file_paths: tuple[str, ...] | None,
+    scoped: bool,
+    limit: int,
+    cursor: int,
+    view: str | None,
+    context: str | None,
+    boundary: str | None,
+    confidence: str | None,
+    actionability: str | None,
+    sort: str | None,
+) -> _PerformanceBlocks:
+    """Read the materialized queue, its rollup, and the dashboard lead.
+
+    Each block is gated on surviving the projection, so a caller that asked for
+    one of the three does not pay for the other two.
+    """
+    page = None
+    query = None
+    ignored: dict[str, str] = {}
+    if included:
+        # The lede quotes only the first row and no evidence, so a projection
+        # down to it reads one row rather than a page of six.
+        emits_queue = wants("performance_opportunities")
+        query, ignored = parse_query(
+            context=context,
+            boundary=boundary,
+            confidence=confidence,
+            actionability=actionability,
+            view=view,
+            sort=sort,
+            file_paths=file_paths,
+            limit=min(max(limit, 0), _PERFORMANCE_COLLECTION_CAP) if emits_queue else 1,
+            offset=cursor if emits_queue else 0,
+        )
+        page = await service.page(
+            query,
+            evidence_per_item=_PERFORMANCE_EVIDENCE_CAP if emits_queue else 0,
+            # Facets are rendered by the summary block alone, so a queue or a
+            # lede does not pay for the aggregate.
+            with_facets=wants("performance_summary"),
+        )
+    return _PerformanceBlocks(
+        page=page,
+        summary=(
+            # Scoped to the same context as the queue beside it, so two blocks
+            # in one answer cannot state totals that contradict each other.
+            await service.summary(query.contexts if query else None)
+            if included and wants("performance_summary")
+            else None
+        ),
+        # The bare dashboard lead: one primary-key read of the current summary
+        # row, so it does not grow with the repository and never touches the
+        # queue.
+        directive=(
+            await service.directive() if not scoped and wants("performance_directive") else None
+        ),
+        ignored=ignored,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _RefactoringBlocks:
+    """Everything the refactoring pillar contributes to one response."""
+
+    page: Any = None
+    summary: dict[str, Any] | None = None
+    directive: dict[str, Any] | None = None
+    ignored: dict[str, str] = field(default_factory=dict)
+
+
+async def _refactoring_blocks(
+    service: RefactoringHealthService,
+    *,
+    wants: Any,
+    included: bool,
+    file_paths: tuple[str, ...] | None,
+    scoped: bool,
+    limit: int,
+    cursor: int,
+    view: str,
+    lead_type: str | None = None,
+    confidence: str | None = None,
+    effort: str | None = None,
+) -> _RefactoringBlocks:
+    """Read the materialized queue, its rollup, and the dashboard lead.
+
+    Each block is gated on surviving the projection, so a caller that asked for
+    one of the three does not pay for the other two.
+    """
+    page = None
+    ignored: dict[str, str] = {}
+    # A scope that resolved to no file is not the dashboard. The queue below
+    # honours it through an ``IN ()``, but the rollup and its facets are read
+    # by repository id and have no scope to honour, so they have to be withheld
+    # rather than filtered — the same reason ``directive`` is dashboard-only.
+    resolved_scope = not (scoped and not file_paths)
+    rollup_wanted = included and wants("refactoring_summary") and resolved_scope
+    if included:
+        emits_queue = wants("refactoring_opportunities")
+        query, ignored = parse_refactoring_query(
+            view=view,
+            lead_type=lead_type,
+            confidence=confidence,
+            effort=effort,
+            file_paths=list(file_paths) if file_paths is not None else None,
+            limit=min(max(limit, 0), _REFACTORING_COLLECTION_CAP) if emits_queue else 1,
+            offset=cursor if emits_queue else 0,
+        )
+        page = await service.page(
+            query,
+            steps_per_item=_REFACTORING_STEP_CAP if emits_queue else 0,
+            with_facets=rollup_wanted,
+        )
+    return _RefactoringBlocks(
+        page=page,
+        summary=await service.summary() if rollup_wanted else None,
+        # The dashboard lead only. A targeted call is already about a file the
+        # caller named, so pointing it at the repository's worst file elsewhere
+        # would be answering a question nobody asked.
+        directive=(
+            await service.directive()
+            if not scoped and wants("refactoring_directive")
+            else None
+        ),
+        ignored=ignored,
+    )
