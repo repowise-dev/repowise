@@ -327,11 +327,9 @@ def _object_macro_invocations(
     definitions: dict[int, tuple[Node, str]], hazards: _MacroHazards, src: str
 ) -> dict[int, Node]:
     """Every identifier that may expand an object-like hazard macro, keyed by node id."""
-    # Object-like macros expand wherever their identifier token appears, not
-    # only as a standalone expression. Walk the existing tree only when a
-    # local definition proves that the name wraps a stack operation. An include
-    # is a barrier at its own position, but without preprocessing context it is
-    # not evidence that every later identifier is an imported wrapper.
+    # Object-like macros expand wherever their token appears. Only local
+    # definitions count: an include is a barrier, not evidence that later
+    # identifiers are imported wrappers.
     object_hazard_names = {
         macro_name
         for macro_node, macro_name in definitions.values()
@@ -472,10 +470,8 @@ class _MacroReplay:
 
     def apply(self, operation: _CppMacroOperation) -> None:
         if self._cross_barriers(operation.position):
-            # Includes and opaque pragma wrappers may mutate both the macro
-            # and its push/pop stack. A later local definition can establish
-            # the current value again, but only a later local push can
-            # establish a stack entry that is safe to restore.
+            # Includes and opaque pragma wrappers may change the macro and its
+            # stack; only a later local define or push re-establishes them.
             self._current.clear()
             self._stacks.clear()
 
