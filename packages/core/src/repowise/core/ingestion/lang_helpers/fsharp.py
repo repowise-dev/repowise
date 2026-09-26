@@ -118,16 +118,22 @@ def _fsharp_owner_name(owner: Node, src: str) -> str | None:
     if owner.type == "module_defn":
         ident = next((c for c in owner.named_children if c.type == "identifier"), None)
         return node_text(ident, src).strip() if ident is not None else None
+    name_node = _fsharp_type_name_node(owner)
+    if name_node is None:
+        return None
+    return node_text(name_node, src).strip() or None
+
+
+def _fsharp_type_name_node(owner: Node) -> Node | None:
+    """The node naming a type owner, reduced to the last segment of a dotted name."""
     name_node = owner.child_by_field_name("type_name")
     if name_node is None:
         holder = next((c for c in owner.named_children if c.type == "type_name"), None)
         name_node = holder.child_by_field_name("type_name") if holder else None
-    if name_node is None:
-        return None
-    if name_node.type == "long_identifier":
-        idents = [c for c in name_node.named_children if c.type == "identifier"]
-        name_node = idents[-1] if idents else name_node
-    return node_text(name_node, src).strip() or None
+    if name_node is None or name_node.type != "long_identifier":
+        return name_node
+    idents = [c for c in name_node.named_children if c.type == "identifier"]
+    return idents[-1] if idents else name_node
 
 
 def _fsharp_parent_name(def_node: Node, src: str) -> str | None:

@@ -70,28 +70,36 @@ def _elixir_call_is_definitional(node: Node, src: str) -> bool:
       attribute the body is types, so its calls are dropped too; inside any
       other attribute the body is ordinary code and keeps its edges.
     """
-    head = node
-    parent = head.parent
-    if parent is not None and parent.type == "binary_operator":
-        operator = parent.child_by_field_name("operator")
-        if (
-            operator is not None
-            and operator.type == "when"
-            and parent.child_by_field_name("left") is not None
-            and parent.child_by_field_name("left").id == head.id
-        ):
-            head, parent = parent, parent.parent
-    if parent is not None and parent.type == "arguments":
-        outer = parent.parent
-        named = parent.named_children
-        if (
-            outer is not None
-            and named
-            and named[0].id == head.id
-            and _elixir_call_target_name(outer, src) in _ELIXIR_DEFINITION_KEYWORDS
-        ):
-            return True
+    return _elixir_is_definition_head(node, src) or _elixir_in_attribute(node, src)
 
+
+def _elixir_is_definition_head(node: Node, src: str) -> bool:
+    """True when *node* (or its ``when`` guard) is the first argument of a ``def``."""
+    head = _elixir_guarded_head(node)
+    parent = head.parent
+    if parent is None or parent.type != "arguments":
+        return False
+    named = parent.named_children
+    if not named or named[0].id != head.id:
+        return False
+    outer = parent.parent
+    return outer is not None and _elixir_call_target_name(outer, src) in _ELIXIR_DEFINITION_KEYWORDS
+
+
+def _elixir_guarded_head(node: Node) -> Node:
+    """The ``when`` expression *node* is the left side of, else *node* itself."""
+    parent = node.parent
+    if parent is None or parent.type != "binary_operator":
+        return node
+    operator = parent.child_by_field_name("operator")
+    if operator is None or operator.type != "when":
+        return node
+    left = parent.child_by_field_name("left")
+    return parent if left is not None and left.id == node.id else node
+
+
+def _elixir_in_attribute(node: Node, src: str) -> bool:
+    """True when *node* is a module attribute's name or sits in a typespec body."""
     # Walk out to the `@` unary_operator that opens this statement. Bounded by
     # the statement rather than by a hop count: a union return type nests one
     # binary_operator per member, so `@spec f(t) :: a() | b() | c() | d()` sits
@@ -101,21 +109,29 @@ def _elixir_call_is_definitional(node: Node, src: str) -> bool:
         holder = ancestor.parent
         if holder is None or holder.type in _ELIXIR_STATEMENT_HOLDERS:
             return False
-        if holder.type == "unary_operator":
-            operator = holder.child_by_field_name("operator")
-            if operator is not None and operator.type == "@":
-                if ancestor.id == node.id:
-                    return True
-                return _elixir_call_target_name(ancestor, src) in _ELIXIR_TYPESPEC_ATTRIBUTES
+        if _elixir_is_attribute_operator(holder):
+            return (
+                ancestor.id == node.id
+                or _elixir_call_target_name(ancestor, src) in _ELIXIR_TYPESPEC_ATTRIBUTES
+            )
         ancestor = holder
     return False
 
 
+def _elixir_is_attribute_operator(node: Node) -> bool:
+    if node.type != "unary_operator":
+        return False
+    operator = node.child_by_field_name("operator")
+    return operator is not None and operator.type == "@"
+
+
+def _elixir_arguments(call_node: Node) -> Node | None:
+    return next((child for child in call_node.named_children if child.type == "arguments"), None)
+
+
 def _elixir_definition_alias(call_node: Node, src: str) -> str | None:
     """The first ``alias`` argument of a definition call, i.e. its module name."""
-    arguments = next(
-        (child for child in call_node.named_children if child.type == "arguments"), None
-    )
+    arguments = _elixir_arguments(call_node)
     if arguments is None or not arguments.named_children:
         return None
     first = arguments.named_children[0]
@@ -126,21 +142,27 @@ def _elixir_definition_alias(call_node: Node, src: str) -> str | None:
 
 def _elixir_defimpl_for_type(call_node: Node, src: str) -> str | None:
     """The ``for:`` type of a ``defimpl Proto, for: Type`` block."""
-    arguments = next(
-        (child for child in call_node.named_children if child.type == "arguments"), None
-    )
+    arguments = _elixir_arguments(call_node)
     if arguments is None:
         return None
     for child in arguments.named_children:
         if child.type != "keywords":
             continue
-        for pair in child.named_children:
-            key = pair.child_by_field_name("key")
-            value = pair.child_by_field_name("value")
-            if key is None or value is None:
-                continue
-            if node_text(key, src).strip().rstrip(":") == "for":
-                return node_text(value, src).strip() or None
+        value = _elixir_keyword_value(child, "for", src)
+        if value is not None:
+            return node_text(value, src).strip() or None
+    return None
+
+
+def _elixir_keyword_value(keywords: Node, key_name: str, src: str) -> Node | None:
+    """The value node of the first ``key_name:`` pair in a keyword list."""
+    for pair in keywords.named_children:
+        key = pair.child_by_field_name("key")
+        value = pair.child_by_field_name("value")
+        if key is None or value is None:
+            continue
+        if node_text(key, src).strip().rstrip(":") == key_name:
+            return value
     return None
 
 

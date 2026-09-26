@@ -43,6 +43,14 @@ def _objc_selector_name(def_node: Node, default_name: str, src: str) -> str:
     """
     if def_node.type not in _OBJC_METHOD_NODE_TYPES:
         return default_name
+    parts = _objc_selector_keywords(def_node, src)
+    if parts:
+        return "".join(f"{p}:" for p in parts)
+    # No parameters at all: the selector is the first keyword, unadorned.
+    return _objc_unary_selector(def_node, src) or default_name
+
+
+def _objc_selector_keywords(def_node: Node, src: str) -> list[str]:
     parts: list[str] = []
     pending: str | None = None
     for child in def_node.children:
@@ -58,15 +66,16 @@ def _objc_selector_name(def_node: Node, default_name: str, src: str) -> str:
                 pending = None
         elif child.type in ("compound_statement", ";"):
             break
-    if parts:
-        return "".join(f"{p}:" for p in parts)
-    # No parameters at all: the selector is the first keyword, unadorned.
+    return parts
+
+
+def _objc_unary_selector(def_node: Node, src: str) -> str | None:
     first = next((c for c in def_node.children if c.type == "identifier"), None)
     if first is None:
-        return default_name
+        return None
     text = node_text(first, src).strip()
     if not text or text in _OBJC_TRAILING_MACRO_NAMES:
-        return default_name
+        return None
     return text
 
 
@@ -175,11 +184,8 @@ def _objc_call_is_block_variable(site_node: Node, target_name: str, src: str) ->
     node: Node | None = site_node
     while node is not None:
         if node.type == "compound_statement":
-            for statement in node.named_children:
-                if statement.type == "declaration" and _objc_declares_name(
-                    statement, target_name, src
-                ):
-                    return True
+            if _objc_block_declares(node, target_name, src):
+                return True
         elif node.type == "method_definition":
             return any(
                 child.type == "method_parameter"
@@ -191,6 +197,14 @@ def _objc_call_is_block_variable(site_node: Node, target_name: str, src: str) ->
             return declarator is not None and _objc_declares_name(declarator, target_name, src)
         node = node.parent
     return False
+
+
+def _objc_block_declares(block: Node, name: str, src: str) -> bool:
+    """True when a statement directly in *block* declares *name*."""
+    return any(
+        statement.type == "declaration" and _objc_declares_name(statement, name, src)
+        for statement in block.named_children
+    )
 
 
 def _objc_declares_name(node: Node, name: str, src: str) -> bool:

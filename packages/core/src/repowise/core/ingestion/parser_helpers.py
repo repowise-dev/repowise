@@ -88,24 +88,36 @@ def _run_query(query: object, root_node: Node) -> list[dict[str, list[Node]]]:
     """Execute a tree-sitter query and return a list of capture dicts."""
     results: list[dict[str, list[Node]]] = []
     try:
-        from tree_sitter import QueryCursor  # type: ignore[attr-defined]
-
-        cursor = QueryCursor(query)  # type: ignore[call-arg]
-        for match in cursor.matches(root_node):
-            if hasattr(match, "captures"):
-                results.append(match.captures)
-            elif isinstance(match, tuple) and len(match) == 2:
-                _, caps = match
-                results.append(caps)
+        _append_cursor_captures(query, root_node, results)
     except Exception:
-        try:
-            for item in query.matches(root_node):  # type: ignore[attr-defined]
-                if isinstance(item, tuple) and len(item) == 2:
-                    _, caps = item
-                    results.append(caps)
-        except Exception as exc:
-            log.warning("query.matches() failed", error=str(exc))
+        # Older py-tree-sitter has no QueryCursor; matches collected before a
+        # failure are kept and the legacy API appends after them.
+        _append_legacy_captures(query, root_node, results)
     return results
+
+
+def _append_cursor_captures(
+    query: object, root_node: Node, results: list[dict[str, list[Node]]]
+) -> None:
+    from tree_sitter import QueryCursor  # type: ignore[attr-defined]
+
+    cursor = QueryCursor(query)  # type: ignore[call-arg]
+    for match in cursor.matches(root_node):
+        if hasattr(match, "captures"):
+            results.append(match.captures)
+        elif isinstance(match, tuple) and len(match) == 2:
+            results.append(match[1])
+
+
+def _append_legacy_captures(
+    query: object, root_node: Node, results: list[dict[str, list[Node]]]
+) -> None:
+    try:
+        for item in query.matches(root_node):  # type: ignore[attr-defined]
+            if isinstance(item, tuple) and len(item) == 2:
+                results.append(item[1])
+    except Exception as exc:
+        log.warning("query.matches() failed", error=str(exc))
 
 
 def _collect_error_nodes(root: Node) -> list[str]:
