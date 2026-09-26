@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import io
 import logging
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.docs_mode import resolve_docs_mode
@@ -23,15 +19,20 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GenerationJob,
-    GitMetadata,
     GraphNode,
-    HealthSnapshot,
     Page,
     Repository,
 )
 from repowise.server.deps import get_db_session, get_fts, verify_api_key
 from repowise.server.job_executor import execute_job
-from repowise.server.mcp_server._meta import read_live_head, resolve_indexed_commit
+from repowise.server.routers._repo_generate import (
+    GenerateRequestBody,
+    GenerateSelectionBody,  # noqa: F401 - re-exported beside the body that nests it
+    _generate_job_config,
+    _validate_generate_selection,
+    _validate_generate_style,
+)
+from repowise.server.routers._repo_summary import _freshness_for, _summary_rows_for
 from repowise.server.routers._sorting import repository_sort_key
 from repowise.server.schemas import (
     JobAcceptedResponse,
@@ -326,139 +327,6 @@ async def list_repos(
         )
 
     return responses
-
-
-def _fresh_case(column: Any, value: Any) -> Any:
-    """Portable conditional count. ``count(...) FILTER (WHERE ...)`` needs
-    SQLite 3.30+ and this project ships no version floor, so every conditional
-    count in the codebase is a ``sum(case(...))`` — see ``routers/git.py``."""
-    return func.coalesce(func.sum(case((column == value, 1), else_=0)), 0)
-
-
-async def _summary_rows_for(session: AsyncSession) -> dict[str, dict[str, Any]]:
-    """Headline figures for every repo in one database, five queries total.
-
-    Grouped by ``repository_id`` rather than filtered per repo: the route this
-    replaces ran six queries *per repository* for the stats alone, and
-    ``/git-summary`` hydrated every ``git_metadata`` row (one per file, ~3.5k on
-    this repo) to produce two integers.
-
-    A table that does not exist yet — a repo registered but never analysed, an
-    older store — degrades that section to zero rather than 500-ing the whole
-    dashboard, which is the same contract ``routers/stats.py`` documents.
-    """
-    out: dict[str, dict[str, Any]] = {}
-
-    def row_for(repo_id: str) -> dict[str, Any]:
-        return out.setdefault(repo_id, {})
-
-    # Files, symbols and entry points. `graph_nodes` holds symbol rows in the
-    # same table, so every count here is scoped to `node_type == "file"`; the
-    # unscoped count is what makes /stats report 38,813 "files" for 3,600.
-    with contextlib.suppress(SQLAlchemyError):
-        result = await session.execute(
-            select(
-                GraphNode.repository_id,
-                func.count(GraphNode.id),
-                func.coalesce(func.sum(GraphNode.symbol_count), 0),
-                _fresh_case(GraphNode.is_entry_point, True),
-            )
-            .where(GraphNode.node_type == "file")
-            .group_by(GraphNode.repository_id)
-        )
-        for repo_id, files, symbols, entries in result.all():
-            row_for(repo_id).update(
-                file_count=int(files or 0),
-                symbol_count=int(symbols or 0),
-                entry_point_count=int(entries or 0),
-            )
-
-    # Documentation pages and the fresh subset. Never selects `content`.
-    with contextlib.suppress(SQLAlchemyError):
-        result = await session.execute(
-            select(
-                Page.repository_id,
-                func.count(Page.id),
-                _fresh_case(Page.freshness_status, "fresh"),
-            ).group_by(Page.repository_id)
-        )
-        for repo_id, pages, fresh in result.all():
-            row_for(repo_id).update(
-                doc_page_count=int(pages or 0),
-                doc_fresh_page_count=int(fresh or 0),
-            )
-
-    # Open unused exports — the one dead-code figure the dashboard quotes.
-    with contextlib.suppress(SQLAlchemyError):
-        result = await session.execute(
-            select(DeadCodeFinding.repository_id, func.count(DeadCodeFinding.id))
-            .where(
-                DeadCodeFinding.kind == "unused_export",
-                DeadCodeFinding.status == "open",
-            )
-            .group_by(DeadCodeFinding.repository_id)
-        )
-        for repo_id, dead in result.all():
-            row_for(repo_id).update(dead_export_count=int(dead or 0))
-
-    # Hotspots, and the tracked-file denominator they are meaningful against.
-    with contextlib.suppress(SQLAlchemyError):
-        result = await session.execute(
-            select(
-                GitMetadata.repository_id,
-                func.count(GitMetadata.id),
-                _fresh_case(GitMetadata.is_hotspot, True),
-            ).group_by(GitMetadata.repository_id)
-        )
-        for repo_id, tracked, hotspots in result.all():
-            row_for(repo_id).update(
-                tracked_file_count=int(tracked or 0),
-                hotspot_count=int(hotspots or 0),
-            )
-
-    # Latest health snapshot per repo. Three scalar columns only: a snapshot
-    # row carries `per_file_scores_json`, ~186 KB apiece, and selecting the
-    # entity would pull the whole retained history's worth of it for two
-    # floats (see crud.get_health_snapshot_headline's docstring). Reduced in
-    # Python rather than with a window function, because retention bounds the
-    # row count to tens per repo and window syntax is not uniform across the
-    # two supported backends.
-    with contextlib.suppress(SQLAlchemyError):
-        result = await session.execute(
-            select(
-                HealthSnapshot.repository_id,
-                HealthSnapshot.taken_at,
-                HealthSnapshot.average_health,
-                HealthSnapshot.hotspot_health,
-            ).order_by(HealthSnapshot.taken_at.asc(), HealthSnapshot.id.asc())
-        )
-        for repo_id, taken_at, average, hotspot in result.all():
-            # Ascending order means the last write per repo wins.
-            row_for(repo_id).update(
-                average_health=round(float(average), 2) if average is not None else None,
-                hotspot_health=round(float(hotspot), 2) if hotspot is not None else None,
-                health_taken_at=taken_at,
-            )
-
-    return out
-
-
-def _freshness_for(repo: RepoResponse) -> tuple[str | None, str | None, bool | None]:
-    """(indexed commit, live HEAD, is the index behind) for one repo.
-
-    Both reads are plain file I/O — `read_live_head` parses `.git/HEAD` and
-    follows at most one ref rather than spawning git — so this stays cheap
-    enough to run per repo on a page load. Returns ``None`` for
-    ``index_behind`` when either side is unavailable, so "current" and
-    "could not tell" never collapse into the same answer.
-    """
-    if not repo.local_path:
-        return None, None, None
-    indexed = resolve_indexed_commit(repo.head_commit, repo.local_path)
-    live = read_live_head(repo.local_path)
-    if not indexed or not live:
-        return (indexed[:12] if indexed else None), (live[:12] if live else None), None
-    return indexed[:12], live[:12], indexed != live
 
 
 @router.get("/summary", response_model=ReposSummaryResponse)
@@ -784,131 +652,6 @@ async def full_resync(
     await session.commit()
     _launch_job_task(request, job.id, repo_id)
     return _accepted(job.id)
-
-
-class GenerateSelectionBody(BaseModel):
-    """Which pages a generate request targets.
-
-    Two selection philosophies, kept distinct exactly as the CLI keeps them:
-
-    - **Explicit**: ``all`` / ``unwritten`` / ``stale``, an explicit ``page_ids``
-      list, or every page under a ``path_prefix`` — the caller names the pages.
-    - **Ranked** (``kind="ranked"``): write the most important slice by the same
-      importance model ``repowise init`` uses, sized by ``coverage_pct`` (a
-      fraction in ``(0, 1]``; ``1.0`` == everything) or ``top_n`` (a target page
-      count, not exact). The two are mutually exclusive.
-
-    The two philosophies cannot be combined; :func:`_validate_generate_selection`
-    enforces it with an actionable 400.
-    """
-
-    kind: Literal["all", "unwritten", "stale", "page_ids", "path_prefix", "ranked"] = "unwritten"
-    page_ids: list[str] | None = None
-    path_prefix: str | None = None
-    # Ranked selection only. ``coverage_pct`` is a fraction (0.2 == the top 20%);
-    # ``top_n`` targets ~N pages (mapped to a coverage fraction downstream).
-    coverage_pct: float | None = None
-    top_n: int | None = None
-
-
-class GenerateRequestBody(BaseModel):
-    """Body for the generate + estimate endpoints.
-
-    ``cascade`` is optional: left unset it resolves to ``none`` for a ranked
-    selection (the ranked set is already a coherent slice) and ``dependents`` for
-    an explicit one, matching the CLI ``generate`` defaults.
-    """
-
-    selection: GenerateSelectionBody = Field(default_factory=GenerateSelectionBody)
-    cascade: Literal["none", "dependents", "full"] | None = None
-    style: str | None = None
-
-
-def _validate_generate_selection(sel: GenerateSelectionBody) -> None:
-    """Reject an incoherent selection with an actionable 400.
-
-    Ranked and explicit selection are distinct philosophies (see
-    :class:`GenerateSelectionBody`) and may not be mixed; ``coverage_pct`` and
-    ``top_n`` are mutually exclusive and belong only to a ranked selection.
-    """
-    if sel.kind == "page_ids":
-        from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
-
-        structural = [
-            pid
-            for pid in (sel.page_ids or [])
-            if pid.split(":", 1)[0] not in MODEL_WRITTEN_PAGE_TYPES
-        ]
-        if structural:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "generate writes the concept layer only; these pages render "
-                    "from structure and refresh on update, not generate: " + ", ".join(structural)
-                ),
-            )
-
-    is_ranked = sel.kind == "ranked"
-    has_coverage = sel.coverage_pct is not None
-    has_top_n = sel.top_n is not None
-
-    if is_ranked:
-        if has_coverage == has_top_n:
-            raise HTTPException(
-                status_code=400,
-                detail="A ranked selection needs exactly one of coverage_pct or top_n.",
-            )
-        if has_coverage and not 0.0 < sel.coverage_pct <= 1.0:
-            raise HTTPException(
-                status_code=400,
-                detail="coverage_pct must be a fraction in (0, 1] (0.2 == the top 20%, 1.0 == all).",
-            )
-        if has_top_n and sel.top_n <= 0:
-            raise HTTPException(status_code=400, detail="top_n must be a positive number of pages.")
-        if sel.page_ids is not None or sel.path_prefix is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="A ranked selection cannot also carry page_ids or path_prefix.",
-            )
-    elif has_coverage or has_top_n:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "coverage_pct / top_n rank pages by importance and require "
-                'selection kind "ranked", not "' + sel.kind + '".'
-            ),
-        )
-
-
-def _validate_generate_style(style: str | None) -> None:
-    """Reject an unknown wiki style with a 400 listing the valid ones."""
-    if style is None:
-        return
-    from repowise.core.generation.styles import is_known_style, list_styles
-
-    if not is_known_style(style):
-        valid = ", ".join(s.name for s in list_styles())
-        raise HTTPException(
-            status_code=400, detail=f"Unknown style '{style}'. Valid styles: {valid}."
-        )
-
-
-def _generate_job_config(body: GenerateRequestBody) -> dict:
-    """Build the executor's job config from a validated request body."""
-    selection: dict = {"kind": body.selection.kind}
-    if body.selection.kind == "page_ids":
-        selection["page_ids"] = body.selection.page_ids or []
-    elif body.selection.kind == "path_prefix":
-        selection["path_prefix"] = body.selection.path_prefix
-    elif body.selection.kind == "ranked":
-        if body.selection.coverage_pct is not None:
-            selection["coverage_pct"] = body.selection.coverage_pct
-        if body.selection.top_n is not None:
-            selection["top_n"] = body.selection.top_n
-    config: dict = {"mode": "generate", "selection": selection, "cascade": body.cascade}
-    if body.style is not None:
-        config["style"] = body.style
-    return config
 
 
 @router.post("/{repo_id}/generate", response_model=JobAcceptedResponse, status_code=202)
