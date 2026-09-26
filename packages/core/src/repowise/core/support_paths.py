@@ -81,10 +81,24 @@ CONFIG_EXTENSIONS = frozenset(
 DOC_EXTENSIONS = frozenset({".md", ".mdx", ".rst", ".txt", ".adoc"})
 
 
+def classification_token(path: str) -> str:
+    """The lowercased token *path* is classified by.
+
+    The extension in almost every case. Pathlib reports **no** suffix for a
+    dotfile whose only dot is the leading one -- ``PurePosixPath(".env").suffix
+    == ""`` -- and the sets above name exactly such files (``".env"`` is an
+    entry of ``CONFIG_EXTENSIONS``). The whole name is the token there, so
+    falling back to it keeps entries that name a file rather than an extension
+    working (#2379).
+    """
+    parsed = PurePosixPath(path)
+    return (parsed.suffix or parsed.name).lower()
+
+
 def is_doc_or_config_path(path: str) -> bool:
     """Whether *path* is documentation or configuration rather than code."""
-    ext = PurePosixPath(path).suffix.lower()
-    return ext in CONFIG_EXTENSIONS or ext in DOC_EXTENSIONS
+    token = classification_token(path)
+    return token in CONFIG_EXTENSIONS or token in DOC_EXTENSIONS
 
 
 FilePopulation = Literal["production", "test", "example", "doc"]
