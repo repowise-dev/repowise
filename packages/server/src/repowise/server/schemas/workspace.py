@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WorkspaceRepoRemovedResponse(BaseModel):
@@ -289,6 +289,50 @@ class WorkspaceOrphanProvider(BaseModel):
     contract_type: str
 
 
+class WorkspaceSymbolIdentity(BaseModel):
+    total: int = 0
+    bound: int = 0
+    unindexed_file: int = 0
+    bound_ratio: float | None = None
+    bound_ratio_indexed: float | None = None
+
+
+class WorkspaceSchemaCoverage(BaseModel):
+    total: int = 0
+    bound: int = 0
+    recovered: int = 0
+    shared_symbol: int = 0
+    unsupported_language: int = 0
+    non_callable: int = 0
+    eligible: int = 0
+    recovered_ratio: float | None = None
+    recovered_ratio_eligible: float | None = None
+
+
+class WorkspaceCodeApiCoverage(BaseModel):
+    manifests: int = 0
+    published: int = 0
+    unsupported_ecosystem: int = 0
+    providers: int = 0
+    consumers: int = 0
+    linked_providers: int = 0
+    published_ratio: float | None = None
+    linked_ratio: float | None = None
+
+
+class WorkspaceOpenApiCoverage(BaseModel):
+    documents: int = 0
+    parsed_documents: int = 0
+    unresolved_documents: int = 0
+    operations: int = 0
+    providers: int = 0
+    schemas_merged: int = 0
+    spec_only_providers: int = 0
+    request_states: dict[str, int] = {}
+    response_states: dict[str, int] = {}
+    refusal_reasons: dict[str, int] = {}
+
+
 class WorkspaceExtractionDiagnostics(BaseModel):
     total_providers: int = 0
     total_consumers: int = 0
@@ -304,6 +348,12 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     #: Share of located HTTP client calls that became a contract. ``None`` when
     #: none were located — 0/0 is not 100%.
     http_consumer_coverage: float | None = None
+
+    symbol_identity: dict[str, WorkspaceSymbolIdentity] = {}
+    schema_coverage: WorkspaceSchemaCoverage = WorkspaceSchemaCoverage()
+    code_api: WorkspaceCodeApiCoverage = WorkspaceCodeApiCoverage()
+    openapi: WorkspaceOpenApiCoverage = WorkspaceOpenApiCoverage()
+    model_config = ConfigDict(extra="forbid")
 
 
 class WorkspaceSystemGraphResponse(BaseModel):

@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
 from repowise.core.workspace.cross_repo import MAX_EDGES, MAX_EDGES_PER_REPO_PAIR
+from repowise.core.workspace.diagnostics import ExtractionDiagnostics
 from repowise.core.workspace.test_impact import (
     UnresolvedLink,
     WorkspaceTestImpactResult,
@@ -23,6 +24,7 @@ from repowise.core.workspace.test_impact import (
 )
 from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 from repowise.server.routers import workspace
+from repowise.server.schemas.workspace import WorkspaceExtractionDiagnostics
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1232,6 +1234,12 @@ class TestGetDiagnostics:
         assert data["total_links"] == 1
         assert len(data["orphan_providers"]) == 1
         assert data["orphan_providers"][0]["contract_id"] == "http::GET::/orphan"
+
+        def test_extraction_diagnostics_schema_matches_core_payload(self) -> None:
+            diagnostics = ExtractionDiagnostics()
+            payload = diagnostics.to_dict()
+
+            assert set(payload) == set(WorkspaceExtractionDiagnostics.model_fields)
 
 
 # ---------------------------------------------------------------------------
