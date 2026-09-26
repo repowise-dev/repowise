@@ -8,6 +8,8 @@ central command wrapper recording exactly one event without breaking commands.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -483,3 +485,142 @@ class TestBucketCount:
         assert telemetry.drain_command_outcome() == {"a": 1}
         # A second drain is empty — the field belongs to one invocation only.
         assert telemetry.drain_command_outcome() == {}
+
+
+class TestFlusherExecutable:
+    """Tests for _flusher_executable() executable selection logic."""
+
+    def test_windows_prefers_pythonw_when_sibling_exists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """On Windows, prefer pythonw.exe next to sys.executable when it exists."""
+        monkeypatch.setattr("os.name", "nt")
+        fake_python = tmp_path / "python.exe"
+        fake_pythonw = tmp_path / "pythonw.exe"
+        fake_python.write_text("")
+        fake_pythonw.write_text("")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+
+        assert emitter._flusher_executable() == str(fake_pythonw)
+
+    def test_windows_falls_back_without_pythonw_sibling(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """On Windows, fall back to sys.executable when no pythonw.exe sibling exists."""
+        monkeypatch.setattr("os.name", "nt")
+        fake_python = tmp_path / "python.exe"
+        fake_python.write_text("")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+
+        assert emitter._flusher_executable() == str(fake_python)
+
+    def test_posix_returns_sys_executable(self, monkeypatch: pytest.MonkeyPatch):
+        """On POSIX, always return sys.executable."""
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+
+        assert emitter._flusher_executable() == "/usr/bin/python3"
+
+    def test_posix_ignores_pythonw_sibling(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """On POSIX, even if pythonw.exe exists, return sys.executable."""
+        monkeypatch.setattr("os.name", "posix")
+        fake_python = tmp_path / "python3"
+        fake_python.write_text("")
+        fake_pythonw = tmp_path / "pythonw.exe"
+        fake_pythonw.write_text("")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+
+        assert emitter._flusher_executable() == str(fake_python)
+
+
+class TestSpawnFlusherFlags:
+    """Tests for _spawn_flusher() subprocess creation flags."""
+
+    def test_windows_popen_receives_startupinfo_with_hide_flags(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """On Windows, subprocess.Popen receives STARTUPINFO with hide flags."""
+        monkeypatch.setattr("os.name", "nt")
+        fake_python = tmp_path / "python.exe"
+        fake_pythonw = tmp_path / "pythonw.exe"
+        fake_python.write_text("")
+        fake_pythonw.write_text("")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+
+        captured_kwargs: dict = {}
+
+        class FakePopen:
+            def __init__(self, args, **kwargs):
+                captured_kwargs.update(kwargs)
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        # Inject Windows-only constants when running on Linux CI.
+        if not hasattr(subprocess, "STARTUPINFO"):
+            monkeypatch.setattr(
+                subprocess,
+                "STARTUPINFO",
+                type(
+                    "STARTUPINFO",
+                    (),
+                    {
+                        "__init__": lambda self: None,
+                        "dwFlags": 0,
+                        "wShowWindow": 0,
+                    },
+                ),
+            )
+        monkeypatch.setattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+        monkeypatch.setattr(subprocess, "SW_HIDE", 0)
+
+        result = emitter._spawn_flusher()
+
+        assert result is True
+        # CREATE_NO_WINDOW alone; adding DETACHED_PROCESS would disable it.
+        assert captured_kwargs.get("creationflags") == 0x08000000
+        assert "startupinfo" in captured_kwargs
+        startupinfo = captured_kwargs["startupinfo"]
+        assert startupinfo.dwFlags & 0x00000001  # STARTF_USESHOWWINDOW
+        assert startupinfo.wShowWindow == 0  # SW_HIDE
+
+    def test_posix_uses_start_new_session(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """On POSIX, subprocess.Popen receives start_new_session=True."""
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+
+        captured_kwargs: dict = {}
+
+        class FakePopen:
+            def __init__(self, args, **kwargs):
+                captured_kwargs.update(kwargs)
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+        result = emitter._spawn_flusher()
+
+        assert result is True
+        assert captured_kwargs.get("start_new_session") is True
+        assert "creationflags" not in captured_kwargs
+        assert "startupinfo" not in captured_kwargs
+
+    def test_popen_failure_returns_false(self, monkeypatch: pytest.MonkeyPatch):
+        """If subprocess.Popen raises, _spawn_flusher returns False silently."""
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+
+        def raise_popen(*args, **kwargs):
+            raise OSError("spawn failed")
+
+        monkeypatch.setattr(subprocess, "Popen", raise_popen)
+
+        result = emitter._spawn_flusher()
+        assert result is False
+
+    def test_empty_executable_returns_false(self, monkeypatch: pytest.MonkeyPatch):
+        """If sys.executable is empty, _spawn_flusher returns False."""
+        monkeypatch.setattr(sys, "executable", "")
+        result = emitter._spawn_flusher()
+        assert result is False
