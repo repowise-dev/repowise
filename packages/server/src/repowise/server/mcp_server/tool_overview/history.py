@@ -13,10 +13,8 @@ def _build_git_health(all_git: list) -> dict[str, Any]:
 
     bus_factors = [getattr(g, "bus_factor", 0) or 0 for g in all_git]
     return {
-        # Files that carry git history (churn/ownership), NOT the parsed file
-        # total — a repo can parse more files than git attributes (vendored,
-        # generated, or newly added files have no 90-day history). Named
-        # explicitly so the two counts don't read as a discrepancy.
+        # Files with git history, not the parsed total: vendored, generated
+        # and new files have none, so the two counts can differ.
         "files_git_attributed": len(all_git),
         "hotspot_count": sum(1 for g in all_git if g.is_hotspot),
         "avg_bus_factor": round(sum(bus_factors) / len(bus_factors), 1),
@@ -61,7 +59,7 @@ def _owner_display_name(name: str | None, email: str) -> str:
 
 
 def _build_knowledge_map(all_git: list) -> dict[str, Any]:
-    """Top owners and knowledge silos aggregated across all indexed files."""
+    """Top owners aggregated across all indexed files."""
     if not all_git:
         return {}
 
@@ -78,12 +76,8 @@ def _build_knowledge_map(all_git: list) -> dict[str, Any]:
             owner_name.setdefault(email, _owner_display_name(g.primary_owner_name, email))
 
     total_files = len(all_git) or 1
-    # Top 3 only: get_overview is orientation, and "who do I ask" is answered
-    # by the first few names. Per-file ownership questions belong to
-    # get_risk / get_context(include=["ownership"]). The old payload also
-    # carried a knowledge_silos file list here — dropped: it duplicated
-    # get_risk's per-file ownership signal and gave an orienting agent
-    # nothing actionable.
+    # Top 3 only: orientation needs the first few names; per-file ownership
+    # belongs to get_risk / get_context(include=["ownership"]).
     top_owners = sorted(
         [
             {

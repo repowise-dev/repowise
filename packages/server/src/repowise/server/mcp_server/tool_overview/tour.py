@@ -42,11 +42,8 @@ async def _build_reading_order(session: Any, repository: Any) -> list[dict[str, 
                 "title": p.title,
                 "page_id": p.id,
                 "target_path": p.target_path,
-                # Where this page sits in the outline. The two orders differ on
-                # purpose: reading order is the onboarding curriculum, keyed by
-                # slot, and it starts at the overview and the architecture
-                # guide, which the outline places as the root and a diagram
-                # rather than as steps one and two.
+                # Where the page sits in the outline, whose order differs on purpose
+                # from this onboarding curriculum.
                 "section": p.section_number,
             }
         )
@@ -110,8 +107,7 @@ def _tour_step(n: int, s: dict[str, Any], sections: dict[str, str | None]) -> di
         "reason": s.get("reason"),
         "target_path": s.get("target_path"),
         "page_id": page_id,
-        # A tour step is a walk of the import graph, so it crosses
-        # the outline rather than following it; the section says
-        # which part of the tree each stop landed in.
+        # A tour crosses the outline rather than following it; the section
+        # says where each stop landed.
         "section": sections.get(page_id),
     }

@@ -1,9 +1,7 @@
 """MCP Tool 1: get_overview, the repository architecture overview.
 
-One module per payload block; importing the package registers the tool and
-re-exports the names tests read. Monkeypatch a collaborator on the module that
-looks it up (e.g. ``health._get_health_metrics``), not here.
-"""
+One module per payload block; the root registers the tool and re-exports the
+names tests read. Monkeypatch collaborators on the module that looks them up."""
 
 from __future__ import annotations
 

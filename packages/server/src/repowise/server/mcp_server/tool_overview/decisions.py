@@ -62,9 +62,8 @@ async def _build_key_decisions(
     as what the repository has settled on.
     """
     try:
-        # Over-fetch, then drop records anchored entirely in excluded paths
-        # (vendored venvs, local-only scratch dirs mined before the exclude
-        # rules changed) so the repo's "top decisions" are never junk.
+        # Over-fetch, then drop records anchored entirely in excluded paths,
+        # so the repo's top decisions are never vendored or scratch junk.
         top_decisions_res = await session.execute(
             select(DecisionRecord)
             .where(

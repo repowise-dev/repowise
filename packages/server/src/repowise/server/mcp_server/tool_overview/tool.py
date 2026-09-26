@@ -99,9 +99,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
             session, repository, exclude_spec, set(include or []), collector
         )
 
-        # The orientation call, and the one place the whole scope is worth its
-        # bytes: it is made once per session and it is what the compact
-        # projection on every other response points at.
+        # Made once per session, so this is where the full scope that every
+        # other response's compact projection points at is worth its bytes.
         result["_meta"] = _build_meta_with_full_scope(repository=repository)
         collector.attach(result)
         return result
@@ -157,9 +156,7 @@ async def _repo_overview(
     }
     result.update((key, block) for key, block in optional.items() if block)
 
-    # Topology-driven guided tour — the ordered, page-by-page walk derived
-    # from the import graph (entry points first, then inward, infra last).
-    # Persisted on the repo_overview page metadata at generation time.
+    # The guided tour is persisted on the overview page's metadata at generation.
     if overview_page:
         _build_guided_tour(overview_page, result, sections, "tour" in want)
 
@@ -222,10 +219,7 @@ async def _requested_blocks(
 async def _load_outline(
     session: Any, repository: Any, want: set[str], collector: OmissionCollector
 ) -> tuple[dict[str, str | None], dict[str, Any]]:
-    """Section labels by page id, and the outline when it was asked for.
-
-    The tree backs the outline and the tour's section labels.
-    """
+    """Section labels by page id for the tour, and the outline when it was asked for."""
     if not want & {"outline", "tour"}:
         return {}, {}
     tree_rows = await _load_tree_rows(session, repository)

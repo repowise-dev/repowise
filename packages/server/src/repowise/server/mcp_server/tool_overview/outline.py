@@ -129,10 +129,9 @@ def _build_outline(rows: list[Any], depth: int, collector: OmissionCollector) ->
         ],
     }
     if len(top) > _OUTLINE_TOP_CAP:
-        # Siblings are ordered by type rank, so the served entries are the
-        # spine (onboarding, diagram, layers, modules) and what falls off the
-        # end is the long tail of cycles and loose files. Say so rather than
-        # letting the list read as the whole top rung.
+        # Siblings are ordered by type rank, so what falls off the end is the
+        # long tail of cycles and loose files; say so rather than letting the
+        # list read as the whole top rung.
         outline["sections_total"] = len(top)
         outline["sections_truncated"] = True
     # Pages the tree has no place for — a dangling parent, or a page generated
