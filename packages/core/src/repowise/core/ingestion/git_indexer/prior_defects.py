@@ -196,8 +196,8 @@ def compute_prior_defects(
 ) -> PriorDefects:
     """Return per-file bug-fix counts over the trailing window.
 
-    *as_of_ts* anchors the window's end (the repo's HEAD-commit timestamp under
-    ``REPOWISE_GIT_WINDOW_ANCHOR``, else wall-clock now). Only commits reachable
+    *as_of_ts* anchors the window's end (the indexed commit's committer date;
+    ``None`` means wall-clock now). Only commits reachable
     from HEAD are walked, so a historical T0 checkout never sees post-T0 fixes.
     Files outside *indexable_files* are ignored.
 

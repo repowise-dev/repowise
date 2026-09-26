@@ -14,6 +14,9 @@ by the FULL git tier:
 * ``recent_mod_count`` — distinct shas touching the range whose
   ``author_time`` falls inside the last 30 days.
 
+"now" is the index's anchor (the indexed commit), not wall-clock time, so
+the marker reads the same at the benchmark's T0 as in the product.
+
 Tier-aware: when ``ctx.blame_index`` is ``None`` (ESSENTIAL git tier),
 or empty, the detector emits zero findings. Function-level no-op is the
 documented "no signal" outcome until the FULL-tier backfill
@@ -29,9 +32,8 @@ Severity (calibrated against the 1-year / 2-year age boundaries):
 
 from __future__ import annotations
 
-import time
-
 from ....ingestion.git_indexer.function_blame import (
+    blame_as_of,
     median_author_time_in_range,
     recent_commits_in_range,
 )
@@ -62,7 +64,7 @@ class CodeAgeVolatilityDetector:
         if idx is None or not idx.lines:
             return []
 
-        now = int(time.time())
+        now = blame_as_of(idx)
         since = now - _RECENT_WINDOW_SECS
 
         findings: list[BiomarkerResult] = []

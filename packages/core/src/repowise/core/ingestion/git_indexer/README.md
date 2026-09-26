@@ -26,14 +26,15 @@ layers consume:
 Every recency window (90d/30d, age, temporal decay, co-change/entropy decay, the
 prior-defect window) is measured relative to a single reference "now":
 
-- **default (env unset)** → wall-clock `now()`, so "churned lately" means
-  relative to today — the live-product meaning.
-- **`REPOWISE_GIT_WINDOW_ANCHOR=head`** → the repo's most-recent commit
-  timestamp. This makes indexing **deterministic** (re-indexing the same commit
-  yields identical windows) and **correct for historical checkouts**: scoring a
-  worktree detached at an old commit then measures the window *before that
-  commit*, not an empty window in its future. Used by the defect benchmark to
-  score repos at a past T0 without leaking future history into the signals.
+- **default** → the committer date of the indexed commit (HEAD). Indexing is
+  **deterministic** (re-indexing the same commit later yields identical windows)
+  and **correct for historical checkouts**: scoring a worktree detached at an
+  old commit measures the window *before that commit*, not an empty window in
+  its future. This is the anchor the defect benchmark calibrates on, and the
+  blame-based markers (`code_age_volatility`, the per-function blame rollup)
+  read line ages from it too.
+- **`REPOWISE_GIT_WINDOW_ANCHOR=now`** → wall-clock `now()`, so "churned
+  lately" means relative to today even when the checkout has not moved.
 
 `REPOWISE_SKIP_EDITOR_SETUP=1` is the companion guard that lets `init` index a
 transient worktree without touching the developer's global editor config.

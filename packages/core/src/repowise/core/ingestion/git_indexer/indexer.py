@@ -51,6 +51,10 @@ __all__ = ["GitIndexer", "git_worker_count"]
 # 200 leaves generous headroom while keeping the subprocess count low.
 _OFFSET_LOOKUP_CHUNK = 200
 
+# ``REPOWISE_GIT_WINDOW_ANCHOR`` values that measure windows from wall-clock
+# time instead of the indexed commit. Unset, or any other value, anchors to HEAD.
+_WALL_CLOCK_ANCHORS = frozenset({"now", "0", "false", "no", "off"})
+
 _GIT_WORKERS_ENV = "REPOWISE_GIT_WORKERS"
 _MAX_GIT_WORKERS = 8
 _GIT_WORKER_MEMORY_BYTES = 384 * 1024 * 1024
@@ -268,7 +272,7 @@ class GitIndexer:
             fallback_note_agents = load_git_ai_note_agents(repo, None)
 
         include_blame = self.tier.includes_blame
-        as_of_ts = self._resolve_as_of_ts(repo, commit_index)
+        as_of_ts = self._resolve_as_of_ts(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
         semaphore = asyncio.Semaphore(workers)
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
@@ -606,7 +610,7 @@ class GitIndexer:
             from ..git_commit_index import load_git_ai_note_agents
 
             fallback_note_agents = load_git_ai_note_agents(repo, None)
-        as_of_ts = self._resolve_as_of_ts(repo, commit_index)
+        as_of_ts = self._resolve_as_of_ts(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
         semaphore = asyncio.Semaphore(workers)
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
@@ -1077,33 +1081,22 @@ class GitIndexer:
 
             return AgentTraceIndex()
 
-    def _resolve_as_of_ts(
-        self, repo: Any, commit_index: dict[str, list[_CommitRec]] | None = None
-    ) -> float | None:
-        """Optional reference 'now' for recency windows (90d/30d, age, decay).
+    def _resolve_as_of_ts(self, repo: Any) -> float | None:
+        """Reference 'now' for every history window (90d/30d, age, decay, blame).
 
-        Default (env unset) returns ``None`` → callers anchor to wall-clock
-        ``now()``, preserving the live-product meaning of "churned lately /
-        is_stable" as *relative to today*.
+        The committer date of the indexed commit (HEAD), so the same tree scores
+        the same whenever it is indexed, and a historical checkout measures the
+        window before *that* commit. This is the anchor the defect benchmark
+        calibrates on. Full index, update, idle refresh and fix events all
+        resolve it here, so they agree whenever HEAD does.
 
-        When ``REPOWISE_GIT_WINDOW_ANCHOR`` is truthy (e.g. ``head``), anchor
-        instead to the repo's most recent commit timestamp. This makes indexing
-        deterministic and correct for **historical checkouts**: scoring a
-        worktree at an old commit then measures the 90 days before *that* commit
-        rather than an empty window in its future. Used by the defect benchmark,
-        which scores repos at a past T0 — without it every windowed process
-        signal (churn, entropy, co-change, congestion) is silently zero."""
+        ``REPOWISE_GIT_WINDOW_ANCHOR=now`` opts back into wall-clock time and
+        returns ``None``, which every consumer reads as ``now()``. So does a
+        repo whose HEAD cannot be read."""
         anchor = os.environ.get("REPOWISE_GIT_WINDOW_ANCHOR", "").strip().lower()
-        if anchor in ("", "0", "false", "no", "now"):
+        if anchor in _WALL_CLOCK_ANCHORS:
             return None
         try:
-            if commit_index:
-                ts = max(
-                    (c.ts for recs in commit_index.values() for c in recs if c.ts > 0),
-                    default=0.0,
-                )
-                if ts > 0:
-                    return float(ts)
             return float(repo.head.commit.committed_date)
         except Exception:
             return None

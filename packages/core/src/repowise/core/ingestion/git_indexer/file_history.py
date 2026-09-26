@@ -475,6 +475,7 @@ def index_file(
                         repo_path=repo_path,
                     )
                     if blame_idx.lines:
+                        blame_idx.as_of_ts = int(now.timestamp())
                         if meta["commit_count_total"] >= _MIN_COMMITS_FOR_BLAME:
                             meta["blame_index"] = blame_idx
                         blame_name, blame_email, blame_pct = ownership_from_blame(blame_idx)

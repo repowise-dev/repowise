@@ -360,7 +360,7 @@ file in the trailing ~6-month window, read from `prior_defect_count`. The
 git indexer classifies a commit as a fix with the **same keyword rule the
 defect benchmark labels fixes with** (`_constants.is_fix_commit`), counts only
 non-merge commits inside the window, and anchors the window to the index's
-`as_of` reference (`REPOWISE_GIT_WINDOW_ANCHOR`): so scoring a historical T0
+`as_of` reference (the indexed commit's committer date): so scoring a historical T0
 checkout measures the fixes *before* T0, never leaking the post-T0 fixes that
 form the benchmark's labels. It carries a **neutral (1.0) weight by design**:
 on the calibration corpus prior-defect history is largely redundant with the

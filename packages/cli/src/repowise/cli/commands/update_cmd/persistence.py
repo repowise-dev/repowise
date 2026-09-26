@@ -1613,8 +1613,8 @@ def _run_full_health_rescore(
 # decay refresh runs every update, but the health *findings* for idle files only
 # recover when the analyzer re-scores them. Those biomarkers have a ~125-180d
 # half-life, so weekly is ample. The interval is anchored to the repo's
-# newest-commit timestamp (not wall clock) so it stays deterministic under
-# REPOWISE_GIT_WINDOW_ANCHOR / historical checkouts; override for tests.
+# HEAD commit timestamp (not wall clock), like the git history windows, so it
+# stays deterministic on historical checkouts; override for tests.
 _FULL_RESCORE_INTERVAL_DAYS = 7.0
 
 
