@@ -622,7 +622,7 @@ parse, where hitting it corrupts everything downstream. Object Pascal is the cur
 `.dpr`/`.dpk`/`.lpr` project files write `unit in 'path.pas'` clauses in their
 `uses` list, a syntax tree-sitter-pascal has no rule for, and hitting one used to
 corrupt every unit named after it in the same clause. Its sanitizer
-(`prepare_pascal_source` in `ingestion/parser_helpers.py`) is gated on `path`'s
+(`prepare_pascal_source` in `ingestion/lang_helpers/source_prep.py`) is gated on `path`'s
 extension (that syntax is invalid in a plain `.pas`/`.pp` unit file) and is a
 no-op everywhere else, same contract as the `_LOCATORS` path. Registering a
 sanitizer this way, rather than as an if-block in `parser.py`, means it stays

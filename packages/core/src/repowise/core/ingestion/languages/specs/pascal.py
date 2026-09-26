@@ -73,7 +73,7 @@ SPEC = LanguageSpec(
     # latter overlap with builtin_parents above) -- none of these ever have
     # an in-repo declaration, so resolving them as a type reference is a
     # guaranteed miss. Read back via get_builtin_types("pascal") in
-    # parser_helpers.py's head-identifier extractor.
+    # lang_helpers/type_heads.py's head-identifier extractor.
     builtin_types=frozenset({
         "Integer", "Cardinal", "Boolean", "ByteBool", "WordBool", "LongBool",
         "String", "AnsiString", "WideString", "UnicodeString", "ShortString",

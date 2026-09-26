@@ -15,7 +15,7 @@ over the whole tree it would match hundreds of legitimate uses and mean nothing.
 
 Ceiling: string shape only. A copy that reaches for ``re``, splits on a
 separator held in a variable, or navigates the syntax tree instead of the text
-stays invisible — the per-language head extractors in ``parser_helpers.py`` are
+stays invisible — the per-language head extractors in ``lang_helpers/type_heads.py`` are
 node walks and are deliberately out of reach. It catches the shape that
 actually recurred here.
 
@@ -54,6 +54,7 @@ _SCOPE = (
     _INGESTION / "framework_edges",
     _INGESTION / "languages",
     _INGESTION / "parser_helpers.py",
+    _INGESTION / "lang_helpers",
     _INGESTION / "type_ref_resolution.py",
     _INGESTION / "call_resolver.py",
     _INGESTION / "heritage_resolver.py",

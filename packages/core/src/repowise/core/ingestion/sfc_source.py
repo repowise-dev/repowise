@@ -41,7 +41,7 @@ not reads, so keeping them would mint phantom identifier references.
 :func:`prepare_source` is also where a language registers a byte-preserving
 sanitizer for a grammar gap that has nothing to do with multi-language files —
 Pascal's project-file ``uses X in 'path'`` clauses being the current example,
-handled by ``prepare_pascal_source`` in ``parser_helpers.py``. Same contract as
+handled by ``prepare_pascal_source`` in ``lang_helpers/source_prep.py``. Same contract as
 a :class:`Locator`, no-op unless the language matches.
 """
 
