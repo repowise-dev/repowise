@@ -87,15 +87,29 @@ def _describe_signature(acceptance) -> dict[str, str] | None:
     }
 
 
-def _signer(agent: str, agent_session: str, *, accepter: str = "") -> tuple[str, str]:
-    """Validate the signing flags and return ``(kind, accepter_session)``.
+@dataclass(frozen=True)
+class _Signer:
+    """Who signs an acceptance-log row: an agent by slug, or the repository's person."""
+
+    agent: str
+    kind: str
+    session: str
+
+    def name(self, repo_path: Path, override: str = "") -> str:
+        from repowise.core.analysis.decisions.accepter import resolve_accepter
+
+        return self.agent or resolve_accepter(repo_path, override=override)
+
+
+def _signer(agent: str, agent_session: str, *, accepter: str = "") -> _Signer:
+    """Validate the signing flags and return who they sign as.
 
     Shared by every verb that appends to the acceptance log, so an agent can
     say it is one wherever it can act.
     """
     _check_agent_flag(agent, accepter)
     _check_session_flag(agent_session, agent)
-    return ("agent" if agent else "person"), agent_session
+    return _Signer(agent=agent, kind="agent" if agent else "person", session=agent_session)
 
 
 def _check_agent_flag(agent: str, accepter: str) -> None:
@@ -795,19 +809,18 @@ def decision_confirm(
     ids, path = _split_ids_and_path(decision_ids)
     repo_path = _resolve_decision_repo(path, fmt)
 
-    kind, signing_session = _signer(agent, agent_session, accepter=accepter)
+    signer = _signer(agent, agent_session, accepter=accepter)
     granted = _load_policy(repo_path).agent_acceptance if agent else False
 
     async def _accept(session, rec) -> None:
-        from repowise.core.analysis.decisions.accepter import resolve_accepter
         from repowise.core.persistence.crud.authority import accept_decision
 
         await accept_decision(
             session,
             rec,
-            accepter=agent or resolve_accepter(repo_path, override=accepter),
-            kind=kind,
-            accepter_session=signing_session,
+            accepter=signer.name(repo_path, override=accepter),
+            kind=signer.kind,
+            accepter_session=signer.session,
             agent_acceptance=granted,
             reason=reason,
             scope=list(scope) or None,
@@ -854,23 +867,22 @@ def decision_dismiss(
     """
     ids, path = _split_ids_and_path(decision_ids)
     repo_path = _resolve_decision_repo(path, fmt)
-    kind, signing_session = _signer(agent, agent_session)
+    signer = _signer(agent, agent_session)
 
     if not _dismissal_confirmed(ids, yes=yes, preview=preview, fmt=fmt):
         console.print("[yellow]Cancelled.[/yellow]")
         return
 
     async def _dismiss(session, rec) -> None:
-        from repowise.core.analysis.decisions.accepter import resolve_accepter
         from repowise.core.persistence.crud.authority import dismiss_candidate
 
         await dismiss_candidate(
             session,
             rec,
             reason=reason,
-            accepter=agent or resolve_accepter(repo_path),
-            kind=kind,
-            accepter_session=signing_session,
+            accepter=signer.name(repo_path),
+            kind=signer.kind,
+            accepter_session=signer.session,
         )
 
     results = run_async(
@@ -929,7 +941,7 @@ def decision_deprecate(
     exists because somebody named the successor.
     """
     repo_path = _resolve_decision_repo(path, fmt)
-    kind, signing_session = _signer(agent, agent_session)
+    signer = _signer(agent, agent_session)
 
     async def _update():
         from repowise.core.persistence import get_session
@@ -950,29 +962,14 @@ def decision_deprecate(
                     fmt,
                     decision_id=superseded_by,
                 )
-            await _retire(
-                session,
-                rec,
-                successor,
-                agent=agent,
-                repo_path=repo_path,
-                kind=kind,
-                signing_session=signing_session,
-                fmt=fmt,
-            )
+            await _retire(session, rec, successor, signer=signer, repo_path=repo_path, fmt=fmt)
             return rec
 
     _emit_lifecycle(run_async(_update()), decision_id, "deprecated", fmt)
 
 
-async def _retire(
-    session, rec, successor, *, agent, repo_path, kind, signing_session, fmt
-) -> None:
-    """Supersede an accepted record, or mark any other one deprecated.
-
-    An empty *agent* signs as the repository's person.
-    """
-    from repowise.core.analysis.decisions.accepter import resolve_accepter
+async def _retire(session, rec, successor, *, signer: _Signer, repo_path: Path, fmt: str) -> None:
+    """Supersede an accepted record, or mark any other one deprecated."""
     from repowise.core.persistence import update_decision_status
     from repowise.core.persistence.crud.authority import (
         AcceptanceRefusedError,
@@ -986,9 +983,9 @@ async def _retire(
                 session,
                 rec,
                 successor_id=successor,
-                accepter=agent or resolve_accepter(repo_path),
-                kind=kind,
-                accepter_session=signing_session,
+                accepter=signer.name(repo_path),
+                kind=signer.kind,
+                accepter_session=signer.session,
             )
         except (AcceptanceRefusedError, ValueError) as exc:
             emit_refusal("supersede_refused", str(exc), fmt, decision_id=rec.id)
@@ -1000,8 +997,8 @@ async def _retire(
         rec.id,
         "deprecated",
         superseded_by=successor,
-        accepter=agent or resolve_accepter(repo_path),
-        kind=kind,
+        accepter=signer.name(repo_path),
+        kind=signer.kind,
     )
 
 
