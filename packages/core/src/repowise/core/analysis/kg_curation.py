@@ -703,7 +703,32 @@ def _curate_entry_points(
     except Exception:  # pragma: no cover - defensive
         betweenness = {}
 
-    candidates: list[tuple[str, float, float]] = []
+    candidates = [
+        (path, pagerank.get(path, 0.0), betweenness.get(path, 0.0))
+        for path in _flagged_entry_paths(kg, pf_by_path)
+    ]
+    if not candidates:
+        # No ingestion-flagged entries (or all were barrels): fall back to the
+        # strong filename scorers the tour seeds from (score >= 3 means an
+        # entry-style name or flag, never just shallow/high-PageRank).
+        candidates = [
+            (path, pagerank.get(path, 0.0), betweenness.get(path, 0.0))
+            for s, path in score_entry_points(parsed_files, pagerank)
+            if s >= 3.0 and _is_entry_candidate(path, lang_by_path.get(path, ""), pf_by_path)
+        ]
+
+    ranked = rank_entry_points(candidates, conventional_entry_stems())
+    kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
+    kg.project["entry_candidates"] = ranked
+
+
+def _flagged_entry_paths(kg: KnowledgeGraphResult, pf_by_path: dict[str, Any]) -> list[str]:
+    """Ingestion-flagged entry files that survive candidacy, in node order.
+
+    A flagged re-export barrel is retagged ``barrel`` in the presentation view
+    (the AST graph's flag is untouched) and dropped.
+    """
+    paths: list[str] = []
     for node in kg.nodes:
         nid = node.get("id", "")
         if not (isinstance(nid, str) and nid.startswith("file:")):
@@ -713,10 +738,7 @@ def _curate_entry_points(
             continue
         path = node.get("filePath", "")
         language = (node.get("language") or "").lower()
-        if infer_layer(path, language) in ADJACENT_LAYERS or is_support_path(path):
-            # Test fixtures (a wsgi.py inside tests/) and sample programs
-            # (examples/*/main.go) may carry the ingestion flag, but they are
-            # not where a reader enters the system.
+        if _off_the_entry_path(path, language):
             continue
         pf = pf_by_path.get(path)
         if pf is not None and _is_barrel(pf):
@@ -727,28 +749,25 @@ def _curate_entry_points(
             continue
         if not_an_execution_start(path, language):
             continue
-        candidates.append((path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)))
+        paths.append(path)
+    return paths
 
-    if not candidates:
-        # No ingestion-flagged entries (or all were barrels): fall back to the
-        # strong filename scorers the tour seeds from (score >= 3 means an
-        # entry-style name or flag, never just shallow/high-PageRank).
-        for s, path in score_entry_points(parsed_files, pagerank):
-            if s < 3.0:
-                continue
-            language = lang_by_path.get(path, "")
-            if infer_layer(path, language) in ADJACENT_LAYERS or is_support_path(path):
-                continue
-            pf = pf_by_path.get(path)
-            if pf is not None and _is_barrel(pf):
-                continue
-            if not_an_execution_start(path, language):
-                continue
-            candidates.append((path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)))
 
-    ranked = rank_entry_points(candidates, conventional_entry_stems())
-    kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
-    kg.project["entry_candidates"] = ranked
+def _off_the_entry_path(path: str, language: str) -> bool:
+    # Test fixtures (a wsgi.py inside tests/) and sample programs
+    # (examples/*/main.go) may carry the ingestion flag, but they are
+    # not where a reader enters the system.
+    return infer_layer(path, language) in ADJACENT_LAYERS or is_support_path(path)
+
+
+def _is_entry_candidate(path: str, language: str, pf_by_path: dict[str, Any]) -> bool:
+    """Whether a scored (unflagged) file may stand as an entry point."""
+    if _off_the_entry_path(path, language):
+        return False
+    pf = pf_by_path.get(path)
+    if pf is not None and _is_barrel(pf):
+        return False
+    return not not_an_execution_start(path, language)
 
 
 # ---------------------------------------------------------------------------
