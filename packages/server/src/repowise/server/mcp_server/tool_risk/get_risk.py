@@ -1,4 +1,4 @@
-"""MCP Tool 3: get_risk — modification risk assessment (orchestrator)."""
+"""The ``get_risk`` MCP tool: modification risk for files and PR change sets."""
 
 from __future__ import annotations
 
@@ -111,18 +111,13 @@ def _add_link(links: dict[str, dict[str, set[str]]], node: str, other: str, edge
 
 
 async def _load_dependency_graph(session: Any, repo_id: str) -> _DependencyGraph:
-    # File-node endpoints and the positive dependency vocabulary are both
-    # required: an untyped or symbol edge must not become a file dependent.
     node_res = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
     node_meta = {n.node_id: n for n in node_res.scalars().all()}
     file_node_ids = {node_id for node_id, node in node_meta.items() if node.node_type == "file"}
 
-    # Pre-load edges. Dependency edges only: everything below reads these as
-    # "X depends on Y", and the graph also carries containment and co-change
-    # edges. Leaving co_changes in made the relation circular: a co-change
-    # partner was fed back in as an import link, so every partner that
-    # cleared the count floor was annotated ``(imports)``, including the
-    # markdown and JSON files that are graph nodes but import nothing.
+    # File-to-file dependency edges only: every edge is read as "X depends on
+    # Y", so a symbol, containment or co-change edge would invent a dependent
+    # (a co-change partner would be reported as an import).
     res = await session.execute(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
@@ -160,16 +155,12 @@ def _hotspot_entry(meta: GitMetadata) -> dict:
 async def _global_hotspots(
     session: Any, repo_id: str, targets: list[str], exclude_spec: Any
 ) -> list[dict]:
-    # Elsewhere-in-the-repo attention list (excluding requested targets).
-    # Ranked on bug-fix history first, churn second. This list sits beside
-    # per-target verdicts that already read "bug-prone" off counted fixes,
-    # so ranking it purely on churn made the two halves of one response
-    # disagree about what deserves attention. Admitting bug magnets matters
-    # as much as the ordering: filtering on is_hotspot alone means a file
-    # fixed four times last month that is not busy can never appear.
-    # Churn stays the fallback, so a repo with no fix convention keeps
-    # exactly the list it had. These are full ORM rows, so the fix columns
-    # are already in memory and this adds no query.
+    """Hotspots outside ``targets``, ranked on bug-fix history, then churn.
+
+    Fix-first ranking keeps this list agreeing with the per-target "bug-prone"
+    verdicts, and admitting bug magnets lets an often-fixed but quiet file
+    appear. A repo with no fix convention falls back to churn order.
+    """
     res = await session.execute(
         select(GitMetadata)
         .where(
@@ -210,8 +201,7 @@ async def _gather_evidence(
         repo_id = repository.id
         graph = await _load_dependency_graph(session, repo_id)
 
-        # Team size is repo-wide — compute once, share across targets
-        # (small-team calibration for bus-factor-risk, issue #361).
+        # Repo-wide, so computed once for every target's bus-factor calibration.
         team_size = await _get_active_contributor_count(session, repo_id)
 
         results = await asyncio.gather(
@@ -251,18 +241,12 @@ async def _enrich_cards(
     # resolved nothing. Mutation is in place, so ``results`` keeps its order.
     scored = [r for r in results if r.get("resolved") is not False]
 
-    # Cross-repo blast radius enrichment (Phase 3 + 4)
     await _enrich_cross_repo(scored, ctx.alias, collector, include_graph=include_graph)
 
-    # ---- Code-health enrichment --------------------------------------------
-    # Attach per-file health_score + top_biomarkers (up to 3) drawn from the
-    # health tables. Conservative: missing data → no field, never invented.
     await _enrich_health(scored, ctx, repo_id)
 
-    # ---- Precedent enrichment ----------------------------------------------
-    # One integer per target: how many dated episodes are bound here. A number
-    # invites a follow-up get_why; a paragraph would spend the budget of every
-    # caller that only wanted the risk card. Absent rather than zero.
+    # An episode count, not episode text, keeps the card within budget; get_why
+    # carries the detail. Absent rather than zero.
     await asyncio.to_thread(_enrich_episodes, scored, ctx.path)
 
 
@@ -275,7 +259,6 @@ async def _lead_with_pr_directive(
     collector: OmissionCollector,
     full_scale: bool,
 ) -> dict:
-    # Governance risk — bounded query over changed_files (small set).
     governance_risk = await _governance_directive(ctx, changed_files)
     _build_pr_directive(
         response,
@@ -288,9 +271,7 @@ async def _lead_with_pr_directive(
         ctx.alias,
         full_scale=full_scale,
     )
-    # Dict insertion order is the serialized external order. PR mode is
-    # action-first by contract, so the directive must precede dossiers,
-    # targets, metadata, and omission details in the exact payload.
+    # Insertion order is the serialized order, and PR mode leads with the directive.
     return {"directive": response.pop("directive"), **response}
 
 
@@ -382,8 +363,7 @@ async def get_risk(
             full_scale="scales" in include_set,
         )
     elif len(targets) > 1:
-        # Standard per-file risk request (no diff) — ambient orientation across
-        # a set of targets. On one file the caller already named, it is noise.
+        # Ambient hotspots orient a multi-file request; beside one named file they are noise.
         cap_collection(
             response,
             "global_hotspots",
