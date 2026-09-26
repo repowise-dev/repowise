@@ -1,9 +1,7 @@
 """TypeScript / JavaScript ``PerfDialect``.
 
-Extracted verbatim from the original ``_ts_sink_kind`` (``io_boundaries.py``)
-and the TS branches of the walker (``_has_async_modifier`` and the
-``_TS_STRING_KINDS`` string-concat predicate). One instance serves both
-``typescript`` / ``tsx`` and ``javascript`` / ``jsx`` (identical call grammar).
+One instance serves ``typescript`` / ``tsx`` and ``javascript`` / ``jsx``, which
+share a call grammar.
 """
 
 from __future__ import annotations
@@ -220,13 +218,9 @@ class TsJsPerfDialect(TsJsMarkerHooks):
         return None
 
     def is_constant_loop(self, node: Node) -> bool:
-        """True if a ``for...of`` / ``for...in`` iterates a compile-time-constant
-        bound: an inline **array literal** (``for (const p of ["/a", "/b"])`` —
-        the author enumerated a fixed set, so there is no data-dependent N+1
-        blow-up) or an **ALL_CAPS** named constant (``for (const f of
-        DREAMS_FILENAMES)``). Mirrors the Python dialect's literal-collection
-        skip. C-style ``for (;;)`` / ``while`` / ``do`` are cursors — never
-        constant here (they are pagination / polling)."""
+        """True if a ``for...of`` / ``for...in`` walks a fixed set: an inline array
+        literal or an ALL_CAPS named constant, so no data-dependent N+1. C-style
+        ``for (;;)`` / ``while`` / ``do`` are cursors and never constant."""
         if node.type not in self._ITERATION_LOOP_KINDS:
             return False
         right = node.child_by_field_name("right")
@@ -251,19 +245,13 @@ class TsJsPerfDialect(TsJsMarkerHooks):
             return "network"
         root_kind = io_names.get(root)
         if root_kind is not None:
-            # A call on an imported I/O package (``axios.get`` / ``db.query``) is
-            # a sink only when it is a known round-trip verb or is awaited — NOT
-            # a sync helper (``axios.isCancel`` / ``axios.create``) or a query
-            # builder (``.where()`` / ``.select()``), which over-fired before
-            # this gate.
+            # A call on an imported I/O package is a sink only as a round-trip
+            # verb or when awaited, never a sync helper or a query builder.
             if method in TS_SINK_METHODS or awaited:
                 return root_kind
             return None
-        # Distinctive prisma-client verbs, but only as a MEMBER call. A prisma
-        # query is always reached through the client (``prisma.user.aggregate``),
-        # so a bare ``aggregate(xs)`` / ``groupBy(xs)`` / ``upsert(x)`` is an
-        # ordinary local function and was being reported as a database round
-        # trip -- an N+1 finding on pure arithmetic, in code with no database.
+        # Prisma verbs count only as member calls: a query goes through the client
+        # (``prisma.user.aggregate``), so a bare ``aggregate(xs)`` is a local function.
         if is_attribute and method in PRISMA_METHODS:
             return "db"
         if method in TS_FS_METHODS:  # distinctive sync-fs verbs

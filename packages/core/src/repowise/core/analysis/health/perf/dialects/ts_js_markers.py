@@ -71,8 +71,7 @@ def _param_names(fn: Node) -> Iterator[str]:
 
 
 def _is_json_deep_clone(call: Node) -> bool:
-    """True if the call's first argument is itself a ``JSON.stringify(...)``
-    call — the ``JSON.parse(JSON.stringify(x))`` deep-clone idiom."""
+    """True if the call's first argument is itself a ``JSON.stringify(...)`` call."""
     args = call.child_by_field_name("arguments")
     first = first_named_child(args) if args is not None else None
     if first is None or first.type != "call_expression":
@@ -93,13 +92,10 @@ def _reduce_spreads_accumulator(call: Node) -> bool:
 
 
 def _spreads_name_in_collection(body: Node, name: str) -> bool:
-    """True if *body* spreads ``name`` into an array / object literal
-    (``[...name, x]`` / ``{...name}``) — the O(n^2) accumulator rebuild.
+    """True if *body* spreads ``name`` into an array / object literal.
 
-    Stops at a nested arrow/function that re-binds ``name`` as its own
-    parameter: a spread of ``name`` inside such a scope targets THAT binding
-    (e.g. an inner ``reduce`` with its own ``acc``), not the outer
-    accumulator, so it must not be attributed to the outer reduce.
+    A nested arrow/function that re-binds ``name`` as a parameter (an inner
+    ``reduce`` with its own ``acc``) is skipped: its spreads target that binding.
     """
     stack: list[Node] = [body]
     while stack:
@@ -127,21 +123,16 @@ class TsJsMarkerHooks(BasePerfDialect):
         # ``arr.includes(x)`` where ``arr`` is a known array -> O(n) membership.
         if method == "includes" and root in list_names:
             return "membership_test_against_list_in_loop"
-        # ``JSON.parse(JSON.stringify(x))`` deep-clone in a loop is the canonical
-        # waste (use ``structuredClone``). Gate: a BARE ``JSON.parse`` /
-        # ``JSON.stringify`` per iteration was 0% precision (30/30 were
-        # format-conversion loops serializing a DISTINCT payload each pass —
-        # necessary work, not waste), so the marker is restricted to the
-        # deep-clone idiom, which is unconditionally hoistable.
+        # Only the ``JSON.parse(JSON.stringify(x))`` deep clone: a bare parse or
+        # stringify per iteration converts a distinct payload each pass, which is
+        # necessary work.
         if root == "JSON" and method == "parse" and _is_json_deep_clone(node):
             return "json_parse_in_loop"
         return None
 
     def bare_call_marker(self, root: str, method: str, node: Node) -> str | None:
-        # ``arr.reduce((acc, x) => [...acc, x], [])`` rebuilds the accumulator
-        # every step -> O(n^2). The ``.reduce`` IS the loop, so this fires at any
-        # depth. Precision-first: only when the callback spreads its OWN
-        # accumulator param into a fresh array / object literal.
+        # ``arr.reduce((acc, x) => [...acc, x], [])`` rebuilds the accumulator every
+        # step (O(n^2)). The ``.reduce`` is the loop, so this fires at any depth.
         if method == "reduce" and _reduce_spreads_accumulator(node):
             return "array_spread_in_reduce"
         return None
