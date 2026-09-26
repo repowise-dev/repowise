@@ -18,10 +18,13 @@ from .ranking import worst_metric
 from .rows import detail_map, field
 from .scoring import (
     CATEGORY_CAPS,
+    HISTORY_CATEGORY,
     SCORE_FLOOR,
     SCORE_MAX,
     biomarker_category,
     biomarker_weight,
+    deduction_split,
+    history_cap,
     is_advisory,
     severity_deduction,
 )
@@ -255,10 +258,13 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
 
     categories: list[dict[str, Any]] = []
     total_deduction = 0.0
-    for category, cap in CATEGORY_CAPS.items():
+    # The history cap follows the structure half, so report the one it scored under.
+    structure, _ = deduction_split(findings)
+    for category, static_cap in CATEGORY_CAPS.items():
         entries = per_category.get(category, [])
         if not entries:
             continue
+        cap = history_cap(structure) if category == HISTORY_CATEGORY else static_cap
         raw_each = [finding_raw_deduction(f) for f in entries]
         applied_each = [float(field(f, "health_impact", 0.0) or 0.0) for f in entries]
         raw_sum = sum(raw_each)

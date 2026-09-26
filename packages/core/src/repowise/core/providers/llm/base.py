@@ -13,8 +13,10 @@ Adding a new provider:
 
 from __future__ import annotations
 
+import contextlib
+import json
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -390,6 +392,68 @@ def parse_retry_after(headers: Any) -> float | None:
         return None
 
 
+def rate_limit_error_from(provider: str, exc: BaseException) -> RateLimitError:
+    """Wrap an SDK 429 exception, keeping the ``retry-after`` it carried."""
+    return RateLimitError(
+        provider,
+        str(exc),
+        status_code=429,
+        retry_after=parse_retry_after(getattr(getattr(exc, "response", None), "headers", None)),
+    )
+
+
+@contextlib.contextmanager
+def translate_sdk_errors(
+    provider: str,
+    *,
+    rate_limit_error: type[BaseException],
+    status_error: type[BaseException],
+    api_error: type[BaseException] | None = None,
+) -> Iterator[None]:
+    """Re-raise a vendor SDK's errors as repowise provider errors.
+
+    429s become ``RateLimitError`` with ``retry-after``; status errors keep
+    their code; *api_error*, when given, wraps status-less errors too.
+    """
+    # An empty tuple makes the last ``except`` match nothing.
+    wrapped_api_errors = (api_error,) if api_error is not None else ()
+    try:
+        yield
+    except rate_limit_error as exc:
+        raise rate_limit_error_from(provider, exc) from exc
+    except status_error as exc:
+        raise ProviderError(provider, str(exc), status_code=exc.status_code) from exc  # type: ignore[attr-defined]
+    except wrapped_api_errors as exc:
+        raise ProviderError(
+            provider, str(exc), status_code=getattr(exc, "status_code", None)
+        ) from exc
+
+
+async def record_generation_cost(
+    tracker: Any,
+    *,
+    model: str,
+    result: GeneratedResponse,
+    operation: str | None = None,
+) -> None:
+    """Record one generation's token spend on *tracker*, if one is attached.
+
+    Awaited inline: a detached task can outlive the event loop. Failures are
+    suppressed so cost bookkeeping never fails a generation. *operation*
+    defaults to the tracker's current one.
+    """
+    if tracker is None:
+        return
+    with contextlib.suppress(Exception):
+        await tracker.record(
+            model=model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            operation=tracker.operation if operation is None else operation,
+            file_path=None,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Shared tenacity retry policy for all HTTP providers
 #
@@ -493,6 +557,14 @@ class ChatToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+
+
+def parse_tool_arguments(raw: str) -> dict[str, Any]:
+    """Decode a tool call's JSON arguments; empty or malformed JSON reads as ``{}``."""
+    try:
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
 
 
 @dataclass

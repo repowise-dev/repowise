@@ -107,8 +107,13 @@ class OmissionStore:
         self.max_mb = max_mb
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, isolation_level=None)
-        apply_sqlite_pragmas(self._conn, _BUSY_TIMEOUT_MS)
-        savings_schema.initialize_savings_schema(self._conn)
+        try:
+            apply_sqlite_pragmas(self._conn, _BUSY_TIMEOUT_MS)
+            savings_schema.initialize_savings_schema(self._conn)
+        except BaseException:
+            # A corrupt file fails here; the caller never gets a store to close.
+            self._conn.close()
+            raise
 
     @classmethod
     def open_default(cls, start: Path | None = None) -> OmissionStore:

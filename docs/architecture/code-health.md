@@ -317,7 +317,7 @@ golden guarantee (§6).
 
 | Category               | Cap  | Markers |
 |------------------------|------|------------|
-| Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect, ungoverned_hotspot†, stale_governance†, contradictory_decision† |
+| Organizational         | −3.5‡ | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect, ungoverned_hotspot†, stale_governance†, contradictory_decision† |
 | Structural complexity  | −2.5 | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
 | Test coverage gradient | −2.0 | coverage_gradient |
@@ -331,6 +331,10 @@ writes them runs *after* scoring completes and never touches
 `HealthFileMetric.score` — so in practice they never deduct. They are counted
 in the table above because `scoring.py` maps them, not because they move a
 number.
+
+‡ A ceiling. The live cap is `history_cap(structure)`, `min(3.5, 1.0 + structure)`,
+where `structure` is the file's capped deduction from every other defect
+category, so git history alone costs a file at most 1.0.
 
 The maintainability dimension has its own independent tables
 (`_MAINTAINABILITY_CATEGORY`, caps: structural_complexity 4.0,

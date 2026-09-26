@@ -117,6 +117,10 @@ log = structlog.get_logger(__name__)
 # scored against wall-clock time holds different windowed findings for any repo
 # whose last commit is not today.
 #
+# v32: the history (organizational) cap follows the file's structure half,
+# ``history_cap(structure)`` in scoring.py, so every stored score that carries
+# a history deduction, and the refactoring impact figures, move.
+#
 # v31: Pascal opts into assertion detection (``assert_call_kinds``): DUnit's
 # ``Check``/``CheckEquals``/``Fail`` family (a new ``asserts/lexicon.py`` row,
 # broad tier) and DUnitX's ``Assert.*`` plus the RTL's own ``Assert(cond, msg)``

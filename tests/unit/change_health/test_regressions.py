@@ -196,8 +196,11 @@ def test_deleting_one_finding_does_not_report_its_neighbours_as_worsened():
     head = _scored(specs[1:])
 
     # The premise: the cap binds on both sides and the survivors' impacts rise.
-    assert sum(f.health_impact for f in base) == pytest.approx(3.5)
-    assert sum(f.health_impact for f in head) == pytest.approx(3.5)
+    # History-only findings, so the cap is the structure-conditioned one at 0.
+    from repowise.core.analysis.health.scoring import history_cap
+
+    assert sum(f.health_impact for f in base) == pytest.approx(history_cap(0.0))
+    assert sum(f.health_impact for f in head) == pytest.approx(history_cap(0.0))
     assert head[0].health_impact > base[1].health_impact
 
     result = FindingMatcher().match(base, head)

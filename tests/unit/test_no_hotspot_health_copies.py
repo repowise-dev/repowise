@@ -59,7 +59,7 @@ _PLUMBING: dict[str, str] = {
     # --- pure renderers: read a value someone else computed ------------------
     "repowise/cli/commands/health_cmd/command.py": "prints the KPI dict it was handed",
     "repowise/core/generation/editor_files/data.py": "the CodeHealthBlock field",
-    "repowise/server/routers/repos.py": "serves the latest snapshot column on /repos/summary",
+    "repowise/server/routers/_repo_summary.py": "serves the latest snapshot column on /repos/summary",
 }
 
 

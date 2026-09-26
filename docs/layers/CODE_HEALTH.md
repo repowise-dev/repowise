@@ -134,7 +134,7 @@ capped per category, so no single category can dominate:
 
 | Category | Cap |
 |---|---|
-| Organizational | −3.5 |
+| Organizational | −3.5, less on cleaner code (below) |
 | Structural complexity | −2.5 |
 | Test coverage | −2.0 |
 | Test coverage gradient | −2.0 |
@@ -156,6 +156,11 @@ history deduction climbs, and the headline barely moves. Each file therefore
 stores its deduction as two numbers, `structure_deduction` and
 `history_deduction`, which sum to the total. Nothing is hidden: the split is on
 every metric row, and the Counts control below reads it back.
+
+Git history on its own measures activity, so its cap follows the code: history
+can cost a file at most 1.0, plus one point for each point the other categories
+deduct, up to 3.5. A file with no code-shape finding never reads below 9.0 from
+history alone.
 
 Three repo-level KPIs: **Hotspot Health** (NLOC-weighted average over files the
 git layer classifies as hotspots), **Average Health** (NLOC-weighted over all
