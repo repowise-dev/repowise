@@ -539,7 +539,8 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
     a path that also does everything else. The record ranked first is the one
     a reader acts on; the rest keep the stored proportion, which cost nothing.
     """
-    from repowise.server.mcp_server import get_why, tool_why
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server.tool_why import path_mode
 
     calls: list[tuple] = []
 
@@ -547,7 +548,7 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
         calls.append((root, tuple(nodes)))
         return "nothing in the 1 file it governs has changed since 2026-01-01"
 
-    monkeypatch.setattr(tool_why, "describe_decision_currency", _fake)
+    monkeypatch.setattr(path_mode, "describe_decision_currency", _fake)
     await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
 
     result = await get_why("src/auth/service.py")
@@ -559,10 +560,11 @@ async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, mo
 
 @pytest.mark.asyncio
 async def test_get_why_stays_silent_when_git_cannot_decide(session, setup_mcp, monkeypatch):
-    from repowise.server.mcp_server import get_why, tool_why
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server.tool_why import path_mode
 
     monkeypatch.setattr(
-        tool_why, "describe_decision_currency", lambda root, **kw: None
+        path_mode, "describe_decision_currency", lambda root, **kw: None
     )
 
     result = await get_why("src/auth/service.py")
