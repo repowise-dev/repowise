@@ -160,8 +160,6 @@ def _build_query_embedder():
 
 def _resolve_server_db_url() -> str:
     # In workspace mode, prefer the primary repo's DB over the global default.
-    # This prevents the global ~/.repowise/wiki.db (which may contain stale
-    # repos from old test runs) from being used as the main DB.
     db_url = resolve_db_url()
     if not os.environ.get("REPOWISE_DB_URL") and not os.environ.get("REPOWISE_DATABASE_URL"):
         db_url = workspace_primary_db_url() or db_url
@@ -169,12 +167,8 @@ def _resolve_server_db_url() -> str:
 
 
 async def _reset_stale_jobs(session_factory) -> None:
-    # Reset any jobs left in "running" or "pending" state from a previous
-    # server instance (crash, restart, or cancellation between row-insert and
-    # background-task launch) — they can never complete now and would block
-    # new syncs via the active-job guard in the repos router.
-    # Note: with multi-worker deployments this is a best-effort race; the
-    # try/except prevents a SQLite lock error from crashing startup.
+    # Jobs left running by a previous process can never finish and would block
+    # new syncs. Best effort: a lock error must not crash startup.
     try:
         count = await fail_interrupted_jobs(session_factory, "Server restarted — job interrupted")
         if count:
@@ -184,11 +178,8 @@ async def _reset_stale_jobs(session_factory) -> None:
 
 
 async def _open_fts(engine) -> FullTextSearch:
-    # Full-text search. A failure here used to abort startup, so a store whose
-    # index could not be upgraded served no documentation at all (issue #1309):
-    # the wiki, the graph and the health pages were all unreachable over a
-    # search index. Keyword search degrades to whatever shape the index is
-    # already in, or to the vector arm alone; everything else keeps working.
+    # An index that cannot be upgraded degrades keyword search only; it must
+    # not take the rest of the server down with it.
     fts = FullTextSearch(engine)
     try:
         await fts.ensure_index()
@@ -221,10 +212,8 @@ def _publish_core_state(
 
 
 async def _rediscover_repo_dbs(app_state) -> None:
-    # Re-register per-repo databases for repos added via the API (their data
-    # lives in <repo>/.repowise/wiki.db; the primary DB only holds a registry
-    # row). Runs after workspace detection so already-registered workspace
-    # repos are skipped.
+    # Repos added via the API keep data in their own wiki.db. Runs after
+    # workspace detection so workspace members are skipped.
     try:
         from repowise.server.repo_db import rediscover_repo_dbs
 
@@ -339,24 +328,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
-        # Shutdown. The finally matters for the workspace globals below: they
-        # outlive the app object, so skipping this on a shutdown exception
-        # would leave the tool layer pointing at disposed engines.
+        # The workspace tool globals outlive the app, so shut down even on error.
         await _shutdown(app, scheduler=scheduler, vector_store=vector_store, engine=engine)
 
 
 def _cors_settings() -> tuple[list[str], bool]:
     """``(allowed origins, allow credentials)`` from the environment."""
-    # CORS — configurable; default allows local dev but is browser-spec compliant.
-    # Browsers reject `Access-Control-Allow-Origin: *` with `Allow-Credentials: true`
-    # (preflight fails). When REPOWISE_CORS_ORIGINS is unset we allow any origin
-    # without credentials (safe for local dev); when credentials are needed the
-    # operator must set explicit origins via REPOWISE_CORS_ORIGINS.
+    # Browsers reject a wildcard origin with credentials, so credentials need
+    # explicit REPOWISE_CORS_ORIGINS; unset means any origin, no credentials.
     cors_origins_env = os.environ.get("REPOWISE_CORS_ORIGINS", "").strip()
     if cors_origins_env:
         return [o.strip() for o in cors_origins_env.split(",") if o.strip()], True
-    # Wildcard with credentials is rejected by browsers — force False and warn
-    # if the old unsafe combination is detected via explicit env.
+    # Warn when the old wildcard-with-credentials setting is still configured.
     if os.environ.get("REPOWISE_CORS_ALLOW_CREDENTIALS", "").lower() in ("1", "true", "yes"):
         logger.warning(
             "cors.wildcard_with_credentials_rejected: "

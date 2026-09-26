@@ -1,11 +1,7 @@
 """Startup and shutdown of the HTTP server, step by step.
 
-The lifespan runs against real SQLite files in a temp directory; only the
-scheduler and the primary vector store are stubbed, since neither is what
-these tests are about. Failures are injected through the data (a trigger that
-refuses updates, an unreadable member database, a malformed workspace file)
-or through the one collaborator a step calls, so the tests pin the contract of
-each step rather than where it lives.
+Real SQLite files, with only the scheduler and primary vector store stubbed.
+Failures come through data or a step's one collaborator, not its location.
 """
 
 from __future__ import annotations
@@ -38,7 +34,7 @@ _MEMBER_RESET = "Server restarted; job interrupted"
 
 @pytest.fixture(autouse=True)
 def restore_tool_globals():
-    """The real lifespan writes process-global MCP tool state — put it back."""
+    """The real lifespan writes process-global MCP tool state; put it back."""
     saved = (
         mcp_mod._registry,
         mcp_mod._workspace_root,

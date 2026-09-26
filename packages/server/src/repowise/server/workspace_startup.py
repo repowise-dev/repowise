@@ -1,10 +1,6 @@
-"""Server-startup wiring for a detected workspace.
-
-When ``repowise serve`` runs inside a workspace, the HTTP lifespan uses the
-primary member's database, opens (or maps) every member's store so the REST
-API can route to it, publishes a ``RepoRegistry`` and the cross-repo enricher
-to the chat tools, and fails jobs a restart interrupted in member databases.
-Each step here is one of those; ``app.lifespan`` sequences them.
+"""Server-startup wiring for a detected workspace: member databases, the chat
+tools' registry and cross-repo enricher, and interrupted-job cleanup.
+``app.lifespan`` sequences these steps.
 """
 
 from __future__ import annotations
@@ -78,7 +74,7 @@ def workspace_primary_db_url() -> str | None:
 
 def init_workspace_state(app_state, vector_store, primary_vector_repo_id: str | None) -> None:
     """Workspace slots on app state, empty until a workspace is detected."""
-    # Workspace detection — mirrors MCP _server.py:_detect_workspace()
+    # Mirrors the MCP server's ``_detect_workspace``.
     app_state.workspace_config = None
     app_state.workspace_root = None
     app_state.cross_repo_enricher = None
@@ -86,21 +82,16 @@ def init_workspace_state(app_state, vector_store, primary_vector_repo_id: str | 
     app_state.workspace_sessions = {}  # repo_id → session_factory
     app_state.workspace_path_to_repo_id = {}  # local_path → repo_id
     app_state.workspace_engines = []  # engines to dispose on shutdown
-    # Per-repo FTS instances keyed by repo_id, used by the search router
-    # to fan out across every workspace repo (single-repo FTS lives on
-    # app.state.fts and stays as the primary).
+    # Search fans out across these; the primary stays on app.state.fts.
     app_state.workspace_fts = {}  # repo_id → FullTextSearch
-    # repo_id → vector store (LanceDB-backed) for per-repo semantic search.
-    # Populated lazily by the search router on first use, then cached.
+    # Filled lazily by the search router.
     app_state.workspace_vector_stores = {}  # repo_id → VectorStore
     if primary_vector_repo_id is not None:
         app_state.workspace_vector_stores[primary_vector_repo_id] = vector_store
 
 
 async def _map_shared_db_members(app_state, ws_config, ws_root: Path, session_factory, fts) -> None:
-    # Shared database mode (e.g. PostgreSQL, REPOWISE_DB_URL).
-    # Member repos are registered in the shared database and do not
-    # have per-repo .repowise/wiki.db files.
+    # Shared database (e.g. PostgreSQL): members have no per-repo wiki.db.
     from repowise.core.persistence.crud import get_repository_by_path
 
     async with get_session(session_factory) as session:
@@ -139,9 +130,7 @@ async def _open_member_db(app_state, repo_id: str, repo_db: Path) -> None:
     app_state.workspace_sessions[repo_id] = repo_sf
     app_state.workspace_engines.append(repo_engine)
 
-    # Build a per-repo FTS instance so the search router can
-    # fan out queries across every workspace repo. Without
-    # this, full-text search only ever sees the primary DB.
+    # Per-repo FTS, or full-text search only ever sees the primary DB.
     try:
         repo_fts = FullTextSearch(repo_engine)
         await repo_fts.ensure_index()
@@ -155,8 +144,6 @@ async def _open_member_db(app_state, repo_id: str, repo_db: Path) -> None:
 
 
 async def _open_member_dbs(app_state, ws_config, ws_root: Path, fts, db_url: str) -> None:
-    # Create per-repo DB engines so all workspace repos are accessible
-    # via the same REST API (sidebar, repo-specific pages, etc.)
     for repo_entry in ws_config.repos:
         repo_path = (ws_root / repo_entry.path).resolve()
         repo_db = repo_path / ".repowise" / "wiki.db"
@@ -168,10 +155,7 @@ async def _open_member_dbs(app_state, ws_config, ws_root: Path, fts, db_url: str
         repo_id = row[0]
         app_state.workspace_path_to_repo_id[str(repo_path)] = repo_id
 
-        # Skip if this is the primary DB we already connected to
-        # (the main engine already serves this repo) — but still
-        # register the primary's FTS under its repo_id so the
-        # search fan-out can include it.
+        # The main engine already serves the primary; only register its FTS.
         if db_url and repo_db.as_posix() in db_url.replace("\\", "/"):
             app_state.workspace_fts[repo_id] = fts
             continue
@@ -182,17 +166,9 @@ async def _open_member_dbs(app_state, ws_config, ws_root: Path, fts, db_url: str
 def _publish_registry(
     app_state, ws_config, ws_root: Path, embedder_factory: Callable[[], Any]
 ) -> None:
-    # Give the MCP tool functions a RepoRegistry, the same one the
-    # stdio MCP lifespan builds (_server.py). Without it every chat
-    # tool call falls into the single-repo branch of
-    # _resolve_repo_context() and dies with "Repository not found:
-    # <alias>", because the alias is looked up in the primary repo's
-    # wiki.db only (issue #970). Contexts load lazily, so the repo
-    # the first chat call names pays the engine/FTS open cost inline.
-    # The registry holds its own handles on each repo's wiki.db,
-    # separate from app.state.workspace_sessions above; collapsing
-    # the two onto one set of connections is worth doing but is a
-    # bigger change than this fix.
+    # Without a registry, chat tools resolve every alias against the primary
+    # wiki.db and fail. It holds its own lazily opened per-repo handles,
+    # separate from workspace_sessions (merging the two is a known TODO).
     from repowise.core.workspace.registry import RepoRegistry
     from repowise.server.chat_tools import set_tool_workspace
 
@@ -206,10 +182,7 @@ def _publish_registry(
 
 
 async def _reset_member_stale_jobs(app_state) -> None:
-    # Reset stale jobs in non-primary workspace DBs too. The primary
-    # DB was handled before workspace detection, but each secondary
-    # repo has its own generation_jobs table and stale running rows
-    # there would keep the UI showing an in-progress sync forever.
+    # Each member has its own generation_jobs table; the primary was reset earlier.
     try:
         reset_count = await reset_workspace_stale_jobs(app_state)
         if reset_count:
