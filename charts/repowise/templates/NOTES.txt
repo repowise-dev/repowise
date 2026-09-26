@@ -1,0 +1,13 @@
+Repowise deployed!
+
+Get the API URL:
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "repowise.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 7337:7337
+
+The API is at http://127.0.0.1:7337 and the web UI at http://127.0.0.1:3000.
+
+{{- if not .Values.secret.repowiseApiKey }}
+WARNING: REPOWISE_API_KEY is not set. The API is only usable from inside the
+cluster. Set secret.repowiseApiKey (or provide an existing Secret) for
+external access.
+{{- end }}
