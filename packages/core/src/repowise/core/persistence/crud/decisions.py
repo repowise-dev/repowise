@@ -1,19 +1,8 @@
 """CRUD operations for the decisions domain (repowise persistence layer).
 
 Split out of the former monolithic ``crud.py``; ``crud/__init__.py`` re-exports
-every public name, so existing imports are unaffected.
-
-This module holds the single-record reads and writes. The rest of the domain
-lives in sibling modules and is re-exported below, so ``crud.decisions`` keeps
-answering for every name it used to define:
-
-* :mod:`.decision_identity` - the id recipe and what extraction may write.
-* :mod:`.decision_evidence` - evidence rows and the headline score.
-* :mod:`.decision_ingest` - :func:`bulk_upsert_decisions`, the extraction path.
-* :mod:`.decision_review_meta` - the candidate review-queue rows.
-* :mod:`.decision_repairs` - idempotent store-wide repairs and purges.
-* :mod:`.decision_staleness` - staleness scoring from git history.
-* :mod:`.decision_health` - the decision health summary.
+every public name, so existing imports are unaffected. Single-record reads and
+writes live here; the ``decision_*`` siblings hold the rest and are re-exported.
 """
 
 from __future__ import annotations

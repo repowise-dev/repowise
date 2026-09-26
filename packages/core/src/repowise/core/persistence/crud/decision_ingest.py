@@ -1,9 +1,4 @@
-"""Batch ingest of extracted decisions: grouping, dedupe and provenance.
-
-:func:`bulk_upsert_decisions` is the path every extraction lane writes
-through. It merges contributions that describe one decision into one
-record and keeps every contributor as evidence.
-"""
+"""Batch ingest of extracted decisions: grouping, dedupe and provenance."""
 
 from __future__ import annotations
 
@@ -372,15 +367,8 @@ def _record_capture(
 ) -> None:
     """Accumulate the lane and split flag this run's candidate-meta row carries.
 
-    Two title groups can fold onto one record, so this accumulates: the later
-    group must not drop what the earlier one raised.
-
-    The split flag is read from every member, not from the headline alone. The
-    headline is the highest-ranked source in the group, and the lane that
-    notices a claim bundles two decisions is usually not the highest-ranked
-    one: a session-mined candidate that flags itself loses its flag the moment
-    a CLI-authored record shares its title. A flag raised by any contributor is
-    a flag on the record.
+    Accumulates because two title groups can fold onto one record. The split
+    flag is read from every member: any contributor raising it flags the record.
     """
     prior_lane, prior_split = captured.get(decision_id, ("", False))
     captured[decision_id] = (
@@ -390,22 +378,12 @@ def _record_capture(
 
 
 class _SemanticDedup:
-    """Phase-2C semantic dedup against the shared vector store.
+    """Phase-2C semantic dedup against the shared vector store; inert without one.
 
-    Augments the cheap normalized-title match: an incoming group that matched
-    no record by title is looked up in the store and folded into its nearest
-    ``decision:`` neighbour when that clears the cosine threshold, and every
-    touched record is (re-)embedded so it is matchable next run and
-    discoverable via ``search_codebase``. Inert when there is no store.
-
-    Batch mode: the per-item path embeds one query per residual group and one
-    upsert per touched record, thousands of serial network round-trips on a
-    first index. Instead every group's match text is embedded in a few chunked
-    requests up front, the store is searched by raw vector, dedup *within* the
-    batch runs against a local pending index, and the store writes are
-    deferred to one batched upsert. Stores that can't hand back vectors (no
-    embedder, or ``search_by_vector`` left at the base-class default) keep the
-    per-item flow.
+    A group with no title match folds into its nearest stored neighbour above
+    the cosine threshold. Batch mode embeds all groups up front, dedupes within
+    the batch against a pending index and defers store writes to one upsert;
+    stores that cannot search by vector use the per-item flow.
     """
 
     def __init__(

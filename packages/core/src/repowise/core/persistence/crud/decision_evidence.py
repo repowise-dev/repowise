@@ -1,9 +1,4 @@
-"""Decision evidence rows and the headline score derived from them.
-
-Every contributing source of a decision is one :class:`DecisionEvidence`
-row; a record's confidence and verification are re-derived from the whole
-set by :func:`_rederive_headline`, the single definition every writer uses.
-"""
+"""Decision evidence rows and the headline score derived from them."""
 
 from __future__ import annotations
 

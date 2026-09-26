@@ -1,9 +1,4 @@
-"""What a decision is keyed on, and what extraction may write onto it.
-
-The id recipe (:func:`derive_decision_id`) and the status/kind rules a
-re-extraction must respect are shared by the single-record upsert in
-:mod:`.decisions` and the batch ingest in :mod:`.decision_ingest`.
-"""
+"""A decision's derived id, and the status/kind rules re-extraction must respect."""
 
 from __future__ import annotations
 

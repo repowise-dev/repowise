@@ -130,20 +130,9 @@ class _Lanes:
             self.governed_files.update(json.loads(d.affected_files_json))
 
     def rank(self) -> None:
-        """Order every list worst-first.
+        """Order every list worst-first, with an id tiebreak so runs agree.
 
-        Ranked here rather than at the five call sites, none of which does. The
-        MCP health dashboard and ``repowise decision health`` cut all three
-        lists; the overview attention panel cuts the hotspots and renders the
-        other two in the order it is handed; the decisions route serves them
-        whole in that order; and ``health/governance.py`` walks them to *write*
-        one finding row per entry. So the callers that truncate were showing
-        whichever rows the scan returned first, and the ones that do not were
-        still listing them by it, while the score answering "which of these
-        first" rides on every record, unread. The ``or 0.0`` guards match how
-        every other reader of these two fields spells it rather than trusting a
-        column default to have been back-filled; the id tiebreak makes the key
-        total, so two runs agree.
+        Callers truncate these lists and must not re-order them.
         """
         self.stale.sort(key=lambda d: (-(d.staleness_score or 0.0), d.id))
         self.proposed.sort(key=lambda d: (-(d.confidence or 0.0), d.id))
@@ -159,13 +148,7 @@ async def _ungoverned_hotspots(
 ) -> list[str]:
     """Hotspot files no accepted decision names, hottest first.
 
-    Sorting these by path put the file most in need of a decision behind
-    whatever sorts alphabetically first, with the score that answers the
-    question sitting unread one column over. The key is the one
-    ``routers/overview.py`` already applies to these same rows in SQL (score
-    descending with NULLs last, then churn) rather than a second answer to
-    "which hotspot matters most". A NULL score is genuinely unknown and is not
-    the same as a measured zero.
+    Same key as ``routers/overview.py``: score descending with NULLs last, then churn.
     """
     hotspot_result = await session.execute(
         select(

@@ -1,9 +1,4 @@
-"""Idempotent repairs and cleanups over a whole decision store.
-
-Each pass fixes rows an earlier version of the pipeline wrote (a stale rank
-ladder, a changed confidence formula, a retired detector's supersessions, a
-retired extraction source) and is a no-op once the store is repaired.
-"""
+"""Idempotent store-wide decision repairs and purges; each is a no-op once applied."""
 
 from __future__ import annotations
 
