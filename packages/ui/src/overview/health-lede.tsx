@@ -1,5 +1,6 @@
 import * as React from "react";
 import { healthBand } from "../health/tokens";
+import { formatScore } from "@repowise-dev/types/health";
 import { LedeLink, PageLede } from "../shared/page-lede";
 
 export interface HealthLedeProps {
@@ -67,8 +68,8 @@ export function HealthLede({
   // it is named like its siblings and the word "risk" is left to the findings
   // count on the health page, where more genuinely is worse.
   const pillars: string[] = [];
-  if (maintainability != null) pillars.push(`maintainability ${maintainability.toFixed(1)}`);
-  if (performance != null) pillars.push(`static performance ${performance.toFixed(1)}`);
+  if (maintainability != null) pillars.push(`maintainability ${formatScore(maintainability)}`);
+  if (performance != null) pillars.push(`static performance ${formatScore(performance)}`);
   const pillarSentence =
     pillars.length === 0
       ? null
@@ -81,7 +82,7 @@ export function HealthLede({
   return (
     <PageLede
       label="Code health"
-      value={score.toFixed(1)}
+      value={formatScore(score)}
       valueColor={band.color}
       unit="out of 10"
       band={band}
@@ -94,7 +95,7 @@ export function HealthLede({
       <p>
         This codebase scores{" "}
         <strong className="font-semibold text-[var(--color-text-primary)]">
-          {score.toFixed(1)} out of 10
+          {formatScore(score)} out of 10
         </strong>{" "}
         for code health, which we rate {band.label.toLowerCase()}.
         {pillarSentence && ` ${pillarSentence}`}
@@ -115,7 +116,7 @@ export function HealthLede({
             </strong>{" "}
             are git hotspots, and they average{" "}
             <strong className="font-semibold" style={{ color: hot.color }}>
-              {hotspotHealth!.toFixed(1)}
+              {formatScore(hotspotHealth!)}
             </strong>
             {" "}— which is where the fixes pay off most.
           </>

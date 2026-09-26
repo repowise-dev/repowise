@@ -11,6 +11,7 @@ import {
   HEALTH_BAND_LABEL,
   HEALTH_BAND_ORDER,
   HEALTH_BAND_RANGE_LABEL,
+  formatScore,
 } from "@repowise-dev/types/health";
 import { healthBandNodeFill, healthNodeFill } from "../health/tokens";
 import { disambiguateBasenames } from "../lib/format";
@@ -451,7 +452,7 @@ export function CouplingGraph({
                   stroke="var(--color-bg-surface)"
                   strokeWidth={isFocus ? 1.6 : 1}
                 >
-                  <title>{`${n.file_path}${n.score != null ? ` · score ${n.score.toFixed(1)}` : ""} · ${degree.get(n.file_path) ?? 0} couplings`}</title>
+                  <title>{`${n.file_path}${n.score != null ? ` · score ${formatScore(n.score)}` : ""} · ${degree.get(n.file_path) ?? 0} couplings`}</title>
                 </circle>
                 {showLabel ? (
                   <text

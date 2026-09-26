@@ -40,7 +40,7 @@ import {
 // The shared bands, never a local threshold: this pill sits beside marks that
 // all derive from `bandForScore`, and two of them disagreeing about where a
 // band starts describes one file two ways in one viewport.
-import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import { bandForScore, formatScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import type {
   FileHealthTrend,
   FileSignals,
@@ -458,7 +458,7 @@ export function HealthFileDrawer({
                       className="text-[40px] font-semibold leading-none tracking-tight tabular-nums"
                       style={{ color: healthBandColor(bandForScore(metric.score)) }}
                     >
-                      {metric.score.toFixed(1)}
+                      {formatScore(metric.score)}
                     </span>
                     <span className="text-xs text-[var(--color-text-tertiary)]">out of 10</span>
                   </div>
@@ -913,7 +913,7 @@ function PillarScore({ v }: { v: number | null }) {
       className="text-lg font-semibold tabular-nums"
       style={{ color: healthBandColor(bandForScore(v)) }}
     >
-      {v.toFixed(1)}
+      {formatScore(v)}
       <span className="text-xs font-normal text-[var(--color-text-tertiary)]">/10</span>
     </span>
   );

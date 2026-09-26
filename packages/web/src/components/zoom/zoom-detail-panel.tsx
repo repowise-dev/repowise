@@ -28,7 +28,7 @@ import {
   nodeRoles,
   summarizeRelations,
 } from "@repowise-dev/ui/zoom";
-import { bandForScore } from "@repowise-dev/types/health";
+import { bandForScore, formatScore } from "@repowise-dev/types/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { pageHref } from "@/lib/utils/page-href";
 import { healthBandTextColor } from "@repowise-dev/ui/health";
@@ -159,7 +159,7 @@ export function ZoomDetailPanel({
           <div className="border-t border-[var(--color-border-default)] pt-3">
             <div className={`flex items-baseline gap-2 ${bandClass}`}>
               <span className="text-[32px] font-bold leading-none tabular-nums">
-                {node.health_score.toFixed(1)}
+                {formatScore(node.health_score)}
               </span>
               <span className="text-[15px] font-medium">{band}</span>
             </div>

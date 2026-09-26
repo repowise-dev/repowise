@@ -10,7 +10,7 @@ import { InfoTip } from "../shared/info-tip";
 import { truncatePath } from "../lib/format";
 // Shared band function, never a local threshold: two surfaces disagreeing
 // about where "Good" starts is worse than the import.
-import { bandForScore, type HealthBand } from "@repowise-dev/types/health";
+import { bandForScore, formatScore, type HealthBand } from "@repowise-dev/types/health";
 import { healthBand } from "../health/tokens";
 import type { CommunityDetail } from "@repowise-dev/types/graph";
 
@@ -256,7 +256,7 @@ function HealthLede({
           className="text-[32px] font-semibold leading-none tracking-tight tabular-nums"
           style={{ color: band.color }}
         >
-          {score.toFixed(1)}
+          {formatScore(score)}
         </span>
         <span className="text-xs text-[var(--color-text-tertiary)]">out of 10</span>
         <span

@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.grading import BAND_BADGE_COLOR, band_for
+from repowise.core.analysis.health.grading import BAND_BADGE_COLOR, band_for, format_score
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.schemas import HealthBadgeResponse
@@ -30,7 +30,7 @@ def _badge_fields(average_health: float | None) -> tuple[str, str, str, str]:
     if average_health is None:
         return "health", "no data", _UNKNOWN_COLOR, "unknown"
     band = band_for(float(average_health))
-    return "health", f"{average_health:.1f}/10", BAND_BADGE_COLOR[band], band
+    return "health", f"{format_score(average_health)}/10", BAND_BADGE_COLOR[band], band
 
 
 def _render_badge_svg(label: str, message: str, color_name: str) -> str:

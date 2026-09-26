@@ -21,6 +21,8 @@ def test_badge_fields_band_colors() -> None:
     assert _badge_fields(6.0) == ("health", "6.0/10", "yellow", "fair")
     assert _badge_fields(4.5) == ("health", "4.5/10", "orange", "needs_work")
     assert _badge_fields(2.0) == ("health", "2.0/10", "red", "at_risk")
+    # Just under an edge: the message must not round up into the next band.
+    assert _badge_fields(6.98) == ("health", "6.9/10", "yellow", "fair")
 
 
 def test_every_band_colour_has_a_hex_for_the_self_rendered_svg() -> None:

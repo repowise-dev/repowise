@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GOOD_MIN, bandForScore, type CoverageBasis } from "@repowise-dev/types/health";
+import { GOOD_MIN, bandForScore, formatScore, type CoverageBasis } from "@repowise-dev/types/health";
 import { HEALTH_BAND_FILL } from "./tokens";
 
 export interface RiskCoveragePoint {
@@ -310,7 +310,7 @@ export function RiskCoverageScatter({
               {active.file_path}
             </span>
             <span className="tabular-nums text-[var(--color-text-tertiary)]">
-              {active.health_score.toFixed(1)} health ·{" "}
+              {formatScore(active.health_score)} health ·{" "}
               {inferred
                 ? active.reached
                   ? "a test reaches it"

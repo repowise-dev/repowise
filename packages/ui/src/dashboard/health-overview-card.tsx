@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
 import { truncatePath } from "../lib/format";
 import { healthBand } from "../health/tokens";
+import { formatScore } from "@repowise-dev/types/health";
 import { Sparkline } from "../health/sparkline";
 
 export interface HealthOverviewPoint {
@@ -171,7 +172,7 @@ function MetricTile({
         <>
           <div className="flex items-baseline gap-1.5">
             <span className="text-3xl font-bold tabular-nums leading-none" style={{ color: b?.color }}>
-              {value.toFixed(1)}
+              {formatScore(value)}
             </span>
             <span className="text-sm text-[var(--color-text-tertiary)]">/10</span>
             <TrendChip delta={delta} />
@@ -360,7 +361,7 @@ export function HealthOverviewCard({
                     className="shrink-0 text-xs font-bold tabular-nums"
                     style={{ color: healthBand(data.worst_performer_score).color }}
                   >
-                    {data.worst_performer_score.toFixed(1)}/10
+                    {formatScore(data.worst_performer_score)}/10
                   </span>
                 </a>
               )}
@@ -418,7 +419,7 @@ function PillarStat({
       ) : (
         <span className="flex items-baseline gap-1.5">
           <span className="text-xl font-bold tabular-nums leading-none" style={{ color: b?.color }}>
-            {score.toFixed(1)}
+            {formatScore(score)}
           </span>
           <span className="text-xs text-[var(--color-text-tertiary)]">/10</span>
           {b ? (
@@ -473,7 +474,7 @@ function PerformancePillarStat({
             {findings === 1 ? "risk" : "risks"}
           </span>
           <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-            · {score.toFixed(1)}/10
+            · {formatScore(score)}/10
           </span>
         </span>
       )}

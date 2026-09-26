@@ -105,3 +105,12 @@ describe("CodeHealthLede — the two readings of one figure", () => {
     expect(screen.getByText(/287 files are not scored here/)).toBeTruthy();
   });
 });
+
+describe("CodeHealthLede — the figure and its band agree at the edge", () => {
+  it("does not print 7.0 beside Fair for a score just under Good", () => {
+    const { container } = render(<CodeHealthLede summary={summary({ average_health: 6.98 })} />);
+    expect(container.textContent).toContain("scores 6.9 out of 10");
+    expect(container.textContent).toContain("That puts it in the Fair band.");
+    expect(container.textContent).not.toContain("7.0 out of 10");
+  });
+});

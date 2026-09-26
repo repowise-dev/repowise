@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { RepoIndexStatus } from "@repowise-dev/types/repos";
+import { formatScore } from "@repowise-dev/types/health";
 import { formatNumber, formatRelativeTime } from "../lib/format";
 import { healthBand } from "../health/tokens";
 import { RepoAvatar } from "./repo-avatar";
@@ -176,7 +177,7 @@ export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
                         className="mt-1 text-[22px] font-semibold leading-none tabular-nums"
                         style={{ color: band.color }}
                       >
-                        {repo.health.toFixed(1)}
+                        {formatScore(repo.health)}
                       </p>
                       <p
                         className="mt-1 text-[11px]"

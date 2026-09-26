@@ -163,6 +163,17 @@ export function bandForScore(score: number): HealthBand {
   return "at_risk";
 }
 
+/**
+ * A 1-10 score at one decimal, rounded down, for display beside its band.
+ * Rounding to nearest would print 6.98 as "7.0" beside "Fair"; flooring can
+ * never cross a band edge, and the band itself stays on the unrounded value.
+ * Mirror of `grading.format_score` in core.
+ */
+export function formatScore(score: number): string {
+  const nearest = Number(score.toFixed(1));
+  return (nearest > score ? nearest - 0.1 : nearest).toFixed(1);
+}
+
 export interface HealthBandShare {
   /** Number of files in this band. */
   files: number;
