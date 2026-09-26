@@ -39,10 +39,7 @@ from repowise.core.analysis.decisions.lifecycle import (
 from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
 from repowise.core.precedent.currency import describe_decision_currency
 
-#: The ladder's real sources plus the no-filter sentinel. Derived, because the
-#: hand-written copy had drifted: it offered ``readme_mining`` (since retired)
-#: while omitting ``session``, the source carrying a user's own words and the
-#: one you would most want to filter for.
+#: Every source a stored record can carry, plus the no-filter sentinel.
 _SOURCE_CHOICES: tuple[str, ...] = (*LISTABLE_SOURCES, "all")
 
 
@@ -906,8 +903,8 @@ def decision_dismiss(
 def _dismissal_confirmed(ids: list[str], *, yes: bool, preview: bool, fmt: str) -> bool:
     """Ask before dismissing, unless ``--yes``, ``--preview`` or json skips the prompt.
 
-    A machine-readable invocation is non-interactive by construction: the
-    prompt read EOF and aborted every scripted dismissal.
+    A machine-readable invocation is non-interactive by construction, so a
+    prompt there would read EOF and abort a scripted dismissal.
     """
     if yes or preview or fmt == "json":
         return True
