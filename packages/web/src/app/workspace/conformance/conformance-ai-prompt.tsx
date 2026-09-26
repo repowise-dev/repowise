@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import {
   AiPromptButton,
   AiPromptModal,
@@ -21,10 +22,11 @@ export function ConformanceAiPrompt({
   violations: ConformanceViolation[];
 }) {
   const [open, setOpen] = useState(false);
+  const t = useTranslations("conformance");
 
   return (
     <>
-      <AiPromptButton label="Fix violations with AI" onClick={() => setOpen(true)} />
+      <AiPromptButton label={t("aiPrompt.label")} onClick={() => setOpen(true)} />
       <AiPromptModal
         open={open}
         onOpenChange={setOpen}
@@ -43,8 +45,8 @@ export function ConformanceAiPrompt({
             flavor,
           })
         }
-        title="AI conformance fix"
-        description="A ready-to-paste prompt that has your AI agent resolve these architecture rule violations by removing the disallowed dependencies."
+        title={t("aiPrompt.title")}
+        description={t("aiPrompt.description")}
       />
     </>
   );

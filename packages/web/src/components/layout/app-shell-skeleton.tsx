@@ -1,4 +1,5 @@
 import { SkeletonRegion, Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { getTranslations } from "next-intl/server";
 
 /**
  * The shell itself, waiting. This is the one place with no page layout to
@@ -9,11 +10,13 @@ import { SkeletonRegion, Skeleton } from "@repowise-dev/ui/ui/skeleton";
  * suspended, so a slow first paint looked like a blank app rather than a
  * loading one.
  */
-export function AppShellSkeleton() {
+export async function AppShellSkeleton() {
+  const t = await getTranslations("shell");
+
   return (
     <SkeletonRegion
       className="flex h-screen overflow-hidden"
-      label="Loading Repowise"
+      label={t("skeleton.loading")}
     >
       {/* Matches Sidebar's expanded width (`w-[280px]`). */}
       <div className="hidden w-[280px] shrink-0 flex-col gap-2 border-r border-[var(--color-border-default)] p-4 md:flex">

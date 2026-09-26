@@ -32,6 +32,7 @@ import { bandForScore } from "@repowise-dev/types/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { pageHref } from "@/lib/utils/page-href";
 import { healthBandTextColor } from "@repowise-dev/ui/health";
+import { useTranslations } from "next-intl";
 
 interface ZoomDetailPanelProps {
   node: ZoomNode;
@@ -98,6 +99,7 @@ export function ZoomDetailPanel({
   onClose,
   onZoom,
 }: ZoomDetailPanelProps) {
+  const t = useTranslations("zoom");
   const m = node.metrics;
   const isFile = node.kind === "file";
   // The shared bands, so the panel agrees with the dot on the card beside it.
@@ -147,7 +149,7 @@ export function ZoomDetailPanel({
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close details"
+          aria-label={t("detail.close")}
           className="shrink-0 rounded p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
         >
           <X className="h-4 w-4" />
@@ -165,8 +167,9 @@ export function ZoomDetailPanel({
             </div>
             {/* A figure alone is not readable. Say what it measures. */}
             <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
-              Code health out of 10
-              {isFile ? "" : ", averaged across this subtree weighted by size"}.
+              {isFile
+                ? t("detail.healthOutOfTen")
+                : t("detail.healthOutOfTenSubtree")}
             </p>
           </div>
         )}
@@ -178,26 +181,32 @@ export function ZoomDetailPanel({
         )}
 
         <div className="mt-3">
-          {!isFile && <Row label="Files" value={m.file_count} />}
+          {!isFile && <Row label={t("detail.files")} value={m.file_count} />}
           {m.hotspot_count > 0 && (
-            <Row label="Hotspots" value={m.hotspot_count} tone="text-[var(--color-risk-high)]" />
+            <Row
+              label={t("detail.hotspots")}
+              value={m.hotspot_count}
+              tone="text-[var(--color-risk-high)]"
+            />
           )}
           {m.entry_point_count > 0 && (
             <Row
-              label="Entry points"
+              label={t("detail.entryPoints")}
               value={m.entry_point_count}
               tone="text-[var(--color-success)]"
             />
           )}
-          {m.on_flow_count > 0 && <Row label="On flow" value={m.on_flow_count} />}
-          {m.dead_count > 0 && <Row label="Dead" value={m.dead_count} />}
+          {m.on_flow_count > 0 && (
+            <Row label={t("detail.onFlow")} value={m.on_flow_count} />
+          )}
+          {m.dead_count > 0 && <Row label={t("detail.dead")} value={m.dead_count} />}
         </div>
 
         {/* What the arrows mean. The verb was on the wire and drawn nowhere,
             so nothing on this surface said whether a line meant "imports" or
             "changes at the same time as". */}
         <div className="mt-3 border-t border-[var(--color-border-default)] pt-3">
-          <Micro>Relations</Micro>
+          <Micro>{t("detail.relations")}</Micro>
           <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--color-text-secondary)] tabular-nums">
             {describeRelations(summary)}
           </p>
@@ -205,14 +214,15 @@ export function ZoomDetailPanel({
             /* A surface that bounds its own coverage has to say so, or the
                partial view reads as the whole one. */
             <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)] tabular-nums">
-              {cap} on the map.
+              {t("detail.capSuffix", { cap })}
             </p>
           )}
         </div>
 
         {node.language && (
           <div className="mt-3 border-t border-[var(--color-border-default)] pt-3 text-[13px] text-[var(--color-text-secondary)]">
-            <Micro>Language</Micro> <span className="ml-1">{node.language}</span>
+            <Micro>{t("detail.language")}</Micro>{" "}
+            <span className="ml-1">{node.language}</span>
           </div>
         )}
       </div>
@@ -226,7 +236,7 @@ export function ZoomDetailPanel({
               className="flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-accent-primary)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-on-accent)] hover:opacity-90"
             >
               <ScanSearch className="h-3.5 w-3.5" />
-              Zoom in
+              {t("detail.zoomIn")}
             </button>
           )}
           {/* This card is named after a module page, so the page it is named
@@ -237,7 +247,7 @@ export function ZoomDetailPanel({
               className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)]"
             >
               <BookOpen className="h-3.5 w-3.5" />
-              Read the module page
+              {t("detail.readModule")}
             </Link>
           )}
           {isFile && node.path && (
@@ -246,7 +256,7 @@ export function ZoomDetailPanel({
               className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)]"
             >
               <FileCode className="h-3.5 w-3.5" />
-              Open file page
+              {t("detail.openFile")}
             </Link>
           )}
         </footer>

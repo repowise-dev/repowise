@@ -5,6 +5,7 @@ import type {
   ConformanceReport,
   ArchitectureMetrics,
 } from "@repowise-dev/api-client/types";
+import { getTranslations } from "next-intl/server";
 import { PageShell } from "@repowise-dev/ui/shared";
 import { PageLede, LedeLink } from "@repowise-dev/ui/shared/page-lede";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
@@ -19,19 +20,12 @@ import {
 } from "@/lib/api/workspace";
 import { ConformanceAiPrompt } from "./conformance-ai-prompt";
 
-export const metadata: Metadata = { title: "Conformance" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("conformance");
+  return { title: t("title") };
+}
 
 export const revalidate = 30;
-
-/**
- * The matrix counts a co-change relationship as a filled cell and the ribbon's
- * structural-link figure does not, so the two numbers differ by design and sit
- * a few hundred pixels apart. Reconciled in the copy rather than left for the
- * reader to work out, and stated here rather than changing the shared matrix's
- * own caption, which is accurate for what it counts.
- */
-const DSM_DESCRIPTION =
-  "Each filled cell means the row service depends on the column service, tinted by transport. Red cells break a declared rule; amber cells sit on a cycle. The matrix counts co-change relationships too, so its total runs above the structural-link figure above.";
 
 /**
  * Whether the conformance analyser has ever produced this report.
@@ -55,6 +49,8 @@ function reportState(
 }
 
 export default async function ConformancePage() {
+  const t = await getTranslations("conformance");
+
   const [sg, cf, arch] = await Promise.allSettled([
     getWorkspaceSystemGraph(),
     getWorkspaceConformance(),
@@ -76,79 +72,84 @@ export default async function ConformancePage() {
 
   const ribbon: RibbonStat[] = [
     {
-      label: "Services",
+      label: t("ribbon.services"),
       value: metrics ? formatNumber(metrics.node_count) : "—",
-      sub: "repositories and their sub-packages",
+      sub: t("ribbon.servicesSub"),
     },
     {
-      label: "Structural links",
+      label: t("ribbon.structuralLinks"),
       value: metrics ? formatNumber(metrics.structural_edge_count) : "—",
-      sub: "contracts and imports, not co-changes",
+      sub: t("ribbon.structuralLinksSub"),
     },
     {
-      label: "Propagation cost",
+      label: t("ribbon.propagationCost"),
       value: metrics ? `${metrics.propagation_cost_pct.toFixed(1)}%` : "—",
-      sub: "of the system a change can reach",
+      sub: t("ribbon.propagationCostSub"),
     },
     {
-      label: "Core size",
+      label: t("ribbon.coreSize"),
       value: metrics ? formatNumber(metrics.core_size) : "—",
       sub: metrics
-        ? `${Math.round(metrics.core_ratio * 100)}% of all services`
-        : "mutually dependent centre",
+        ? t("ribbon.coreSizeSubPct", { pct: Math.round(metrics.core_ratio * 100) })
+        : t("ribbon.coreSizeSub"),
     },
     {
-      label: "Cycles",
+      label: t("ribbon.cycles"),
       value: metrics ? formatNumber(cycleCount) : "—",
-      sub: "circular service dependencies",
+      sub: t("ribbon.cyclesSub"),
     },
   ];
 
   return (
     <PageShell
-      title="Conformance"
+      title={t("title")}
       icon={<ShieldCheck className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
-      description="How the workspace is shaped, and whether it obeys the dependency rules you declared."
+      description={t("description")}
     >
       <PageLede
-        label="Architecture score"
+        label={t("ledeLabel")}
         value={metrics ? metrics.score.toFixed(1) : "—"}
-        unit="out of 10"
+        unit={t("ledeUnit")}
         {...(metrics?.architecture_type
           ? { band: { label: metrics.architecture_type } }
           : {})}
         layout="beside"
         action={
           <LedeLink href="/workspace/system-map" LinkComponent={Link}>
-            See the system map
+            {t("ledeSeeSystemMap")}
           </LedeLink>
         }
       >
         {metrics ? (
           <p>
-            A change here can reach {metrics.propagation_cost_pct.toFixed(1)}% of the system
-            through {formatNumber(metrics.structural_edge_count)} structural links between{" "}
-            {formatNumber(metrics.node_count)} services. The score weighs that reach against
-            the size of the mutually dependent core and any cycles; it is computed from the
-            system graph on every request, so it does not depend on the check below having run.
+            {t("ledeSentence", {
+              pct: metrics.propagation_cost_pct.toFixed(1),
+              links: formatNumber(metrics.structural_edge_count),
+              services: formatNumber(metrics.node_count),
+            })}
           </p>
         ) : (
-          <p>
-            No system graph has been built yet, so there is nothing to measure. Run a workspace
-            sync to build one.
-          </p>
+          <p>{t("ledeNoGraph")}</p>
         )}
-        {ruleSentence(state, report)}
+        <RuleSentence state={state} report={report} />
       </PageLede>
 
       <StatRibbon stats={ribbon} />
 
+      {/*
+        The matrix counts a co-change relationship as a filled cell and the
+        ribbon's structural-link figure does not, so the two numbers differ by
+        design and sit a few hundred pixels apart. Reconciled in
+        `dsmDescription` rather than left for the reader to work out, and
+        stated there rather than changing the shared matrix's own caption,
+        which is accurate for what it counts.
+      */}
       <OverviewSection
-        title="Dependency-structure matrix"
-        description={DSM_DESCRIPTION}
+        title={t("dsmTitle")}
+        description={t("dsmDescription")}
         action={
           <SectionLink href="/workspace/system-map" LinkComponent={Link}>
-            System map
+            {t("dsmSystemMapLink")}
           </SectionLink>
         }
       >
@@ -157,9 +158,11 @@ export default async function ConformancePage() {
 
       <OverviewSection
         title={
-          state === "checked" ? `Rule violations (${violations.length})` : "Rule violations"
+          state === "checked"
+            ? t("violationsTitleCount", { count: violations.length })
+            : t("violationsTitle")
         }
-        description="Dependencies that exist in the graph but are forbidden by a rule you declared."
+        description={t("violationsDescription")}
         {...(violations.length > 0
           ? { action: <ConformanceAiPrompt violations={violations} /> }
           : {})}
@@ -188,7 +191,7 @@ export default async function ConformancePage() {
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
-                  Breaks{" "}
+                  {t("violationBreaks")}{" "}
                   <span className="font-mono text-[var(--color-warning)]">
                     {v.rule_source} !&gt; {v.rule_target}
                   </span>
@@ -201,21 +204,21 @@ export default async function ConformancePage() {
       </OverviewSection>
 
       <OverviewSection
-        title={`Dependency cycles (${cycleCount})`}
-        description="Groups of services that depend on each other in a loop, so none of them can be changed or deployed independently."
+        title={t("cyclesTitle", { count: cycleCount })}
+        description={t("cyclesDescription")}
       >
         {cycles.length === 0 ? (
           <EmptyState
             className="p-6"
             title={
               cycleCount > 0
-                ? `${cycleCount} ${cycleCount === 1 ? "cycle" : "cycles"} detected, but not listed`
-                : "No circular dependencies"
+                ? t("cyclesDetectedNotListed", { count: cycleCount })
+                : t("noCyclesTitle")
             }
             description={
               cycleCount > 0
-                ? "The count is recomputed from the system graph, but the services in each cycle are recorded by the conformance check. Run it to see which services are involved."
-                : "Every dependency in the graph runs one way. Nothing has to be changed in lockstep."
+                ? t("cyclesUnlistedDescription")
+                : t("noCyclesDescription")
             }
           />
         ) : (
@@ -223,7 +226,7 @@ export default async function ConformancePage() {
             {cycles.map((c) => (
               <li key={c.nodes.join("->")} className="py-3.5">
                 <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                  {c.length} services
+                  {t("cycleServices", { count: c.length })}
                 </p>
                 <p className="mt-1 text-sm text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
                   {c.nodes.join(" → ")} → {c.nodes[0]}
@@ -238,41 +241,52 @@ export default async function ConformancePage() {
 }
 
 /** The sentence in the lede that says whether the check has anything to say. */
-function ruleSentence(
-  state: ReturnType<typeof reportState>,
-  report: ConformanceReport | null,
-) {
+async function RuleSentence({
+  state,
+  report,
+}: {
+  state: ReturnType<typeof reportState>;
+  report: ConformanceReport | null;
+}) {
+  const t = await getTranslations("conformance");
   if (state === "checked") {
     const n = report?.rules_evaluated ?? 0;
     const v = report?.violations?.length ?? 0;
     return (
       <p>
-        {formatNumber(n)} declared {n === 1 ? "rule was" : "rules were"} checked against that
-        graph, and {v === 0 ? "nothing breaks them" : `${formatNumber(v)} ${v === 1 ? "dependency breaks" : "dependencies break"} them`}.
+        {v === 0
+          ? t("ruleCheckedClean", { rules: n })
+          : t("ruleCheckedViolations", { rules: n, violations: v })}
       </p>
     );
   }
   if (state === "no_rules") {
     return (
       <p>
-        The check has run, but no dependency rules are declared, so it had nothing to enforce.
-        Add a <code className="font-mono text-[var(--color-text-primary)]">conformance:</code>{" "}
-        block to{" "}
-        <code className="font-mono text-[var(--color-text-primary)]">
-          .repowise-workspace.yaml
-        </code>{" "}
-        to describe which services may depend on which.
+        {t.rich("ruleNoneDeclared", {
+          c: (chunks) => (
+            <code className="font-mono text-[var(--color-text-primary)]">
+              {chunks}
+            </code>
+          ),
+          f: (chunks) => (
+            <code className="font-mono text-[var(--color-text-primary)]">
+              {chunks}
+            </code>
+          ),
+        })}
       </p>
     );
   }
   return (
     <p>
-      The conformance check has not run on this workspace yet, so nothing below is a verdict —
-      an empty violations list here means unmeasured, not clean. Run{" "}
-      <code className="font-mono text-[var(--color-text-primary)]">
-        repowise workspace check
-      </code>{" "}
-      to evaluate it.
+      {t.rich("ruleNeverRan", {
+        c: (chunks) => (
+          <code className="font-mono text-[var(--color-text-primary)]">
+            {chunks}
+          </code>
+        ),
+      })}
     </p>
   );
 }
@@ -283,13 +297,18 @@ function ruleSentence(
  * Collapsing them into one "no violations" message is the failure this page
  * shipped with: the artifact's zeros are written before anything runs.
  */
-function ViolationsEmptyState({ state }: { state: ReturnType<typeof reportState> }) {
+async function ViolationsEmptyState({
+  state,
+}: {
+  state: ReturnType<typeof reportState>;
+}) {
+  const t = await getTranslations("conformance");
   if (state === "checked") {
     return (
       <EmptyState
         className="p-6"
-        title="No rules are broken"
-        description="Every dependency in the graph is allowed by the rules you declared."
+        title={t("emptyNoRulesBrokenTitle")}
+        description={t("emptyNoRulesBrokenDescription")}
       />
     );
   }
@@ -297,8 +316,8 @@ function ViolationsEmptyState({ state }: { state: ReturnType<typeof reportState>
     return (
       <EmptyState
         className="p-6"
-        title="No rules declared"
-        description="Nothing has been forbidden yet, so nothing can be violated. Declare which services may depend on which under `conformance:` in .repowise-workspace.yaml, then run `repowise workspace check` to gate CI on it."
+        title={t("emptyNoRulesDeclaredTitle")}
+        description={t("emptyNoRulesDeclaredDescription")}
       />
     );
   }
@@ -306,16 +325,16 @@ function ViolationsEmptyState({ state }: { state: ReturnType<typeof reportState>
     return (
       <EmptyState
         className="p-6"
-        title="Not checked yet"
-        description="The conformance analyser has not run on this workspace, so no rules have been evaluated. This is not a clean bill of health — run `repowise workspace check` to produce one."
+        title={t("emptyNotCheckedTitle")}
+        description={t("emptyNotCheckedDescription")}
       />
     );
   }
   return (
     <EmptyState
       className="p-6"
-      title="Conformance report unavailable"
-      description="The report could not be read. Run a workspace sync to rebuild it."
+      title={t("emptyUnavailableTitle")}
+      description={t("emptyUnavailableDescription")}
     />
   );
 }

@@ -10,6 +10,7 @@ import { CouplingExplorer } from "@repowise-dev/ui/coupling";
 import { getCoupling } from "@/lib/api/coupling";
 import { useRepo } from "@/lib/hooks/use-repo";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 
 /** The route's own ceiling. Asking beyond it is rejected, not clamped. */
 const MAX_LIMIT = 1000;
@@ -27,6 +28,7 @@ const INITIAL_LIMIT = 200;
  * ceiling, so the "showing N of M" line is never a dead end.
  */
 export function CouplingTab({ repoId }: { repoId: string }) {
+  const t = useTranslations("coupling");
   const [limit, setLimit] = useState(INITIAL_LIMIT);
   const { data, error, isLoading, isValidating, mutate } = useSWR(
     `coupling:${repoId}:${limit}`,
@@ -41,7 +43,7 @@ export function CouplingTab({ repoId }: { repoId: string }) {
     <div className="space-y-6">
       {error ? (
         <ApiError
-          title="Couldn't load change coupling"
+          title={t("loadFailed")}
           message={toFriendlyMessage(error)}
           onRetry={() => void mutate()}
         />

@@ -9,12 +9,14 @@ import type { RepoResponse } from "@/lib/api/types";
 import { DEFAULT_WIKI_STYLE } from "@repowise-dev/types";
 import type { RepoSettingsValue, WikiStyle } from "@repowise-dev/types/settings";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 
 interface Props {
   repo: RepoResponse;
 }
 
 export function RepoSettingsFormWrapper({ repo }: Props) {
+  const t = useTranslations("repos");
   const currentStyle =
     (repo.settings?.wiki_style as WikiStyle | undefined) ?? DEFAULT_WIKI_STYLE;
 
@@ -44,13 +46,13 @@ export function RepoSettingsFormWrapper({ repo }: Props) {
           wiki_style: nextStyle,
         },
       });
-      toast.success("Repository settings saved");
+      toast.success(t("settings.toastSaved"));
       if (nextStyle !== currentStyle) {
         setPendingStyle(nextStyle);
         setRegenOpen(true);
       }
     } catch (err) {
-      toast.error(toFriendlyMessage(err, "Failed to save settings"));
+      toast.error(toFriendlyMessage(err, t("settings.saveFailed")));
       throw err;
     }
   }
@@ -59,11 +61,11 @@ export function RepoSettingsFormWrapper({ repo }: Props) {
     setRegenLoading(true);
     try {
       await fullResyncRepo(repo.id);
-      toast.info("Wiki regeneration queued");
+      toast.info(t("settings.regenQueued"));
       setRegenOpen(false);
     } catch (err) {
       toast.error(
-        toFriendlyMessage(err, "Failed to queue regeneration"),
+        toFriendlyMessage(err, t("settings.regenFailed")),
       );
     } finally {
       setRegenLoading(false);
@@ -81,10 +83,12 @@ export function RepoSettingsFormWrapper({ repo }: Props) {
       <ConfirmDialog
         open={regenOpen}
         onOpenChange={setRegenOpen}
-        title="Regenerate the wiki now?"
-        description={`The documentation style was changed to "${pendingStyle ?? ""}". Regenerate the whole wiki now to apply it? This runs LLM generation (a cost). You can also do it later from Sync.`}
-        confirmLabel="Regenerate now"
-        cancelLabel="Later"
+        title={t("settings.regenTitle")}
+        description={t("settings.regenDescription", {
+          style: pendingStyle ?? "",
+        })}
+        confirmLabel={t("settings.regenConfirm")}
+        cancelLabel={t("settings.regenCancel")}
         loading={regenLoading}
         onConfirm={() => void handleRegenerate()}
       />

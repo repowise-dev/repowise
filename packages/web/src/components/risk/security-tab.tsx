@@ -16,8 +16,10 @@ import { syncRepo } from "@/lib/api/repos";
 import { useFileCardHost } from "@/components/shared/file-card-host";
 import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 
 export function SecurityTab({ repoId }: { repoId: string }) {
+  const t = useTranslations("risk");
   const { data: findings, isLoading, error } = useSWR<SecurityFinding[]>(
     `security:${repoId}`,
     () => listSecurityFindings(repoId, { limit: 500 }),
@@ -30,9 +32,9 @@ export function SecurityTab({ repoId }: { repoId: string }) {
     setRescanning(true);
     try {
       await syncRepo(repoId);
-      toast.success("Sync started — findings refresh when it completes");
+      toast.success(t("syncStarted"));
     } catch (err) {
-      toast.error(toFriendlyMessage(err, "Couldn't start a sync"));
+      toast.error(toFriendlyMessage(err, t("syncFailed")));
     } finally {
       setRescanning(false);
     }
@@ -58,8 +60,7 @@ export function SecurityTab({ repoId }: { repoId: string }) {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-2">
         <p className="text-sm text-[var(--color-text-secondary)] mr-auto">
-          Secrets, dangerous patterns, and policy hits detected while indexing.
-          Findings refresh on every sync.
+          {t("description")}
         </p>
         <Button size="sm" variant="outline" onClick={handleRescan} disabled={rescanning}>
           <RotateCw
@@ -74,10 +75,10 @@ export function SecurityTab({ repoId }: { repoId: string }) {
       ) : error ? (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Couldn&apos;t load findings</CardTitle>
+            <CardTitle className="text-sm">{t("loadFailed")}</CardTitle>
           </CardHeader>
           <CardContent className="pt-0 text-xs text-[var(--color-text-secondary)]">
-            The security endpoint returned an error. Try re-running ingestion.
+            {t("loadFailedBody")}
           </CardContent>
         </Card>
       ) : (
@@ -86,8 +87,8 @@ export function SecurityTab({ repoId }: { repoId: string }) {
               filter pills below, not in a separate distribution card. */}
           <SeverityDirectoryMatrix findings={findings ?? []} />
           <CollapsibleSection
-            title="All findings"
-            hint={`${(findings ?? []).length} findings`}
+            title={t("allFindings")}
+            hint={t("findingsCount", { count: (findings ?? []).length })}
             defaultOpen={false}
           >
             <SecurityFindingsTable
@@ -108,8 +109,8 @@ export function SecurityTab({ repoId }: { repoId: string }) {
             : null
         }
         filePath={promptFinding?.file_path}
-        title="AI fix prompt"
-        description="A ready-to-paste prompt that walks your AI agent through confirming and remediating this security finding."
+        title={t("promptTitle")}
+        description={t("promptDescription")}
       />
 
       {dialog}

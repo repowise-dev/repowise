@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
+import { useTranslations } from "next-intl";
 import { Search, X } from "lucide-react";
 import type { GitMetadataResponse, WorkspaceCoChangeEntry } from "@repowise-dev/api-client/types";
 import { OverviewSection } from "@repowise-dev/ui/overview";
@@ -22,7 +23,6 @@ import {
   buildCoChangeRepoPairAiPrompt,
 } from "@repowise-dev/ui/workspace/co-change-ai-prompt";
 import {
-  capRule,
   coChangeRepoPairId,
   nearbyCommits,
   type CoChangeCaps,
@@ -44,7 +44,32 @@ interface Props {
   initialOpen: string | null;
 }
 
+/** The minimal translator shape the copy helpers below need; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
+
 type PromptTarget = { kind: "file" } | { kind: "repo"; pair: RepoPairSummary } | null;
+
+/**
+ * The rule that trimmed the stored pairs, as a clause.
+ *
+ * Named here rather than read from `@repowise-dev/ui`, which stays
+ * language-agnostic: the clause is a sentence fragment, so it comes from the
+ * catalog and the caller capitalises it.
+ */
+function capRule(t: Translator, caps: CoChangeCaps): string | null {
+  if (caps.truncatedBy === "per_repo_pair" && caps.perRepoPairCap) {
+    return t("scope.rulePerPair", { cap: caps.perRepoPairCap });
+  }
+  if (caps.truncatedBy === "total" && caps.totalCap) {
+    return caps.perRepoPairCap
+      ? t("scope.ruleTotalWithPerPair", {
+          cap: caps.totalCap,
+          perPair: caps.perRepoPairCap,
+        })
+      : t("scope.ruleTotal", { cap: caps.totalCap });
+  }
+  return caps.truncatedBy ? t("scope.ruleUnknown") : null;
+}
 
 const SEARCH_DEBOUNCE_MS = 150;
 
@@ -80,6 +105,7 @@ function syncUrl(pair: string | null, q: string, cc: string | null) {
 /** One side's per-repo git facts, or why there are none. Keyed like the docs
  *  viewer's fetch, so a file already seen there costs nothing here. */
 function useFileHistory(repoId: string | undefined, path: string | undefined): Loadable<CoChangeFileHistory> {
+  const t = useTranslations("coChanges");
   const { data, error } = useSWR<GitMetadataResponse | null>(
     repoId && path ? `git-meta:${repoId}:${path}` : null,
     () =>
@@ -93,10 +119,10 @@ function useFileHistory(repoId: string | undefined, path: string | undefined): L
   // lets the reconstructed commits be computed once per pair.
   return useMemo((): Loadable<CoChangeFileHistory> => {
     if (!path) return { state: "loading" };
-    if (!repoId) return { state: "unavailable", reason: "Repository not indexed, so no history" };
-    if (error) return { state: "unavailable", reason: "History failed to load" };
+    if (!repoId) return { state: "unavailable", reason: t("reason.repoNotIndexed") };
+    if (error) return { state: "unavailable", reason: t("reason.historyFailed") };
     if (data === undefined) return { state: "loading" };
-    if (data === null) return { state: "unavailable", reason: "No git history indexed for this file" };
+    if (data === null) return { state: "unavailable", reason: t("reason.noGitHistory") };
     return {
       state: "ready",
       data: {
@@ -112,7 +138,7 @@ function useFileHistory(repoId: string | undefined, path: string | undefined): L
         })),
       },
     };
-  }, [repoId, path, data, error]);
+  }, [repoId, path, data, error, t]);
 }
 
 export function CoChangesExplorer({
@@ -125,6 +151,7 @@ export function CoChangesExplorer({
   initialQuery,
   initialOpen,
 }: Props) {
+  const t = useTranslations("coChanges");
   const [selectedPair, setSelectedPair] = useState<string | null>(initialPair);
   const [query, setQuery] = useState(initialQuery);
   const [debouncedQuery, setDebouncedQuery] = useState(initialQuery);
@@ -191,7 +218,7 @@ export function CoChangesExplorer({
   const structure = useMemo(
     () =>
       structureError
-        ? ({ state: "unavailable", reason: "Contract links failed to load, so this pair was not checked." } as const)
+        ? ({ state: "unavailable", reason: t("reason.linksFailed") } as const)
         : structureData
           ? ({
               state: "ready",
@@ -259,28 +286,50 @@ export function CoChangesExplorer({
   const selected = selectedPair ? repoPairs.find((p) => p.id === selectedPair) ?? null : null;
   const trimmed = debouncedQuery.trim();
   const inScope = selected ? selected.filePairCount : coChanges.length;
-  const rule = capRule(caps);
+  const rule = capRule(t, caps);
   const dropped = totalMined - coChanges.length;
 
+  const scopeValues = {
+    rows: formatNumber(rows.length),
+    scope: formatNumber(inScope),
+    total: formatNumber(totalMined),
+    query: trimmed,
+  };
   const scope = [
     trimmed
-      ? `${formatNumber(rows.length)} of ${formatNumber(inScope)} pairs ${selected ? `in ${selected.repo1} and ${selected.repo2} ` : ""}touch a path matching "${trimmed}", strongest first.`
+      ? selected
+        ? t("scope.filteredInPair", {
+            ...scopeValues,
+            repo1: selected.repo1,
+            repo2: selected.repo2,
+          })
+        : t("scope.filtered", scopeValues)
       : selected
-        ? `${formatNumber(rows.length)} file pairs in ${selected.repo1} and ${selected.repo2}, strongest first.`
-        : `${formatNumber(coChanges.length)} of ${formatNumber(totalMined)} pairs, strongest first.`,
+        ? t("scope.selected", {
+            rows: formatNumber(rows.length),
+            repo1: selected.repo1,
+            repo2: selected.repo2,
+          })
+        : t("scope.all", {
+            rows: formatNumber(rows.length),
+            total: formatNumber(totalMined),
+          }),
     rule && dropped > 0
-      ? ` ${rule[0]!.toUpperCase()}${rule.slice(1)}, so ${formatNumber(dropped)} weaker pairs across the workspace are not listed.`
+      ? t("scope.capped", {
+          rule: `${rule[0]!.toUpperCase()}${rule.slice(1)}`,
+          dropped: formatNumber(dropped),
+        })
       : "",
   ].join("");
 
   return (
     <>
       <OverviewSection
-        title="Repository pairs"
+        title={t("pairs.title")}
         description={
           caps.truncatedBy === "per_repo_pair" && caps.perRepoPairCap
-            ? `Ranked by their strongest file pair. File pairs stop at ${caps.perRepoPairCap} per repository pair because the miner keeps no more.`
-            : "Ranked by their strongest file pair."
+            ? t("pairs.descriptionCapped", { cap: caps.perRepoPairCap })
+            : t("pairs.descriptionRanked")
         }
       >
         <RepoPairTable
@@ -292,12 +341,19 @@ export function CoChangesExplorer({
       </OverviewSection>
 
       <OverviewSection
-        title={selected ? `Files in ${selected.repo1} and ${selected.repo2}` : "Files that change together"}
+        title={
+          selected
+            ? t("files.titleScoped", {
+                repo1: selected.repo1,
+                repo2: selected.repo2,
+              })
+            : t("files.titleAll")
+        }
         description={scope}
       >
         <div className="flex flex-wrap items-center gap-3">
           <label className="relative flex min-w-0 max-w-[420px] flex-1 items-center">
-            <span className="sr-only">Filter by file path</span>
+            <span className="sr-only">{t("files.filterLabel")}</span>
             <Search
               className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-[var(--color-text-tertiary)]"
               aria-hidden
@@ -306,7 +362,7 @@ export function CoChangesExplorer({
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="What changes with this file? Type a path"
+              placeholder={t("files.searchPlaceholder")}
               className="h-8 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 font-mono text-xs text-[var(--color-text-primary)] placeholder:font-sans placeholder:text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
             />
           </label>
@@ -317,14 +373,17 @@ export function CoChangesExplorer({
               className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
             >
               <X className="h-3 w-3" aria-hidden />
-              Show all repository pairs
+              {t("files.clearPair")}
             </button>
           )}
         </div>
         {rows.length === 0 ? (
           <EmptyState
-            title="No file pairs match"
-            description={`No listed pair touches a path containing "${trimmed}". Only the ${formatNumber(coChanges.length)} strongest pairs are listed, so a weaker partner may exist that is not shown.`}
+            title={t("files.emptyTitle")}
+            description={t("files.emptyDescription", {
+              query: trimmed,
+              count: formatNumber(coChanges.length),
+            })}
           />
         ) : (
           <CoChangeTable coChanges={rows} onSelect={onSelectRow} selectedKey={openKey} />
@@ -364,11 +423,11 @@ export function CoChangesExplorer({
               ? `${openPair.source_file} and ${openPair.target_file}`
               : null
         }
-        title="AI co-change prompt"
+        title={t("prompt.title")}
         description={
           prompt?.kind === "repo"
-            ? "A ready-to-paste prompt that has your agent group this repository pair's co-changing files by the concept they share and decide which lockstep a contract, shared type or generated client should replace."
-            : "A ready-to-paste prompt that has your agent find why these two files change together and whether a contract, shared type or generated client should replace the manual lockstep."
+            ? t("prompt.descriptionRepo")
+            : t("prompt.descriptionFile")
         }
       />
     </>

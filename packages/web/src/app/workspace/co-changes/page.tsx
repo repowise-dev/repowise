@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { GitMerge } from "lucide-react";
+import { getTranslations } from "next-intl/server";
 import type { WorkspaceCoChangeEntry } from "@repowise-dev/api-client/types";
 import { PageShell } from "@repowise-dev/ui/shared";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
@@ -11,7 +12,10 @@ import { repoPairId, STRENGTH_DEFINITION } from "@repowise-dev/ui/workspace/co-c
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
 import { CoChangesExplorer } from "./co-changes-explorer";
 
-export const metadata: Metadata = { title: "Co-changes" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("coChanges");
+  return { title: t("title") };
+}
 
 export const revalidate = 30;
 
@@ -33,6 +37,7 @@ type Props = {
  * pair is a linkable address.
  */
 export default async function CoChangesPage({ searchParams }: Props) {
+  const t = await getTranslations("coChanges");
   const { pair, q, cc } = await searchParams;
 
   // One wave. The workspace call is what the layout already makes, and it
@@ -52,14 +57,14 @@ export default async function CoChangesPage({ searchParams }: Props) {
   }
 
   const icon = <GitMerge className="h-5 w-5 text-[var(--color-text-tertiary)]" />;
-  const description = "Files in different repositories that recent commits touched together.";
+  const description = t("description");
 
   if (coChanges.length === 0) {
     return (
-      <PageShell title="Co-changes" icon={icon} description={description}>
+      <PageShell title={t("title")} icon={icon} description={description}>
         <EmptyState
-          title="No cross-repo co-changes found"
-          description="Co-changes are mined from each repository's git history during a workspace sync. Pairs appear once commits close together in time touch files in two repositories."
+          title={t("emptyTitle")}
+          description={t("emptyDescription")}
           icon={<GitMerge className="h-8 w-8" />}
         />
       </PageShell>
@@ -79,45 +84,49 @@ export default async function CoChangesPage({ searchParams }: Props) {
   // The lede owns the file-pair count, so the ribbon does not repeat it.
   const ribbon: RibbonStat[] = [
     {
-      label: "Repository pairs",
+      label: t("ribbon.repoPairs"),
       value: String(repoPairs.length),
-      sub: "with shared work sessions",
+      sub: t("ribbon.repoPairsSub"),
     },
     {
-      label: "Strongest pair",
+      label: t("ribbon.strongest"),
       value: strongest ? `${strongest.repo1} and ${strongest.repo2}` : "",
-      sub: "by its strongest file pair",
+      sub: t("ribbon.strongestSub"),
     },
     {
-      label: "Peak strength",
+      label: t("ribbon.peakStrength"),
       value: strongest ? `${Math.round(strongest.maxStrength * 100)}%` : "",
       hint: STRENGTH_DEFINITION,
-      sub: "the single strongest file pair",
+      sub: t("ribbon.peakStrengthSub"),
     },
     {
-      label: "Sessions per pair",
-      value: minFreq === maxFreq ? String(minFreq) : `${minFreq} to ${maxFreq}`,
-      sub: "shared work sessions per file pair",
+      label: t("ribbon.sessionsPerPair"),
+      value:
+        minFreq === maxFreq
+          ? String(minFreq)
+          : t("ribbon.sessionsRange", { min: minFreq, max: maxFreq }),
+      sub: t("ribbon.sessionsPerPairSub"),
     },
     {
-      label: "Most recent",
+      label: t("ribbon.mostRecent"),
       value: mostRecent ? mostRecent.slice(0, 10) : "",
-      sub: "last shared session",
+      sub: t("ribbon.mostRecentSub"),
     },
   ];
 
   return (
-    <PageShell title="Co-changes" icon={icon} description={description}>
+    <PageShell title={t("title")} icon={icon} description={description}>
       <PageLede
-        label="File pairs"
+        label={t("ledeLabel")}
         value={formatNumber(coChanges.length)}
-        unit={totalMined > coChanges.length ? `of ${formatNumber(totalMined)} found` : "found"}
+        unit={
+          totalMined > coChanges.length
+            ? t("ledeUnitOfFound", { total: formatNumber(totalMined) })
+            : t("ledeUnitFound")
+        }
         layout="beside"
       >
-        <p>
-          Files in two repositories that the same author keeps changing in the same work
-          sessions: a pattern read from git history, not a declared dependency.
-        </p>
+        <p>{t("ledeSentence")}</p>
       </PageLede>
 
       <StatRibbon stats={ribbon} />

@@ -20,6 +20,7 @@ import { listRepos } from "@/lib/api/repos";
 import { getMcpToolSurface, updateMcpTools } from "@/lib/api/mcp-tools";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import type { McpToolSurface } from "@/lib/api/types";
+import { useTranslations } from "next-intl";
 
 interface RepoOption {
   id: string;
@@ -51,6 +52,7 @@ function toDeltas(surface: McpToolSurface, enabled: Set<string>): string[] {
  * indicator.
  */
 export function McpToolsSection() {
+  const t = useTranslations("settings");
   const [repos, setRepos] = useState<RepoOption[]>([]);
   const [repoId, setRepoId] = useState<string | null>(null);
   const [surface, setSurface] = useState<McpToolSurface | null>(null);
@@ -141,33 +143,32 @@ export function McpToolsSection() {
     );
     const on = available.filter((t) => enabled.has(t.name)).length;
     const mode = surface.is_workspace
-      ? "Workspace mode, so workspace-only tools are available."
-      : "Single-repo mode, so workspace-only tools are unavailable here.";
-    return `${on} of ${available.length} tools exposed. ${mode}`;
-  }, [surface, enabled]);
+      ? t("mcpTools.summaryWorkspace")
+      : t("mcpTools.summarySingleRepo");
+    return t("mcpTools.summary", { on, total: available.length, mode });
+  }, [surface, enabled, t]);
 
   return (
     <OverviewSection
-      title="Tool surface"
+      title={t("mcpTools.title")}
       // Rule 4: the figure is the point. "9 of 15 exposed" answers the question
       // the list is there to answer, before you read fifteen rows.
       description={
-        summary ??
-        "Which tools the MCP server offers an agent. Saved to the repo's .repowise/config.yaml and applied the next time you start repowise mcp for it."
+        summary ?? t("mcpTools.description")
       }
       action={<SaveIndicator state={saveState} error={error} />}
     >
       {repos.length === 0 && !loading && (
         <p className="text-sm text-[var(--color-text-tertiary)]">
-          Index a repository and its tool surface shows up here.
+          {t("mcpTools.empty")}
         </p>
       )}
 
       {repos.length > 1 && (
         <SettingsRows>
           <SettingsRow
-            label="Repository"
-            hint="The surface is stored per repo."
+            label={t("mcpTools.repoLabel")}
+            hint={t("mcpTools.repoHint")}
           >
             <Select value={repoId ?? undefined} onValueChange={setRepoId}>
               <SelectTrigger className="w-full sm:w-64">
@@ -213,7 +214,7 @@ export function McpToolsSection() {
                         the unavailable case needs a word. */}
                     {locked && (
                       <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                        workspace only
+                        {t("mcpTools.workspaceOnly")}
                       </span>
                     )}
                   </div>

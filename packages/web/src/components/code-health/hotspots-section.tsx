@@ -29,6 +29,7 @@ import { OverviewSection, SectionLink } from "@repowise-dev/ui/overview";
 import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
 import { AiPromptModal, buildHotspotAiPrompt } from "@repowise-dev/ui/health";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { useTranslations } from "next-intl";
 import { hotspotToFileCard } from "@repowise-dev/ui/shared/file-card";
 import type { Hotspot } from "@repowise-dev/types/git";
 import Link from "next/link";
@@ -42,6 +43,7 @@ const PAGE_SIZE = 100;
 const PAGE_MAX = 500;
 
 export function HotspotsSection({ repoId }: { repoId: string }) {
+  const t = useTranslations("codeHealth");
   const { showFile, dialog } = useFileCardHost(repoId);
   const [pageLimit, setPageLimit] = useState(PAGE_SIZE);
   const [drawerSymbol, setDrawerSymbol] = useState<SymbolResponse | null>(null);
@@ -67,17 +69,17 @@ export function HotspotsSection({ repoId }: { repoId: string }) {
 
   return (
     <OverviewSection
-      title="Hotspots"
-      description="Ranked by change frequency and prior bug fixes, mined from full git history. The danger is not churn on its own. It is a file that changes constantly and only one person understands."
+      title={t("hotspots.title")}
+      description={t("hotspots.description")}
       action={
         <SectionLink href={`/repos/${repoId}/commits`} LinkComponent={Link}>
-          Commit history
+          {t("hotspots.commitHistory")}
         </SectionLink>
       }
     >
       {error && list.length === 0 ? (
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Couldn&apos;t load hotspots. Run a sync to mine git history for this repo.
+          {t("hotspots.loadFailed")}
         </p>
       ) : isLoading && list.length === 0 ? (
         <Skeleton className="h-72 w-full rounded-xl" />
@@ -133,8 +135,8 @@ export function HotspotsSection({ repoId }: { repoId: string }) {
             : null
         }
         filePath={promptHotspot?.file_path}
-        title="AI stabilization prompt"
-        description="A ready-to-paste prompt that has your AI agent diagnose why this file churns and propose changes that make it cheaper to maintain."
+        title={t("hotspots.promptTitle")}
+        description={t("hotspots.promptDescription")}
       />
     </OverviewSection>
   );

@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { BrandLogo } from "./brand-logo";
 import {
   ChevronDown,
@@ -26,6 +27,7 @@ import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import { VersionFooter } from "./version-footer";
 import { FeedbackButton } from "./feedback-button";
+import { LanguageSwitcher } from "./language-switcher";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface SidebarProps {
@@ -46,6 +48,8 @@ export function Sidebar({
   workspace,
   reposUnavailable = false,
 }: SidebarProps) {
+  const t = useTranslations("nav");
+  const ts = useTranslations("shell");
   const isWorkspace = workspace?.is_workspace ?? false;
   const pathname = usePathname();
   const derivedActiveRepoId = React.useMemo(() => {
@@ -139,7 +143,7 @@ export function Sidebar({
             "shrink-0 rounded-md p-2.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)] transition-colors",
             !isIconOnly && "ml-auto",
           )}
-          aria-label={isIconOnly ? "Expand sidebar" : "Collapse sidebar"}
+          aria-label={isIconOnly ? ts("expandSidebar") : ts("collapseSidebar")}
           aria-expanded={!isIconOnly}
           aria-controls="sidebar-nav"
         >
@@ -180,7 +184,7 @@ export function Sidebar({
                   aria-controls="sidebar-workspace-nav"
                   className="mb-1 mt-4 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]"
                 >
-                  <span className="flex-1 truncate text-left">Workspace</span>
+                  <span className="flex-1 truncate text-left">{ts("workspace")}</span>
                   {workspaceNavOpen ? (
                     <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
                   ) : (
@@ -228,7 +232,7 @@ export function Sidebar({
                       heading plus the brand block above them stacked ~150px
                       of chrome in front of the first repo row. */}
                   <p className="mb-2 mt-4 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                    Repositories
+                    {ts("repositories")}
                   </p>
                 </>
               )}
@@ -260,7 +264,7 @@ export function Sidebar({
                             <Link
                               href={indexHref}
                               className="flex w-full items-center justify-center rounded-md p-2 text-[var(--color-text-tertiary)] opacity-60 transition-colors hover:bg-[var(--color-bg-elevated)]"
-                              aria-label={`${repo.name} (${isMissing ? "missing" : "needs index"})`}
+                              aria-label={`${repo.name} (${isMissing ? ts("statusDirectoryMissing") : ts("statusNeedsIndexing")})`}
                             >
                               <Circle className="h-2.5 w-2.5 stroke-current" />
                             </Link>
@@ -268,7 +272,7 @@ export function Sidebar({
                           <TooltipContent side="right">
                             {repo.workspace_alias ?? repo.name}
                             {" — "}
-                            {isMissing ? "directory missing" : "needs indexing"}
+                            {isMissing ? ts("statusDirectoryMissing") : ts("statusNeedsIndexing")}
                           </TooltipContent>
                         </Tooltip>
                       );
@@ -280,10 +284,10 @@ export function Sidebar({
                         className={cn(ROW, ROW_L1, "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)]")}
                         title={
                           isMissing
-                            ? "Directory missing — open Workspace to remove or fix"
+                            ? ts("titleDirectoryMissing")
                             : isSynthetic
-                              ? "Not indexed yet. Open Workspace to index."
-                              : "Not indexed yet. Open the repo to index."
+                              ? ts("titleNotIndexedSynthetic")
+                              : ts("titleNotIndexedRepo")
                         }
                       >
                         <RowGlyph>
@@ -293,7 +297,7 @@ export function Sidebar({
                           {repo.workspace_alias ?? repo.name}
                         </span>
                         <span className="shrink-0 rounded-full bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
-                          {isMissing ? "missing" : "index"}
+                          {isMissing ? ts("pillMissing") : ts("pillIndex")}
                         </span>
                       </Link>
                     );
@@ -389,7 +393,7 @@ export function Sidebar({
                             <React.Fragment key={group.label ?? gi}>
                               {group.label ? (
                                 <p className="px-2 pt-2 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                                  {group.label}
+                                  {group.labelKey ? t(group.labelKey) : group.label}
                                 </p>
                               ) : gi > 0 ? (
                                 <div className="pt-1.5" />
@@ -429,11 +433,10 @@ export function Sidebar({
                 // unactionable.
                 <div className="space-y-1 px-2">
                   <p className="text-xs font-medium text-[var(--color-text-primary)]">
-                    Can&apos;t reach the API
+                    {ts("cantReachApiTitle")}
                   </p>
                   <p className="text-xs text-[var(--color-text-secondary)]">
-                    Your repositories could not be loaded. Check that the
-                    Repowise server is running, then reload.
+                    {ts("cantReachApiBody")}
                   </p>
                 </div>
               ) : (
@@ -452,18 +455,22 @@ export function Sidebar({
           at 56px the whole footer used to disappear, so theme, feedback, and
           version were unreachable without expanding first. */}
       {isIconOnly ? (
-        <div className="flex flex-col items-center border-t border-[var(--color-border-default)] py-1.5">
+        <div className="flex flex-col items-center gap-1 border-t border-[var(--color-border-default)] py-1.5">
+          <LanguageSwitcher compact />
           <ThemeToggle compact />
         </div>
       ) : (
         <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] px-3 py-2">
           <FeedbackButton />
-          {/* Version and theme share a row. The toggle was a full-width
-              bordered track stacked on its own line, which made a
+          {/* Version, language and theme share a row. The toggle was a
+              full-width bordered track stacked on its own line, which made a
               once-per-session control the tallest thing in the footer. */}
           <div className="flex items-center justify-between gap-2">
             <VersionFooter />
-            <ThemeToggle compact />
+            <div className="flex items-center gap-1">
+              <LanguageSwitcher compact />
+              <ThemeToggle compact />
+            </div>
           </div>
         </div>
       )}
@@ -472,6 +479,7 @@ export function Sidebar({
 }
 
 function SidebarSearchButton({ iconOnly }: { iconOnly: boolean }) {
+  const ts = useTranslations("shell");
   const openPalette = () =>
     window.dispatchEvent(new CustomEvent("repowise:open-command-palette"));
 
@@ -481,13 +489,13 @@ function SidebarSearchButton({ iconOnly }: { iconOnly: boolean }) {
         <TooltipTrigger asChild>
           <button
             onClick={openPalette}
-            aria-label="Search"
+            aria-label={ts("openSearch")}
             className="flex w-full items-center justify-center rounded-lg p-2.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
           >
             <Search className="h-[18px] w-[18px] shrink-0" />
           </button>
         </TooltipTrigger>
-        <TooltipContent side="right">Search</TooltipContent>
+        <TooltipContent side="right">{ts("openSearch")}</TooltipContent>
       </Tooltip>
     );
   }
@@ -497,7 +505,7 @@ function SidebarSearchButton({ iconOnly }: { iconOnly: boolean }) {
       <RowGlyph>
         <Search className="h-4 w-4" />
       </RowGlyph>
-      <span className="flex-1 truncate text-left">Search</span>
+      <span className="flex-1 truncate text-left">{ts("openSearch")}</span>
       <kbd className="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-tertiary)]">
         ⌘K
       </kbd>
@@ -547,6 +555,8 @@ function SidebarNavItem({
   size?: "default" | "sm";
   iconOnly?: boolean;
 }) {
+  const t = useTranslations("nav");
+  const label = t(item.labelKey);
   const Icon = item.icon;
 
   if (iconOnly) {
@@ -555,7 +565,7 @@ function SidebarNavItem({
         <TooltipTrigger asChild>
           <Link
             href={item.href}
-            aria-label={item.label}
+            aria-label={label}
             className={cn(
               "flex items-center justify-center rounded-lg p-2.5 transition-colors",
               isActive
@@ -566,7 +576,7 @@ function SidebarNavItem({
             <Icon className="h-[18px] w-[18px] shrink-0" />
           </Link>
         </TooltipTrigger>
-        <TooltipContent side="right">{item.label}</TooltipContent>
+        <TooltipContent side="right">{label}</TooltipContent>
       </Tooltip>
     );
   }
@@ -574,7 +584,7 @@ function SidebarNavItem({
   return (
     <Link
       href={item.href}
-      title={item.label}
+      title={label}
       className={cn(ROW, size === "sm" ? ROW_L2 : ROW_L1, isActive ? ROW_ACTIVE : ROW_IDLE)}
     >
       <RowGlyph>
@@ -585,7 +595,7 @@ function SidebarNavItem({
           )}
         />
       </RowGlyph>
-      <span className="truncate">{item.label}</span>
+      <span className="truncate">{label}</span>
     </Link>
   );
 }

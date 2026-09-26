@@ -1,0 +1,1139 @@
+{
+  "app": {
+    "description": "Open-source codebase documentation engine"
+  },
+  "common": {
+    "search": "Search",
+    "loading": "Loading…",
+    "cancel": "Cancel",
+    "save": "Save",
+    "refresh": "Refresh",
+    "refreshing": "Refreshing…",
+    "dismiss": "Dismiss",
+    "close": "Close",
+    "back": "Back",
+    "retry": "Try again"
+  },
+  "language": {
+    "label": "Language",
+    "switched": "Language switched to {language}"
+  },
+  "shell": {
+    "skipToContent": "Skip to content",
+    "expandSidebar": "Expand sidebar",
+    "collapseSidebar": "Collapse sidebar",
+    "openNavMenu": "Open navigation menu",
+    "openSearch": "Open search",
+    "repositories": "Repositories",
+    "workspace": "Workspace",
+    "indexingNow": "Indexing",
+    "cantReachApiTitle": "Can't reach the API",
+    "cantReachApiBody": "Your repositories could not be loaded. Check that the Repowise server is running, then reload.",
+    "pillMissing": "missing",
+    "pillIndex": "index",
+    "statusDirectoryMissing": "directory missing",
+    "statusNeedsIndexing": "needs indexing",
+    "titleDirectoryMissing": "Directory missing — open Workspace to remove or fix",
+    "titleNotIndexedSynthetic": "Not indexed yet. Open Workspace to index.",
+    "titleNotIndexedRepo": "Not indexed yet. Open the repo to index.",
+    "updateAvailable": "Update available",
+    "whatsNew": "What's new",
+    "updateBanner": "repowise <b>v{latest}</b> is available",
+    "updateBannerCurrent": " (you have v{current})",
+    "updateBannerCommand": "Run <code>{command}</code> to upgrade.",
+    "ask": "Ask",
+    "commandPalette": {
+      "label": "Command palette",
+      "placeholder": "Jump to a file, search pages, navigate repos…",
+      "searching": "Searching…",
+      "navigate": "Navigate",
+      "workspace": "Workspace",
+      "workspaceOverview": "Workspace Overview",
+      "repositories": "Repositories",
+      "files": "Files",
+      "pages": "Pages",
+      "askGroup": "Ask",
+      "askWithQuery": "Ask repowise: “{query}”",
+      "askEmpty": "Ask repowise…",
+      "goTo": "Go to — {repo}",
+      "noResults": "No results found.",
+      "hintNavigate": "↑↓ navigate",
+      "hintSelect": "↵ select",
+      "hintClose": "esc close"
+    },
+    "feedback": {
+      "title": "Help us improve Repowise",
+      "description": "Found a bug or have an idea? It goes straight to the maintainers, and we read every message. It's anonymous by default — no account needed.",
+      "empty": "Please enter your feedback.",
+      "thanks": "Thanks for the feedback!",
+      "failed": "Couldn't send feedback. Please try again.",
+      "category": "Category",
+      "categoryUiUx": "UI / UX",
+      "categoryBug": "Bug",
+      "categoryFeature": "Feature request",
+      "categoryOther": "Other",
+      "messageLabel": "Your feedback",
+      "messagePlaceholder": "Tell us what's working, what's broken, or what you'd love to see...",
+      "emailLabel": "Email",
+      "emailOptional": "(optional, if you'd like a reply)",
+      "anonymous": "Submitted anonymously. We only see your email if you add one above.",
+      "sending": "Sending…",
+      "send": "Send feedback"
+    },
+    "skeleton": {
+      "loading": "Loading Repowise"
+    },
+    "reindexHint": {
+      "body": "This index was built by an older repowise. It still works, but a reindex is recommended to pick up the latest format."
+    },
+    "whatsNewModal": {
+      "title": "What's new in repowise",
+      "loading": "Loading release notes...",
+      "unavailable": "Release notes unavailable. <link>View on GitHub</link>"
+    }
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "settings": "Settings",
+    "overview": "Overview",
+    "chat": "Chat",
+    "docs": "Docs",
+    "architecture": "Architecture",
+    "knowledgeGraph": "Knowledge Graph",
+    "codeHealth": "Code Health",
+    "refactoring": "Refactoring",
+    "files": "Files",
+    "commits": "Commits",
+    "contributors": "Contributors",
+    "decisions": "Decisions",
+    "stats": "Stats",
+    "usageAndSavings": "Usage & savings",
+    "systemMap": "System Map",
+    "conformance": "Conformance",
+    "contracts": "Contracts",
+    "coChanges": "Co-Changes",
+    "groupPeopleAndHistory": "People & History",
+    "groupSettings": "Settings"
+  },
+  "breadcrumb": {
+    "overview": "Overview",
+    "docs": "Docs",
+    "chat": "Chat",
+    "architecture": "Architecture",
+    "codeHealth": "Code Health",
+    "coverage": "Tests",
+    "refactoringTargets": "Refactoring Targets",
+    "trend": "Trend",
+    "search": "Search",
+    "graph": "Graph",
+    "symbols": "Symbols",
+    "ownership": "Ownership",
+    "hotspots": "Hotspots",
+    "deadCode": "Dead Code",
+    "blastRadius": "Blast Radius",
+    "decisions": "Decisions",
+    "commits": "Commits",
+    "owners": "Contributors",
+    "modules": "Modules",
+    "wiki": "Wiki",
+    "health": "Code Health",
+    "costs": "Usage & Savings",
+    "risk": "Risk",
+    "security": "Security",
+    "settings": "Settings",
+    "knowledgeGraph": "Knowledge Graph",
+    "zoom": "Zoom Map",
+    "files": "Files"
+  },
+  "errors": {
+    "notFoundTitle": "Page not found",
+    "notFoundBody": "The page you requested doesn't exist. It may have been moved or never existed.",
+    "backToDashboard": "Back to dashboard",
+    "errorTitle": "Something went wrong",
+    "errorFallback": "An unexpected error occurred. Please try again.",
+    "digest": "Digest",
+    "tryAgain": "Try again",
+    "repoErrorTitle": "Failed to load repository",
+    "repoErrorFallback": "Could not load repository data. The backend may be unavailable.",
+    "retry": "Retry",
+    "dashboard": "Dashboard",
+    "repoNotFoundTitle": "Page not found",
+    "repoNotFoundBody": "The page or resource you requested doesn't exist for this repository. It may have been moved or never existed."
+  },
+  "dashboard": {
+    "title": "Repositories",
+    "description": "Everything repowise has indexed from this machine.",
+    "ledeLabel": "Repositories",
+    "ledeUnit": "indexed on this machine",
+    "intro": "{files} files and {symbols} symbols are under intelligence here, with {pages} documentation pages written from them. Every figure below is measured from the index rather than estimated.",
+    "ribbon": {
+      "files": "Files",
+      "filesSub": "across {count} repositories",
+      "symbols": "Symbols",
+      "symbolsSub": "functions, classes and methods",
+      "docFreshness": "Doc freshness",
+      "docFreshnessSub": "{fresh} of {total} pages",
+      "docFreshnessNone": "no documentation generated yet",
+      "hotspots": "Hotspots",
+      "hotspotsSub": "files by churn and prior fixes",
+      "unusedExports": "Unused exports",
+      "unusedExportsSub": "open dead-code findings"
+    },
+    "indexingNow": "Indexing now",
+    "indexingNowCount": "Indexing now ({count})",
+    "indexingNowDescription": "Progress streams live; this page does not need a refresh to catch up.",
+    "repositoriesTitle": "Repositories",
+    "repositoriesDescription": "Ordered by what needs attention first — never indexed, then behind their working tree, then by health score — rather than by when they last changed.",
+    "recentActivity": "Recent activity",
+    "recentActivityDescription": "The last indexing and sync runs across every repository.",
+    "quickActions": {
+      "sync": "Sync",
+      "resync": "Full resync",
+      "deadCode": "Dead code scan",
+      "actionFailed": "{action} failed",
+      "deadCodeFinished": "Dead code scan finished",
+      "deadCodeFailed": "Dead code scan failed",
+      "syncStarted": "Sync started{name}",
+      "resyncStarted": "Full resync started{name}",
+      "deadCodeStarted": "Dead code analysis started",
+      "inFlight": "Showing progress for the in-flight job. Cancel it from the panel to start a new one."
+    }
+  },
+  "attention": {
+    "unindexedOne": "{name} has not been indexed yet.",
+    "unindexedMany": "{count} repositories have not been indexed yet.",
+    "behindOne": "{name} is behind its working tree — run repowise update in it to catch up.",
+    "behindMany": "{count} are behind their working trees — run repowise update in them to catch up.",
+    "lowestScore": "Lowest health score is {score} out of 10, in {name}.",
+    "nothingAnalysed": "None of them has been analysed yet, so there are no health scores to compare.",
+    "allCurrent": "Every index is current with its checkout. {parts}"
+  },
+  "views": {
+    "files": {
+      "title": "Files",
+      "description": "Drill the map to see how the tree is shaped and where health is thin, then filter the table to find a specific file."
+    },
+    "stats": {
+      "title": "By the Numbers",
+      "description": "The things about this codebase you can't see anywhere else: how big it got, when it started, when the work happens, and the records it holds."
+    },
+    "commits": {
+      "title": "Commits",
+      "description": "Every commit scored for change-risk against this repo's own history, so 'elevated' means elevated here rather than on some global curve.",
+      "emptyDescription": "Every commit scored for change-risk against this repo's own history.",
+      "emptyHint": "Per-commit change-risk is captured on the next full index. Run a sync and the review queue fills in behind it.",
+      "reviewQueueTitle": "Review queue",
+      "reviewQueueDescription": "Newest first by default. Priority is a tercile of this repo's own distribution, so sorting by it shows only the top third — the filters narrow the whole repository, not the page.",
+      "scoreBehaviourTitle": "How the score behaves here",
+      "scoreBehaviourDescription": "Two views of the same model: where the cuts fall, and what commit shape lands you above them.",
+      "changeRisk": "Change risk",
+      "evolutionTitle": "How the work changed shape",
+      "evolutionDescription": "Commit categories over time, read off the subject line. Fixes carry the accent because that is the series this chart exists to show."
+    },
+    "architecture": {
+      "couplingTitle": "Change coupling",
+      "tabs": {
+        "map": "Map",
+        "coupling": "Coupling",
+        "packages": "Third-party",
+        "symbols": "Symbols"
+      }
+    },
+    "codeHealth": {
+      "title": "Code health",
+      "scopeFiles": "Files",
+      "scopeCounts": "Counts",
+      "scopeAll": "All code",
+      "scopeProduction": "Production",
+      "countsEverything": "Everything",
+      "countsCodeShape": "Code shape only",
+      "refresh": "Refresh",
+      "refreshing": "Refreshing…",
+      "trendTitle": "Health trend",
+      "trendDescription": "How the scores have moved across indexed snapshots.",
+      "indexed": "Indexed {date}",
+      "notIndexed": "Not indexed yet",
+      "snapshots": "{count, plural, one {# snapshot} other {# snapshots}}",
+      "coChangeNoticeTitle": "Health scores changed in this release.",
+      "coChangeNoticeBody": "Co-change coupling is now measured relative to your repository and decays with commit history rather than calendar time, so roughly one file in ten moves a band. Scores are not comparable to snapshots taken before this release.",
+      "tabs": {
+        "triage": "Overview",
+        "performance": "Performance",
+        "findings": "Findings",
+        "coverage": "Tests",
+        "deadCode": "Dead code",
+        "docDrift": "Doc drift",
+        "security": "Security",
+        "impact": "Blast radius"
+      }
+    },
+    "knowledgeGraph": {
+      "title": "Knowledge Graph",
+      "description": "Explore your codebase like a map: scroll to zoom, drag to pan, and double-click any card to dive into its layers, folders and files, ranked by how the code actually runs.",
+      "loading": "Building the knowledge graph…",
+      "error": "Could not load the knowledge graph for this repository."
+    },
+    "refactoring": {
+      "title": "Refactoring",
+      "description": "One opportunity per file: the ordered steps the health pass wrote from your code. Open one to see the change, or hand it to a coding agent.",
+      "promptTitle": "AI refactoring prompt",
+      "promptDescription": "A ready-to-paste plan that hands your AI coding agent the ordered steps, which of them are mechanical, the evidence behind the diagnosis, and the id to query it back.",
+      "loading": "Loading refactoring opportunities",
+      "loadFailed": "Couldn't load refactoring opportunities. The repo may not be indexed yet, or the API is unreachable.",
+      "tabAll": "All",
+      "tabStructural": "Structural",
+      "sectionTitleAll": "All opportunities",
+      "sectionTitleStructural": "Structural opportunities",
+      "sectionTitleFiltered": "{type} opportunities"
+    },
+    "decisions": {
+      "title": "Decisions",
+      "description": "What this codebase has settled on and what is true of the checkout you are standing in: the constraints, the tradeoffs, and the facts that catch people out.",
+      "ledeAccepted": "Accepted",
+      "ledeConfirmed": "Confirmed",
+      "ledeEmpty": "Decisions land here as the indexer mines them from pull requests, commit messages, code comments and your own sessions, and as you record them yourself — below, or with <code>repowise decision add</code>. Each one keeps the quote it was drawn from and the files it governs.",
+      "ledeNoGovernance": "Nothing here governs yet. A record governs only once somebody accepts it, naming the files it covers and why — mining it, seeing it recur, and scoring it confident all stop short of that.",
+      "ledeCandidates": "{count, plural, one {# candidate is} other {# candidates are}} waiting below, and {count, plural, one {it is} other {they are}} all still here: nothing was deleted and every id still resolves. If this page used to show confirmed decisions, those are the records now in Candidates. Accepting one takes a click and changes no code.",
+      "ledeAcceptedRecords": "{count, plural, one {# record is} other {# records are}} accepted: somebody read {count, plural, one {it} other {them}} and marked {count, plural, one {it} other {them}} as something the team stands behind, which is what makes {count, plural, one {it} other {them}} worth quoting back to an agent later.",
+      "ledeAcceptedMore": "{count, plural, one {# more is a candidate} other {# more are candidates}} the indexer mined and nobody has accepted. Until one is accepted it is a guess about your codebase rather than a rule for it, and no agent is ever given one. Open the Candidates lane below to work through them; accepting or dismissing one takes a click and changes no code.",
+      "checkoutTitle": "About this checkout",
+      "checkoutDescription": "Facts about the working tree rather than claims anybody made about it, derived at index time with no model call and no history. These are the ones that trip up a newcomer, human or agent.",
+      "reviewTitle": "Review",
+      "reviewDescription": "Split by what each record's acceptance amounts to, not by a status word. Every record is in exactly one lane and the counts add up: what governs, what nobody has reviewed, what has drifted from the code it names, what names nothing at all, and what has been retired."
+    },
+    "contributors": {
+      "title": "Contributors",
+      "description": "Who knows what, mined from full git history. Ownership follows whoever wrote the surviving lines, not whoever committed last.",
+      "profileTitle": "Contributor",
+      "profileEmptyTitle": "No profile for this contributor",
+      "profileEmptyDescription": "Nobody by this name or address appears in the indexed git history. They may have committed under a different address, or the history may not have been synced yet.",
+      "tenureSince": "Committing here since {date}",
+      "tenureLastTouched": "last touched {time}",
+      "unknownName": "unknown"
+    },
+    "costs": {
+      "title": "Usage & savings",
+      "description": "What agents avoided, what Repowise cost, and how we know.",
+      "savingsErrorTitle": "Couldn't load agent savings",
+      "spendTitle": "Repowise model spend",
+      "spendDescription": "What Repowise's own model work cost, reported beside agent savings and never subtracted from them.",
+      "spendErrorTitle": "Couldn't load model spend",
+      "savingsEmptyTitle": "No agent savings recorded yet",
+      "savingsEmptyDescription": "Route noisy commands through repowise distill, or install the rewrite hook with repowise hook rewrite install. Savings appear here on their own once an agent starts using this repository.",
+      "bySourceTitle": "Savings by source",
+      "bySourceDescription": "Which capture surface produced each part of the total.",
+      "opportunitiesTitle": "Observed opportunities",
+      "opportunitiesDescription": "Behaviour that could have been optimised and was not. Never part of the total above.",
+      "detailsTitle": "Details",
+      "detailsDescription": "The same savings, cut by day, operation, pricing model and agent.",
+      "loadingSavings": "Loading agent savings",
+      "loadingSpend": "Loading model spend…",
+      "savingsErrorBody": "The savings endpoint did not respond.",
+      "savingsErrorBodySpendUnaffected": "The savings endpoint did not respond. Model spend below is unaffected.",
+      "surfaceHeader": "Surface",
+      "surfaceCaption": "Savings by the surface that produced them",
+      "surfaceEmpty": "No savings in this window carry a surface."
+    },
+    "repoSettings": {
+      "title": "Settings",
+      "description": "Indexing, model keys and health for {repo}. Server, webhook and editor configuration are shared across repositories.",
+      "generalTitle": "General",
+      "generalDescription": "Where this repository lives and which branch is indexed.",
+      "syncTitle": "Sync and indexing",
+      "syncDescription": "Pull recent commits into the existing index, or rebuild it from scratch.",
+      "providerTitle": "AI provider",
+      "providerDescription": "A model key lets this repository's documentation be written with AI. Keys are stored with the repository and used by generation from the UI or the CLI.",
+      "captureTitle": "Decision capture",
+      "captureDescription": "What mines architectural decisions from this repository, and whether any of it may send prose to your configured model. Capture only ever produces candidates: nothing here can accept a decision on your behalf.",
+      "refactoringTitle": "Refactoring code generation",
+      "refactoringDescription": "Opt in to turning refactoring plans into reviewable diffs with your configured model.",
+      "healthTitle": "Index health",
+      "healthDescription": "Per-population drift: wiki pages against page vectors, and decision records against decision vectors. A gap means search is answering from a stale set.",
+      "deleteTitle": "Delete this repository",
+      "deleteDescription": "Removes the index and everything generated from it — pages, symbols, decisions and history. Your source files are untouched. This cannot be undone.",
+      "footer": "Server connection, webhooks, model defaults and MCP configuration are in <link>global settings</link>."
+    },
+    "globalSettings": {
+      "title": "Settings",
+      "description": "How this dashboard reaches your server, which model it defaults to, and what the MCP server offers an agent. Changes save as you make them.",
+      "footer": "Sync schedule, exclude patterns and deletion are per repository, on <link>the repository page</link>."
+    },
+    "workspace": {
+      "title": "Workspace",
+      "description": "Every repository registered in this workspace, and what connects them.",
+      "emptyTitle": "No repositories discovered yet",
+      "emptyDescription": "Run `repowise init .` in the workspace root to scan for git repositories and index them. They show up here as soon as the scan lands.",
+      "ledeLabel": "Repositories",
+      "syncWorkspace": "Sync workspace",
+      "reposTitle": "Repositories",
+      "reposDescription": "Ordered by what needs attention first — never indexed, then missing on disk, then by health score — rather than by name.",
+      "contractsTitle": "Contracts",
+      "contractsDescription": "Routes, topics and tables one repository publishes and another consumes, matched across the workspace.",
+      "coChangesTitle": "Files that change together",
+      "coChangesDescription": "Cross-repo file pairs that recent commits touched in the same session. A work-pattern signal mined from git history, not a declared dependency.",
+      "sync": "Sync",
+      "indexNow": "Index now",
+      "syncThisRepo": "Sync this repo",
+      "syncing": "Syncing…",
+      "syncNoRepos": "no repos",
+      "syncQueued": "{count} queued",
+      "syncSkipped": "{count} skipped",
+      "syncErrors": "{count} error",
+      "removeConfirm": "Remove '{name}' from .repowise-workspace.yaml?",
+      "removeFailed": "Failed to remove: {message}",
+      "removeAria": "Remove {alias} from workspace",
+      "removing": "Removing…",
+      "remove": "Remove",
+      "ledeUnit": "in this workspace",
+      "seeSystemMap": "See the system map",
+      "ledeSentence": "{files} files and {symbols} symbols are under intelligence here{pages}.",
+      "ledePagesWith": ", with {pages} documentation pages written from them",
+      "ledeRootedAt": "Everything is rooted at <root>{path}</root>.",
+      "viewAllContracts": "All contracts",
+      "viewAllCoChanges": "All co-changes",
+      "unregisteredNote": "Cross-repo figures below also cover {count, plural, one {# repository} other {# repositories}} the workspace config no longer registers ({names}). Re-run a workspace sync to bring the two back into agreement.",
+      "attention": {
+        "none": "Every registered repository is indexed and present on disk.",
+        "suffix": "{parts}. Each is marked in the list below.",
+        "needsIndex": "{count, plural, one {# repository has} other {# repositories have}} not been indexed yet ({names})",
+        "missing": "{count, plural, one {# directory is} other {# directories are}} missing on disk ({names})",
+        "docsSkipped": "documentation was skipped for {count} ({names})",
+        "andMore": "{list} and {count} more"
+      },
+      "ribbon": {
+        "files": "Files",
+        "filesSub": "across {count, plural, one {# repository} other {# repositories}}",
+        "symbols": "Symbols",
+        "symbolsSub": "functions, classes and methods",
+        "docFreshness": "Doc freshness",
+        "docFreshnessNoPages": "no documentation generated yet",
+        "docFreshnessSub": "weighted across {pages} pages",
+        "hotspots": "Hotspots",
+        "hotspotsSub": "files by churn and prior fixes",
+        "contractLinks": "Contract links",
+        "contractLinksSub": "matched provider to consumer",
+        "contractLinksNone": "no contract data yet"
+      }
+    },
+    "docsFreshness": {
+      "title": "Doc freshness",
+      "header": "Freshness across {count} pages",
+      "freshPct": "{pct}% of pages are fresh",
+      "fresh": "Fresh",
+      "stale": "Stale",
+      "outdated": "Outdated",
+      "pctOfPages": "{pct}% of pages",
+      "distribution": "Distribution"
+    },
+    "overview": {
+      "title": "Overview"
+    },
+    "modules": {
+      "breadcrumb": "Code Health",
+      "notFoundTitle": "Module not found",
+      "notFoundDescription": "The requested module path doesn't exist in this repository's index."
+    }
+  },
+  "settings": {
+    "connection": {
+      "title": "Server",
+      "description": "How this dashboard reaches your repowise server. Stored in this browser, not on the server.",
+      "urlLabel": "Server URL",
+      "urlHint": "Leave blank to use the same origin, which is what a Next.js proxy setup wants.",
+      "apiKeyLabel": "API key",
+      "apiKeyHint": "Only needed when REPOWISE_API_KEY is set on the server.",
+      "apiKeyPlaceholder": "Optional",
+      "testLabel": "Connection",
+      "testHint": "Checks that the server answers and reports what it is running.",
+      "testing": "Testing",
+      "test": "Test connection",
+      "status": "Connected · v{version} · DB {db}"
+    },
+    "webhook": {
+      "title": "Webhooks",
+      "description": "Register one of these in GitHub or GitLab and a push re-syncs the index. The URLs use this dashboard's address, so substitute a public hostname if the host cannot reach it.",
+      "githubHint": "Content type: application/json.",
+      "gitlabHint": "Push events.",
+      "signatureLabel": "Signature verification",
+      "signatureHint": "Omit both to skip verification while developing locally.",
+      "serverOnly": "Set on the server, not here."
+    },
+    "providerPanel": {
+      "keySaved": "API key saved",
+      "keySavedDescription": "Written to this repo. Test it to confirm it works.",
+      "keySaveFailed": "Couldn't save the key",
+      "keyRemoved": "API key removed",
+      "keyRemoveFailed": "Couldn't remove the key",
+      "activateFailed": "Couldn't set the active provider"
+    },
+    "display": {
+      "title": "Display",
+      "description": "What this browser shows and how it presents it. Nothing here changes the index.",
+      "weekendLabel": "Weekend days",
+      "weekendHint": "Drives the “on weekends” share on the coding-rhythm heatmap.",
+      "chatDockLabel": "Ask Repowise",
+      "chatDockHint": "The chat pill in the bottom-right of every repository page. Hiding it also hides the two controls below, and does not affect the full chat page.",
+      "chatDockAria": "Show the Ask Repowise chat pill",
+      "chatAskLabel": "Ask about this",
+      "chatAskHint": "The small chat button beside a file, symbol, finding, decision or commit. Hiding it removes those buttons; the pill and the full chat page still work.",
+      "chatAskAria": "Show the Ask about this buttons",
+      "chatSelectionLabel": "Ask about a selection",
+      "chatSelectionHint": "The control that appears when you select text in code or documentation. Hiding it removes that control; selecting text behaves normally.",
+      "chatSelectionAria": "Show the Ask about selection control",
+      "chatGatedHint": "{hint} Unavailable while Ask Repowise is hidden."
+    },
+    "mcp": {
+      "title": "Editor config",
+      "description": "Paste this into Claude Code, Cursor or Cline to let the agent query this codebase. Replace the path with the repo you want served, and index it first so there is something to answer from.",
+      "serverLabel": "MCP server",
+      "serverHint": "Goes in your editor's MCP config file."
+    },
+    "mcpTools": {
+      "title": "Tool surface",
+      "description": "Which tools the MCP server offers an agent. Saved to the repo's .repowise/config.yaml and applied the next time you start repowise mcp for it.",
+      "empty": "Index a repository and its tool surface shows up here.",
+      "repoLabel": "Repository",
+      "repoHint": "The surface is stored per repo.",
+      "workspaceOnly": "workspace only",
+      "summary": "{on} of {total} tools exposed. {mode}",
+      "summaryWorkspace": "Workspace mode, so workspace-only tools are available.",
+      "summarySingleRepo": "Single-repo mode, so workspace-only tools are unavailable here."
+    },
+    "provider": {
+      "title": "Model defaults",
+      "description": "Used when you trigger init or sync from this dashboard.",
+      "descriptionWithServer": "Used when you trigger init or sync from this dashboard. The server itself is currently configured with {provider}.",
+      "providerLabel": "Provider",
+      "providerAria": "Provider",
+      "modelLabel": "Model",
+      "modelHint": "Leave blank to use the provider's default.",
+      "embedderLabel": "Embedder",
+      "embedderHint": "What semantic search is built from. The mock embedder disables it.",
+      "embedderAria": "Embedder",
+      "embedderOffNote": "Semantic search is off. Set <code>REPOWISE_EMBEDDER=gemini</code> or <code>REPOWISE_EMBEDDER=openai</code> on the server for real retrieval.",
+      "embedderOnNote": "Set <code>{env}</code> on the server."
+    }
+  },
+  "repos": {
+    "addDialog": {
+      "toastStarted": "Repository added, indexing started",
+      "toastAdded": "Repository added",
+      "trigger": "Add Repository"
+    },
+    "delete": {
+      "button": "Delete Repository",
+      "toastDeleted": "Deleted {name} — {pages} pages removed",
+      "toastFailed": "Failed to delete: {error}",
+      "title": "Delete repository",
+      "aria": "Delete {name}",
+      "confirm": "This will permanently delete <repo>{name}</repo> and all its generated pages, symbols, and history.",
+      "deleting": "Deleting..."
+    },
+    "empty": {
+      "title": "No repositories yet",
+      "description": "Point repowise at a local git repository to build its index, docs, and health signals.",
+      "action": "Add repository",
+      "terminalHint": "Prefer the terminal? Run <code>repowise init</code> in a repo, or see the <link>setup guide</link>."
+    },
+    "firstIndex": {
+      "startFailed": "Couldn't start indexing",
+      "startHere": "Start here",
+      "title": "This repo hasn't been indexed yet",
+      "description": "One click builds the code index, health signals, and documentation. You can watch it happen live.",
+      "starting": "Starting…",
+      "action": "Index this repo"
+    },
+    "coordinator": {
+      "status": "Status",
+      "wikiPages": "Wiki Pages",
+      "wikiPagesHelp": "Generated wiki pages in SQL vs the matching page vectors in the vector store.",
+      "sqlVsVectors": "{sql} SQL / {vectors} vectors",
+      "pageDrift": "Page Drift",
+      "pageDriftHelp": "How far the wiki-page count disagrees with the page-vector count. 0% means every page is embedded; high drift usually means an interrupted index — run a sync to reconcile.",
+      "decisions": "Decisions",
+      "decisionsHelp": "Decision records in SQL vs the matching decision vectors. Decision vectors are counted separately from page vectors.",
+      "decisionDrift": "Decision Drift",
+      "decisionDriftHelp": "How far the decision-record count disagrees with the decision-vector count.",
+      "graphNodes": "Graph Nodes",
+      "noData": "No data — click Refresh to load.",
+      "checking": "Checking…",
+      "refresh": "Refresh"
+    },
+    "ops": {
+      "syncStarted": "Sync started — {name}",
+      "syncFailed": "Sync failed",
+      "resyncStarted": "Full resync started — {name}",
+      "resyncFailed": "Resync failed",
+      "title": "Operations",
+      "export": "Export",
+      "starting": "Starting…",
+      "sync": "Sync",
+      "resync": "Full Resync",
+      "resyncConfirm": "This regenerates every page for <repo>{name}</repo> from scratch. All existing pages will be overwritten.",
+      "resyncConfirmAction": "Resync Everything"
+    },
+    "settings": {
+      "toastSaved": "Repository settings saved",
+      "saveFailed": "Failed to save settings",
+      "regenQueued": "Wiki regeneration queued",
+      "regenFailed": "Failed to queue regeneration",
+      "regenTitle": "Regenerate the wiki now?",
+      "regenDescription": "The documentation style was changed to \"{style}\". Regenerate the whole wiki now to apply it? This runs LLM generation (a cost). You can also do it later from Sync.",
+      "regenConfirm": "Regenerate now",
+      "regenCancel": "Later"
+    }
+  },
+  "docs": {
+    "viewer": {
+      "topPercent": "Top {pct}%",
+      "centrality": "Centrality",
+      "notScored": "Not scored yet",
+      "degree": "Degree",
+      "degreeValue": "{inbound} in · {outbound} out",
+      "entryPoint": "Entry Point",
+      "community": "Community",
+      "calledBy": "Called by ({count})",
+      "calls": "Calls ({count})",
+      "hotspot": "Hotspot · top {pct}%",
+      "stable": "Stable",
+      "busFactorOne": "Bus factor 1",
+      "bugMagnetTitle": "Repeatedly bug-fixed, most recently {age}.",
+      "bugMagnet": "Bug magnet",
+      "owner": "Owner",
+      "commits90d": "Commits (90d)",
+      "bugFixes": "Bug fixes",
+      "bugFixesTitle": "Bug-fix commits that touched this file in the trailing defect window.",
+      "contributors": "Contributors",
+      "agentAuthored": "Agent-authored",
+      "renamedFrom": "Renamed from",
+      "historyCapped": "History capped during indexing, so older commits are not counted above.",
+      "signals": "Signals"
+    },
+    "explorer": {
+      "emptyTitle": "No documentation yet",
+      "emptyBody": "Run a generation job to create AI-powered documentation for this codebase.",
+      "hideTree": "Hide pages tree",
+      "showTree": "Show pages tree",
+      "askQuestion": "Explain \"{title}\" using the source code, and name the files it rests on.",
+      "askLabel": "Ask about {title}"
+    },
+    "bulk": {
+      "button": "Write subsystem pages",
+      "title": "Write the subsystem pages",
+      "writing": "Writing the subsystem pages"
+    },
+    "bulkConfirm": {
+      "description": "Write every subsystem page still generated from structure, with your configured model.",
+      "writePages": "Write {count, plural, one {# page} other {# pages}}",
+      "writeWithAi": "Write with AI"
+    },
+    "pageGenerate": {
+      "failed": "Couldn't start generation"
+    }
+  },
+  "zoom": {
+    "breadcrumb": {
+      "label": "Zoom location"
+    },
+    "hint": {
+      "scroll": "Scroll to zoom",
+      "drag": "Drag to pan",
+      "doubleClick": "Double-click a card to dive in",
+      "dismiss": "Dismiss hint"
+    },
+    "search": {
+      "placeholder": "Search files…",
+      "aria": "Search the system map",
+      "clear": "Clear search"
+    },
+    "export": {
+      "downloaded": "Downloaded {filename}",
+      "failed": "Couldn't build the Structurizr DSL",
+      "title": "Download this repository's architecture as Structurizr DSL",
+      "workspaceLabel": "Workspace (workspace.dsl)",
+      "workspaceHint": "Complete file with default views. Opens as-is in Structurizr.",
+      "fragmentLabel": "Model fragment (repowise-model.dsl)",
+      "fragmentHint": "Model block only, to !include from a workspace.dsl you already have.",
+      "building": "Building…"
+    },
+    "mapKey": {
+      "showingFiltered": "Showing <verbs>{list}</verbs> only. Arrow weight is how many file pairs the relation covers.",
+      "hoverHint": "Hover a card to see what it depends on. Arrow weight is how many file pairs the dependency covers.",
+      "unclaimed": "{shown} of {total} files are not on the map; they belong to no layer.",
+      "clear": "Clear",
+      "topRightDot": "Top-right dot",
+      "entryDotHelp": "Entry point, hotspot, dead code or on an execution flow. Hover for which.",
+      "footerDot": "Footer dot",
+      "healthBand": "Code health: {good} from {goodMin}, {fair} from {fairMin}, {needsWork} from {needsWorkMin}, {atRisk} below that."
+    },
+    "detail": {
+      "close": "Close details",
+      "healthOutOfTen": "Code health out of 10",
+      "healthOutOfTenSubtree": "Code health out of 10, averaged across this subtree weighted by size",
+      "files": "Files",
+      "hotspots": "Hotspots",
+      "entryPoints": "Entry points",
+      "onFlow": "On flow",
+      "dead": "Dead",
+      "relations": "Relations",
+      "capSuffix": "{cap} on the map.",
+      "language": "Language",
+      "zoomIn": "Zoom in",
+      "readModule": "Read the module page",
+      "openFile": "Open file page"
+    }
+  },
+  "architecture": {
+    "dependencies": {
+      "title": "External dependencies",
+      "description": "Declared third-party packages, joined to persisted import-graph evidence. Select a package to inspect declaration counts, versions, and importing files.",
+      "includeAuxiliary": "Include auxiliary declarations",
+      "loadFailed": "Couldn't load external dependencies",
+      "loading": "Loading external dependencies",
+      "auxiliaryExcluded": "{count} declarations from auxiliary directories excluded",
+      "showingAll": "Showing primary and auxiliary directories present in this indexed checkout"
+    },
+    "graph": {
+      "communitiesDescription": "Files that depend on each other more than on the rest of the repo, detected automatically. Circle size is how much code a group holds, and the nearer the centre, the nearer an entry point. Double-click a group to see the files inside it and what they depend on.",
+      "filesDescription": "Every file, grouped into the communities it depends on most, with a band for each strong link between communities. Hover or select a file to see exactly what it imports and what imports it."
+    }
+  },
+  "chat": {
+    "noProvider": "No chat provider is configured. Add an API key in <link>settings</link> to start asking questions.",
+    "noProviderShort": "No chat provider is configured. Add an API key in <link>settings</link>."
+  },
+  "codeHealth": {
+    "hotspots": {
+      "title": "Hotspots",
+      "description": "Ranked by change frequency and prior bug fixes, mined from full git history. The danger is not churn on its own. It is a file that changes constantly and only one person understands.",
+      "commitHistory": "Commit history",
+      "loadFailed": "Couldn't load hotspots. Run a sync to mine git history for this repo.",
+      "promptTitle": "AI stabilization prompt",
+      "promptDescription": "A ready-to-paste prompt that has your AI agent diagnose why this file churns and propose changes that make it cheaper to maintain."
+    }
+  },
+  "commits": {
+    "detail": {
+      "title": "Review this commit",
+      "promptLabel": "AI review prompt",
+      "promptTitle": "AI commit review",
+      "promptDescription": "A ready-to-paste prompt that has your AI agent review this commit's change-risk, flag what to scrutinize, and suggest reviewers."
+    }
+  },
+  "coupling": {
+    "loadFailed": "Couldn't load change coupling"
+  },
+  "coverage": {
+    "jobRunning": "A generation job is already running. Wait for it to finish.",
+    "regenStarted": "Regeneration started",
+    "regenFailed": "Couldn't start regeneration"
+  },
+  "decisions": {
+    "add": {
+      "trigger": "Record a decision",
+      "title": "Record a decision",
+      "description": "Something the team has settled on. Name the files it governs and it is recorded as confirmed, because you are the person confirming it."
+    },
+    "capture": {
+      "saveFailedWithMessage": "Couldn't save capture settings: {message}",
+      "saveFailed": "Couldn't save capture settings."
+    },
+    "review": {
+      "accepted": "Accepted. It governs the files it names.",
+      "dismissed": "Dismissed. Reindexing will not propose it again.",
+      "acceptFailed": "Couldn't accept: {message}",
+      "dismissFailed": "Couldn't dismiss: {message}",
+      "actionFailed": "The review action failed.",
+      "previous": "Previous",
+      "next": "Next"
+    }
+  },
+  "files": {
+    "health": {
+      "findingMarked": "Finding marked {status}",
+      "statusFailed": "Couldn't update finding status"
+    },
+    "explorer": {
+      "loadFailed": "Couldn't load the file index for this repository."
+    }
+  },
+  "health": {
+    "findingMarked": "Finding marked {status}",
+    "findingStatusFailed": "Couldn't update finding status"
+  },
+  "jobs": {
+    "completed": "Documentation updated{name}",
+    "pagesGenerated": "{count} pages generated",
+    "failed": "Generation failed",
+    "unknownError": "Unknown error",
+    "cancelled": "Job cancelled",
+    "cancelledDescription": "The pipeline was stopped before completion.",
+    "cancelFailed": "Couldn't cancel job",
+    "progressCount": "{completed}/{total} pages"
+  },
+  "overview": {
+    "ask": {
+      "placeholder": "How does the incremental pipeline decide what to re-index?",
+      "suggestion1": "How does authentication work?",
+      "suggestion2": "Where is the retry logic?",
+      "suggestion3": "Why is this module structured this way?",
+      "label": "Ask a question about this codebase",
+      "submit": "Ask"
+    }
+  },
+  "risk": {
+    "analysisTimeout": "Analysis is taking longer than expected. Reload to see the results.",
+    "syncStarted": "Sync started — findings refresh when it completes",
+    "syncFailed": "Couldn't start a sync",
+    "description": "Secrets, dangerous patterns, and policy hits detected while indexing. Findings refresh on every sync.",
+    "loadFailed": "Couldn't load findings",
+    "loadFailedBody": "The security endpoint returned an error. Try re-running ingestion.",
+    "allFindings": "All findings",
+    "findingsCount": "{count} findings",
+    "promptTitle": "AI fix prompt",
+    "promptDescription": "A ready-to-paste prompt that walks your AI agent through confirming and remediating this security finding."
+  },
+  "symbols": {
+    "clearFileFilter": "Clear file filter",
+    "fileOnly": "showing symbols in this file only"
+  },
+  "conformance": {
+    "title": "Conformance",
+    "description": "How the workspace is shaped, and whether it obeys the dependency rules you declared.",
+    "ledeLabel": "Architecture score",
+    "ledeUnit": "out of 10",
+    "ledeSeeSystemMap": "See the system map",
+    "ledeSentence": "A change here can reach {pct}% of the system through {links} structural links between {services} services. The score weighs that reach against the size of the mutually dependent core and any cycles; it is computed from the system graph on every request, so it does not depend on the check below having run.",
+    "ledeNoGraph": "No system graph has been built yet, so there is nothing to measure. Run a workspace sync to build one.",
+    "dsmTitle": "Dependency-structure matrix",
+    "dsmDescription": "Each filled cell means the row service depends on the column service, tinted by transport. Red cells break a declared rule; amber cells sit on a cycle. The matrix counts co-change relationships too, so its total runs above the structural-link figure above.",
+    "dsmSystemMapLink": "System map",
+    "violationsTitle": "Rule violations",
+    "violationsTitleCount": "Rule violations ({count})",
+    "violationsDescription": "Dependencies that exist in the graph but are forbidden by a rule you declared.",
+    "violationBreaks": "Breaks",
+    "cyclesTitle": "Dependency cycles ({count})",
+    "cyclesDescription": "Groups of services that depend on each other in a loop, so none of them can be changed or deployed independently.",
+    "cyclesDetectedNotListed": "{count, plural, one {# cycle detected, but not listed} other {# cycles detected, but not listed}}",
+    "noCyclesTitle": "No circular dependencies",
+    "cyclesUnlistedDescription": "The count is recomputed from the system graph, but the services in each cycle are recorded by the conformance check. Run it to see which services are involved.",
+    "noCyclesDescription": "Every dependency in the graph runs one way. Nothing has to be changed in lockstep.",
+    "cycleServices": "{count} services",
+    "ruleCheckedClean": "{rules, plural, one {# declared rule was} other {# declared rules were}} checked against that graph, and nothing breaks them.",
+    "ruleCheckedViolations": "{rules, plural, one {# declared rule was} other {# declared rules were}} checked against that graph, and {violations, plural, one {# dependency breaks them} other {# dependencies break them}}.",
+    "ruleNoneDeclared": "The check has run, but no dependency rules are declared, so it had nothing to enforce. Add a <c>conformance:</c> block to <f>.repowise-workspace.yaml</f> to describe which services may depend on which.",
+    "ruleNeverRan": "The conformance check has not run on this workspace yet, so nothing below is a verdict — an empty violations list here means unmeasured, not clean. Run <c>repowise workspace check</c> to evaluate it.",
+    "emptyNoRulesBrokenTitle": "No rules are broken",
+    "emptyNoRulesBrokenDescription": "Every dependency in the graph is allowed by the rules you declared.",
+    "emptyNoRulesDeclaredTitle": "No rules declared",
+    "emptyNoRulesDeclaredDescription": "Nothing has been forbidden yet, so nothing can be violated. Declare which services may depend on which under `conformance:` in .repowise-workspace.yaml, then run `repowise workspace check` to gate CI on it.",
+    "emptyNotCheckedTitle": "Not checked yet",
+    "emptyNotCheckedDescription": "The conformance analyser has not run on this workspace, so no rules have been evaluated. This is not a clean bill of health — run `repowise workspace check` to produce one.",
+    "emptyUnavailableTitle": "Conformance report unavailable",
+    "emptyUnavailableDescription": "The report could not be read. Run a workspace sync to rebuild it.",
+    "ribbon": {
+      "services": "Services",
+      "servicesSub": "repositories and their sub-packages",
+      "structuralLinks": "Structural links",
+      "structuralLinksSub": "contracts and imports, not co-changes",
+      "propagationCost": "Propagation cost",
+      "propagationCostSub": "of the system a change can reach",
+      "coreSize": "Core size",
+      "coreSizeSubPct": "{pct}% of all services",
+      "coreSizeSub": "mutually dependent centre",
+      "cycles": "Cycles",
+      "cyclesSub": "circular service dependencies"
+    },
+    "aiPrompt": {
+      "label": "Fix violations with AI",
+      "title": "AI conformance fix",
+      "description": "A ready-to-paste prompt that has your AI agent resolve these architecture rule violations by removing the disallowed dependencies."
+    }
+  },
+  "contracts": {
+    "links": {
+      "title": "Matched links",
+      "loadFailed": "The matched links could not be loaded. Reload to try again.",
+      "loading": "Loading matched links...",
+      "allExact": "All {count} are exact matches.",
+      "filteredHead": "{count, plural, one {# link matches} other {# links match}} the type, repository and search.",
+      "defaultHead": "Every provider joined to the consumer that calls it, strongest first.",
+      "description": "{head} {basis} Open a row for the provider and every caller."
+    },
+    "breaking": {
+      "title": "Breaking changes",
+      "description": "Provider contracts that changed in the most recent workspace update, and the consumers linked to them. Breaking first, then warnings."
+    },
+    "title": "Contracts",
+    "description": "Routes, tables and exports one repository publishes and another consumes.",
+    "ledeUnknown": "Unknown",
+    "ledeUnit": "provider to consumer",
+    "ledeLinkLine1": "Each link is a call site resolved to the route, table or export that serves it, in another repository or service.",
+    "ledeLinkLine2": "It is a match on the path or name, not proof both sides share a schema. Calls that matched nothing and providers nothing calls are under {attention}.",
+    "ledeNoDiagnostics": "Extraction diagnostics are not available, so the totals cannot be shown. Run a workspace sync to rebuild them.",
+    "attention": {
+      "title": "Needs attention"
+    },
+    "list": {
+      "title": "All detected contracts",
+      "description": "All {total, plural, one {# contract} other {# contracts}} detected across the workspace, {pageSize} to a page. One contract can be declared in several places, so a name may repeat.",
+      "filtered": "{total, plural, one {# contract matches these filters.} other {# contracts match these filters.}}",
+      "filteredOf": "{total, plural, one {# contract} other {# contracts}} of {workspaceTotal} match these filters.",
+      "loadFailed": "The contract list could not be loaded. The API may be restarting; reload in a moment.",
+      "pagePastEnd": "Page {page} is past the end of this list, which has {total, plural, one {# contract} other {# contracts}}. <first>Go to the first page</first>.",
+      "noMatch": "No contracts match these filters. Clear the search or a filter to widen the list.",
+      "noneDetected": "No contracts detected. They are found during a workspace sync, by reading the routes each repository serves and the calls the others make."
+    },
+    "footer": {
+      "note": "Contracts are matched on path. Two routes that share a path are one contract here, so a repository can appear against a contract it declares for its own use. <link>See how they connect</link>."
+    },
+    "ribbon": {
+      "providers": "Providers",
+      "providersSub": "routes, tables and exports published",
+      "consumers": "Consumers",
+      "consumersSub": "call sites resolved to a contract",
+      "unmatched": "Unmatched consumers",
+      "orphans": "Providers with no caller",
+      "orphansSub": "in this workspace; not the same as unused",
+      "httpResolved": "HTTP calls resolved",
+      "httpUnresolved": "{count} located but not resolvable",
+      "httpSub": "of the client calls extraction located"
+    },
+    "reasons": {
+      "no_provider": "no provider found",
+      "unlinked": "unlinked",
+      "internal_only": "internal to one service",
+      "external_host": "external host",
+      "unknown": "no reason recorded",
+      "everyMatched": "every consumer matched a provider"
+    },
+    "filters": {
+      "allTypes": "All",
+      "typeAria": "Contract type",
+      "searchLabel": "Search contracts",
+      "searchPlaceholder": "Search path, table, file, symbol or service",
+      "repoLabel": "Repository",
+      "allRepos": "All repositories",
+      "roleLabel": "Role",
+      "roleAll": "Providers and consumers",
+      "roleProviders": "Providers",
+      "roleConsumers": "Consumers",
+      "linkedLabel": "Link",
+      "linkedAll": "Linked or not",
+      "linkedYes": "On a matched link",
+      "linkedNo": "On no link",
+      "updating": "Updating..."
+    },
+    "pager": {
+      "label": "contracts"
+    },
+    "detail": {
+      "back": "Contracts",
+      "typeContract": "contract",
+      "roleProvider": "Provider",
+      "roleConsumer": "Consumer",
+      "declaredHere": "Declared here",
+      "calledHere": "Called here",
+      "declaredHereDescription": "Where this contract is declared, and how confident extraction is that this is the declaration.",
+      "calledHereDescription": "The call site, and how confident extraction is that it names this contract.",
+      "fact": {
+        "repository": "Repository",
+        "file": "File",
+        "service": "Service",
+        "symbol": "Symbol",
+        "confidence": "Confidence",
+        "contractId": "Contract id",
+        "detail": "Detail"
+      },
+      "symbolNone": "None recorded",
+      "howFound": "How it was found",
+      "howFoundDescription": "What the extractor recorded about this contract. The layer is the part worth reading: an index contract came from the parsed symbol table, a regex one from a text dialect, which is where recall is least certain.",
+      "extractorNone": "The extractor recorded none.",
+      "noCallerFound": "No caller found",
+      "callers": "Callers",
+      "servedBy": "Served by",
+      "servedByDescription": "This call resolves to the code that serves it. A match joins a call site to a declaration; it does not mean the two were written against a shared schema.",
+      "caption": {
+        "providersServing": "Providers serving this call",
+        "callSites": "Call sites resolving here"
+      },
+      "col": {
+        "match": "Match"
+      },
+      "reasonTitle": {
+        "no_provider": "No provider found",
+        "unlinked": "No link formed",
+        "internal_only": "Not a cross-repo link",
+        "external_host": "Outside this workspace",
+        "unknown": "No provider found"
+      },
+      "prose": {
+        "unlinkedProviderWithService": "Nothing in this workspace resolves to this contract. It may be called from outside the workspace, or by code extraction cannot follow, and a call from inside {repo}/{service} is excluded by construction. Neither reading makes it dead code.",
+        "unlinkedProvider": "Nothing in this workspace resolves to this contract. It may be called from outside the workspace, or by code extraction cannot follow, and a call from elsewhere in {repo} that also sits outside any service is excluded by construction. Neither reading makes it dead code.",
+        "linkedFromOne": "{calls, plural, one {# call site resolves} other {# call sites resolve}} to this contract, from a different service inside {repo}.",
+        "linkedAllFromOne": "{calls, plural, one {# call site resolves} other {# call sites resolve}} to this contract, all from a different service inside {repo}.",
+        "linkedAcross": "{calls, plural, one {# call site resolves} other {# call sites resolve}} to this contract across {repos, plural, one {# repository} other {# repositories}}.",
+        "unmatchedExternalHost": "This call goes to {host}, which is not a service in this workspace. Calls to a literal external host are left out of matching on purpose, so there is nothing to link. If {host} is one of your own services, add its repository to the workspace.",
+        "unmatchedExternalHostGeneric": "This call goes to a third-party host, which is not a service in this workspace. Calls to a literal external host are left out of matching on purpose, so there is nothing to link. If that host is one of your own services, add its repository to the workspace.",
+        "unmatchedInternalOnly": "The only declarations matching this call live in the same repository and the same service as the call itself, so it never crosses a boundary. Intra-service calls are left out of the link set on purpose: a link is a claim that two services depend on each other.",
+        "unmatchedNoProvider": "Nothing in this workspace declares {contract}. Check for a typo in the path, an endpoint that was renamed or removed, a service outside these repositories, or a route declared in a form extraction does not recognise.",
+        "unmatchedUnlinked": "A declaration with this id exists in another service, but no link was formed between the two. That is rare, and it points at a gap in the matcher rather than at the code.",
+        "unmatchedDefault": "This call matched no declaration, and no reason was recorded for it. Reasons come from the system graph, so a workspace that has not built one reports the count without the explanation."
+      },
+      "shape": "Shape",
+      "shapeEmptyFields": "The reader produced a shape with no fields in it.",
+      "schema": {
+        "recovered": "Recovered by the {source} reader.",
+        "withResponse": "{head} Fields are what the declaration names, not what any one caller passes.",
+        "signature": "{head} It reads a declaration's parameters and stops there, so there is no return shape below; a response would have to come from an OpenAPI or proto declaration.",
+        "noReturn": "{head} It recovered no return shape for this contract.",
+        "dataTable": "A table contract carries no field shape. It is matched on the table name, and nothing on that path reads a column list, so this section is empty for every table contract rather than for this one in particular.",
+        "noReader": "No reader recovered a shape for this contract. A shape comes off a typed declaration, so an untyped signature, a route declared through a decorator alone, or a file the index never parsed all arrive here without one."
+      },
+      "field": {
+        "request": "Request",
+        "response": "Response",
+        "field": "Field",
+        "type": "Type",
+        "required": "Required"
+      },
+      "line": "line {line}"
+    }
+  },
+  "coChanges": {
+    "title": "Co-changes",
+    "description": "Files in different repositories that recent commits touched together.",
+    "emptyTitle": "No cross-repo co-changes found",
+    "emptyDescription": "Co-changes are mined from each repository's git history during a workspace sync. Pairs appear once commits close together in time touch files in two repositories.",
+    "ledeLabel": "File pairs",
+    "ledeUnitFound": "found",
+    "ledeUnitOfFound": "of {total} found",
+    "ledeSentence": "Files in two repositories that the same author keeps changing in the same work sessions: a pattern read from git history, not a declared dependency.",
+    "ribbon": {
+      "repoPairs": "Repository pairs",
+      "repoPairsSub": "with shared work sessions",
+      "strongest": "Strongest pair",
+      "strongestSub": "by its strongest file pair",
+      "peakStrength": "Peak strength",
+      "peakStrengthSub": "the single strongest file pair",
+      "sessionsPerPair": "Sessions per pair",
+      "sessionsPerPairSub": "shared work sessions per file pair",
+      "sessionsRange": "{min} to {max}",
+      "mostRecent": "Most recent",
+      "mostRecentSub": "last shared session"
+    },
+    "pairs": {
+      "title": "Repository pairs",
+      "descriptionRanked": "Ranked by their strongest file pair.",
+      "descriptionCapped": "Ranked by their strongest file pair. File pairs stop at {cap} per repository pair because the miner keeps no more."
+    },
+    "files": {
+      "titleAll": "Files that change together",
+      "titleScoped": "Files in {repo1} and {repo2}",
+      "filterLabel": "Filter by file path",
+      "searchPlaceholder": "What changes with this file? Type a path",
+      "clearPair": "Show all repository pairs",
+      "emptyTitle": "No file pairs match",
+      "emptyDescription": "No listed pair touches a path containing \"{query}\". Only the {count} strongest pairs are listed, so a weaker partner may exist that is not shown."
+    },
+    "scope": {
+      "filteredInPair": "{rows} of {scope} pairs in {repo1} and {repo2} touch a path matching \"{query}\", strongest first.",
+      "filtered": "{rows} of {scope} pairs touch a path matching \"{query}\", strongest first.",
+      "selected": "{rows} file pairs in {repo1} and {repo2}, strongest first.",
+      "all": "{rows} of {total} pairs, strongest first.",
+      "capped": " {rule}, so {dropped} weaker pairs across the workspace are not listed.",
+      "rulePerPair": "the miner keeps the strongest {cap} for each repository pair",
+      "ruleTotal": "the miner keeps the strongest {cap} across the workspace",
+      "ruleTotalWithPerPair": "the miner keeps the strongest {cap} across the workspace, and at most {perPair} for any one repository pair",
+      "ruleUnknown": "the miner keeps only the strongest"
+    },
+    "reason": {
+      "repoNotIndexed": "Repository not indexed, so no history",
+      "historyFailed": "History failed to load",
+      "noGitHistory": "No git history indexed for this file",
+      "linksFailed": "Contract links failed to load, so this pair was not checked."
+    },
+    "prompt": {
+      "title": "AI co-change prompt",
+      "descriptionRepo": "A ready-to-paste prompt that has your agent group this repository pair's co-changing files by the concept they share and decide which lockstep a contract, shared type or generated client should replace.",
+      "descriptionFile": "A ready-to-paste prompt that has your agent find why these two files change together and whether a contract, shared type or generated client should replace the manual lockstep."
+    }
+  },
+  "systemMap": {
+    "title": "System map",
+    "description": "Services and the typed relationships between them, rebuilt from code and git history on every workspace update.",
+    "section": {
+      "title": "Services and relationships",
+      "description": "Each box is a service; each line is a contract, import or co-change between two of them. Pick a lens to ask the map one question at a time."
+    },
+    "lede": {
+      "label": "Architecture score",
+      "labelHint": "A 1 to 10 roll-up of propagation cost, the size of the cyclic core, dependency cycles and rule violations, over structural edges only. Higher means less coupled.",
+      "unit": "out of 10",
+      "counts": "{services, plural, one {# service} other {# services}} in {repos, plural, one {# repository} other {# repositories}}, joined by {relationships, plural, one {# relationship} other {# relationships}}: {structural} structural (a contract or import in code) and {behavioral} co-change (files that change in the same commits, not a call).",
+      "cycleMore": "{count, plural, one {# more cycle is} other {# more cycles are}} listed under Needs attention.",
+      "cycleOne": "It is listed under Needs attention with a prompt to break it.",
+      "noCycles": "No dependency cycles: every service can change without a loop back to itself.",
+      "reachAndScore": "On average a service reaches {pct}% of the others through dependencies, and {core}. Those two figures drive the score.",
+      "coreForms": "{count, plural, one {# service forms} other {# services form}} the cyclic core",
+      "noCore": "there is no cyclic core",
+      "cycleDepend": "{names} depend on each other",
+      "cycleTail": ", a dependency cycle: none of them can change a contract, build or deploy alone."
+    },
+    "lens": {
+      "none": {
+        "label": "None",
+        "hint": "The map as extracted, no lens"
+      },
+      "blast": {
+        "label": "Blast radius",
+        "hint": "What depends on one service, directly or through others",
+        "disabled": "No relationships to trace yet."
+      },
+      "breaking": {
+        "label": "Breaking changes",
+        "disabledFailed": "Could not load the breaking-change report.",
+        "disabledLoading": "Loading the breaking-change report.",
+        "disabledNotRun": "Breaking-change detection has not run. Run a workspace update.",
+        "disabledNone": "No provider contract changed incompatibly in the most recent update."
+      },
+      "conformance": {
+        "label": "Conformance",
+        "hint": "Rule violations and dependency cycles",
+        "disabledFailed": "Could not load the conformance report.",
+        "disabledLoading": "Loading the conformance report.",
+        "disabledNotRun": "Conformance has not been checked. Run a workspace update.",
+        "disabledNone": "No rule violations or dependency cycles."
+      },
+      "core": {
+        "label": "Core",
+        "hint": "The largest group of services that all depend on each other, and every service's role",
+        "disabledFailed": "Could not load the architecture metrics.",
+        "disabledLoading": "Loading architecture metrics.",
+        "disabledNone": "No services to classify."
+      }
+    },
+    "ribbon": {
+      "services": "Services",
+      "servicesSub": "in {count, plural, one {# repository} other {# repositories}}",
+      "relationships": "Relationships",
+      "relationshipsSub": "{structural} structural, {behavioral} co-change",
+      "propagationCost": "Propagation cost",
+      "propagationCostSub": "of other services the average one reaches",
+      "propagationCostHint": "The share of other services the average service can reach through structural dependencies. 0% is fully decoupled, 100% is everything reaching everything.",
+      "contractLinks": "Contract links",
+      "contractLinksSub": "from {providers} providers, {consumers} consumers",
+      "contractLinksHint": "Consumer calls matched to the provider that serves them, across services.",
+      "unmatched": "Unmatched consumers",
+      "unmatchedSub": "calls with no provider in the workspace",
+      "unmatchedHint": "Consumer contracts that matched no provider: missing, a third-party host, or inside the same service."
+    }
+  },
+  "loading": {
+    "repo": "Loading",
+    "architecture": "Loading architecture",
+    "commits": "Loading commits",
+    "coverage": "Loading coverage",
+    "knowledgeGraph": "Loading knowledge graph"
+  }
+}

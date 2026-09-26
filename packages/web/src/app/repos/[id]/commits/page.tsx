@@ -16,6 +16,7 @@ import {
   getCommitStats,
   getCommitsPage,
 } from "@/lib/api/git";
+import { getTranslations } from "next-intl/server";
 
 export const metadata: Metadata = { title: "Commits" };
 
@@ -52,6 +53,7 @@ export default async function CommitsPage({
 }) {
   const { id } = await params;
   const base = `/repos/${id}`;
+  const t = await getTranslations("views.commits");
 
   // One wave. The scatter plots its own recency sample rather than reusing the
   // queue's first page: the feed is risk-sorted, so reusing it would draw only
@@ -72,12 +74,11 @@ export default async function CommitsPage({
     return (
       <PageShell
         icon={<GitCommitHorizontal className="h-5 w-5 text-[var(--color-accent-primary)]" />}
-        title="Commits"
-        description="Every commit scored for change-risk against this repo's own history."
+        title={t("title")}
+        description={t("emptyDescription")}
       >
         <p className="max-w-[62ch] text-sm text-[var(--color-text-secondary)]">
-          Per-commit change-risk is captured on the next full index. Run a sync and
-          the review queue fills in behind it.
+          {t("emptyHint")}
         </p>
       </PageShell>
     );
@@ -86,15 +87,15 @@ export default async function CommitsPage({
   return (
     <PageShell
       icon={<GitCommitHorizontal className="h-5 w-5 text-[var(--color-accent-primary)]" />}
-      title="Commits"
-      description="Every commit scored for change-risk against this repo's own history, so 'elevated' means elevated here rather than on some global curve."
+      title={t("title")}
+      description={t("description")}
     >
       {stats && <CommitsLede stats={stats} base={base} LinkComponent={Link} />}
 
       {evolution && evolution.total_commits > 0 && (
         <OverviewSection
-          title="How the work changed shape"
-          description="Commit categories over time, read off the subject line. Fixes carry the accent because that is the series this chart exists to show."
+          title={t("evolutionTitle")}
+          description={t("evolutionDescription")}
         >
           <CodeEvolutionChart evolution={evolution} />
         </OverviewSection>
@@ -103,8 +104,8 @@ export default async function CommitsPage({
       {trend && trend.agent_commits > 0 && <AgentTrendStrip trend={trend} />}
 
       <OverviewSection
-        title="Review queue"
-        description="Newest first by default. Priority is a tercile of this repo's own distribution, so sorting by it shows only the top third — the filters narrow the whole repository, not the page."
+        title={t("reviewQueueTitle")}
+        description={t("reviewQueueDescription")}
         action={<CredibilityInfoButton />}
       >
         <CommitQueue
@@ -124,11 +125,11 @@ export default async function CommitsPage({
       </OverviewSection>
 
       <OverviewSection
-        title="How the score behaves here"
-        description="Two views of the same model: where the cuts fall, and what commit shape lands you above them."
+        title={t("scoreBehaviourTitle")}
+        description={t("scoreBehaviourDescription")}
         action={
           <SectionLink href={`${base}/code-health?tab=triage`} LinkComponent={Link}>
-            Change risk
+            {t("changeRisk")}
           </SectionLink>
         }
       >

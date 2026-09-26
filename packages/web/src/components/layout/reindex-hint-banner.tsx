@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, X } from "lucide-react";
 import useSWR from "swr";
 import { getMetaVersion } from "@/lib/api/meta";
+import { useTranslations } from "next-intl";
 
 const STORAGE_PREFIX = "repowise:reindex-hint-dismissed:";
 
@@ -18,6 +19,8 @@ export interface ReindexHintBannerProps {
  * case (store compatible) or if the check fails.
  */
 export function ReindexHintBanner({ repoId }: ReindexHintBannerProps) {
+  const t = useTranslations("shell");
+  const tc = useTranslations("common");
   const { data: meta } = useSWR(
     ["meta-version", repoId],
     () => getMetaVersion(repoId),
@@ -58,8 +61,7 @@ export function ReindexHintBanner({ repoId }: ReindexHintBannerProps) {
         aria-hidden="true"
       />
       <div className="flex-1 text-[var(--color-text-primary)]">
-        This index was built by an older repowise. It still works, but a reindex is
-        recommended to pick up the latest format.
+        {t("reindexHint.body")}
         {command && (
           <>
             {" "}
@@ -72,7 +74,7 @@ export function ReindexHintBanner({ repoId }: ReindexHintBannerProps) {
       <button
         type="button"
         onClick={dismiss}
-        aria-label="Dismiss"
+        aria-label={tc("dismiss")}
         className="rounded p-1 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
       >
         <X className="h-4 w-4" />

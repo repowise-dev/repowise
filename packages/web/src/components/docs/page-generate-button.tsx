@@ -14,6 +14,7 @@ import { regeneratePage } from "@/lib/api/pages";
 import { generateEstimate } from "@/lib/api/repos";
 import { formatEstimateCost } from "@/lib/generate-format";
 import type { PageResponse, GenerateEstimate } from "@/lib/api/types";
+import { useTranslations } from "next-intl";
 
 /**
  * Reader-side "Write with AI" / "Regenerate" for a single page. Owns the
@@ -37,6 +38,7 @@ export function PageGenerateButton({
   // "Write" on a stub concept page, "Regenerate" on a written one. Callers only
   // mount this on the model-written page types, so a stub here is genuinely a
   // page awaiting its first prose, never a structural file page.
+  const t = useTranslations("docs");
   const mode = isStubPage(page) ? "write" : "regenerate";
   const settingsHref = `/repos/${repoId}/settings#provider`;
 
@@ -105,7 +107,9 @@ export function PageGenerateButton({
       setJobId(res.job_id);
       setConfirmOpen(false);
     } catch (e) {
-      toast.error("Couldn't start generation", { description: toFriendlyMessage(e) });
+      toast.error(t("pageGenerate.failed"), {
+        description: toFriendlyMessage(e),
+      });
     } finally {
       setLaunching(false);
     }

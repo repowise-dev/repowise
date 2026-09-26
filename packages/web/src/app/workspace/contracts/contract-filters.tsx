@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { Search } from "lucide-react";
 import { PaginationControls } from "@repowise-dev/ui/shared/pagination-controls";
@@ -15,6 +16,9 @@ const ALL_TYPES = ["http", "grpc", "socket", "topic", "data", "code"];
 /** Keystrokes settle for this long before the list is re-fetched. */
 const SEARCH_DEBOUNCE_MS = 300;
 
+/** The minimal translator shape `typeTabs` needs; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
+
 /**
  * The type tabs, from the workspace-wide distribution rather than the
  * vocabulary: a tab that can never return a row is a control that cannot act.
@@ -22,7 +26,11 @@ const SEARCH_DEBOUNCE_MS = 300;
  * every other tab. A type someone linked to stays, so the URL never selects a
  * tab that is not drawn.
  */
-function typeTabs(byType: Record<string, number> | null, selected: string) {
+function typeTabs(
+  t: Translator,
+  byType: Record<string, number> | null,
+  selected: string,
+) {
   const known = byType ? ALL_TYPES.filter((t) => (byType[t] ?? 0) > 0) : ALL_TYPES;
   const extra = byType
     ? Object.keys(byType).filter((t) => !ALL_TYPES.includes(t) && byType[t]! > 0)
@@ -31,7 +39,7 @@ function typeTabs(byType: Record<string, number> | null, selected: string) {
   if (selected && !values.includes(selected)) values.push(selected);
   const total = byType ? Object.values(byType).reduce((a, b) => a + b, 0) : null;
   return [
-    { id: "", label: "All", ...(total != null ? { badge: formatNumber(total) } : {}) },
+    { id: "", label: t("filters.allTypes"), ...(total != null ? { badge: formatNumber(total) } : {}) },
     ...values.map((t) => ({
       id: t,
       label: contractTypeLabel(t),
@@ -58,6 +66,7 @@ export function ContractListControls({
   /** Workspace-wide contracts per type, from `contract_summary`. */
   byType: Record<string, number> | null;
 }) {
+  const t = useTranslations("contracts");
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [text, setText] = useState(filters.q ?? "");
@@ -98,14 +107,14 @@ export function ContractListControls({
   return (
     <div className="flex flex-col gap-3">
       <ViewTabs
-        aria-label="Contract type"
-        tabs={typeTabs(byType, filters.type ?? "")}
+        aria-label={t("filters.typeAria")}
+        tabs={typeTabs(t, byType, filters.type ?? "")}
         value={filters.type ?? ""}
         onValueChange={(type) => go({ ...filters, type })}
       />
       <div className="flex flex-wrap items-center gap-2" aria-busy={pending}>
         <label className="relative min-w-[220px] flex-1">
-          <span className="sr-only">Search contracts</span>
+          <span className="sr-only">{t("filters.searchLabel")}</span>
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]"
             aria-hidden
@@ -114,13 +123,13 @@ export function ContractListControls({
             type="search"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Search path, table, file, symbol or service"
+            placeholder={t("filters.searchPlaceholder")}
             className={`${SELECT_CLASS} w-full pl-8`}
           />
         </label>
 
         <label className="sr-only" htmlFor="contract-repo">
-          Repository
+          {t("filters.repoLabel")}
         </label>
         <select
           id="contract-repo"
@@ -128,7 +137,7 @@ export function ContractListControls({
           value={filters.repo ?? ""}
           onChange={(e) => go({ ...filters, repo: e.target.value })}
         >
-          <option value="">All repositories</option>
+          <option value="">{t("filters.allRepos")}</option>
           {repos.map((r) => (
             <option key={r} value={r}>
               {r}
@@ -137,7 +146,7 @@ export function ContractListControls({
         </select>
 
         <label className="sr-only" htmlFor="contract-role">
-          Role
+          {t("filters.roleLabel")}
         </label>
         <select
           id="contract-role"
@@ -145,13 +154,13 @@ export function ContractListControls({
           value={filters.role ?? ""}
           onChange={(e) => go({ ...filters, role: e.target.value })}
         >
-          <option value="">Providers and consumers</option>
-          <option value="provider">Providers</option>
-          <option value="consumer">Consumers</option>
+          <option value="">{t("filters.roleAll")}</option>
+          <option value="provider">{t("filters.roleProviders")}</option>
+          <option value="consumer">{t("filters.roleConsumers")}</option>
         </select>
 
         <label className="sr-only" htmlFor="contract-linked">
-          Link
+          {t("filters.linkedLabel")}
         </label>
         <select
           id="contract-linked"
@@ -159,14 +168,14 @@ export function ContractListControls({
           value={filters.linked ?? ""}
           onChange={(e) => go({ ...filters, linked: e.target.value })}
         >
-          <option value="">Linked or not</option>
-          <option value="yes">On a matched link</option>
-          <option value="no">On no link</option>
+          <option value="">{t("filters.linkedAll")}</option>
+          <option value="yes">{t("filters.linkedYes")}</option>
+          <option value="no">{t("filters.linkedNo")}</option>
         </select>
 
         {pending ? (
           <span className="text-[10px] text-[var(--color-text-tertiary)]" role="status">
-            Updating...
+            {t("filters.updating")}
           </span>
         ) : null}
       </div>
@@ -188,6 +197,7 @@ export function ContractListPager({
   shown: number;
   total: number;
 }) {
+  const t = useTranslations("contracts");
   const router = useRouter();
   const to = (p: number) =>
     router.push(contractsListHref({ ...filters, page: p }), { scroll: false });
@@ -197,7 +207,7 @@ export function ContractListPager({
       offset={offset}
       shown={shown}
       total={total}
-      label="contracts"
+      label={t("pager.label")}
       onPrevious={page > 1 ? () => to(page - 1) : undefined}
       onNext={offset + shown < total ? () => to(page + 1) : undefined}
     />

@@ -14,6 +14,7 @@ import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
 import { useRepositoryChat } from "./repository-chat-provider";
+import { useTranslations } from "next-intl";
 
 interface ChatInterfaceProps {
   repoId: string;
@@ -33,6 +34,7 @@ export function ChatInterface({
   headCommit,
   initialQuestion,
 }: ChatInterfaceProps) {
+  const t = useTranslations("chat");
   const {
     messages,
     conversationId,
@@ -219,14 +221,16 @@ export function ChatInterface({
       sendDisabled={!anyConfigured}
       sendDisabledReason={
         <span>
-          No chat provider is configured. Add an API key in{" "}
-          <Link
-            href="/settings"
-            className="text-[var(--color-accent-primary)] hover:underline"
-          >
-            settings
-          </Link>{" "}
-          to start asking questions.
+          {t.rich("noProvider", {
+            link: (chunks) => (
+              <Link
+                href="/settings"
+                className="text-[var(--color-accent-primary)] hover:underline"
+              >
+                {chunks}
+              </Link>
+            ),
+          })}
         </span>
       }
       historySlot={

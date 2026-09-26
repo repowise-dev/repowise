@@ -37,6 +37,7 @@ import { search as searchPages } from "@/lib/api/search";
 import { getPageById, listAllPages } from "@/lib/api/pages";
 import { downloadTextFile } from "@/lib/utils/download";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { useTranslations } from "next-intl";
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import type { PageSummary } from "@/lib/api/types";
 
@@ -45,6 +46,8 @@ interface DocsExplorerProps {
 }
 
 export function DocsExplorer({ repoId }: DocsExplorerProps) {
+  const t = useTranslations("docs");
+  const tc = useTranslations("common");
   const { pages, isLoading, mutate } = usePages(repoId);
   // The list carries no bodies, so the reader's page is fetched on its own.
   // Only the id is state; the page itself is whatever that id resolves to,
@@ -289,10 +292,10 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
         </div>
         <div className="space-y-1">
           <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-            No documentation yet
+            {t("explorer.emptyTitle")}
           </h3>
           <p className="text-xs text-[var(--color-text-secondary)] max-w-sm">
-            Run a generation job to create AI-powered documentation for this codebase.
+            {t("explorer.emptyBody")}
           </p>
         </div>
       </div>
@@ -334,7 +337,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
 
       <button
         onClick={() => setTreePanelOpen((o) => !o)}
-        aria-label={treePanelOpen ? "Hide pages tree" : "Show pages tree"}
+        aria-label={treePanelOpen ? t("explorer.hideTree") : t("explorer.showTree")}
         aria-expanded={treePanelOpen}
         className={cn(
           "absolute top-3.5 z-20 rounded-md p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors",
@@ -366,8 +369,8 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
                 target: selectedPage.id,
                 targetKind: "documentation",
               }}
-              question={`Explain "${selectedPage.title}" using the source code, and name the files it rests on.`}
-              label={`Ask about ${selectedPage.title}`}
+              question={t("explorer.askQuestion", { title: selectedPage.title })}
+              label={t("explorer.askLabel", { title: selectedPage.title })}
               className="shrink-0"
             />
           )}
@@ -384,7 +387,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             className="flex items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)]"
           >
             <Search className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Search</span>
+            <span className="hidden sm:inline">{tc("search")}</span>
             <kbd className="hidden rounded border border-[var(--color-border-default)] px-1 py-0.5 text-[10px] sm:inline">
               ⌘K
             </kbd>

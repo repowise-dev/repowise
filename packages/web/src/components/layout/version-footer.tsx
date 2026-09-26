@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { useMetaVersion } from "@/lib/hooks/use-meta-version";
 import { WhatsNewModal } from "./whats-new-modal";
 
@@ -10,6 +11,7 @@ import { WhatsNewModal } from "./whats-new-modal";
  * "update available" dot that opens the what's-new view.
  */
 export function VersionFooter() {
+  const t = useTranslations("shell");
   const { meta } = useMetaVersion();
   const [showWhatsNew, setShowWhatsNew] = useState(false);
 
@@ -27,7 +29,7 @@ export function VersionFooter() {
         {updateAvailable && (
           <span
             className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent-primary)]"
-            aria-label="Update available"
+            aria-label={t("updateAvailable")}
           />
         )}
       </button>

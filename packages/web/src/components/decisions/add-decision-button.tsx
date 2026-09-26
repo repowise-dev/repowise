@@ -14,6 +14,7 @@ import {
 import { Button } from "@repowise-dev/ui/ui/button";
 import type { DecisionCreateInput } from "@repowise-dev/types/decisions";
 import { createDecision } from "@/lib/api/decisions";
+import { useTranslations } from "next-intl";
 
 /**
  * The host half of recording a decision: the entry point, the POST, and the
@@ -21,6 +22,7 @@ import { createDecision } from "@/lib/api/decisions";
  * its own client.
  */
 export function AddDecisionButton({ repoId }: { repoId: string }) {
+  const t = useTranslations("decisions");
   const [open, setOpen] = React.useState(false);
   const router = useRouter();
 
@@ -35,17 +37,13 @@ export function AddDecisionButton({ repoId }: { repoId: string }) {
     <>
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
         <Plus className="h-3.5 w-3.5" />
-        Record a decision
+        {t("add.trigger")}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Record a decision</DialogTitle>
-            <DialogDescription>
-              Something the team has settled on. Name the files it governs and
-              it is recorded as confirmed, because you are the person
-              confirming it.
-            </DialogDescription>
+            <DialogTitle>{t("add.title")}</DialogTitle>
+            <DialogDescription>{t("add.description")}</DialogDescription>
           </DialogHeader>
           <DecisionCreateForm
             onSubmit={handleSubmit}

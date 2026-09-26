@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
+import { useTranslations } from "next-intl";
 import useSWR from "swr";
 import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { ContractLinksTable } from "@repowise-dev/ui/workspace/contract-links-table";
@@ -8,6 +9,12 @@ import { formatNumber } from "@repowise-dev/ui/lib/format";
 import type { WorkspaceContractLinkEntry } from "@/lib/api/types";
 import { getWorkspaceContracts } from "@/lib/api/workspace";
 import { useOpenContract } from "./contract-drawer-host";
+
+/** The minimal translator shape `linksDescription` needs; next-intl's `t` fits. */
+type Translator = (
+  key: string,
+  values?: Record<string, string | number>,
+) => string;
 
 /**
  * The matched links, fetched here rather than on the server page.
@@ -27,6 +34,7 @@ export function LinksSection({
   repo?: string | undefined;
   q?: string | undefined;
 }) {
+  const t = useTranslations("contracts");
   const open = useOpenContract();
   const { data, error, isLoading } = useSWR(
     ["workspace:contract-links", type ?? "", repo ?? "", q ?? ""],
@@ -47,15 +55,15 @@ export function LinksSection({
 
   return (
     <OverviewSection
-      title="Matched links"
-      {...(data ? { description: linksDescription(links, filtered) } : {})}
+      title={t("links.title")}
+      {...(data ? { description: linksDescription(t, links, filtered) } : {})}
     >
       {error ? (
         <p className="text-xs text-[var(--color-text-secondary)]">
-          The matched links could not be loaded. Reload to try again.
+          {t("links.loadFailed")}
         </p>
       ) : !data ? (
-        <p className="text-xs text-[var(--color-text-secondary)]">Loading matched links...</p>
+        <p className="text-xs text-[var(--color-text-secondary)]">{t("links.loading")}</p>
       ) : (
         <ContractLinksTable links={links} onSelect={onSelect} />
       )}
@@ -64,15 +72,19 @@ export function LinksSection({
 }
 
 /** Name the match basis once, since it is the same word on nearly every row. */
-function linksDescription(links: { match_type: string }[], filtered: boolean): string {
+function linksDescription(
+  t: Translator,
+  links: { match_type: string }[],
+  filtered: boolean,
+): string {
   const byType = new Map<string, number>();
   for (const l of links) byType.set(l.match_type, (byType.get(l.match_type) ?? 0) + 1);
   const basis =
     byType.size === 1 && byType.has("exact")
-      ? `All ${formatNumber(links.length)} are exact matches.`
-      : [...byType.entries()].map(([t, n]) => `${formatNumber(n)} ${t}`).join(", ") + ".";
+      ? t("links.allExact", { count: formatNumber(links.length) })
+      : [...byType.entries()].map(([type, n]) => `${formatNumber(n)} ${type}`).join(", ") + ".";
   const head = filtered
-    ? `${formatNumber(links.length)} ${links.length === 1 ? "link matches" : "links match"} the type, repository and search.`
-    : "Every provider joined to the consumer that calls it, strongest first.";
-  return `${head} ${basis} Open a row for the provider and every caller.`;
+    ? t("links.filteredHead", { count: links.length })
+    : t("links.defaultHead");
+  return t("links.description", { head, basis });
 }

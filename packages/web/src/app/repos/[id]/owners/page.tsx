@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { Users } from "lucide-react";
@@ -21,6 +22,7 @@ const LIMIT = 30;
 const DISTRIBUTION_PREFETCH_CAP = 120;
 
 export default function OwnersDirectoryPage() {
+  const t = useTranslations("views.contributors");
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [filters, setFilters] = useState<OwnerDirectoryFilters>({
@@ -75,8 +77,8 @@ export default function OwnersDirectoryPage() {
   return (
     <PageShell
       icon={<Users className="h-5 w-5 text-[var(--color-accent-primary)]" />}
-      title="Contributors"
-      description="Who knows what, mined from full git history. Ownership follows whoever wrote the surviving lines, not whoever committed last."
+      title={t("title")}
+      description={t("description")}
     >
       <OwnerDirectory
         owners={items}

@@ -28,6 +28,7 @@ import { Spinner } from "@repowise-dev/ui/ui/spinner";
 import { toast } from "sonner";
 import { getStructurizrDsl } from "@repowise-dev/api-client/c4";
 import { downloadTextFile } from "@/lib/utils/download";
+import { useTranslations } from "next-intl";
 
 const WORKSPACE_FILENAME = "workspace.dsl";
 const FRAGMENT_FILENAME = "repowise-model.dsl";
@@ -39,6 +40,7 @@ export function ZoomExportButton({
   repoId: string;
   disabled?: boolean;
 }) {
+  const t = useTranslations("zoom");
   const [working, setWorking] = useState(false);
   const [open, setOpen] = useState(false);
   // `working` is only true after a re-render, and `disabled` follows it, so two
@@ -73,19 +75,19 @@ export function ZoomExportButton({
       try {
         const dsl = await getStructurizrDsl(repoId, { standalone });
         downloadTextFile(dsl, filename, "text/plain");
-        toast.success(`Downloaded ${filename}`);
+        toast.success(t("export.downloaded", { filename }));
       } catch (error) {
         // The client throws with the status code, so a 404 (no such repo) and a
         // 500 (built and failed) are different problems. Keep it out of the toast
         // and in the console, where someone debugging will look.
         console.error("Structurizr DSL export failed", error);
-        toast.error("Couldn't build the Structurizr DSL");
+        toast.error(t("export.failed"));
       } finally {
         inFlight.current = false;
         setWorking(false);
       }
     },
-    [repoId],
+    [repoId, t],
   );
 
   return (
@@ -102,7 +104,7 @@ export function ZoomExportButton({
         aria-busy={working}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Download this repository's architecture as Structurizr DSL"
+        title={t("export.title")}
         className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
       >
         {working ? (
@@ -113,7 +115,7 @@ export function ZoomExportButton({
         {/* The label carries the state, not just the icon: lucide marks its
             glyphs aria-hidden, so a spinner alone tells a screen-reader user
             nothing happened. */}
-        {working ? "Building…" : "Structurizr DSL"}
+        {working ? t("export.building") : "Structurizr DSL"}
         {!working && <ChevronDown className="h-3 w-3" />}
       </button>
       {open && (
@@ -122,13 +124,13 @@ export function ZoomExportButton({
           className="absolute right-0 top-[calc(100%+4px)] z-10 w-72 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-1 shadow-lg"
         >
           <ExportOption
-            label="Workspace (workspace.dsl)"
-            hint="Complete file with default views. Opens as-is in Structurizr."
+            label={t("export.workspaceLabel")}
+            hint={t("export.workspaceHint")}
             onClick={() => void download(true)}
           />
           <ExportOption
-            label="Model fragment (repowise-model.dsl)"
-            hint="Model block only, to !include from a workspace.dsl you already have."
+            label={t("export.fragmentLabel")}
+            hint={t("export.fragmentHint")}
             onClick={() => void download(false)}
           />
         </div>

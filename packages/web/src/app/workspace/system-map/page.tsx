@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { Waypoints } from "lucide-react";
 import {
   SystemMap,
@@ -14,7 +15,6 @@ import {
   buildBlastRadiusOverlay,
   buildBreakingChangeOverlay,
   buildConformanceOverlay,
-  plural,
   selectionRepo,
   type ContractRef,
   type RepoHealth,
@@ -41,6 +41,9 @@ import { useRepoContracts } from "./use-repo-contracts";
 
 const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];
 
+/** The minimal translator shape the copy helpers below need; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
+
 function contractHref(ref: ContractRef): string {
   const params = new URLSearchParams({ contract: ref.contract_id, repo: ref.repo });
   if (ref.file_path) params.set("file", ref.file_path);
@@ -52,6 +55,7 @@ function contractsHref(repo: string): string {
 }
 
 export default function SystemMapPage() {
+  const t = useTranslations("systemMap");
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -74,12 +78,21 @@ export default function SystemMapPage() {
   }, [searchParams]);
   const lensOptions = useMemo(
     () =>
-      lensOptionsFor(graph, breaking, conformance, architecture, {
+      lensOptionsFor(t, graph, breaking, conformance, architecture, {
         breaking: Boolean(breakingError),
         conformance: Boolean(conformanceError),
         architecture: Boolean(architectureError),
       }),
-    [graph, breaking, conformance, architecture, breakingError, conformanceError, architectureError],
+    [
+      t,
+      graph,
+      breaking,
+      conformance,
+      architecture,
+      breakingError,
+      conformanceError,
+      architectureError,
+    ],
   );
   // A lens from the URL that cannot act here (0 findings, or its report
   // failed) reads as no lens, rather than a checked option nobody can reach.
@@ -180,18 +193,17 @@ export default function SystemMapPage() {
 
   return (
     <PageShell
-      title="System map"
+      title={t("title")}
       icon={<Waypoints className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
-      description="Services and the typed relationships between them, rebuilt from code and git history on every workspace update."
+      description={t("description")}
       maxWidth="wide"
     >
-      {graph && <Lede graph={graph} architecture={architecture} conformance={conformance} />}
-      {graph && <StatRibbon stats={ribbon(graph, architecture)} LinkComponent={Link} />}
+      {graph && (
+        <Lede graph={graph} architecture={architecture} conformance={conformance} t={t} />
+      )}
+      {graph && <StatRibbon stats={ribbon(t, graph, architecture)} LinkComponent={Link} />}
 
-      <OverviewSection
-        title="Services and relationships"
-        description="Each box is a service; each line is a contract, import or co-change between two of them. Pick a lens to ask the map one question at a time."
-      >
+      <OverviewSection title={t("section.title")} description={t("section.description")}>
         {isLoading ? (
           // Same rows as the loaded map: lens, filters, legend, then the canvas.
           <div className="flex flex-col gap-3" aria-hidden>
@@ -266,6 +278,7 @@ export default function SystemMapPage() {
 
 /** Counts and disabled reasons for each lens, from data already on the page. */
 function lensOptionsFor(
+  t: Translator,
   graph: SystemGraph | null,
   breaking: ReturnType<typeof useWorkspaceBreakingChanges>["data"],
   conformance: ConformanceReport | null,
@@ -276,53 +289,53 @@ function lensOptionsFor(
   const breakingTotal = breaking ? breaking.breaking_count + breaking.warning_count : 0;
   const findings = conformance ? conformance.violation_count + (conformance.total_cycles ?? conformance.cycle_count) : 0;
   return [
-    { value: "none", label: "None", hint: "The map as extracted, no lens" },
+    { value: "none", label: t("lens.none.label"), hint: t("lens.none.hint") },
     {
       value: "blast",
-      label: "Blast radius",
-      hint: "What depends on one service, directly or through others",
-      disabledReason: hasEdges ? undefined : "No relationships to trace yet.",
+      label: t("lens.blast.label"),
+      hint: t("lens.blast.hint"),
+      disabledReason: hasEdges ? undefined : t("lens.blast.disabled"),
     },
     {
       value: "breaking",
-      label: "Breaking changes",
+      label: t("lens.breaking.label"),
       count: breaking ? String(breakingTotal) : undefined,
       disabledReason: failed.breaking
-        ? "Could not load the breaking-change report."
+        ? t("lens.breaking.disabledFailed")
         : !breaking
-        ? "Loading the breaking-change report."
+        ? t("lens.breaking.disabledLoading")
         : !breaking.generated_at
-          ? "Breaking-change detection has not run. Run a workspace update."
+          ? t("lens.breaking.disabledNotRun")
           : breakingTotal === 0
-            ? "No provider contract changed incompatibly in the most recent update."
+            ? t("lens.breaking.disabledNone")
             : undefined,
     },
     {
       value: "conformance",
-      label: "Conformance",
+      label: t("lens.conformance.label"),
       count: conformance ? String(findings) : undefined,
-      hint: "Rule violations and dependency cycles",
+      hint: t("lens.conformance.hint"),
       disabledReason: failed.conformance
-        ? "Could not load the conformance report."
+        ? t("lens.conformance.disabledFailed")
         : !conformance
-        ? "Loading the conformance report."
+        ? t("lens.conformance.disabledLoading")
         : !conformance.generated_at
-          ? "Conformance has not been checked. Run a workspace update."
+          ? t("lens.conformance.disabledNotRun")
           : findings === 0
-            ? "No rule violations or dependency cycles."
+            ? t("lens.conformance.disabledNone")
             : undefined,
     },
     {
       value: "core",
-      label: "Core",
+      label: t("lens.core.label"),
       count: architecture ? String(architecture.core_size) : undefined,
-      hint: "The largest group of services that all depend on each other, and every service's role",
+      hint: t("lens.core.hint"),
       disabledReason: failed.architecture
-        ? "Could not load the architecture metrics."
+        ? t("lens.core.disabledFailed")
         : !architecture
-          ? "Loading architecture metrics."
+          ? t("lens.core.disabledLoading")
           : architecture.core_size === 0 && architecture.roles.length === 0
-            ? "No services to classify."
+            ? t("lens.core.disabledNone")
             : undefined,
     },
   ];
@@ -332,10 +345,12 @@ function Lede({
   graph,
   architecture,
   conformance,
+  t,
 }: {
   graph: SystemGraph;
   architecture: ReturnType<typeof useWorkspaceArchitecture>["data"];
   conformance: ConformanceReport | null;
+  t: Translator;
 }) {
   const name = (id: string) => graph.nodes.find((n) => n.id === id)?.name ?? id;
   const repos = new Set(graph.nodes.map((n) => n.repo)).size;
@@ -347,33 +362,43 @@ function Lede({
 
   return (
     <PageLede
-      label="Architecture score"
-      labelHint="A 1 to 10 roll-up of propagation cost, the size of the cyclic core, dependency cycles and rule violations, over structural edges only. Higher means less coupled."
+      label={t("lede.label")}
+      labelHint={t("lede.labelHint")}
       value={architecture ? architecture.score.toFixed(1) : "–"}
-      unit="out of 10"
+      unit={t("lede.unit")}
       layout="beside"
     >
       <p>
-        {plural(graph.nodes.length, "service", "services")} in {plural(repos, "repository", "repositories")}, joined by{" "}
-        {plural(graph.edges.length, "relationship", "relationships")}: {structural} structural (a contract or import
-        in code) and {behavioral} co-change (files that change in the same commits, not a call).
+        {t("lede.counts", {
+          services: graph.nodes.length,
+          repos,
+          relationships: graph.edges.length,
+          structural,
+          behavioral,
+        })}
       </p>
       {first ? (
         <p>
           <span className="font-medium text-[var(--color-text-primary)]">
-            {first.nodes.map(name).join(" and ")} depend on each other
+            {t("lede.cycleDepend", { names: first.nodes.map(name).join(", ") })}
           </span>
-          , a dependency cycle: none of them can change a contract, build or deploy alone.
-          {totalCycles > 1 ? ` ${plural(totalCycles - 1, "more cycle is", "more cycles are")} listed under Needs attention.` : " It is listed under Needs attention with a prompt to break it."}
+          {t("lede.cycleTail")}{" "}
+          {totalCycles > 1
+            ? t("lede.cycleMore", { count: totalCycles - 1 })
+            : t("lede.cycleOne")}
         </p>
       ) : conformance?.generated_at ? (
-        <p>No dependency cycles: every service can change without a loop back to itself.</p>
+        <p>{t("lede.noCycles")}</p>
       ) : null}
       {architecture && (
         <p>
-          On average a service reaches {architecture.propagation_cost_pct.toFixed(1)}% of the others through
-          dependencies, and {architecture.core_size > 0 ? `${plural(architecture.core_size, "service forms", "services form")} the cyclic core` : "there is no cyclic core"}
-          . Those two figures drive the score.
+          {t("lede.reachAndScore", {
+            pct: architecture.propagation_cost_pct.toFixed(1),
+            core:
+              architecture.core_size > 0
+                ? t("lede.coreForms", { count: architecture.core_size })
+                : t("lede.noCore"),
+          })}
         </p>
       )}
     </PageLede>
@@ -381,6 +406,7 @@ function Lede({
 }
 
 function ribbon(
+  t: Translator,
   graph: SystemGraph,
   architecture: ReturnType<typeof useWorkspaceArchitecture>["data"],
 ): RibbonStat[] {
@@ -389,32 +415,40 @@ function ribbon(
   const structural = graph.edges.filter((e) => e.structural).length;
   return [
     {
-      label: "Services",
+      label: t("ribbon.services"),
       value: formatNumber(graph.nodes.length),
-      sub: `in ${plural(repos, "repository", "repositories")}`,
+      sub: t("ribbon.servicesSub", { count: repos }),
     },
     {
-      label: "Relationships",
+      label: t("ribbon.relationships"),
       value: formatNumber(graph.edges.length),
-      sub: `${structural} structural, ${graph.edges.length - structural} co-change`,
+      sub: t("ribbon.relationshipsSub", {
+        structural,
+        behavioral: graph.edges.length - structural,
+      }),
     },
     {
-      label: "Propagation cost",
+      label: t("ribbon.propagationCost"),
       value: architecture ? `${architecture.propagation_cost_pct.toFixed(1)}%` : "–",
-      sub: "of other services the average one reaches",
-      hint: "The share of other services the average service can reach through structural dependencies. 0% is fully decoupled, 100% is everything reaching everything.",
+      sub: t("ribbon.propagationCostSub"),
+      hint: t("ribbon.propagationCostHint"),
     },
     {
-      label: "Contract links",
+      label: t("ribbon.contractLinks"),
       value: diag ? formatNumber(diag.total_links) : "–",
-      sub: diag ? `from ${formatNumber(diag.total_providers)} providers, ${formatNumber(diag.total_consumers)} consumers` : undefined,
-      hint: "Consumer calls matched to the provider that serves them, across services.",
+      sub: diag
+        ? t("ribbon.contractLinksSub", {
+            providers: formatNumber(diag.total_providers),
+            consumers: formatNumber(diag.total_consumers),
+          })
+        : undefined,
+      hint: t("ribbon.contractLinksHint"),
     },
     {
-      label: "Unmatched consumers",
+      label: t("ribbon.unmatched"),
       value: diag ? formatNumber(diag.unmatched_consumers.length) : "–",
-      sub: "calls with no provider in the workspace",
-      hint: "Consumer contracts that matched no provider: missing, a third-party host, or inside the same service.",
+      sub: t("ribbon.unmatchedSub"),
+      hint: t("ribbon.unmatchedHint"),
     },
   ];
 }

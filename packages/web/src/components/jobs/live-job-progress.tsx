@@ -1,6 +1,7 @@
 "use client";
 
 import { useJob } from "@/lib/hooks/use-job";
+import { useTranslations } from "next-intl";
 
 /**
  * Live progress text for a running/pending generation job. Subscribes to the
@@ -16,6 +17,7 @@ export function LiveJobProgress({
   initialCompleted: number;
   initialTotal: number;
 }) {
+  const t = useTranslations("jobs");
   const { job, sse } = useJob(jobId);
   const completed =
     sse.data?.completed_pages ?? job?.completed_pages ?? initialCompleted;
@@ -25,7 +27,7 @@ export function LiveJobProgress({
   return (
     <span className="inline-flex items-center gap-2 text-[var(--color-model)]">
       <span className="tabular-nums">
-        {completed}/{total} pages
+        {t("progressCount", { completed, total })}
       </span>
       <span className="h-1 w-16 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
         <span

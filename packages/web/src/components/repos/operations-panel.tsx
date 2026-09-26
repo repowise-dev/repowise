@@ -15,6 +15,7 @@ import {
 } from "@repowise-dev/ui/ui/dialog";
 import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 
 interface Props {
   repoId: string;
@@ -22,6 +23,8 @@ interface Props {
 }
 
 export function OperationsPanel({ repoId, repoName }: Props) {
+  const t = useTranslations("repos");
+  const tc = useTranslations("common");
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [confirmResync, setConfirmResync] = useState(false);
   const [loading, setLoading] = useState<"sync" | "resync" | null>(null);
@@ -31,9 +34,9 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     try {
       const job = await syncRepo(repoId);
       setActiveJobId(job.id);
-      toast.info(`Sync started — ${repoName}`);
+      toast.info(t("ops.syncStarted", { name: repoName }));
     } catch (e) {
-      toast.error("Sync failed", {
+      toast.error(t("ops.syncFailed"), {
         description: toFriendlyMessage(e),
       });
     } finally {
@@ -47,9 +50,9 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     try {
       const job = await fullResyncRepo(repoId);
       setActiveJobId(job.id);
-      toast.info(`Full resync started — ${repoName}`);
+      toast.info(t("ops.resyncStarted", { name: repoName }));
     } catch (e) {
-      toast.error("Resync failed", {
+      toast.error(t("ops.resyncFailed"), {
         description: toFriendlyMessage(e),
       });
     } finally {
@@ -65,7 +68,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     <>
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Operations</CardTitle>
+          <CardTitle className="text-sm">{t("ops.title")}</CardTitle>
         </CardHeader>
 
         <CardContent id="operations-panel-content" className="space-y-4">
@@ -89,7 +92,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
                 className="flex-1"
               >
                 <Zap className="h-3.5 w-3.5 mr-1.5" />
-                {loading === "sync" ? "Starting…" : "Sync"}
+                {loading === "sync" ? t("ops.starting") : t("ops.sync")}
               </Button>
               <Button
                 variant="outline"
@@ -99,7 +102,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
                 className="flex-1"
               >
                 <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                {loading === "resync" ? "Starting…" : "Full Resync"}
+                {loading === "resync" ? t("ops.starting") : t("ops.resync")}
               </Button>
               <Button
                 variant="ghost"
@@ -108,7 +111,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
               >
                 <a href={`/api/repos/${repoId}/export`} download>
                   <Download className="h-3.5 w-3.5 mr-1.5" />
-                  Export
+                  {t("ops.export")}
                 </a>
               </Button>
             </div>
@@ -122,20 +125,25 @@ export function OperationsPanel({ repoId, repoName }: Props) {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-[var(--color-stale)]" />
-              Full Resync
+              {t("ops.resync")}
             </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-[var(--color-text-secondary)]">
-            This regenerates every page for{" "}
-            <span className="font-medium text-[var(--color-text-primary)]">{repoName}</span>{" "}
-            from scratch. All existing pages will be overwritten.
+            {t.rich("ops.resyncConfirm", {
+              name: repoName,
+              repo: (chunks) => (
+                <span className="font-medium text-[var(--color-text-primary)]">
+                  {chunks}
+                </span>
+              ),
+            })}
           </p>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setConfirmResync(false)}>
-              Cancel
+              {tc("cancel")}
             </Button>
             <Button variant="destructive" onClick={handleResync}>
-              Resync Everything
+              {t("ops.resyncConfirmAction")}
             </Button>
           </DialogFooter>
         </DialogContent>
