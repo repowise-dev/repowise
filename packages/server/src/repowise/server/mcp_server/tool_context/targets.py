@@ -69,14 +69,11 @@ from repowise.server.mcp_server.tool_context.kg import (
 )
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
-#: How many users of a symbol the card carries. The asymmetry is recorded, not
-#: explained: the sibling ``imported_by`` on a file target carries no cap at
-#: all, and nothing in the code or its history says whether that is a decision
-#: or an omission. This constant only names the cut that already existed.
+#: How many users of a symbol the card carries. The file target's
+#: ``imported_by`` is uncapped; whether that asymmetry is intended is unknown.
 _MAX_USED_BY = 20
-#: Caps for the two decision lanes that are not the accepted one. A candidate
-#: is a review request rather than a rule, and a withdrawn decision is context,
-#: so neither is worth spending the shared response budget the card needs.
+#: Caps for the non-accepted decision lanes: a candidate is a review request
+#: and a withdrawn decision is context, neither worth the shared budget.
 _MAX_CANDIDATES = 3
 _MAX_DECISION_HISTORY = 2
 
@@ -84,27 +81,9 @@ _MAX_DECISION_HISTORY = 2
 #: 32,766 after, and which applies depends on the libsqlite3 linked at runtime.
 _RANK_LOOKUP_CHUNK = 500
 
-# Skeleton-by-default is GONE; ``include=["skeleton"]`` still serves it in full.
-#
-# It was introduced on the claim that "a 1,400-line file's default card costs
-# ~2.5k tokens for 16 bare signatures, while the smart skeleton costs ~1.7k" —
-# strictly better per token. Re-measured 2026-08-11 on pinned Textualize/rich,
-# whole serialised cards in characters, auto-upgrade suppressed for the
-# comparison:
-#
-#   target          auto card   symbol-list card   skeleton text alone
-#   rich/ansi.py        6,585              2,171                 5,295
-#   rich/text.py       13,365              8,562                12,247
-#   rich/color.py       8,591              4,818                 7,405
-#
-# The symbol list is 1,321 chars on ansi.py where the skeleton text is 5,295.
-# The original claim is inverted on this corpus, and the auto card was 73-91%
-# source text on every sample — text the agent can Read for ~1/5 the marginal
-# cost of a mid-session tool result, which is what the block's own
-# ``mostly_full`` note ("a direct Read costs little more") was already saying
-# at the agent's expense. So the default card is the symbol list again and the
-# skeleton is opt-in. If you restore an auto-upgrade, re-run the measurement
-# first: the numbers above are the bar.
+# The default file card is the symbol list; the skeleton is opt-in via
+# ``include=["skeleton"]``. An auto-upgraded card was mostly source text, which
+# a direct Read serves more cheaply, so measure card sizes before restoring one.
 
 
 def _synthesize_structural_summary(file_path: str, classes: list[str], functions: list[str]) -> str:
@@ -129,9 +108,8 @@ def _synthesize_structural_summary(file_path: str, classes: list[str], functions
     return f"{name}: " + "; ".join(parts) + "."
 
 
-# The summary a file with no indexed symbols falls back to. Named so the
-# preview block below can recognise its own stub and correct it rather than
-# string-matching the sentence in two places.
+# The summary a symbol-less file falls back to; named so the preview block can
+# recognise and replace its own stub.
 _NO_SYMBOL_SUMMARY_SUFFIX = "empty or non-symbol file"
 
 
@@ -147,11 +125,8 @@ def _preview_summary(file_path: str, preview: dict[str, Any]) -> str:
     return f"{name}: {lines} lines, no indexed symbols."
 
 
-# A file with no indexed symbols (README, YAML config, SQL, plain text) used to
-# get a card whose entire content was "<name>: empty or non-symbol file", a
-# reply that restates the filename and answers nothing, so the next move was
-# always a Read or a grep the tool could have saved. These bounds keep the
-# replacement preview cheap enough to stay on by default.
+# Bounds on the preview a symbol-less file (README, YAML, SQL) gets, cheap
+# enough to stay on by default.
 _PREVIEW_MAX_LINES = 15
 _PREVIEW_MAX_LINE_CHARS = 120
 # Beyond this the file is big enough that a preview would misrepresent it; the
@@ -316,16 +291,9 @@ async def _resolve_one_target(
             )
             page = res.scalar_one_or_none()
         if page is None:
-            # Partial match fallback for modules — but only on a path-segment
-            # boundary, so "api" matches "src/api" yet "apiclient"/"pi" do not.
-            # Curated module ids are path-shaped, so a raw substring match can
-            # (a) hit 2+ module paths (→ MultipleResultsFound) and (b) shadow a
-            # real file of the same name. Guard against both here.
-            #
-            # First: if the target is itself a known real file (present in
-            # git_metadata, the same source the git fallback rung uses), do NOT
-            # let a partial module match preempt that — fall through so the
-            # ladder reaches the "exists but no wiki page" rung below.
+            # Partial module match, only on a path-segment boundary ("api"
+            # matches "src/api", not "apiclient"). Skipped when the target is a
+            # known file, so a module match cannot shadow the file rung below.
             file_meta_res = await session.execute(
                 select(GitMetadata.file_path).where(
                     GitMetadata.repository_id == repo_id,
@@ -347,9 +315,8 @@ async def _resolve_one_target(
                         ),
                     )
                 )
-                # Deterministic pick when several module paths match: shortest
-                # target_path first, ties broken lexicographically. Module
-                # counts are small, so picking in Python is robust and cheap.
+                # Deterministic pick among several matches: shortest path, then
+                # lexicographic.
                 candidates = sorted(
                     res.scalars().all(), key=lambda p: (len(p.target_path), p.target_path)
                 )
@@ -358,16 +325,9 @@ async def _resolve_one_target(
         if page:
             target_type = "module"
         else:
-            # 3. Try symbol.
-            #
-            # A "{path}::{Name}" target goes through the shared symbol lookup,
-            # the same ladder get_symbol uses, so an id lifted from one tool's
-            # response resolves in the other, in whichever separator style the
-            # caller wrote the qualified part. Matching such a target verbatim
-            # against WikiSymbol.name can only ever miss (a stored name is one
-            # segment, never a path-qualified id), and the ilike below would
-            # then scan for a "%path::Class.method%" substring that no name
-            # column contains. Both rungs are skipped for qualified ids.
+            # 3. Try symbol. A "{path}::{Name}" id goes through get_symbol's
+            # lookup so ids resolve the same in both tools; the name rungs
+            # below can never match a path-qualified id.
             if "::" in target:
                 sym_matches = await resolve_symbol_rows(session, repo_id, target)
             else:
@@ -406,14 +366,9 @@ async def _resolve_one_target(
                     file_path_for_git = target
 
     if target_type is None:
-        # Fallback 1: index-only mode (no wiki pages). Return the graph node.
-        #
-        # The call graph keys its symbol nodes as "{path}::{Class}::{method}",
-        # so a symbol target with no WikiSymbol row matches here, and used to
-        # be typed as a *file*. The card then looked up symbols whose file_path
-        # was the whole id, found none, and reported the symbol as an "empty or
-        # non-symbol file". Type the node by what it is instead: a symbol node
-        # is a symbol target, and its file is the node's file, not its id.
+        # Fallback 1: index-only mode (no wiki pages). Return the graph node,
+        # typed by what it is: a symbol node is a symbol target whose file is
+        # the node's file, not its id.
         res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
@@ -441,12 +396,8 @@ async def _resolve_one_target(
             )
             meta = res.scalar_one_or_none()
             if meta:
-                # Say so when the file was excluded on size. The generic answer
-                # below ("too few symbols or below the PageRank threshold")
-                # sends the reader to regenerate docs, which cannot help: the
-                # file was never read, so no amount of updating will produce a
-                # page. Computed from the same function that made the decision,
-                # so the two cannot drift (#1237).
+                # A file excluded on size will never get a page, so regenerating
+                # docs cannot help; say so instead of the generic answer.
                 size_note = _size_exclusion_note(repo_root, target)
                 if size_note:
                     return {
@@ -459,19 +410,16 @@ async def _resolve_one_target(
                 live_file_meta = meta
                 page = None
 
-        # A producer can legitimately surface a live repository file that was
-        # never indexed into git_metadata (for example, an analysis finding
-        # imported from an older index). Its repository-relative path remains
-        # a valid public identifier, so resolve it from the live checkout.
+        # A live file never indexed into git_metadata is still a valid public
+        # path; resolve it from the checkout.
         if target_type is None and _file_preview(repo_root, target) is not None:
             target_type = "file"
             file_path_for_git = target
             page = None
             live_unindexed_file = True
 
-        # Fallback 2b: legacy module ids. Wiki modules used to be keyed by
-        # community ordinal ("community-12"); they are now keyed by directory
-        # path. Point old agent habits at the new vocabulary.
+        # Fallback 2b: legacy "community-12" module ids; point them at the
+        # directory-path vocabulary.
         if target_type is None and re.fullmatch(r"community[-_]\d+", clean_target, re.IGNORECASE):
             res = await session.execute(
                 select(Page.target_path)
@@ -493,13 +441,9 @@ async def _resolve_one_target(
                 "suggestions": module_paths,
             }
 
-        # Fallback 2c: a "{path}::{Name}" target whose symbol half did not
-        # resolve, but whose file half is a real indexed file. The caller asked
-        # about something *in* that file, so the file's card is a partial answer
-        # and a strictly better reply than "not found": it carries the symbol
-        # list, which is where the correct id was going to come from anyway.
-        # Reported as ``resolved_to`` so the degrade is legible rather than
-        # looking like the symbol was found.
+        # Fallback 2c: an unresolved "{path}::{Name}" whose file is real gets
+        # the file's card (its symbol list holds the right id), marked with
+        # ``resolved_to`` so the degrade is legible.
         if target_type is None and "::" in target:
             file_part = target.split("::", 1)[0]
             if file_part and file_part != target and not is_excluded(file_part, exclude_spec):
@@ -578,9 +522,8 @@ async def _resolve_one_target(
         result_data["index_status"] = "live_file_without_index_record"
         result_data["verification_basis"] = "live"
 
-    # Tombstone redirect: the page documents a file deleted or renamed since
-    # indexing. A "fresh" card here is an active trap — return the redirect
-    # instead of the card.
+    # Tombstone: the file was deleted or renamed since indexing, so return the
+    # redirect rather than a misleading card.
     if page is not None and getattr(page, "freshness_status", "") == "tombstone":
         import json as _json_ts
 
@@ -597,10 +540,7 @@ async def _resolve_one_target(
         return result_data
 
     # --- Parent page (position in the concept tree) -----------------------
-    # Every placed page now carries parent_page_id, so a file target can point
-    # up to the subsystem/concept page that documents it, and a concept page
-    # up to its layer. One extra get() on the already-open session; the row is
-    # a full ORM object here, so parent_page_id is already loaded.
+    # Points a file up to its concept page, a concept page up to its layer.
     if page is not None and page.parent_page_id:
         parent = await session.get(Page, page.parent_page_id)
         if (
@@ -608,9 +548,7 @@ async def _resolve_one_target(
             and parent.repository_id == repo_id
             and getattr(parent, "freshness_status", "") != "tombstone"
         ):
-            # Skip a tombstoned parent: pointing an agent up-tree at a page
-            # whose directory was deleted or renamed since indexing is the
-            # same trap the target's own tombstone redirect above avoids.
+            # Skip a tombstoned parent, for the reason of the redirect above.
             result_data["parent_page"] = {
                 "title": parent.title,
                 "target_path": parent.target_path,
@@ -643,24 +581,14 @@ async def _resolve_one_target(
             classes = [s.name for s in symbols if s.kind == "class"]
             functions = [s.name for s in symbols if s.kind in ("function", "method")]
             if want_skeleton:
-                # A requested skeleton suppresses the symbol list: it already
-                # renders every signature with line bounds, so repeating the
-                # list in docs would roughly double the response for zero
-                # information. Keep the cheap title/summary card only.
+                # The skeleton already renders every signature with line
+                # bounds, so the symbol list would only double the response.
                 if not docs.get("summary"):
                     docs["summary"] = _synthesize_structural_summary(target, classes, functions)
             elif compact:
-                # Compact mode: name+kind+signature+line+symbol_id only. Drops
-                # docstrings, line ranges, structure, and imported_by — those
-                # live behind compact=False or include= flags. The symbol_id
-                # is the canonical handle the caller pipes straight into
-                # get_symbol when it wants bytes.
-                #
-                # Cap at 40 symbols so a dense generated file (protobuf
-                # wrappers, vendored libs) can't blow the triage card past
-                # the agent's budget. Order matches WikiSymbol.start_line
-                # (assigned at index time), so the head is the navigationally
-                # useful slice.
+                # Compact: name, kind, signature, line and symbol_id only. The
+                # cap stops a dense generated file blowing the budget; symbols
+                # are in start_line order, so the head is the useful slice.
                 symbol_cap = 40
                 visible = list(symbols)[:symbol_cap]
                 docs["symbols"] = [
@@ -706,14 +634,10 @@ async def _resolve_one_target(
                     "total_loc": total_loc,
                     "avg_complexity": round(avg_complexity, 2),
                 }
-                # Fallback summary: if no Page (index-only mode) or page.summary
-                # is empty, synthesize a deterministic one-liner from structure.
                 if not docs.get("summary"):
                     docs["summary"] = _synthesize_structural_summary(target, classes, functions)
-                # Importers. The key is literally ``imported_by``, so the scan
-                # has to exclude the edge types that are not references —
-                # otherwise a file that merely tends to change alongside this
-                # one is served to the agent as one of its importers.
+                # Non-reference edges (e.g. co-change) are excluded, or a file
+                # that merely changes alongside this one reads as an importer.
                 res = await session.execute(
                     select(GraphEdge).where(
                         GraphEdge.repository_id == repo_id,
@@ -743,19 +667,13 @@ async def _resolve_one_target(
                         "label": _cmeta.get("label", ""),
                     }
 
-            # A file the symbol index has nothing for still exists and still has
-            # content. Serving counts and a verbatim excerpt costs one read and
-            # answers the "what is in here" the caller was asking; the card
-            # without it restates the filename. Applies to all three shapes
-            # above; none of them has anything to say about a symbol-less file.
+            # A symbol-less file still has content: one read serves counts and
+            # a verbatim excerpt instead of a card that restates the filename.
             if not symbols:
                 preview = _file_preview(repo_root, target)
                 if preview is not None:
                     docs["file_preview"] = preview
-                    # "empty or non-symbol file" is the only summary a
-                    # symbol-less file could get, and next to a preview showing
-                    # 800 lines of headings it is simply false. Restate it from
-                    # what the preview actually counted.
+                    # Replace the stub summary with the preview's own counts.
                     if docs.get("summary", "").endswith(_NO_SYMBOL_SUMMARY_SUFFIX):
                         docs["summary"] = _preview_summary(target, preview)
 
@@ -766,11 +684,7 @@ async def _resolve_one_target(
                 docs["section"] = page.section_number
             if want_full_doc:
                 docs["content_md"] = page.content
-            # Direct sub-concept children in the tree (nested subsystems, api
-            # contracts, symbol spotlights). File children are covered by the
-            # member "files" list below, so listing them here too would just
-            # double the response; this surfaces the tree's real sub-structure
-            # where it exists and is omitted when there is none.
+            # Non-file children only; file children are in "files" below.
             res = await session.execute(
                 select(Page)
                 .where(
@@ -808,9 +722,7 @@ async def _resolve_one_target(
                 [
                     {
                         "path": f.target_path,
-                        # Page titles are "File: <path>" — pure redundancy
-                        # next to the path field. Use the indexed one-line
-                        # summary when there is one.
+                        # The title ("File: <path>") repeats the path.
                         "description": (f.summary or "").strip()[:160],
                         "confidence_score": f.confidence,
                     }
@@ -843,21 +755,12 @@ async def _resolve_one_target(
                 docs["file_summary"] = sym_page.summary or ""
                 if want_full_doc:
                     docs["documentation"] = sym_page.content
-            # Used by: the files that use THIS symbol. Keyed on the symbol's
-            # own node id, because a ``calls`` edge is symbol-to-symbol and
-            # targets a ``path::Name``; keyed on the file path, as it was until
-            # now, it could only match edges into the whole file and answered
-            # "who imports this symbol's file" instead. Positive vocabulary
-            # rather than a negative filter, for the reason #1905 gave the
-            # sibling path in get_risk: an untyped edge must not become a use.
-            #
-            # Sources fold to their file, which keeps one row per using file and
-            # keeps this distinct from ``callers`` (symbol-grained, calls-only,
-            # opt-in). The list is cut at ``_MAX_USED_BY`` and the agent never
-            # learns what fell off, so which twenty survive is the whole of what
-            # it says: on the 42-index corpus ranking moves the kept set on
-            # 4,447 of the 4,743 targets over the cap, a median of 7 of the 20.
-            # Rank by the source file's PageRank, path breaking ties.
+            # Used by: files that use THIS symbol, keyed on its node id (a
+            # ``calls`` edge targets ``path::Name``; the file path would answer
+            # "who imports the file"). A positive edge vocabulary, so an untyped
+            # edge never becomes a use. Sources fold to one row per file, unlike
+            # symbol-grained ``callers``. The cap drops rows silently, so which
+            # survive matters: rank by source-file PageRank, path breaking ties.
             sym_node_id = getattr(sym, "symbol_id", None) or getattr(sym, "node_id", None)
             res = await session.execute(
                 select(GraphEdge.source_node_id, GraphNode.file_path)
@@ -934,22 +837,12 @@ async def _resolve_one_target(
         result_data["docs"] = docs
 
     # --- Triage signals (always on) ---------------------------------------
-    # Two single-bit-ish pointers the agent uses to decide its next move:
-    #   * ``hotspot``: lights the way to ``get_risk`` for files in the 95th+
-    #     churn percentile. Just the boolean — the full risk dossier stays
-    #     in ``get_risk`` so the triage card doesn't grow.
-    #   * ``fix_history``: the same pointer for the defect signal, and the
-    #     reason the card grew by one key. ``hotspot`` alone answers "is this
-    #     file busy", which is not the same question as "does this file break",
-    #     and get_risk already classifies targets bug-prone off these columns.
-    #     Count plus age plus the magnet flag, no symbols and no dossier;
-    #     omitted entirely on files with no counted fixes.
-    #   * ``decision_records``: titles only, no body. Lights the way to
-    #     ``get_why``. We deliberately don't inline the rationale here;
-    #     duplicating it across every ``get_context`` response bloats the
-    #     cached prompt prefix and defeats the split between the two tools.
-    #
-    # Cheap: two short queries piggybacking on the session we already opened.
+    # Small pointers to the next tool, never the dossier itself:
+    #   * ``hotspot``: points to ``get_risk`` for high-churn files.
+    #   * ``fix_history``: "does this file break", which churn does not
+    #     answer; omitted on files with no counted fixes.
+    #   * ``decision_records``: titles only, pointing to ``get_why``; inlining
+    #     rationale would bloat every cached response.
     triage_path = file_path_for_git
     if target_type == "module" and page:
         triage_path = page.target_path
@@ -975,12 +868,8 @@ async def _resolve_one_target(
             if fixes is not None:
                 result_data["fix_history"] = fixes
 
-        # Governing decisions — opt-in only (``include=["decisions"]``).
-        # The default triage card omits them: the rich form
-        # (id/staleness/verification) is low-signal for an agent's next move and
-        # the per-call graph query isn't worth the latency or the cached-prefix
-        # weight. Agents that want rationale call get_why directly; opting in
-        # here returns a lightweight titles list (no enriched objects).
+        # Governing decisions, opt-in only: the graph query is not worth its
+        # latency on every card. Returns titles; get_why has the rationale.
         if include and "decisions" in include:
             governing: list[DecisionRecord] = []
             seen_ids: set[str] = set()
@@ -1079,30 +968,15 @@ async def _resolve_one_target(
 
     # --- Decisions ---
     if include is None or "decisions" in include:
-        # Acceptance is authority, and the status column is not it. This query
-        # used to select every record for the repository with no status, no
-        # acceptance and no dismissed filter and assign the whole list to
-        # ``decisions``, so a machine-mined candidate and a dismissed tombstone
-        # both reached an agent as a rule the repository had settled on.
+        # Acceptance is authority, not the status column. The lanes match
+        # ``get_why`` path mode: ``decisions`` accepted and binding,
+        # ``candidates`` never accepted, ``history`` accepted then withdrawn.
+        # Ordering is ``decision_priority_order``, shared with the Decisions page.
         #
-        # The lanes are ``get_why`` path mode's, spelled the same way on
-        # purpose: ``decisions`` is accepted and still binding, ``candidates``
-        # is never accepted, ``history`` is accepted and withdrawn. Two agent
-        # tools answering the same question in two vocabularies is the divergence
-        # the split exists to remove.
-        #
-        # The order is ``decision_priority_order``, which is what the Decisions
-        # page renders through ``crud.list_decisions(sort="priority")``. Ordering
-        # is shared rather than restated so the two surfaces cannot drift.
-        #
-        # The dismissed filter is ``count_decisions_by_lane``'s, and for its
-        # reason: ``dismiss_candidate`` writes ``status = "dismissed"`` both for
-        # a candidate tombstoned so re-extraction never re-proposes it and for a
-        # decision somebody accepted and later withdrew. Only the acceptance row
-        # tells the two apart. A bare ``status != "dismissed"`` drops both, which
-        # loses the withdrawn decision from every lane instead of putting it in
-        # the one that exists for it — and the Decisions page's History lane
-        # shows exactly those records, so dropping them here is a divergence.
+        # The dismissed filter is ``count_decisions_by_lane``'s: "dismissed"
+        # marks both a tombstoned candidate and a withdrawn decision, and only
+        # the acceptance row tells them apart, so a bare status filter would
+        # lose the withdrawn ones from the history lane.
         res = await session.execute(
             select(DecisionRecord)
             .where(
@@ -1117,8 +991,7 @@ async def _resolve_one_target(
         candidates: list[dict[str, Any]] = []
         history: list[dict[str, Any]] = []
         for d in all_decisions:
-            # A commit footprint is not a claim about any one of its
-            # files.
+            # A commit footprint is not a claim about any one of its files.
             if not binds_to_paths(d.scope_basis):
                 continue
             affected_files = json.loads(d.affected_files_json)
@@ -1150,12 +1023,9 @@ async def _resolve_one_target(
                 entry["currency"] = currency
                 history.append(entry)
         result_data["decisions"] = governing
-        # The response budget is one ceiling over the whole payload, not one
-        # per block, so an uncapped new lane does not appear beside the card —
-        # it displaces the docs and symbols the caller asked for. Accepted
-        # decisions keep the behaviour they have (a set acceptance keeps small
-        # by construction); the two lanes this adds are capped where they are
-        # built, and what a cap drops is recoverable through the collector.
+        # One budget covers the whole payload, so an uncapped lane would
+        # displace the docs the caller asked for. Accepted decisions stay
+        # uncapped (small by construction); dropped rows go to the collector.
         if candidates:
             cap_collection(
                 result_data,
@@ -1176,31 +1046,14 @@ async def _resolve_one_target(
             )
 
     # --- Freshness ---
-    #
-    # ``is_stale`` reads ``freshness_status`` through the same predicate
-    # ``repowise generate --stale`` uses, rather than thresholding
-    # ``confidence``. Two separate corrections in one line.
-    #
-    # The axis was wrong: freshness is whether a page has fallen behind the
-    # code it documents, confidence is how far its statements can be trusted
-    # while it has not. Thresholding the latter reported a *module* page as
-    # stale on the day it was built, because generation stamped every module
-    # page a keyless run rendered below the threshold. File and symbol targets
-    # were unaffected, since their pages are template renders at full
-    # confidence, so this was a module-target bug rather than a whole-tool one.
-    #
-    # The word was also being redefined: importing the CLI's set keeps one
-    # meaning of "stale" in the product. A hand-rolled ``!= "fresh"`` would
-    # quietly widen it to cover ``tombstone`` and ``outdated`` too, which is a
-    # different claim than the one the flag makes.
+    # ``is_stale`` uses ``STALE_STATUSES``, the set ``repowise generate --stale``
+    # uses, so "stale" means one thing. Not ``confidence``: that rates how far a
+    # page can be trusted, not whether it has fallen behind the code.
     if include is None or "freshness" in include:
         freshness: dict[str, Any] = {}
 
         def _is_stale(row: Page) -> bool:
-            # Defensive on None: the column is NOT NULL with a "fresh" default
-            # and every write path passes it, but the old expression guarded
-            # its input and dropping the guard would turn a hand-written row
-            # into a stale one rather than a fresh one.
+            # The column is NOT NULL, but a hand-written None reads as fresh.
             return (row.freshness_status or "fresh") in STALE_STATUSES
 
         if page:
