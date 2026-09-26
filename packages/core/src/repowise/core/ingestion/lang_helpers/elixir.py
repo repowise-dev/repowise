@@ -100,10 +100,8 @@ def _elixir_guarded_head(node: Node) -> Node:
 
 def _elixir_in_attribute(node: Node, src: str) -> bool:
     """True when *node* is a module attribute's name or sits in a typespec body."""
-    # Walk out to the `@` unary_operator that opens this statement. Bounded by
-    # the statement rather than by a hop count: a union return type nests one
-    # binary_operator per member, so `@spec f(t) :: a() | b() | c() | d()` sits
-    # deeper than any fixed budget and used to leak its type names as calls.
+    # Bounded by the statement, not a hop count: a union return type nests one
+    # binary_operator per member, so a typespec has no fixed depth.
     ancestor: Node | None = node
     while ancestor is not None:
         holder = ancestor.parent
@@ -179,8 +177,8 @@ def _elixir_enclosing_module_alias(node: Node, src: str) -> str | None:
 def _elixir_defimpl_name(call_node: Node, src: str) -> str | None:
     """The module name the compiler generates for a ``defimpl`` block.
 
-    ``defimpl Jason.Encoder, for: Tuple`` compiles to a module called
-    ``Jason.Encoder.Tuple``, and that name is used here. Without it the
+    ``defimpl Printable, for: Tuple`` compiles to a module called
+    ``Printable.Tuple``, and that name is used here. Without it the
     definitions inside the block are attributed to whatever module encloses it,
     where they read as unused exports of a module that never declared them, and
     two implementations of one protocol in one file mint two symbols under one

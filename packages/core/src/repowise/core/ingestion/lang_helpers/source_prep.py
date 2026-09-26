@@ -10,37 +10,12 @@ _PASCAL_USES_IN_CLAUSE_RE = re.compile(rb"\bin\b[ \t]*'(?:[^'\r\n]|'')*'")
 def _sanitize_pascal_project_source(source: bytes) -> bytes:
     """Blank Delphi/FPC project-file ``unit in 'path.pas'`` clauses.
 
-    ``.dpr``/``.dpk``/``.lpr`` project files map each unit to its source
-    path right in the ``uses`` clause -- ``uses SysUtils, MyUnit in
-    'src\\MyUnit.pas';`` -- and Delphi's IDE writes this automatically for
-    every unit added to a project, making it the norm rather than the
-    exception in real ``.dpr``/``.dpk`` files (confirmed against this
-    repo's own ``MTN2.dpr``: every non-RTL unit uses it).
-
-    tree-sitter-pascal's grammar has no rule for the trailing ``in
-    '...'`` at all. Hitting it mid-``declUses`` doesn't just fail that
-    one unit -- the parser's error recovery folds the ``in``, the path
-    string, and every subsequent comma-separated unit into one corrupted
-    ``moduleName`` node spanning to wherever it happens to resync, so a
-    single ``in`` clause was silently swallowing the rest of the ``uses``
-    list (observed on ``MTN2.dpr``: 4 imports extracted instead of ~80,
-    the 4th holding several KB of raw multi-line garbage as its
-    ``module_path``). This is an upstream grammar gap, not something a
-    ``.scm`` query can route around -- the AST itself is malformed before
-    any query runs.
-
-    Blanks the matched span with spaces (never a raw newline -- a Pascal
-    string literal can't contain one, so no line is fully consumed) to
-    preserve every other byte offset in the file, so line numbers for
-    symbols/imports/calls elsewhere are unaffected. `'ABC'` doesn't need
-    the doubled-quote (`''`) escape handled specially for *finding* the
-    end of the string here (the regex already treats `''` as staying
-    inside the literal), only for correctness of the match's own extent.
-
-    Scoped to project files specifically: this syntax is invalid outside
-    a ``uses`` clause and ``.pas``/``.pp`` unit files can't legally carry
-    it, so there's nothing to blank there and no reason to run the regex
-    over every unit file in a codebase.
+    ``.dpr``/``.dpk``/``.lpr`` files map units to paths in the ``uses``
+    clause (``uses MyUnit in 'src\\MyUnit.pas';``), and the Delphi IDE writes
+    that form for every unit it adds. tree-sitter-pascal has no rule for it:
+    error recovery folds the ``in``, the path and every later unit into one
+    corrupt ``moduleName`` node, so the rest of the ``uses`` list is lost before
+    any query runs. The regex keeps a doubled ``''`` inside the literal.
     """
     return _blank_matches(source, _PASCAL_USES_IN_CLAUSE_RE)
 
@@ -69,32 +44,15 @@ _PASCAL_PROJECT_EXTENSIONS = (".dpr", ".dpk", ".lpr")
 def prepare_pascal_source(source: bytes, path: str | None) -> bytes:
     """Single entry point for every Pascal byte-preserving sanitizer.
 
-    Called from :func:`~.sfc_source.prepare_source` -- the same
-    registry-dispatched hook every other tree-sitter consumer (the
-    ingestion parser, plus the complexity/dataflow/duplication health
-    walkers) already calls before handing bytes to a ``Parser`` -- rather
-    than parser.py special-casing Pascal in its own if-blocks. That keeps
-    ``docs/architecture/language-support.md``'s "zero changes to
-    parser.py" promise for a new language, and means the health walkers
-    get the same clean projection the ingestion parser does instead of
-    parsing raw bytes.
+    Called through :func:`~.sfc_source.prepare_source`, the hook the parser and
+    the health walkers already run before parsing, so ``parser.py`` needs no
+    Pascal branch. Gated on *path*'s extension because the ``in '...'`` syntax
+    is invalid in a plain unit file.
 
-    Only wraps ``_sanitize_pascal_project_source`` (``.dpr``/``.dpk``/
-    ``.lpr`` ``in '...'`` clauses), gated on *path*'s extension since that
-    syntax is invalid in a plain unit file. An earlier revision of this
-    function also blanked whatever an anonymous ``array[...] of record``
-    element type's parse errors touched, discovered via ERROR-node spans
-    from a throwaway parse. Dropped after review (PR #1353): tree-sitter's
-    error recovery for that construct doesn't cleanly wrap the bad
-    construct in one ERROR node -- on the reviewer's repro, one of the
-    spans it found was the class's own legitimate closing ``end;``, and
-    blanking it produced the exact same broken structure (the following
-    method detached from its class) as running no sanitizer at all. A
-    correct fix needs a nesting-aware nested-record/variant-part scanner,
-    which is more surface area than one occurrence in one file (see the
-    dropped function's own docstring) justifies; the anon-record case is
-    left to degrade to a wrong parent for that one class, same as any
-    other unhandled grammar gap.
+    An anonymous ``array[...] of record`` element type still parses badly and
+    is not blanked here: its ERROR spans can cover the class's own closing
+    ``end;``, so blanking them breaks the structure they meant to fix. That
+    case degrades to a wrong parent for the one class, like any grammar gap.
     """
     if path and path.lower().endswith(_PASCAL_PROJECT_EXTENSIONS):
         return _sanitize_pascal_project_source(source)
@@ -116,26 +74,15 @@ _OBJC_BARE_MACRO_LINE_RE = re.compile(
 )
 
 
-# Availability / naming attributes written *call-shaped* after a declaration
-# (``@property (...) Foo *bar AF_API_AVAILABLE(ios(10));``,
-# ``- (void)done NS_SWIFT_NAME(done())``). The bare whole-line pass above
-# cannot see these: the macro is the last token of a declaration the grammar
-# otherwise reads fine, and it reads as a declarator or attribute list the
-# grammar cannot close. Error recovery then fails to resync at the ``;`` and
-# the damage runs past the declaration into the rest of the file, so the
-# enclosing method of every call after it is lost and those calls are credited
-# to ``__module__`` instead of their real caller. Measured on AFNetworking's
-# ``AFURLSessionManager.m``: 822 ERROR nodes before, 2 after.
+# Availability / naming attributes written call-shaped after a declaration
+# (``- (void)done NS_SWIFT_NAME(done())``). The grammar reads the macro as a
+# declarator it cannot close, recovery fails to resync at the ``;``, and every
+# later call in the file loses its enclosing method.
 #
-# Enumerated by name, the same shape as the list above, because the grammar
-# cannot tell an attribute from a call on its own. ``NS_ENUM(NSInteger, Kind)``
-# after a ``typedef`` and ``NSLog(@"%@", x)`` both look like
-# ``IDENT(...)``; a general rule would blank real code and a match-everything
-# rule for these names is no safer. Only a form that *terminates* a declaration
-# qualifies: the macro must be followed by the closing ``;``, the ``{`` opening
-# a method body, or the end of the line (a definition may put the brace on the
-# next one). The same name inside an argument list or a comparison sits before
-# a ``,``/``)`` and is left alone.
+# Enumerated by name because ``NS_ENUM(NSInteger, Kind)`` and
+# ``NSLog(@"%@", x)`` share the ``IDENT(...)`` shape. Only a form that ends a
+# declaration qualifies: followed by ``;``, a body's ``{``, or end of line. The
+# same name before a ``,`` or ``)`` is left alone.
 _OBJC_TRAILING_MACRO_RE = re.compile(
     rb"(?<![A-Za-z0-9_])(?:AF_API_AVAILABLE|API_AVAILABLE|API_DEPRECATED"
     rb"|NS_SWIFT_NAME|NS_AVAILABLE|NS_DEPRECATED)"
@@ -164,7 +111,7 @@ def prepare_objectivec_source(source: bytes) -> bytes:
     header, so this is the dominant parse failure in real source.
 
     The same failure has a second shape: a declaration whose *last* token is a
-    call-shaped availability attribute (``AF_API_AVAILABLE(ios(10), ...)``,
+    call-shaped availability attribute (``API_AVAILABLE(ios(10))``,
     ``NS_SWIFT_NAME(...)``). There the recovery never resyncs at the closing
     ``;``, so one trailing attribute derails the remainder of the file. Both
     passes blank in place, so every offset outside a match is unchanged.

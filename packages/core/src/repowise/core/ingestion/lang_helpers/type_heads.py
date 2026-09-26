@@ -423,7 +423,7 @@ def _java_head_step(node: Node, src: str) -> str | Node | None:
              if c.type not in ("annotation", "marker_annotation")),
             None,
         )
-    # ``Foo[]`` and anything else (wildcard, type_parameter, ...) — descend.
+    # ``Foo[]`` and anything else (wildcard, type_parameter, ...): descend.
     return _first_named_child(node)
 
 
@@ -479,11 +479,9 @@ _RUST_NO_SINGLE_HEAD = (
 def _rust_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head identifier of a Rust type expression, or None.
 
-    Rust needs its own extractor because the C#-shaped default spells a type
-    name ``identifier`` while tree-sitter-rust spells it ``type_identifier``.
-    The default therefore returned None for every bare Rust type, and for
-    ``std::io::Error`` returned the leftmost segment ``io`` — a crate name,
-    not the type.
+    tree-sitter-rust spells a type name ``type_identifier`` where the
+    C#-shaped default expects ``identifier``, and a scoped path keeps the type
+    in its ``name`` field, so the default cannot serve.
 
     Examples:
         ``MyType``              -> "MyType"
@@ -648,7 +646,7 @@ def _objc_head_type_identifier(type_node: Node, src: str) -> str | None:
 
     Examples:
         ``(NSString *)``      -> None       (Foundation, never in-repo)
-        ``(AFHTTPClient *)``  -> the name
+        ``(MyClient *)``      -> "MyClient"
         ``(instancetype)``    -> None       (builtin)
         ``(void)`` / ``(id)`` -> None       (primitive / builtin)
         ``@class Helper;``    -> "Helper"

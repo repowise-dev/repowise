@@ -55,10 +55,8 @@ def _objc_selector_keywords(def_node: Node, src: str) -> list[str]:
     pending: str | None = None
     for child in def_node.children:
         if child.type == "identifier":
-            # Only the identifier immediately before a method_parameter is a
-            # keyword; a bare trailing one is a macro like
-            # NS_DESIGNATED_INITIALIZER, which would otherwise join into the
-            # selector and stop the header pairing with its implementation.
+            # Only an identifier followed by a method_parameter is a keyword;
+            # a trailing one is a macro such as NS_DESIGNATED_INITIALIZER.
             pending = node_text(child, src).strip() or None
         elif child.type == "method_parameter":
             if pending is not None:
@@ -210,7 +208,7 @@ def _objc_block_declares(block: Node, name: str, src: str) -> bool:
 def _objc_declares_name(node: Node, name: str, src: str) -> bool:
     """True when *node* binds *name* as a parameter or a variable.
 
-    A declarator nests (``void (^block)(int)``, ``SDBlock done = ^{}``), so
+    A declarator nests (``void (^block)(int)``, ``Handler done = ^{}``), so
     every identifier under the node is checked rather than only the direct
     children. The node is a parameter or a declaration, never a body, so the
     walk stays small; a nested block body is skipped for the same reason.
