@@ -8,7 +8,7 @@ import {
 } from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
-// Work-queue prompt (repo-level — the Attention Needed backlog)
+// Work-queue prompt (repo-level: the Attention Needed backlog)
 // ─────────────────────────────────────────────────────────────────────
 
 const WORK_QUEUE_PREAMBLE: Record<AiPromptFlavor, string> = {

@@ -17,13 +17,8 @@ import {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Everything the file drawer knows about one file, in the shape the prompt
- * needs it.
- *
- * Structural rather than imported from the drawer, like every other input in
- * this module: the drawer imports the builder, so importing the drawer's types
- * back would be a cycle, and a host holding the same facts from somewhere else
- * can still build the prompt.
+ * Everything the file drawer knows about one file. Structural rather than the
+ * drawer's own types, which would be an import cycle.
  */
 export interface FileHealthPromptInput {
   file_path: string;
@@ -51,9 +46,8 @@ export interface FileHealthPromptFinding {
   line_end?: number | null;
   health_impact: number;
   reason: string;
-  // Spelled with an explicit `undefined` because the drawer forwards rows
-  // whose optional fields are genuinely absent, and the package compiles with
-  // exactOptionalPropertyTypes.
+  // Explicit `undefined`: the drawer forwards absent fields and the package
+  // compiles with exactOptionalPropertyTypes.
   status?: string | undefined;
   details?: Record<string, unknown> | null | undefined;
 }
@@ -114,28 +108,18 @@ const EXPECTED = [
   "4. A summary of what changed, and which specific findings each change should clear.",
 ];
 
-/**
- * A titled section that carries its own leading blank line, or "" when it has
- * no body. The blank line has to live inside the string because `joinSections`
- * drops bare "" separators along with the absent sections.
- */
+/** A titled section with its own leading blank line, or "" when it has no body. */
 function section(heading: string, body: string | null | undefined): string {
   return body ? `\n${heading}\n\n${body}` : "";
 }
 
-/**
- * The findings still worth work: the detailed ones, the rolled-up tail, and
- * the history markers that go to context instead.
- */
+/** Open findings: the detailed ones, the rolled-up tail, and history for context. */
 function openFindings(findings: FileHealthPromptFinding[]) {
-  // Triaged findings stay on the row. A prompt that asked an agent to fix
-  // something already marked resolved would be reporting the drawer's state
-  // rather than the file's.
+  // Findings already triaged away are not open work.
   const open = findings.filter(
     (f) => f.status !== "resolved" && f.status !== "false_positive",
   );
-  // Split before ranking: history markers are scored but cannot be fixed from
-  // this file, so they go to context rather than into a list of open work.
+  // Split before ranking: history markers go to context, not open work.
   const { codeShape, history } = splitByOrigin(open);
   const ranked = rankByImpact(codeShape);
   return {
@@ -200,9 +184,7 @@ function leadingCause(file: FileHealthPromptInput): string | null {
 function categoryLine(c: FileHealthPromptCategory): string {
   const label = CATEGORY_LABEL[c.category as keyof typeof CATEGORY_LABEL] ?? c.category;
   const cap = c.cap != null ? `, capped at −${c.cap.toFixed(1)}` : "";
-  // A capped category understates itself: the raw deductions ran past the
-  // ceiling, so this figure is a floor on how bad it is, not a measurement
-  // of it.
+  // A capped category's figure is a floor, not a measurement.
   const note = c.capped ? " — **at its ceiling**, so this understates the category" : "";
   return `${label}: −${c.applied_deduction.toFixed(2)} from ${c.finding_count} finding${pluralS(
     c.finding_count,
@@ -245,9 +227,8 @@ function processSignals(signals: FileHealthPromptSignals | null | undefined): st
 }
 
 function causeLine(c: PerformanceOpportunity): string {
-  // Titled the way every other surface titles a cause: the marker plus where
-  // it fires. The fix's strategy name is not the cause's name, and using it
-  // made distinct causes read as several copies of one.
+  // Titled by marker and location, as every other surface titles a cause; the
+  // fix strategy is not the cause's name.
   const first = c.evidence[0];
   const symbol = c.intervention_symbol ?? first?.function_name ?? null;
   const at = symbol ? ` in \`${symbol}\`` : "";
@@ -276,14 +257,9 @@ function performanceCauses(causes: PerformanceOpportunity[]): string | null {
 }
 
 /**
- * One file, everything code health has on it, as a prompt.
- *
- * Deliberately not `buildAiPrompt`. That one takes a refactoring-queue item
- * and asks for a refactor. This takes the drawer's own view of a file, which
- * spans three scored dimensions, the category ceilings, the process and
- * topology signals, and any open performance causes. Those signals disagree
- * often enough that the prompt's job is to hand over all of them and ask which
- * ones share a root cause, rather than to order a fix.
+ * One file, everything code health has on it, as a prompt. Unlike
+ * `buildAiPrompt` it hands over every signal and asks which share a root
+ * cause, rather than ordering a refactor.
  */
 export function buildFileHealthAiPrompt({
   file,

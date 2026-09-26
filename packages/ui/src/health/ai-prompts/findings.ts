@@ -24,12 +24,8 @@ export function rankByImpact<T extends { health_impact: number }>(findings: T[])
 }
 
 /**
- * History findings, stated as context rather than as work.
- *
- * They are scored, so leaving them out would not explain the file's number,
- * but they are measured from the commit log: an agent handed them in a fix
- * list will either edit the file until it gives up or invent a change that
- * cannot move them. They get their own section and an explicit instruction.
+ * History findings as context, not work. They count toward the score but come
+ * from the commit log, so no edit to the file can clear them.
  */
 export function historyContextBlock(
   findings: { biomarker_type: string; reason: string; health_impact: number }[],
@@ -108,11 +104,7 @@ function codeAgeVolatilityContext(d: DetailFields): string | null {
   return parts.join(", ");
 }
 
-/**
- * The few biomarkers whose details carry something the reason line does not.
- * A Map rather than an object so a biomarker type can never resolve to an
- * inherited property.
- */
+/** Biomarkers whose details add to the reason line. A Map, so no type hits a prototype key. */
 const EXTRA_CONTEXT = new Map<string, (d: DetailFields) => string | null>([
   ["hidden_coupling", hiddenCouplingContext],
   ["complex_conditional", complexConditionalContext],
@@ -153,10 +145,7 @@ function findingEntry(f: PromptFinding, index: number, suggestion: string | unde
     .join("\n");
 }
 
-/**
- * The detailed findings as numbered entries, each with the host's suggested
- * direction for its marker when one was supplied.
- */
+/** Numbered entries, with the host's suggested direction per marker when given. */
 export function findingEntries(
   findings: PromptFinding[],
   suggestions?: Record<string, string>,
@@ -166,11 +155,7 @@ export function findingEntries(
     .join("\n\n");
 }
 
-/**
- * The findings past the detailed cap, rolled up into one line grouped by
- * marker, so the agent still knows what is left without paying for every
- * description. `followUp` says when to deal with them.
- */
+/** The findings past the detailed cap as one line grouped by marker. */
 export function remainderRollup(remainder: PromptFinding[], followUp: string): string | null {
   if (remainder.length === 0) return null;
   const counts = new Map<string, number>();

@@ -21,7 +21,7 @@ import {
 } from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
-// Refactoring plan prompt — hand a deterministic plan to a coding agent
+// Refactoring plan prompt (hand a deterministic plan to a coding agent)
 // ─────────────────────────────────────────────────────────────────────
 
 export interface BuildPerformanceOpportunityPromptOptions {
@@ -144,11 +144,8 @@ function planFacts(plan: RefactoringPlan, blurb: string): string {
 }
 
 /**
- * Build a ready-to-paste prompt that hands a coding agent ONE deterministic
- * refactoring plan: what to change, the concrete per-type steps, the blast
- * radius it must keep consistent, and a completion contract. Unlike the
- * file-level fix prompt, the plan here is already computed — the agent's job is
- * to execute it and verify behavior, not to rediscover the smell.
+ * Hand an agent ONE precomputed refactoring plan to execute and verify, with
+ * its per-type steps, blast radius and completion contract.
  */
 export function buildRefactoringPlanPrompt({
   plan,
@@ -235,13 +232,8 @@ function stepEntry(step: OpportunityStep, index: number, plan: RefactoringPlan |
 }
 
 /**
- * The ordered steps, each one saying what kind of change it is.
- *
- * `relocated_by` gets its own sentence rather than a footnote. A step it marks
- * names an earlier step that moves its symbol to another file, so its own path
- * and span describe where the symbol *was* — an agent that follows those
- * coordinates after applying step one lands in the wrong file, and nothing else
- * in the payload would tell it so.
+ * The ordered steps. A `relocated_by` step gets its own line because an earlier
+ * step moves its symbol, so its recorded path and span go stale mid-run.
  */
 function opportunitySteps(opportunity: RefactoringOpportunityDetailResolved): string {
   const byId = new Map(opportunity.plans.map((plan) => [plan.id, plan]));
@@ -285,15 +277,9 @@ function opportunityValidation(opportunity: RefactoringOpportunityDetailResolved
 }
 
 /**
- * The line that tells an MCP-capable agent it can pull this record itself.
- *
- * An id in a prompt with no call that resolves it is noise — the work-queue
- * prompt prints `- Target: <id>` and nothing accepts it, which is the mistake
- * this deliberately does not repeat. So the id is stated for every flavor,
- * because it is how a person reports completion and how staleness is detected,
- * but only the MCP flavor is told to call anything with it. Every other flavor
- * gets the whole plan inlined above and is told plainly that it cannot query
- * back, rather than being handed a tool name it has no way to invoke.
+ * The opportunity id, stated for every flavor so work can be reported against
+ * it. Only the MCP flavor is told a call that resolves it; the others are told
+ * everything is inlined because they have no such tool.
  */
 function opportunityHandoff(
   opportunity: RefactoringOpportunityDetailResolved,
@@ -347,13 +333,9 @@ function opportunityFacts(opportunity: RefactoringOpportunityDetailResolved): st
 }
 
 /**
- * Build a ready-to-paste prompt that hands a coding agent ONE composed
- * refactoring opportunity: the file, what it leads with, its ordered steps with
- * the mechanical/judgment split, the evidence, the validation commands, and the
- * stable id that resolves back to the record.
- *
- * This is the opportunity-level sibling of `buildRefactoringPlanPrompt`, which
- * still handles a single step.
+ * Hand an agent ONE composed refactoring opportunity: its ordered steps with the
+ * mechanical/judgment split, evidence, validation and stable id. The multi-step
+ * sibling of `buildRefactoringPlanPrompt`.
  */
 export function buildRefactoringOpportunityPrompt({
   opportunity,

@@ -9,7 +9,7 @@ import {
 } from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
-// Conformance prompt (bulk — architecture rule violations)
+// Conformance prompt (bulk: architecture rule violations)
 // ─────────────────────────────────────────────────────────────────────
 
 export interface ConformancePromptViolation {

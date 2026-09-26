@@ -1,16 +1,8 @@
 /**
- * Build high-quality AI-agent prompts for the code-health surface and its
- * neighbours (coverage, dead code, doc drift, coupling, conformance, security,
- * hotspots, decisions, commits, refactoring plans, and the file drawer).
- *
- * Every prompt is deliberately structured (role → target → state → tasks →
- * constraints → completion contract) so the agent doesn't have to ask
- * follow-up questions before making its first move.
- *
- * This module is the public surface: hosts, the VS Code extension, and the
- * package's `./health/ai-prompt-builder` export all import from here. Each
- * prompt kind lives in its own module under `./ai-prompts/`, and only the names
- * below are part of the contract; the shared helpers stay internal.
+ * Public surface of the agent-prompt builders. Each prompt kind lives in
+ * `./ai-prompts/`; only the names re-exported here are part of the contract.
+ * Every prompt runs role, target, state, tasks, constraints, expected output,
+ * so the agent can act without asking follow-up questions.
  */
 
 export type { AiPromptFlavor } from "./ai-prompts/shared";

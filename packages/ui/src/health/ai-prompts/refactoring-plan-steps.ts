@@ -131,10 +131,7 @@ function splitFileSteps(plan: RefactoringPlan): string {
     .join("\n");
 }
 
-/**
- * One renderer per refactoring type. A Map rather than an object so a type
- * string can never resolve to an inherited property.
- */
+/** One renderer per refactoring type. A Map, so no type hits a prototype key. */
 const PLAN_STEPS = new Map<string, (plan: RefactoringPlan) => string>([
   ["extract_class", extractClassSteps],
   ["extract_helper", extractHelperSteps],

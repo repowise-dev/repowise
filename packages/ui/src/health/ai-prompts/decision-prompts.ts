@@ -64,10 +64,7 @@ function listSection(heading: string, items: string[] | undefined): string {
   return items && items.length > 0 ? [heading, "", bulletList(items), ""].join("\n") : "";
 }
 
-/**
- * The opening of the MCP closer both decision prompts share: which tool
- * serves the rationale and which serves the governed code.
- */
+/** The start of the MCP closer both decision prompts share. */
 function decisionToolsLead(d: DecisionPromptInput, scope: string[]): string {
   const paths = scope
     .slice(0, MAX_GOVERNED_QUERIED)
@@ -147,10 +144,8 @@ export function buildDecisionAiPrompt({
 }
 
 /**
- * Enforcement sibling of {@link buildDecisionAiPrompt}: where the
- * verification prompt asks "is this decision still true?", this one asks the
- * agent to bring non-conforming code into line with the decision — the
- * follow-through once a decision is confirmed.
+ * Enforcement sibling of {@link buildDecisionAiPrompt}: brings non-conforming
+ * code into line with a decision instead of asking whether it still holds.
  */
 export function buildDecisionEnforcementAiPrompt({
   decision: d,

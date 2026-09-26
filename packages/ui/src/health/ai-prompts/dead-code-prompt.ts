@@ -11,7 +11,7 @@ import {
 } from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
-// Dead-code cleanup prompt (bulk — the safe-to-delete pile)
+// Dead-code cleanup prompt (bulk: the safe-to-delete pile)
 // ─────────────────────────────────────────────────────────────────────
 
 export interface DeadCodePromptFinding {
@@ -30,8 +30,7 @@ export interface BuildDeadCodePromptOptions {
   repoName?: string;
 }
 
-// Cap the file list so a big cleanup pile doesn't produce a giant prompt; the
-// tail is summarized so the agent still knows the full scope.
+// Files listed by name; the rest are counted so the scope stays visible.
 const MAX_DEAD_CODE_FILES = 20;
 
 const CONSTRAINTS = [

@@ -69,11 +69,7 @@ const CLOSER_CONFIG: Record<
   },
 };
 
-/**
- * Closing instruction, tailored per surface. The MCP flavor steers the agent to
- * the repowise tools it already has instead of repeating the exploration
- * repowise did at index time; every other flavor keeps the read-first wording.
- */
+/** The MCP flavor points at repowise tools; every other flavor reads first. */
 export function explorationCloser(
   flavor: AiPromptFlavor,
   filePath: string,
@@ -102,10 +98,7 @@ export function pluralS(count: number): string {
   return count === 1 ? "" : "s";
 }
 
-/**
- * The two sections nearly every prompt ends on before its closing line: the
- * constraints the agent must hold to, and what it should hand back.
- */
+/** The constraints and expected-output sections most prompts end on. */
 export function closingSections(
   constraints: (string | null)[],
   expected: string[],
@@ -123,11 +116,8 @@ export function closingSections(
 }
 
 /**
- * Join a prompt's sections into one string.
- *
- * An absent optional section renders as "", and dropping those is what keeps
- * the prompt free of runs of blank lines. The "" separators go with them, so a
- * section that needs a blank line before it has to carry its own newline.
+ * Join sections, dropping every "" (absent sections and bare separators alike),
+ * so a section that needs a blank line before it carries its own newline.
  */
 export function joinSections(sections: string[]): string {
   return sections.filter((s) => s !== "").join("\n");

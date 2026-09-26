@@ -29,10 +29,7 @@ const EFFORT_HINT: Record<HealthWorkItem["effort_bucket"], string> = {
   XL: "Extra large (>400 NLOC) — propose a staged plan and confirm scope before editing.",
 };
 
-// Cap the detailed findings so a file with dozens of hits doesn't produce a
-// multi-thousand-token prompt. The top findings (by impact) are spelled out
-// in full; the long tail is rolled up into a single grouped line so the agent
-// still knows what's left without paying for every description.
+// Findings spelled out in full; the rest roll up so the prompt stays affordable.
 const MAX_DETAILED_FINDINGS = 8;
 
 const CONSTRAINTS = [
@@ -58,11 +55,7 @@ export interface BuildPromptOptions {
   repoName?: string;
 }
 
-/**
- * The item's findings. A queue payload that omits the per-finding list still
- * carries its primary finding, which then stands in for the whole file's
- * impact, averaged over the findings it summarizes.
- */
+/** The item's findings, or its primary finding when the payload omits the list. */
 function targetFindings(t: HealthWorkItem): PromptFinding[] {
   if (t.all_findings && t.all_findings.length > 0) return t.all_findings;
   return [
@@ -106,8 +99,7 @@ export function buildAiPrompt({
 }: BuildPromptOptions): string {
   const t = target;
 
-  // History markers are scored but unfixable, so they belong in context, not
-  // in a list titled "issues to fix". The split preserves the ranking.
+  // History markers go to context, not "issues to fix"; the split keeps the ranking.
   const { codeShape: fixable, history } = splitByOrigin(rankByImpact(targetFindings(t)));
   const historyBlock = historyContextBlock(history);
 

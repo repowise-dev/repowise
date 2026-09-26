@@ -57,9 +57,7 @@ const EXPECTED = [
 const SECTION_PREFIX = "under: ";
 
 function findingEntry(f: DocDriftPromptFinding): string {
-  // The heading trail the resolver recorded, which is how a reader finds
-  // the passage in a long document. Split out of the evidence lines so it
-  // can be labelled rather than dumped as trace.
+  // The heading trail locates the passage, so it gets its own label.
   const trail = (f.evidence ?? []).find((line) => line.startsWith(SECTION_PREFIX));
   const trace = (f.evidence ?? []).filter((line) => !line.startsWith(SECTION_PREFIX));
   return [
@@ -76,19 +74,10 @@ function findingEntry(f: DocDriftPromptFinding): string {
 }
 
 /**
- * Ask an agent to repair documentation whose assertions no longer hold.
- *
- * The one thing this prompt must get right is the direction of the claim. A
- * drift finding is filed against the *document*, and the target is what that
- * document claims exists — an agent that reads it the other way round goes off
- * and "restores" a file the repository deliberately removed. Every section
- * here names the document as the thing to edit.
- *
- * It also has to leave room for the finding to be wrong. Some of them are
- * correct-by-design: a contributor guide teaching you to add a file names one
- * that was never meant to exist, and deleting that line would damage the guide.
- * The flavor preamble already says "leads, not ground truth"; the constraints
- * say what that means for prose specifically.
+ * Ask an agent to repair documentation whose assertions no longer hold. A
+ * finding is filed against the document, so every section names the document
+ * as the thing to edit, and the constraints leave room for lines that are
+ * correct by design.
  */
 export function buildDocDriftAiPrompt({
   findings,
