@@ -10,7 +10,7 @@ that **every edge carries its own evidence**.
 
 <p>
   <img src="https://img.shields.io/badge/17-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="17 edge types" />
-  <img src="https://img.shields.io/badge/29-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="29 resolution origins" />
+  <img src="https://img.shields.io/badge/37-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="37 resolution origins" />
   <img src="https://img.shields.io/badge/26-languages-F59520?style=flat-square&labelColor=0A0A0A" alt="26 languages" />
   <img src="https://img.shields.io/badge/22-framework_detectors-7F52FF?style=flat-square&labelColor=0A0A0A" alt="22 framework detectors" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
@@ -92,7 +92,7 @@ the call was there.
 **Stage two: resolution.** Given a captured site, work out what the name points
 at. `repo.save(draft)` hands you the name `save` and a receiver spelled `repo`,
 and the job is to turn that into one declaration in one file. This is where the
-29 origins below live, and it is the `user.save()` problem from the section
+37 origins below live, and it is the `user.save()` problem from the section
 above.
 
 | | fails when | costs you | how you find out |
@@ -242,7 +242,7 @@ filter, and two of them silently counted co-change edges as imports.
 ## Every edge says how it got there
 
 Each `calls` edge is stamped with a **resolution origin**: the named strategy
-that produced it. There are 29, drawn from a closed vocabulary, and each one
+that produced it. There are 37, drawn from a closed vocabulary, and each one
 carries exactly one confidence.
 
 | Confidence | Origin | What was actually established |
@@ -272,7 +272,7 @@ call site.
 
 ## Typing the receiver
 
-Twelve of the 29 origins exist to answer the `user.save()` question properly.
+Twelve of the 37 origins exist to answer the `user.save()` question properly.
 Rather than matching a bare method name, repowise reads the receiver's
 **declaration** and resolves the method on that type.
 

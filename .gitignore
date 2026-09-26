@@ -121,3 +121,7 @@ ehthumbs.db
 
 # Claude Code
 .claude/
+
+# fork tool artifacts
+fork-error.txt
+fork-view-error.txt

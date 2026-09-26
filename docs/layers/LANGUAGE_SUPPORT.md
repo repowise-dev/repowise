@@ -134,10 +134,12 @@ vocabulary, and every origin has exactly one confidence:
 | `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |
 | `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
 
-That is six of 29. You can filter a graph by confidence, and both
+That is six of 37. You can filter a graph by confidence, and both
 the MCP tools and the web UI surface which origin produced an edge, so an agent
 reading an execution flow can tell a fact from an inference instead of treating
-both as source.
+both as source. The full 37-origin table — including `scoped_name`, the
+`receiver_extension_*` family and the `return_type_*` family — lives in
+[language-support.md](../architecture/language-support.md#resolution-origins).
 
 ### A call on a variable resolves by typing the variable
 

@@ -424,3 +424,26 @@ def test_reads_edge_producer_is_strictly_file_level() -> None:
     assert producers == ["packages/core/src/repowise/core/ingestion/languages/csharp_member_reads.py"], (
         f"`reads` edge emitted by unexpected producers: {producers}"
     )
+
+
+def test_graph_docs_badge_matches_resolution_origin_vocabulary() -> None:
+    """The GRAPH.md badge must read ``len(RESOLUTION_ORIGIN_VALUES)``.
+
+    The vocabulary grew 29 -> 37 as receiver-typing families landed while every
+    written figure stayed 29, because nothing keeps the docs in step with the
+    code. Pinning the badge to the vocabulary makes the next family fail CI
+    instead of quietly ageing the page.
+    """
+    import re
+
+    from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
+
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    page = (repo_root / "docs" / "layers" / "GRAPH.md").read_text(encoding="utf-8")
+    match = re.search(r"badge/(\d+)-resolution_origins", page)
+    assert match is not None, "GRAPH.md resolution-origins badge is missing"
+    assert int(match.group(1)) == len(RESOLUTION_ORIGIN_VALUES), (
+        f"GRAPH.md badge reads {match.group(1)} resolution origins but the "
+        f"ResolutionOrigin vocabulary holds {len(RESOLUTION_ORIGIN_VALUES)} — "
+        "update the docs figures and tables alongside the vocabulary."
+    )

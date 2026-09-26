@@ -465,11 +465,11 @@ The tiers, highest evidence first:
 | Confidence | Origins | Evidence |
 |:---:|---|---|
 | 0.95 | `same_file`, `self_scope`, `enclosing_class` | The callee is in this file, or on the caller's own class |
-| 0.93 | `receiver_same_file`, `receiver_typed_same_file`, `receiver_field_same_file`, `receiver_framework_same_file` | The receiver names a type declared in this file |
-| 0.90 | `same_package`, `import_scoped`, `receiver_same_package`, the three `*_same_package` typed variants, `self_inherited`, `enclosing_inherited` | A sibling file needing no import, or an explicit import |
-| 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, the three `*_import` typed variants | The receiver resolved through an imported file |
+| 0.93 | `receiver_same_file`, `scoped_name`, `receiver_typed_same_file`, `receiver_field_same_file`, `receiver_framework_same_file`, `receiver_extension_same_file`, `return_type_same_file` | The receiver names a type declared in this file |
+| 0.90 | `same_package`, `import_scoped`, `receiver_same_package`, the three `*_same_package` typed variants, `return_type_same_package`, `self_inherited`, `enclosing_inherited` | A sibling file needing no import, or an explicit import |
+| 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, the three `*_import` typed variants, `receiver_extension_import`, `return_type_import` | The receiver resolved through an imported file |
 | 0.85 | `import_merged`, `same_target` | In *some* imported file, or some sibling translation unit; which one is unattributed |
-| 0.75 | `receiver_global`, the three `*_global` typed variants | The `(class, method)` pair exists somewhere in the repo |
+| 0.75 | `receiver_global`, the three `*_global` typed variants, `receiver_extension_global`, `return_type_global` | The `(class, method)` pair exists somewhere in the repo |
 | 0.50 | `global_unique` | The name is unique repo-wide. **A guess** |
 
 The typed variants come in three parallel families of four, one per *scope*,
@@ -485,6 +485,17 @@ declare the method before an edge was emitted, so the evidence is no weaker. Wha
 differs is *how the receiver was named*, and that is precisely what an origin is
 for. Keeping the three families apart is what makes each one separately
 auditable: an origin that cannot separate them cannot be measured.
+
+Two further families sit alongside those three. `scoped_name` (0.93) is the
+C/C++ `Qualifier::name()` spelling: the class is written at the call site and
+declares the method, so it ranks with `receiver_same_file`. The
+`receiver_extension_*` family (`_same_file`, `_import`, `_global`) is a C#
+extension method reached through the type its `this` parameter names rather
+than the static holder class — one family, not a fourth set of four, because no
+same-package tier reaches the extension index. The `return_type_*` family
+(`_same_file`, `_same_package`, `_import`, `_global`) is a chained receiver
+typed from the inner callee's declared return type. Together with the table
+above that is 3 + 7 + 9 + 9 + 2 + 6 + 1 = 37 origins.
 
 ### Receiver typing
 
