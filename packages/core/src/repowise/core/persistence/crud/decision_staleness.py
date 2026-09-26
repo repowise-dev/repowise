@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,13 +106,6 @@ async def recompute_decision_staleness(
     now = _now_utc()
     updated = 0
     dated = 0
-    # Function-local, like every other analysis import here: the persistence
-    # layer cannot depend on analysis at module scope.
-    from repowise.core.analysis.decisions.extractor import (
-        DecisionExtractor,
-        _as_aware_utc,
-    )
-
     for dec in decisions:
         affected = affected_by_id.get(dec.id)
         if not affected:
@@ -119,13 +113,7 @@ async def recompute_decision_staleness(
 
         # Before the conventions skip below: a date is a fact about the code,
         # not a score, so it is filled for every scoped record.
-        last_change = DecisionExtractor.last_code_change(affected, git_meta_map)
-        stored = dec.last_code_change
-        # SQLite drops tzinfo, so an aware value would differ from the naive
-        # one it just wrote and rewrite ``updated_at`` on every run.
-        if last_change != (_as_aware_utc(stored) if stored else None):
-            dec.last_code_change = last_change
-            dec.updated_at = now
+        if _refresh_last_code_change(dec, affected, git_meta_map, now):
             dated += 1
 
         # The source writes its own conformance share, and a git-diff score
@@ -134,14 +122,7 @@ async def recompute_decision_staleness(
         if dec.source == "conventions":
             continue
 
-        new_score = DecisionExtractor.compute_staleness(
-            dec.created_at,
-            affected,
-            git_meta_map,
-        )
-        if abs(new_score - dec.staleness_score) > 0.01:
-            dec.staleness_score = round(new_score, 3)
-            dec.updated_at = now
+        if _rescore_staleness(dec, affected, git_meta_map, now):
             updated += 1
 
     if updated or modules_updated or dated:
@@ -150,6 +131,43 @@ async def recompute_decision_staleness(
     # "N decisions rescored"; folding the module repair or the date fill into
     # it would report a rescore that did not happen.
     return updated
+
+
+def _refresh_last_code_change(
+    dec: DecisionRecord, affected: list[str], git_meta_map: dict[str, dict], now: datetime
+) -> bool:
+    """Fill ``last_code_change`` from the files' git dates; True when it moved."""
+    # Function-local, like every other analysis import here: the persistence
+    # layer cannot depend on analysis at module scope.
+    from repowise.core.analysis.decisions.extractor import DecisionExtractor, _as_aware_utc
+
+    last_change = DecisionExtractor.last_code_change(affected, git_meta_map)
+    stored = dec.last_code_change
+    # SQLite drops tzinfo, so an aware value would differ from the naive
+    # one it just wrote and rewrite ``updated_at`` on every run.
+    if last_change == (_as_aware_utc(stored) if stored else None):
+        return False
+    dec.last_code_change = last_change
+    dec.updated_at = now
+    return True
+
+
+def _rescore_staleness(
+    dec: DecisionRecord, affected: list[str], git_meta_map: dict[str, dict], now: datetime
+) -> bool:
+    """Recompute the git-diff staleness score; True when it moved by more than 0.01."""
+    from repowise.core.analysis.decisions.extractor import DecisionExtractor
+
+    new_score = DecisionExtractor.compute_staleness(
+        dec.created_at,
+        affected,
+        git_meta_map,
+    )
+    if abs(new_score - dec.staleness_score) > 0.01:
+        dec.staleness_score = round(new_score, 3)
+        dec.updated_at = now
+        return True
+    return False
 
 
 def _backfill_module_nodes(
