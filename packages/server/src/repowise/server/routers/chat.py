@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,8 @@ from repowise.server.chat_prompt import (
     _db_messages_to_llm_format,
     _history_has_call,
     _with_navigation_context,
+    assistant_tool_call_message,
+    tool_result_message,
 )
 from repowise.server.chat_suggestions import (
     conversation_title,
@@ -113,6 +116,239 @@ def _workspace_alias(request: Request, repo_path: str, repo_name: str) -> str | 
     return None
 
 
+def _is_live(conv: Any, repo_id: str) -> bool:
+    return bool(conv) and conv.repository_id == repo_id and conv.deleted_at is None
+
+
+async def _open_conversation(
+    factory: Any, repo_id: str, body: ChatRequest
+) -> tuple[str, str, bool] | None:
+    """Load or create the turn's conversation and save the user message.
+
+    Returns ``(conversation_id, user_message_id, created)``, or None when the
+    requested conversation is not a live one of this repo.
+    """
+    async with get_session(factory) as session:
+        created = not body.conversation_id
+        if created:
+            # Placeholder; refined once the turn's tools are known.
+            conv = await crud.create_conversation(
+                session,
+                repository_id=repo_id,
+                title=" ".join(body.message.split()[:6]),
+            )
+        else:
+            conv = await crud.get_conversation(session, body.conversation_id)
+            if not _is_live(conv, repo_id):
+                return None
+        user_msg = await crud.create_chat_message(
+            session,
+            conversation_id=conv.id,
+            role="user",
+            content={"text": body.message},
+        )
+        return conv.id, user_msg.id, created
+
+
+async def _llm_history(factory: Any, conv_id: str, page_context: Any) -> list[dict[str, Any]]:
+    async with get_session(factory) as session:
+        db_messages = await crud.list_chat_messages(session, conv_id)
+        llm_messages = _db_messages_to_llm_format(db_messages)
+        return _with_navigation_context(llm_messages, page_context)
+
+
+async def _save_reply(
+    factory: Any, conv_id: str, content: dict[str, Any], opening_message: str | None
+) -> str:
+    """Store the assistant message; *opening_message* titles a new conversation."""
+    async with get_session(factory) as session:
+        msg = await crud.create_chat_message(
+            session,
+            conversation_id=conv_id,
+            role="assistant",
+            content=content,
+        )
+        await crud.touch_conversation(session, conv_id)
+        # Opening turn only, so a later rename is never overwritten.
+        if opening_message is not None:
+            await crud.update_conversation_title(
+                session,
+                conv_id,
+                conversation_title(opening_message, tool_names(content["tool_calls"])),
+            )
+        return msg.id
+
+
+class _AgentTurn:
+    """One assistant turn: the model and tool loop, and what it records.
+
+    ``aborted`` is set when the client disconnects or the provider fails, in
+    which case nothing is saved; ``truncated`` when the loop cap is reached.
+    """
+
+    def __init__(
+        self,
+        repo_path: str,
+        repo_alias: str | None,
+        provider: ChatProvider,
+        llm_messages: list[dict[str, Any]],
+    ) -> None:
+        self.repo_path = repo_path
+        self.repo_alias = repo_alias
+        self.provider = provider
+        self.llm_messages = llm_messages
+        self.text_parts: list[str] = []
+        self.tool_calls: list[dict[str, Any]] = []
+        self.aborted = False
+        self.truncated = False
+
+    async def execute(self, name: str, args: dict) -> dict:
+        """Run one tool scoped to this repo; also handed to providers that loop internally."""
+        return await execute_tool(name, args, repo_path=self.repo_path, repo=self.repo_alias)
+
+    async def ground(self, page_context: Any, tool_catalog: list) -> str | None:
+        """Make the one read the page already justifies, before the first model turn.
+
+        A repeat of a call the history already holds is skipped.
+        """
+        plan = plan_grounding(page_context, (tool.entry for tool in tool_catalog))
+        if plan is not None and _history_has_call(self.llm_messages, plan.tool_name, plan.arguments):
+            plan = None
+        grounding = await run_grounding(plan, self.execute)
+        if grounding is None:
+            return None
+        self.llm_messages.extend(grounding.llm_messages())
+        self.tool_calls.append(
+            _stored_tool_call(
+                grounding.tool_id,
+                grounding.tool_name,
+                grounding.arguments,
+                grounding.summary,
+                grounding.artifact,
+                origin="grounding",
+            )
+        )
+        return _sse_event("data", grounding.sse_payload())
+
+    async def run(
+        self, request: Request, system_prompt: str, tool_schemas: list
+    ) -> AsyncIterator[str]:
+        """Alternate model turns and tool runs until the model answers."""
+        for _ in range(_MAX_AGENTIC_LOOPS):
+            pending: list[dict[str, Any]] = []
+            async for sse in self._model_turn(request, system_prompt, tool_schemas, pending):
+                yield sse
+            if self.aborted or not pending:
+                return
+            async for sse in self._run_pending(pending):
+                yield sse
+        # Every turn ended in a tool call, so no final answer exists.
+        self.truncated = True
+        yield _sse_event("data", {"type": "truncated", "loops": _MAX_AGENTIC_LOOPS})
+
+    def reply_content(self) -> dict[str, Any]:
+        content: dict[str, Any] = {
+            "text": "".join(self.text_parts),
+            "tool_calls": self.tool_calls,
+            "provider": self.provider.provider_name,
+            "model": self.provider.model_name,
+        }
+        if self.truncated:
+            content["truncated"] = True
+        # A turn that read nothing, or read only failures, has no next
+        # step to propose.
+        follow_ups = follow_up_suggestions(self.tool_calls)
+        if follow_ups:
+            content["follow_ups"] = follow_ups
+        return content
+
+    async def _model_turn(
+        self,
+        request: Request,
+        system_prompt: str,
+        tool_schemas: list,
+        pending: list[dict[str, Any]],
+    ) -> AsyncIterator[str]:
+        """Stream one provider call, collecting the tool calls left to us in *pending*."""
+        try:
+            async for event in self.provider.stream_chat(
+                messages=self.llm_messages,
+                tools=tool_schemas,
+                system_prompt=system_prompt,
+                max_tokens=8192,
+                temperature=0.7,
+                tool_executor=self.execute,
+            ):
+                if await request.is_disconnected():
+                    self.aborted = True
+                    return
+                sse = self._on_provider_event(event, pending)
+                if sse is not None:
+                    yield sse
+        except ProviderError as exc:
+            self.aborted = True
+            yield _sse_event("data", {"type": "error", "message": str(exc)})
+
+    def _on_provider_event(self, event: Any, pending: list[dict[str, Any]]) -> str | None:
+        if event.type == "text_delta" and event.text:
+            self.text_parts.append(event.text)
+            return _sse_event("data", {"type": "text_delta", "text": event.text})
+        tc = event.tool_call
+        if not tc:
+            return None
+        if event.type == "tool_start":
+            pending.append({"id": tc.id, "name": tc.name, "arguments": tc.arguments})
+            return _sse_event(
+                "data",
+                {
+                    "type": "tool_start",
+                    "tool_id": tc.id,
+                    "tool_name": tc.name,
+                    "input": tc.arguments,
+                },
+            )
+        if event.type == "tool_result":
+            # The provider already ran this tool (e.g. Gemini), so it leaves the pending list.
+            pending[:] = [p for p in pending if p["id"] != tc.id]
+            return self._tool_result(tc.id, tc.name, tc.arguments, event.tool_result_data or {})
+        return None
+
+    async def _run_pending(self, pending: list[dict[str, Any]]) -> AsyncIterator[str]:
+        """Run the tool calls the provider left to us and feed the results back."""
+        self.llm_messages.append(assistant_tool_call_message("".join(self.text_parts), pending))
+        self.text_parts.clear()
+        for tc in pending:
+            result = await self.execute(tc["name"], tc["arguments"])
+            yield self._tool_result(tc["id"], tc["name"], tc["arguments"], result)
+            self.llm_messages.append(tool_result_message(tc["id"], tc["name"], result))
+
+    def _tool_result(
+        self, tool_id: str, name: str, arguments: dict[str, Any], result: dict[str, Any]
+    ) -> str:
+        """Record one tool result as a stored call and return its SSE event."""
+        artifact_type = get_artifact_type(name, self.repo_path)
+        summary = _build_tool_summary(name, result)
+        artifact = create_artifact_envelope(
+            tool_name=name,
+            artifact_type=artifact_type,
+            presentation=get_artifact_presentation(name, self.repo_path),
+            data=result,
+            title=summary,
+            evidence_basis=get_artifact_evidence_basis(name, self.repo_path),
+        )
+        self.tool_calls.append(_stored_tool_call(tool_id, name, arguments, summary, artifact))
+        return _sse_event(
+            "data",
+            {
+                "type": "tool_result",
+                "tool_id": tool_id,
+                "tool_name": name,
+                "summary": summary,
+                "artifact": artifact,
+            },
+        )
+
+
 @router.post("/api/repos/{repo_id}/chat/messages")
 async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     """Stream an agentic chat response via SSE."""
@@ -156,307 +392,36 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
         )
 
     async def event_stream():
-        conv_id = body.conversation_id
-        msg_id = ""
-        user_msg_id = ""
-        opened_conversation = False
-
         try:
-            # Emit retry interval
             yield "retry: 3000\n\n"
 
-            # Create or load conversation
-            async with get_session(factory) as session:
-                if conv_id:
-                    conv = await crud.get_conversation(session, conv_id)
-                    if not conv or conv.repository_id != repo_id or conv.deleted_at is not None:
-                        # Every other failure here goes out on the ``data``
-                        # channel carrying a ``type``, which is the only shape
-                        # the client switches on. This one used to be an
-                        # ``error``-channel event with no ``type``, so the UI
-                        # dropped it and then sat on the stream's close with
-                        # nothing to show.
-                        yield _sse_event(
-                            "data",
-                            {"type": "error", "message": "Conversation not found"},
-                        )
-                        return
-                else:
-                    # Placeholder; refined once the turn's tools are known.
-                    conv = await crud.create_conversation(
-                        session,
-                        repository_id=repo_id,
-                        title=" ".join(body.message.split()[:6]),
-                    )
-                    conv_id = conv.id
-                    opened_conversation = True
+            opened = await _open_conversation(factory, repo_id, body)
+            if opened is None:
+                yield _sse_event("data", {"type": "error", "message": "Conversation not found"})
+                return
+            conv_id, user_msg_id, created = opened
 
-                # Save user message
-                user_msg = await crud.create_chat_message(
-                    session,
-                    conversation_id=conv_id,
-                    role="user",
-                    content={"text": body.message},
-                )
-                user_msg_id = user_msg.id
-
-            # Build message history from DB
-            async with get_session(factory) as session:
-                db_messages = await crud.list_chat_messages(session, conv_id)
-                llm_messages = _db_messages_to_llm_format(db_messages)
-                llm_messages = _with_navigation_context(llm_messages, body.context)
-
+            llm_messages = await _llm_history(factory, conv_id, body.context)
             tool_catalog = get_tool_catalog(repo_path)
             system_prompt = _build_system_prompt(repo_name, repo_path, tool_catalog, body.context)
             tool_schemas = get_tool_schemas_for_llm(repo_path)
 
-            # Tool executor callback — used by providers that run the
-            # agentic loop internally (e.g. Gemini for thought_signature).
-            async def _tool_executor(name: str, args: dict) -> dict:
-                return await execute_tool(name, args, repo_path=repo_path, repo=repo_alias)
+            turn = _AgentTurn(repo_path, repo_alias, provider, llm_messages)
+            grounded = await turn.ground(body.context, tool_catalog)
+            if grounded is not None:
+                yield grounded
+            async for sse in turn.run(request, system_prompt, tool_schemas):
+                yield sse
+            if turn.aborted:
+                return
 
-            assistant_text_parts: list[str] = []
-            tool_calls_made: list[dict[str, Any]] = []
-            truncated = False
-
-            # Page-aware prefetch: one read the page already justifies, made
-            # before the first model turn so the answer starts grounded. A
-            # repeat of a call the history already holds is skipped.
-            plan = plan_grounding(body.context, (tool.entry for tool in tool_catalog))
-            if plan is not None and _history_has_call(llm_messages, plan.tool_name, plan.arguments):
-                plan = None
-            grounding = await run_grounding(plan, _tool_executor)
-            if grounding is not None:
-                llm_messages.extend(grounding.llm_messages())
-                yield _sse_event("data", grounding.sse_payload())
-                tool_calls_made.append(
-                    _stored_tool_call(
-                        grounding.tool_id,
-                        grounding.tool_name,
-                        grounding.arguments,
-                        grounding.summary,
-                        grounding.artifact,
-                        origin="grounding",
-                    )
-                )
-
-            # Agentic loop
-            for _loop_idx in range(_MAX_AGENTIC_LOOPS):
-                pending_tool_calls: list[dict[str, Any]] = []
-
-                try:
-                    async for event in provider.stream_chat(
-                        messages=llm_messages,
-                        tools=tool_schemas,
-                        system_prompt=system_prompt,
-                        max_tokens=8192,
-                        temperature=0.7,
-                        tool_executor=_tool_executor,
-                    ):
-                        if await request.is_disconnected():
-                            return
-
-                        if event.type == "text_delta" and event.text:
-                            assistant_text_parts.append(event.text)
-                            yield _sse_event(
-                                "data",
-                                {
-                                    "type": "text_delta",
-                                    "text": event.text,
-                                },
-                            )
-
-                        elif event.type == "tool_start" and event.tool_call:
-                            tc = event.tool_call
-                            pending_tool_calls.append(
-                                {
-                                    "id": tc.id,
-                                    "name": tc.name,
-                                    "arguments": tc.arguments,
-                                }
-                            )
-                            yield _sse_event(
-                                "data",
-                                {
-                                    "type": "tool_start",
-                                    "tool_id": tc.id,
-                                    "tool_name": tc.name,
-                                    "input": tc.arguments,
-                                },
-                            )
-
-                        elif event.type == "tool_result" and event.tool_call:
-                            # Provider executed the tool internally (e.g. Gemini).
-                            # Emit the result to the frontend.
-                            tc = event.tool_call
-                            result = event.tool_result_data or {}
-                            artifact_type = get_artifact_type(tc.name, repo_path)
-                            summary = _build_tool_summary(tc.name, result)
-                            artifact = create_artifact_envelope(
-                                tool_name=tc.name,
-                                artifact_type=artifact_type,
-                                presentation=get_artifact_presentation(tc.name, repo_path),
-                                data=result,
-                                title=summary,
-                                evidence_basis=get_artifact_evidence_basis(tc.name, repo_path),
-                            )
-
-                            yield _sse_event(
-                                "data",
-                                {
-                                    "type": "tool_result",
-                                    "tool_id": tc.id,
-                                    "tool_name": tc.name,
-                                    "summary": summary,
-                                    "artifact": artifact,
-                                },
-                            )
-
-                            tool_calls_made.append(
-                                _stored_tool_call(
-                                    tc.id,
-                                    tc.name,
-                                    tc.arguments,
-                                    summary,
-                                    artifact,
-                                )
-                            )
-
-                            # Remove from pending since provider already executed it
-                            pending_tool_calls = [p for p in pending_tool_calls if p["id"] != tc.id]
-
-                        elif event.type == "stop":
-                            pass  # stop_reason = event.stop_reason (reserved for future use)
-
-                except ProviderError as exc:
-                    yield _sse_event(
-                        "data",
-                        {
-                            "type": "error",
-                            "message": str(exc),
-                        },
-                    )
-                    return
-
-                # Execute tool calls that weren't handled internally by the provider
-                if pending_tool_calls:
-                    # Add assistant message with tool calls to history
-                    assistant_text = "".join(assistant_text_parts)
-                    assistant_msg: dict[str, Any] = {"role": "assistant"}
-                    if assistant_text:
-                        assistant_msg["content"] = assistant_text
-                    assistant_msg["tool_calls"] = [
-                        {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": json.dumps(tc["arguments"]),
-                            },
-                        }
-                        for tc in pending_tool_calls
-                    ]
-                    llm_messages.append(assistant_msg)
-                    assistant_text_parts.clear()
-
-                    # Execute each tool and add results
-                    for tc in pending_tool_calls:
-                        result = await execute_tool(
-                            tc["name"],
-                            tc["arguments"],
-                            repo_path=repo_path,
-                            repo=repo_alias,
-                        )
-                        artifact_type = get_artifact_type(tc["name"], repo_path)
-
-                        # Build summary from result
-                        summary = _build_tool_summary(tc["name"], result)
-                        artifact = create_artifact_envelope(
-                            tool_name=tc["name"],
-                            artifact_type=artifact_type,
-                            presentation=get_artifact_presentation(tc["name"], repo_path),
-                            data=result,
-                            title=summary,
-                            evidence_basis=get_artifact_evidence_basis(tc["name"], repo_path),
-                        )
-
-                        yield _sse_event(
-                            "data",
-                            {
-                                "type": "tool_result",
-                                "tool_id": tc["id"],
-                                "tool_name": tc["name"],
-                                "summary": summary,
-                                "artifact": artifact,
-                            },
-                        )
-
-                        tool_calls_made.append(
-                            _stored_tool_call(
-                                tc["id"],
-                                tc["name"],
-                                tc["arguments"],
-                                summary,
-                                artifact,
-                            )
-                        )
-
-                        # Add tool result to LLM history
-                        llm_messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tc["id"],
-                                "name": tc["name"],
-                                "content": json.dumps(result),
-                            }
-                        )
-
-                    # Always loop back so the LLM can generate a text
-                    # response based on the tool results.
-                    continue
-
-                # No pending tool calls — end of generation
-                break
-            else:
-                # Every turn ended in a tool call, so no final answer exists.
-                truncated = True
-                yield _sse_event("data", {"type": "truncated", "loops": _MAX_AGENTIC_LOOPS})
-
-            # Save assistant message to DB
-            final_text = "".join(assistant_text_parts)
-            content: dict[str, Any] = {
-                "text": final_text,
-                "tool_calls": tool_calls_made,
-                "provider": provider.provider_name,
-                "model": provider.model_name,
-            }
-            if truncated:
-                content["truncated"] = True
-            # A turn that read nothing, or read only failures, has no next
-            # step to propose.
-            follow_ups = follow_up_suggestions(tool_calls_made)
-            if follow_ups:
-                content["follow_ups"] = follow_ups
-            async with get_session(factory) as session:
-                msg = await crud.create_chat_message(
-                    session,
-                    conversation_id=conv_id,
-                    role="assistant",
-                    content=content,
-                )
-                msg_id = msg.id
-                await crud.touch_conversation(session, conv_id)
-                # Opening turn only, so a later rename is never overwritten.
-                if opened_conversation:
-                    await crud.update_conversation_title(
-                        session,
-                        conv_id,
-                        conversation_title(body.message, tool_names(tool_calls_made)),
-                    )
-
-            if follow_ups:
+            content = turn.reply_content()
+            msg_id = await _save_reply(
+                factory, conv_id, content, body.message if created else None
+            )
+            if "follow_ups" in content:
                 yield _sse_event(
-                    "data", {"type": "suggestions", "suggestions": follow_ups}
+                    "data", {"type": "suggestions", "suggestions": content["follow_ups"]}
                 )
 
             yield _sse_event(
@@ -548,6 +513,25 @@ async def chat_suggestions(
 # ---------------------------------------------------------------------------
 
 
+async def _live_conversation(session: Any, repo_id: str, conversation_id: str) -> Any:
+    conv = await crud.get_conversation(session, conversation_id)
+    if not _is_live(conv, repo_id):
+        raise HTTPException(404, "Conversation not found")
+    return conv
+
+
+def _dict_contents(messages: list) -> Iterator[tuple[Any, dict[str, Any]]]:
+    """Each message with its stored content, skipping rows that are not a JSON object."""
+    for message in messages:
+        raw = message.content_json
+        try:
+            content = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(content, dict):
+            yield message, content
+
+
 @router.get("/api/repos/{repo_id}/chat/conversations", response_model=list[ConversationResponse])
 async def list_conversations(
     repo_id: str,
@@ -567,10 +551,7 @@ async def get_conversation(
     conversation_id: str,
     session=Depends(get_db_session),
 ):
-    conv = await crud.get_conversation(session, conversation_id)
-    if not conv or conv.repository_id != repo_id or conv.deleted_at is not None:
-        raise HTTPException(404, "Conversation not found")
-
+    conv = await _live_conversation(session, repo_id, conversation_id)
     messages = await crud.list_chat_messages(session, conversation_id)
     return {
         "conversation": ConversationResponse.from_orm(conv, message_count=len(messages)),
@@ -588,17 +569,9 @@ async def get_conversation_artifact(
     artifact_id: str,
     session=Depends(get_db_session),
 ):
-    conv = await crud.get_conversation(session, conversation_id)
-    if not conv or conv.repository_id != repo_id or conv.deleted_at is not None:
-        raise HTTPException(404, "Conversation not found")
-    for message in await crud.list_chat_messages(session, conversation_id):
-        raw = message.content_json
-        try:
-            content = json.loads(raw) if isinstance(raw, str) else raw
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if not isinstance(content, dict):
-            continue
+    await _live_conversation(session, repo_id, conversation_id)
+    messages = await crud.list_chat_messages(session, conversation_id)
+    for message, content in _dict_contents(messages):
         artifact = find_artifact(
             content,
             message_id=message.id,
@@ -620,33 +593,19 @@ async def update_conversation_artifact(
     body: ArtifactUpdateRequest,
     session=Depends(get_db_session),
 ):
-    conv = await crud.get_conversation(session, conversation_id)
-    if not conv or conv.repository_id != repo_id or conv.deleted_at is not None:
-        raise HTTPException(404, "Conversation not found")
-    for message in await crud.list_chat_messages(session, conversation_id):
-        raw = message.content_json
-        try:
-            content = json.loads(raw) if isinstance(raw, str) else raw
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if not isinstance(content, dict):
-            continue
+    await _live_conversation(session, repo_id, conversation_id)
+    messages = await crud.list_chat_messages(session, conversation_id)
+    for message, content in _dict_contents(messages):
         updated, found = set_artifact_pinned(
             content,
             message_id=message.id,
             artifact_id=artifact_id,
             pinned=body.pinned,
         )
-        if not found:
-            continue
-        await crud.update_chat_message_content(session, message.id, updated)
-        await crud.touch_conversation(session, conversation_id)
-        artifact = find_artifact(
-            updated,
-            message_id=message.id,
-            artifact_id=artifact_id,
-        )
-        return artifact
+        if found:
+            await crud.update_chat_message_content(session, message.id, updated)
+            await crud.touch_conversation(session, conversation_id)
+            return find_artifact(updated, message_id=message.id, artifact_id=artifact_id)
     raise HTTPException(404, "Artifact not found")
 
 
@@ -679,9 +638,7 @@ async def update_conversation(
     body: ConversationUpdateRequest,
     session=Depends(get_db_session),
 ):
-    conv = await crud.get_conversation(session, conversation_id)
-    if not conv or conv.repository_id != repo_id or conv.deleted_at is not None:
-        raise HTTPException(404, "Conversation not found")
+    conv = await _live_conversation(session, repo_id, conversation_id)
     if body.title is not None:
         title = body.title.strip()
         if not title:
@@ -699,9 +656,7 @@ async def fork_conversation(
     body: ConversationForkRequest,
     session=Depends(get_db_session),
 ):
-    conv = await crud.get_conversation(session, conversation_id)
-    if not conv or conv.repository_id != repo_id or conv.deleted_at is not None:
-        raise HTTPException(404, "Conversation not found")
+    await _live_conversation(session, repo_id, conversation_id)
     if body.through_message_id is not None and body.before_message_id is not None:
         raise HTTPException(422, "Choose either a through or before fork point")
     fork_point = body.through_message_id or body.before_message_id

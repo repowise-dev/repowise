@@ -92,21 +92,24 @@ def _build_system_prompt(
     )
 
 
+def _call_matches(call: dict[str, Any], name: str, arguments: dict[str, Any]) -> bool:
+    function = call.get("function", {})
+    if function.get("name") != name:
+        return False
+    try:
+        return json.loads(function.get("arguments", "{}")) == arguments
+    except json.JSONDecodeError:
+        return False
+
+
 def _history_has_call(messages: list[dict[str, Any]], name: str, arguments: dict[str, Any]) -> bool:
     """True when an earlier assistant turn already made this exact tool call."""
-    for message in messages:
-        if message.get("role") != "assistant":
-            continue
-        for call in message.get("tool_calls", []):
-            function = call.get("function", {})
-            if function.get("name") != name:
-                continue
-            try:
-                if json.loads(function.get("arguments", "{}")) == arguments:
-                    return True
-            except json.JSONDecodeError:
-                continue
-    return False
+    return any(
+        _call_matches(call, name, arguments)
+        for message in messages
+        if message.get("role") == "assistant"
+        for call in message.get("tool_calls", [])
+    )
 
 
 def _with_navigation_context(
@@ -129,6 +132,48 @@ def _with_navigation_context(
     return contextualized
 
 
+def assistant_tool_call_message(text: str, tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
+    """The assistant turn that requested *tool_calls*, with its text when any."""
+    message: dict[str, Any] = {"role": "assistant"}
+    if text:
+        message["content"] = text
+    message["tool_calls"] = [
+        {
+            "id": tc["id"],
+            "type": "function",
+            "function": {
+                "name": tc["name"],
+                "arguments": json.dumps(tc.get("arguments", {})),
+            },
+        }
+        for tc in tool_calls
+    ]
+    return message
+
+
+def tool_result_message(tool_id: str, name: str, result: Any) -> dict[str, Any]:
+    return {
+        "role": "tool",
+        "tool_call_id": tool_id,
+        "name": name,
+        "content": json.dumps(result),
+    }
+
+
+def _assistant_history(content: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rebuild a stored assistant turn, replaying its tool results after it."""
+    text = content.get("text", "")
+    tool_calls = content.get("tool_calls", [])
+    if not tool_calls:
+        return [{"role": "assistant", "content": text}]
+    messages = [assistant_tool_call_message(text, tool_calls)]
+    for tc in tool_calls:
+        artifact = tc.get("artifact")
+        result = artifact.get("data", {}) if isinstance(artifact, dict) else {}
+        messages.append(tool_result_message(tc["id"], tc["name"], result))
+    return messages
+
+
 def _db_messages_to_llm_format(db_messages: list) -> list[dict[str, Any]]:
     """Convert DB chat messages to OpenAI-format message list."""
     llm_messages: list[dict[str, Any]] = []
@@ -141,52 +186,8 @@ def _db_messages_to_llm_format(db_messages: list) -> list[dict[str, Any]]:
             content = normalize_message_artifacts(content, message_id=str(msg.id))
 
         if msg.role == "user":
-            llm_messages.append(
-                {
-                    "role": "user",
-                    "content": content.get("text", ""),
-                }
-            )
+            llm_messages.append({"role": "user", "content": content.get("text", "")})
         elif msg.role == "assistant":
-            text = content.get("text", "")
-            tool_calls = content.get("tool_calls", [])
-
-            if tool_calls:
-                # Reconstruct the assistant + tool result messages
-                assistant_msg: dict[str, Any] = {"role": "assistant"}
-                if text:
-                    assistant_msg["content"] = text
-                assistant_msg["tool_calls"] = [
-                    {
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": json.dumps(tc.get("arguments", {})),
-                        },
-                    }
-                    for tc in tool_calls
-                ]
-                llm_messages.append(assistant_msg)
-
-                # Add tool results
-                for tc in tool_calls:
-                    artifact = tc.get("artifact")
-                    result = artifact.get("data", {}) if isinstance(artifact, dict) else {}
-                    llm_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "name": tc["name"],
-                            "content": json.dumps(result),
-                        }
-                    )
-            else:
-                llm_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": text,
-                    }
-                )
+            llm_messages.extend(_assistant_history(content))
 
     return llm_messages
