@@ -221,6 +221,11 @@ class AnthropicProvider(BaseProvider):
             raise ProviderError("anthropic", str(exc), status_code=exc.status_code) from exc
 
         cached = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+        # The API reports the uncached remainder as input_tokens; the full
+        # prompt is the sum of all three disjoint dispositions.
+        uncached_input = response.usage.input_tokens
+        total_input = uncached_input + cached + cache_creation
         stop_reason, provider_stop_reason = normalize_stop_reason(response.stop_reason)
 
         text_content = ""
@@ -231,18 +236,16 @@ class AnthropicProvider(BaseProvider):
 
         result = GeneratedResponse(
             content=text_content,
-            input_tokens=response.usage.input_tokens,
+            input_tokens=total_input,
             output_tokens=response.usage.output_tokens,
             cached_tokens=cached,
             stop_reason=stop_reason,
             provider_stop_reason=provider_stop_reason,
             usage={
-                "input_tokens": response.usage.input_tokens,
+                "input_tokens": total_input,
+                "uncached_input_tokens": uncached_input,
                 "output_tokens": response.usage.output_tokens,
-                "cache_creation_input_tokens": getattr(
-                    response.usage, "cache_creation_input_tokens", 0
-                )
-                or 0,
+                "cache_creation_input_tokens": cache_creation,
                 "cache_read_input_tokens": cached,
             },
         )
