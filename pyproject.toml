@@ -99,7 +99,14 @@ dependencies = [
     # Server
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.32,<1",
-    "mcp>=1.0,<2",
+    # The floor has to cover what the server imports at module scope.
+    # `_server.py` imports `mcp.server.transport_security` at the top (it
+    # widens the DNS-rebinding allowlist to match --host, #1737), and that
+    # module first ships in 1.10.0: on 1.9.4 the import raises
+    # ModuleNotFoundError and the whole MCP server package fails to load.
+    # Streamable HTTP itself reached `FastMCP.run` in 1.8.0, so the import is
+    # what sets the floor, not the transport.
+    "mcp>=1.10.0,<2",
     "apscheduler>=3.10,<4",
     "cryptography>=50.0.0,<51",
     # LLM providers (bundled — no extras needed)
