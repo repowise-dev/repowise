@@ -1,4 +1,11 @@
-import { bulletList, type AiPromptFlavor } from "./shared";
+import {
+  bulletList,
+  closingSections,
+  joinSections,
+  pluralS,
+  repoSuffix,
+  type AiPromptFlavor,
+} from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
 // Work-queue prompt (repo-level — the Attention Needed backlog)
@@ -45,51 +52,48 @@ export interface BuildWorkQueuePromptOptions {
 const MAX_WORK_QUEUE_ITEMS = 15;
 const SEVERITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
 
+const CONSTRAINTS = [
+  "Work top-down by severity. Finish (or consciously defer) one item before starting the next.",
+  "One focused, independently-revertible change per item — don't bundle unrelated fixes into a single commit.",
+  "Verify each item against the real code first. If it's a false positive, skip it and record why instead of forcing a change.",
+  "Preserve behavior. Add or update tests for anything whose logic you touch.",
+  "If an item is too large for one pass, propose a phased plan for it and move on rather than half-finishing.",
+];
+
+const EXPECTED = [
+  "1. A triaged plan: the order you'll take these in and why.",
+  "2. For each item you action: the change, scoped and verified, with the tests that cover it.",
+  "3. For each item you skip: a one-line reason (false positive, needs product input, too large — with a proposed follow-up).",
+  "4. A short summary of what's left in the queue at the end.",
+];
+
+function workQueueEntry(it: WorkQueueItem, index: number): string {
+  const guidance = WORK_QUEUE_GUIDANCE[it.type];
+  return [
+    `${index + 1}. [${it.severity.toUpperCase()}] **${it.title}**`,
+    it.description ? `   - Detail: ${it.description}` : null,
+    it.target_id ? `   - Target: \`${it.target_id}\`` : null,
+    guidance ? `   - How to approach: ${guidance}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function buildWorkQueueAiPrompt({
   items,
   flavor = "generic",
   repoName,
 }: BuildWorkQueuePromptOptions): string {
-  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
   const ranked = items
     .slice()
     .sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 3) - (SEVERITY_ORDER[b.severity] ?? 3));
   const shown = ranked.slice(0, MAX_WORK_QUEUE_ITEMS);
   const hidden = ranked.length - shown.length;
 
-  const itemsBlock = shown
-    .map((it, i) => {
-      const guidance = WORK_QUEUE_GUIDANCE[it.type];
-      return [
-        `${i + 1}. [${it.severity.toUpperCase()}] **${it.title}**`,
-        it.description ? `   - Detail: ${it.description}` : null,
-        it.target_id ? `   - Target: \`${it.target_id}\`` : null,
-        guidance ? `   - How to approach: ${guidance}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n");
-    })
-    .join("\n\n");
-
-  const constraintList = [
-    "Work top-down by severity. Finish (or consciously defer) one item before starting the next.",
-    "One focused, independently-revertible change per item — don't bundle unrelated fixes into a single commit.",
-    "Verify each item against the real code first. If it's a false positive, skip it and record why instead of forcing a change.",
-    "Preserve behavior. Add or update tests for anything whose logic you touch.",
-    "If an item is too large for one pass, propose a phased plan for it and move on rather than half-finishing.",
-  ];
-
-  const completionContract = [
-    "1. A triaged plan: the order you'll take these in and why.",
-    "2. For each item you action: the change, scoped and verified, with the tests that cover it.",
-    "3. For each item you skip: a one-line reason (false positive, needs product input, too large — with a proposed follow-up).",
-    "4. A short summary of what's left in the queue at the end.",
-  ];
-
-  return [
+  return joinSections([
     WORK_QUEUE_PREAMBLE[flavor],
     "",
-    `## Repository backlog${repoLine}`,
+    `## Repository backlog${repoSuffix(repoName)}`,
     "",
     bulletList([
       `Items in this queue: **${ranked.length}**`,
@@ -98,23 +102,14 @@ export function buildWorkQueueAiPrompt({
     "",
     "## Issues to work through (highest severity first)",
     "",
-    itemsBlock,
+    shown.map(workQueueEntry).join("\n\n"),
     hidden > 0
-      ? `\n…and ${hidden} more lower-priority item${hidden === 1 ? "" : "s"} in the panel — handle these after the above.`
+      ? `\n…and ${hidden} more lower-priority item${pluralS(hidden)} in the panel — handle these after the above.`
       : "",
     "",
-    "## Hard constraints",
-    "",
-    bulletList(constraintList),
-    "",
-    "## What I expect back",
-    "",
-    completionContract.join("\n"),
-    "",
+    ...closingSections(CONSTRAINTS, EXPECTED),
     flavor === "claude-code-mcp"
       ? "Start by calling `get_overview()` to orient, then take the queue top-down — `get_context` / `get_risk` / `get_why` per item before you touch anything. repowise already did the exploration; lean on it."
       : "Start with the highest-severity items and ground each one in the real code before acting. The list describes symptoms; confirm the root cause before you change anything.",
-  ]
-    .filter((s) => s !== "")
-    .join("\n");
+  ]);
 }

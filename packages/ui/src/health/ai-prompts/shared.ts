@@ -20,11 +20,7 @@ export const FLAVOR_PREAMBLE: Record<AiPromptFlavor, string> = {
     "Work on the file referenced below. The findings below were detected by a static analyzer — treat them as leads, not ground truth. Use @file and @codebase to read the file, its callers, its tests, and neighboring modules before editing. Verify each finding against the real code; skip and call out any false positives.",
 };
 
-/**
- * Closing instruction, tailored per flavor. The MCP flavor steers the agent
- * to the repowise tools it already has instead of repeating the exploration
- * repowise did at index time; every other flavor keeps the read-first wording.
- */
+/** The surface a closer is written for; each names its own tools and risks. */
 type CloserKind = "refactor" | "coverage" | "security" | "hotspot" | "file-health";
 
 const CLOSER_CONFIG: Record<
@@ -94,4 +90,45 @@ export function explorationCloser(
 
 export function bulletList(items: (string | null | undefined | false)[]): string {
   return items.filter(Boolean).map((s) => `- ${s}`).join("\n");
+}
+
+/** The `` (`repo`)`` suffix a prompt heading carries when the host named the repo. */
+export function repoSuffix(repoName: string | undefined): string {
+  return repoName ? ` (\`${repoName}\`)` : "";
+}
+
+/** The plural `s` for a count, so "1 file" and "2 files" both read right. */
+export function pluralS(count: number): string {
+  return count === 1 ? "" : "s";
+}
+
+/**
+ * The two sections nearly every prompt ends on before its closing line: the
+ * constraints the agent must hold to, and what it should hand back.
+ */
+export function closingSections(
+  constraints: (string | null)[],
+  expected: string[],
+): string[] {
+  return [
+    "## Hard constraints",
+    "",
+    bulletList(constraints),
+    "",
+    "## What I expect back",
+    "",
+    expected.join("\n"),
+    "",
+  ];
+}
+
+/**
+ * Join a prompt's sections into one string.
+ *
+ * An absent optional section renders as "", and dropping those is what keeps
+ * the prompt free of runs of blank lines. The "" separators go with them, so a
+ * section that needs a blank line before it has to carry its own newline.
+ */
+export function joinSections(sections: string[]): string {
+  return sections.filter((s) => s !== "").join("\n");
 }

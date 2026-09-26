@@ -1,4 +1,12 @@
-import { bulletList, explorationCloser, FLAVOR_PREAMBLE, type AiPromptFlavor } from "./shared";
+import {
+  bulletList,
+  closingSections,
+  explorationCloser,
+  FLAVOR_PREAMBLE,
+  joinSections,
+  repoSuffix,
+  type AiPromptFlavor,
+} from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
 // Hotspot stabilization prompt (per file)
@@ -26,12 +34,45 @@ export interface BuildHotspotPromptOptions {
   repoName?: string;
 }
 
+const EXPECTED = [
+  "1. A diagnosis: why does this file churn so much? (2–4 bullets, grounded in the actual code and its history.)",
+  "2. A prioritized plan to reduce its change-cost — structural seams, extractions, or decoupling, smallest-risk first.",
+  "3. The change you'd make first, scoped and behavior-preserving, with the tests that protect it.",
+  "4. What you'd leave for later and why.",
+];
+
+/** The churn, ownership and defect facts that got this file flagged. */
+function whyFlagged(h: HotspotPromptInput, soleOwner: boolean): string {
+  return bulletList([
+    h.churn_percentile != null
+      ? `Churn: **${Math.round(h.churn_percentile)}th percentile** in this repo (it changes more than most files)`
+      : null,
+    h.commit_count_90d != null
+      ? `Commits: **${h.commit_count_90d} in 90 days**${h.commit_count_30d != null ? ` (${h.commit_count_30d} in the last 30)` : ""}`
+      : null,
+    h.bus_factor != null
+      ? `Bus factor: **${h.bus_factor}**${soleOwner ? " — knowledge concentrated in one person" : ""}`
+      : null,
+    h.contributor_count != null ? `Contributors: ${h.contributor_count}` : null,
+    h.primary_owner ? `Primary owner: ${h.primary_owner}` : null,
+    h.lines_added_90d != null || h.lines_deleted_90d != null
+      ? `Lines churned (90d): +${h.lines_added_90d ?? 0} / −${h.lines_deleted_90d ?? 0}`
+      : null,
+    h.change_entropy_pct != null
+      ? `Change entropy: ${Math.round(h.change_entropy_pct)}th percentile (how scattered the edits are)`
+      : null,
+    h.prior_defect_count != null && h.prior_defect_count > 0
+      ? `Prior bug-fix commits here: ${h.prior_defect_count}`
+      : null,
+    h.module ? `Module: \`${h.module}\`` : null,
+  ]);
+}
+
 export function buildHotspotAiPrompt({
   hotspot: h,
   flavor = "generic",
   repoName,
 }: BuildHotspotPromptOptions): string {
-  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
   const soleOwner = h.bus_factor != null && h.bus_factor <= 1;
 
   const constraintList = [
@@ -44,56 +85,18 @@ export function buildHotspotAiPrompt({
     "Check its co-change partners: if it always changes alongside another file, the coupling itself may be the thing to fix.",
   ];
 
-  const completionContract = [
-    "1. A diagnosis: why does this file churn so much? (2–4 bullets, grounded in the actual code and its history.)",
-    "2. A prioritized plan to reduce its change-cost — structural seams, extractions, or decoupling, smallest-risk first.",
-    "3. The change you'd make first, scoped and behavior-preserving, with the tests that protect it.",
-    "4. What you'd leave for later and why.",
-  ];
-
-  return [
+  return joinSections([
     FLAVOR_PREAMBLE[flavor],
     "",
-    `## Hotspot to stabilize${repoLine}`,
+    `## Hotspot to stabilize${repoSuffix(repoName)}`,
     "",
     `\`${h.file_path}\``,
     "",
     "## Why it's flagged",
     "",
-    bulletList([
-      h.churn_percentile != null
-        ? `Churn: **${Math.round(h.churn_percentile)}th percentile** in this repo (it changes more than most files)`
-        : null,
-      h.commit_count_90d != null
-        ? `Commits: **${h.commit_count_90d} in 90 days**${h.commit_count_30d != null ? ` (${h.commit_count_30d} in the last 30)` : ""}`
-        : null,
-      h.bus_factor != null
-        ? `Bus factor: **${h.bus_factor}**${soleOwner ? " — knowledge concentrated in one person" : ""}`
-        : null,
-      h.contributor_count != null ? `Contributors: ${h.contributor_count}` : null,
-      h.primary_owner ? `Primary owner: ${h.primary_owner}` : null,
-      h.lines_added_90d != null || h.lines_deleted_90d != null
-        ? `Lines churned (90d): +${h.lines_added_90d ?? 0} / −${h.lines_deleted_90d ?? 0}`
-        : null,
-      h.change_entropy_pct != null
-        ? `Change entropy: ${Math.round(h.change_entropy_pct)}th percentile (how scattered the edits are)`
-        : null,
-      h.prior_defect_count != null && h.prior_defect_count > 0
-        ? `Prior bug-fix commits here: ${h.prior_defect_count}`
-        : null,
-      h.module ? `Module: \`${h.module}\`` : null,
-    ]),
+    whyFlagged(h, soleOwner),
     "",
-    "## Hard constraints",
-    "",
-    bulletList(constraintList),
-    "",
-    "## What I expect back",
-    "",
-    completionContract.join("\n"),
-    "",
+    ...closingSections(constraintList, EXPECTED),
     explorationCloser(flavor, h.file_path, "hotspot"),
-  ]
-    .filter((s) => s !== "")
-    .join("\n");
+  ]);
 }

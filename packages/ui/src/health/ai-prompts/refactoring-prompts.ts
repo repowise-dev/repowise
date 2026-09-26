@@ -1,6 +1,7 @@
 import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 import type {
   OpportunityStep,
+  RecommendationValidation,
   RefactoringOpportunityDetailResolved,
   RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
@@ -8,7 +9,16 @@ import type {
 import { typeMeta } from "../../refactoring/meta";
 import { blastFiles } from "../../refactoring/types";
 import { planSourceLink, refactoringPlanSteps } from "./refactoring-plan-steps";
-import { bulletList, explorationCloser, FLAVOR_PREAMBLE, type AiPromptFlavor } from "./shared";
+import {
+  bulletList,
+  closingSections,
+  explorationCloser,
+  FLAVOR_PREAMBLE,
+  joinSections,
+  pluralS,
+  repoSuffix,
+  type AiPromptFlavor,
+} from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
 // Refactoring plan prompt — hand a deterministic plan to a coding agent
@@ -68,38 +78,69 @@ export interface BuildRefactoringPlanPromptOptions {
   repoName?: string;
 }
 
+/** Each item in backticks, joined. */
+function codeList(items: string[], separator = ", "): string {
+  return items.map((item) => `\`${item}\``).join(separator);
+}
+
+/** How many tests guard the change and how that was established. */
+function guardingTests(v: RecommendationValidation): string {
+  if (v.basis === "unknown") {
+    return "No measured or inferred guarding test was found; treat this as a validation gap.";
+  }
+  return `${v.total} guarding test${pluralS(v.total)} via ${v.via ?? v.basis}${
+    v.truncated ? ` (showing ${v.tests.length})` : ""
+  }.`;
+}
+
+function testsLine(v: RecommendationValidation): string | null {
+  return v.tests.length ? `Tests: ${codeList(v.tests)}.` : null;
+}
+
+function runLine(v: RecommendationValidation): string | null {
+  return v.commands.length ? `Run: ${codeList(v.commands, "; ")}.` : null;
+}
+
 function recommendationValidation(plan: RefactoringPlan): string {
   const validation = plan.validation;
   if (!validation) return "";
-  const evidence =
-    validation.basis === "unknown"
-      ? "No measured or inferred guarding test was found; treat this as a validation gap."
-      : `${validation.total} guarding test${validation.total === 1 ? "" : "s"} via ${
-          validation.via ?? validation.basis
-        }${validation.truncated ? ` (showing ${validation.tests.length})` : ""}.`;
   return [
     "## Validation plan",
     "",
     bulletList([
-      evidence,
-      validation.tests.length
-        ? `Tests: ${validation.tests.map((test) => `\`${test}\``).join(", ")}.`
-        : null,
+      guardingTests(validation),
+      testsLine(validation),
       validation.affected_files.length
-        ? `Affected files: ${validation.affected_files
-            .map((file) => `\`${file}\``)
-            .join(", ")}.`
+        ? `Affected files: ${codeList(validation.affected_files)}.`
         : null,
       validation.affected_symbols.length
-        ? `Affected symbols: ${validation.affected_symbols
-            .map((symbol) => `\`${symbol}\``)
-            .join(", ")}.`
+        ? `Affected symbols: ${codeList(validation.affected_symbols)}.`
         : null,
-      validation.commands.length
-        ? `Run: ${validation.commands.map((command) => `\`${command}\``).join("; ")}.`
-        : null,
+      runLine(validation),
     ]),
   ].join("\n");
+}
+
+const PLAN_EXPECTED = [
+  "1. The refactored code, with each step above applied.",
+  "2. A short note on what you renamed/introduced and why.",
+  "3. Confirmation the tests pass (or the exact failures if they don't).",
+  "4. Any call sites or co-changed files you had to update.",
+];
+
+/** Where the plan points, what it is, and what it is worth. */
+function planFacts(plan: RefactoringPlan, blurb: string): string {
+  return bulletList([
+    `Target: ${planSourceLink(plan.file_path, plan.line_start, plan.line_end)}${
+      plan.target_symbol ? ` — \`${plan.target_symbol}\`` : ""
+    }`,
+    `What: ${blurb}`,
+    plan.impact_delta > 0
+      ? `Recovers ~${plan.impact_delta.toFixed(2)} of health score if applied.`
+      : null,
+    plan.effort_bucket ? `Effort: ${plan.effort_bucket} bucket.` : null,
+    plan.confidence ? `Detector confidence: ${plan.confidence}.` : null,
+  ]);
 }
 
 /**
@@ -114,63 +155,37 @@ export function buildRefactoringPlanPrompt({
   flavor = "generic",
   repoName,
 }: BuildRefactoringPlanPromptOptions): string {
-  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
   const meta = typeMeta(plan.refactoring_type);
   const files = blastFiles(plan).filter((f) => f !== plan.file_path);
-  const validation = recommendationValidation(plan);
 
   const constraintList = [
     "Preserve behavior exactly — this is a refactoring, not a feature change. No public API or observable behavior should shift.",
     "Run the project's tests (and type-checker/linter) after the change; the suite must stay green.",
     "If, after reading the real code, the plan looks wrong or unsafe, stop and explain why instead of forcing it — the detection is static and can be a false positive.",
-    files.length > 0
-      ? `Keep these co-affected files consistent: ${files.map((f) => `\`${f}\``).join(", ")}.`
-      : null,
+    files.length > 0 ? `Keep these co-affected files consistent: ${codeList(files)}.` : null,
   ];
 
-  const completionContract = [
-    "1. The refactored code, with each step above applied.",
-    "2. A short note on what you renamed/introduced and why.",
-    "3. Confirmation the tests pass (or the exact failures if they don't).",
-    "4. Any call sites or co-changed files you had to update.",
-  ];
-
-  return [
+  return joinSections([
     FLAVOR_PREAMBLE[flavor],
     "",
-    `## ${meta.label}${repoLine}`,
+    `## ${meta.label}${repoSuffix(repoName)}`,
     "",
-    bulletList([
-      `Target: ${planSourceLink(plan.file_path, plan.line_start, plan.line_end)}${
-        plan.target_symbol ? ` — \`${plan.target_symbol}\`` : ""
-      }`,
-      `What: ${meta.blurb}`,
-      plan.impact_delta > 0
-        ? `Recovers ~${plan.impact_delta.toFixed(2)} of health score if applied.`
-        : null,
-      plan.effort_bucket ? `Effort: ${plan.effort_bucket} bucket.` : null,
-      plan.confidence ? `Detector confidence: ${plan.confidence}.` : null,
-    ]),
+    planFacts(plan, meta.blurb),
     "",
     "## The plan",
     "",
     refactoringPlanSteps(plan),
     "",
-    validation,
+    recommendationValidation(plan),
     "",
-    "## Hard constraints",
-    "",
-    bulletList(constraintList),
-    "",
-    "## What I expect back",
-    "",
-    completionContract.join("\n"),
-    "",
+    ...closingSections(constraintList, PLAN_EXPECTED),
     explorationCloser(flavor, plan.file_path, "refactor"),
-  ]
-    .filter((s) => s !== "")
-    .join("\n");
+  ]);
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Refactoring opportunity prompt (the ordered steps for one file)
+// ─────────────────────────────────────────────────────────────────────
 
 export interface BuildRefactoringOpportunityPromptOptions {
   opportunity: RefactoringOpportunityDetailResolved;
@@ -191,6 +206,34 @@ function stepApplicabilityLine(step: OpportunityStep): string {
   return `${classification}${reasons ? ` — ${reasons}` : ""}.${unknowns}`;
 }
 
+/** Indent a multi-line block so it reads as the body of its numbered step. */
+function indentBlock(body: string, pad: string): string {
+  return body
+    .split("\n")
+    .map((line) => (line.trim() === "" ? "" : `${pad}${line}`))
+    .join("\n");
+}
+
+function stepEntry(step: OpportunityStep, index: number, plan: RefactoringPlan | undefined): string {
+  const meta = typeMeta(step.refactoring_type);
+  const lines: (string | null)[] = [
+    `${index + 1}. **${meta.label}** — ${planSourceLink(step.file_path, step.line_start, step.line_end)}${
+      step.target_symbol ? ` — \`${step.target_symbol}\`` : ""
+    }`,
+    `   - Step id: \`${step.plan_id}\``,
+    `   - ${stepApplicabilityLine(step)}`,
+    step.relocated_by
+      ? `   - **Locate it again first.** Step \`${step.relocated_by}\` moves this symbol to another file, so the path and lines above are where it was, not where it will be when you get here.`
+      : null,
+    plan
+      ? indentBlock(refactoringPlanSteps(plan), "   ")
+      : // Not a silent gap: a step whose payload did not come back still
+        // says so rather than rendering a header with no instruction.
+        `   - The detail for this step was not in this payload. Ask for it by id: \`${step.plan_id}\`.`,
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
 /**
  * The ordered steps, each one saying what kind of change it is.
  *
@@ -203,35 +246,8 @@ function stepApplicabilityLine(step: OpportunityStep): string {
 function opportunitySteps(opportunity: RefactoringOpportunityDetailResolved): string {
   const byId = new Map(opportunity.plans.map((plan) => [plan.id, plan]));
   return opportunity.steps
-    .map((step, i) => {
-      const plan = byId.get(step.plan_id);
-      const meta = typeMeta(step.refactoring_type);
-      const lines: (string | null)[] = [
-        `${i + 1}. **${meta.label}** — ${planSourceLink(step.file_path, step.line_start, step.line_end)}${
-          step.target_symbol ? ` — \`${step.target_symbol}\`` : ""
-        }`,
-        `   - Step id: \`${step.plan_id}\``,
-        `   - ${stepApplicabilityLine(step)}`,
-        step.relocated_by
-          ? `   - **Locate it again first.** Step \`${step.relocated_by}\` moves this symbol to another file, so the path and lines above are where it was, not where it will be when you get here.`
-          : null,
-        plan
-          ? indentBlock(refactoringPlanSteps(plan), "   ")
-          : // Not a silent gap: a step whose payload did not come back still
-            // says so rather than rendering a header with no instruction.
-            `   - The detail for this step was not in this payload. Ask for it by id: \`${step.plan_id}\`.`,
-      ];
-      return lines.filter(Boolean).join("\n");
-    })
+    .map((step, i) => stepEntry(step, i, byId.get(step.plan_id)))
     .join("\n\n");
-}
-
-/** Indent a multi-line block so it reads as the body of its numbered step. */
-function indentBlock(body: string, pad: string): string {
-  return body
-    .split("\n")
-    .map((line) => (line.trim() === "" ? "" : `${pad}${line}`))
-    .join("\n");
 }
 
 /** The observations behind the diagnosis, never presented as work. */
@@ -247,7 +263,7 @@ function opportunityEvidence(opportunity: RefactoringOpportunityDetailResolved):
       detail ? ` — ${detail}` : ""
     }`;
   });
-  return [
+  return joinSections([
     "## Evidence behind the diagnosis",
     "",
     "Supporting observations, not extra work. They are why the diagnosis reads the way it does.",
@@ -256,31 +272,15 @@ function opportunityEvidence(opportunity: RefactoringOpportunityDetailResolved):
     opportunity.evidence_truncated
       ? `\n${opportunity.evidence_emitted} of ${opportunity.evidence_total} shown.`
       : "",
-  ]
-    .filter((s) => s !== "")
-    .join("\n");
+  ]);
 }
 
 /** The validation profiles the steps share, with their runnable commands. */
 function opportunityValidation(opportunity: RefactoringOpportunityDetailResolved): string {
   if (opportunity.validation_profiles.length === 0) return "";
-  const blocks = opportunity.validation_profiles.map((profile) => {
-    const evidence =
-      profile.basis === "unknown"
-        ? "No measured or inferred guarding test was found; treat this as a validation gap."
-        : `${profile.total} guarding test${profile.total === 1 ? "" : "s"} via ${
-            profile.via ?? profile.basis
-          }${profile.truncated ? ` (showing ${profile.tests.length})` : ""}.`;
-    return bulletList([
-      evidence,
-      profile.tests.length
-        ? `Tests: ${profile.tests.map((test) => `\`${test}\``).join(", ")}.`
-        : null,
-      profile.commands.length
-        ? `Run: ${profile.commands.map((command) => `\`${command}\``).join("; ")}.`
-        : null,
-    ]);
-  });
+  const blocks = opportunity.validation_profiles.map((profile) =>
+    bulletList([guardingTests(profile), testsLine(profile), runLine(profile)]),
+  );
   return ["## Validation plan", "", blocks.join("\n")].join("\n");
 }
 
@@ -317,6 +317,35 @@ function opportunityHandoff(
   ].join("\n");
 }
 
+// Tri-state, and all three states survive. `null` means no dominant finding
+// was recorded to compare against, which is not the claim `false` makes.
+function primaryProblemLine(addressesPrimary: boolean | null | undefined): string {
+  if (addressesPrimary === true) {
+    return "These steps address the file's dominant diagnosed problem.";
+  }
+  if (addressesPrimary === false) {
+    return "These steps do NOT address the file's dominant diagnosed problem — they are real work, but not the biggest cost in this file. Say so if you think something else should come first.";
+  }
+  return "No dominant problem was recorded for this file, so whether these steps address the main one is unknown — not answered either way.";
+}
+
+/** What the opportunity is, how big it is, and whether it hits the main problem. */
+function opportunityFacts(opportunity: RefactoringOpportunityDetailResolved): string {
+  return bulletList([
+    `Opportunity: \`${opportunity.opportunity_id}\``,
+    `File: \`${opportunity.file_path}\``,
+    opportunity.lead_biomarker
+      ? `Leading cause: ${opportunity.lead_biomarker.replace(/_/g, " ")}.`
+      : null,
+    `${opportunity.step_count} step${pluralS(opportunity.step_count)}: ${opportunity.mechanical_steps} mechanical, ${opportunity.judgment_steps} judgment.`,
+    opportunity.recoverable_health > 0
+      ? `Recovers ~${opportunity.recoverable_health.toFixed(2)} of health score if applied.`
+      : null,
+    `Effort: ${opportunity.effort_bucket} bucket. Detector confidence: ${opportunity.confidence}.`,
+    primaryProblemLine(opportunity.addresses_primary_problem),
+  ]);
+}
+
 /**
  * Build a ready-to-paste prompt that hands a coding agent ONE composed
  * refactoring opportunity: the file, what it leads with, its ordered steps with
@@ -331,19 +360,8 @@ export function buildRefactoringOpportunityPrompt({
   flavor = "generic",
   repoName,
 }: BuildRefactoringOpportunityPromptOptions): string {
-  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
   const meta = typeMeta(opportunity.lead_refactoring_type || "");
   const others = opportunity.affected_files.filter((f) => f !== opportunity.file_path);
-
-  // Tri-state, and all three states survive. `null` means no dominant finding
-  // was recorded to compare against, which is not the claim `false` makes.
-  const primaryLine =
-    opportunity.addresses_primary_problem === true
-      ? "These steps address the file's dominant diagnosed problem."
-      : opportunity.addresses_primary_problem === false
-        ? "These steps do NOT address the file's dominant diagnosed problem — they are real work, but not the biggest cost in this file. Say so if you think something else should come first."
-        : "No dominant problem was recorded for this file, so whether these steps address the main one is unknown — not answered either way.";
-
   const anyRelocated = opportunity.steps.some((step) => Boolean(step.relocated_by));
 
   const constraintList = [
@@ -355,9 +373,7 @@ export function buildRefactoringOpportunityPrompt({
     "A step marked Judgment has an unproven obligation. Read the real code and decide before applying it; do not treat it like a mechanical one.",
     "Run the project's tests (and type-checker/linter) after the change; the suite must stay green.",
     "If, after reading the real code, a step looks wrong or unsafe, stop and explain why instead of forcing it — the detection is static and can be a false positive.",
-    others.length > 0
-      ? `Keep these co-affected files consistent: ${others.map((f) => `\`${f}\``).join(", ")}.`
-      : null,
+    others.length > 0 ? `Keep these co-affected files consistent: ${codeList(others)}.` : null,
   ];
 
   const completionContract = [
@@ -368,24 +384,12 @@ export function buildRefactoringOpportunityPrompt({
     `5. The opportunity id \`${opportunity.opportunity_id}\`, so the work can be matched back to the record.`,
   ];
 
-  return [
+  return joinSections([
     FLAVOR_PREAMBLE[flavor],
     "",
-    `## ${meta.label} in \`${opportunity.file_path}\`${repoLine}`,
+    `## ${meta.label} in \`${opportunity.file_path}\`${repoSuffix(repoName)}`,
     "",
-    bulletList([
-      `Opportunity: \`${opportunity.opportunity_id}\``,
-      `File: \`${opportunity.file_path}\``,
-      opportunity.lead_biomarker
-        ? `Leading cause: ${opportunity.lead_biomarker.replace(/_/g, " ")}.`
-        : null,
-      `${opportunity.step_count} step${opportunity.step_count === 1 ? "" : "s"}: ${opportunity.mechanical_steps} mechanical, ${opportunity.judgment_steps} judgment.`,
-      opportunity.recoverable_health > 0
-        ? `Recovers ~${opportunity.recoverable_health.toFixed(2)} of health score if applied.`
-        : null,
-      `Effort: ${opportunity.effort_bucket} bucket. Detector confidence: ${opportunity.confidence}.`,
-      primaryLine,
-    ]),
+    opportunityFacts(opportunity),
     "",
     "## The steps, in order",
     "",
@@ -398,18 +402,9 @@ export function buildRefactoringOpportunityPrompt({
     "",
     opportunityValidation(opportunity),
     "",
-    "## Hard constraints",
-    "",
-    bulletList(constraintList),
-    "",
-    "## What I expect back",
-    "",
-    completionContract.join("\n"),
-    "",
+    ...closingSections(constraintList, completionContract),
     opportunityHandoff(opportunity, flavor),
     "",
     explorationCloser(flavor, opportunity.file_path, "refactor"),
-  ]
-    .filter((s) => s !== "")
-    .join("\n");
+  ]);
 }

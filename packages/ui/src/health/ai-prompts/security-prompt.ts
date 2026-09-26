@@ -1,4 +1,12 @@
-import { bulletList, explorationCloser, FLAVOR_PREAMBLE, type AiPromptFlavor } from "./shared";
+import {
+  bulletList,
+  closingSections,
+  explorationCloser,
+  FLAVOR_PREAMBLE,
+  joinSections,
+  repoSuffix,
+  type AiPromptFlavor,
+} from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
 // Security remediation prompt (per finding)
@@ -22,7 +30,6 @@ export function buildSecurityAiPrompt({
   flavor = "generic",
   repoName,
 }: BuildSecurityPromptOptions): string {
-  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
   const isSecret = /secret|key|token|credential|password/i.test(finding.kind);
 
   const constraintList = [
@@ -42,10 +49,10 @@ export function buildSecurityAiPrompt({
     isSecret ? "4. An explicit rotation/remediation note for the exposed secret." : "4. Any related spots in the codebase with the same pattern that should get the same fix.",
   ];
 
-  return [
+  return joinSections([
     FLAVOR_PREAMBLE[flavor],
     "",
-    `## Security finding${repoLine}`,
+    `## Security finding${repoSuffix(repoName)}`,
     "",
     bulletList([
       `File: \`${finding.file_path}\``,
@@ -61,16 +68,7 @@ export function buildSecurityAiPrompt({
     "",
     `Investigate and remediate this ${finding.kind} finding in \`${finding.file_path}\`.`,
     "",
-    "## Hard constraints",
-    "",
-    bulletList(constraintList),
-    "",
-    "## What I expect back",
-    "",
-    completionContract.join("\n"),
-    "",
+    ...closingSections(constraintList, completionContract),
     explorationCloser(flavor, finding.file_path, "security"),
-  ]
-    .filter((s) => s !== "")
-    .join("\n");
+  ]);
 }
