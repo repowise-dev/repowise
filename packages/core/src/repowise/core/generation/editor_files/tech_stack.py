@@ -173,8 +173,9 @@ def _manifest_fingerprint(repo_path: Path) -> tuple:
 def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
     """Detect languages, frameworks, and infra tools from manifest files.
 
-    Scans repo root and one level deep for common manifest files.
-    Returns items sorted by category then name.
+    Reads root manifests, looks for tsconfig.json up to two levels down, and
+    walks up to five levels for .csproj files. A malformed manifest contributes
+    what it can and never raises. Returns items sorted by category then name.
 
     Memoized on the root inputs' stat signature: a single ``repowise update``
     asks twice (the graph's framework edges, then the knowledge-graph refresh)
@@ -267,11 +268,19 @@ def _read_package_json(repo_path: Path) -> object:
         return None
 
 
+def _read_manifest_text(path: Path) -> str | None:
+    """Text of a manifest, or None when absent. Undecodable bytes are replaced."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def _node_items(repo_path: Path) -> Iterator[_Item]:
     pkg = _read_package_json(repo_path)
     if not isinstance(pkg, dict):
         return
-    all_deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+    all_deps = {**_dep_table(pkg, "dependencies"), **_dep_table(pkg, "devDependencies")}
     if _is_node_app(pkg, all_deps):
         yield "Node.js", _node_engine(pkg), "language"
         yield from _node_framework_items(all_deps)
@@ -286,14 +295,21 @@ def _node_framework_items(all_deps: dict) -> Iterator[_Item]:
             yield display, _dep_version(all_deps, dep_key), cat
 
 
+def _dep_table(pkg: dict, field: str) -> dict:
+    table = pkg.get(field)
+    return table if isinstance(table, dict) else {}
+
+
 def _dep_version(all_deps: dict, name: str) -> str | None:
     """The declared version with its range operator stripped, or None."""
-    return all_deps.get(name, "").lstrip("^~>=") or None
+    version = all_deps.get(name)
+    return (version.lstrip("^~>=") or None) if isinstance(version, str) else None
 
 
 def _node_engine(pkg: dict) -> str | None:
     engines = pkg.get("engines")
-    return engines.get("node") if isinstance(engines, dict) else None
+    node = engines.get("node") if isinstance(engines, dict) else None
+    return node if isinstance(node, str) else None
 
 
 def _is_node_app(pkg: dict, all_deps: dict) -> bool:
@@ -330,18 +346,16 @@ def _python_items(repo_path: Path) -> Iterator[_Item]:
     if not (pyproject.exists() or (repo_path / "setup.py").exists()):
         return
     yield "Python", None, "language"
-    if not pyproject.exists():
-        return
-    text = pyproject.read_text(encoding="utf-8").lower()
+    text = (_read_manifest_text(pyproject) or "").lower()
     for dep_key, (display, cat) in _PYTHON_FRAMEWORKS.items():
         if dep_key in text:
             yield display, None, cat
 
 
 def _go_items(repo_path: Path) -> Iterator[_Item]:
-    go_mod = repo_path / "go.mod"
-    if go_mod.exists():
-        ver_match = re.search(r"^go\s+(\S+)", go_mod.read_text(encoding="utf-8"), re.MULTILINE)
+    text = _read_manifest_text(repo_path / "go.mod")
+    if text is not None:
+        ver_match = re.search(r"^go\s+(\S+)", text, re.MULTILINE)
         yield "Go", ver_match.group(1) if ver_match else None, "language"
 
 
@@ -503,10 +517,9 @@ def _package_script_commands(repo_path: Path) -> dict[str, str]:
 
 
 def _add_pyproject_commands(repo_path: Path, commands: dict[str, str]) -> None:
-    pyproject = repo_path / "pyproject.toml"
-    if not pyproject.exists():
+    text = _read_manifest_text(repo_path / "pyproject.toml")
+    if text is None:
         return
-    text = pyproject.read_text(encoding="utf-8")
     if "pytest" in text:
         commands.setdefault("test", "pytest")
     if "ruff" in text:
@@ -518,8 +531,7 @@ def _add_pyproject_commands(repo_path: Path, commands: dict[str, str]) -> None:
 
 
 def _make_commands(repo_path: Path) -> dict[str, str]:
-    try:
-        text = (repo_path / "Makefile").read_text(encoding="utf-8")
-    except (OSError, ValueError):
+    text = _read_manifest_text(repo_path / "Makefile")
+    if text is None:
         return {}
     return _first_available(_MAKE_TARGETS, set(_MAKE_TARGET_RE.findall(text)), "make")
