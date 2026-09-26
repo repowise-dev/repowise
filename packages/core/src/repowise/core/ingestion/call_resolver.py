@@ -38,18 +38,20 @@ from .call_receiver_typing import (
     _SOURCE_CACHE_FILES,
     _TYPE_KINDS,
     ReceiverTypingMixin,
+    _store_capped,
 )
 from .language_data import (
     get_builtin_methods,
     get_external_receiver_types,
     get_external_return_types,
 )
-from .languages.receiver_types import Declaration
 from .models import (
     CallReceiver,
     CallSite,
+    Import,
     NamedBinding,
     ParsedFile,
+    Symbol,
     symbol_id_language,
 )
 from .resolved_call import ResolvedCall
@@ -132,10 +134,65 @@ def _is_property_accessor(sym: Any) -> bool:
             return True
     return False
 
+
 # Phase admission is intentionally explicit. P16 lands the behavior-preserving
 # substrate with no language enabled; later phases add only measured lanes.
 PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp"})
 
+# Chain lanes that need a file or import/re-export identity for the head type:
+# a repository-global simple type name is not a language binding.
+_BOUND_CHAIN_LANGUAGES = frozenset({"java", "csharp", "typescript"})
+
+
+def _overload_return_types(
+    parsed_files: dict[str, ParsedFile],
+) -> dict[tuple[str, str | None, str, int | None], set[str]]:
+    """``{(path, parent, name, parameter count): normalised return types}``."""
+    found: dict[tuple[str, str | None, str, int | None], set[str]] = defaultdict(set)
+    for path, parsed in parsed_files.items():
+        for symbol in parsed.symbols:
+            raw_return = declared_return_type(symbol.signature or "")
+            normalized = (
+                normalize_return_type(raw_return, symbol.language) if raw_return else None
+            )
+            if normalized is None:
+                continue
+            key = (
+                path,
+                symbol.parent_name,
+                symbol.name,
+                signature_parameter_count(symbol.signature or ""),
+            )
+            found[key].add(normalized)
+    return found
+
+
+def _flattened_wildcard_source(imp: Import) -> str | None:
+    """The repository file whose every name *imp* forwards, or None.
+
+    Two shapes qualify: Rust ``pub use foo::*`` (``is_reexport``) and
+    Python/JS ``from foo import *`` (a "*" imported name).
+    """
+    is_wildcard = imp.is_reexport or "*" in imp.imported_names
+    if not is_wildcard or not imp.resolved_file:
+        return None
+    if imp.resolved_file.startswith("external:"):
+        return None
+    # ``export * as ns from "x"`` forwards the module under ``ns``,
+    # so x's names are reachable as ``ns.name`` and are NOT this
+    # file's own exports. Flattening them makes a bare ``name``
+    # resolve into a nested namespace it was never in.
+    if any(b.local_name == "*" and b.exported_name for b in imp.bindings):
+        return None
+    return imp.resolved_file
+
+
+def _admitted_cpp_chain(type_name: str, method_name: str) -> bool:
+    return type_name == "future" and method_name == "get"
+
+
+def _renames_on_the_way(binding: NamedBinding | None, name: str) -> bool:
+    return binding is not None and (binding.exported_name or name) != name
 
 
 def _same_translation_unit(decl_file: str, def_file: str) -> bool:
@@ -216,23 +273,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             for path, parsed in parsed_files.items()
             for symbol in parsed.symbols
         }
-        self._overload_return_types: dict[tuple[str, str | None, str, int | None], set[str]] = (
-            defaultdict(set)
-        )
-        for path, parsed in parsed_files.items():
-            for symbol in parsed.symbols:
-                raw_return = declared_return_type(symbol.signature or "")
-                normalized = (
-                    normalize_return_type(raw_return, symbol.language) if raw_return else None
-                )
-                if normalized is not None:
-                    key = (
-                        path,
-                        symbol.parent_name,
-                        symbol.name,
-                        signature_parameter_count(symbol.signature or ""),
-                    )
-                    self._overload_return_types[key].add(normalized)
+        self._overload_return_types = _overload_return_types(parsed_files)
         self._known_type_names = frozenset(
             symbol.name for symbol in self._symbols_by_id.values() if symbol.kind in _TYPE_KINDS
         )
@@ -284,24 +325,8 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Lazy per-file set of (line, target) that also carry a receiver.
         self._member_shaped: dict[str, set[tuple[int, str]]] = {}
 
-        # Receiver typing reads source text, so both caches are capped rather
-        # than per-repo: files resolve one at a time, so a few slots always
-        # hit, and the cap is what keeps a whole repo's source out of memory.
-        # Scanning is memoised per *function*, not per reference — one scan
-        # answers every unresolved receiver in a body.
-        self._source_text: dict[str, str] = {}
-        self._declarations: dict[str, tuple[Declaration, ...]] = {}
-        self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
-        self._body_types: dict[tuple[str, str], dict[str, str | None]] = {}
-        self._field_types: dict[str, dict[str, dict[str, str | None]]] = {}
-        self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
-        self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
-        # {file: {name: type}} — module-level defs a framework decorator retyped.
-        self._framework_types: dict[str, dict[str, str]] = {}
-        self._external_names: dict[str, frozenset[str]] = {}
+        self._init_receiver_typing_caches()
         self._repo_rebound_names: dict[str, frozenset[str]] = {}
-        self._method_name_set: frozenset[str] | None = None
-        self._framework_name_set: frozenset[str] | None = None
 
         # Barrel re-export origins: {barrel_file: {name: origin_file}}
         self._barrel_origins: dict[str, dict[str, str]] = defaultdict(dict)
@@ -309,23 +334,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Keep reference for cross-language checks in Tier 3
         self._parsed_files = parsed_files
 
-        # Rust cross-crate resolution
-        self._repo_path = repo_path
-        self._rust_crate_src: dict[str, str] | None = None  # lazy
-
-        # Go package-scoped resolution (lazy GoPackageIndex). ``_go_index``
-        # holds the built index; ``_go_index_built`` distinguishes "not yet
-        # built" from "built but unavailable" (no repo_path / no go files).
-        self._go_index: Any = None
-        self._go_index_built = False
-
-        # JVM same-package resolution (lazy JvmWorkspaceIndex)
-        self._jvm_index: Any = None
-        self._jvm_index_built = False
-
-        # C/C++ same-target resolution (lazy CppWorkspaceIndex)
-        self._cpp_index: Any = None
-        self._cpp_index_built = False
+        self._init_workspace_indexes(repo_path)
 
         self._strategies_by_file: dict[str, _LanguageCallStrategies] = {}
 
@@ -340,7 +349,12 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         When downstream code imports from the barrel, we follow chains to
         find the actual defining file.
         """
-        # First pass: identify direct barrel origins
+        self._record_direct_barrel_origins()
+        wildcard_sources = self._record_wildcard_barrel_origins()
+        self._forward_barrels_over_barrels(wildcard_sources)
+        self._deepen_barrel_chains()
+
+    def _record_direct_barrel_origins(self) -> None:
         for path, name_to_file in self._import_names.items():
             file_syms = self._file_symbols.get(path, {})
             for name, source_file in name_to_file.items():
@@ -351,88 +365,100 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 if name not in file_syms and not source_file.startswith("external:"):
                     self._barrel_origins[path][name] = source_file
 
-        # Track wildcard re-exports, which forward every symbol of the imported
-        # module under this file's namespace. Two shapes qualify: Rust
-        # `pub use foo::*` (is_reexport) and Python/JS `from foo import *` (a
-        # "*" imported name). The latter is how package ``__init__.py`` barrels
-        # commonly re-export a subpackage — ``build_import_name_maps`` skips the
-        # "*" name (it is not a binding), so without this pass the barrel chain
-        # dead-ends one hop short of the real definition and a call through the
-        # barrel resolves to nothing.
+    def _record_wildcard_barrel_origins(self) -> dict[str, list[str]]:
+        """Forward every name a wildcard import publishes; return each file's sources.
+
+        This is how package ``__init__.py`` barrels commonly re-export a
+        subpackage. ``build_import_name_maps`` skips the "*" name (it is not a
+        binding), so without this pass the barrel chain dead-ends one hop short
+        of the real definition and a call through the barrel resolves to nothing.
+        """
         wildcard_sources: dict[str, list[str]] = defaultdict(list)
         for path, parsed in self._parsed_files.items():
             file_syms = self._file_symbols.get(path, {})
             for imp in parsed.imports:
-                is_wildcard = imp.is_reexport or "*" in imp.imported_names
-                if not is_wildcard or not imp.resolved_file:
+                resolved = _flattened_wildcard_source(imp)
+                if resolved is None:
                     continue
-                if imp.resolved_file.startswith("external:"):
-                    continue
-                # ``export * as ns from "x"`` forwards the module under ``ns``,
-                # so x's names are reachable as ``ns.name`` and are NOT this
-                # file's own exports. Flattening them makes a bare ``name``
-                # resolve into a nested namespace it was never in.
-                if any(b.local_name == "*" and b.exported_name for b in imp.bindings):
-                    continue
-                resolved = imp.resolved_file
                 if resolved != path:
                     wildcard_sources[path].append(resolved)
-                source_syms = self._file_symbols.get(resolved, {})
-                source_parsed = self._parsed_files.get(resolved)
-                published = (
-                    (*source_syms, *source_parsed.export_aliases)
-                    if source_parsed
-                    else tuple(source_syms)
-                )
-                for sym_name in published:
-                    if sym_name not in file_syms:
-                        self._barrel_origins[path][sym_name] = resolved
+                self._forward_published_names(path, resolved, file_syms)
+        return wildcard_sources
 
-        # The pass above forwards only what the source file DECLARES, so a
-        # barrel over a barrel forwards nothing and the chain breaks at its
-        # first link rather than its last. Forward what the source file
-        # re-exports too, to a fixpoint. The multi-hop pass below cannot do
-        # this job — it deepens entries that exist, and here none do.
-        #
-        # Sorted so that a name two of this file's barrels both forward lands on
-        # the same origin whatever order the repository was walked in.
+    def _forward_published_names(
+        self, path: str, resolved: str, file_syms: dict[str, str]
+    ) -> None:
+        source_syms = self._file_symbols.get(resolved, {})
+        source_parsed = self._parsed_files.get(resolved)
+        published = (
+            (*source_syms, *source_parsed.export_aliases)
+            if source_parsed
+            else tuple(source_syms)
+        )
+        for sym_name in published:
+            if sym_name not in file_syms:
+                self._barrel_origins[path][sym_name] = resolved
+
+    def _forward_barrels_over_barrels(self, wildcard_sources: dict[str, list[str]]) -> None:
+        """Forward what each wildcard source re-exports too, to a fixpoint.
+
+        The wildcard pass forwards only what the source file DECLARES, so a
+        barrel over a barrel forwards nothing and the chain breaks at its
+        first link rather than its last. The multi-hop pass cannot do this
+        job: it deepens entries that exist, and here none do.
+
+        Sorted so that a name two of this file's barrels both forward lands on
+        the same origin whatever order the repository was walked in.
+        """
         for _ in range(4):
             changed = False
             for path, sources in sorted(wildcard_sources.items()):
-                file_syms = self._file_symbols.get(path, {})
-                origins = self._barrel_origins[path]
-                for source in sorted(sources):
-                    source_bindings = self._import_bindings.get(source, {})
-                    for name, declaring in sorted(self._barrel_origins.get(source, {}).items()):
-                        if name in file_syms or name in origins or declaring == path:
-                            continue
-                        # The map keys a name as the source file spells it and
-                        # records only the declaring file, never the name the
-                        # symbol has there. A hop that renames therefore hands
-                        # on a key the declaring file may coincidentally
-                        # declare as something unrelated, and the receiving
-                        # file carries no binding to undo it with. Refuse those
-                        # rather than forward a name that means something else
-                        # at the far end; it costs reach, never correctness.
-                        binding = source_bindings.get(name)
-                        if binding is not None and (binding.exported_name or name) != name:
-                            continue
-                        origins[name] = declaring
-                        changed = True
+                if self._forward_source_origins(path, sources):
+                    changed = True
             if not changed:
                 break
 
-        # Multi-hop: follow chains up to 5 hops
+    def _forward_source_origins(self, path: str, sources: list[str]) -> bool:
+        file_syms = self._file_symbols.get(path, {})
+        origins = self._barrel_origins[path]
+        changed = False
+        for source in sorted(sources):
+            source_bindings = self._import_bindings.get(source, {})
+            for name, declaring in sorted(self._barrel_origins.get(source, {}).items()):
+                if name in file_syms or name in origins or declaring == path:
+                    continue
+                # The map keys a name as the source file spells it and
+                # records only the declaring file, never the name the
+                # symbol has there. A hop that renames therefore hands
+                # on a key the declaring file may coincidentally
+                # declare as something unrelated, and the receiving
+                # file carries no binding to undo it with. Refuse those
+                # rather than forward a name that means something else
+                # at the far end; it costs reach, never correctness.
+                if _renames_on_the_way(source_bindings.get(name), name):
+                    continue
+                origins[name] = declaring
+                changed = True
+        return changed
+
+    def _deepen_barrel_chains(self) -> None:
+        """Multi-hop: follow chains up to 5 hops."""
         for _ in range(4):
             changed = False
             for _path, origins in list(self._barrel_origins.items()):
-                for name, source in list(origins.items()):
-                    deeper = self._barrel_origins.get(source, {}).get(name)
-                    if deeper and deeper != source:
-                        origins[name] = deeper
-                        changed = True
+                if self._deepen_origins(origins):
+                    changed = True
             if not changed:
                 break
+
+    def _deepen_origins(self, origins: dict[str, str]) -> bool:
+        changed = False
+        for name, source in list(origins.items()):
+            deeper = self._barrel_origins.get(source, {}).get(name)
+            if deeper and deeper != source:
+                origins[name] = deeper
+                changed = True
+        return changed
 
     def _collapse_declarations(self, sym_ids: list[str]) -> set[str]:
         """Fold each declaration onto the definition it was paired with.
@@ -456,61 +482,74 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         extensions: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
 
         for path, parsed in parsed_files.items():
-            file_syms: dict[str, str] = {}
-            file_methods: dict[tuple[str, str], str] = {}
-
-            for sym in parsed.symbols:
-                decl_key = (sym.parent_name, sym.name)
-                if sym.is_declaration:
-                    declarations.append((path, sym.id, decl_key))
-                    # A declaration must never displace a definition already
-                    # indexed under this name — a .cpp that forward-declares a
-                    # helper above its own body holds both.
-                    #
-                    # A method declaration stays out: this index answers
-                    # unqualified lookups from importing files, and no bare name
-                    # can legally reach a method. The (class, method) index
-                    # below still takes it.
-                    if sym.parent_name is None:
-                        file_syms.setdefault(sym.name, sym.id)
-                else:
-                    definitions[decl_key].append((path, sym.id))
-                    # File-level symbol index (top-level symbols and methods)
-                    file_syms[sym.name] = sym.id
-
-                # Method index: (class_name, method_name) → symbol_id
-                if sym.parent_name:
-                    key = (sym.parent_name, sym.name)
-                    file_methods[key] = sym.id
-                    self._global_methods[key].append((path, sym.id))
-
-                    extended = (
-                        csharp_extension_receiver(sym.signature)
-                        if sym.language == "csharp"
-                        else None
-                    )
-                    if (
-                        extended is not None
-                        and is_resolvable_type_name(extended, "csharp")
-                        and extended in self._csharp_type_names
-                    ):
-                        extensions[(extended, sym.name)].add((path, sym.id))
-
-                # Global indices
-                if sym.kind in _NON_CALLABLE_KINDS:
-                    self._non_callable_ids.add(sym.id)
-                if _is_property_accessor(sym):
-                    self._property_accessor_ids.add(sym.id)
-                # Same rule as the per-file index above, for the global-unique
-                # tier.
-                if not (sym.is_declaration and sym.parent_name is not None):
-                    self._global_symbols[sym.name].append(sym.id)
-
-            self._file_symbols[path] = file_syms
-            self._file_methods[path] = file_methods
+            self._index_file(path, parsed, definitions, declarations, extensions)
 
         self._decl_to_def = self._link_declarations(declarations, definitions)
         self._index_extension_methods(extensions)
+
+    def _index_file(
+        self,
+        path: str,
+        parsed: ParsedFile,
+        definitions: dict[tuple[str | None, str], list[tuple[str, str]]],
+        declarations: list[tuple[str, str, tuple[str | None, str]]],
+        extensions: dict[tuple[str, str], set[tuple[str, str]]],
+    ) -> None:
+        """Index one file's symbols, collecting what is settled repo-wide later."""
+        file_syms: dict[str, str] = {}
+        file_methods: dict[tuple[str, str], str] = {}
+
+        for sym in parsed.symbols:
+            decl_key = (sym.parent_name, sym.name)
+            if sym.is_declaration:
+                declarations.append((path, sym.id, decl_key))
+                # A declaration must never displace a definition already
+                # indexed under this name — a .cpp that forward-declares a
+                # helper above its own body holds both.
+                #
+                # A method declaration stays out: this index answers
+                # unqualified lookups from importing files, and no bare name
+                # can legally reach a method. The (class, method) index
+                # below still takes it.
+                if sym.parent_name is None:
+                    file_syms.setdefault(sym.name, sym.id)
+            else:
+                definitions[decl_key].append((path, sym.id))
+                # File-level symbol index (top-level symbols and methods)
+                file_syms[sym.name] = sym.id
+
+            # Method index: (class_name, method_name) → symbol_id
+            if sym.parent_name:
+                key = (sym.parent_name, sym.name)
+                file_methods[key] = sym.id
+                self._global_methods[key].append((path, sym.id))
+
+                extended = self._csharp_extended_type(sym)
+                if extended is not None:
+                    extensions[(extended, sym.name)].add((path, sym.id))
+
+            self._index_globally(sym)
+
+        self._file_symbols[path] = file_syms
+        self._file_methods[path] = file_methods
+
+    def _csharp_extended_type(self, sym: Symbol) -> str | None:
+        """The repository C# type *sym* extends, when it is an extension method."""
+        if sym.language != "csharp":
+            return None
+        extended = csharp_extension_receiver(sym.signature)
+        if extended is None or not is_resolvable_type_name(extended, "csharp"):
+            return None
+        return extended if extended in self._csharp_type_names else None
+
+    def _index_globally(self, sym: Symbol) -> None:
+        if sym.kind in _NON_CALLABLE_KINDS:
+            self._non_callable_ids.add(sym.id)
+        if _is_property_accessor(sym):
+            self._property_accessor_ids.add(sym.id)
+        # Same rule as the per-file index, for the global-unique tier.
+        if not (sym.is_declaration and sym.parent_name is not None):
+            self._global_symbols[sym.name].append(sym.id)
 
     def _index_extension_methods(
         self, candidates: dict[tuple[str, str], set[tuple[str, str]]]
@@ -787,22 +826,28 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         tabled = self._external_chain_return_type(file_path, inner, language)
         from_table = tabled is not None
-        if tabled is not None:
-            type_name = tabled
-        elif language not in self._return_type_chain_languages:
-            # Admitted by its table alone. Inferring the head's type from the
-            # declared return type of a repository symbol is a separate and much
-            # larger population, and it is unmeasured here.
+        type_name = (
+            tabled
+            if tabled is not None
+            else self._inferred_chain_return_type(file_path, call, inner, caller_id, language)
+        )
+        if type_name is None:
             return False, None
-        else:
-            inferred = self._inferred_chain_return_type(
-                file_path, call, inner, caller_id, language
-            )
-            if inferred is None:
-                return False, None
-            type_name = inferred
 
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
+        if language == "cpp" and not _admitted_cpp_chain(type_name, call.target_name):
+            # P17 admits only the measured Seastar debt family.  Broader C++
+            # return-name matching remains probe evidence, not production
+            # behaviour.
+            return False, None
+        if found is None or (found[1] == "global" and language in _BOUND_CHAIN_LANGUAGES):
+            return self._chain_refusal_is_proven(language, type_name, from_table), None
+
+        sym_id, tier = found
+        return True, self._return_typed_call(caller_id, sym_id, tier, call.line)
+
+    def _chain_refusal_is_proven(self, language: str, type_name: str, from_table: bool) -> bool:
+        """Whether a chain with no usable target disproves the bare-name fallback."""
         if language == "java":
             # A simple type name is not repository-unique.  Java package and
             # import binding settle its identity; the global tier does not.
@@ -812,27 +857,10 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
             # declare that type's method either.  That makes the bare-name
             # answer disproved rather than merely unevidenced, which is the
             # difference between refusing the site and falling through to it.
-            if found is None or found[1] == "global":
-                return from_table, None
-        elif language == "cpp":
-            # P17 admits only the measured Seastar debt family.  Broader C++
-            # return-name matching remains probe evidence, not production
-            # behaviour.
-            if type_name != "future" or call.target_name != "get":
-                return False, None
-            if found is None:
-                return (type_name in self._known_type_names), None
-        elif language in ("csharp", "typescript"):
-            # These lanes require a file or import/re-export identity.  A
-            # repository-global simple type name is not a language binding.
-            if found is None or found[1] == "global":
-                return False, None
-        elif found is None:
-            return (type_name in self._known_type_names), None
-
-        assert found is not None
-        sym_id, tier = found
-        return True, self._return_typed_call(caller_id, sym_id, tier, call.line)
+            return from_table
+        if language in ("csharp", "typescript"):
+            return False
+        return type_name in self._known_type_names
 
     def _external_chain_return_type(
         self,
@@ -883,6 +911,11 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         language: str,
     ) -> str | None:
         """The head's type read off the repository symbol the inner call resolves to."""
+        if language not in self._return_type_chain_languages:
+            # Admitted by its table alone. Inferring the head's type from the
+            # declared return type of a repository symbol is a separate and much
+            # larger population, and it is unmeasured here.
+            return None
         inner_call = CallSite(
             target_name=inner.target_name,
             receiver_name=inner.receiver_name,
@@ -893,8 +926,13 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         resolved_inner = self._resolve_one(file_path, inner_call)
         if resolved_inner is None:
             return None
+        return self._callee_return_type(resolved_inner.callee_id, inner.argument_count, language)
 
-        symbol = self._symbols_by_id.get(resolved_inner.callee_id)
+    def _callee_return_type(
+        self, callee_id: str, argument_count: int | None, language: str
+    ) -> str | None:
+        """The type a call to *callee_id* yields, unless its overloads disagree."""
+        symbol = self._symbols_by_id.get(callee_id)
         if symbol is None:
             return None
         if symbol.kind in _TYPE_KINDS:
@@ -902,14 +940,14 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         raw_return = declared_return_type(symbol.signature or "")
         type_name = normalize_return_type(raw_return, language) if raw_return else None
-        symbol_path = self._symbol_paths_by_id.get(resolved_inner.callee_id)
+        symbol_path = self._symbol_paths_by_id.get(callee_id)
         if symbol_path is None:
             return None
         overload_key = (
             symbol_path,
             symbol.parent_name,
             symbol.name,
-            inner.argument_count,
+            argument_count,
         )
         if len(self._overload_return_types.get(overload_key, ())) > 1:
             return None
@@ -980,75 +1018,139 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         declared = target_name in self._global_symbols
 
         # Tier 1: same-file
-        file_syms = self._file_symbols.get(file_path, {})
-        if target_name in file_syms:
-            callee_id = file_syms[target_name]
-            own = self._enclosing_class_method(file_path, call, caller_id)
-            if own is not None and own != callee_id and _rivals_a_class_method(callee_id):
-                if own == caller_id:
-                    # Recursion the flat index handed to a stranger. No edge.
-                    return None
-                return ResolvedCall(caller_id, own, 0.95, call.line, "enclosing_class")
-            if callee_id != caller_id:  # no self-recursion edges for now
-                return ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
+        handled, resolved = self._same_file_free_call(file_path, call, caller_id)
+        if handled:
+            return resolved
 
         # The caller's language may see names no import statement mentions —
         # a Go or JVM package sibling, a C/C++ translation unit in the same
         # build target — and those beat the weaker import/global tiers.
         if declared:
-            for strategy in self._strategies_for(file_path).free:
-                hit = getattr(self, strategy)(file_path, call, caller_id)
-                if hit is not None:
-                    return hit
+            hit = self._first_strategy_hit(
+                self._strategies_for(file_path).free, file_path, call, caller_id
+            )
+            if hit is not None:
+                return hit
 
         # Tier 2: import-scoped
-        # 2a: Check specific imported name → source file (binding-aware)
         binding = self._import_bindings.get(file_path, {}).get(target_name)
-        if binding and binding.source_file:
-            source_file = binding.source_file
-            # Follow barrel re-export one hop
-            barrel = self._barrel_origins.get(source_file, {})
-            lookup_name = binding.exported_name or target_name
-            if lookup_name in barrel:
-                source_file = barrel[lookup_name]
-            published = self._published(source_file, lookup_name)
-            if published is not None:
-                return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
-
+        hit = self._bound_import_call(call, caller_id, binding)
+        if hit is not None:
+            return hit
         if not declared:
             return None
+        return (
+            self._named_import_call(file_path, call, caller_id, binding)
+            or self._merged_import_call(file_path, call, caller_id)
+            or self._repo_wide_free_call(file_path, call, caller_id)
+        )
 
-        # 2a fallback: plain _import_names (for imports without binding data)
+    def _first_strategy_hit(
+        self,
+        strategies: tuple[str, ...],
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """The first edge a named strategy resolves, in order."""
+        for strategy in strategies:
+            hit = getattr(self, strategy)(file_path, call, caller_id)
+            if hit is not None:
+                return hit
+        return None
+
+    def _same_file_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Tier 1, as ``(handled, edge)``: a handled None is a refusal."""
+        callee_id = self._file_symbols.get(file_path, {}).get(call.target_name)
+        if callee_id is None:
+            return False, None
+        own = self._enclosing_class_method(file_path, call, caller_id)
+        if own is not None and own != callee_id and _rivals_a_class_method(callee_id):
+            if own == caller_id:
+                # Recursion the flat index handed to a stranger. No edge.
+                return True, None
+            return True, ResolvedCall(caller_id, own, 0.95, call.line, "enclosing_class")
+        if callee_id != caller_id:  # no self-recursion edges for now
+            return True, ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
+        return False, None
+
+    def _bound_import_call(
+        self,
+        call: CallSite,
+        caller_id: str,
+        binding: NamedBinding | None,
+    ) -> ResolvedCall | None:
+        """2a: the specific imported name, binding-aware."""
+        if not (binding and binding.source_file):
+            return None
+        source_file = binding.source_file
+        # Follow barrel re-export one hop
+        barrel = self._barrel_origins.get(source_file, {})
+        lookup_name = binding.exported_name or call.target_name
+        if lookup_name in barrel:
+            source_file = barrel[lookup_name]
+        published = self._published(source_file, lookup_name)
+        if published is None:
+            return None
+        return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
+
+    def _named_import_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        binding: NamedBinding | None,
+    ) -> ResolvedCall | None:
+        """2a fallback: plain ``_import_names`` (for imports without binding data)."""
+        target_name = call.target_name
         name_to_file = self._import_names.get(file_path, {})
-        if target_name in name_to_file and not binding:
-            source_file = name_to_file[target_name]
-            barrel = self._barrel_origins.get(source_file, {})
-            if target_name in barrel:
-                source_file = barrel[target_name]
-            published = self._published(source_file, target_name)
-            if published is not None:
-                return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
+        if target_name not in name_to_file or binding:
+            return None
+        source_file = name_to_file[target_name]
+        barrel = self._barrel_origins.get(source_file, {})
+        if target_name in barrel:
+            source_file = barrel[target_name]
+        published = self._published(source_file, target_name)
+        if published is None:
+            return None
+        return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
 
-        # 2b: Check all imported files for the symbol (pre-merged lookup)
-        merged_syms = self._merged_symbols_for(file_path)
+    def _merged_import_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """2b: the symbol in any imported file (pre-merged lookup)."""
+        target_name = call.target_name
+        sym_id = self._merged_symbols_for(file_path).get(target_name)
         # A data member is not callable. Tier 3 already refuses one, but this
         # rung answered first and at 0.85, above the tier that declines it, so
         # the refusal only reached whichever sites tier 3 happened to see.
-        #
+        if sym_id is None or sym_id in self._non_callable_ids:
+            return None
         # A std-library name is refused for the same reason tier 3 refuses it:
         # the name is in scope in every file without an import, so a repo
         # symbol that merely shares it is not what the call site named. Being
         # reachable through an import says nothing, because the guess never
         # attributed the name to one imported file in the first place.
-        if (
-            target_name in merged_syms
-            and merged_syms[target_name] not in self._non_callable_ids
-            and target_name not in get_builtin_methods(self._language_of(file_path) or "")
-        ):
-            return ResolvedCall(
-                caller_id, merged_syms[target_name], 0.85, call.line, "import_merged"
-            )
+        if target_name in get_builtin_methods(self._language_of(file_path) or ""):
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.85, call.line, "import_merged")
 
+    def _repo_wide_free_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Tier 3 and what follows it: answers not grounded in this file or its imports."""
+        target_name = call.target_name
         # Tier 3: global unique match — only within the same language.
         # A data member is not callable, so it must not be the unique answer
         # that mints an edge. Filtered here rather than at index build
@@ -1070,19 +1172,9 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 file_path, call, caller_id, target_name, candidates[0]
             )
 
-        # Last, so it can only add an edge. The member-shaped refusal is the
-        # one ``_enclosing_class_method`` already applies: several grammars
-        # mint a receiver-less site for ``obj.m()`` too, and reading one as an
-        # implicit receiver would bind the wrong class's hierarchy to the call.
-        lang = self._language_of(file_path)
-        if (
-            lang in _IMPLICIT_RECEIVER_LANGUAGES
-            and lang in _INHERITED_LANGUAGES
-            and (call.line, target_name) not in self._member_shaped_sites(file_path)
-        ):
-            sym_id = self._inherited_method(caller_id, target_name)
-            if sym_id is not None:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "enclosing_inherited")
+        inherited = self._implicit_inherited_call(file_path, call, caller_id)
+        if inherited is not None:
+            return inherited
 
         # An overload set is several declarations under one id, which the row
         # count reads as an ambiguity that is not there. Not the filtering
@@ -1090,14 +1182,35 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         # Last on purpose - ahead of the tier above it restated 1,027 edges
         # the caller's own hierarchy already answered, at half the confidence.
         collapsed = self._collapse_declarations(candidates)
-        if len(candidates) > 1 and len(collapsed) == 1:
-            only = next(iter(collapsed))
-            if only != caller_id and only not in self._property_accessor_ids:
-                return self._global_unique_match(
-                    file_path, call, caller_id, target_name, only
-                )
+        if len(candidates) <= 1 or len(collapsed) != 1:
+            return None
+        only = next(iter(collapsed))
+        if only == caller_id or only in self._property_accessor_ids:
+            return None
+        return self._global_unique_match(file_path, call, caller_id, target_name, only)
 
-        return None
+    def _implicit_inherited_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """A bare call an ancestor of the caller's class answers.
+
+        Asked after tier 3, so it can only add an edge. The member-shaped
+        refusal is the one ``_enclosing_class_method`` already applies: several
+        grammars mint a receiver-less site for ``obj.m()`` too, and reading one
+        as an implicit receiver would bind the wrong class's hierarchy to the call.
+        """
+        lang = self._language_of(file_path)
+        if lang not in _IMPLICIT_RECEIVER_LANGUAGES or lang not in _INHERITED_LANGUAGES:
+            return None
+        if (call.line, call.target_name) in self._member_shaped_sites(file_path):
+            return None
+        sym_id = self._inherited_method(caller_id, call.target_name)
+        if sym_id is None:
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.90, call.line, "enclosing_inherited")
 
     def _global_unique_match(
         self,
@@ -1156,95 +1269,171 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
 
         # A language may reach a receiver no import statement mentions: a Go
         # package alias spanning several files, a JVM class in the same package.
-        for strategy in self._strategies_for(file_path).member:
-            hit = getattr(self, strategy)(file_path, call, caller_id)
-            if hit is not None:
-                return hit
+        hit = (
+            self._first_strategy_hit(
+                self._strategies_for(file_path).member, file_path, call, caller_id
+            )
+            or self._module_receiver_call(file_path, call, caller_id)
+            or self._crate_root_call(call, caller_id)
+        )
+        if hit is not None:
+            return hit
 
+        handled, hit = self._receiver_class_call(file_path, call, caller_id)
+        if handled:
+            return hit
+
+        return self._unclassed_receiver_call(file_path, call, caller_id)
+
+    def _unclassed_receiver_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """A receiver no class name answers: ``self``/``this``, a local or a parameter.
+
+        The fallback strategies ask only once everything above declined.
+        """
+        return (
+            self._self_scope_call(file_path, call, caller_id)
+            or self._first_strategy_hit(
+                self._strategies_for(file_path).member_fallback, file_path, call, caller_id
+            )
+            or self._self_inherited_call(file_path, call, caller_id)
+        )
+
+    def _module_receiver_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Strategies 1 and 1b: the receiver names an imported module."""
+        receiver_name = call.receiver_name
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
         if module_file:
-            published = self._published_by(module_file, receiver_name, method_name)
-            if published is not None:
-                return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
-            # A namespace over a barrel names a file that declares nothing of
-            # its own, so the lookup above can only ever miss. Chase the
-            # re-export map, as free calls and typed receivers already do.
-            #
-            # Keyed on the name the declaring file uses, not the one written
-            # here: a member access cannot rename, but the re-export it arrives
-            # through can, and the map records only the file. Without this an
-            # ``export { foo as bar }`` binds any unrelated ``bar`` the
-            # declaring file happens to hold.
-            origin = self._barrel_origins.get(module_file, {}).get(method_name)
-            if origin is not None and origin != module_file:
-                binding = self._import_bindings.get(module_file, {}).get(method_name)
-                declared_name = (binding.exported_name if binding else None) or method_name
-                published = self._published(origin, declared_name)
-                if published is not None:
-                    return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+            return self._module_alias_call(module_file, call, caller_id)
 
         # Strategy 1b: receiver in import names (non-alias fallback for backward compat)
         name_to_file = self._import_names.get(file_path, {})
-        if receiver_name in name_to_file and not module_file:
-            source_file = name_to_file[receiver_name]
-            published = self._published_by(source_file, receiver_name, method_name)
-            if published is not None:
-                return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+        if receiver_name not in name_to_file:
+            return None
+        published = self._published_by(name_to_file[receiver_name], receiver_name, call.target_name)
+        if published is None:
+            return None
+        return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
 
-        # Strategy 1c: Rust crate-scoped reference (e.g. typst_html::module)
-        # The receiver is a crate name, the target is a symbol in that crate's lib.rs
-        crate_src = self._get_rust_crate_src().get(receiver_name)
-        if crate_src:
-            for root_file in ("lib.rs", "main.rs"):
-                crate_root = f"{crate_src}/{root_file}"
-                root_syms = self._file_symbols.get(crate_root, {})
-                if method_name in root_syms:
-                    return ResolvedCall(
-                        caller_id, root_syms[method_name], 0.88, call.line, "crate_root"
-                    )
+    def _module_alias_call(
+        self,
+        module_file: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        method_name = call.target_name
+        published = self._published_by(module_file, call.receiver_name, method_name)
+        if published is not None:
+            return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+        # A namespace over a barrel names a file that declares nothing of
+        # its own, so the lookup above can only ever miss. Chase the
+        # re-export map, as free calls and typed receivers already do.
+        #
+        # Keyed on the name the declaring file uses, not the one written
+        # here: a member access cannot rename, but the re-export it arrives
+        # through can, and the map records only the file. Without this an
+        # ``export { foo as bar }`` binds any unrelated ``bar`` the
+        # declaring file happens to hold.
+        origin = self._barrel_origins.get(module_file, {}).get(method_name)
+        if origin is None or origin == module_file:
+            return None
+        binding = self._import_bindings.get(module_file, {}).get(method_name)
+        declared_name = (binding.exported_name if binding else None) or method_name
+        published = self._published(origin, declared_name)
+        if published is None:
+            return None
+        return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
 
-        # Strategies 2 and 2b: the receiver names a class that declares the
-        # method — in this file, in an imported one, or anywhere at all.
-        match = self._receiver_pair_match(file_path, (receiver_name, method_name))
-        if match is not None:
-            sym_id, tier = match
-            if tier == "same_file":
-                return ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_same_file")
-            if tier == "import":
-                return ResolvedCall(caller_id, sym_id, 0.88, call.line, "receiver_import")
-            if self._answers_for_a_foreign_type(file_path, receiver_name):
-                return None
-            return ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_global")
+    def _crate_root_call(self, call: CallSite, caller_id: str) -> ResolvedCall | None:
+        """Strategy 1c: Rust crate-scoped reference (e.g. typst_html::module).
 
-        # Strategy 3: receiver is "self" or "this" — look in same class.
-        # Only the caller's own file can hold the match, so index straight
-        # into it instead of scanning every file's method dict.
-        if receiver_name in ("self", "this"):
-            caller_class = _extract_class_from_symbol_id(caller_id)
-            if caller_class:
-                sym_id = self._file_methods.get(file_path, {}).get((caller_class, method_name))
-                if sym_id is not None and sym_id != caller_id:
-                    return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
-
-        # Last: the receiver may be a local or parameter, which names no class
-        # at all. Everything above has already declined it.
-        for strategy in self._strategies_for(file_path).member_fallback:
-            hit = getattr(self, strategy)(file_path, call, caller_id)
-            if hit is not None:
-                return hit
-
-        # Strategy 3, continued: the method may be inherited, and Strategy 3
-        # can only see the caller's own class in the caller's own file. Asked
-        # last so it can add an edge and never displace one.
-        if receiver_name in ("self", "this") and self._language_of(file_path) in (
-            _INHERITED_LANGUAGES
-        ):
-            sym_id = self._inherited_method(caller_id, method_name)
-            if sym_id is not None:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
-
+        The receiver is a crate name, the target is a symbol in that crate's lib.rs.
+        """
+        crate_src = self._get_rust_crate_src().get(call.receiver_name)
+        if not crate_src:
+            return None
+        for root_file in ("lib.rs", "main.rs"):
+            crate_root = f"{crate_src}/{root_file}"
+            root_syms = self._file_symbols.get(crate_root, {})
+            if call.target_name in root_syms:
+                return ResolvedCall(
+                    caller_id, root_syms[call.target_name], 0.88, call.line, "crate_root"
+                )
         return None
+
+    def _receiver_class_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Strategies 2 and 2b, as ``(handled, edge)``: the receiver names a class
+        that declares the method — in this file, in an imported one, or anywhere
+        at all.
+        """
+        receiver_name = call.receiver_name
+        match = self._receiver_pair_match(file_path, (receiver_name, call.target_name))
+        if match is None:
+            return False, None
+        sym_id, tier = match
+        if tier == "same_file":
+            return True, ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_same_file")
+        if tier == "import":
+            return True, ResolvedCall(caller_id, sym_id, 0.88, call.line, "receiver_import")
+        if self._answers_for_a_foreign_type(file_path, receiver_name):
+            return True, None
+        return True, ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_global")
+
+    def _self_scope_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Strategy 3: receiver is "self" or "this" — look in same class.
+
+        Only the caller's own file can hold the match, so index straight
+        into it instead of scanning every file's method dict.
+        """
+        if call.receiver_name not in ("self", "this"):
+            return None
+        caller_class = _extract_class_from_symbol_id(caller_id)
+        if not caller_class:
+            return None
+        sym_id = self._file_methods.get(file_path, {}).get((caller_class, call.target_name))
+        if sym_id is None or sym_id == caller_id:
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
+
+    def _self_inherited_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Strategy 3, continued: the method may be inherited.
+
+        Strategy 3 can only see the caller's own class in the caller's own
+        file. Asked last so it can add an edge and never displace one.
+        """
+        if call.receiver_name not in ("self", "this"):
+            return None
+        if self._language_of(file_path) not in _INHERITED_LANGUAGES:
+            return None
+        sym_id = self._inherited_method(caller_id, call.target_name)
+        if sym_id is None:
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
 
     def _language_of(self, file_path: str) -> str | None:
         parsed = self._parsed_files.get(file_path)
@@ -1387,9 +1576,7 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
                 found.update(n for n in (imp.local_names or ()) if n)
 
         names = frozenset(found)
-        if len(self._repo_rebound_names) >= _SOURCE_CACHE_FILES:
-            self._repo_rebound_names.clear()
-        self._repo_rebound_names[file_path] = names
+        _store_capped(self._repo_rebound_names, file_path, names, _SOURCE_CACHE_FILES)
         return names
 
 

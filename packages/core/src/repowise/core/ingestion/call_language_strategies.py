@@ -85,6 +85,25 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
 class LanguageStrategiesMixin:
     """Language-specific strategies and the lazy workspace indexes they read."""
 
+    def _init_workspace_indexes(self, repo_path: str | None) -> None:
+        # Rust cross-crate resolution
+        self._repo_path = repo_path
+        self._rust_crate_src: dict[str, str] | None = None  # lazy
+
+        # Go package-scoped resolution (lazy GoPackageIndex). ``_go_index``
+        # holds the built index; ``_go_index_built`` distinguishes "not yet
+        # built" from "built but unavailable" (no repo_path / no go files).
+        self._go_index: Any = None
+        self._go_index_built = False
+
+        # JVM same-package resolution (lazy JvmWorkspaceIndex)
+        self._jvm_index: Any = None
+        self._jvm_index_built = False
+
+        # C/C++ same-target resolution (lazy CppWorkspaceIndex)
+        self._cpp_index: Any = None
+        self._cpp_index_built = False
+
     def _get_rust_crate_src(self) -> dict[str, str]:
         """Lazily build a mapping from normalised crate name to src/ dir."""
         if self._rust_crate_src is not None:

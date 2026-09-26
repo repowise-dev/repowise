@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import TypeVar
 
 from .languages.receiver_types import (
     FRAMEWORK_DECORATOR_LANGUAGES,
@@ -18,7 +19,7 @@ from .languages.receiver_types import (
     types_in_span,
     unwrapped_names_in_span,
 )
-from .models import CallSite
+from .models import CallSite, Symbol
 from .resolved_call import ResolvedCall
 from .type_names import POINTER_LIKE_MEMBERS
 
@@ -31,9 +32,42 @@ _FUNCTION_KINDS = frozenset({"function", "method"})
 _SOURCE_CACHE_FILES = 4
 _BODY_TYPE_CACHE_ENTRIES = 2048
 
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+
+
+def _store_capped(cache: dict[_K, _V], key: _K, value: _V, cap: int) -> None:
+    """Store *value*, emptying *cache* first once it holds *cap* entries."""
+    if len(cache) >= cap:
+        cache.clear()
+    cache[key] = value
+
+
+def _is_module_level_function(symbol: Symbol) -> bool:
+    return symbol.kind in _FUNCTION_KINDS and not symbol.parent_name
+
 
 class ReceiverTypingMixin:
     """Typed-receiver and C# extension strategies, with the source caches they read."""
+
+    def _init_receiver_typing_caches(self) -> None:
+        # Receiver typing reads source text, so both caches are capped rather
+        # than per-repo: files resolve one at a time, so a few slots always
+        # hit, and the cap is what keeps a whole repo's source out of memory.
+        # Scanning is memoised per *function*, not per reference — one scan
+        # answers every unresolved receiver in a body.
+        self._source_text: dict[str, str] = {}
+        self._declarations: dict[str, tuple[Declaration, ...]] = {}
+        self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
+        self._body_types: dict[tuple[str, str], dict[str, str | None]] = {}
+        self._field_types: dict[str, dict[str, dict[str, str | None]]] = {}
+        self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
+        self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
+        # {file: {name: type}} — module-level defs a framework decorator retyped.
+        self._framework_types: dict[str, dict[str, str]] = {}
+        self._external_names: dict[str, frozenset[str]] = {}
+        self._method_name_set: frozenset[str] | None = None
+        self._framework_name_set: frozenset[str] | None = None
 
     def _merged_extension_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:
         """Merged ``{(extended type, method) → symbol_id}`` across imports.
@@ -115,24 +149,7 @@ class ReceiverTypingMixin:
         # this is before any scope search.
         bound = self._import_names.get(file_path, {}).get(type_name)
         if bound is not None and not bound.startswith("external:"):
-            sym_id = self._file_methods.get(bound, {}).get(key)
-            if sym_id is None:
-                # An import names the module it was written against, which in
-                # Python is usually a package ``__init__`` that re-exports the
-                # type rather than declaring it. Free calls already chase that
-                # chain; without it the import settles which type this is and
-                # then refuses every method of it.
-                #
-                # Keyed on the *exported* name, as the free-call chase is: the
-                # map holds each file's own local names, so an alias would ask
-                # the bound file about a name that means something else there.
-                # ``!= bound`` because a mutual re-export can leave an entry
-                # naming its own file.
-                binding = self._import_bindings.get(file_path, {}).get(type_name)
-                exported = (binding.exported_name if binding else None) or type_name
-                declaring = self._barrel_origins.get(bound, {}).get(exported)
-                if declaring is not None and declaring != bound:
-                    sym_id = self._file_methods.get(declaring, {}).get((exported, call.target_name))
+            sym_id = self._import_bound_method(file_path, bound, key)
             return None if sym_id is None else (sym_id, "import")
 
         # Bound to something outside the repo and there is no edge to find,
@@ -153,12 +170,39 @@ class ReceiverTypingMixin:
         # the scope that answers here is its same-package one. A second
         # language pairing the two needs an origin word of its own.
         typed_call = replace(call, receiver_name=type_name)
-        for strategy in self._strategies_for(file_path).member:
-            hit = getattr(self, strategy)(file_path, typed_call, caller_id)
-            if hit is not None:
-                return hit.callee_id, "same_package"
+        hit = self._first_strategy_hit(
+            self._strategies_for(file_path).member, file_path, typed_call, caller_id
+        )
+        if hit is not None:
+            return hit.callee_id, "same_package"
 
         return self._receiver_pair_match(file_path, key)
+
+    def _import_bound_method(
+        self, file_path: str, bound: str, key: tuple[str, str]
+    ) -> str | None:
+        """The method *key* names on a type an import bound to the file *bound*."""
+        sym_id = self._file_methods.get(bound, {}).get(key)
+        if sym_id is not None:
+            return sym_id
+        # An import names the module it was written against, which in
+        # Python is usually a package ``__init__`` that re-exports the
+        # type rather than declaring it. Free calls already chase that
+        # chain; without it the import settles which type this is and
+        # then refuses every method of it.
+        #
+        # Keyed on the *exported* name, as the free-call chase is: the
+        # map holds each file's own local names, so an alias would ask
+        # the bound file about a name that means something else there.
+        # ``!= bound`` because a mutual re-export can leave an entry
+        # naming its own file.
+        type_name, method_name = key
+        binding = self._import_bindings.get(file_path, {}).get(type_name)
+        exported = (binding.exported_name if binding else None) or type_name
+        declaring = self._barrel_origins.get(bound, {}).get(exported)
+        if declaring is None or declaring == bound:
+            return None
+        return self._file_methods.get(declaring, {}).get((exported, method_name))
 
     def _resolve_typed_receiver(
         self,
@@ -182,31 +226,9 @@ class ReceiverTypingMixin:
             return None
 
         receiver_name = call.receiver_name or ""
-        # A local shadows a field, so the body answers first and its answer
-        # stands — including when that answer is "declared twice, no usable
-        # type". Only a name the body never mentions reaches class scope.
-        body_types = self._declared_types_in(file_path, caller_id, language)
-        type_name = body_types.get(receiver_name)
-        unbound = receiver_name not in body_types
-        from_field = unbound and language in IMPLICIT_FIELD_LANGUAGES
-        if from_field:
-            class_id = caller_id.rpartition("::")[0]
-            type_name = (
-                self._field_types_in(file_path, language).get(class_id, {}).get(receiver_name)
-            )
-        # Third scope: a module-level def a framework decorator turned into an
-        # instance. Neither of the two above can see it — it is not in the body
-        # and not a field.
-        from_framework = type_name is None and unbound and language in FRAMEWORK_DECORATOR_LANGUAGES
-        if from_framework:
-            # The type lookup is a dict hit and the shadowing scan reads the
-            # whole file, so the cheap half decides first: only a receiver this
-            # scope would actually answer for is worth scanning a body for.
-            type_name = self._framework_type_of(file_path, receiver_name, language)
-            if type_name is not None and receiver_name in self._bound_names_in(
-                file_path, caller_id, language
-            ):
-                return None
+        type_name, scope = self._receiver_type_and_scope(
+            file_path, caller_id, language, receiver_name
+        )
         if type_name is None:
             return None
         if self._means_the_wrapper(file_path, caller_id, language, call, receiver_name):
@@ -215,18 +237,78 @@ class ReceiverTypingMixin:
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
         if found is None:
             # Last, because C# prefers an instance method to an extension.
-            if language != "csharp":
-                return None
-            extension = self._extension_target(file_path, (type_name, call.target_name))
-            if extension is None:
-                return None
-            return self._extension_typed_call(caller_id, *extension, call.line)
+            return self._typed_extension_call(file_path, call, caller_id, type_name, language)
         sym_id, tier = found
-        if from_framework:
+        if scope == "framework":
             return self._framework_typed_call(caller_id, sym_id, tier, call.line)
-        if from_field:
+        if scope == "field":
             return self._field_typed_call(caller_id, sym_id, tier, call.line)
         return self._body_typed_call(caller_id, sym_id, tier, call.line)
+
+    def _receiver_type_and_scope(
+        self,
+        file_path: str,
+        caller_id: str,
+        language: str,
+        receiver_name: str,
+    ) -> tuple[str | None, str]:
+        """The receiver's declared type and the scope that declared it.
+
+        A local shadows a field, so the body answers first and its answer
+        stands — including when that answer is "declared twice, no usable
+        type". Only a name the body never mentions reaches class scope.
+        """
+        body_types = self._declared_types_in(file_path, caller_id, language)
+        if receiver_name in body_types:
+            return body_types[receiver_name], "body"
+        type_name, scope = None, "body"
+        if language in IMPLICIT_FIELD_LANGUAGES:
+            class_id = caller_id.rpartition("::")[0]
+            type_name = (
+                self._field_types_in(file_path, language).get(class_id, {}).get(receiver_name)
+            )
+            scope = "field"
+        # Third scope: a module-level def a framework decorator turned into an
+        # instance. Neither of the two above can see it — it is not in the body
+        # and not a field.
+        if type_name is None and language in FRAMEWORK_DECORATOR_LANGUAGES:
+            return (
+                self._framework_receiver_type(file_path, caller_id, language, receiver_name),
+                "framework",
+            )
+        return type_name, scope
+
+    def _framework_receiver_type(
+        self,
+        file_path: str,
+        caller_id: str,
+        language: str,
+        receiver_name: str,
+    ) -> str | None:
+        # The type lookup is a dict hit and the shadowing scan reads the
+        # whole file, so the cheap half decides first: only a receiver this
+        # scope would actually answer for is worth scanning a body for.
+        type_name = self._framework_type_of(file_path, receiver_name, language)
+        if type_name is not None and receiver_name in self._bound_names_in(
+            file_path, caller_id, language
+        ):
+            return None
+        return type_name
+
+    def _typed_extension_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        type_name: str,
+        language: str,
+    ) -> ResolvedCall | None:
+        if language != "csharp":
+            return None
+        extension = self._extension_target(file_path, (type_name, call.target_name))
+        if extension is None:
+            return None
+        return self._extension_typed_call(caller_id, *extension, call.line)
 
     def _means_the_wrapper(
         self,
@@ -347,9 +429,7 @@ class ReceiverTypingMixin:
             found.update(name for name in bound if name and name != "*")
 
         names = frozenset(found)
-        if len(self._external_names) >= _SOURCE_CACHE_FILES:
-            self._external_names.clear()
-        self._external_names[file_path] = names
+        _store_capped(self._external_names, file_path, names, _SOURCE_CACHE_FILES)
         return names
 
     def _declared_types_in(
@@ -370,9 +450,7 @@ class ReceiverTypingMixin:
         else:
             types = types_in_span(self._declarations_for(file_path, language), *span)
 
-        if len(self._body_types) >= _BODY_TYPE_CACHE_ENTRIES:
-            self._body_types.clear()
-        self._body_types[key] = types
+        _store_capped(self._body_types, key, types, _BODY_TYPE_CACHE_ENTRIES)
         return types
 
     def _field_types_in(
@@ -393,9 +471,7 @@ class ReceiverTypingMixin:
             class_spans,
             [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
         )
-        if len(self._field_types) >= _SOURCE_CACHE_FILES:
-            self._field_types.clear()
-        self._field_types[file_path] = by_class
+        _store_capped(self._field_types, file_path, by_class, _SOURCE_CACHE_FILES)
         return by_class
 
     def _bound_names_in(self, file_path: str, caller_id: str, language: str) -> frozenset[str]:
@@ -408,9 +484,7 @@ class ReceiverTypingMixin:
                 names = frozenset()
             else:
                 names = names_in_span(self._bindings_for(file_path, language), *span)
-            if len(self._bound_names) >= _BODY_TYPE_CACHE_ENTRIES:
-                self._bound_names.clear()
-            self._bound_names[key] = names
+            _store_capped(self._bound_names, key, names, _BODY_TYPE_CACHE_ENTRIES)
         return names
 
     def _bindings_for(self, file_path: str, language: str) -> tuple[tuple[int, str], ...]:
@@ -418,26 +492,24 @@ class ReceiverTypingMixin:
         found = self._bindings.get(file_path)
         if found is None:
             found = scan_bindings(self._text_of(file_path), language)
-            if len(self._bindings) >= _SOURCE_CACHE_FILES:
-                self._bindings.clear()
-            self._bindings[file_path] = found
+            _store_capped(self._bindings, file_path, found, _SOURCE_CACHE_FILES)
         return found
 
     def _framework_names(self, language: str) -> frozenset[str]:
         """Every name a framework decorator retypes anywhere in the repo."""
-        if self._framework_name_set is None:
-            found: set[str] = set()
-            for parsed in self._parsed_files.values():
-                if parsed.file_info.language != language:
-                    continue
-                for symbol in parsed.symbols:
-                    if (
-                        symbol.kind in _FUNCTION_KINDS
-                        and not symbol.parent_name
-                        and framework_decorated_type(symbol.decorators, language)
-                    ):
-                        found.add(symbol.name)
-            self._framework_name_set = frozenset(found)
+        if self._framework_name_set is not None:
+            return self._framework_name_set
+        found: set[str] = set()
+        for parsed in self._parsed_files.values():
+            if parsed.file_info.language != language:
+                continue
+            found.update(
+                symbol.name
+                for symbol in parsed.symbols
+                if _is_module_level_function(symbol)
+                and framework_decorated_type(symbol.decorators, language)
+            )
+        self._framework_name_set = frozenset(found)
         return self._framework_name_set
 
     def _framework_types_in(self, file_path: str, language: str) -> dict[str, str]:
@@ -447,7 +519,7 @@ class ReceiverTypingMixin:
             parsed = self._parsed_files.get(file_path)
             types = {}
             for symbol in parsed.symbols if parsed else ():
-                if symbol.kind not in _FUNCTION_KINDS or symbol.parent_name:
+                if not _is_module_level_function(symbol):
                     continue
                 type_name = framework_decorated_type(symbol.decorators, language)
                 if type_name is not None:
@@ -489,9 +561,7 @@ class ReceiverTypingMixin:
         found = self._declarations.get(file_path)
         if found is None:
             found = scan_declarations(self._text_of(file_path), language)
-            if len(self._declarations) >= _SOURCE_CACHE_FILES:
-                self._declarations.clear()
-            self._declarations[file_path] = found
+            _store_capped(self._declarations, file_path, found, _SOURCE_CACHE_FILES)
         return found
 
     def _spans_for(self, file_path: str) -> dict[str, tuple[int, int]]:
@@ -500,9 +570,7 @@ class ReceiverTypingMixin:
         if spans is None:
             parsed = self._parsed_files.get(file_path)
             spans = {s.id: (s.start_line, s.end_line) for s in (parsed.symbols if parsed else ())}
-            if len(self._symbol_spans) >= _SOURCE_CACHE_FILES:
-                self._symbol_spans.clear()
-            self._symbol_spans[file_path] = spans
+            _store_capped(self._symbol_spans, file_path, spans, _SOURCE_CACHE_FILES)
         return spans
 
     def _text_of(self, file_path: str) -> str:
@@ -519,7 +587,5 @@ class ReceiverTypingMixin:
             except OSError:
                 text = ""
 
-        if len(self._source_text) >= _SOURCE_CACHE_FILES:
-            self._source_text.clear()
-        self._source_text[file_path] = text
+        _store_capped(self._source_text, file_path, text, _SOURCE_CACHE_FILES)
         return text
