@@ -22,12 +22,115 @@ from repowise.server.mcp_server.tool_health.pillars import (
 from repowise.server.mcp_server.tool_health.serialize import (
     _health_finding_id,
     _legacy_health_finding_id,
+    _serialize_finding,
 )
 from repowise.server.services.performance_health import (
     PerformanceHealthService,
     evidence_block,
 )
 from repowise.server.services.refactoring_health import RefactoringHealthService
+
+
+async def _detail_response(
+    session: Any,
+    repository: Any,
+    reference_repository: str,
+    *,
+    finding_id: str | None,
+    plan_id: str | None,
+    opportunity_id: str | None,
+    only_set: set[str],
+    limit: int,
+    cursor: int,
+) -> dict[str, Any] | None:
+    """Answer a lookup by id, or ``None`` when no selector was passed.
+
+    At most one selector is set by the time this runs: ``_selector_conflict``
+    refuses two before any read.
+    """
+    if finding_id:
+        return await _finding_detail_response(
+            session, repository, reference_repository, finding_id
+        )
+    if opportunity_id and opportunity_id.startswith(_REFACTORING_OPPORTUNITY_PREFIX):
+        return await _refactoring_detail_response(
+            session,
+            repository,
+            reference_repository,
+            opportunity_id,
+            evidence_only=only_set == {"refactoring_evidence"},
+            limit=limit,
+            cursor=cursor,
+        )
+    if opportunity_id:
+        return await _performance_detail_response(
+            session,
+            repository,
+            reference_repository,
+            opportunity_id,
+            evidence_only=only_set == {"performance_evidence"},
+            limit=limit,
+            cursor=cursor,
+        )
+    if plan_id:
+        return await _plan_detail_response(session, repository, reference_repository, plan_id)
+    return None
+
+
+async def _finding_detail_response(
+    session: Any, repository: Any, reference_repository: str, finding_id: str
+) -> dict[str, Any]:
+    match = await _resolve_finding(session, repository.id, finding_id, reference_repository)
+    result = {
+        "mode": "finding",
+        "finding_id": finding_id,
+        "finding": (
+            _serialize_finding(match, reference_repository) if match else None
+        ),
+        "resolved": match is not None,
+        "_meta": _build_meta(
+            repository=repository,
+            targets=[match.file_path] if match else None,
+        ),
+    }
+    await _attach_repository_analysis_meta(session, repository, result["_meta"])
+    return result
+
+
+async def _plan_detail_response(
+    session: Any, repository: Any, reference_repository: str, plan_id: str
+) -> dict[str, Any]:
+    """One stored plan, and the composed opportunity it is a step of, if any.
+
+    An indexed seek and one hydration, not a full load and a linear
+    scan: resolving one id used to cost every open plan in the repo.
+    """
+    service = RefactoringHealthService(session, repository.id, reference_repository)
+    resolved = await service.plan_detail(plan_id)
+    plan = resolved.get("plan") if resolved.get("resolved") else None
+    if plan is not None:
+        plan.setdefault("id", plan_id)
+        plan["repository"] = reference_repository
+    result = {
+        "mode": "refactoring_plan",
+        "plan_id": plan_id,
+        "plan": plan,
+        "resolved": bool(resolved.get("resolved")),
+        "_meta": _build_meta(
+            repository=repository,
+            targets=[plan["file_path"]] if plan else None,
+        ),
+    }
+    if resolved.get("opportunity_id"):
+        result["opportunity_id"] = resolved["opportunity_id"]
+        result["next_action"] = resolved["next_action"]
+    elif plan is not None:
+        result["opportunity_note"] = (
+            "This plan is addressable but is not a step of any composed "
+            "opportunity; a demoted clone is supporting evidence, not work."
+        )
+    await _attach_repository_analysis_meta(session, repository, result["_meta"])
+    return result
 
 
 def _selector_conflict(**selectors: str | None) -> dict[str, Any] | None:

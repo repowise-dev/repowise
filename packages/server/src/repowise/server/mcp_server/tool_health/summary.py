@@ -150,39 +150,46 @@ def _directive(
             "history. Read watch for what is moving and leave it alone."
         )
         return out
-    # Only speak when there is a named cause to speak about. With no lead the
-    # ``reason`` above already falls back to the bare score, and a note reading
-    # "No stored plan addresses None" would be worse than silence.
-    if not addresses and lead_biomarker:
-        # Name the gap rather than leaving the caller to diff two biomarker
-        # vocabularies. The three branches call for different next moves:
-        # plans for other causes, plans with no recorded cause, or no plans.
-        n_plans = (plan_count_by_path or {}).get(top.file_path, 0)
-        if available:
-            # Deliberately "target X, Y" rather than "the plans target only X, Y":
-            # plans with an empty ``source_biomarker`` are counted in ``n_plans``
-            # but cannot be named, so an exhaustive phrasing would be a claim
-            # this read cannot support.
-            out["plan_note"] = (
-                f"No stored plan addresses {lead_biomarker!r}; the plans on this file "
-                f"target {', '.join(sorted(available))}. Treat plan_via as related "
-                f"cleanup, not the fix for reason."
-            )
-        elif n_plans:
-            out["plan_note"] = (
-                f"No stored plan addresses {lead_biomarker!r}; this file's {n_plans} "
-                f"plan(s) record no source biomarker. Treat plan_via as related "
-                f"cleanup, not the fix for reason."
-            )
-        else:
-            out["plan_note"] = (
-                f"No plan addresses {lead_biomarker!r}; this file has no plans. "
-                "Use the finding itself."
-            )
-        out["next_action"] = f"investigate {lead_biomarker}"
-    elif addresses:
+    # Only speak when there is a named cause to speak about (the early return
+    # above). With no lead the ``reason`` already falls back to the bare score,
+    # and a note reading "No stored plan addresses None" would be worse than
+    # silence.
+    if addresses:
         out["next_action"] = "inspect matching plan via plan_via"
+        return out
+    out["plan_note"] = _plan_note(
+        lead_biomarker, available, (plan_count_by_path or {}).get(top.file_path, 0)
+    )
+    out["next_action"] = f"investigate {lead_biomarker}"
     return out
+
+
+def _plan_note(lead_biomarker: str, available: set[str], n_plans: int) -> str:
+    """Name the gap rather than leaving the caller to diff two biomarker vocabularies.
+
+    The three branches call for different next moves: plans for other causes,
+    plans with no recorded cause, or no plans.
+    """
+    if available:
+        # Deliberately "target X, Y" rather than "the plans target only X, Y":
+        # plans with an empty ``source_biomarker`` are counted in ``n_plans``
+        # but cannot be named, so an exhaustive phrasing would be a claim
+        # this read cannot support.
+        return (
+            f"No stored plan addresses {lead_biomarker!r}; the plans on this file "
+            f"target {', '.join(sorted(available))}. Treat plan_via as related "
+            f"cleanup, not the fix for reason."
+        )
+    if n_plans:
+        return (
+            f"No stored plan addresses {lead_biomarker!r}; this file's {n_plans} "
+            f"plan(s) record no source biomarker. Treat plan_via as related "
+            f"cleanup, not the fix for reason."
+        )
+    return (
+        f"No plan addresses {lead_biomarker!r}; this file has no plans. "
+        "Use the finding itself."
+    )
 
 
 def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:

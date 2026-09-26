@@ -158,7 +158,7 @@ cli/src/repowise/cli/commands/
 ```
 server/src/repowise/server/
 ├── mcp_server/
-│   ├── tool_health.py              # @mcp.tool get_health(targets, include, repo, limit)
+│   ├── tool_health/                # @mcp.tool get_health(targets, include, repo, limit)
 │   ├── tool_risk.py                # enriched: health_score, top_biomarkers, coverage_pct
 │   ├── tool_context.py             # include=["health"]: score, top 2 biomarkers, suggestion
 │   └── tool_overview.py            # code_health block with KPIs
@@ -725,7 +725,7 @@ silently re-scored for changed files only.
 
 ### `get_health(targets?, include?, repo?, limit?)`
 
-Defined in `tool_health.py`. Modes:
+Defined in `tool_health/tool.py`, which dispatches to one module per mode and block. Modes:
 
 - **Dashboard mode** (`targets=None`): returns repo-level KPIs (with the
   repo `band`) + the NLOC-weighted `distribution` across the bands +
@@ -974,7 +974,7 @@ phases may revisit; the constraints kept v1 shippable.
 | Change the suggestion text for a marker | `suggestions._TEMPLATES` |
 | Adjust the trend-alert threshold | `trends.DECLINE_THRESHOLD` / `DECLINE_LOOKBACK` |
 | Change snapshot retention | `crud.HEALTH_SNAPSHOT_RETENTION` |
-| Add a new MCP `include` flag | `tool_health.py`: append handling near the existing `"coverage"` / `"refactoring"` branches |
+| Add a new MCP `include` flag | `tool_health/`: name it in `request.py`, read it in `loading.py`, render it in `blocks.py` beside the existing `"coverage"` / `"refactoring"` blocks |
 | Add a new REST route | `routers/code_health.py`: auth is wired at the router level |
 | Add a new dashboard view | new file under `packages/web/src/app/repos/[id]/health/`, primitives under `packages/ui/src/health/` |
 | Add a CLI flag | `packages/cli/src/repowise/cli/commands/health_cmd.py` |

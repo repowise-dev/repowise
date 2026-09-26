@@ -1,9 +1,29 @@
-"""Target resolution for get_health: naming every requested target that matched nothing."""
+"""Target resolution for get_health: expanding ``module:`` targets, naming misses."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+
+
+def _expand_module_targets(
+    metrics: list[Any], module_targets: list[str], file_targets: list[str]
+) -> tuple[list[str], set[str]]:
+    """Add every file of each named module to the targets; report which matched.
+
+    The path list is returned untouched (not re-sorted) when no module was
+    named, so a plain file-target call keeps the caller's order.
+    """
+    matched_modules: set[str] = set()
+    if not module_targets:
+        return file_targets, matched_modules
+    expanded = list(file_targets)
+    module_set = set(module_targets)
+    for m in metrics:
+        if m.module in module_set:
+            matched_modules.add(m.module)
+            expanded.append(m.file_path)
+    return sorted(set(expanded)), matched_modules
 
 
 def _unresolved_targets(
@@ -29,24 +49,29 @@ def _unresolved_targets(
     would otherwise read as ``not_indexed`` and send the caller to run an
     update that changes nothing.
     """
-    out: list[dict[str, str]] = []
-    for t in file_targets:
-        if t in resolved_paths:
-            continue
-        if t in excluded_paths:
-            reason = "excluded"
-        elif t in unscored_paths:
-            reason = "not_measured"
-        else:
-            try:
-                on_disk = (Path(repo_root) / t).exists()
-            except (OSError, ValueError):
-                on_disk = False
-            reason = "not_indexed" if on_disk else "no_such_path"
-        out.append({"target": t, "reason": reason})
+    out = [
+        {"target": t, "reason": _miss_reason(t, excluded_paths, unscored_paths, repo_root)}
+        for t in file_targets
+        if t not in resolved_paths
+    ]
     out.extend(
         {"target": f"module:{name}", "reason": "no_such_module"}
         for name in module_targets
         if name not in matched_modules
     )
     return out
+
+
+def _miss_reason(
+    target: str, excluded_paths: set[str], unscored_paths: set[str], repo_root: Any
+) -> str:
+    """Why one file target produced no row."""
+    if target in excluded_paths:
+        return "excluded"
+    if target in unscored_paths:
+        return "not_measured"
+    try:
+        on_disk = (Path(repo_root) / target).exists()
+    except (OSError, ValueError):
+        on_disk = False
+    return "not_indexed" if on_disk else "no_such_path"

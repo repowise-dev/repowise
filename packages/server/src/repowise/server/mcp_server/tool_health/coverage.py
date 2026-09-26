@@ -6,6 +6,43 @@ import json
 from typing import Any
 
 from repowise.core.analysis.health.coverage import decay_since, measurement_ref
+from repowise.server.mcp_server.tool_health.paging import Pager
+
+
+def _coverage_block(
+    rows: list[Any],
+    summary: dict[str, Any],
+    *,
+    scoped: bool,
+    pager: Pager,
+    repo_path: str,
+) -> dict[str, Any]:
+    """Per-file coverage rows plus the stored repo-wide summary.
+
+    Drop the bulky covered-lines arrays from dashboard mode; full
+    detail is available in targeted mode.
+    """
+    if scoped:
+        selected_coverage = pager.bound(rows, "coverage.files")
+        coverage_payload = [_serialize_coverage_row(r) for r in selected_coverage]
+        _attach_coverage_decay(coverage_payload, selected_coverage, repo_path)
+    else:
+        # Built narrow, not built wide and subtracted from. These rows came
+        # back without the column at all (see the read in ``loading``).
+        full_coverage_payload = [_serialize_coverage_row(r, covered_lines=False) for r in rows]
+        coverage_payload = pager.bound(full_coverage_payload, "coverage.files")
+    # ``ingested_at`` is a datetime on the summary too — coerce.
+    if summary.get("ingested_at") is not None:
+        summary = {**summary, "ingested_at": summary["ingested_at"].isoformat()}
+    block: dict[str, Any] = {
+        "summary": summary,
+        "files": coverage_payload,
+        "files_total": len(rows),
+        "files_emitted": len(coverage_payload),
+    }
+    if len(coverage_payload) < len(rows):
+        block["files_reduced_reason"] = "limit"
+    return block
 
 
 def _attach_coverage_decay(payload: list[dict[str, Any]], rows: list[Any], repo_path: str) -> None:

@@ -4,13 +4,72 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
     register_post_enforce,
     register_post_shed,
 )
+from repowise.server.mcp_server.tool_health.paging import Pager, _stamp_collection
+from repowise.server.mcp_server.tool_health.request import HealthRequest
+from repowise.server.mcp_server.tool_health.serialize import _serialize_refactoring
+
+if TYPE_CHECKING:
+    from repowise.server.mcp_server.tool_health.loading import HealthData
+
+
+def _render_plans(
+    result: dict[str, Any], data: HealthData, req: HealthRequest, pager: Pager
+) -> None:
+    """The plan list, its shared validation profiles, and why it may be empty.
+
+    Canonical is the shared REST/MCP/CLI order.  File diversity remains
+    available only through the explicitly named ``file_spread`` view.
+    """
+    recommendations = data.refactoring_recommendations
+    validation_profiles: dict[str, dict[str, Any]] = {}
+    plan_payload = []
+    for recommendation in pager.bound(
+        recommendations, "refactoring_plans", cap=min(req.limit, 6)
+    ):
+        payload = _serialize_refactoring(recommendation, data.reference_repository)
+        validation = payload.pop("validation", None)
+        if validation:
+            profile_id, profile = _validation_profile(validation)
+            validation_profiles.setdefault(profile_id, profile)
+            payload["validation_profile_id"] = profile_id
+        plan_payload.append(payload)
+    result["refactoring_plans"] = plan_payload
+    if validation_profiles:
+        result["validation_profiles"] = list(validation_profiles.values())
+        _stamp_collection(
+            result,
+            "validation_profiles",
+            total=len(validation_profiles),
+            reason="profile_cap",
+        )
+    result["refactoring_plans_total"] = len(data.refactoring_rows)
+    if req.wants("refactoring_plans"):
+        scoped = data.pop.scoped
+        result["refactoring_plans_status"] = _refactoring_plans_status(
+            available_plans_total=len(recommendations),
+            plans_emitted=len(plan_payload),
+            scoped=scoped,
+            has_eligible_metrics=bool(data.metric_rows if scoped else data.pop.all_metrics),
+            finding=next(iter(data.findings.emitted), None),
+            repo=req.repo,
+        )
+    # The deterministic prose suggestion is the fallback for biomarkers
+    # that have no structured detector yet. It is emitted once per
+    # biomarker type as ``suggestion_legend`` (built later, after the
+    # dimension filter) rather than copied onto every finding: the text is
+    # keyed purely by type, so the per-row form repeated one ~40-word
+    # string up to 10x in a single response.
+    #
+    # (The old no-findings-anywhere fallback here was unreachable: targeted
+    # mode always sets ``findings`` and dashboard mode always sets
+    # ``top_findings``.)
 
 
 def _validation_profile(validation: dict[str, Any]) -> tuple[str, dict[str, Any]]:
