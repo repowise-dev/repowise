@@ -41,6 +41,7 @@ from repowise.server.routers.code_health import (
     _score_breakdown_from_findings,
 )
 from repowise.server.routers.git import _hotspot_from_row
+from repowise.server.schemas.files import PinDocResponse
 
 router = APIRouter(
     prefix="/api/repos",
@@ -216,6 +217,101 @@ async def files_index(
     }
 
 
+def _file_exists(repo: Any, file_path: str) -> bool:
+    """True when *file_path* is a file inside *repo*'s checkout.
+
+    Resolved and then checked against the checkout root, so a ``..`` segment
+    cannot walk out of the repository. The path arrives from a URL, and the row
+    this endpoint writes is a claim that a real file needs a doc.
+
+    A repository whose ``local_path`` is not a directory (moved checkout,
+    remote-only entry) cannot answer the question, so it is not treated as a
+    missing file: the pin proceeds and the generation phase decides, which keeps
+    this from turning a storage change into a 404 on a previously working call.
+    """
+    from pathlib import Path
+
+    root = getattr(repo, "local_path", None)
+    if not root:
+        return True
+    root_path = Path(root)
+    if not root_path.is_dir():
+        return True
+    try:
+        target = (root_path / file_path).resolve()
+        target.relative_to(root_path.resolve())
+    except (ValueError, OSError):
+        return False
+    return target.is_file()
+
+
+@router.post("/{repo_id}/files/{file_path:path}/pin-doc", response_model=PinDocResponse)
+async def pin_file_doc(
+    repo_id: str,
+    file_path: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> PinDocResponse:
+    """Pin a file's doc so every reindex regenerates it (issue #812).
+
+    Called from the Doc tab's "Generate doc" action. A file with no page
+    yet gets a lightweight template row marked pinned, so the next
+    generation phase knows to produce (and keep) its doc. Returns the
+    pinned state for the UI to render.
+    """
+    from datetime import UTC, datetime
+
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    # The file has to be one this repository actually has. Without this the
+    # endpoint pins a row for any string a caller sends: an empty path, a
+    # traversal, or a typo all produce a pinned page that no reindex will ever
+    # fill, and the UI renders it as a doc the user asked for.
+    if not _file_exists(repo, file_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    page_id = f"file_page:{file_path}"
+    page = await crud.get_page(session, page_id)
+    if page is not None and page.repository_id != repo_id:
+        # ``Page.id`` is ``"{page_type}:{target_path}"`` and therefore global, so
+        # two repositories holding the same path share one id. The doc tab
+        # already refuses to read the other repository's row
+        # (``file_detail``); pinning it was still possible, which let one
+        # repository's Doc tab mark another repository's page as pinned.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A page for {file_path} already belongs to a different "
+                "repository; refusing to pin it"
+            ),
+        )
+    if page is None:
+        # Lightweight "wanted" row: template provenance means it reads as
+        # unwritten (so the heuristics know there is nothing yet), and the
+        # pin is what makes selection always include it.
+        page = await crud.upsert_page(
+            session,
+            page_id=page_id,
+            repository_id=repo_id,
+            page_type="file_page",
+            title=file_path.rsplit("/", 1)[-1],
+            content="",
+            summary="",
+            target_path=file_path,
+            source_hash="",
+            model_name="template",
+            provider_name="template",
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+    page = await crud.set_page_pinned(session, page_id, True)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Page not found")
+    await session.commit()
+    return PinDocResponse(file_path=file_path, pinned=page.pinned)
+
+
 @router.get("/{repo_id}/files/{file_path:path}")
 async def file_detail(
     repo_id: str,
@@ -281,6 +377,7 @@ async def file_detail(
             "freshness_status": page_row.freshness_status,
             "confidence": page_row.confidence,
             "human_notes": page_row.human_notes,
+            "pinned": page_row.pinned,
             "updated_at": page_row.updated_at.isoformat() if page_row.updated_at else None,
         }
         if page_row
