@@ -415,6 +415,7 @@ async def persist_graph_nodes(
     update path can refresh ``graph_nodes`` (including symbol-level
     PageRank / betweenness) without constructing a full ``PipelineResult``.
     """
+    from repowise.core.analysis.communities import stored_community_id
     from repowise.core.persistence import (
         batch_upsert_graph_metrics,
         batch_upsert_graph_node_membership,
@@ -462,7 +463,7 @@ async def persist_graph_nodes(
             # per-symbol UI panel shows real centrality instead of 0.
             "pagerank": pr.get(node_id, sym_pr.get(node_id, 0.0)),
             "betweenness": bc.get(node_id, sym_bc.get(node_id, 0.0)),
-            "community_id": cd.get(node_id, 0),
+            "community_id": stored_community_id(cd, node_id),
         }
 
         # Scored → its commit; in no scoring → NULL, the unscored marker;

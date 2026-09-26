@@ -66,6 +66,8 @@ class MetricsMixin:
         Used to materialize the ``graph_metrics`` table. Computes every metric
         from NetworkX (or returns the cached/SQL-loaded values when present).
         """
+        from repowise.core.analysis.communities import stored_community_id
+
         pr = self.pagerank()
         bc = self.betweenness_centrality()
         cd = self.community_detection()
@@ -80,7 +82,7 @@ class MetricsMixin:
             n: {
                 "pagerank": pr.get(n, 0.0),
                 "betweenness": bc.get(n, 0.0),
-                "community_id": cd.get(n, 0),
+                "community_id": stored_community_id(cd, n),
                 "in_degree": ind.get(n, 0),
                 "out_degree": outd.get(n, 0),
             }

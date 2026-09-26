@@ -827,6 +827,8 @@ async def get_cross_community_edges(
             GraphEdge.__table__.c.repository_id == repository_id,
             source_node.c.community_id == community_id,
             target_node.c.community_id != community_id,
+            # External code is stored with no community (-1); it is not a target.
+            target_node.c.community_id >= 0,
             # Only count file-level edges for meaningful community crossing
             source_node.c.node_type == "file",
             target_node.c.node_type == "file",
