@@ -1,8 +1,7 @@
-"""Characterization of the /api/graph intelligence endpoints on a small graph.
+"""Pins every response of `/metrics`, `/callers-callees` and `/execution-flows`.
 
-Pins the full response of `/metrics`, `/callers-callees` and `/execution-flows`
-across their branches: exact and fuzzy symbol resolution, direction and
-edge-type filters, row caps, entry-point selection and the 404 paths.
+Covers exact and fuzzy symbol resolution, direction and edge-type filters, row
+caps, entry-point selection and the 404 paths, on a small fixture graph.
 """
 
 from __future__ import annotations

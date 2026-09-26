@@ -83,9 +83,8 @@ async def get_graph_metrics(
 async def _layer_degrees(session: AsyncSession, repo_id: str, node: GraphNode) -> dict[str, int]:
     """In/out degree over the node's own layer: symbol-use or file-dependency edges.
 
-    This endpoint feeds the same symbol component as /api/symbols/detail (the
-    drawer, where that page is the drill-down), so an unscoped count here made
-    one symbol report two different degrees depending on which the user opened.
+    Same scope as /api/symbols/detail, which renders the same symbol component,
+    so a symbol reports one degree whichever of the two surfaces is open.
     """
     is_symbol = node.node_type == "symbol"
     return await crud.get_node_degree_counts(
