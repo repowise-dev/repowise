@@ -15,6 +15,62 @@ from typing import Any
 
 _log = logging.getLogger("repowise.mcp.enrichment")
 
+# Sentinels from _read_artifact: a parsed JSON ``null`` is a real payload.
+_ABSENT = object()
+_UNREADABLE = object()
+
+
+def _read_artifact(path: Path, missing: str, unparsable: str) -> Any:
+    """Parsed JSON at *path*, else ``_ABSENT`` (no file) or ``_UNREADABLE``."""
+    if not path.is_file():
+        _log.debug("No %s at %s", missing, path)
+        return _ABSENT
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        # A bad artifact degrades that one signal; it must never fail startup.
+        _log.warning("Failed to parse %s at %s", unparsable, path, exc_info=True)
+        return _UNREADABLE
+
+
+def _was_read(payload: Any) -> bool:
+    return payload is not _ABSENT and payload is not _UNREADABLE
+
+
+def _artifact_status(status: str, reason: str) -> dict:
+    return {"status": status, "reason": reason}
+
+
+def _heads_not_compared() -> dict:
+    return {"status": "unavailable", "reason": "live_repository_heads_not_compared"}
+
+
+def _co_change_partner(cc: dict, end: str) -> dict:
+    """The *end* (``source``/``target``) of a co-change pair, as a partner row."""
+    return {
+        "repo": cc.get(f"{end}_repo", ""),
+        "file": cc.get(f"{end}_file", ""),
+        "strength": cc.get("strength", 0),
+        "frequency": cc.get("frequency", 0),
+        "last_date": cc.get("last_date", ""),
+    }
+
+
+def _package_dep_evidence(pd: dict) -> dict:
+    return {
+        "source_manifest": pd.get("source_manifest", ""),
+        "kind": pd.get("kind", ""),
+        "target_package": pd.get("target_package", ""),
+        "target_manifest": pd.get("target_manifest", ""),
+        "requested_version": pd.get("requested_version"),
+        "scope": pd.get("scope", ""),
+        "resolution_basis": pd.get("resolution_basis", ""),
+    }
+
+
+def _strongest_first(partner: dict) -> Any:
+    return -partner["strength"]
+
 
 class CrossRepoEnricher:
     """In-memory lookup for cross-repo signals."""
@@ -27,20 +83,25 @@ class CrossRepoEnricher:
         breaking_changes_path: Path | None = None,
         conformance_path: Path | None = None,
     ) -> None:
+        self._reset()
+        self._data_path = data_path
+        self._contracts_path = contracts_path
+        self._system_graph_path = system_graph_path
+        self._breaking_changes_path = breaking_changes_path
+        self._conformance_path = conformance_path
+
+        self._load_all()
+
+    def _reset(self) -> None:
+        """Empty every signal and index, as if no artifact had been read."""
         self._co_changes: list[dict] = []
         self._total_co_changes: int = 0
         self._package_deps: list[dict] = []
         self._package_diagnostics: list[dict] = []
         self._total_package_diagnostics: int = 0
         self._repo_summaries: dict[str, dict] = {}
-        self._cross_repo_analysis: dict = {
-            "status": "unavailable",
-            "reason": "artifact_missing",
-        }
-        self._contract_analysis: dict = {
-            "status": "unavailable",
-            "reason": "artifact_missing",
-        }
+        self._cross_repo_analysis: dict = _artifact_status("unavailable", "artifact_missing")
+        self._contract_analysis: dict = _artifact_status("unavailable", "artifact_missing")
 
         # Pre-built indexes
         self._co_change_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -71,14 +132,6 @@ class CrossRepoEnricher:
         # Conformance report — architecture rule violations + dependency cycles
         # from the most recent update. Read-only pass-through.
         self._conformance: dict | None = None
-
-        self._data_path = data_path
-        self._contracts_path = contracts_path
-        self._system_graph_path = system_graph_path
-        self._breaking_changes_path = breaking_changes_path
-        self._conformance_path = conformance_path
-
-        self._load_all()
 
     @classmethod
     def from_data(
@@ -124,35 +177,23 @@ class CrossRepoEnricher:
 
     def _load(self, data_path: Path) -> None:
         """Parse JSON and build indexes."""
-        if not data_path.is_file():
-            _log.debug("No cross-repo data at %s", data_path)
-            return
-
-        try:
-            data = json.loads(data_path.read_text(encoding="utf-8"))
-        except Exception:
-            self._cross_repo_analysis = {
-                "status": "degraded",
-                "reason": "artifact_parse_failed",
-            }
-            _log.warning("Failed to parse cross-repo data at %s", data_path, exc_info=True)
-            return
-        self._ingest_overlay(data, data_path)
+        data = _read_artifact(data_path, "cross-repo data", "cross-repo data")
+        if data is _UNREADABLE:
+            self._cross_repo_analysis = _artifact_status("degraded", "artifact_parse_failed")
+        elif data is not _ABSENT:
+            self._ingest_overlay(data, data_path)
 
     def _ingest_overlay(self, data: dict, source: object) -> None:
-        if data.get("version", 1) < 2:
+        version = data.get("version", 1)
+        if version < 2:
             # v1 overlays carry unbounded strength values; everything
             # downstream now assumes the bounded [0, 1) session share, so
             # skip stale files until a workspace update regenerates them.
-            _log.info(
-                "Ignoring cross-repo data at %s (version %s < 2)",
-                source,
-                data.get("version", 1),
-            )
+            _log.info("Ignoring cross-repo data at %s (version %s < 2)", source, version)
             self._cross_repo_analysis = {
                 "status": "degraded",
                 "reason": "unsupported_contract_version",
-                "contract_version": data.get("version", 1),
+                "contract_version": version,
             }
             return
 
@@ -167,107 +208,10 @@ class CrossRepoEnricher:
             len(self._package_diagnostics),
         )
         self._repo_summaries = data.get("repo_summaries", {})
-        self._cross_repo_analysis = {
-            "status": (
-                "partial"
-                if (
-                    self._total_co_changes > len(self._co_changes)
-                    or self._total_package_diagnostics > len(self._package_diagnostics)
-                )
-                else "available"
-            ),
-            "contract_version": data.get("version", 1),
-            "generated_at": data.get("generated_at"),
-            "repo_provenance": data.get("repo_provenance", {}),
-            "freshness": {
-                "status": "unavailable",
-                "reason": "live_repository_heads_not_compared",
-            },
-            "source_co_changes_total": self._total_co_changes,
-            "source_co_changes_emitted": len(self._co_changes),
-            "source_truncated": self._total_co_changes > len(self._co_changes),
-            "package_diagnostics_total": self._total_package_diagnostics,
-            "package_diagnostics_emitted": len(self._package_diagnostics),
-            "package_diagnostics_truncated": self._total_package_diagnostics
-            > len(self._package_diagnostics),
-        }
+        self._cross_repo_analysis = self._overlay_analysis(data)
 
-        # Build co-change index: (repo, file) -> list of partner dicts
-        malformed_co_changes = 0
-        for cc in self._co_changes:
-            try:
-                src_key = (cc["source_repo"], cc["source_file"])
-                tgt_key = (cc["target_repo"], cc["target_file"])
-            except KeyError:
-                malformed_co_changes += 1
-                _log.debug("Skipping malformed co-change entry: %s", cc)
-                continue
-
-            partner_for_src = {
-                "repo": cc.get("target_repo", ""),
-                "file": cc.get("target_file", ""),
-                "strength": cc.get("strength", 0),
-                "frequency": cc.get("frequency", 0),
-                "last_date": cc.get("last_date", ""),
-            }
-            partner_for_tgt = {
-                "repo": cc.get("source_repo", ""),
-                "file": cc.get("source_file", ""),
-                "strength": cc.get("strength", 0),
-                "frequency": cc.get("frequency", 0),
-                "last_date": cc.get("last_date", ""),
-            }
-
-            self._co_change_index[src_key].append(partner_for_src)
-            self._co_change_index[tgt_key].append(partner_for_tgt)
-
-            # Consumer index: who is affected BY changes to this file
-            self._consumer_index[src_key].append(partner_for_src)
-            self._consumer_index[tgt_key].append(partner_for_tgt)
-
-        # Sort each index entry by strength descending
-        for key in self._co_change_index:
-            self._co_change_index[key].sort(key=lambda x: -x["strength"])
-        for key in self._consumer_index:
-            self._consumer_index[key].sort(key=lambda x: -x["strength"])
-
-        # Build package dep indexes
-        malformed_package_deps = 0
-        for pd in self._package_deps:
-            try:
-                src_repo = pd["source_repo"]
-                tgt_repo = pd["target_repo"]
-            except KeyError:
-                malformed_package_deps += 1
-                _log.debug("Skipping malformed package dep entry: %s", pd)
-                continue
-            self._package_dep_index[src_repo].append(
-                {
-                    "target_repo": tgt_repo,
-                    "source_manifest": pd.get("source_manifest", ""),
-                    "kind": pd.get("kind", ""),
-                    "target_package": pd.get("target_package", ""),
-                    "target_manifest": pd.get("target_manifest", ""),
-                    "requested_version": pd.get("requested_version"),
-                    "scope": pd.get("scope", ""),
-                    "resolution_basis": pd.get("resolution_basis", ""),
-                }
-            )
-            # Reverse: who depends on target_repo
-            self._package_dep_reverse[tgt_repo].append(src_repo)
-            self._package_dep_reverse_links[tgt_repo].append(
-                {
-                    "source_repo": src_repo,
-                    "target_repo": tgt_repo,
-                    "source_manifest": pd.get("source_manifest", ""),
-                    "kind": pd.get("kind", ""),
-                    "target_package": pd.get("target_package", ""),
-                    "target_manifest": pd.get("target_manifest", ""),
-                    "requested_version": pd.get("requested_version"),
-                    "scope": pd.get("scope", ""),
-                    "resolution_basis": pd.get("resolution_basis", ""),
-                }
-            )
+        malformed_co_changes = self._index_co_changes()
+        malformed_package_deps = self._index_package_deps()
         if malformed_co_changes or malformed_package_deps:
             self._cross_repo_analysis.update(
                 {
@@ -283,22 +227,77 @@ class CrossRepoEnricher:
             len(self._package_deps),
         )
 
+    def _overlay_analysis(self, data: dict) -> dict:
+        """Availability and provenance of a just-ingested overlay."""
+        co_changes_truncated = self._total_co_changes > len(self._co_changes)
+        diagnostics_truncated = self._total_package_diagnostics > len(self._package_diagnostics)
+        return {
+            "status": "partial" if co_changes_truncated or diagnostics_truncated else "available",
+            "contract_version": data.get("version", 1),
+            "generated_at": data.get("generated_at"),
+            "repo_provenance": data.get("repo_provenance", {}),
+            "freshness": _heads_not_compared(),
+            "source_co_changes_total": self._total_co_changes,
+            "source_co_changes_emitted": len(self._co_changes),
+            "source_truncated": co_changes_truncated,
+            "package_diagnostics_total": self._total_package_diagnostics,
+            "package_diagnostics_emitted": len(self._package_diagnostics),
+            "package_diagnostics_truncated": diagnostics_truncated,
+        }
+
+    def _index_co_changes(self) -> int:
+        """Index each pair from both of its ends; return how many were malformed."""
+        malformed = 0
+        for cc in self._co_changes:
+            try:
+                src_key = (cc["source_repo"], cc["source_file"])
+                tgt_key = (cc["target_repo"], cc["target_file"])
+            except KeyError:
+                malformed += 1
+                _log.debug("Skipping malformed co-change entry: %s", cc)
+                continue
+
+            partner_for_src = _co_change_partner(cc, "target")
+            partner_for_tgt = _co_change_partner(cc, "source")
+            self._co_change_index[src_key].append(partner_for_src)
+            self._co_change_index[tgt_key].append(partner_for_tgt)
+            # Consumer index: who is affected BY changes to this file
+            self._consumer_index[src_key].append(partner_for_src)
+            self._consumer_index[tgt_key].append(partner_for_tgt)
+
+        for partners in self._co_change_index.values():
+            partners.sort(key=_strongest_first)
+        for partners in self._consumer_index.values():
+            partners.sort(key=_strongest_first)
+        return malformed
+
+    def _index_package_deps(self) -> int:
+        """Index manifest deps both ways; return how many were malformed."""
+        malformed = 0
+        for pd in self._package_deps:
+            try:
+                src_repo = pd["source_repo"]
+                tgt_repo = pd["target_repo"]
+            except KeyError:
+                malformed += 1
+                _log.debug("Skipping malformed package dep entry: %s", pd)
+                continue
+            evidence = _package_dep_evidence(pd)
+            self._package_dep_index[src_repo].append({"target_repo": tgt_repo, **evidence})
+            # Reverse: who depends on target_repo
+            self._package_dep_reverse[tgt_repo].append(src_repo)
+            self._package_dep_reverse_links[tgt_repo].append(
+                {"source_repo": src_repo, "target_repo": tgt_repo, **evidence}
+            )
+        return malformed
+
     def _load_contracts(self, contracts_path: Path) -> None:
         """Parse ``contracts.json`` and build lookup indexes."""
-        if not contracts_path.is_file():
-            _log.debug("No contract data at %s", contracts_path)
-            return
-
-        try:
-            data = json.loads(contracts_path.read_text(encoding="utf-8"))
-        except Exception:
-            self._contract_analysis = {
-                "status": "degraded",
-                "reason": "artifact_parse_failed",
-            }
-            _log.warning("Failed to parse contract data at %s", contracts_path, exc_info=True)
-            return
-        self._ingest_contracts(data)
+        data = _read_artifact(contracts_path, "contract data", "contract data")
+        if data is _UNREADABLE:
+            self._contract_analysis = _artifact_status("degraded", "artifact_parse_failed")
+        elif data is not _ABSENT:
+            self._ingest_contracts(data)
 
     def _ingest_contracts(self, data: dict) -> None:
         self._contracts = data.get("contracts", [])
@@ -308,10 +307,7 @@ class CrossRepoEnricher:
             "contract_version": data.get("version", 1),
             "generated_at": data.get("generated_at"),
             "repo_provenance": data.get("repo_provenance", {}),
-            "freshness": {
-                "status": "unavailable",
-                "reason": "live_repository_heads_not_compared",
-            },
+            "freshness": _heads_not_compared(),
         }
 
         malformed_contract_links = 0
@@ -350,15 +346,9 @@ class CrossRepoEnricher:
 
     def _load_system_graph(self, system_graph_path: Path) -> None:
         """Parse ``system_graph.json`` (read-only pass-through to views)."""
-        if not system_graph_path.is_file():
-            _log.debug("No system graph at %s", system_graph_path)
-            return
-        try:
-            graph = json.loads(system_graph_path.read_text(encoding="utf-8"))
-        except Exception:
-            _log.warning("Failed to parse system graph at %s", system_graph_path, exc_info=True)
-            return
-        self._ingest_system_graph(graph)
+        graph = _read_artifact(system_graph_path, "system graph", "system graph")
+        if _was_read(graph):
+            self._ingest_system_graph(graph)
 
     def _ingest_system_graph(self, graph: dict) -> None:
         self._system_graph = graph
@@ -370,17 +360,9 @@ class CrossRepoEnricher:
 
     def _load_breaking_changes(self, breaking_changes_path: Path) -> None:
         """Parse ``breaking_changes.json`` and index changes by provider repo."""
-        if not breaking_changes_path.is_file():
-            _log.debug("No breaking-change report at %s", breaking_changes_path)
-            return
-        try:
-            report = json.loads(breaking_changes_path.read_text(encoding="utf-8"))
-        except Exception:
-            _log.warning(
-                "Failed to parse breaking changes at %s", breaking_changes_path, exc_info=True
-            )
-            return
-        self._ingest_breaking_changes(report)
+        report = _read_artifact(breaking_changes_path, "breaking-change report", "breaking changes")
+        if _was_read(report):
+            self._ingest_breaking_changes(report)
 
     def _ingest_breaking_changes(self, report: dict) -> None:
         self._breaking_changes = report
@@ -395,15 +377,9 @@ class CrossRepoEnricher:
 
     def _load_conformance(self, conformance_path: Path) -> None:
         """Parse ``conformance.json`` (read-only pass-through to views)."""
-        if not conformance_path.is_file():
-            _log.debug("No conformance report at %s", conformance_path)
-            return
-        try:
-            report = json.loads(conformance_path.read_text(encoding="utf-8"))
-        except Exception:
-            _log.warning("Failed to parse conformance at %s", conformance_path, exc_info=True)
-            return
-        self._ingest_conformance(report)
+        report = _read_artifact(conformance_path, "conformance report", "conformance")
+        if _was_read(report):
+            self._ingest_conformance(report)
 
     def _ingest_conformance(self, report: dict) -> None:
         self._conformance = report
@@ -419,37 +395,7 @@ class CrossRepoEnricher:
         Call after cross-repo analysis writes new data so the running
         server serves fresh results without a restart.
         """
-        # Reset all state
-        self._co_changes = []
-        self._total_co_changes = 0
-        self._package_deps = []
-        self._package_diagnostics = []
-        self._total_package_diagnostics = 0
-        self._repo_summaries = {}
-        self._cross_repo_analysis = {
-            "status": "unavailable",
-            "reason": "artifact_missing",
-        }
-        self._contract_analysis = {
-            "status": "unavailable",
-            "reason": "artifact_missing",
-        }
-        self._co_change_index = defaultdict(list)
-        self._consumer_index = defaultdict(list)
-        self._package_dep_index = defaultdict(list)
-        self._package_dep_reverse = defaultdict(list)
-        self._package_dep_reverse_links = defaultdict(list)
-        self._contracts = []
-        self._contract_links = []
-        self._contract_provider_index = defaultdict(list)
-        self._contract_consumer_index = defaultdict(list)
-        self._contract_symbol_index = defaultdict(list)
-        self._link_provider_symbol_index = defaultdict(list)
-        self._system_graph = None
-        self._breaking_changes = None
-        self._breaking_changes_by_repo = defaultdict(list)
-        self._conformance = None
-
+        self._reset()
         self._load_all()
 
         _log.info(
