@@ -410,8 +410,7 @@ async def get_co_change_structure(
             source_file=source_file,
             target_repo=target_repo,
             target_file=target_file,
-        )
-    )
+        )    )
 
 
 # ---------------------------------------------------------------------------

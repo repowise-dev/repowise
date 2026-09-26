@@ -2910,6 +2910,14 @@ export interface WorkspaceCoChangeEntry {
   strength: number;
   frequency: number;
   last_date: string;
+  evidence?: WorkspaceCoChangeEvidence | null;
+}
+
+/** Bounded supporting evidence for one co-change pair (#483). */
+export interface WorkspaceCoChangeEvidence {
+  authors?: string[];
+  commit_pairs?: Record<string, unknown>[];
+  max_gap_hours?: number;
 }
 
 /** What declared structure connects one co-changing file pair. */
