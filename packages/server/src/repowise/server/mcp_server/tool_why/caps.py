@@ -39,13 +39,6 @@ _MAX_PATH_CANDIDATES = 3
 #: a head plus a total answers as well as 241 paths do.
 _MAX_AFFECTED_FILES = 10
 
-#: Commit *bodies* are the weight in an origin story: the subject is already
-#: capped at 200 chars at ingest, but ``body`` is kept up to 1 KB per
-#: significant commit (``git_indexer/file_history.py``) and up to 10 of those
-#: ride along in ``key_commits``. An origin story reads the intent, not the
-#: whole message.
-_MAX_COMMIT_TEXT_CHARS = 320
-
 #: Headroom left under the budget for ``OmissionCollector.attach``, which adds
 #: ``omission_marker`` + ``_meta.omitted`` *after* the last size check.
 _COLLECTOR_HEADROOM_CHARS = 600
@@ -95,12 +88,6 @@ _SEMANTIC_WINDOW = 50
 #: unbounded scan.
 _DECISION_CORPUS_LIMIT = 2000
 
-#: Keyword candidates scored before restatements are collapsed. Wider than the
-#: serving cap on purpose: the worst cluster here is fourteen phrasings of one
-#: decision, so a pool cut to three first would serve one decision three times.
-#: Bounded because the lineage walk after the collapse costs a query per record.
-_KEYWORD_POOL = 24
-
 #: Items per list in the health dashboard. This mode is an orientation call:
 #: asked once, skimmed, acted on twice. It served 45 items to be read as a
 #: verdict. Halved now that ``get_decision_health_summary`` ranks what it
@@ -118,32 +105,6 @@ _MAX_HEALTH_UNGOVERNED = 8
 #: Retired records and accepted records naming no file. Same 5 as its peers:
 #: a pointer into history, not a place to read it from.
 _MAX_HEALTH_RETIRED = 5
-
-
-def _trim_commit_text(origin_story: dict) -> None:
-    """Cap commit prose in place, wherever the origin story inlines it.
-
-    ``message`` and ``body`` both, because which one carries the weight depends
-    on the repo: a squash-merge repo puts the whole rationale in ``body`` and
-    the ingest keeps it up to 1 KB, while ``message`` is already capped at 200.
-    Capping both means this does not quietly become a no-op if that changes.
-    """
-
-    def _trim(commits: Any) -> None:
-        if not isinstance(commits, list):
-            return
-        for c in commits:
-            if not isinstance(c, dict):
-                continue
-            for field in ("message", "body"):
-                text = c.get(field)
-                if isinstance(text, str) and len(text) > _MAX_COMMIT_TEXT_CHARS:
-                    c[field] = text[:_MAX_COMMIT_TEXT_CHARS] + "…"
-
-    _trim(origin_story.get("key_commits"))
-    for linked in origin_story.get("linked_decisions") or []:
-        if isinstance(linked, dict):
-            _trim(linked.get("evidence_commits"))
 
 
 def _cap_origin_story(
