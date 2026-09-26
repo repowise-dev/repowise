@@ -33,7 +33,7 @@ import structlog
 
 # Re-exported: the strategy table is asserted on through this module.
 from .call_language_strategies import _LANGUAGE_CALL_STRATEGIES as _LANGUAGE_CALL_STRATEGIES
-from .call_language_strategies import LanguageStrategiesMixin, _LanguageCallStrategies
+from .call_language_strategies import LanguageStrategiesMixin
 from .call_receiver_typing import (
     _SOURCE_CACHE_FILES,
     _TYPE_KINDS,
@@ -314,8 +314,6 @@ class CallResolver(LanguageStrategiesMixin, ReceiverTypingMixin):
         self._parsed_files = parsed_files
 
         self._init_workspace_indexes(repo_path)
-
-        self._strategies_by_file: dict[str, _LanguageCallStrategies] = {}
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
