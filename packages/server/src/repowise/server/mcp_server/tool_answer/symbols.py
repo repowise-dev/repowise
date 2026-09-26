@@ -9,6 +9,7 @@ here, since callers and tests import them from this module.
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -263,8 +264,6 @@ async def _anchor_symbol_hits(
     if not question_ids:
         return hits, homonyms
     qids_lower = {q.lower() for q in question_ids}
-    # Qualifiers the question used (dotted forms like ``decisionextractor.extract_all``).
-    qualifiers = {q for q in qids_lower if "." in q}
     res = await session.execute(
         select(WikiSymbol).where(
             WikiSymbol.repository_id == repo_id,
@@ -303,6 +302,36 @@ async def _anchor_symbol_hits(
             d["_approx"] = True
         return d
 
+    chosen = await _choose_anchor_symbols(by_name, qids_lower, _verified_dict, homonyms)
+    if not chosen:
+        return hits, homonyms
+    await _anchor_chosen_symbols(hits, chosen, _verified_dict)
+    hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
+    return hits, homonyms
+
+
+def _question_names_parent(cand, qids_lower: set[str]) -> bool:
+    """Whether the question names this def's parent, or a qualifier of it."""
+    if (cand.parent_name or "").lower() in qids_lower:
+        return True
+    qualified = (cand.qualified_name or "").lower()
+    name = (cand.name or "").lower()
+    return any(q in qualified for q in qids_lower if len(q) >= 4 and q != name)
+
+
+async def _choose_anchor_symbols(
+    by_name: dict[str, list],
+    qids_lower: set[str],
+    verified_dict: Callable[[Any], Awaitable[dict]],
+    homonyms: dict[str, Any],
+) -> list:
+    """The one def per question-named symbol to anchor on.
+
+    Names with several defs that cannot be narrowed to one are recorded in
+    *homonyms* instead, as a union or a qualified miss.
+    """
+    # Qualifiers the question used (dotted forms like ``decisionextractor.extract_all``).
+    qualifiers = {q for q in qids_lower if "." in q}
     chosen: list = []
     for name, cands in by_name.items():
         if len(cands) == 1:
@@ -310,16 +339,7 @@ async def _anchor_symbol_hits(
             continue
         # Disambiguate a homonym when the question names its parent or the
         # parent appears in the qualified name.
-        narrowed = [
-            c
-            for c in cands
-            if (c.parent_name or "").lower() in qids_lower
-            or any(
-                q in (c.qualified_name or "").lower()
-                for q in qids_lower
-                if len(q) >= 4 and q != (c.name or "").lower()
-            )
-        ]
+        narrowed = [c for c in cands if _question_names_parent(c, qids_lower)]
         if len(narrowed) == 1:
             chosen.append(narrowed[0])
             continue
@@ -329,17 +349,22 @@ async def _anchor_symbol_hits(
         if narrowed:
             # Qualifier matched >1 def: union of the narrowed set (still all
             # genuine candidates for the qualified name).
-            homonyms["union"][name] = [await _verified_dict(c) for c in narrowed]
+            homonyms["union"][name] = [await verified_dict(c) for c in narrowed]
         elif targeted:
             # Qualifier present but matched nothing: do not guess.
             homonyms["qualified_miss"].append(name)
         else:
             # Bare homonym, no qualifier: union of every def.
-            homonyms["union"][name] = [await _verified_dict(c) for c in cands]
+            homonyms["union"][name] = [await verified_dict(c) for c in cands]
+    return chosen
 
-    if not chosen:
-        return hits, homonyms
 
+async def _anchor_chosen_symbols(
+    hits: list[dict],
+    chosen: list,
+    verified_dict: Callable[[Any], Awaitable[dict]],
+) -> None:
+    """Boost (or insert) each chosen def's file and stash the def on it."""
     by_path = {h.get("target_path"): h for h in hits}
     top_score = max((h.get("score", 0.0) for h in hits), default=0.0)
     # Above the current top so an exact symbol match dominates the dominance
@@ -354,29 +379,14 @@ async def _anchor_symbol_hits(
             # score — no path, title, summary or excerpt — while displacing a
             # real hit from the synthesis window.
             continue
-        target = by_path.get(fp)
-        if target is None:
-            target = {
-                "page_id": f"file_page:{fp}",
-                "target_path": fp,
-                "title": fp,
-                "summary": "",
-                "snippet": "",
-                "page_type": "file_page",
-                "score": anchor_score,
-                "_symbol_anchored": True,
-            }
-            hits.insert(0, target)
-            by_path[fp] = target
-        else:
-            target["score"] = max(target.get("score", 0.0), anchor_score)
-            target["_symbol_anchored"] = True
+        target = _boost_or_insert_file_hit(hits, by_path, fp, anchor_score)
+        target["_symbol_anchored"] = True
         # Stash the exact symbol the question named so symbol_bodies serves it
         # directly — the fuzzy hydration cap drops a far-down method when the
         # parent class name floods every sibling's qualified-name match. Serve
         # verified bounds only: an unrelocatable (approximate) symbol still
         # boosts its file's rank, but is not stashed for a live-body slice.
-        vd = await _verified_dict(sym)
+        vd = await verified_dict(sym)
         if vd.get("_approx"):
             continue
         target.setdefault("_anchor_symbols", []).append(
@@ -387,8 +397,32 @@ async def _anchor_symbol_hits(
                 "end_line": vd["end_line"],
             }
         )
-    hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
-    return hits, homonyms
+
+
+def _boost_or_insert_file_hit(
+    hits: list[dict], by_path: dict, path: str, score: float
+) -> dict:
+    """The hit for *path* raised to at least *score*, or a new one at the front.
+
+    Shared by the symbol and concept anchors, which differ only in the flags
+    they set on the returned hit.
+    """
+    target = by_path.get(path)
+    if target is None:
+        target = {
+            "page_id": f"file_page:{path}",
+            "target_path": path,
+            "title": path,
+            "summary": "",
+            "snippet": "",
+            "page_type": "file_page",
+            "score": score,
+        }
+        hits.insert(0, target)
+        by_path[path] = target
+    else:
+        target["score"] = max(target.get("score", 0.0), score)
+    return target
 
 
 def attach_truncation_contract(
@@ -583,21 +617,7 @@ async def _concept_anchor_hits(
     # Above the current top so the comment-justified file dominates the
     # dominance gate and synthesis runs instead of gating low.
     anchor_score = max(top_score + 1.5, _HIGH_CONFIDENCE_SCORE_FLOOR + 0.5)
-    target = by_path.get(winner_path)
-    if target is None:
-        target = {
-            "page_id": f"file_page:{winner_path}",
-            "target_path": winner_path,
-            "title": winner_path,
-            "summary": "",
-            "snippet": "",
-            "page_type": "file_page",
-            "score": anchor_score,
-        }
-        hits.insert(0, target)
-        by_path[winner_path] = target
-    else:
-        target["score"] = max(target.get("score", 0.0), anchor_score)
+    target = _boost_or_insert_file_hit(hits, by_path, winner_path, anchor_score)
     target["_concept_anchored"] = True
     target["_concept_near_line"] = near_line
     # Stash the mined comment so the code_rationale surfacing can serve it
