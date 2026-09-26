@@ -6,6 +6,7 @@ Shared by the ``decision`` commands in ``decision_cmd``.
 from __future__ import annotations
 
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import click
@@ -15,6 +16,22 @@ from repowise.cli.helpers import console, get_db_url_for_repo
 from repowise.cli.output import emit_json, emit_refusal
 
 
+@asynccontextmanager
+async def _open_store(repo_path: Path):
+    """Yield a session factory on the repo's store; the engine is disposed after.
+
+    A factory, so ``add`` can embed after its session commits.
+    """
+    from repowise.core.persistence import create_engine, create_session_factory, init_db
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        await init_db(engine)
+        yield create_session_factory(engine)
+    finally:
+        await engine.dispose()
+
+
 async def _resolve_decision_id(session, decision_id: str) -> str | None:
     """Expand a (possibly truncated) decision id to the full stored id.
 
@@ -22,40 +39,36 @@ async def _resolve_decision_id(session, decision_id: str) -> str | None:
     accepts a unique prefix. Returns None when nothing matches; raises on an
     ambiguous prefix.
     """
+    from repowise.core.persistence.models import DecisionAlias, DecisionRecord
+
+    full_id = await _match_prefix(session, DecisionRecord.id, DecisionRecord.id, decision_id)
+    if full_id is not None:
+        return full_id
+    # Merging and superseding retire ids that are already written down
+    # somewhere. Resolving through the alias keeps those working instead of
+    # reporting the decision as gone.
+    return await _match_prefix(
+        session, DecisionAlias.decision_id, DecisionAlias.alias_id, decision_id
+    )
+
+
+async def _match_prefix(session, selected, matched, prefix: str) -> str | None:
+    """*selected* from the one row whose *matched* column starts with *prefix*."""
     from sqlalchemy import select
 
-    from repowise.core.persistence.models import DecisionRecord
     from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 
     result = await session.execute(
-        select(DecisionRecord.id)
-        .where(DecisionRecord.id.like(f"{escape_like(decision_id)}%", escape=LIKE_ESCAPE))
+        select(selected)
+        .where(matched.like(f"{escape_like(prefix)}%", escape=LIKE_ESCAPE))
         .limit(2)
     )
     ids = [row[0] for row in result.all()]
     if len(ids) > 1:
         raise click.ClickException(
-            f"Decision id prefix {decision_id!r} is ambiguous; use more characters."
+            f"Decision id prefix {prefix!r} is ambiguous; use more characters."
         )
-    if ids:
-        return ids[0]
-
-    # Merging and superseding retire ids that are already written down
-    # somewhere. Resolving through the alias keeps those working instead of
-    # reporting the decision as gone.
-    from repowise.core.persistence.models import DecisionAlias
-
-    alias = await session.execute(
-        select(DecisionAlias.decision_id)
-        .where(DecisionAlias.alias_id.like(f"{escape_like(decision_id)}%", escape=LIKE_ESCAPE))
-        .limit(2)
-    )
-    alias_ids = [row[0] for row in alias.all()]
-    if len(alias_ids) > 1:
-        raise click.ClickException(
-            f"Decision id prefix {decision_id!r} is ambiguous; use more characters."
-        )
-    return alias_ids[0] if alias_ids else None
+    return ids[0] if ids else None
 
 
 def _emit_lifecycle(rec, decision_id: str, action: str, fmt: str, note: str = "") -> None:
@@ -92,8 +105,9 @@ def _split_ids_and_path(tokens: tuple[str, ...]) -> tuple[list[str], str | None]
     that name happens to exist, because reading one as a path would drop it
     from the batch and still exit 0.
     """
-    last = tokens[-1] if tokens else ""
-    if len(tokens) > 1 and last and not _ID_SHAPED.match(last) and Path(last).is_dir():
+    last = tokens[-1] if len(tokens) > 1 else ""
+    # An empty token would otherwise read as the current directory.
+    if last and not _ID_SHAPED.match(last) and Path(last).is_dir():
         return list(tokens[:-1]), last
     return list(tokens), None
 
@@ -127,35 +141,21 @@ async def _review_batch(repo_path, tokens, *, action: str, verb: str, preview: b
     back, so what it reports is what the contract actually said; the schema
     reconcile every subcommand opens the store with still runs.
     """
-    from repowise.core.persistence import (
-        create_engine,
-        create_session_factory,
-        get_session,
-        init_db,
-    )
+    from repowise.core.persistence import get_session
 
-    engine = create_engine(get_db_url_for_repo(repo_path))
-    try:
-        await init_db(engine)
-    except BaseException:
-        await engine.dispose()
-        raise
     results: list[dict] = []
-    try:
-        async with get_session(create_session_factory(engine)) as session:
-            for token in tokens:
-                # A token that resolves to nothing already carries its outcome.
-                rec, outcome = await _resolve_one(session, token)
-                if outcome is None:
-                    outcome = await _apply_in_savepoint(
-                        session, rec, token, action=action, verb=verb, preview=preview,
-                        apply_one=apply_one,
-                    )
-                results.append(outcome)
-            if preview:
-                await session.rollback()
-    finally:
-        await engine.dispose()
+    async with _open_store(repo_path) as sf, get_session(sf) as session:
+        for token in tokens:
+            # A token that resolves to nothing already carries its outcome.
+            rec, outcome = await _resolve_one(session, token)
+            if outcome is None:
+                outcome = await _apply_in_savepoint(
+                    session, rec, token, action=action, verb=verb, preview=preview,
+                    apply_one=apply_one,
+                )
+            results.append(outcome)
+        if preview:
+            await session.rollback()
     return results
 
 

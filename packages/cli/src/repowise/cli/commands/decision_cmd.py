@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +16,7 @@ from repowise.cli.commands.decision_batch import (
     _emit_batch,
     _emit_lifecycle,
     _emit_single,
+    _open_store,
     _resolve_decision_id,
     _review_batch,
     _split_ids_and_path,
@@ -24,7 +24,6 @@ from repowise.cli.commands.decision_batch import (
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
-    get_db_url_for_repo,
     resolve_command_target,
     run_async,
 )
@@ -94,17 +93,25 @@ def _signer(agent: str, agent_session: str, *, accepter: str = "") -> tuple[str,
     Shared by every verb that appends to the acceptance log, so an agent can
     say it is one wherever it can act.
     """
+    _check_agent_flag(agent, accepter)
+    _check_session_flag(agent_session, agent)
+    return ("agent" if agent else "person"), agent_session
+
+
+def _check_agent_flag(agent: str, accepter: str) -> None:
     if agent and accepter:
         raise click.ClickException("Pass --agent or --as, not both: they name different signers.")
     if agent and not is_agent_slug(agent):
         raise click.ClickException(
             f"{agent!r} is not a well-formed agent slug (lowercase, digits and underscores)."
         )
+
+
+def _check_session_flag(agent_session: str, agent: str) -> None:
     if agent_session and not agent:
         raise click.ClickException("--session names the agent signing; pass --agent too.")
     if len(agent_session) > ACCEPTER_SESSION_MAX:
         raise click.ClickException(f"--session is at most {ACCEPTER_SESSION_MAX} characters.")
-    return ("agent" if agent else "person"), agent_session
 
 
 #: The two flags an agent signs with, on every verb that writes an authority
@@ -173,22 +180,6 @@ def _register_config_commands() -> None:
 
 
 _register_config_commands()
-
-
-@asynccontextmanager
-async def _open_store(repo_path: Path):
-    """Yield a session factory on the repo's store; the engine is disposed after.
-
-    A factory, so ``add`` can embed after its session commits.
-    """
-    from repowise.core.persistence import create_engine, create_session_factory, init_db
-
-    engine = create_engine(get_db_url_for_repo(repo_path))
-    try:
-        await init_db(engine)
-        yield create_session_factory(engine)
-    finally:
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -537,10 +528,7 @@ def decision_list(
         )
     )
 
-    if proposed:
-        decisions = [d for d in decisions if d.status == "proposed"]
-    if stale_only:
-        decisions = [d for d in decisions if d.staleness_score >= 0.5]
+    decisions = _narrow(decisions, proposed=proposed, stale_only=stale_only)
 
     if fmt == "json":
         emit_json({"repo": str(repo_path), "decisions": [_listed_json(d) for d in decisions]})
@@ -550,6 +538,15 @@ def decision_list(
         console.print("[dim]No decisions found.[/dim]")
         return
     _print_decision_table(decisions)
+
+
+def _narrow(decisions: list, *, proposed: bool, stale_only: bool) -> list:
+    """Apply ``--proposed`` and ``--stale-only`` to what the query returned."""
+    if proposed:
+        decisions = [d for d in decisions if d.status == "proposed"]
+    if stale_only:
+        decisions = [d for d in decisions if d.staleness_score >= 0.5]
+    return decisions
 
 
 def _listed_json(d) -> dict:
@@ -859,10 +856,7 @@ def decision_dismiss(
     repo_path = _resolve_decision_repo(path, fmt)
     kind, signing_session = _signer(agent, agent_session)
 
-    # A machine-readable invocation is non-interactive by construction: the
-    # prompt read EOF and aborted every scripted dismissal.
-    subject = ids[0][:8] if len(ids) == 1 else f"{len(ids)} decisions"
-    if not yes and not preview and fmt != "json" and not click.confirm(f"Dismiss {subject}?"):
+    if not _dismissal_confirmed(ids, yes=yes, preview=preview, fmt=fmt):
         console.print("[yellow]Cancelled.[/yellow]")
         return
 
@@ -895,6 +889,18 @@ def decision_dismiss(
         "[dim](kept as a tombstone; reindexing will not re-propose it)[/dim]",
         "",
     )
+
+
+def _dismissal_confirmed(ids: list[str], *, yes: bool, preview: bool, fmt: str) -> bool:
+    """Ask before dismissing, unless ``--yes``, ``--preview`` or json skips the prompt.
+
+    A machine-readable invocation is non-interactive by construction: the
+    prompt read EOF and aborted every scripted dismissal.
+    """
+    if yes or preview or fmt == "json":
+        return True
+    subject = ids[0][:8] if len(ids) == 1 else f"{len(ids)} decisions"
+    return click.confirm(f"Dismiss {subject}?")
 
 
 # ---------------------------------------------------------------------------
@@ -1067,20 +1073,27 @@ def _print_health_summary(summary: dict) -> None:
 
 def _print_health_lists(health: dict) -> None:
     """Stale, ungoverned and proposed, each capped so the report stays short."""
-    stale = health["stale_decisions"]
-    if stale:
-        console.print(f"\n[red]Stale decisions ({len(stale)}):[/red]")
-        for d in stale[:5]:
-            console.print(f"  {d.id[:8]}  {d.title[:50]}  (staleness: {d.staleness_score:.2f})")
+    _print_capped(
+        "red",
+        "Stale decisions",
+        health["stale_decisions"],
+        5,
+        lambda d: f"{d.id[:8]}  {d.title[:50]}  (staleness: {d.staleness_score:.2f})",
+    )
+    _print_capped("yellow", "Ungoverned hotspots", health["ungoverned_hotspots"], 10, str)
+    _print_capped(
+        "yellow",
+        "Proposed decisions",
+        health["proposed_awaiting_review"],
+        5,
+        lambda d: f"{d.id[:8]}  {d.title[:50]}  (source: {d.source})",
+    )
 
-    ungoverned = health["ungoverned_hotspots"]
-    if ungoverned:
-        console.print(f"\n[yellow]Ungoverned hotspots ({len(ungoverned)}):[/yellow]")
-        for fp in ungoverned[:10]:
-            console.print(f"  {fp}")
 
-    proposed = health["proposed_awaiting_review"]
-    if proposed:
-        console.print(f"\n[yellow]Proposed decisions ({len(proposed)}):[/yellow]")
-        for d in proposed[:5]:
-            console.print(f"  {d.id[:8]}  {d.title[:50]}  (source: {d.source})")
+def _print_capped(color: str, heading: str, items: list, cap: int, line) -> None:
+    """A headed list with its full count, showing the first *cap* items."""
+    if not items:
+        return
+    console.print(f"\n[{color}]{heading} ({len(items)}):[/{color}]")
+    for item in items[:cap]:
+        console.print(f"  {line(item)}")
