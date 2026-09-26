@@ -26,12 +26,9 @@ def _has_archaeology(archaeology: Any) -> bool:
 def _is_accepted_row(row: Any) -> bool:
     """Whether an emitted decision row rests on an acceptance.
 
-    Reads the ``authority`` key this module stamps rather than ``status``, for
-    the reason ``decision_currencies`` gives: the column is a projection every
-    writer keeps in step, and it agrees right up until something writes it
-    without an acceptance. A row with no ``authority`` at all is a semantic hit
-    projected from the vector store, which carries no record to join on and so
-    cannot be claimed as accepted either.
+    Reads the stamped ``authority``, not ``status`` (see
+    ``decision_currencies``). A row with no ``authority`` is a semantic hit with
+    no record to join on, so it cannot count as accepted.
     """
     return isinstance(row, dict) and row.get("authority") == "accepted"
 
@@ -39,28 +36,14 @@ def _is_accepted_row(row: Any) -> bool:
 def _stamp_answer_basis(result: dict) -> dict:
     """Name the strongest lane the response actually rests on.
 
-    This tool serves commit messages and mined comments beside decision
-    records. Only an *accepted* decision is a ruling; the rest are evidence a
-    reader has to weigh. Per-row ``provenance`` answers that one row at a time,
-    which is no help in deciding how much of the whole response to trust.
+    Only an accepted decision is a ruling; everything else is evidence to weigh.
 
-    ``decision`` requires an acceptance, not a record. A ``DecisionRecord`` is a
-    candidate until a ``DecisionAcceptance`` row exists for it, and accepting is
-    a deliberate manual step, so a store of nothing but candidates is the state
-    every user who has not worked through the acceptance UI is in — the common
-    case, not an edge one. Stamping ``decision`` off the mere presence of a
-    record therefore claimed a ruling on most calls this tool ever serves, and
-    it did so beside titles like "Do not ship UI components yet": session
-    artifacts nobody confirmed, presented as governing.
-
-    ``candidate`` sits *below* every evidence lane rather than above them for
-    the same reason. A mined comment or a commit message is something a reader
-    can weigh; an unconfirmed candidate is a guess about what somebody once
-    meant, so it must not outrank the lanes that carry real evidence.
+    ``decision`` requires a ``DecisionAcceptance``, not just a record: most
+    stores hold only unconfirmed candidates. ``candidate`` ranks below every
+    evidence lane, since an unconfirmed guess must not outrank real evidence.
 
     Absent when nothing was served, so a refusal cannot read as an answer.
-    Re-derived after the budget pass has shed, so the claim cannot outlive the
-    lane it names; clears first to stay correct on that second call.
+    Re-derived after the budget pass sheds, so it clears first.
     """
     result.pop("answer_basis", None)
     entries = [
@@ -92,11 +75,7 @@ def _stamp_answer_basis(result: dict) -> dict:
 
 
 def _restamp_answer_basis(result: dict, _collector: OmissionCollector) -> None:
-    """Re-derive the basis after shedding.
-
-    The basis names a lane, and a lane the budget pass emptied must not leave
-    the claim standing.
-    """
+    """Re-derive the basis after shedding, so it never names an emptied lane."""
     _stamp_answer_basis(result)
 
 

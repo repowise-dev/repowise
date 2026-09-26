@@ -15,95 +15,58 @@ from repowise.server.mcp_server._episodes import bank_overflow
 
 # --- Path-mode cap and projection -------------------------------------------
 #
-# Path mode used to return every governing record whole: on ``persist.py`` that
-# was 15 records inlining 241 file paths between them, plus an origin story
-# carrying full commit bodies — 81 854 chars, which the MCP host rejects
-# outright (see ``_budget.budgeter``: over the cap is an isError, not a
-# truncation). The mode that matters most, "what governs this file right before
-# I edit it", hard-failed on exactly the bug-magnet files it exists for.
-#
-# So: rank, project, then enforce. The caps below are the projection; the
-# budget pass after them is the guarantee, since no fixed cap can bound a
-# response whose fields are free text.
+# Rank, project, then enforce. Over-budget is a host error, not a truncation,
+# so the caps below project and the budget pass after them is the guarantee:
+# no fixed cap bounds free-text fields.
 
 #: Governing records kept, best-first. Past ~8 the tail is review-queue noise.
 _MAX_PATH_DECISIONS = 8
 
-#: Candidates inlined beside a path's decisions. Deliberately far below the
-#: decisions cap: this lane exists so a reader knows a queue is there and can
-#: go and work it, not so they can work it from inside a get_why response. A
-#: live index carries 380 candidates, and a hot path can be named by dozens.
+#: Candidates inlined beside a path's decisions. Far below the decisions cap:
+#: this lane signals that a review queue exists, it is not the queue.
 _MAX_PATH_CANDIDATES = 3
 
-#: Paths kept per record. The array answers "how wide is this decision", which
-#: a head plus a total answers as well as 241 paths do.
+#: Paths kept per record. A head plus a total shows how wide a decision is.
 _MAX_AFFECTED_FILES = 10
 
 #: Headroom left under the budget for ``OmissionCollector.attach``, which adds
 #: ``omission_marker`` + ``_meta.omitted`` *after* the last size check.
 _COLLECTOR_HEADROOM_CHARS = 600
 
-# Ranking uses ``status_rank`` from lifecycle. The local table this file kept
-# had drifted from it: it ranked ``deprecated`` ahead of ``superseded`` while
-# the list endpoint ranked them the other way, so a record moved position
-# depending on which surface was asked.
+# Status ranking uses lifecycle's ``status_rank``, so every surface orders
+# records the same way.
 
 
 # --- Search-mode caps -------------------------------------------------------
 #
-# Search mode had no caps at all: it served eight whole records with their file
-# arrays inlined, measuring 27 640 - 34 917 chars over five probe questions
-# against a 32 000 budget, so two of the five went over the ceiling outright.
-# The cost was not only transport. On a question the store does answer ("why
-# ruff check and not ruff format", held by two active records) it returned eight
-# records, none of them those, three restating one unrelated decision. A long
-# low-relevance answer teaches an agent that the tool is not worth calling,
-# which is more expensive than a miss.
-#
-# So this mode gets few records served whole rather than many served thin: a
-# padded answer is the failure mode, and thinning every record to keep eight of
-# them is padding with extra steps.
+# Few records served whole rather than many served thin: a long low-relevance
+# answer teaches an agent the tool is not worth calling.
 
-#: Records kept by search mode. Three whole beats eight thinned: past the third
-#: hit the ranking is not trustworthy enough to spend an agent's context on.
+#: Records kept by search mode. Past the third hit the ranking is not
+#: trustworthy enough to spend an agent's context on.
 _MAX_SEARCH_DECISIONS = 3
 
-#: Records kept by workspace search. Above the single-repo three because the
-#: answer can genuinely live in more than one store and the repo is part of it;
-#: nowhere near the fifteen whole records this path served before it was ranked.
+#: Records kept by workspace search. Above three because the answer can live
+#: in more than one repo's store.
 _MAX_WORKSPACE_DECISIONS = 5
 
-#: Nearest pages pulled for the *one* semantic lookup search mode makes. Both
-#: lanes (decisions, documentation) are partitioned out of this single window,
-#: so the depth is the old decision lane's rather than the sum of the two.
+#: Nearest pages pulled for search mode's one semantic lookup. Both lanes
+#: (decisions, documentation) are partitioned out of this single window.
 _SEMANTIC_WINDOW = 50
 
-#: Records search mode ranks over. It used to be 200, against a store holding
-#: 614: ``list_decisions`` sorts confirmed-then-confident, so the 414 records
-#: below the cut were unreachable by any question, and the cap was a silent
-#: recall ceiling rather than a cost control. It is not a cost control either —
-#: ranking is a substring scan over short fields, measured at 2 ms for 182
-#: records here, so the whole store costs single-digit milliseconds. Kept
-#: bounded only so an unattended extractor cannot turn one call into an
-#: unbounded scan.
+#: Records search mode ranks over. Not a cost control (ranking is a cheap
+#: substring scan) and a low cut would be a silent recall ceiling; bounded only
+#: so an unattended extractor cannot make one call an unbounded scan.
 _DECISION_CORPUS_LIMIT = 2000
 
-#: Items per list in the health dashboard. This mode is an orientation call:
-#: asked once, skimmed, acted on twice. It served 45 items to be read as a
-#: verdict. Halved now that ``get_decision_health_summary`` ranks what it
-#: returns: cutting an unranked list only makes a list nobody reads shorter,
-#: cutting a ranked one keeps the part that is worth reading. The full sizes stay
-#: legible in ``counts`` and in the summary line, and every row cut here is
-#: recoverable through the omission collector, so nothing is silently dropped.
-#:
-#: That clause needs a list to be true of: for a count-only lane there was
-#: nothing to recover, which is why the two below exist.
+#: Items per list in the health dashboard, an orientation call. The lists are
+#: ranked, so the cut keeps the part worth reading; full sizes stay in
+#: ``counts`` and every cut row is recoverable through the omission collector.
 _MAX_HEALTH_STALE = 5
 _MAX_HEALTH_PROPOSED = 5
 _MAX_HEALTH_UNGOVERNED = 8
 
-#: Retired records and accepted records naming no file. Same 5 as its peers:
-#: a pointer into history, not a place to read it from.
+#: Retired records and accepted records naming no file: a pointer into history.
 _MAX_HEALTH_RETIRED = 5
 
 
@@ -257,37 +220,22 @@ def _fit_path_response(
 ) -> dict:
     """Shrink a path response until it fits the transport budget.
 
-    The projection above bounds the structured fields; this bounds the free
-    text ones, which no fixed cap can — a single record's ``rationale`` is
-    unbounded, and the ungoverned-file branch returns git archaeology instead
-    of decisions and so is not capped by any of them.
+    The caps bound the structured fields; this bounds the free-text ones.
 
     Stages, cheapest loss first:
 
-    1. Drop ``origin_story.linked_decisions``, which re-inlines each record's
-       title, rationale and matched commits — all of it already in
-       ``decisions``.
-    2. Drop the candidate lane whole. A candidate is a review request, and a
-       response that cannot afford the rules it must not spend on the queue.
-    3. Drop governing records from the tail, all the way to none if it comes
-       to that. They are sorted best-first, so the tail is review-queue noise,
-       and an empty list plus a marker beats a rejected response.
-    4. Trim the fallback blocks the ungoverned branch adds (``code_rationale``,
-       then ``git_archaeology``) to a tail, dropping them whole only if that is
-       not enough, then ``origin_story``. What survives — mode, path,
-       alignment, ``_meta`` — is bounded.
+    1. ``origin_story.linked_decisions`` (duplicates ``decisions``), then the
+       history and candidate lanes: review requests, not rules.
+    2. Episodes, which must only ever spend slack.
+    3. Governing records from the tail, down to none if need be: an empty list
+       plus a marker beats a rejected response.
+    4. The ungoverned branch's ``code_rationale`` and ``git_archaeology``,
+       trimmed then dropped, then ``origin_story``.
 
-    Every drop goes to the omission store, so the agent gets a
-    ``[repowise#<ref>]`` marker it can expand rather than a silently shortened
-    response. Call after ``_meta`` is set: the collector writes into it.
+    Every drop goes to the omission store. Call after ``_meta`` is set.
 
-    *collector* is the one a caller already started — the episode block caps
-    long bodies and banks the overflow before this runs. It must be reused
-    rather than joined by a second, because ``attach`` overwrites
-    ``_meta.omitted`` with its own refs and the loser's markers would then
-    point at content the response no longer advertises. It is also why the
-    under-budget path still attaches: a response that fits can still carry a
-    capped body whose remainder needs advertising.
+    Reuse the caller's *collector*: a second one's ``attach`` would overwrite
+    ``_meta.omitted``. It is also why the under-budget path still attaches.
     """
 
     def _over() -> bool:
@@ -310,19 +258,8 @@ def _fit_path_response(
             record_counts=True,
         )
 
-    # Episodes go before the governing records, not after: they are the newest
-    # evidence kind here and must only ever spend slack. Dropping them later in
-    # the sequence meant the decisions loop ran with the episode block still
-    # inflating the response, and a governing record was evicted to make room
-    # for an episode that then survived — measured, not theorised.
-    # ``episodes[]`` floors at one row, so the whole-block entry behind it is
-    # what still empties the lane before the decisions loop below. Trimming
-    # first is why mild pressure costs rows: this served 0 of 20.
-    # Candidates first of everything: they are the one lane whose whole
-    # purpose is to be reviewed later, so under pressure they are the cheapest
-    # thing in the response to lose. Their note goes with them, because a
-    # sentence counting candidates that are no longer in the payload is worse
-    # than no sentence.
+    # Review lanes first; each note goes with its lane, since a note counting
+    # rows no longer in the payload is worse than none.
     _shed(
         "origin_story.linked_decisions",
         "history[]",
@@ -334,12 +271,13 @@ def _fit_path_response(
         if not result_data.get(lane_key):
             result_data.pop(f"{lane_key}_note", None)
 
+    # Episodes before the governing records, so a record is never evicted to
+    # make room for one. Trimmed first, so mild pressure costs rows, not the lane.
     _shed("episodes[]", "episodes")
 
     _shed_tail_decisions(result_data, collector)
 
-    # The ungoverned branch's whole answer, and it served 0 of 58 mined
-    # rationale comments on a file with no governing record at all.
+    # The ungoverned branch's answer: trim rows before dropping whole lanes.
     _shed(
         "code_rationale[]",
         "git_archaeology.file_commits[]",

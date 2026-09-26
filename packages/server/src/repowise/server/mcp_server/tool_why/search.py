@@ -59,20 +59,12 @@ async def _fts_doc_results(ctx: Any, query: str) -> list:
 async def _semantic_lanes(ctx: Any, query: str) -> tuple[list, list]:
     """``(decision_hits, doc_hits)`` from **one** embedding of *query*.
 
-    These were two awaits embedding the same string back to back, so every
-    search-mode call paid two network round trips to ask one question. One
-    ``embed_texts`` plus ``search_by_vector`` is the documented way to spend one
-    (see ``vector_store._base``), and ``search`` remains the fallback for a
-    backend that cannot search by raw vector.
+    One ``embed_texts`` plus ``search_by_vector`` (see ``vector_store._base``),
+    with ``search`` as the fallback for a backend without raw-vector search. The
+    window is split by namespace, so decisions never come back as documentation.
 
-    Partitioning one window also fixes a quieter bug: the doc lane took the
-    nearest three pages *of any kind*, so decision records were being served
-    back as "related documentation" beside the decisions list they came from.
-    Splitting by namespace gives each lane only what belongs to it.
-
-    The decision lane stays empty on a keyless index, deliberately: there is no
-    lexical fallback for it, because a window of arbitrary decisions is worse
-    than none for a tool whose whole job is explaining one specific thing.
+    The decision lane stays empty on a keyless index, deliberately: a window of
+    arbitrary decisions is worse than none.
     """
     if not store_has_semantic_vectors(getattr(ctx, "vector_store", None)):
         return [], await _fts_doc_results(ctx, query)
@@ -106,49 +98,26 @@ def _focus_target_context(
 ) -> None:
     """Drop from each target card whatever does not bear on *query*, in place.
 
-    A target card is built from a path, so without this it answers the same
-    bytes to every question asked about that file. Measured on this repo, two
-    unrelated questions about ``changed_lines.py`` returned byte-identical
-    ``candidate_decisions``, ``origin`` and ``git_archaeology``, together 13,397
-    of a 20,000-char response, while the mined comment that answered both sat
-    below them.
+    A card is built from a path, so without this it would answer every
+    question about a file with the same bytes. Only when a query is present.
 
-    Only when a query is present. A call with targets and no query *is* the
-    dashboard for those files, and there is nothing to be relevant to.
-
-    Each block reduces to a count and the call that recovers it in full, never
-    to silence: "no history mentions what you asked" and "no history" are
-    different answers and the reader has to be able to tell them apart.
+    Each emptied block becomes a count plus the call that recovers it, so "no
+    history mentions what you asked" reads apart from "no history".
     """
     recall = f"get_why(targets={json.dumps(targets)})"
-    # One scorer for the whole response, built from the decision corpus — the
-    # same vocabulary the ranked lane is judged against, so one question gets
-    # one set of term weights everywhere in the answer.
-    #
-    # Deriving rarity from the card's own handful of strings was tried first and
-    # is the degeneracy ``term_idf`` warns about: over three short rows, a word
-    # none of them happens to contain outweighs the two that identify the
-    # answer, and "why is JWT used for authentication" scored the row titled
-    # "Use JWT for authentication" at 0.489 — under the floor, on the strength
-    # of the word "used".
+    # Term weights from the whole decision corpus: a card's few rows are too
+    # small a sample for ``term_idf`` (see its warning).
     score = query_scorer(query, corpus)
     for entry in target_context.values():
         if not isinstance(entry, dict):
             continue
 
-        # ``governing_decisions`` is exempt. An accepted decision binds this
-        # file whatever the question was, so a reader asking anything about it
-        # is owed the rules — suppressing one for sharing no vocabulary with the
-        # question would hide a ruling from the person about to edit the file.
-        # A candidate binds nothing, so it has to earn its place like any other
-        # unranked text.
+        # ``governing_decisions`` is exempt: an accepted rule binds whatever the
+        # question. A candidate binds nothing, so it must earn its place.
         _keep_relevant(entry, "candidate_decisions", score, recall)
 
-        # Only the origin story's decision lane, not the story. Reducing the
-        # whole block was tried and was the wrong cut: it saved ~700 of the
-        # 13,397 chars at issue while costing ``primary_author`` and the first
-        # commit — facts a reader wants whatever they asked, and cheap. The
-        # lane inside it is the query-blind part, because it is decisions again.
+        # Only the origin's decision lane; the author and first commit are
+        # cheap and wanted whatever the question.
         origin = entry.get("origin")
         if isinstance(origin, dict):
             _keep_relevant(origin, "linked_decisions", score, recall)
@@ -163,11 +132,8 @@ def _focus_archaeology(
 ) -> None:
     """Keep the commits that carry the question's terms, count the rest.
 
-    Filtered rather than dropped, unlike the decision lanes. A commit message is
-    prose somebody wrote about this file, so "which of these commits mention
-    what I asked about" is a question it can actually answer — and on the branch
-    this block is reached from, no decision cleared the floor, which makes these
-    commits the best evidence left.
+    Here no decision cleared the floor, so these commits are the best evidence
+    left.
     """
     for lane in ("file_commits", "cross_references", "git_log"):
         _keep_relevant(arch, lane, score, recall)
@@ -176,9 +142,7 @@ def _focus_archaeology(
 def _keep_relevant(block: dict[str, Any], key: str, score: Any, recall: str) -> None:
     """Keep the rows of ``block[key]`` that clear the floor for *score*.
 
-    When none do, the lane is replaced by ``<key>_omitted``: a count and the
-    call that recovers it, so an emptied lane still reads differently from a
-    lane that never had anything in it.
+    When none do, the lane becomes ``<key>_omitted``: a count and the recall.
     """
     rows = block.get(key)
     if not isinstance(rows, list) or not rows:
@@ -202,22 +166,11 @@ async def _why_no_match(
 ) -> dict[str, Any]:
     """The whole response when no record clears the relevance floor.
 
-    Returns early rather than serving the closest three anyway, and returns
-    *before* the semantic lookup: a nearest-neighbour search over a 614-record
-    store always returns three records, and on the questions this store cannot
-    answer those were "14-language AST support" for "where is the episode store"
-    and "Escape LIKE patterns" for "why is entry-point candidacy decided at
-    ingestion". Serving them beside a redirect would be the padding the redirect
-    exists to stop, and skipping the lookup is also the latency this branch
-    saves. Episodes are held back for the same reason — they are what made the
-    unanswerable questions the *largest* responses in the measured set.
+    Returns before the semantic lookup and episodes: nearest neighbours always
+    return something, and serving them beside a redirect is padding.
 
-    Named targets are the exception, and both blocks they carry are kept. A
-    caller who passes them has handed over a concrete handle, so this file's
-    git archaeology and this file's rationale comments are evidence about the
-    thing asked rather than the nearest guess at it — the same reason path mode
-    serves them. That is also the branch the redirect is *least* useful on,
-    since `get_why` on a path is the tool the caller already reached for.
+    Named targets are the exception: their git archaeology and rationale
+    comments are evidence about the thing asked, as in path mode.
     """
     result: dict[str, Any] = {
         "mode": "search",
@@ -249,10 +202,7 @@ async def _why_no_match(
         )
         _cap_supporting_lanes(result, collector, label=query)
         _cap_target_context(result["target_context"], collector)
-    # The redirect is stapled on before the target lanes are built, because
-    # without targets there is nothing else this branch can serve. With them
-    # there often is, and pointing away from an answer it is holding is the
-    # padding-by-another-name the redirect exists to prevent.
+    # Don't redirect away from evidence this response is already serving.
     served = _served_lanes(result)
     if served:
         result.pop("try_instead", None)
@@ -286,14 +236,8 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     )
 
     target_set = set(targets) if targets else set()
-    # Rank wide, collapse restatements, and project the whole surviving pool.
-    # The decisions cap comes last, at the bottom of this function, and what it
-    # sheds is banked whole: the omission document is the projected rows, so
-    # building only the three that are served would leave recovery with nothing
-    # to hand back. Measured on this repo, a
-    # realistic question collapses to a median of 7 records and up to 33, and
-    # capping first saves 4-21ms of a call whose cost is dominated by a fixed
-    # annotation floor. The recovery is worth more than the milliseconds.
+    # Rank wide, collapse, and project the whole pool; the cap comes last so
+    # the rows it sheds are banked whole for recovery.
     ranked = _rank_keyword_matches(all_decisions, query, target_set)
     if not ranked:
         return await _why_no_match(
@@ -309,9 +253,7 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         collapsed, decision_results, lineage_by_id, collector, accepted
     )
 
-    # Semantic hits append as id-plus-snippet at roughly 200 chars each, so
-    # dropping them to fit a record count would cost the lane that carries a
-    # calibrated relevance score for the sake of no measurable payload.
+    # Semantic hits are small id-plus-snippet rows, not worth dropping.
     result_data: dict[str, Any] = {
         "mode": "search",
         "query": query,
@@ -319,14 +261,10 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         "related_documentation": _related_documentation(doc_results),
     }
 
-    # If targets provided, include target context
     if targets:
         result_data["target_context"] = await _build_target_context(
             ctx, repository, all_decisions, target_git, targets, collector, accepted
         )
-        # The comment-mining fallback that used to sit here was gated on
-        # ``not merged_decisions``, which nothing ever reached. It now lives in
-        # ``_why_no_match``, behind the floor — the condition it always meant.
 
     # Targets resolve through the node index; without them the question itself
     # is the only handle, so it is ranked against the bodies.
@@ -362,10 +300,8 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         _cap_target_context(result_data["target_context"], collector)
     _cap_episodes(result_data, episodes, collector)
     result_data["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
-    # Episode overflow is banked here because it is produced before the shared
-    # final budget pass. The middleware owns the complete search-mode shed
-    # order after trust metadata is attached; routing this shape through the
-    # path-only fitter would discard its primary decision lane prematurely.
+    # The middleware owns the search-mode shed order; the path-only fitter would
+    # drop the primary decision lane too early.
     cap_collection(
         result_data,
         "decisions",
@@ -412,11 +348,7 @@ def _focus_target_episodes(
     Trims *population* in place and returns the matching ``(episodes,
     pending)``, unchanged when every episode clears the floor.
     """
-    # ``episode_evidence`` takes *either* a scope or a query, and a scope
-    # wins, so the targeted lane never saw the question: the same three
-    # episodes came back for every question asked about a file. Scoping is
-    # still the right retrieval — these are the episodes bound to the file
-    # asked about — but what survives has to bear on what was asked.
+    # ``episode_evidence`` ignores the query when scoped, so filter by it here.
     score = query_scorer(query, [_record_text(d) for d in all_decisions])
     kept = [e for e in population if clears_floor(score(json.dumps(e, default=str)))]
     if len(kept) == len(population):

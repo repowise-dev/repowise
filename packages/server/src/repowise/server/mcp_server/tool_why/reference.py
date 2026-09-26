@@ -76,10 +76,8 @@ async def _follow_moved_decision_id(
     session: Any, reference_id: str, records: list
 ) -> str:
     """The live id for a decision id that no longer names a live record."""
-    # This tool tells callers to hold onto the ids it emits, so an id quoted
-    # from an earlier session may name a decision that has since moved.
-    # Follow the alias for one that no longer matches anything live; a live
-    # id is left alone, so a merged candidate still answers about itself.
+    # A quoted id may name a decision that has since moved. A live id is left
+    # alone, so a merged candidate still answers about itself.
     stale_decision_id = not reference_id.startswith("ev_") and not any(
         record.id == reference_id for record in records
     )

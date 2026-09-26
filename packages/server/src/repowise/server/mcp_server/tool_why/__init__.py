@@ -1,15 +1,8 @@
-"""MCP Tool 4: get_why — intent archaeology and decision search.
+"""MCP Tool 4: get_why, intent archaeology and decision search.
 
-Facade: the tool used to be a single ``tool_why.py``. It is now a package with
-one module per mode (``path_mode``, ``search``, ``workspace``, ``reference``,
-``dashboard``) over shared layers (``loading`` reads, ``ranking`` scores,
-``projection`` shapes rows, ``caps`` bounds them, ``archaeology`` falls back to
-git, ``basis`` names the lane an answer rests on). Importing the package
-registers the tool, and the names tests read stay importable from here.
-
-Monkeypatch a collaborator on the module that looks it up, not on this facade:
-``path_mode.describe_decision_currency``, ``search.episode_evidence``,
-``archaeology._run_git_log`` and so on.
+One module per mode over shared layers; importing the package registers the
+tool and re-exports the names tests read. Monkeypatch a collaborator on the
+module that looks it up (e.g. ``path_mode.describe_decision_currency``), not here.
 """
 
 from __future__ import annotations

@@ -56,12 +56,9 @@ async def _load_target_git(
 async def _decision_corpus(session: Any, repository_id: str, exclude_spec: Any) -> list:
     """The rankable decision records of one repository.
 
-    A record anchored entirely in excluded paths is noise for every mode, and a
-    dismissed one is a tombstone, so both filters belong wherever a corpus is
-    built. Takes a session rather than a context so the caller that also needs a
-    repository row and git metadata still opens one. Shared with workspace search
-    precisely because that path used to build its own corpus and got neither
-    filter.
+    Records anchored entirely in excluded paths, and dismissed ones, are
+    filtered out. Shared with workspace search so every mode ranks the same
+    corpus. Takes a session so a caller can share one.
     """
     from repowise.core.persistence.crud import list_decisions as _list_decisions
 
@@ -74,9 +71,8 @@ async def _decision_corpus(session: Any, repository_id: str, exclude_spec: Any) 
 async def _attach_decision_evidence(session: Any, records: list) -> None:
     """Attach all persisted provenance rows with one bounded query.
 
-    ``DecisionRecord`` is the compatibility headline.  The child rows are the
-    canonical accreted evidence and must travel with it when trust metadata is
-    projected, without introducing an N+1 query in workspace or search modes.
+    The child rows are the canonical evidence behind each ``DecisionRecord``
+    and must travel with it when trust metadata is projected.
     """
     if not records:
         return
@@ -108,12 +104,8 @@ async def _attach_response_decision_evidence(
 ) -> None:
     """Hydrate the decision rows *result* currently carries.
 
-    Shared by all three modes, so what it covers is whatever the caller has
-    built by the time it runs. Search mode calls it before its cap, which
-    means the whole projected pool rather than the served head. That is
-    deliberate: the rows the cap sheds are written to the omission store, and
-    they have to carry their evidence by then or recovery returns bodies with
-    no provenance.
+    Search mode calls it before its cap on purpose: rows the cap sheds go to
+    the omission store and must carry their evidence by then.
     """
     ids: set[str] = set()
 
@@ -144,17 +136,14 @@ async def _hydrate_response_decision_evidence(
 async def _load_corpus(repo: str | None, targets: list[str] | None) -> tuple:
     """Repo context, corpus, git metadata for targets, and the acceptance set.
 
-    The prologue both target-aware modes open with. Shared so the corpus is
-    filtered once: a record anchored entirely in excluded paths is noise for
-    every mode downstream, and a mode that skipped the filter would answer from
-    a different store than its neighbour.
+    The prologue both target-aware modes open with, so both answer from the
+    same filtered corpus.
     """
     ctx = await _resolve_repo_context(repo)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         all_decisions = await _decision_corpus(session, repository.id, _get_exclude_spec(ctx.path))
-        # ``governing_only`` drops the ones whose authority was withdrawn, so
-        # what comes back is what still binds rather than what was ever signed.
+        # ``governing_only``: what still binds, not what was ever accepted.
         accepted = await accepted_decision_ids(
             session, repository.id, governing_only=True
         )

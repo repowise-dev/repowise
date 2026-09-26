@@ -20,11 +20,9 @@ from repowise.server.mcp_server.tool_why.caps import _MAX_AFFECTED_FILES
 def _authority_of(decision_id: str, accepted: set[str]) -> str:
     """``"accepted"`` when an acceptance binds this record, else ``"candidate"``.
 
-    The one test that separates the two entities, per
-    :func:`~repowise.core.persistence.crud.authority.decision_currencies`:
-    membership of the acceptance set, never ``status``. Stamped on every row
-    this tool emits so a reader — and :func:`_stamp_answer_basis` — can tell a
-    ruling from a guess without a second call.
+    Membership of the acceptance set, never ``status`` (see
+    :func:`~repowise.core.persistence.crud.authority.decision_currencies`).
+    Stamped on every emitted row so a ruling reads apart from a guess.
     """
     return "accepted" if decision_id in accepted else "candidate"
 
@@ -112,9 +110,7 @@ def _merge_decisions(
             "rationale": d.rationale,
             "context": d.context,
             "consequences": json.loads(d.consequences_json),
-            # Whole arrays reached 83 paths and 4 812 chars, 36% of the payload
-            # across the eight records served. A head plus a total answers "how
-            # wide is this decision" as well, and path mode already says so.
+            # A head plus a total; see ``_MAX_AFFECTED_FILES``.
             "affected_files": affected_files[:_MAX_AFFECTED_FILES],
             "source": d.source,
             "confidence": d.confidence,

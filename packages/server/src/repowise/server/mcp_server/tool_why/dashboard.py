@@ -75,11 +75,8 @@ async def _why_health_dashboard(repo: str | None) -> dict:
             ],
             "ungoverned_hotspots": ungoverned,
             "conflicts": list(health.get("conflicts", [])),
-            # Lanes ``counts`` reported as a number with no list. Query and
-            # path mode do reach these records, but only if you already know
-            # the question or the path — no mode enumerates either lane, which
-            # is what an orientation call is for. ``active`` stays count-only:
-            # it is the lane every other mode exists to serve.
+            # No other mode enumerates these lanes. ``active`` stays count-only:
+            # every other mode exists to serve it.
             "retired_decisions": [
                 {"id": d.id, "title": d.title, "lane": lane} for lane, d in retired
             ],

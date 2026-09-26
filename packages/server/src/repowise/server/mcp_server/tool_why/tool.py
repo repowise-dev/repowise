@@ -77,15 +77,11 @@ async def get_why(
         return _stamp_answer_basis(await _why_workspace_search(query))
 
     # --- Mode 1: No query → the targets, or the health dashboard ---
-    # Targets first: a caller who named files and asked nothing has asked about
-    # those files. Reaching the dashboard from here returned the same bytes for
-    # every target and for no arguments at all, so the answer never mentioned
-    # what was asked about.
+    # Targets first: naming files and asking nothing asks about those files.
     if not query:
         if targets:
             return _stamp_answer_basis(await _why_targets(list(targets), repo))
-        # The dashboard is an orientation call, not an answer, so it carries no
-        # basis to name.
+        # An orientation call, not an answer: no basis to name.
         return await _why_health_dashboard(repo)
 
     # --- Mode 2: Path → decisions, origin story, alignment ---

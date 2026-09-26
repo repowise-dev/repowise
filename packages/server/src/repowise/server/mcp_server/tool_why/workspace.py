@@ -33,30 +33,14 @@ from repowise.server.mcp_server.tool_why.ranking import (
 async def _why_workspace_search(query: str) -> dict:
     """repo="all": the question single-repo search answers, across the workspace.
 
-    This used to be the whole tool as it stood before the relevance work: match
-    any query word as a substring, append in whatever order the workspace
-    resolved its stores, serve fifteen whole records. That is the shape the
-    single-repo mode was rebuilt away from, still reachable one argument away and
-    over several stores at once. It now loads its corpus the way ``_load_corpus``
-    does, so dismissed tombstones and records anchored entirely in excluded
-    paths stop being served here alone, and it ranks with the shared machinery, so
-    a question the workspace cannot answer gets the redirect rather than fifteen
-    records that happen to contain "the".
+    Same corpus filters and ranking as single-repo search, so an unanswerable
+    question gets the redirect.
 
-    **Each store is scored against its own corpus, never a pooled one**, and the
-    consequence is asymmetric. The floor keeps the meaning it was swept for:
-    ``relevance`` is a normalised share of the question's weight, so it survives
-    a uniform rescale of the idf vector untouched. What a pooled corpus moves is
-    the *ratio* between term weights, and with it which records clear 0.6.
-    Scoring each store on its own statistics keeps that filter the one that was
-    calibrated. The merge is where the cost lands, and it is a real one: the cut
-    below is decided across stores whose scores come from different
-    distributions, since a large store polarises toward 0 and 1 while a small one
-    lands mid-range. So which store loses a slot is settled approximately, and
-    that is a *selection*, not merely an order. It is the price of not silently
-    re-scaling a constant nobody re-swept. The upgrade path, if workspace
-    ranking ever needs to be exact, is to sweep a floor against a pooled corpus,
-    not to pool the statistics underneath the floor that exists.
+    Each store is scored against its own corpus, never a pooled one: pooling
+    would change term-weight ratios and so which records clear the calibrated
+    floor. The cost is at the merge, where scores from different distributions
+    decide which store loses a slot, approximately. If that ever needs to be
+    exact, sweep a floor against a pooled corpus rather than pool under this one.
     """
     scored = await _score_workspace(query)
     if not scored:
@@ -69,9 +53,7 @@ async def _why_workspace_search(query: str) -> dict:
             "_meta": _build_meta(),
         }
 
-    # The store's own key first, so relevance, occurrence count and status decide
-    # as they do within one repo; alias and id only settle what those three leave
-    # equal, and are here so the answer is the same on two runs.
+    # The store's own key first; alias and id settle ties, for a stable order.
     scored.sort(key=lambda t: (t[0], t[1], t[3]))
     selected = scored
     collector = OmissionCollector(
@@ -127,9 +109,8 @@ async def _score_workspace(
             repository = await _get_repo(session)
             records = await _decision_corpus(session, repository.id, _get_exclude_spec(ctx.path))
         ranked = _score_keyword_matches(records, query, set())
-        # Collapsed per store, not across the merge: ``_evidence_key`` is a
-        # (source, commit) pair carrying no repo, so two stores sharing a commit
-        # sha would fold into one and a repo would lose its record.
+        # Collapsed per store: ``_evidence_key`` carries no repo, so stores
+        # sharing a commit would fold into one across the merge.
         key_by_id = {d.id: key for key, d in ranked}
         for d, folded in _collapse_restatements([d for _, d in ranked]):
             scored.append((key_by_id[d.id], ctx.alias, ctx, d.id, d, folded))

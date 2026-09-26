@@ -175,15 +175,12 @@ def _git_log_stdout(repo_path: str, args: list[str]) -> str | None:
         cwd=repo_path,
         capture_output=True,
         text=True,
-        # ``%s`` is the commit subject and ``%an`` the author name, both
-        # utf-8 from git. text=True alone decodes with the locale codec,
-        # which is cp1252 on a default Windows install.
+        # Git emits utf-8; text=True alone uses the locale codec (cp1252 on Windows).
         encoding="utf-8",
         errors="replace",
         timeout=10,
-        # See commits_since() in core/precedent/currency.py: a git child
-        # that inherits this server's JSON-RPC stdin can wedge the
-        # session, and the timeout above is not a reliable ceiling.
+        # A git child inheriting the JSON-RPC stdin can wedge the session
+        # (see commits_since() in core/precedent/currency.py).
         stdin=subprocess.DEVNULL,
     )
     return proc.stdout if proc.returncode == 0 else None

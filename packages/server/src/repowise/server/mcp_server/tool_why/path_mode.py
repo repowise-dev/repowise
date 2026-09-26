@@ -74,14 +74,11 @@ async def _why_path(query: str, repo: str | None) -> dict:
         all_git_meta = await _all_git_metadata(session, repository.id)
 
         matched = _records_naming_path(all_decisions, query)
-        # The authority split, and the only test that makes it: a record with
-        # no acceptance row is a candidate whatever its status column says.
-        # Computed over every record in the repository, because the sibling
-        # coverage inside alignment reads records this path did not match.
+        # A record with no acceptance row is a candidate whatever its status.
+        # Over every record, since alignment reads records this path did not match.
         currencies = await decision_currencies(session, repository.id, all_decisions)
 
-        # Rank before capping, so the 8 that survive are the 8 that govern —
-        # not whichever 8 the table scan happened to yield first.
+        # Rank before capping, so the survivors are the ones that govern.
         matched.sort(key=_path_decision_sort_key)
         lineage_by_id = await _lineage_for_records(session, matched, all_decisions)
         governing, candidates, retired = _split_by_authority(
@@ -89,10 +86,7 @@ async def _why_path(query: str, repo: str | None) -> dict:
         )
         await _stamp_still_true(governing, matched, ctx.path)
 
-        # Every lane: the origin story is history, and a commit that matches a
-        # candidate's or a retired record's title is still the commit that
-        # explains the file. It is evidence, not instruction, so nothing here
-        # needs the authority test.
+        # Every lane: the origin story is evidence, not instruction.
         origin_story = _build_origin_story(
             query, git_meta, governing + candidates + retired
         )
@@ -102,11 +96,7 @@ async def _why_path(query: str, repo: str | None) -> dict:
             "path": query,
             "decisions": governing,
             "origin_story": origin_story,
-            # Alignment is scored over every matching record, not just the
-            # ones that survived the cap — it is a coverage number, and
-            # capping its input would make a well-governed hotspot look thin.
-            # It reads the id, the title and the acceptance map, so the cheap
-            # projection is the whole of what it needs.
+            # A coverage number, so scored over every match, not the capped head.
             "alignment": _compute_alignment(
                 query,
                 [{"id": d.id, "title": d.title} for d in matched],
@@ -122,10 +112,7 @@ async def _why_path(query: str, repo: str | None) -> dict:
                 result_data, query, git_meta, all_git_meta, repository, collector, ctx.path
             )
 
-        # Episodes are additive rather than a fallback, unlike the two blocks
-        # above. A well-governed file still has a history, and "what happened
-        # here, dated" is the question this mode is asked; gating it on the
-        # absence of decisions would hide it exactly where there is most to say.
+        # Episodes are additive, not a fallback: a governed file still has history.
         episode_population: list[dict] = []
         episodes, pending = await asyncio.to_thread(
             episode_evidence,
@@ -150,9 +137,8 @@ async def _why_path(query: str, repo: str | None) -> dict:
 
 def _records_naming_path(all_decisions: list, path: str) -> list:
     """Records whose own scope names *path* as a file or a module."""
-    # A record whose file list is the footprint of the commit it was
-    # mined from does not answer "what governs this file". It keeps its
-    # files and its place in search; it stops claiming to be specific.
+    # A record whose file list is just its source commit's footprint does not
+    # govern those files; it stays in search.
     return [
         d
         for d in all_decisions
@@ -175,8 +161,7 @@ def _split_by_authority(
     candidates: list[dict] = []
     retired: list[dict] = []
     for d in matched:
-        # Walk supersedes/refines back to roots so the answer is a
-        # lineage chain (sessions → JWT → OAuth2), not a flat list.
+        # The supersedes/refines chain, so the answer is a lineage, not a list.
         lineage = lineage_by_id.get(d.id, [])
         entry = _governing_decision_entry(
             d, json.loads(d.affected_files_json), lineage, collector
@@ -184,8 +169,7 @@ def _split_by_authority(
         currency = currencies.get(d.id)
         if currency is None:
             entry["authority"] = "candidate"
-            # Never accepted. It goes in its own lane, labelled, rather
-            # than into the list an agent reads as the rules for this file.
+            # Never accepted: its own lane, not the rules for this file.
             entry["review_state"] = "open"
             candidates.append(entry)
             continue
@@ -194,14 +178,9 @@ def _split_by_authority(
             entry["authority"] = "accepted"
             governing.append(entry)
         else:
-            # Accepted once, withdrawn since: not a ruling any more, so it
-            # must not read as one to ``_stamp_answer_basis`` either.
+            # Accepted once, withdrawn since: neither rule nor review request,
+            # so a third lane rather than dropped.
             entry["authority"] = "withdrawn"
-            # Accepted once and withdrawn since. Not a rule and not a
-            # review request, so it gets a third lane rather than being
-            # dropped: on a file whose only record was superseded, dropping
-            # it left the answer with nothing to say about the one thing
-            # anybody had ever decided there.
             retired.append(entry)
     return governing, candidates, retired
 
@@ -210,12 +189,8 @@ async def _stamp_still_true(
     governing: list[dict], matched: list, repo_path: str | Path
 ) -> None:
     """Ask git whether the top governing record still holds, and say so on it."""
-    # Ask git whether the top governing record still holds — and only the
-    # top one. The query is ~60 ms, which is affordable once inside an MCP
-    # call and is not affordable eight times; the record ranked first is
-    # the one a reader acts on. Everything below it keeps the stored
-    # proportion, which needed no subprocess to compute. A candidate never
-    # gets the check: it is not something anyone should be acting on.
+    # Only the top record: the git query is affordable once per call, and the
+    # first-ranked record is the one a reader acts on. Candidates never get it.
     if not governing:
         return
     top = next(d for d in matched if d.id == governing[0]["id"])
@@ -234,9 +209,7 @@ def _add_review_lanes(
 ) -> None:
     """Serve candidates and retired records beside the rules, each labelled."""
     if candidates:
-        # Named, counted and separated from the rules. An agent reading
-        # this must be able to tell a request to review something from an
-        # instruction to follow it, without parsing a status string.
+        # Separated from the rules, so a review request never reads as one.
         result_data["candidates"] = candidates
         result_data["candidates_note"] = (
             f"{len(candidates)} candidate(s) mention this path and none of them "
@@ -249,9 +222,7 @@ def _add_review_lanes(
         )
 
     if retired:
-        # Named as history, never as a rule. A reader asking why a file
-        # looks the way it does is owed "this was decided and then
-        # replaced", which is the sentence a dropped record cannot say.
+        # History, never a rule.
         result_data["history"] = retired
         result_data["history_note"] = (
             f"{len(retired)} decision(s) governing this path were accepted "
@@ -277,8 +248,7 @@ async def _add_ungoverned_evidence(
         repository,
         collector,
     )
-    # Decisions and git history both silent → the "why" may live in a
-    # code comment. Mine this file's rationale comments directly.
+    # The "why" may live in a code comment.
     rationale = _mine_rationale(
         repo_path, [path], None, max_results=1000, truncate_blocks=False
     )
@@ -297,16 +267,10 @@ async def _build_target_context(
 ) -> dict[str, Any]:
     """Per-target governing decisions + origin story, with archaeology fallback.
 
-    ``governing_decisions`` holds only records an acceptance binds; unaccepted
-    ones go to ``candidate_decisions`` under the name they have earned. The two
-    lanes were one, and on a store with no acceptances — the state of every
-    repository whose maintainer has not worked through the acceptance UI — that
-    one lane presented candidates as governing the file.
-
-    The archaeology fallback is therefore keyed on the *accepted* lane. A file
-    whose only records are candidates is a file no decision governs, which is
-    exactly the case the fallback exists for, and its commits are stronger
-    evidence than an unconfirmed candidate is.
+    ``governing_decisions`` holds only accepted records; the rest go to
+    ``candidate_decisions``. The archaeology fallback keys on the accepted lane:
+    a file with only candidates is ungoverned, and its commits are stronger
+    evidence than an unconfirmed candidate.
     """
     async with get_session(ctx.session_factory) as session2:
         # Load all git metadata for cross-file search
@@ -392,12 +356,9 @@ async def _target_card(
 async def _why_targets(targets: list[str], repo: str | None) -> dict:
     """Mode 2b: targets and no query — the paths themselves are the question.
 
-    One target is path mode outright: its lineage walk, alignment score and
-    origin story are the fullest answer this tool has about a file, and that
-    content is why the mode exists. Several get the per-target card instead —
-    the same evidence a target already earns in search mode — because running
-    path mode once per target would mean a corpus scan and a currency
-    subprocess each, for a shape no caller renders.
+    One target is path mode outright, the fullest answer about a file. Several
+    get the per-target card instead: path mode per target would cost a corpus
+    scan and a git subprocess each.
     """
     if len(targets) == 1:
         return await _why_path(targets[0], repo)
