@@ -257,7 +257,7 @@ async def _resolve_one_target(
     # --- Determine target type ---
     # 1. Try file page (most common)
     page_id = f"file_page:{target}"
-    page = await session.get(Page, page_id)
+    page = await session.get(Page, (repo_id, page_id))
     target_type = None
     file_path_for_git: str | None = None
     live_file_meta: GitMetadata | None = None
@@ -266,7 +266,7 @@ async def _resolve_one_target(
     # the symbol index (index-only mode); carries the fields the node has.
     graph_symbol: GraphNode | None = None
 
-    if page and page.repository_id == repo_id:
+    if page:
         target_type = "file"
         file_path_for_git = target
     else:
@@ -542,10 +542,9 @@ async def _resolve_one_target(
     # --- Parent page (position in the concept tree) -----------------------
     # Points a file up to its concept page, a concept page up to its layer.
     if page is not None and page.parent_page_id:
-        parent = await session.get(Page, page.parent_page_id)
+        parent = await session.get(Page, (repo_id, page.parent_page_id))
         if (
             parent is not None
-            and parent.repository_id == repo_id
             and getattr(parent, "freshness_status", "") != "tombstone"
         ):
             # Skip a tombstoned parent, for the reason of the redirect above.
@@ -750,7 +749,7 @@ async def _resolve_one_target(
                     docs[key] = _clean_signature(value) if attr == "signature" else value
             # File page summary (full content gated behind include=["full_doc"])
             sym_page_id = f"file_page:{sym.file_path}"
-            sym_page = await session.get(Page, sym_page_id)
+            sym_page = await session.get(Page, (repo_id, sym_page_id))
             if sym_page is not None:
                 docs["file_summary"] = sym_page.summary or ""
                 if want_full_doc:
@@ -1062,7 +1061,7 @@ async def _resolve_one_target(
             freshness["is_stale"] = _is_stale(page)
         elif target_type == "symbol" and file_path_for_git:
             sym_page_id = f"file_page:{file_path_for_git}"
-            sym_page = await session.get(Page, sym_page_id)
+            sym_page = await session.get(Page, (repo_id, sym_page_id))
             if sym_page:
                 freshness["confidence_score"] = sym_page.confidence
                 freshness["freshness_status"] = sym_page.freshness_status

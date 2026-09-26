@@ -83,7 +83,7 @@ async def multi_module_db(session, populated_db):
             updated_at=_NOW,
         )
     )
-    await session.flush()
+    await session.commit()
     return rid
 
 
@@ -812,7 +812,7 @@ async def _add_tree(session) -> None:
             ),
         ]
     )
-    await session.flush()
+    await session.commit()
 
 
 @pytest.mark.asyncio

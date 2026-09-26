@@ -22,6 +22,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -178,17 +179,19 @@ class GenerationJob(Base):
 class Page(Base):
     """A generated wiki page.
 
-    The primary key is page_id: "{page_type}:{target_path}" — same format as
-    GeneratedPage.page_id. This is a natural key so callers can upsert without
-    knowing the database row ID.
+    The primary key is composite: (repository_id, page_id). This allows multiple
+    repositories to share a database without colliding on identical relative paths.
     """
 
     __tablename__ = "wiki_pages"
 
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
     repository_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
     )
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
     page_type: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -245,9 +248,17 @@ class PageVersion(Base):
     """Historical snapshot of a wiki page, created each time the page is re-generated."""
 
     __tablename__ = "wiki_page_versions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["repository_id", "page_id"],
+            ["wiki_pages.repository_id", "wiki_pages.id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_wiki_page_versions_repo_page", "repository_id", "page_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
-    page_id: Mapped[str] = mapped_column(Text, ForeignKey("wiki_pages.id"), nullable=False)
+    page_id: Mapped[str] = mapped_column(Text, nullable=False)
     repository_id: Mapped[str] = mapped_column(String(32), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     page_type: Mapped[str] = mapped_column(String(64), nullable=False)
