@@ -95,7 +95,12 @@ describe("GraphLink backwards compatibility", () => {
       imported_names: [],
     };
     expectTypeOf(minimal).toEqualTypeOf<GraphLink>();
-    expectTypeOf<GraphLink["edge_type"]>().toEqualTypeOf<string | undefined>();
+    // `| null` is not decoration: the server's `GraphEdgeResponse` declares
+    // `edge_type` as optional-but-nullable, and `types/src/generated/http.ts`
+    // (generated from that schema) says the same. A consumer reading it has to
+    // handle null, and while this type said `string | undefined` that one
+    // compiled only by accident.
+    expectTypeOf<GraphLink["edge_type"]>().toEqualTypeOf<string | null | undefined>();
     expectTypeOf<GraphLink["confidence"]>().toEqualTypeOf<number | undefined>();
   });
 });
