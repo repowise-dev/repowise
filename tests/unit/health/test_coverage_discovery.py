@@ -313,3 +313,45 @@ def test_coverage_config_parses_block() -> None:
     assert cfg.paths == ("coverage/lcov.info",)
     assert cfg.strip_prefix == "build"
     assert cfg.reingest_on_update is True
+
+
+# ---------------------------------------------------------------------------
+# Merging a not-applicable record (issue #2193)
+# ---------------------------------------------------------------------------
+
+
+def _empty_fc(path: str) -> FileCoverage:
+    return FileCoverage(
+        file_path=path,
+        line_coverage_pct=None,
+        branch_coverage_pct=None,
+        covered_lines=[],
+        total_coverable_lines=0,
+    )
+
+
+def test_merge_keeps_not_applicable_when_neither_report_has_lines() -> None:
+    report = CoverageReport(
+        source_format="lcov", files=[_empty_fc("src/types.ts"), _empty_fc("src/types.ts")]
+    )
+    resolved = resolve_reports([report], {"src/types.ts"})
+    assert resolved.coverage_map["src/types.ts"]["line_coverage_pct"] is None
+
+
+def test_merge_resolves_to_a_number_once_a_report_has_lines() -> None:
+    """Hit-wins: one report saying there are coverable lines settles it."""
+    report = CoverageReport(
+        source_format="lcov",
+        files=[
+            _empty_fc("src/types.ts"),
+            FileCoverage(
+                file_path="src/types.ts",
+                line_coverage_pct=50.0,
+                branch_coverage_pct=None,
+                covered_lines=[1, 2],
+                total_coverable_lines=4,
+            ),
+        ],
+    )
+    resolved = resolve_reports([report], {"src/types.ts"})
+    assert resolved.coverage_map["src/types.ts"]["line_coverage_pct"] == 50.0

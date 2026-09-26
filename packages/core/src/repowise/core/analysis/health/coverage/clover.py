@@ -74,7 +74,8 @@ def parse_clover(text: str) -> CoverageReport:
                 branches_hit += (1 if tc > 0 else 0) + (1 if fc > 0 else 0)
 
         total_n = len(total)
-        line_pct = (len(covered) / total_n * 100.0) if total_n else 0.0
+        # No coverable lines is "not applicable", not "nothing was hit".
+        line_pct = (len(covered) / total_n * 100.0) if total_n else None
         branch_pct: float | None
         if has_branches and branches_found:
             branch_pct = branches_hit / branches_found * 100.0
@@ -84,7 +85,7 @@ def parse_clover(text: str) -> CoverageReport:
         files.append(
             FileCoverage(
                 file_path=norm,
-                line_coverage_pct=round(line_pct, 2),
+                line_coverage_pct=round(line_pct, 2) if line_pct is not None else None,
                 branch_coverage_pct=round(branch_pct, 2) if branch_pct is not None else None,
                 covered_lines=sorted(covered),
                 total_coverable_lines=total_n,

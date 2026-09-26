@@ -116,7 +116,14 @@ async def health_coverage(
         )
         files = [_coverage_row_to_dict(r, include_covered_lines=True) for r in detail]
     else:
-        rows_sorted = sorted(all_rows, key=lambda r: r.line_coverage_pct)
+        # Worst-first, with the rows that have nothing to cover last rather
+        # than first: a file with no coverable lines has no percentage
+        # (issue #2193), and sorting ``None`` as 0 would put exactly the files
+        # with no code to test at the top of a worst-coverage list.
+        rows_sorted = sorted(
+            all_rows,
+            key=lambda r: (r.line_coverage_pct is None, r.line_coverage_pct or 0.0),
+        )
         files = [_coverage_row_to_dict(r) for r in rows_sorted[:limit]]
         # Attach per-file health score so the UI can render a coverage
         # x score matrix without a second request. Scoped to the rows we are
@@ -138,6 +145,11 @@ async def health_coverage(
     # repo's coverage looks like by directory, not what this page of it does.
     modules: dict[str, dict[str, Any]] = {}
     for r in all_rows:
+        # Same rule the repo rollup uses: a row with nothing to cover carries
+        # no percentage and weighs nothing, so it neither feeds the ratio nor
+        # counts as a file the module has coverage for.
+        if r.line_coverage_pct is None:
+            continue
         mod = r.file_path.rsplit("/", 1)[0] if "/" in r.file_path else "(root)"
         bucket = modules.setdefault(mod, {"covered": 0, "total": 0, "files": 0})
         bucket["files"] += 1
