@@ -60,7 +60,7 @@ def _evaluate(severity_overrides):
     metric, findings, _ = HealthAnalyzer(graph=None)._evaluate_file(
         pf,
         fcx,
-        path_basenames=set(),
+        paired_tests=set(),
         package_roots=set(),
         disabled=[],
         dup_report=DuplicationReport(),

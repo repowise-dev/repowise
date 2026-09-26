@@ -9,6 +9,7 @@ lives in ``tests/unit/persistence`` beside the session fixture.
 
 from __future__ import annotations
 
+import networkx as nx
 import pytest
 
 from repowise.core.analysis.test_reachability import (
@@ -16,6 +17,7 @@ from repowise.core.analysis.test_reachability import (
     CallGraphView,
     call_graph_from_graph,
     files_reached_by_tests,
+    files_with_paired_tests,
 )
 
 
@@ -154,3 +156,50 @@ def test_name_only_resolutions_are_dropped():
 def test_missing_graph_is_no_signal_not_an_error():
     view = call_graph_from_graph(None)
     assert view.declares == {} and view.calls == {}
+
+
+# ---------------------------------------------------------------------------
+# files_with_paired_tests
+# ---------------------------------------------------------------------------
+
+
+def _dep_graph(*edges: tuple[str, str, str]) -> nx.DiGraph:
+    g = nx.DiGraph()
+    for src, dst, kind in edges:
+        g.add_edge(src, dst, edge_type=kind)
+    return g
+
+
+def test_a_test_importing_a_file_pairs_it_whatever_the_names() -> None:
+    g = _dep_graph(("tests/unit/cli/test_init.py", "src/cli/main.py", "imports"))
+    paths = {"src/cli/main.py", "tests/unit/cli/test_init.py"}
+    assert "src/cli/main.py" in files_with_paired_tests(g, paths, {"tests/unit/cli/test_init.py"})
+
+
+def test_a_name_collision_the_graph_contradicts_does_not_pair() -> None:
+    # ``distill/test_engine.py`` tests the distill engine, not health's.
+    g = _dep_graph(("tests/distill/test_engine.py", "src/distill/engine.py", "imports"))
+    paths = {"src/health/engine.py", "src/distill/engine.py", "tests/distill/test_engine.py"}
+    paired = files_with_paired_tests(g, paths, {"tests/distill/test_engine.py"})
+    assert "src/distill/engine.py" in paired
+    assert "src/health/engine.py" not in paired
+
+
+def test_a_name_match_holds_through_a_barrel_or_when_the_graph_is_silent() -> None:
+    g = _dep_graph(
+        ("tests/test_risk.py", "src/risk/__init__.py", "imports"),
+        ("src/risk/__init__.py", "src/risk/risk.py", "imports"),
+        ("tests/test_other.py", "src/unrelated.py", "co_changes"),
+    )
+    paths = {"src/risk/risk.py", "src/other.py", "src/lonely.py"}
+    tests = {"tests/test_risk.py", "tests/test_other.py"}
+    paired = files_with_paired_tests(g, paths, tests)
+    # Through the package barrel it imports.
+    assert "src/risk/risk.py" in paired
+    # ``test_other.py`` has no resolved dependency, so its name still counts.
+    assert "src/other.py" in paired
+    assert "src/lonely.py" not in paired
+    # With no graph at all, names are all there is.
+    assert files_with_paired_tests(None, {"src/lonely.py"}, {"tests/test_lonely.py"}) == {
+        "src/lonely.py"
+    }
