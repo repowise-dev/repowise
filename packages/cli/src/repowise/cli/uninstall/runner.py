@@ -145,6 +145,70 @@ def _remove_agents(repo_path: Path, plan: Plan) -> tuple[list[Result], list[str]
     return results, notes
 
 
+def _remove_hook(repo_path: Path, plan: Plan) -> list[Result]:
+    """Remove our marker block from the post-commit hook, if the plan lists it.
+
+    The hook file is shared with the user's own tooling, so removal is
+    ``hooks.uninstall`` -- strip our block, delete the file only when it held
+    nothing else -- rather than a file delete.
+    """
+    from repowise.cli import hooks
+
+    path = hooks.hook_path(repo_path)
+    if path is None:
+        return []
+    item = next(
+        (i for i in plan.for_groups(frozenset({Group.REPO_FILES})) if i.path == path),
+        None,
+    )
+    if item is None:
+        # The inventory listed no hook file: nothing to do.
+        return []
+    if item.blocked:
+        return [
+            Result(
+                group=Group.REPO_FILES,
+                path=item.path,
+                action=FileAction.KEPT,
+                label=item.label,
+                reason=item.blocked,
+            )
+        ]
+    try:
+        outcome = hooks.uninstall(repo_path)
+    except Exception as exc:
+        return [
+            Result(
+                group=Group.REPO_FILES,
+                path=item.path,
+                action=FileAction.FAILED,
+                label=item.label,
+                reason=str(exc),
+            )
+        ]
+    if outcome.startswith("removed"):
+        action: FileAction = FileAction.REMOVED
+        reason: str | None = None
+    elif outcome == "no post-commit hook found":
+        action = FileAction.NOT_FOUND
+        reason = None
+    else:
+        # "repowise hook not found in post-commit" (the marker vanished between
+        # the inventory and the run) or "not a git repository". Either way we
+        # touched nothing, and the string says why.
+        action = FileAction.KEPT
+        reason = outcome
+    return [
+        Result(
+            group=Group.REPO_FILES,
+            path=item.path,
+            action=action,
+            label=item.label,
+            reason=reason,
+        )
+    ]
+
+
 def _remove_repo_files(repo_path: Path, plan: Plan) -> list[Result]:
     from .generated_files import generated_blocks, remove_block
 
@@ -168,6 +232,7 @@ def _remove_repo_files(repo_path: Path, plan: Plan) -> list[Result]:
         results.append(
             Result(group=Group.REPO_FILES, path=path, action=action, label=label, reason=reason)
         )
+    results.extend(_remove_hook(repo_path, plan))
     return results
 
 

@@ -361,6 +361,32 @@ def _repo_file_items(repo_path: Path) -> list[Item]:
     return items
 
 
+def _hook_items(repo_path: Path) -> list[Item]:
+    """The git post-commit hook ``init`` offers to install.
+
+    ``init`` appends a marker-bracketed block that coexists with other tools'
+    content, so the row reports the marker rather than the file: a hook file
+    without our block is listed and left alone, with the reason on the row.
+    A repo with no hook file at all gets no row; there is nothing to name.
+    """
+    from repowise.cli import hooks
+
+    path = hooks.hook_path(repo_path)
+    if path is None or not path.exists():
+        return []
+    present = hooks.marker_present(path)
+    return [
+        Item(
+            group=Group.REPO_FILES,
+            path=path,
+            label="post-commit hook (auto-sync)",
+            exists=present,
+            size=_size_of(path),
+            blocked=None if present else "no repowise block in the hook, so it is left alone",
+        )
+    ]
+
+
 def _global_items() -> list[Item]:
     """``~/.repowise/`` as one row, with the two consequences named.
 
@@ -453,6 +479,7 @@ def build_plan(repo_path: Path) -> Plan:
     plan = Plan(repo_path=repo_path)
     plan.items.extend(_agent_items(repo_path))
     plan.items.extend(_repo_file_items(repo_path))
+    plan.items.extend(_hook_items(repo_path))
     plan.items.append(
         Item(
             group=Group.INDEX,
