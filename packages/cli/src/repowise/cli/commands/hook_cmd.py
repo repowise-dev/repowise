@@ -15,6 +15,7 @@ from repowise.cli.output import (
     notice_console,
     resolve_format,
 )
+from repowise.core.store_location import resolve_store_dir
 
 #: Every ``hook stats --format json`` payload carries these five keys, whether
 #: or not there is a ledger to fill them from. A consumer that has to check
@@ -144,7 +145,7 @@ def _target_repo_paths(target) -> list:
             if ((target.ws_root / entry.path).resolve() / ".repowise").is_dir()
         ]
     assert target.repo_path is not None
-    return [target.repo_path] if (target.repo_path / ".repowise").is_dir() else []
+    return [target.repo_path] if resolve_store_dir(target.repo_path).is_dir() else []
 
 
 def _print_rewrite_hook_status(label: str, status) -> None:
@@ -269,12 +270,12 @@ def rewrite_install(
         assert target.ws_root is not None and target.ws_config is not None
         for entry in target.ws_config.repos:
             abs_path = (target.ws_root / entry.path).resolve()
-            if (abs_path / ".repowise").is_dir():
+            if resolve_store_dir(abs_path).is_dir():
                 save_distill_commands_enabled(abs_path, enabled=True)
                 console.print(f"  {entry.alias}: [green]enabled[/green]")
     else:
         assert target.repo_path is not None
-        if (target.repo_path / ".repowise").is_dir():
+        if resolve_store_dir(target.repo_path).is_dir():
             save_distill_commands_enabled(target.repo_path, enabled=True)
 
     _install_codex_surfaces(target)
@@ -488,7 +489,7 @@ def _set_hook_surface(
     word = "[green]on[/green]" if enabled else "[yellow]off[/yellow]"
     touched = 0
     for repo_path in _target_repo_paths(target):
-        if not (repo_path / ".repowise").is_dir():
+        if not resolve_store_dir(repo_path).is_dir():
             continue
         save_hook_surface_enabled(repo_path, surface, enabled=enabled)
         console.print(f"  {label}: {word} ({repo_path})")

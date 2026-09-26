@@ -36,6 +36,7 @@ from typing import Any
 import structlog
 
 from repowise.core.providers.llm.base import BaseProvider, CacheHint
+from repowise.core.store_location import resolve_store_dir
 
 log = structlog.get_logger(__name__)
 
@@ -487,7 +488,7 @@ def _cache_key(suggestion: Any, spans: list[SourceSpan], model: str) -> str:
 
 
 def _cache_dir(repo_path: Path) -> Path:
-    return repo_path.joinpath(".repowise", *_CACHE_SUBDIR)
+    return resolve_store_dir(repo_path).joinpath(*_CACHE_SUBDIR)
 
 
 def _read_cache(cache_dir: Path, key: str) -> EnrichmentResult | None:

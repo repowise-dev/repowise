@@ -279,16 +279,44 @@ def test_numbering_is_dropped_rather_than_guessed_when_it_cannot_reconcile() -> 
 
 
 def test_the_omission_store_path_matches_distills(repo: Path) -> None:
-    """The path is spelled out to dodge a 250ms structlog import; keep it true.
+    """Both omission writers resolve the store the same way, without a slow import.
 
-    Lives in ``_shared`` now that both replacing surfaces bill savings through
-    the same two writers: one copy of the literal, one guard over it.
+    Used to compare literal spellings, because ``_shared`` deliberately avoids
+    importing ``repowise.core.distill.store`` (which pulls structlog in for
+    ~250ms on the hook path). Global store mode (issue #1551) made that weaker
+    than the real requirement: the two paths must agree *including* when the
+    mode moves the store. They now agree because both call
+    ``resolve_store_dir``, so this asserts the resolved paths are equal and
+    that the cheap module still carries no distill import.
     """
+    import ast
+
     from repowise.cli.commands.augment_cmd import _shared
     from repowise.core.distill.store import OMISSIONS_DB_FILENAME, OMISSIONS_DIRNAME
+    from repowise.core.store_location import resolve_store_dir
 
     source = Path(_shared.__file__).read_text(encoding="utf-8")
-    assert f'".repowise" / "{OMISSIONS_DIRNAME}" / "{OMISSIONS_DB_FILENAME}"' in source
+    assert "resolve_store_dir" in source
+    # Module-level imports only, read from the AST rather than the text: the
+    # docstring names ``distill.store`` in prose, which is not an import.
+    imported = {
+        node.module or ""
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom) and node.col_offset == 0
+    }
+    # The cheap resolver is allowed; the structlog-carrying distill module is not.
+    assert "repowise.core.store_location" in imported
+    assert not any("distill.store" in name for name in imported), (
+        "the hook path must stay free of the 250ms distill import"
+    )
+
+    # Both writers name the same file, and the name follows the store: create
+    # the file under the resolved store and the guard must find exactly it.
+    expected = resolve_store_dir(repo) / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
+    assert _shared._omission_db(repo) is None, "no store yet: the guard reports absence"
+    expected.parent.mkdir(parents=True, exist_ok=True)
+    expected.write_text("", encoding="utf-8")
+    assert _shared._omission_db(repo) == expected
 
 
 def test_the_replacement_is_smaller_than_what_it_replaced(repo: Path) -> None:

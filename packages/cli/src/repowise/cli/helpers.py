@@ -177,8 +177,17 @@ def find_workspace_root(start: Path | None = None) -> Path | None:
 
 
 def get_repowise_dir(repo_path: Path) -> Path:
-    """Return the ``.repowise/`` directory for a given repo root."""
-    return repo_path / REPOWISE_DIR
+    """Return the directory this repo's index lives in.
+
+    Delegates to :func:`repowise.core.store_location.resolve_store_dir`, so the
+    CLI cannot disagree with core about where a store is. That matters once
+    global store mode (issue #1551) can move the index out of the repository:
+    a second hand-rolled answer here would put half the commands in the old
+    location and half in the new one.
+    """
+    from repowise.core.store_location import resolve_store_dir
+
+    return resolve_store_dir(repo_path)
 
 
 def user_global_dir() -> Path:

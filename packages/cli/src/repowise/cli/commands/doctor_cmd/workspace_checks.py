@@ -7,6 +7,7 @@ from pathlib import Path as _DoctorPath
 from rich.table import Table
 
 from repowise.cli.helpers import console
+from repowise.core.store_location import resolve_store_dir
 
 
 def _run_workspace_checks(
@@ -70,7 +71,7 @@ def _run_workspace_checks(
                 )
             )
             issues.append(f"{entry.alias}: workspace config missing commit pointer")
-        elif (abs_path / ".repowise").is_dir() and not disk_commit:
+        elif resolve_store_dir(abs_path).is_dir() and not disk_commit:
             rows.append(
                 (
                     entry.alias,

@@ -37,6 +37,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.store_location import resolve_store_dir
+
 from .store import TIER_GIT, Episode, EpisodeStore
 
 __all__ = ["KIND_CODE_FIX", "derive_git_episodes", "record_git_episodes"]
@@ -89,7 +91,7 @@ def record_git_episodes(repo_path: Path | str, walk: Any) -> int:
     sidecar — looks exactly like a repository whose window held no fixes.
     """
     root = Path(repo_path)
-    if not (root / ".repowise").is_dir():
+    if not resolve_store_dir(root).is_dir():
         return 0
     try:
         episodes = derive_git_episodes(walk)
