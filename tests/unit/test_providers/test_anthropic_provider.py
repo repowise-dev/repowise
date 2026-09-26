@@ -107,7 +107,7 @@ def _make_mock_response(
     usage.input_tokens = 200
     usage.output_tokens = 80
     usage.cache_read_input_tokens = 50
-    usage.cache_creation_input_tokens = 0
+    usage.cache_creation_input_tokens = 30
 
     content_block = MagicMock()
     content_block.text = text
@@ -156,9 +156,12 @@ async def test_generate_token_counts_with_cache():
         provider._client = mock_client.return_value
         result = await provider.generate("sys", "user")
 
-    assert result.input_tokens == 200
+    assert result.input_tokens == 280
     assert result.output_tokens == 80
     assert result.cached_tokens == 50
+    assert result.usage["input_tokens"] == 280
+    assert result.usage["cache_creation_input_tokens"] == 30
+    assert result.usage["cache_read_input_tokens"] == 50
 
 
 async def test_generate_sends_correct_params():

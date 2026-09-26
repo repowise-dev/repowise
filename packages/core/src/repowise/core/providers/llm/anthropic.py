@@ -220,7 +220,16 @@ class AnthropicProvider(BaseProvider):
         except _AnthropicAPIStatusError as exc:
             raise ProviderError("anthropic", str(exc), status_code=exc.status_code) from exc
 
-        cached = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        uncached_input_tokens = response.usage.input_tokens or 0
+        cached_tokens = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        cache_creation_tokens = (
+            getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+        )
+
+        # The three are disjoint, so their sum is the prompt total represented by
+        # input_tokens. cached_tokens remains the cache-read portion.
+        input_tokens = uncached_input_tokens + cached_tokens + cache_creation_tokens
+
         stop_reason, provider_stop_reason = normalize_stop_reason(response.stop_reason)
 
         text_content = ""
@@ -231,19 +240,16 @@ class AnthropicProvider(BaseProvider):
 
         result = GeneratedResponse(
             content=text_content,
-            input_tokens=response.usage.input_tokens,
+            input_tokens=input_tokens,
             output_tokens=response.usage.output_tokens,
-            cached_tokens=cached,
+            cached_tokens=cached_tokens,
             stop_reason=stop_reason,
             provider_stop_reason=provider_stop_reason,
             usage={
-                "input_tokens": response.usage.input_tokens,
+                "input_tokens": input_tokens,
                 "output_tokens": response.usage.output_tokens,
-                "cache_creation_input_tokens": getattr(
-                    response.usage, "cache_creation_input_tokens", 0
-                )
-                or 0,
-                "cache_read_input_tokens": cached,
+                "cache_creation_input_tokens": cache_creation_tokens,
+                "cache_read_input_tokens": cached_tokens,
             },
         )
         log.debug(
