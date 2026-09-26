@@ -61,7 +61,6 @@ def validate_kg(kg: KnowledgeGraphResult) -> KGValidation:
     file_count = len(file_nodes)
     file_ids = {n["id"] for n in file_nodes}
     tags_by_path = {n["filePath"]: (n.get("tags") or []) for n in file_nodes}
-    summary_by_id = {n["id"]: n.get("summary") for n in file_nodes}
 
     layers = kg.layers or []
     shape = _check_layers(layers, file_ids, file_count, errors, warnings)
@@ -76,18 +75,14 @@ def validate_kg(kg: KnowledgeGraphResult) -> KGValidation:
     modules = getattr(kg, "modules", None) or []
     module_covered = _check_modules(modules, file_ids, errors, warnings) if modules else set()
 
-    # -- Summaries ---------------------------------------------------------
-    empty_summaries = [nid for nid, s in summary_by_id.items() if not s]
-    if empty_summaries:
-        errors.append(f"{len(empty_summaries)} file nodes have an empty summary")
-    summary_completeness = 1.0 - len(empty_summaries) / file_count if file_count else 1.0
+    summary_completeness = _check_summaries(file_nodes, errors)
 
     metrics = {
         "file_count": file_count,
         "layer_count": len(layers),
         "module_count": len(modules),
-        "module_coverage_pct": round(
-            (len(module_covered) / file_count * 100) if (modules and file_count) else 0.0, 1
+        "module_coverage_pct": (
+            round(len(module_covered) / file_count * 100, 1) if file_count else 0.0
         ),
         "singleton_layer_pct": round(shape.singleton_frac * 100, 1),
         "largest_layer_pct": round(shape.largest_frac * 100, 1),
@@ -116,9 +111,23 @@ def _check_layers(
     warnings: list[str],
 ) -> _LayerShape:
     """Layer count, partition, singleton spam and mega-layer balance."""
-    n_layers = len(layers)
+    _check_layer_count(len(layers), errors, warnings)
+    _check_layer_partition(layers, file_ids, file_count, errors)
+    shape = _layer_shape(layers, file_count)
+    if shape.singleton_frac >= _MAX_SINGLETON_FRACTION:
+        warnings.append(
+            f"singleton layers {shape.singleton_frac:.0%} ≥ {_MAX_SINGLETON_FRACTION:.0%}"
+        )
+    if shape.largest_frac > _MAX_LAYER_FRACTION:
+        warnings.append(f"largest layer {shape.largest_frac:.0%} > {_MAX_LAYER_FRACTION:.0%}")
+    if shape.catchall_frac > _MAX_CATCHALL_FRACTION:
+        warnings.append(
+            f"Application catch-all {shape.catchall_frac:.0%} > {_MAX_CATCHALL_FRACTION:.0%}"
+        )
+    return shape
 
-    # -- Layer count -------------------------------------------------------
+
+def _check_layer_count(n_layers: int, errors: list[str], warnings: list[str]) -> None:
     if n_layers == 0:
         errors.append("no layers")
     elif n_layers > _MAX_LAYERS:
@@ -126,7 +135,10 @@ def _check_layers(
     elif n_layers < _MIN_LAYERS:
         warnings.append(f"few layers: {n_layers} < {_MIN_LAYERS} (small/flat repo?)")
 
-    # -- Partition ---------------------------------------------------------
+
+def _check_layer_partition(
+    layers: list[dict], file_ids: set[str], file_count: int, errors: list[str]
+) -> None:
     layered: list[str] = [nid for layer in layers for nid in layer.get("nodeIds", [])]
     layered_set = set(layered)
     if len(layered) != len(layered_set):
@@ -136,23 +148,26 @@ def _check_layers(
         extra = len(layered_set - file_ids)
         errors.append(f"partition: {missing} unlayered, {extra} unknown ids")
 
-    # -- Singleton spam & mega-layer balance -------------------------------
+
+def _layer_shape(layers: list[dict], file_count: int) -> _LayerShape:
+    """Singleton-layer, largest-layer and ``Application`` catch-all fractions."""
     sizes = [len(layer.get("nodeIds", [])) for layer in layers]
-    singleton_frac = (sum(1 for s in sizes if s == 1) / n_layers) if n_layers else 0.0
-    if singleton_frac >= _MAX_SINGLETON_FRACTION:
-        warnings.append(f"singleton layers {singleton_frac:.0%} ≥ {_MAX_SINGLETON_FRACTION:.0%}")
-
+    singleton_frac = (sum(1 for s in sizes if s == 1) / len(layers)) if layers else 0.0
     largest_frac = (max(sizes) / file_count) if (sizes and file_count) else 0.0
-    if largest_frac > _MAX_LAYER_FRACTION:
-        warnings.append(f"largest layer {largest_frac:.0%} > {_MAX_LAYER_FRACTION:.0%}")
-
     catchall = next((layer for layer in layers if layer.get("name") == "Application"), None)
     catchall_frac = (
         (len(catchall.get("nodeIds", [])) / file_count) if (catchall and file_count) else 0.0
     )
-    if catchall_frac > _MAX_CATCHALL_FRACTION:
-        warnings.append(f"Application catch-all {catchall_frac:.0%} > {_MAX_CATCHALL_FRACTION:.0%}")
     return _LayerShape(singleton_frac, largest_frac, catchall_frac)
+
+
+def _check_summaries(file_nodes: list[dict], errors: list[str]) -> float:
+    """Never-empty summaries, returning the fraction of file nodes that have one."""
+    summary_by_id = {n["id"]: n.get("summary") for n in file_nodes}
+    empty_summaries = [nid for nid, s in summary_by_id.items() if not s]
+    if empty_summaries:
+        errors.append(f"{len(empty_summaries)} file nodes have an empty summary")
+    return 1.0 - len(empty_summaries) / len(file_nodes) if file_nodes else 1.0
 
 
 def _check_entry_points(

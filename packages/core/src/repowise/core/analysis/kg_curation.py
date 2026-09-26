@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -137,70 +138,85 @@ def curate_knowledge_graph(
 
     # Each step mutates only ``kg`` (the presentation result) and is guarded so
     # a failure degrades to the prior, uncurated field rather than aborting the
-    # export. Steps are layered in by subsequent phases:
-    #   _curate_layers -> _curate_entry_points -> _curate_tour
-    #   -> _curate_node_types -> _curate_summaries
-    layers_curated = False
+    # export.
+    layers = _guarded(
+        "kg_curation._curate_layers failed; keeping community layers",
+        _curate_layers,
+        kg,
+        graph_builder,
+    )
+    if layers is not None:
+        kg.layers = layers
+        # Wiki modules are a *sibling* artifact of the curated layers (same
+        # splitting machinery, module-sized granularity). Only derived when the
+        # spine landed — community layers would make the dir-split meaningless,
+        # and downstream consumers fall back to community grouping when this
+        # stays empty (the fallback matrix's "degraded" row).
+        modules = _guarded(
+            "kg_curation._curate_modules failed; exporting no modules", _curate_modules, kg
+        )
+        if modules is not None:
+            kg.modules = modules
+
+    _guarded(
+        "kg_curation._curate_entry_points failed; keeping raw entry points",
+        _curate_entry_points,
+        kg,
+        parsed_files,
+        graph_builder,
+    )
+
+    tour = _guarded(
+        "kg_curation._curate_tour failed; keeping existing tour",
+        _curate_tour,
+        kg,
+        parsed_files,
+        graph_builder,
+        hotspot_commits=_hotspot_commits(git_meta_map),
+    )
+    if tour is not None:
+        kg.tour = tour
+
+    _guarded("kg_curation._curate_node_types failed; keeping coarse types", _curate_node_types, kg)
+
+    if not defer_summary_floor:
+        _guarded(
+            "kg_curation summary floor failed; leaving summaries empty",
+            apply_summary_floor,
+            kg,
+            parsed_files,
+        )
+
+    return kg
+
+
+def _guarded(failure: str, step: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run one curation *step*; on error log *failure* and return ``None``."""
     try:
-        curated = _curate_layers(kg, graph_builder)
-        if curated is not None:
-            kg.layers = curated
-            layers_curated = True
-    except Exception:  # pragma: no cover - defensive; keep uncurated layers
-        logger.exception("kg_curation._curate_layers failed; keeping community layers")
+        return step(*args, **kwargs)
+    except Exception:  # pragma: no cover - defensive; keep the uncurated field
+        logger.exception(failure)
+        return None
 
-    # Wiki modules are a *sibling* artifact of the curated layers (same
-    # splitting machinery, module-sized granularity). Only derived when the
-    # spine landed — community layers would make the dir-split meaningless,
-    # and downstream consumers fall back to community grouping when this
-    # stays empty (the fallback matrix's "degraded" row).
-    if layers_curated:
-        try:
-            modules = _curate_modules(kg)
-            if modules is not None:
-                kg.modules = modules
-        except Exception:  # pragma: no cover - defensive; ship no modules
-            logger.exception("kg_curation._curate_modules failed; exporting no modules")
 
-    try:
-        _curate_entry_points(kg, parsed_files, graph_builder)
-    except Exception:  # pragma: no cover - defensive; keep skeleton entry points
-        logger.exception("kg_curation._curate_entry_points failed; keeping raw entry points")
+def _hotspot_commits(git_meta_map: dict[str, dict] | None) -> dict[str, int]:
+    """Recent commit counts of the flagged churn hotspots.
 
-    # Genuine churn hotspots (a constantly-edited file off the hot import path)
-    # earn a tour stop on this signal alone. Only flagged hotspots with recent
-    # commits qualify; repos without git history pass an empty map and the tour
-    # is unchanged.
-    hotspot_commits = {
+    Genuine churn hotspots (a constantly-edited file off the hot import path)
+    earn a tour stop on this signal alone. Only flagged hotspots with recent
+    commits qualify; repos without git history pass an empty map and the tour
+    is unchanged.
+    """
+    return {
         path: int(meta.get("commit_count_90d", 0) or 0)
         for path, meta in (git_meta_map or {}).items()
         if meta.get("is_hotspot")
     }
-    try:
-        tour = _curate_tour(kg, parsed_files, graph_builder, hotspot_commits=hotspot_commits)
-        if tour is not None:
-            kg.tour = tour
-    except Exception:  # pragma: no cover - defensive; keep skeleton/LLM tour
-        logger.exception("kg_curation._curate_tour failed; keeping existing tour")
-
-    try:
-        _curate_node_types(kg)
-    except Exception:  # pragma: no cover - defensive; keep skeleton types
-        logger.exception("kg_curation._curate_node_types failed; keeping coarse types")
-
-    if not defer_summary_floor:
-        try:
-            apply_summary_floor(kg, parsed_files)
-        except Exception:  # pragma: no cover - defensive; leave summaries as-is
-            logger.exception("kg_curation summary floor failed; leaving summaries empty")
-
-    return kg
 
 
 # ---------------------------------------------------------------------------
 # Phase 1 — curated layers (replace raw-community layers with the spine)
 # ---------------------------------------------------------------------------
-
 
 
 def _sub_split(layer_id: str, node_ids: list[str], id_to_path: dict[str, str]) -> list[dict] | None:
@@ -263,35 +279,48 @@ def _curate_layers(kg: KnowledgeGraphResult, graph_builder: Any) -> list[dict] |
     for n in file_nodes:
         by_layer[file_layers[n["filePath"]]].append(n["id"])
 
-    layers: list[dict] = []
-    for display_order, layer_name in enumerate(order):
-        node_ids = by_layer[layer_name]
-        layer_id = f"layer:{_slugify(layer_name)}"
-        layer: dict[str, Any] = {
-            "id": layer_id,
-            "name": layer_name,
-            "description": "",
-            "nodeIds": node_ids,
-            "display_order": display_order,
-            "order_basis": order_basis,
-        }
-        sub_groups = _sub_split(layer_id, node_ids, id_to_path)
-        if sub_groups:
-            layer["subGroups"] = sub_groups
-        layers.append(layer)
+    layers = [
+        _layer_record(layer_name, display_order, by_layer[layer_name], order_basis, id_to_path)
+        for display_order, layer_name in enumerate(order)
+    ]
+    return layers if _layers_hold_invariants(layers, len(file_nodes)) else None
 
-    # Degrade rather than ship a broken artifact: enforce bound + partition.
+
+def _layer_record(
+    layer_name: str,
+    display_order: int,
+    node_ids: list[str],
+    order_basis: str,
+    id_to_path: dict[str, str],
+) -> dict[str, Any]:
+    layer_id = f"layer:{_slugify(layer_name)}"
+    layer: dict[str, Any] = {
+        "id": layer_id,
+        "name": layer_name,
+        "description": "",
+        "nodeIds": node_ids,
+        "display_order": display_order,
+        "order_basis": order_basis,
+    }
+    sub_groups = _sub_split(layer_id, node_ids, id_to_path)
+    if sub_groups:
+        layer["subGroups"] = sub_groups
+    return layer
+
+
+def _layers_hold_invariants(layers: list[dict], file_count: int) -> bool:
+    """Degrade rather than ship a broken artifact: enforce bound + partition."""
     total = sum(len(layer["nodeIds"]) for layer in layers)
-    if not layers or len(layers) > _MAX_LAYERS or total != len(file_nodes):
+    if not layers or len(layers) > _MAX_LAYERS or total != file_count:
         logger.warning(
             "kg_curation: curated layers failed invariant "
             "(count=%d, partition=%d/%d); keeping community layers",
             len(layers),
             total,
-            len(file_nodes),
+            file_count,
         )
-        return None
-    return layers
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -313,9 +342,12 @@ def _curate_modules(kg: KnowledgeGraphResult) -> list[dict] | None:
     lang_by_id = {n["id"]: (n.get("language") or "").lower() for n in file_nodes}
 
     modules = derive_modules(kg.layers, id_to_path, lang_by_id=lang_by_id)
-    if not modules:
+    if not modules or not _modules_hold_invariants(modules, id_to_path):
         return None
+    return modules
 
+
+def _modules_hold_invariants(modules: list[dict], id_to_path: dict[str, str]) -> bool:
     seen: set[str] = set()
     for m in modules:
         for nid in m["nodeIds"]:
@@ -324,7 +356,7 @@ def _curate_modules(kg: KnowledgeGraphResult) -> list[dict] | None:
                     "kg_curation: derived modules failed partition invariant; "
                     "exporting no modules"
                 )
-                return None
+                return False
             seen.add(nid)
     names = [m["name"] for m in modules]
     ids = [m["id"] for m in modules]
@@ -332,8 +364,8 @@ def _curate_modules(kg: KnowledgeGraphResult) -> list[dict] | None:
         logger.warning(
             "kg_curation: derived module names/ids not unique; exporting no modules"
         )
-        return None
-    return modules
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -362,28 +394,30 @@ def _curate_entry_points(
     pf_by_path = {pf.file_info.path: pf for pf in parsed_files if getattr(pf, "file_info", None)}
     lang_by_path = {n["filePath"]: (n.get("language") or "").lower() for n in _file_nodes(kg)}
     pagerank = graph_builder.pagerank() or {}
-    try:
-        betweenness = graph_builder.betweenness_centrality() or {}
-    except Exception:  # pragma: no cover - defensive
-        betweenness = {}
+    betweenness = _betweenness(graph_builder)
 
-    candidates = [
-        (path, pagerank.get(path, 0.0), betweenness.get(path, 0.0))
-        for path in _flagged_entry_paths(kg, pf_by_path)
-    ]
-    if not candidates:
+    paths = _flagged_entry_paths(kg, pf_by_path)
+    if not paths:
         # No ingestion-flagged entries (or all were barrels): fall back to the
         # strong filename scorers the tour seeds from (score >= 3 means an
         # entry-style name or flag, never just shallow/high-PageRank).
-        candidates = [
-            (path, pagerank.get(path, 0.0), betweenness.get(path, 0.0))
+        paths = [
+            path
             for s, path in score_entry_points(parsed_files, pagerank)
             if s >= 3.0 and _is_entry_candidate(path, lang_by_path.get(path, ""), pf_by_path)
         ]
+    candidates = [(path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)) for path in paths]
 
     ranked = rank_entry_points(candidates, conventional_entry_stems())
     kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
     kg.project["entry_candidates"] = ranked
+
+
+def _betweenness(graph_builder: Any) -> dict[str, float]:
+    try:
+        return graph_builder.betweenness_centrality() or {}
+    except Exception:  # pragma: no cover - defensive
+        return {}
 
 
 def _flagged_entry_paths(kg: KnowledgeGraphResult, pf_by_path: dict[str, Any]) -> list[str]:
@@ -394,27 +428,37 @@ def _flagged_entry_paths(kg: KnowledgeGraphResult, pf_by_path: dict[str, Any]) -
     """
     paths: list[str] = []
     for node in kg.nodes:
-        nid = node.get("id", "")
-        if not (isinstance(nid, str) and nid.startswith("file:")):
-            continue
-        tags = node.get("tags") or []
-        if "entry_point" not in tags:
+        if not _is_flagged_file_node(node):
             continue
         path = node.get("filePath", "")
         language = (node.get("language") or "").lower()
         if _off_the_entry_path(path, language):
             continue
-        pf = pf_by_path.get(path)
-        if pf is not None and _is_barrel(pf):
-            new_tags = [t for t in tags if t != "entry_point"]
-            if "barrel" not in new_tags:
-                new_tags.append("barrel")
-            node["tags"] = new_tags
+        if _is_barrel_path(path, pf_by_path):
+            _retag_as_barrel(node)
             continue
-        if not_an_execution_start(path, language):
-            continue
-        paths.append(path)
+        if not not_an_execution_start(path, language):
+            paths.append(path)
     return paths
+
+
+def _is_flagged_file_node(node: dict) -> bool:
+    nid = node.get("id", "")
+    if not (isinstance(nid, str) and nid.startswith("file:")):
+        return False
+    return "entry_point" in (node.get("tags") or [])
+
+
+def _retag_as_barrel(node: dict) -> None:
+    new_tags = [t for t in (node.get("tags") or []) if t != "entry_point"]
+    if "barrel" not in new_tags:
+        new_tags.append("barrel")
+    node["tags"] = new_tags
+
+
+def _is_barrel_path(path: str, pf_by_path: dict[str, Any]) -> bool:
+    pf = pf_by_path.get(path)
+    return pf is not None and _is_barrel(pf)
 
 
 def _off_the_entry_path(path: str, language: str) -> bool:
@@ -426,10 +470,7 @@ def _off_the_entry_path(path: str, language: str) -> bool:
 
 def _is_entry_candidate(path: str, language: str, pf_by_path: dict[str, Any]) -> bool:
     """Whether a scored (unflagged) file may stand as an entry point."""
-    if _off_the_entry_path(path, language):
-        return False
-    pf = pf_by_path.get(path)
-    if pf is not None and _is_barrel(pf):
+    if _off_the_entry_path(path, language) or _is_barrel_path(path, pf_by_path):
         return False
     return not not_an_execution_start(path, language)
 
@@ -476,20 +517,23 @@ def _enrich_type(path: str, current_type: str) -> tuple[str, str | None]:
     suffix = PurePosixPath(p).suffix
     is_code = suffix in _CODE_SUFFIXES
 
-    if not is_code and (any(m in p for m in _CI_PATH_MARKERS) or name == "jenkinsfile"):
+    if not is_code and _is_ci_path(p, name):
         return "pipeline", "ci"
-    if (
-        not is_code
-        and (
-            name.startswith("dockerfile")
-            or any(m in name for m in _INFRA_NAME_MARKERS)
-            or any(m in p for m in _INFRA_PATH_MARKERS)
-        )
-    ) or suffix in _INFRA_SUFFIXES:
+    if (not is_code and _is_infra_path(p, name)) or suffix in _INFRA_SUFFIXES:
         return "service", "infra"
     if any(m in p for m in _DATA_PATH_MARKERS) or suffix in _DATA_SUFFIXES:
         return "schema", "data"
     return current_type, None
+
+
+def _is_ci_path(lowered_path: str, name: str) -> bool:
+    return any(m in lowered_path for m in _CI_PATH_MARKERS) or name == "jenkinsfile"
+
+
+def _is_infra_path(lowered_path: str, name: str) -> bool:
+    if name.startswith("dockerfile") or any(m in name for m in _INFRA_NAME_MARKERS):
+        return True
+    return any(m in lowered_path for m in _INFRA_PATH_MARKERS)
 
 
 def _curate_node_types(kg: KnowledgeGraphResult) -> None:
@@ -514,55 +558,70 @@ def _infer_test_target(path: str) -> str:
     return stem
 
 
+# Support-file summary templates in precedence order: the first row whose
+# presentation type or tag matches the node names it.
+_SUPPORT_TEMPLATES: tuple[tuple[str, str | None, str], ...] = (
+    ("pipeline", "ci", "CI / pipeline definition: {name}."),
+    ("service", "infra", "Infrastructure definition: {name}."),
+    ("schema", "data", "Data / schema definition: {name}."),
+    ("config", "config", "Configuration file: {name}."),
+    ("document", None, "Documentation: {name}."),
+)
+
+
 def _cheap_summary(node: dict, parsed_file: Any | None) -> str:
     """A deterministic, honest fallback summary (zero LLM cost)."""
     path = node["filePath"]
-    stem = PurePosixPath(path).stem
-    parent = PurePosixPath(path).parent.name or "root"
-    node_type = node.get("type", "file")
     tags = node.get("tags") or []
-    layer = infer_layer(path, (node.get("language") or "").lower())
 
     if "barrel" in tags:
-        return f"Re-export barrel for {parent}/."
-
-    name = PurePosixPath(path).name
-    if node_type in {"pipeline", "service", "schema", "config", "document"} or (
-        tags and ({"ci", "infra", "data", "config"} & set(tags))
-    ):
-        # Recognised scaffolding earns a real role instead of a bare name
-        # restatement; only genuinely opaque support files fall back to the
-        # type template below.
-        role = well_known_role(path)
-        if role is not None:
-            return role
-    if node_type == "pipeline" or "ci" in tags:
-        return f"CI / pipeline definition: {name}."
-    if node_type == "service" or "infra" in tags:
-        return f"Infrastructure definition: {name}."
-    if node_type == "schema" or "data" in tags:
-        return f"Data / schema definition: {name}."
-    if node_type == "config" or "config" in tags:
-        return f"Configuration file: {name}."
-    if node_type == "document":
-        return f"Documentation: {name}."
+        return f"Re-export barrel for {PurePosixPath(path).parent.name or 'root'}/."
+    support = _support_summary(path, node.get("type", "file"), tags)
+    if support is not None:
+        return support
     if "test" in tags:
         return f"Tests for {_infer_test_target(path)}."
+    return _code_summary(node, parsed_file)
 
-    # Code file: name the layer and its most prominent symbols.
-    symbol_names: list[str] = []
-    if parsed_file is not None:
-        symbol_names = [
-            getattr(s, "name", "")
-            for s in (getattr(parsed_file, "symbols", []) or [])
-            if getattr(s, "kind", "") in _SUBSTANTIVE_KINDS and getattr(s, "name", "")
-        ][:3]
+
+def _support_summary(path: str, node_type: str, tags: list[str]) -> str | None:
+    template = next(
+        (text for kind, tag, text in _SUPPORT_TEMPLATES if node_type == kind or tag in tags),
+        None,
+    )
+    if template is None:
+        return None
+    # Recognised scaffolding earns a real role instead of a bare name
+    # restatement; only genuinely opaque support files fall back to the
+    # type template.
+    role = well_known_role(path)
+    if role is not None:
+        return role
+    return template.format(name=PurePosixPath(path).name)
+
+
+def _code_summary(node: dict, parsed_file: Any | None) -> str:
+    """Name the code file's layer and its most prominent symbols."""
+    path = node["filePath"]
+    stem = PurePosixPath(path).stem
+    layer = infer_layer(path, (node.get("language") or "").lower())
+    symbol_names = _top_symbol_names(parsed_file)
     if symbol_names:
         return f"{layer} module {stem} defining {', '.join(symbol_names)}."
     count = node.get("symbolCount", 0)
     if count:
         return f"{layer} module {stem} ({count} symbols)."
     return f"{layer} module {stem}."
+
+
+def _top_symbol_names(parsed_file: Any | None) -> list[str]:
+    if parsed_file is None:
+        return []
+    return [
+        getattr(s, "name", "")
+        for s in (getattr(parsed_file, "symbols", []) or [])
+        if getattr(s, "kind", "") in _SUBSTANTIVE_KINDS and getattr(s, "name", "")
+    ][:3]
 
 
 def apply_summary_floor(kg: KnowledgeGraphResult, parsed_files: list[Any] | None = None) -> None:

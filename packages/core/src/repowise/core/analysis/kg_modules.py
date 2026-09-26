@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from pathlib import PurePosixPath
 
+from repowise.core.analysis.kg_inputs import _dominant_language
 from repowise.core.analysis.knowledge_graph import _slugify
+
+# A directory's segments and the (sorted) node ids grouped under it.
+_DirGroup = tuple[tuple[str, ...], list[str]]
 
 
 def _common_dir_prefix(seg_lists: list[tuple[str, ...]]) -> tuple[str, ...]:
@@ -132,12 +137,14 @@ def _merge_small_groups(
     its identity.
     """
     merged = [(d, list(ids)) for d, ids in groups]
+    _fuse_small_siblings(merged, target_min)
+    merged.sort(key=lambda g: g[0])
+    _fold_small_groups(merged, target_min)
+    return [(d, ids) for d, ids in merged]
 
-    by_parent: dict[tuple[str, ...], list[tuple[tuple[str, ...], list[str]]]] = {}
-    for g in merged:
-        if len(g[1]) < target_min and len(g[0]) > 0:
-            by_parent.setdefault(g[0][:-1], []).append(g)
-    for parent, sibs in sorted(by_parent.items()):
+
+def _fuse_small_siblings(merged: list[_DirGroup], target_min: int) -> None:
+    for parent, sibs in sorted(_small_groups_by_parent(merged, target_min).items()):
         if len(sibs) < 2 or sum(len(g[1]) for g in sibs) < target_min:
             continue
         fused = sorted(nid for g in sibs for nid in g[1])
@@ -149,11 +156,19 @@ def _merge_small_groups(
             existing[1].sort()
         else:
             merged.append((parent, fused))
-    merged.sort(key=lambda g: g[0])
 
-    def shared(a: tuple[str, ...], b: tuple[str, ...]) -> int:
-        return len(_common_dir_prefix([a, b]))
 
+def _small_groups_by_parent(
+    merged: list[_DirGroup], target_min: int
+) -> dict[tuple[str, ...], list[_DirGroup]]:
+    by_parent: dict[tuple[str, ...], list[_DirGroup]] = {}
+    for g in merged:
+        if len(g[1]) < target_min and len(g[0]) > 0:
+            by_parent.setdefault(g[0][:-1], []).append(g)
+    return by_parent
+
+
+def _fold_small_groups(merged: list[_DirGroup], target_min: int) -> None:
     while len(merged) > 1:
         small = min(
             (g for g in merged if len(g[1]) < target_min),
@@ -165,11 +180,14 @@ def _merge_small_groups(
         merged.remove(small)
         target = min(
             merged,
-            key=lambda g: (-shared(g[0], small[0]), -len(g[1]), g[0]),
+            key=lambda g: (-_shared_depth(g[0], small[0]), -len(g[1]), g[0]),
         )
         target[1].extend(small[1])
         target[1].sort()
-    return [(d, ids) for d, ids in merged]
+
+
+def _shared_depth(a: tuple[str, ...], b: tuple[str, ...]) -> int:
+    return len(_common_dir_prefix([a, b]))
 
 
 def _name_modules(mods: list[dict], generic: set[str]) -> None:
@@ -184,6 +202,27 @@ def _name_modules(mods: list[dict], generic: set[str]) -> None:
     paths across layers) appends the layer name, which is unique by
     construction.
     """
+    info_by, used = _initial_module_names(mods, generic)
+    _extend_colliding_names(mods, info_by, used)
+
+    # Two all-organizational groups in one layer (a root remnant plus a
+    # "packages"-style container) would both read "<Layer> (top-level)" —
+    # the container's raw tail is the honest tiebreak.
+    _rename_collisions(mods, lambda m: None if info_by[id(m)] else _dir_tail(m))
+
+    # Same informative dir in two layers (or no segments left): the layer
+    # name disambiguates — (dir, layer) is unique by construction.
+    _rename_collisions(mods, lambda m: f"{m['name']} ({m['_layerName']})")
+
+    # Absolute backstop (two all-org dirs in one layer sharing a tail): the
+    # full dir path is unique per layer.
+    _rename_collisions(mods, lambda m: "/".join(m["_dir"]) or None)
+
+
+def _initial_module_names(
+    mods: list[dict], generic: set[str]
+) -> tuple[dict[int, list[str]], dict[int, int | None]]:
+    """Name each module; return its informative segments and how many it uses."""
     per_layer: Counter[str] = Counter(m["layerId"] for m in mods)
     info_by: dict[int, list[str]] = {}
     used: dict[int, int | None] = {}  # informative segments consumed; None = fixed
@@ -210,7 +249,13 @@ def _name_modules(mods: list[dict], generic: set[str]) -> None:
             k = min(2, len(info))
             m["name"] = "/".join(info[-k:])
             used[id(m)] = k
+    return info_by, used
 
+
+def _extend_colliding_names(
+    mods: list[dict], info_by: dict[int, list[str]], used: dict[int, int | None]
+) -> None:
+    """Extend colliding names leftward, one informative segment per round."""
     for _ in range(16):  # bounded: each round consumes ≥1 segment somewhere
         names = Counter(m["name"] for m in mods)
         colliding = [m for m in mods if names[m["name"]] > 1]
@@ -225,29 +270,21 @@ def _name_modules(mods: list[dict], generic: set[str]) -> None:
                 m["name"] = "/".join(info[-(k + 1) :])
                 progressed = True
         if not progressed:
-            break
+            return
 
-    # Two all-organizational groups in one layer (a root remnant plus a
-    # "packages"-style container) would both read "<Layer> (top-level)" —
-    # the container's raw tail is the honest tiebreak.
-    names = Counter(m["name"] for m in mods)
-    for m in mods:
-        if names[m["name"]] > 1 and not info_by[id(m)] and m["_dir"]:
-            m["name"] = "/".join(m["_dir"][-min(2, len(m["_dir"])) :])
 
-    # Same informative dir in two layers (or no segments left): the layer
-    # name disambiguates — (dir, layer) is unique by construction.
+def _rename_collisions(mods: list[dict], rename: Callable[[dict], str | None]) -> None:
+    """Rename every module whose name is still shared, where *rename* has one."""
     names = Counter(m["name"] for m in mods)
     for m in mods:
         if names[m["name"]] > 1:
-            m["name"] = f"{m['name']} ({m['_layerName']})"
+            new_name = rename(m)
+            if new_name is not None:
+                m["name"] = new_name
 
-    # Absolute backstop (two all-org dirs in one layer sharing a tail): the
-    # full dir path is unique per layer.
-    names = Counter(m["name"] for m in mods)
-    for m in mods:
-        if names[m["name"]] > 1 and m["_dir"]:
-            m["name"] = "/".join(m["_dir"])
+
+def _dir_tail(module: dict) -> str | None:
+    return "/".join(module["_dir"][-2:]) or None
 
 
 def derive_modules(
@@ -284,30 +321,51 @@ def derive_modules(
     - **Determinism**: sorted iteration throughout; same inputs → same bytes.
     """
     generic = dominant_segments(sorted(set(id_to_path.values())))
-
-    mods: list[dict] = []
-    for layer in layers:
-        node_ids = [nid for nid in layer.get("nodeIds", []) if nid in id_to_path]
-        if len(node_ids) < min_module_size:
-            continue
-        groups = _merge_small_groups(
-            _split_to_granularity(node_ids, id_to_path, target_max), target_min
-        )
-        for dir_parts, ids in sorted(groups):
-            mods.append(
-                {
-                    "_dir": dir_parts,
-                    "_layerName": layer.get("name", ""),
-                    "path": "/".join(dir_parts),
-                    "layerId": layer.get("id", ""),
-                    "nodeIds": sorted(ids),
-                }
-            )
-
+    mods = [
+        module
+        for layer in layers
+        for module in _layer_modules(layer, id_to_path, target_min, target_max, min_module_size)
+    ]
     _name_modules(mods, generic)
+    _assign_module_ids(mods)
 
-    # Ids: path-derived slugs; the bigger module keeps the plain id on the
-    # rare cross-layer dir collision (a dir whose files split across layers).
+    # A single-module layer is 1:1 with its layer page — mark it so page
+    # generation can skip the duplicate doc (the module stays in the
+    # artifact: canvas containers and the coverage invariant need it).
+    per_layer_count: Counter[str] = Counter(m["layerId"] for m in mods)
+    return [
+        _export_module(m, per_layer_count[m["layerId"]] == 1, lang_by_id) for m in mods
+    ]
+
+
+def _layer_modules(
+    layer: dict, id_to_path: dict[str, str], target_min: int, target_max: int, min_size: int
+) -> list[dict]:
+    """One layer's unnamed module groups, or none below *min_size* files."""
+    node_ids = [nid for nid in layer.get("nodeIds", []) if nid in id_to_path]
+    if len(node_ids) < min_size:
+        return []
+    groups = _merge_small_groups(
+        _split_to_granularity(node_ids, id_to_path, target_max), target_min
+    )
+    return [
+        {
+            "_dir": dir_parts,
+            "_layerName": layer.get("name", ""),
+            "path": "/".join(dir_parts),
+            "layerId": layer.get("id", ""),
+            "nodeIds": sorted(ids),
+        }
+        for dir_parts, ids in sorted(groups)
+    ]
+
+
+def _assign_module_ids(mods: list[dict]) -> None:
+    """Give each module a path-derived slug id.
+
+    The bigger module keeps the plain id on the rare cross-layer dir collision
+    (a dir whose files split across layers).
+    """
     used_ids: set[str] = set()
     for m in sorted(mods, key=lambda m: (-len(m["nodeIds"]), m["path"], m["layerId"])):
         base = "module:" + _slugify(m["path"] or m["_layerName"])
@@ -319,28 +377,19 @@ def derive_modules(
         used_ids.add(mid)
         m["id"] = mid
 
-    # A single-module layer is 1:1 with its layer page — mark it so page
-    # generation can skip the duplicate doc (the module stays in the
-    # artifact: canvas containers and the coverage invariant need it).
-    per_layer_count: Counter[str] = Counter(m["layerId"] for m in mods)
 
-    out: list[dict] = []
-    for m in mods:
-        module = {
-            "id": m["id"],
-            "name": m["name"],
-            "path": m["path"],
-            "layerId": m["layerId"],
-            "nodeIds": m["nodeIds"],
-        }
-        if per_layer_count[m["layerId"]] == 1:
-            module["wholeLayer"] = True
-        if lang_by_id is not None:
-            langs = Counter(
-                lang for nid in m["nodeIds"] if (lang := lang_by_id.get(nid, ""))
-            )
-            module["language"] = (
-                min(langs, key=lambda tag: (-langs[tag], tag)) if langs else ""
-            )
-        out.append(module)
-    return out
+def _export_module(m: dict, whole_layer: bool, lang_by_id: dict[str, str] | None) -> dict:
+    module = {
+        "id": m["id"],
+        "name": m["name"],
+        "path": m["path"],
+        "layerId": m["layerId"],
+        "nodeIds": m["nodeIds"],
+    }
+    if whole_layer:
+        module["wholeLayer"] = True
+    if lang_by_id is not None:
+        module["language"] = _dominant_language(
+            [lang for nid in m["nodeIds"] if (lang := lang_by_id.get(nid, ""))]
+        )
+    return module
