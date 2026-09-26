@@ -5,14 +5,16 @@ text alone (the ``visibility_fn`` shape). Some cannot, because the answer
 depends on surrounding AST context — C/C++ ``public:`` / ``private:``
 access specifier siblings, ``static`` storage class at file scope and
 ``__declspec(dllexport)`` attributes; C#'s no-modifier default, which
-differs by enclosing declaration; TS/JS export position; Rust's
-trait items, which may not write a modifier of their own. Each has a
-``refine_*_visibility`` the parser calls after the generic
-``visibility_fn``.
+differs by enclosing declaration; TS/JS export position; Python's
+module-level ``__all__``, which can export a name the identifier alone
+would call private; Rust's trait items, which may not write a modifier of
+their own. Each has a ``refine_*_visibility`` the parser calls after the
+generic ``visibility_fn``.
 """
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -28,6 +30,130 @@ def py_visibility(name: str, _mods: list[str]) -> str:
         return "public"  # dunder
     if name.startswith("_"):
         return "private"
+    return "public"
+
+
+# ---------------------------------------------------------------------------
+# Python module __all__ visibility refinement
+# ---------------------------------------------------------------------------
+
+# A definition nested under one of these belongs to that scope, not to the
+# module's namespace, so a module-level ``__all__`` does not govern it.
+_PY_MEMBER_ANCESTORS = frozenset(
+    {"class_definition", "function_definition", "async_function_definition", "lambda"}
+)
+
+
+def _py_all_literal(value: ast.expr | None) -> set[str] | None:
+    """The names in a literal ``__all__`` value, or ``None`` when it is not literal.
+
+    List, tuple and set all enumerate statically; every element must be a plain
+    string constant. A comprehension, a concatenation, a call or a name is a
+    list this module assembles at runtime, and reading part of it would be
+    worse than reading none of it.
+    """
+    if not isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+        return None
+    names: set[str] = set()
+    for element in value.elts:
+        if not isinstance(element, ast.Constant) or not isinstance(element.value, str):
+            return None
+        names.add(element.value)
+    return names
+
+
+def _py_all_has_other_binding(tree: ast.Module, accepted: list[ast.Name]) -> bool:
+    """True when ``__all__`` is written or imported anywhere but the literal assignments.
+
+    ``tree.body`` cannot see ``__all__ += [...]``, a binding inside an ``if``
+    or a function, an unpacking target, a ``del``, or ``from x import __all__``.
+    Each of those makes the list something other than the single literal the
+    caller can trust, so the whole signal is dropped rather than half-read.
+    """
+    accepted_ids = {id(node) for node in accepted}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "__all__":
+            if isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in accepted_ids:
+                return True
+        elif isinstance(node, ast.alias) and node.name == "__all__":
+            return True
+    return False
+
+
+def py_module_all_names(src: str) -> frozenset[str] | None:
+    """Names from a literal module-level ``__all__``, or ``None`` for no signal.
+
+    ``None`` means the module gave no answer this pass may act on: no
+    ``__all__`` at all, one built at runtime (a comprehension, ``+=``, a
+    concatenation, a non-string element), or any shape that leaves the list
+    not statically enumerable — a second assignment, an assignment below module
+    level, a ``del``, an import of the name. A built list is treated as absent
+    rather than half-parsed.
+    """
+    # A module with no ``__all__`` token has no literal to read, and most
+    # modules do not — the parse below is the only cost this pass adds, so the
+    # reject keeps it off every Python file in the tree but the ones that use
+    # the name (the same shape as ``ts_export_aliases``' ``" as "`` guard).
+    if "__all__" not in src:
+        return None
+    try:
+        tree = ast.parse(src)
+    except (SyntaxError, ValueError):
+        return None
+
+    names: set[str] = set()
+    accepted: list[ast.Name] = []
+    assigned = False
+    for stmt in tree.body:
+        targets: list[ast.expr]
+        value: ast.expr | None
+        if isinstance(stmt, ast.Assign):
+            targets, value = stmt.targets, stmt.value
+        elif isinstance(stmt, ast.AnnAssign):
+            targets, value = [stmt.target], stmt.value
+        else:
+            continue
+        for target in targets:
+            if not (isinstance(target, ast.Name) and target.id == "__all__"):
+                continue
+            if assigned:
+                return None  # two bindings: the second one wins at runtime
+            literal = _py_all_literal(value)
+            if literal is None:
+                return None
+            names = literal
+            assigned = True
+            accepted.append(target)
+
+    if not assigned or _py_all_has_other_binding(tree, accepted):
+        return None
+    return frozenset(names)
+
+
+def refine_py_visibility(
+    def_node: Node,
+    current_visibility: str,
+    name: str,
+    all_names: frozenset[str] | None,
+) -> str:
+    """Raise a module-level name the module lists in ``__all__`` to ``public``.
+
+    ``py_visibility`` reads the identifier alone, so an underscore-prefixed
+    name that ``__all__`` explicitly exports reads ``private``. Membership is
+    the one thing that changes here, and it is capped at the visibility label:
+    it sets no export marker, mints no edge and suppresses no dead-code
+    finding, so ``__all__`` alone can never mark a symbol reachable. A name
+    the list omits is left exactly as it was — ``__all__`` is often stale, and
+    demoting on absence would move a genuinely dead export into the opt-in
+    internals pass and hide it from the default report.
+    """
+    if all_names is None or name not in all_names:
+        return current_visibility
+    node = def_node.parent
+    while node is not None:
+        if node.type in _PY_MEMBER_ANCESTORS:
+            return current_visibility
+        node = node.parent
     return "public"
 
 

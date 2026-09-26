@@ -59,8 +59,10 @@ from .extractors.bindings.ts_js import (
 )
 from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
+    py_module_all_names,
     refine_cpp_visibility,
     refine_csharp_visibility,
+    refine_py_visibility,
     refine_rust_visibility,
     refine_ts_visibility,
     ts_deferred_export_names,
@@ -1221,6 +1223,12 @@ class ASTParser:
         if file_info.language in _TS_JS_LANGUAGES:
             ts_deferred_exports = ts_deferred_export_names(src)
 
+        # Literal module __all__ names, once per file for the Python
+        # refinement below. None means no signal (built at runtime or absent).
+        py_all_names: frozenset[str] | None = None
+        if file_info.language == "python":
+            py_all_names = py_module_all_names(src)
+
         # tree-sitter-cpp parses ``struct EXPORT Name { ... }`` and
         # ``struct EXPORT Name;`` with ``EXPORT`` as the specifier name and the
         # real type name as a bare declarator. cpp.scm marks those matches so
@@ -1587,6 +1595,10 @@ class ASTParser:
             # inline, via ``export { x }`` lists, or ``export default x``.
             elif file_info.language in _TS_JS_LANGUAGES:
                 visibility = refine_ts_visibility(def_node, visibility, name, ts_deferred_exports)
+            # Python: a literal ``__all__`` raises the names it lists to
+            # public; it never demotes the ones it omits.
+            elif file_info.language == "python":
+                visibility = refine_py_visibility(def_node, visibility, name, py_all_names)
             # Rust: a trait's items may not write ``pub`` of their own, so the
             # trait's modifier is the only place their visibility is stated.
             elif file_info.language == "rust":
