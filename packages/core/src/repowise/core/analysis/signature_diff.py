@@ -9,8 +9,8 @@ Compares a base signature with a head signature to classify changes as:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 EFFECT_NONE = "none"
 EFFECT_COMPATIBLE = "compatible"
@@ -18,6 +18,9 @@ EFFECT_BREAKING = "breaking"
 EFFECT_UNKNOWN = "unknown"
 
 _RECEIVER_NAMES = frozenset({"self", "cls", "this"})
+_C_TYPES = frozenset(
+    {"int", "long", "float", "double", "char", "void", "bool", "boolean", "string", "String", "Object"}
+)
 
 
 @dataclass(frozen=True)
@@ -180,8 +183,7 @@ def _parse_single_param(raw: str, index: int = 0) -> ParsedParam:
     # "x int" (Go) -> tokens ["x", "int"] -> name is "x", type is "int"
     tokens = p.split()
     if len(tokens) == 2 and not type_ann:
-        c_types = {"int", "long", "float", "double", "char", "void", "bool", "boolean", "string", "String", "Object"}
-        if tokens[0] in c_types or tokens[0].endswith("*"):
+        if tokens[0] in _C_TYPES or tokens[0].endswith("*"):
             type_ann = tokens[0]
             name = tokens[1]
         else:
@@ -233,7 +235,7 @@ def _normalize_sig(sig: str) -> str:
 
 
 def classify_signature_change(
-    base_sig: str, head_sig: str, kind: str = "function"
+    base_sig: str, head_sig: str, _kind: str = "function"
 ) -> tuple[str, str | None]:
     """Classify semantic change between base_sig and head_sig.
 
