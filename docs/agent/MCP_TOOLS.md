@@ -235,7 +235,7 @@ Architecture summary, module map, and entry points.
 | `"tour"` | `guided_tour` and `reading_order` — onboarding walks |
 | `"decisions"` | `key_decisions`. `get_why` is the richer route |
 | `"graph"` | `community_summary` — code-community clusters |
-| `"ownership"` | `knowledge_map` — top owners and knowledge silos |
+| `"ownership"` | `knowledge_map` — top 3 owners by files owned |
 
 **When to use:** First call on any unfamiliar codebase. Gives the agent a mental map before diving into specifics. Skip on later calls in the same session; it doesn't change mid-session.
 

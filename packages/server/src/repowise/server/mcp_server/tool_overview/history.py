@@ -66,13 +66,11 @@ def _build_knowledge_map(all_git: list) -> dict[str, Any]:
     # Aggregate on email (the stable identity key) but never surface it — the
     # payload emits a display name only, to keep contributor emails private.
     owner_file_count: dict[str, int] = defaultdict(int)
-    owner_pct_sum: dict[str, float] = defaultdict(float)
     owner_name: dict[str, str] = {}
     for g in all_git:
         email = g.primary_owner_email or ""
         if email:
             owner_file_count[email] += 1
-            owner_pct_sum[email] += float(g.primary_owner_commit_pct or 0.0)
             owner_name.setdefault(email, _owner_display_name(g.primary_owner_name, email))
 
     total_files = len(all_git) or 1

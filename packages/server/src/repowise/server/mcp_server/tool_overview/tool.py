@@ -83,7 +83,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
             ``"tour"`` — ``guided_tour`` + ``reading_order`` onboarding walks.
             ``"decisions"`` — ``key_decisions``; ``get_why`` is richer.
             ``"graph"`` — ``community_summary``, code-community clusters.
-            ``"ownership"`` — ``knowledge_map``: top owners, knowledge silos.
+            ``"ownership"`` — ``knowledge_map``: top 3 owners by files owned.
     """
     if repo == "all":
         return await _workspace_overview()
