@@ -55,11 +55,19 @@ def restore_tool_globals():
 
 
 @pytest.fixture(autouse=True)
-def live_server_loggers(monkeypatch):
-    """Alembic's ``fileConfig`` elsewhere in the suite disables existing loggers."""
+def live_server_loggers():
+    """Other tests leave ``repowise.*`` loggers disabled (Alembic's ``fileConfig``)
+    or raised to ERROR (CLI log silencing); undo both for the test's duration."""
+    saved = []
     for name, logger in list(logging.root.manager.loggerDict.items()):
         if name.startswith("repowise") and isinstance(logger, logging.Logger):
-            monkeypatch.setattr(logger, "disabled", False)
+            saved.append((logger, logger.disabled, logger.level))
+            logger.disabled = False
+            logger.setLevel(logging.NOTSET)
+    yield
+    for logger, disabled, level in saved:
+        logger.disabled = disabled
+        logger.setLevel(level)
 
 
 @pytest.fixture
