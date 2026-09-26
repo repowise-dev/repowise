@@ -12,39 +12,18 @@ Models:
 
 from __future__ import annotations
 
-import os
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-import structlog
-from openai import AsyncOpenAI
-from tenacity import RetryError, retry
-
-from repowise.core.providers.llm.base import (
-    BaseProvider,
-    ChatStreamEvent,
-    GeneratedResponse,
-    ProviderError,
-    ProviderModelOption,
-    ensure_reasoning_supported,
-    provider_retry_stop,
-    provider_retry_wait,
-    provider_should_retry,
-    record_generation_cost,
-)
+from repowise.core.providers.llm.base import ProviderModelOption
 from repowise.core.providers.llm.openai_compat import (
-    completion_to_response,
+    OpenAICompatibleProvider,
     listed_model_options,
-    stream_openai_chat,
-    translate_openai_errors,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
-
-log = structlog.get_logger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.deepseek.com"
 _DEEPSEEK_REASONING_MODES: tuple[ReasoningMode, ...] = (
@@ -72,23 +51,6 @@ def _deepseek_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]
     if model in _DEEPSEEK_REASONING_MODELS:
         return _DEEPSEEK_REASONING_MODES
     return ()
-
-
-def _resolve_deepseek_reasoning_mode(
-    reasoning: ReasoningMode,
-    *,
-    model: str,
-) -> ReasoningMode:
-    return ensure_reasoning_supported(
-        "deepseek",
-        model,
-        normalize_reasoning(reasoning),
-        _deepseek_supported_reasoning_modes(model),
-        detail=(
-            "DeepSeek /models lists IDs only; reasoning controls are enabled "
-            "for the documented DeepSeek Flash and V4 model families."
-        ),
-    )
 
 
 def _deepseek_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
@@ -124,7 +86,7 @@ def _deepseek_model_options(
     )
 
 
-class DeepSeekProvider(BaseProvider):
+class DeepSeekProvider(OpenAICompatibleProvider):
     """DeepSeek provider — access DeepSeek V4 models via OpenAI-compatible API.
 
     Args:
@@ -135,6 +97,15 @@ class DeepSeekProvider(BaseProvider):
         cost_tracker: Optional CostTracker instance for usage recording.
     """
 
+    provider_id = "deepseek"
+    api_key_env = "DEEPSEEK_API_KEY"
+    base_url_env = "DEEPSEEK_BASE_URL"
+    default_base_url = _DEFAULT_BASE_URL
+    reasoning_detail = (
+        "DeepSeek /models lists IDs only; reasoning controls are enabled "
+        "for the documented DeepSeek Flash and V4 model families."
+    )
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -143,129 +114,25 @@ class DeepSeekProvider(BaseProvider):
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,
     ) -> None:
-        resolved_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
-        if not resolved_key:
-            raise ProviderError(
-                "deepseek",
-                "No API key provided. Pass api_key= or set DEEPSEEK_API_KEY.",
-            )
-        resolved_base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL") or _DEFAULT_BASE_URL
-        self._api_key = resolved_key
-        self._base_url = resolved_base_url
-        self._client = AsyncOpenAI(
-            api_key=resolved_key,
-            base_url=resolved_base_url,
-        )
-        self._model = model
-        self._rate_limiter = rate_limiter
-        self._cost_tracker = cost_tracker
-
-    @property
-    def provider_name(self) -> str:
-        return "deepseek"
-
-    @property
-    def model_name(self) -> str:
-        return self._model
-
-    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
-        return ("auto", *_deepseek_supported_reasoning_modes(self._model))
+        super().__init__(api_key, model, base_url, rate_limiter, cost_tracker)
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _deepseek_model_options(self._api_key, self._base_url, self._model)
 
-    async def generate(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int = 4096,
-        temperature: float = 0.3,
-        request_id: str | None = None,
-        reasoning: ReasoningMode = "auto",
-        cache_hints: tuple = (),
-    ) -> GeneratedResponse:
-        reasoning_mode = _resolve_deepseek_reasoning_mode(reasoning, model=self._model)
-        if self._rate_limiter:
-            await self._rate_limiter.acquire(estimated_tokens=max_tokens)
+    def _explicit_reasoning_modes(self, model: str) -> tuple[ReasoningMode, ...]:
+        return _deepseek_supported_reasoning_modes(model)
 
-        log.debug(
-            "deepseek.generate.start",
-            model=self._model,
-            max_tokens=max_tokens,
-            request_id=request_id,
-        )
+    def _reasoning_kwargs(self, reasoning: ReasoningMode) -> dict[str, Any]:
+        return _deepseek_reasoning_kwargs(reasoning)
 
-        try:
-            return await self._generate_with_retry(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                request_id=request_id,
-                reasoning=reasoning_mode,
-            )
-        except RetryError as exc:
-            raise ProviderError(
-                "deepseek",
-                f"All retries exhausted: {exc}",
-            ) from exc
-
-    @retry(
-        retry=provider_should_retry,
-        stop=provider_retry_stop,
-        wait=provider_retry_wait,
-        reraise=True,
-    )
-    async def _generate_with_retry(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int,
-        temperature: float,
-        request_id: str | None,
-        reasoning: ReasoningMode,
-    ) -> GeneratedResponse:
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-        kwargs.update(_deepseek_reasoning_kwargs(reasoning))
-        with translate_openai_errors("deepseek"):
-            response = await self._client.chat.completions.create(**kwargs)
-
-        result = completion_to_response(response)
-        log.debug(
-            "deepseek.generate.done",
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            request_id=request_id,
-        )
-
-        await record_generation_cost(self._cost_tracker, model=self._model, result=result)
-        return result
-
-    async def stream_chat(
+    def _stream_kwargs(
         self,
         messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        system_prompt: str,
-        max_tokens: int = 8192,
-        temperature: float = 0.7,
-        request_id: str | None = None,
-        tool_executor: Any | None = None,
-    ) -> AsyncIterator[ChatStreamEvent]:
-        full_messages = [{"role": "system", "content": system_prompt}, *messages]
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": full_messages,
-            "stream": True,
+        max_tokens: int,
+        temperature: float,
+    ) -> dict[str, Any]:
+        return {
+            **super()._stream_kwargs(messages, max_tokens, temperature),
             # Thinking tool calls require reasoning_content from every prior
             # assistant turn. Repowise's shared chat history intentionally
             # does not retain hidden reasoning, so use DeepSeek's documented
@@ -273,8 +140,3 @@ class DeepSeekProvider(BaseProvider):
             # invalid follow-up request after the first tool call.
             "extra_body": {"thinking": {"type": "disabled"}},
         }
-        if tools:
-            kwargs["tools"] = tools
-
-        async for event in stream_openai_chat(self._client, "deepseek", kwargs):
-            yield event

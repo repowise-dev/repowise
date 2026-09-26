@@ -10,25 +10,42 @@ completion-to-``GeneratedResponse`` mapping and the ``/models`` listing fetch.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractContextManager
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
+import structlog
 from openai import APIError as _OpenAIAPIError
 from openai import APIStatusError as _OpenAIAPIStatusError
+from openai import AsyncOpenAI
 from openai import RateLimitError as _OpenAIRateLimitError
+from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
+    BaseProvider,
     ChatStreamEvent,
     ChatToolCall,
     GeneratedResponse,
+    ProviderError,
     ProviderModelOption,
+    ensure_reasoning_supported,
     fallback_model_option,
     normalize_stop_reason,
     parse_tool_arguments,
+    provider_retry_stop,
+    provider_retry_wait,
+    provider_should_retry,
+    record_generation_cost,
     translate_sdk_errors,
 )
-from repowise.core.reasoning import ReasoningMode
+from repowise.core.reasoning import ReasoningMode, normalize_reasoning
+
+if TYPE_CHECKING:
+    from repowise.core.generation.cost_tracker import CostTracker
+    from repowise.core.rate_limiter import RateLimiter
+
+log = structlog.get_logger(__name__)
 
 
 def translate_openai_errors(
@@ -253,3 +270,211 @@ def listed_model_options(
     if sort:
         options.sort(key=lambda option: option.model)
     return tuple(options)
+
+
+class OpenAICompatibleProvider(BaseProvider):
+    """Base for a hosted gateway that is the Chat Completions API at another URL.
+
+    Such a gateway needs an API key, a base URL and a few request tweaks, and
+    is otherwise driven exactly like OpenAI. Subclasses set the class
+    attributes below and override the ``_*_kwargs`` hooks where their
+    requests differ; everything else (retries, error translation, streaming,
+    cost recording) is shared.
+    """
+
+    provider_id: ClassVar[str]
+    api_key_env: ClassVar[str]
+    base_url_env: ClassVar[str]
+    default_base_url: ClassVar[str]
+    #: Appended to the "reasoning not supported" error.
+    reasoning_detail: ClassVar[str]
+    #: Wrap status-less SDK errors (connection failures, timeouts) so they retry.
+    wrap_connection_errors: ClassVar[bool] = True
+    #: Report the completion's stop reason on ``GeneratedResponse``.
+    reports_stop_reason: ClassVar[bool] = True
+    #: Fixed cost-tracker operation; ``None`` uses the tracker's current one.
+    cost_operation: ClassVar[str | None] = None
+
+    def __init__(
+        self,
+        api_key: str | None,
+        model: str,
+        base_url: str | None,
+        rate_limiter: RateLimiter | None,
+        cost_tracker: CostTracker | None,
+    ) -> None:
+        resolved_key = api_key or os.environ.get(self.api_key_env)
+        if not resolved_key:
+            raise ProviderError(
+                self.provider_id,
+                f"No API key provided. Pass api_key= or set {self.api_key_env}.",
+            )
+        resolved_base_url = (
+            base_url or os.environ.get(self.base_url_env) or self.default_base_url
+        )
+        self._api_key = resolved_key
+        self._base_url = self._clean_base_url(resolved_base_url)
+        self._client = AsyncOpenAI(api_key=resolved_key, base_url=self._base_url)
+        self._model = model
+        self._rate_limiter = rate_limiter
+        self._cost_tracker = cost_tracker
+
+    @property
+    def provider_name(self) -> str:
+        return self.provider_id
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        return ("auto", *self._explicit_reasoning_modes(self._model))
+
+    # --- hooks -----------------------------------------------------------
+
+    def _clean_base_url(self, base_url: str) -> str:
+        return base_url
+
+    def _explicit_reasoning_modes(self, model: str) -> tuple[ReasoningMode, ...]:
+        """The reasoning modes *model* accepts besides ``auto``."""
+        raise NotImplementedError
+
+    def _reasoning_kwargs(self, reasoning: ReasoningMode) -> dict[str, Any]:
+        """Request kwargs that carry a validated reasoning mode."""
+        raise NotImplementedError
+
+    def _completion_kwargs(
+        self,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+        reasoning: ReasoningMode,
+    ) -> dict[str, Any]:
+        return {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": messages,
+            **self._reasoning_kwargs(reasoning),
+        }
+
+    def _stream_kwargs(
+        self,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+    ) -> dict[str, Any]:
+        return {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": messages,
+            "stream": True,
+        }
+
+    # --- generation --------------------------------------------------------
+
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+        request_id: str | None = None,
+        reasoning: ReasoningMode = "auto",
+        cache_hints: tuple = (),
+    ) -> GeneratedResponse:
+        reasoning_mode = ensure_reasoning_supported(
+            self.provider_id,
+            self._model,
+            normalize_reasoning(reasoning),
+            self._explicit_reasoning_modes(self._model),
+            detail=self.reasoning_detail,
+        )
+        if self._rate_limiter:
+            await self._rate_limiter.acquire(estimated_tokens=max_tokens)
+
+        log.debug(
+            f"{self.provider_id}.generate.start",
+            model=self._model,
+            max_tokens=max_tokens,
+            request_id=request_id,
+        )
+
+        try:
+            return await self._generate_with_retry(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                request_id=request_id,
+                reasoning=reasoning_mode,
+            )
+        except RetryError as exc:
+            raise ProviderError(
+                self.provider_id,
+                f"All retries exhausted: {exc}",
+            ) from exc
+
+    @retry(
+        retry=provider_should_retry,
+        stop=provider_retry_stop,
+        wait=provider_retry_wait,
+        reraise=True,
+    )
+    async def _generate_with_retry(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        temperature: float,
+        request_id: str | None,
+        reasoning: ReasoningMode,
+    ) -> GeneratedResponse:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        kwargs = self._completion_kwargs(messages, max_tokens, temperature, reasoning)
+        with translate_openai_errors(
+            self.provider_id, include_api_error=self.wrap_connection_errors
+        ):
+            response = await self._client.chat.completions.create(**kwargs)
+
+        result = completion_to_response(response, include_stop_reason=self.reports_stop_reason)
+        log.debug(
+            f"{self.provider_id}.generate.done",
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            request_id=request_id,
+        )
+
+        await record_generation_cost(
+            self._cost_tracker, model=self._model, result=result, operation=self.cost_operation
+        )
+        return result
+
+    # --- ChatProvider protocol implementation ---
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        system_prompt: str,
+        max_tokens: int = 8192,
+        temperature: float = 0.7,
+        request_id: str | None = None,
+        tool_executor: Any | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        full_messages = [{"role": "system", "content": system_prompt}, *messages]
+        kwargs = self._stream_kwargs(full_messages, max_tokens, temperature)
+        if tools:
+            kwargs["tools"] = tools
+
+        async for event in stream_openai_chat(
+            self._client,
+            self.provider_id,
+            kwargs,
+            include_api_error=self.wrap_connection_errors,
+        ):
+            yield event

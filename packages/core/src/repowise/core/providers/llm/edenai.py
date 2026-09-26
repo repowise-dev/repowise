@@ -23,39 +23,18 @@ Set the EU endpoint for data residency:
 
 from __future__ import annotations
 
-import os
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-import structlog
-from openai import AsyncOpenAI
-from tenacity import RetryError, retry
-
-from repowise.core.providers.llm.base import (
-    BaseProvider,
-    ChatStreamEvent,
-    GeneratedResponse,
-    ProviderError,
-    ProviderModelOption,
-    ensure_reasoning_supported,
-    provider_retry_stop,
-    provider_retry_wait,
-    provider_should_retry,
-    record_generation_cost,
-)
+from repowise.core.providers.llm.base import ProviderModelOption
 from repowise.core.providers.llm.openai_compat import (
-    completion_to_response,
+    OpenAICompatibleProvider,
     listed_model_options,
-    stream_openai_chat,
-    translate_openai_errors,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
-
-log = structlog.get_logger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.edenai.run/v3"
 
@@ -86,20 +65,6 @@ def _edenai_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
     if leaf.startswith("gpt-5"):
         return ("minimal", "low", "medium", "high")
     return ("low", "medium", "high")
-
-
-def _resolve_edenai_reasoning_mode(reasoning: ReasoningMode, *, model: str) -> ReasoningMode:
-    """Validate reasoning support before issuing an API call."""
-    return ensure_reasoning_supported(
-        "edenai",
-        model,
-        normalize_reasoning(reasoning),
-        _edenai_supported_reasoning_modes(model),
-        detail=(
-            "EdenAIProvider maps explicit efforts to the OpenAI reasoning_effort "
-            "parameter for OpenAI reasoning model ids routed via Eden AI."
-        ),
-    )
 
 
 def _edenai_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
@@ -133,7 +98,7 @@ def _edenai_model_options(
     )
 
 
-class EdenAIProvider(BaseProvider):
+class EdenAIProvider(OpenAICompatibleProvider):
     """Eden AI provider, reaching many vendors via a single OpenAI-compatible key.
 
     Args:
@@ -147,6 +112,21 @@ class EdenAIProvider(BaseProvider):
         cost_tracker: Optional CostTracker instance for usage recording.
     """
 
+    provider_id = "edenai"
+    api_key_env = "EDENAI_API_KEY"
+    base_url_env = "EDENAI_BASE_URL"
+    default_base_url = _DEFAULT_BASE_URL
+    reasoning_detail = (
+        "EdenAIProvider maps explicit efforts to the OpenAI reasoning_effort "
+        "parameter for OpenAI reasoning model ids routed via Eden AI."
+    )
+    # Differences from the other gateways that predate the shared base class:
+    # status-less SDK errors are not wrapped (so not retried), no stop reason
+    # is reported, and spend is always recorded as doc generation.
+    wrap_connection_errors = False
+    reports_stop_reason = False
+    cost_operation = "doc_generation"
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -155,136 +135,16 @@ class EdenAIProvider(BaseProvider):
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,
     ) -> None:
-        resolved_key = api_key or os.environ.get("EDENAI_API_KEY")
-        if not resolved_key:
-            raise ProviderError(
-                "edenai",
-                "No API key provided. Pass api_key= or set EDENAI_API_KEY.",
-            )
-        resolved_base_url = base_url or os.environ.get("EDENAI_BASE_URL") or _DEFAULT_BASE_URL
-        self._api_key = resolved_key
-        self._base_url = resolved_base_url.rstrip("/")
-        self._client = AsyncOpenAI(
-            api_key=resolved_key,
-            base_url=self._base_url,
-        )
-        self._model = model
-        self._rate_limiter = rate_limiter
-        self._cost_tracker = cost_tracker
-
-    @property
-    def provider_name(self) -> str:
-        return "edenai"
-
-    @property
-    def model_name(self) -> str:
-        return self._model
-
-    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
-        return ("auto", *_edenai_supported_reasoning_modes(self._model))
+        super().__init__(api_key, model, base_url, rate_limiter, cost_tracker)
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _edenai_model_options(self._api_key, self._base_url, self._model)
 
-    async def generate(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int = 4096,
-        temperature: float = 0.3,
-        request_id: str | None = None,
-        reasoning: ReasoningMode = "auto",
-        cache_hints: tuple = (),
-    ) -> GeneratedResponse:
-        reasoning_mode = _resolve_edenai_reasoning_mode(reasoning, model=self._model)
-        if self._rate_limiter:
-            await self._rate_limiter.acquire(estimated_tokens=max_tokens)
+    def _clean_base_url(self, base_url: str) -> str:
+        return base_url.rstrip("/")
 
-        log.debug(
-            "edenai.generate.start",
-            model=self._model,
-            max_tokens=max_tokens,
-            request_id=request_id,
-        )
+    def _explicit_reasoning_modes(self, model: str) -> tuple[ReasoningMode, ...]:
+        return _edenai_supported_reasoning_modes(model)
 
-        try:
-            return await self._generate_with_retry(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                request_id=request_id,
-                reasoning=reasoning_mode,
-            )
-        except RetryError as exc:
-            raise ProviderError(
-                "edenai",
-                f"All retries exhausted: {exc}",
-            ) from exc
-
-    @retry(
-        retry=provider_should_retry,
-        stop=provider_retry_stop,
-        wait=provider_retry_wait,
-        reraise=True,
-    )
-    async def _generate_with_retry(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int,
-        temperature: float,
-        request_id: str | None,
-        reasoning: ReasoningMode,
-    ) -> GeneratedResponse:
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-        kwargs.update(_edenai_reasoning_kwargs(reasoning))
-        with translate_openai_errors("edenai", include_api_error=False):
-            response = await self._client.chat.completions.create(**kwargs)
-
-        result = completion_to_response(response, include_stop_reason=False)
-        log.debug(
-            "edenai.generate.done",
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            request_id=request_id,
-        )
-
-        await record_generation_cost(
-            self._cost_tracker, model=self._model, result=result, operation="doc_generation"
-        )
-        return result
-
-    # --- ChatProvider protocol implementation ---
-
-    async def stream_chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        system_prompt: str,
-        max_tokens: int = 8192,
-        temperature: float = 0.7,
-        request_id: str | None = None,
-        tool_executor: Any | None = None,
-    ) -> AsyncIterator[ChatStreamEvent]:
-        full_messages = [{"role": "system", "content": system_prompt}, *messages]
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": full_messages,
-            "stream": True,
-        }
-        if tools:
-            kwargs["tools"] = tools
-
-        async for event in stream_openai_chat(self._client, "edenai", kwargs, include_api_error=False):
-            yield event
+    def _reasoning_kwargs(self, reasoning: ReasoningMode) -> dict[str, Any]:
+        return _edenai_reasoning_kwargs(reasoning)
