@@ -41,16 +41,11 @@ _FIXTURE_CAMEL_RES = _LANG_REGISTRY.camel_fixture_res_by_extension()
 # face must come from inside one.
 _TEST_PROJECT_DIR_SUFFIXES: tuple[str, ...] = _LANG_REGISTRY.test_dir_suffixes()
 
-# Honest-degradation thresholds. Density = (imports + tested_by)
-# edges per dominant-language file — the same definition the validation
-# harness uses, calibrated on the 13-repo matrix: express (1.89, broken CJS
-# resolution) and sinatra (1.48, broken require resolution) land in
-# "sparse"; every healthy repo sits at ≥ 2.2. Repos below the file floor
-# skip the density check — density on a 7-file repo is noise, not evidence.
-# Low density alone stops indicting the resolver once the resolution rate
-# (internal targets / all targets) is strong: stdlib filtering makes an
-# honestly-resolved Ruby gem land at ~1.3 edges/file with 0.77 resolution —
-# that graph isn't lying, it's just require-light.
+# Honest-degradation thresholds. Density is import edges per dominant-language
+# file; resolution is internal targets over all targets. Repos below the file
+# floor skip the density check, since density on a tiny repo is noise. Low
+# density indicts the resolver only when resolution is also weak: a
+# require-light but well-resolved graph narrates honestly.
 _FLOW_DENSITY_FLOOR = 2.0
 _FLOW_RESOLUTION_FLOOR = 0.7
 _STRUCTURAL_DENSITY_FLOOR = 0.3
@@ -96,13 +91,8 @@ def _mode_from_imports(support: str, file_count: int, internal: int, external: i
     density = total / file_count
     if density < _STRUCTURAL_DENSITY_FLOOR:
         return "structural"
-    # Partial-tier languages run in flow or sparse per their REAL density
-    # and resolution, exactly like full-tier ones: a regex-tier resolver
-    # that resolves 0.95+ of an Elixir repo's aliases must not have its
-    # tour blame "incomplete import resolution" — that would be the lie
-    # this mode exists to prevent, inverted.
-    # Low density indicts the resolver only when resolution is ALSO
-    # weak — a require-light but well-resolved graph narrates honestly.
+    # Partial-tier languages are judged on their real density and resolution,
+    # exactly like full-tier ones.
     if density < _FLOW_DENSITY_FLOOR and resolution < _FLOW_RESOLUTION_FLOOR:
         return "sparse"
     return "flow"
@@ -304,12 +294,9 @@ def _internal_edges(graph_builder: Any, edge_types: frozenset[str]) -> Iterator[
             yield src, dst, data
 
 
-# The harness signal is "this test file *depends on* that one" — type
-# references and inheritance (a base test class) are exactly that evidence;
-# raw-graph type_use/heritage edges surface as plain imports in the export.
-# Deliberately narrower than FILE_DEPENDENCY_EDGE_TYPES: framework and dynamic
-# wiring is not harness evidence. "heritage" used to be a third member and was
-# never an edge type — inheritance reaches the graph as extends/implements.
+# The harness signal is "this test file *depends on* that one": imports and
+# type references are that evidence. Deliberately narrower than
+# FILE_DEPENDENCY_EDGE_TYPES, since framework and dynamic wiring is not.
 _DEPENDENCY_EDGE_TYPES = frozenset({"imports", "type_use"})
 
 
