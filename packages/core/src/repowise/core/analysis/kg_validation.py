@@ -10,9 +10,8 @@ from repowise.core.analysis.kg_modules import _MODULE_TARGET_MAX, _SIZE_SUFFIX_R
 from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult
 from repowise.core.generation.tour import DEFAULT_MAX_STOPS
 
-# Hard bound on the curated primary-layer count. The spine is bounded ≤~11 by
-# construction; if a future change ever blows past this we degrade to the
-# uncurated layers rather than ship an unreadable list.
+# Hard bound on the curated primary-layer count. The spine stays well below it
+# by construction; past it curation keeps the uncurated layers.
 _MAX_LAYERS = 15
 
 # Entry points surfaced in ``project.entry_points``; the full ranked list is
@@ -48,7 +47,7 @@ class KGValidation:
 
 
 def validate_kg(kg: KnowledgeGraphResult) -> KGValidation:
-    """Validate a curated KG against the intuitiveness invariants (plan §5/§7).
+    """Validate a curated KG against the intuitiveness invariants.
 
     Pure and side-effect free. Hard violations set ``ok=False`` and populate
     ``errors``; size/shape-dependent shortfalls go to ``warnings``. The

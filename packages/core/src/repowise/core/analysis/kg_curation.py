@@ -11,14 +11,10 @@ summaries.
 **Hard invariant.** Curation reads the NetworkX graph, communities, and
 centrality, but it *only ever writes the returned* :class:`KnowledgeGraphResult`.
 It never mutates ``graph_builder``'s graph, ``graph_edges``, centrality caches,
-community detection, or any DB table. There is a regression test that asserts the
-graph's node/edge counts are identical before and after this pass.
+community detection, or any DB table.
 
 Curation is feature-flagged (``REPOWISE_KG_CURATION``) and defaults **on**;
-the 38-repo cross-language validation matrix is the acceptance gate that
-flipped it. Setting the flag to ``0``/``false``/``no``/``off`` makes
-:func:`curate_knowledge_graph` a no-op that returns its input unchanged
-(the raw uncurated export).
+see :func:`curation_enabled`.
 """
 
 from __future__ import annotations
@@ -90,7 +86,7 @@ _FLAG_ENV = "REPOWISE_KG_CURATION"
 # A primary layer larger than this many files, or spanning more than this many
 # distinct sub-directories, is given a two-level structure (primary → named
 # sub-groups) so a mega-layer like core/* or ui/* stays drill-down legible
-# instead of becoming one opaque bucket (plan §Phase 1, edge case B).
+# instead of becoming one opaque bucket.
 _SUBSPLIT_FILE_THRESHOLD = 60
 _SUBSPLIT_DIR_THRESHOLD = 8
 
@@ -98,10 +94,8 @@ _SUBSPLIT_DIR_THRESHOLD = 8
 def curation_enabled() -> bool:
     """Whether KG curation is enabled via the ``REPOWISE_KG_CURATION`` env flag.
 
-    Defaults to **on** — the cross-language validation matrix (38 pinned
-    repos, enforced density/orphan/catch-all thresholds, honest degradation
-    modes) is the acceptance gate that flipped it. Set ``0``/``false``/``no``/
-    ``off`` (case-insensitive) to fall back to the raw uncurated export.
+    Defaults to **on**. Set ``0``/``false``/``no``/``off`` (case-insensitive)
+    to fall back to the raw uncurated export.
     Resolved at the call site so :func:`curate_knowledge_graph` itself stays
     pure and trivially testable with an explicit ``enabled=``.
     """
@@ -123,8 +117,7 @@ def curate_knowledge_graph(
 
     Pure with respect to the AST graph: reads ``graph_builder`` /
     ``community_info`` but writes only the returned result. When ``enabled`` is
-    ``False`` this is a strict no-op returning ``kg`` unchanged (the default, so
-    the exported KG is unaffected until the flag flips).
+    ``False`` this is a strict no-op returning ``kg`` unchanged.
 
     ``defer_summary_floor`` skips the never-empty summary floor here so it can
     run *after* the wiki-page backfill in generate mode (where richer summaries
@@ -136,9 +129,6 @@ def curate_knowledge_graph(
     if not enabled:
         return kg
 
-    # Each step mutates only ``kg`` (the presentation result) and is guarded so
-    # a failure degrades to the prior, uncurated field rather than aborting the
-    # export.
     layers = _guarded(
         "kg_curation._curate_layers failed; keeping community layers",
         _curate_layers,
@@ -147,11 +137,8 @@ def curate_knowledge_graph(
     )
     if layers is not None:
         kg.layers = layers
-        # Wiki modules are a *sibling* artifact of the curated layers (same
-        # splitting machinery, module-sized granularity). Only derived when the
-        # spine landed — community layers would make the dir-split meaningless,
-        # and downstream consumers fall back to community grouping when this
-        # stays empty (the fallback matrix's "degraded" row).
+        # Modules need the curated spine; over community layers the dir split
+        # is meaningless, and consumers fall back to community grouping.
         modules = _guarded(
             "kg_curation._curate_modules failed; exporting no modules", _curate_modules, kg
         )
@@ -270,9 +257,8 @@ def _curate_layers(kg: KnowledgeGraphResult, graph_builder: Any) -> list[dict] |
     }
     import_edges = _file_import_edges(graph_builder)
     order = compute_layer_order(file_layers, import_edges)
-    # Honesty label (additive export field): "imports" when inter-layer edges
-    # informed the order, "canonical" when it is pure convention — consumers
-    # must not claim "X sits above Y" for a canonical order.
+    # "imports" when inter-layer edges informed the order, "canonical" when it
+    # is pure convention: consumers must not claim "X sits above Y" for the latter.
     order_basis = layer_order_basis(file_layers, import_edges)
 
     by_layer: dict[str, list[str]] = defaultdict(list)
@@ -398,9 +384,8 @@ def _curate_entry_points(
 
     paths = _flagged_entry_paths(kg, pf_by_path)
     if not paths:
-        # No ingestion-flagged entries (or all were barrels): fall back to the
-        # strong filename scorers the tour seeds from (score >= 3 means an
-        # entry-style name or flag, never just shallow/high-PageRank).
+        # No flagged entries survived: score >= 3 means an entry-style name or
+        # flag, never just a shallow or high-PageRank file.
         paths = [
             path
             for s, path in score_entry_points(parsed_files, pagerank)
@@ -498,10 +483,8 @@ _DATA_SUFFIXES = (".sql", ".prisma")
 
 # Source-code extensions. A code file is never CI/infra config however its
 # name or directory reads — ``languages/specs/dockerfile.py`` *parses*
-# Dockerfiles, it isn't one. Registry-derived: every is_code,
-# non-infra language's extensions are protected — .dart/.hs/.clj included;
-# shell/terraform stay promotable (they ARE infra); the historical orphan
-# ``.pl`` (no perl spec) is gone.
+# Dockerfiles, it isn't one. Registry-derived from every non-infra code
+# language; shell/terraform stay promotable because they are infra.
 _CODE_SUFFIXES = _LANG_REGISTRY.non_infra_code_extensions()
 
 
@@ -591,9 +574,8 @@ def _support_summary(path: str, node_type: str, tags: list[str]) -> str | None:
     )
     if template is None:
         return None
-    # Recognised scaffolding earns a real role instead of a bare name
-    # restatement; only genuinely opaque support files fall back to the
-    # type template.
+    # Recognised scaffolding earns a real role; only opaque support files fall
+    # back to the type template.
     role = well_known_role(path)
     if role is not None:
         return role

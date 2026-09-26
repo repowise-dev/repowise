@@ -29,13 +29,10 @@ def _common_dir_prefix(seg_lists: list[tuple[str, ...]]) -> tuple[str, ...]:
     return tuple(common)
 
 
-# Granularity window for derived wiki modules. Sub-groups verbatim are NOT
-# module-sized (a 452-file ``core`` sub-group would make one vague mush of a
-# doc; a 1-file ``examples`` group would mint a confetti page), so the layer
-# node sets are split *recursively* by directory until every group fits the
-# window — bottoming out honestly on flat directories. ``target_max`` keeps
-# the 10 key-file template slots representative; ``target_min`` is the
-# merge-up floor below which a group folds into its nearest sibling.
+# Granularity window for derived wiki modules. Layer node sets are split
+# recursively by directory until every group fits, stopping at flat
+# directories. ``target_max`` keeps the 10 key-file template slots
+# representative; below ``target_min`` a group folds into its nearest sibling.
 _MODULE_TARGET_MIN = 8
 _MODULE_TARGET_MAX = 120
 # A layer smaller than this yields no module at all (matches the selection
@@ -45,8 +42,7 @@ _MODULE_MIN_FILES = 3
 # *generic* (namespace dirs: ``src``, ``packages``, the repo's own name) and
 # never appears in a module name. Data-driven — no hardcoded segment list.
 _GENERIC_SEGMENT_FRACTION = 0.60
-# The legacy community labels' size-suffix dedupe ("ingestion (32)") is the
-# exact failure mode module names must never reproduce.
+# Module names never carry a size suffix such as "ingestion (32)".
 _SIZE_SUFFIX_RE = re.compile(r"\(\d+\)\s*$")
 
 
@@ -205,17 +201,14 @@ def _name_modules(mods: list[dict], generic: set[str]) -> None:
     info_by, used = _initial_module_names(mods, generic)
     _extend_colliding_names(mods, info_by, used)
 
-    # Two all-organizational groups in one layer (a root remnant plus a
-    # "packages"-style container) would both read "<Layer> (top-level)" —
-    # the container's raw tail is the honest tiebreak.
+    # A root remnant and an organizational container in one layer would both
+    # read "<Layer> (top-level)"; the container's raw tail breaks the tie.
     _rename_collisions(mods, lambda m: None if info_by[id(m)] else _dir_tail(m))
 
-    # Same informative dir in two layers (or no segments left): the layer
-    # name disambiguates — (dir, layer) is unique by construction.
+    # Same informative dir in two layers: (dir, layer) is unique by construction.
     _rename_collisions(mods, lambda m: f"{m['name']} ({m['_layerName']})")
 
-    # Absolute backstop (two all-org dirs in one layer sharing a tail): the
-    # full dir path is unique per layer.
+    # Backstop: the full dir path is unique per layer.
     _rename_collisions(mods, lambda m: "/".join(m["_dir"]) or None)
 
 
@@ -227,14 +220,9 @@ def _initial_module_names(
     info_by: dict[int, list[str]] = {}
     used: dict[int, int | None] = {}  # informative segments consumed; None = fixed
     for m in mods:
-        # Data-driven stripping can consume EVERY segment on fixture-dominated
-        # repos (aeson: tests/JSONTestSuite/test_parsing is >60% of all
-        # paths). The raw dir tail is still the honest name there —
-        # "(top-level)" would mislabel a real directory and collide across
-        # sibling groups (which trips the export degradation guard and ships
-        # no modules). Universal organizational dirs (pkg, src, packages…)
-        # stay excluded even in the fallback: "(top-level)" reads better than
-        # a container name, so it remains the name for true root groups.
+        # Generic stripping can consume every segment on fixture-dominated
+        # repos; the raw tail minus organizational dirs is still the honest
+        # name, and "(top-level)" stays reserved for true root groups.
         info = [s for s in m["_dir"] if s not in generic] or [
             s for s in m["_dir"] if s.lower() not in GENERIC_ORG_SEGMENTS
         ]
@@ -301,7 +289,7 @@ def derive_modules(
     ``Module = {"id": "module:<dir-slug>", "name": <human>, "path": <dir or "">,
     "layerId": ..., "nodeIds": [...], "language": ...}``
 
-    Properties (each one an edge case from the research pass):
+    Properties:
 
     - **Partition per layer**: every node of every layer ≥ ``min_module_size``
       lands in exactly one module; layers below the floor yield none. Never
@@ -329,9 +317,8 @@ def derive_modules(
     _name_modules(mods, generic)
     _assign_module_ids(mods)
 
-    # A single-module layer is 1:1 with its layer page — mark it so page
-    # generation can skip the duplicate doc (the module stays in the
-    # artifact: canvas containers and the coverage invariant need it).
+    # A single-module layer duplicates its layer page; the flag lets page
+    # generation skip it while the module stays in the artifact.
     per_layer_count: Counter[str] = Counter(m["layerId"] for m in mods)
     return [
         _export_module(m, per_layer_count[m["layerId"]] == 1, lang_by_id) for m in mods
