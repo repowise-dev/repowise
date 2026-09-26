@@ -9,16 +9,11 @@ from typing import Any
 
 from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.providers.embedding import store_has_semantic_vectors
-from repowise.server.mcp_server._budget import (
-    OmissionCollector,
-    cap_collection,
-)
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
 from repowise.server.mcp_server._episodes import episode_evidence
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._why_evidence import (
-    annotate_response_evidence_async,
-)
+from repowise.server.mcp_server._why_evidence import annotate_response_evidence_async
 from repowise.server.mcp_server._why_relevance import (
     clears_floor,
     query_scorer,
@@ -30,13 +25,14 @@ from repowise.server.mcp_server.tool_why.basis import _has_archaeology
 from repowise.server.mcp_server.tool_why.caps import (
     _MAX_SEARCH_DECISIONS,
     _SEMANTIC_WINDOW,
+    _cap_episodes,
     _cap_supporting_lanes,
     _cap_target_context,
-    _prepare_episode_bodies,
+    _serve_episodes,
 )
+from repowise.server.mcp_server.tool_why.lineage import _lineage_for_matches
 from repowise.server.mcp_server.tool_why.loading import (
     _hydrate_response_decision_evidence,
-    _lineage_for_matches,
     _load_corpus,
 )
 from repowise.server.mcp_server.tool_why.path_mode import _build_target_context
@@ -146,16 +142,7 @@ def _focus_target_context(
         # question would hide a ruling from the person about to edit the file.
         # A candidate binds nothing, so it has to earn its place like any other
         # unranked text.
-        rows = entry.get("candidate_decisions")
-        if isinstance(rows, list) and rows:
-            kept = [r for r in rows if clears_floor(score(json.dumps(r, default=str)))]
-            if kept:
-                entry["candidate_decisions"] = kept
-            else:
-                entry.pop("candidate_decisions", None)
-                entry["candidate_decisions_omitted"] = recovery_note(
-                    len(rows), recall
-                )
+        _keep_relevant(entry, "candidate_decisions", score, recall)
 
         # Only the origin story's decision lane, not the story. Reducing the
         # whole block was tried and was the wrong cut: it saved ~700 of the
@@ -164,18 +151,7 @@ def _focus_target_context(
         # lane inside it is the query-blind part, because it is decisions again.
         origin = entry.get("origin")
         if isinstance(origin, dict):
-            linked = origin.get("linked_decisions")
-            if isinstance(linked, list) and linked:
-                kept = [
-                    d for d in linked if clears_floor(score(json.dumps(d, default=str)))
-                ]
-                if kept:
-                    origin["linked_decisions"] = kept
-                else:
-                    origin.pop("linked_decisions", None)
-                    origin["linked_decisions_omitted"] = recovery_note(
-                        len(linked), recall
-                    )
+            _keep_relevant(origin, "linked_decisions", score, recall)
 
         arch = entry.get("git_archaeology")
         if isinstance(arch, dict):
@@ -194,15 +170,25 @@ def _focus_archaeology(
     commits the best evidence left.
     """
     for lane in ("file_commits", "cross_references", "git_log"):
-        rows = arch.get(lane)
-        if not isinstance(rows, list) or not rows:
-            continue
-        kept = [r for r in rows if clears_floor(score(json.dumps(r, default=str)))]
-        if kept:
-            arch[lane] = kept
-        else:
-            arch.pop(lane, None)
-            arch[f"{lane}_omitted"] = recovery_note(len(rows), recall)
+        _keep_relevant(arch, lane, score, recall)
+
+
+def _keep_relevant(block: dict[str, Any], key: str, score: Any, recall: str) -> None:
+    """Keep the rows of ``block[key]`` that clear the floor for *score*.
+
+    When none do, the lane is replaced by ``<key>_omitted``: a count and the
+    call that recovers it, so an emptied lane still reads differently from a
+    lane that never had anything in it.
+    """
+    rows = block.get(key)
+    if not isinstance(rows, list) or not rows:
+        return
+    kept = [r for r in rows if clears_floor(score(json.dumps(r, default=str)))]
+    if kept:
+        block[key] = kept
+    else:
+        block.pop(key, None)
+        block[f"{key}_omitted"] = recovery_note(len(rows), recall)
 
 
 async def _why_no_match(
@@ -267,18 +253,7 @@ async def _why_no_match(
     # without targets there is nothing else this branch can serve. With them
     # there often is, and pointing away from an answer it is holding is the
     # padding-by-another-name the redirect exists to prevent.
-    served = [
-        label
-        for key, label in (
-            ("code_rationale", "rationale comments"),
-            ("git_archaeology", "commit history"),
-        )
-        if result.get(key)
-        or any(
-            isinstance(e, dict) and _has_archaeology(e.get(key))
-            for e in (result.get("target_context") or {}).values()
-        )
-    ]
+    served = _served_lanes(result)
     if served:
         result.pop("try_instead", None)
         result.update(
@@ -288,6 +263,20 @@ async def _why_no_match(
     if collector is not None:
         collector.attach(result)
     return result
+
+
+def _served_lanes(result: dict[str, Any]) -> list[str]:
+    """Labels of the evidence lanes *result* carries, top level or on a target card."""
+    cards = (result.get("target_context") or {}).values()
+    return [
+        label
+        for key, label in (
+            ("code_rationale", "rationale comments"),
+            ("git_archaeology", "commit history"),
+        )
+        if result.get(key)
+        or any(isinstance(e, dict) and _has_archaeology(e.get(key)) for e in cards)
+    ]
 
 
 async def _why_search(query: str, targets: list[str] | None, repo: str | None) -> dict:
@@ -327,16 +316,7 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         "mode": "search",
         "query": query,
         "decisions": merged_decisions,
-        "related_documentation": [
-            {
-                "page_id": r.page_id,
-                "title": r.title,
-                "page_type": r.page_type,
-                "snippet": r.snippet,
-                "relevance_score": r.score,
-            }
-            for r in doc_results
-        ],
+        "related_documentation": _related_documentation(doc_results),
     }
 
     # If targets provided, include target context
@@ -359,26 +339,12 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         full_population=episode_population,
     )
     if episodes and targets:
-        # ``episode_evidence`` takes *either* a scope or a query, and a scope
-        # wins, so the targeted lane never saw the question: the same three
-        # episodes came back for every question asked about a file. Scoping is
-        # still the right retrieval — these are the episodes bound to the file
-        # asked about — but what survives has to bear on what was asked.
-        score = query_scorer(query, [_record_text(d) for d in all_decisions])
-        kept = [
-            e
-            for e in episode_population
-            if clears_floor(score(json.dumps(e, default=str)))
-        ]
-        if len(kept) != len(episode_population):
-            episodes = [e for e in episodes if e in kept]
-            episode_population[:] = kept
-            pending = [t for t in pending if t[0] in kept]
-    if episodes:
-        collector = _prepare_episode_bodies(
-            episode_population, len(episodes), pending, collector, ctx.path
+        episodes, pending = _focus_target_episodes(
+            query, all_decisions, episodes, episode_population, pending
         )
-        result_data["episodes"] = episode_population
+    collector = _serve_episodes(
+        result_data, episodes, episode_population, pending, collector, ctx.path
+    )
 
     await _hydrate_response_decision_evidence(ctx, result_data, all_decisions)
     await annotate_response_evidence_async(
@@ -391,19 +357,10 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
             list(targets),
             [_record_text(d) for d in all_decisions],
         )
-        _cap_supporting_lanes(result_data, collector, label=query)
+    _cap_supporting_lanes(result_data, collector, label=query)
+    if targets:
         _cap_target_context(result_data["target_context"], collector)
-    else:
-        _cap_supporting_lanes(result_data, collector, label=query)
-    if episodes:
-        cap_collection(
-            result_data,
-            "episodes",
-            result_data["episodes"],
-            len(episodes),
-            collector,
-            label="episodes beyond construction cap",
-        )
+    _cap_episodes(result_data, episodes, collector)
     result_data["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
     # Episode overflow is banked here because it is produced before the shared
     # final budget pass. The middleware owns the complete search-mode shed
@@ -427,3 +384,42 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     )
     collector.attach(result_data)
     return result_data
+
+
+def _related_documentation(doc_results: list) -> list[dict[str, Any]]:
+    """Documentation hits as served rows."""
+    return [
+        {
+            "page_id": r.page_id,
+            "title": r.title,
+            "page_type": r.page_type,
+            "snippet": r.snippet,
+            "relevance_score": r.score,
+        }
+        for r in doc_results
+    ]
+
+
+def _focus_target_episodes(
+    query: str,
+    all_decisions: list,
+    episodes: list[dict],
+    population: list[dict],
+    pending: list[tuple[dict, str, str]],
+) -> tuple[list[dict], list[tuple[dict, str, str]]]:
+    """Narrow target-scoped episodes to those bearing on *query*.
+
+    Trims *population* in place and returns the matching ``(episodes,
+    pending)``, unchanged when every episode clears the floor.
+    """
+    # ``episode_evidence`` takes *either* a scope or a query, and a scope
+    # wins, so the targeted lane never saw the question: the same three
+    # episodes came back for every question asked about a file. Scoping is
+    # still the right retrieval — these are the episodes bound to the file
+    # asked about — but what survives has to bear on what was asked.
+    score = query_scorer(query, [_record_text(d) for d in all_decisions])
+    kept = [e for e in population if clears_floor(score(json.dumps(e, default=str)))]
+    if len(kept) == len(population):
+        return episodes, pending
+    population[:] = kept
+    return [e for e in episodes if e in kept], [t for t in pending if t[0] in kept]

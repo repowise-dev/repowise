@@ -1,4 +1,4 @@
-"""Database reads the modes share: corpus, git metadata, lineage, evidence rows."""
+"""Database reads the modes share: corpus, git metadata, evidence rows."""
 
 from __future__ import annotations
 
@@ -6,16 +6,9 @@ from typing import Any
 
 from sqlalchemy import select
 
-from repowise.core.persistence.crud.authority import (
-    accepted_decision_ids,
-)
+from repowise.core.persistence.crud.authority import accepted_decision_ids
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import (
-    DecisionEdge,
-    DecisionEvidence,
-    DecisionRecord,
-    GitMetadata,
-)
+from repowise.core.persistence.models import DecisionEvidence, GitMetadata
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -23,6 +16,27 @@ from repowise.server.mcp_server._helpers import (
     decision_is_excluded,
 )
 from repowise.server.mcp_server.tool_why.caps import _DECISION_CORPUS_LIMIT
+
+
+async def _git_metadata_for(session: Any, repository_id: Any, file_path: str) -> Any | None:
+    """One file's git metadata row, or ``None`` when git never indexed it."""
+    git_res = await session.execute(
+        select(GitMetadata).where(
+            GitMetadata.repository_id == repository_id,
+            GitMetadata.file_path == file_path,
+        )
+    )
+    return git_res.scalar_one_or_none()
+
+
+async def _all_git_metadata(session: Any, repository_id: Any) -> list:
+    """Every file's git metadata, for the archaeology cross-file search."""
+    all_git_res = await session.execute(
+        select(GitMetadata).where(
+            GitMetadata.repository_id == repository_id,
+        )
+    )
+    return all_git_res.scalars().all()
 
 
 async def _load_target_git(
@@ -33,115 +47,10 @@ async def _load_target_git(
     if not targets:
         return target_git
     for t in targets:
-        git_res = await session.execute(
-            select(GitMetadata).where(
-                GitMetadata.repository_id == repository_id,
-                GitMetadata.file_path == t,
-            )
-        )
-        meta = git_res.scalar_one_or_none()
+        meta = await _git_metadata_for(session, repository_id, t)
         if meta:
             target_git[t] = meta
     return target_git
-
-
-async def _lineage_for_records(
-    session: Any, candidates: list[Any], all_decisions: list[Any]
-) -> dict[str, list[dict]]:
-    """Build every candidate lineage from one edge query and in-memory records."""
-    if not candidates:
-        return {}
-    edges = list(
-        (
-            await session.execute(
-                select(DecisionEdge).where(
-                    DecisionEdge.repository_id == candidates[0].repository_id,
-                    DecisionEdge.kind.in_(("supersedes", "refines")),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    outgoing: dict[str, list[Any]] = {}
-    for edge in edges:
-        outgoing.setdefault(edge.src_decision_id, []).append(edge)
-    for rows in outgoing.values():
-        rows.sort(
-            key=lambda edge: (
-                edge.kind == "supersedes",
-                edge.confidence or 0.0,
-                edge.dst_decision_id,
-            ),
-            reverse=True,
-        )
-    records = {record.id: record for record in all_decisions}
-    edge_record_ids = {
-        decision_id
-        for edge in edges
-        for decision_id in (edge.src_decision_id, edge.dst_decision_id)
-    }
-    missing_ids = edge_record_ids - records.keys()
-    if missing_ids:
-        missing_records = list(
-            (
-                await session.execute(
-                    select(DecisionRecord).where(DecisionRecord.id.in_(missing_ids))
-                )
-            )
-            .scalars()
-            .all()
-        )
-        records.update({record.id: record for record in missing_records})
-    result: dict[str, list[dict]] = {}
-    for candidate in candidates:
-        order: list[tuple[str, str | None]] = []
-        visited: set[str] = set()
-        current = candidate.id
-        relation: str | None = None
-        while current and current not in visited and len(order) < 50:
-            visited.add(current)
-            order.append((current, relation))
-            edge = next(
-                (
-                    row
-                    for row in outgoing.get(current, [])
-                    if row.dst_decision_id not in visited
-                ),
-                None,
-            )
-            if edge is None:
-                break
-            current = edge.dst_decision_id
-            relation = edge.kind
-        if len(order) <= 1:
-            continue
-        chain = []
-        for decision_id, kind in reversed(order):
-            record = records.get(decision_id)
-            if record is not None:
-                chain.append(
-                    {
-                        "id": record.id,
-                        "title": record.title,
-                        "status": record.status,
-                        "source": record.source,
-                        "relation": kind,
-                    }
-                )
-        if len(chain) > 1:
-            result[candidate.id] = chain
-    return result
-
-
-async def _lineage_for_matches(
-    ctx: Any, keyword_matches: list, all_decisions: list[Any]
-) -> dict[str, list[dict]]:
-    """Build all keyword lineages with one bounded edge query."""
-    if not keyword_matches:
-        return {}
-    async with get_session(ctx.session_factory) as session3:
-        return await _lineage_for_records(session3, keyword_matches, all_decisions)
 
 
 async def _decision_corpus(session: Any, repository_id: str, exclude_spec: Any) -> list:

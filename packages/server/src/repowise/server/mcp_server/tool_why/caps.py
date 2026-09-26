@@ -215,6 +215,43 @@ def _prepare_episode_bodies(
     ) or collector
 
 
+def _serve_episodes(
+    result: dict[str, Any],
+    episodes: list[dict[str, Any]],
+    population: list[dict[str, Any]],
+    pending: list[tuple[dict, str, str]],
+    collector: OmissionCollector,
+    repo_root: Path,
+) -> OmissionCollector:
+    """Put the episode population on *result*, long visible bodies banked first.
+
+    Returns the collector to carry on with: banking can start a new one, and
+    the caller must attach that one rather than the one it passed in.
+    """
+    if not episodes:
+        return collector
+    collector = _prepare_episode_bodies(
+        population, len(episodes), pending, collector, repo_root
+    )
+    result["episodes"] = population
+    return collector
+
+
+def _cap_episodes(
+    result: dict[str, Any], episodes: list[dict[str, Any]], collector: OmissionCollector
+) -> None:
+    """Cap the served population back to the rows episode retrieval chose."""
+    if episodes:
+        cap_collection(
+            result,
+            "episodes",
+            result["episodes"],
+            len(episodes),
+            collector,
+            label="episodes beyond construction cap",
+        )
+
+
 def _fit_path_response(
     result_data: dict, repo_root: Any, collector: OmissionCollector | None = None
 ) -> dict:
@@ -299,23 +336,7 @@ def _fit_path_response(
 
     _shed("episodes[]", "episodes")
 
-    decisions: list = result_data.get("decisions") or []
-    while decisions and _over():
-        dropped = decisions.pop()
-        collector.add(f"dropped governing decision {dropped.get('title', '')}", dropped)
-        result_data["truncated"] = True
-        result_data.setdefault("dropped_decisions", []).append(dropped.get("id", ""))
-    if "decisions_total" in result_data:
-        result_data["decisions_emitted"] = len(decisions)
-        if len(decisions) < result_data["decisions_total"]:
-            prior = result_data.get("decisions_reduced_reason")
-            result_data["decisions_reduced_reason"] = (
-                "construction_cap_and_response_budget"
-                if prior == "construction_cap"
-                else "response_budget"
-            )
-            result_data["decisions_truncated"] = True
-            result_data["decisions_omitted"] = result_data["decisions_total"] - len(decisions)
+    _shed_tail_decisions(result_data, collector)
 
     # The ungoverned branch's whole answer, and it served 0 of 58 mined
     # rationale comments on a file with no governing record at all.
@@ -335,6 +356,32 @@ def _fit_path_response(
     return result_data
 
 
+def _shed_tail_decisions(result_data: dict, collector: OmissionCollector) -> None:
+    """Drop governing records from the tail until the response fits.
+
+    Stage 3 of :func:`_fit_path_response`. The ``decisions_*`` counts the
+    construction cap wrote are brought up to date, so a reader can tell the
+    budget cut from the cap, or both, apart.
+    """
+    decisions: list = result_data.get("decisions") or []
+    while decisions and over_budget(result_data, headroom=_COLLECTOR_HEADROOM_CHARS):
+        dropped = decisions.pop()
+        collector.add(f"dropped governing decision {dropped.get('title', '')}", dropped)
+        result_data["truncated"] = True
+        result_data.setdefault("dropped_decisions", []).append(dropped.get("id", ""))
+    if "decisions_total" in result_data:
+        result_data["decisions_emitted"] = len(decisions)
+        if len(decisions) < result_data["decisions_total"]:
+            prior = result_data.get("decisions_reduced_reason")
+            result_data["decisions_reduced_reason"] = (
+                "construction_cap_and_response_budget"
+                if prior == "construction_cap"
+                else "response_budget"
+            )
+            result_data["decisions_truncated"] = True
+            result_data["decisions_omitted"] = result_data["decisions_total"] - len(decisions)
+
+
 def _cap_target_context(
     target_context: dict[str, Any], collector: OmissionCollector
 ) -> None:
@@ -351,3 +398,25 @@ def _cap_target_context(
                     collector,
                     label=f"{target} :: {lane} beyond cap={_MAX_PATH_DECISIONS}",
                 )
+
+
+def _cap_path_decision_lanes(result_data: dict[str, Any], collector: OmissionCollector) -> None:
+    """Cap path mode's rules lane and the two lanes beside it."""
+    cap_collection(
+        result_data,
+        "decisions",
+        result_data["decisions"],
+        _MAX_PATH_DECISIONS,
+        collector,
+        label=f"path decisions beyond cap={_MAX_PATH_DECISIONS}",
+    )
+    for lane_key in ("candidates", "history"):
+        if result_data.get(lane_key):
+            cap_collection(
+                result_data,
+                lane_key,
+                result_data[lane_key],
+                _MAX_PATH_CANDIDATES,
+                collector,
+                label=f"path {lane_key} beyond cap={_MAX_PATH_CANDIDATES}",
+            )
