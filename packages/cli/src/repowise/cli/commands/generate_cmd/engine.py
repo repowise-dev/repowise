@@ -9,7 +9,7 @@ in core so the OSS server and hosted share it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +49,11 @@ class GenerateOutcome:
     marked_stale: int
     remaining_template_pages: int
     plan: ScopePlan
+    swept_page_ids: list[str] = field(default_factory=list)
+    cost_usd: float = 0.0
+    tokens: int = 0
+    #: Model-written pages still stale after the run.
+    stale_page_ids: set[str] = field(default_factory=set)
 
 
 async def run_scoped_generation(
@@ -220,20 +225,24 @@ async def run_scoped_generation(
             concurrency=config.max_concurrency,
         )
 
-        total_pages, remaining_templates = await _page_stats(sf, repo_id)
+        total_pages, remaining_templates, stale_ids = await _page_stats(sf, repo_id)
         return GenerateOutcome(
             generated_pages=result.generated_pages,
             total_pages=total_pages,
             marked_stale=result.marked_stale,
             remaining_template_pages=remaining_templates,
             plan=plan,
+            swept_page_ids=result.swept_page_ids,
+            cost_usd=cost_tracker.session_cost,
+            tokens=cost_tracker.session_tokens,
+            stale_page_ids=stale_ids,
         )
     finally:
         await engine.dispose()
 
 
-async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int]:
-    """Return ``(total_pages, remaining_stub_pages)`` from the DB.
+async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
+    """Return ``(total_pages, remaining_stub_pages, stale_model_page_ids)``.
 
     A "stub" is a page a model was meant to write but has not yet: a
     model-written page type still stamped ``provider_name='template'``.
@@ -271,7 +280,18 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int]:
                 )
             ).scalar_one()
         )
-    return total, stubs
+        stale_ids = set(
+            (
+                await session.execute(
+                    sa_select(Page.id).where(
+                        Page.repository_id == repo_id,
+                        Page.freshness_status == "stale",
+                        Page.page_type.in_(list(_MODEL_WRITTEN_PAGE_TYPES)),
+                    )
+                )
+            ).scalars()
+        )
+    return total, stubs, stale_ids
 
 
 def _report_plan(plan: ScopePlan, cascade_mode: CascadeMode) -> None:
