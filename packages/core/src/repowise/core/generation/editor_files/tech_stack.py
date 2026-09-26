@@ -1,6 +1,6 @@
 """Filesystem-based tech stack and build command detection.
 
-No DB or network dependencies — scans manifest files in the repo root.
+No DB or network dependencies: reads manifest files at and near the repo root.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from ...ingestion.framework_facts import detect_php_framework
 from ...precedent.structural import declares_ruff_format
 from .data import TechStackItem
 
-# Node.js framework/library signatures to detect from package.json dependencies
+# package.json dependency -> (display name, category).
 _NODE_FRAMEWORKS: dict[str, tuple[str, str]] = {
     "next": ("Next.js", "framework"),
     "react": ("React", "framework"),
@@ -40,7 +40,7 @@ _NODE_FRAMEWORKS: dict[str, tuple[str, str]] = {
     "turbo": ("Turborepo", "infra"),
 }
 
-# Python framework/library keywords in pyproject.toml / requirements.txt
+# Keyword searched for in pyproject.toml -> (display name, category).
 _PYTHON_FRAMEWORKS: dict[str, tuple[str, str]] = {
     "fastapi": ("FastAPI", "framework"),
     "django": ("Django", "framework"),
@@ -58,25 +58,16 @@ _PYTHON_FRAMEWORKS: dict[str, tuple[str, str]] = {
 }
 
 
-# Maximum directory depth from the repo root to scan for .NET project
-# files. Five levels covers every observed .NET monorepo layout in the
-# wild (e.g. `src/<area>/<module>/<Project>/<Project>.csproj` is depth
-# 4; `services/<svc>/src/<Project>/<Project>.csproj` is depth 5).
-# Setting this higher would only add noise from samples / tests buried
-# inside generated SDK folders.
+# Deep enough for `services/<svc>/src/<Project>/<Project>.csproj` (depth 5);
+# deeper only reaches samples and tests buried in generated SDK folders.
 _DOTNET_MAX_DEPTH = 5
 
-# Hard cap on returned .csproj count. Repos like dotnet/runtime have
-# thousands of project files; we only need a representative sample to
-# infer the tech stack.
+# A representative sample is enough to infer the stack of a repo with
+# thousands of project files.
 _DOTNET_MAX_PROJECTS = 200
 
-# Directory names to prune from the scan. These never host real
-# project source and bloat the walk on Windows where `bin/obj`
-# contains thousands of intermediate files per project. Test fixtures
-# and vendored sample repos are pruned too: a Python/TS repo that keeps
-# .NET solutions under tests/fixtures/ or test-repos/ must not be
-# labelled a C# codebase by its own test data.
+# Build output and tooling dirs never hold real project source. Test fixtures
+# and samples are pruned too, so a repo is not labelled C# by its own test data.
 _DOTNET_PRUNE = frozenset({
     "bin", "obj", ".vs", "node_modules", ".git", "packages",
     ".idea", "artifacts", ".build", "TestResults",
@@ -109,9 +100,8 @@ def _find_dotnet_projects(repo_path: Path) -> list[Path]:
             if entry.is_dir():
                 if entry.name in _DOTNET_PRUNE or entry.name.startswith("."):
                     continue
-                # A nested git repo is a separate project (vendored
-                # benchmark checkout, sibling clone) — its project files
-                # must not define THIS repo's tech stack.
+                # A nested git repo is a separate project; its files must not
+                # define this repo's stack.
                 if (entry / ".git").exists():
                     continue
                 _walk(entry, depth + 1)
@@ -140,7 +130,6 @@ _MANIFEST_FILES = (
     "Dockerfile",
     "docker-compose.yml",
     "docker-compose.yaml",
-    # .NET evidence read at the root, same as the rest.
     "Directory.Build.props",
     "Directory.Packages.props",
 )
@@ -152,26 +141,16 @@ _STACK_CACHE: dict[str, tuple[tuple, list[TechStackItem]]] = {}
 def _manifest_fingerprint(repo_path: Path) -> tuple:
     """Cheap stat-based signature of the root inputs this scan reads.
 
-    Sixteen stats plus one root glob, versus the bounded .csproj walk that
-    dominates the real scan (0.18s on hugo, 0.47s on PowerToys, measured). The
-    ``*.sln`` glob is in the key because the scan reads solutions by pattern
-    rather than by name, so no fixed entry can stand in for them.
+    A few stats and one root glob, versus the bounded .csproj walk that dominates
+    the real scan. ``*.sln`` is globbed because the scan reads solutions by
+    pattern, not by name. The trailing directory mtime is a bonus, not the
+    mechanism: Windows timestamps are quantized to the ~15.6ms timer tick.
 
-    The trailing directory-mtime entry is a bonus, not the mechanism: on Windows
-    file timestamps come from the ~15.6ms system timer tick, so two changes
-    inside one tick can leave it byte-identical. Every root path the scan reads
-    is stat'd by name or globbed above, so the key does not depend on it.
-
-    CEILING: it does not see a nested change - a ``.csproj`` appearing under an
-    existing subdirectory, or a workspace ``tsconfig.json`` one or two levels
-    down (``glob("*/tsconfig.json")`` and ``"*/*/tsconfig.json"``). Covering
-    those means walking, which is the cost this exists to avoid. In one CLI
-    command the window is seconds, so it is unreachable there; a long-lived
-    process (the server's job executor, or a test suite driving several
-    ``CliRunner`` invocations in one interpreter) can re-index the same repo
-    later and be served a stale stack. Blast radius is contextual metadata only:
-    framework edges, the knowledge-graph tech list, the editor file table. To
-    close it, key on a traversal snapshot instead of the root.
+    CEILING: a nested change (a new ``.csproj`` in an existing subdirectory, a
+    workspace ``tsconfig.json`` one or two levels down) does not move the key, so
+    a long-lived process re-indexing the same repo can be served a stale stack.
+    The stack is contextual metadata only. To close it, key on a traversal
+    snapshot instead of the root.
     """
     sig: list = []
     for name in _MANIFEST_FILES:
@@ -215,7 +194,7 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
 _Item = tuple[str, str | None, str]
 
 # A root package.json with none of these fields, no engines.node and no known
-# framework is tooling (Playwright, Husky) rather than a Node.js app.
+# framework is tooling (a test runner, git hooks) rather than a Node.js app.
 _NODE_RUNTIME_FIELDS = ("dependencies", "main", "bin", "module", "exports")
 
 # Root files whose mere presence names a technology.
