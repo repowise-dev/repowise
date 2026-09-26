@@ -6,8 +6,9 @@ import re
 import unicodedata
 from bisect import bisect_left
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
+from functools import cached_property
 
 from tree_sitter import Node
 
@@ -564,3 +565,100 @@ def _cpp_export_macro_parent(node: Node, parent_names: dict[int, str]) -> str | 
             return parent_name
         ancestor = ancestor.parent
     return None
+
+
+@dataclass
+class CppExportTypes:
+    """Macro-decorated C++ types (``struct EXPORT Name``) recovered from one file.
+
+    tree-sitter-cpp names such a type after the macro; cpp.scm marks the
+    matches so the real name, range and member context can be restored.
+    """
+
+    defs: dict[int, _CppExportType] = field(default_factory=dict)
+    parents: dict[int, str] = field(default_factory=dict)
+    capture_ids: set[int] = field(default_factory=set)
+    macro_names: set[str] = field(default_factory=set)
+    macro_def_ids: set[int] = field(default_factory=set)
+
+    @cached_property
+    def parent_ids(self) -> frozenset[int]:
+        return frozenset(self.parents)
+
+
+def collect_cpp_export_types(matches: list[dict], src: str) -> CppExportTypes:
+    """Recover every macro-decorated type the query matched in one C++ file."""
+    found = CppExportTypes()
+    cpp_export_matches = [
+        capture_dict
+        for capture_dict in matches
+        if capture_dict.get("symbol.cpp_export_type", [])
+    ]
+    has_forward_candidate = any(
+        capture_dict["symbol.cpp_export_type"][0].type
+        in _CPP_EXPORT_FORWARD_DECLARATION_NODES
+        for capture_dict in cpp_export_matches
+    )
+    cpp_macro_facts = (
+        _build_cpp_macro_facts(matches, src) if has_forward_candidate else None
+    )
+
+    for capture_dict in cpp_export_matches:
+        type_nodes = capture_dict.get("symbol.cpp_export_type", [])
+        def_nodes = capture_dict.get("symbol.def", [])
+        name_nodes = capture_dict.get("symbol.name", [])
+        macro_nodes = capture_dict.get("symbol.cpp_export_macro", [])
+        if not type_nodes or not def_nodes or not name_nodes:
+            continue
+        type_name = _node_text(name_nodes[0], src)
+        if not type_name:
+            continue
+        capture_node = type_nodes[0]
+        is_forward_declaration = capture_node.type in _CPP_EXPORT_FORWARD_DECLARATION_NODES
+        range_node = capture_node
+        if (
+            is_forward_declaration
+            and capture_node.parent is not None
+            and capture_node.parent.type == "template_declaration"
+        ):
+            range_node = capture_node.parent
+        active_macro_def: Node | None = None
+        if is_forward_declaration:
+            active_macro_def = _forward_declaration_macro(
+                cpp_macro_facts, macro_nodes, capture_node, src
+            )
+            if active_macro_def is None:
+                continue
+        else:
+            # Body-form matches are unambiguous. Preserve #1896's
+            # name-based suppression across conditional definitions.
+            found.macro_names.update(
+                _cpp_normalize_identifier(_node_text(node, src)) for node in macro_nodes
+            )
+        found.defs[def_nodes[0].id] = _CppExportType(
+            range_node=range_node,
+            name=type_name,
+            is_forward_declaration=is_forward_declaration,
+        )
+        found.capture_ids.add(capture_node.id)
+        found.parents[capture_node.id] = type_name
+        found.parents[range_node.id] = type_name
+        if active_macro_def is not None:
+            found.macro_def_ids.add(active_macro_def.id)
+    return found
+
+
+def _forward_declaration_macro(
+    facts: _CppMacroFacts | None, macro_nodes: list[Node], declaration: Node, src: str
+) -> Node | None:
+    """The empty macro definition that makes a bodiless decorated type safe to recover."""
+    if facts is None:
+        return None
+    macro_names = {
+        _cpp_normalize_identifier(_node_text(node, src)) for node in macro_nodes
+    } - {""}
+    if len(macro_names) != 1:
+        return None
+    # A bodiless decorated type is syntactically identical to
+    # an ordinary ``struct Tag variable;`` declaration.
+    return facts.empty_definition_at(next(iter(macro_names)), declaration)

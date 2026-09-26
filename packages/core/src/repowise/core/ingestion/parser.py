@@ -33,12 +33,12 @@ import structlog
 from tree_sitter import Language, Node, Parser
 
 from .cpp_export_macros import (
-    _CPP_EXPORT_FORWARD_DECLARATION_NODES,
-    _build_cpp_macro_facts,
+    CppExportTypes,
     _cpp_export_macro_parent,
     _cpp_normalize_identifier,
     _CppExportType,
     _is_bodiless_cpp_type,
+    collect_cpp_export_types,
 )
 from .extractors import (
     build_signature,
@@ -431,6 +431,255 @@ def _normalize_php_receiver(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+_FSHARP_BINDING_NODE_TYPES = ("function_declaration_left", "value_declaration_left")
+_DART_FUNCTION_NODE_TYPES = ("function_signature", "getter_signature", "setter_signature")
+
+
+def _is_fsharp_binding(language: str, node_type: str) -> bool:
+    return language == "fsharp" and node_type in _FSHARP_BINDING_NODE_TYPES
+
+
+def _language_symbol_name(language: str, def_node: Node, name: str, src: str) -> str | None:
+    """Apply a language's own naming rule; None drops the match."""
+    if not name:
+        return None
+    if language == "elixir":
+        # A `def` inside `quote do ... end` is macro body, not a
+        # definition of the module that writes it.
+        if _elixir_is_template_definition(def_node, src):
+            return None
+        # `defimpl Proto, for: Type` is named for the module the
+        # compiler generates, not for the protocol alone.
+        return _elixir_symbol_name(def_node, name, src)
+    if language == "objectivec":
+        # `typedef NS_ENUM(NSInteger, Kind) { ... }` has no grammar
+        # rule, so only its enum *cases* survive as declarators and
+        # each would become a symbol named as though it were the type.
+        if _objc_is_macro_enum(def_node, src):
+            return None
+        # A method is named by its whole selector
+        # (`initWithName:age:`), which no single node holds, and a
+        # category by the class it extends plus its own name.
+        return _objc_symbol_name(def_node, name, src)
+    return name
+
+
+def _refine_symbol_kind(
+    kind: str, def_node: Node, config: LanguageConfig, language: str, src: str
+) -> str:
+    """Narrow a node-type kind where one node shape spells several kinds."""
+    node_type = def_node.type
+    # A value binding that carries parameter patterns beside its
+    # name is a function the grammar reparsed as a value because
+    # of its return-type annotation.
+    if (
+        language == "fsharp"
+        and node_type == "value_declaration_left"
+        and _fsharp_binding_has_params(def_node)
+    ):
+        kind = "function"
+
+    # Refine "struct" kind for Go type_spec (check if struct or interface body)
+    if kind == "struct" and config.parent_extraction == "receiver":
+        kind = refine_go_type_kind(def_node, src)
+
+    # Refine "class" kind for Kotlin (interface / enum class share class_declaration)
+    if kind == "class" and language == "kotlin" and node_type == "class_declaration":
+        kind = refine_kotlin_class_kind(def_node)
+
+    # Refine "class" kind for Pascal (declType wraps class / record /
+    # object / interface / class-helper / enum / set / array / alias
+    # in one node shape -- see the spec docstring and
+    # refine_pascal_type_kind's own docstring for the disambiguation).
+    if kind == "class" and language == "pascal" and node_type == "declType":
+        kind = refine_pascal_type_kind(def_node)
+
+    # Elixir: every definition is a ``call``, so the node type cannot
+    # name the kind and the config maps it to a deliberately
+    # non-callable placeholder (see refine_elixir_call_kind). The
+    # keyword in the call's target is what actually says what was
+    # defined.
+    if language == "elixir" and node_type == "call":
+        kind = refine_elixir_call_kind(def_node, src)
+
+    # F# writes a class, a struct and an interface with the same
+    # ``anon_type_defn`` node; only the body says which it is.
+    if kind == "class" and language == "fsharp" and node_type == "anon_type_defn":
+        kind = refine_fsharp_type_kind(def_node)
+    return kind
+
+
+def _symbol_end_line(
+    def_node: Node,
+    config: LanguageConfig,
+    language: str,
+    export_type: _CppExportType | None,
+) -> int | None:
+    """The symbol's last line, or None for a Dart local function (not a symbol)."""
+    node_type = def_node.type
+    end_line = def_node.end_point[0] + 1
+    if config.symbol_end_line_fn is not None:
+        end_line = config.symbol_end_line_fn(def_node, end_line)
+    if export_type is not None:
+        end_line = export_type.range_node.end_point[0] + 1
+    # F#: the captured node is the binding's left-hand side, so its
+    # own span stops at the parameter list. Extend it over the body
+    # (and any return-type annotation between the two) or every call
+    # in the body is attributed to whatever encloses the binding.
+    if _is_fsharp_binding(language, node_type):
+        end_line = _fsharp_binding_end_line(def_node)
+    if language == "dart" and node_type in _DART_FUNCTION_NODE_TYPES:
+        return _dart_function_end_line(def_node, end_line)
+    return end_line
+
+
+def _dart_function_end_line(def_node: Node, end_line: int) -> int | None:
+    """Dart: a function's body is a sibling of its signature.
+
+    Local functions nested inside another function's body have no callable
+    *ancestor* (the enclosing signature is a sibling), so they are dropped
+    here (None); and the line range extends to the trailing body sibling or
+    call-site attribution stops at the signature line.
+    """
+    ancestor = def_node.parent
+    while ancestor is not None:
+        if ancestor.type in ("function_body", "function_expression"):
+            return None
+        ancestor = ancestor.parent
+    anchor = def_node
+    if def_node.parent is not None and def_node.parent.type == "method_signature":
+        anchor = def_node.parent
+    body_sibling = anchor.next_named_sibling
+    if body_sibling is not None and body_sibling.type == "function_body":
+        return body_sibling.end_point[0] + 1
+    return end_line
+
+
+def _module_binding_kind(def_node: Node, name: str, language: str, src: str) -> str | None:
+    """Kind of a module-level assignment, or None when it only binds a module.
+
+    SCREAMING_CASE names are constants by convention; the rest are module
+    variables (singletons like ``app = FastAPI()``, registries, caches).
+    ``str.isupper()`` requires at least one cased char, so names with no
+    letters (``_``, ``__all__``) fall to "variable" rather than being
+    mislabelled constants by ``name == name.upper()``.
+    """
+    # TS/JS: the symbol query admits call_expression values so
+    # forwardRef / memo / onCall / styled() bindings exist at all,
+    # which also lets `const svc = require('./svc')` through. Those
+    # bind a module and are already imports — drop them here rather
+    # than in the query, which cannot see past the await / paren /
+    # non-null / member-pick shells.
+    if language in _TS_JS_LANGUAGES and declarator_value_is_module_ref(def_node, src):
+        return None
+    # A declarator whose value is structurally callable is not
+    # data, whatever its name looks like: `const C =
+    # forwardRef(fn)` and `const f = function(){}` are a component
+    # and a function. Naming decides only for the rest, which is
+    # what it was ever able to answer.
+    callable_kind = (
+        declarator_binds_callable(def_node, src) if language in _TS_JS_LANGUAGES else None
+    )
+    return callable_kind or ("constant" if name.isupper() else "variable")
+
+
+def _attribute_decorators(def_node: Node, language: str, src: str) -> list[str]:
+    """Attribute texts that act as decorators (Rust, C#, C/C++), brackets stripped.
+
+    They land beside ``@`` decorators so one deprecation check reads them all.
+    """
+    if language == "rust":
+        return _rust_outer_attributes(def_node, src)
+    # C#: [Obsolete] / [System.Obsolete] are ``attribute_list`` nodes.
+    # In tree-sitter-c-sharp the attribute_list is child[0] of the
+    # declaration node itself (method_declaration, class_declaration, etc.),
+    # NOT a preceding sibling in the class body.
+    if language == "csharp":
+        return _leading_child_attributes(def_node, "attribute_list", "[", "]", src)
+    # C/C++: [[deprecated]] / [[deprecated("reason")]] are
+    # ``attribute_declaration`` nodes, child[0] of function_definition itself
+    # (NOT a preceding sibling at translation_unit level).
+    if language in ("cpp", "c"):
+        return _leading_child_attributes(def_node, "attribute_declaration", "[[", "]]", src)
+    return []
+
+
+def _rust_outer_attributes(def_node: Node, src: str) -> list[str]:
+    """Rust: outer attributes (#[...]) are preceding siblings of the item."""
+    attrs: list[str] = []
+    if def_node.parent is None:
+        return attrs
+    siblings = def_node.parent.children
+    for j, sib in enumerate(siblings):
+        if sib.id != def_node.id:
+            continue
+        k = j - 1
+        while k >= 0 and siblings[k].type == "attribute_item":
+            attr_text = _node_text(siblings[k], src).strip()
+            # Strip #[ and ] to get the inner attribute text
+            if attr_text.startswith("#[") and attr_text.endswith("]"):
+                attrs.append(attr_text[2:-1])
+            k -= 1
+        break
+    return attrs
+
+
+def _leading_child_attributes(
+    def_node: Node, node_type: str, opener: str, closer: str, src: str
+) -> list[str]:
+    """Inner text of the attribute children leading *def_node*, until the first other child."""
+    attrs: list[str] = []
+    for child in def_node.children:
+        if child.type != node_type:
+            break
+        attr_text = _node_text(child, src).strip()
+        if attr_text.startswith(opener) and attr_text.endswith(closer):
+            attrs.append(attr_text[len(opener) : -len(closer)])
+    return attrs
+
+
+def _refine_visibility(
+    def_node: Node,
+    language: str,
+    visibility: str,
+    name: str,
+    ts_deferred_exports: frozenset[str] | None,
+    src: str,
+) -> tuple[str, bool]:
+    """``(visibility, is_exported_symbol)`` after the language's AST-context rules."""
+    # C/C++ visibility is dictated by AST context (access
+    # specifiers / storage class / export attributes), not by
+    # modifier text. Refine after the generic fn ran.
+    if language in ("cpp", "c"):
+        return refine_cpp_visibility(def_node, visibility, src)
+    # C#: an unmodified declaration's default depends on what encloses
+    # it, which the modifier-text fn cannot see.
+    if language == "csharp":
+        return refine_csharp_visibility(def_node, visibility), False
+    # TS/JS: a top-level declaration is only public when exported —
+    # inline, via ``export { x }`` lists, or ``export default x``.
+    if language in _TS_JS_LANGUAGES:
+        return refine_ts_visibility(def_node, visibility, name, ts_deferred_exports), False
+    # Rust: a trait's items may not write ``pub`` of their own, so the
+    # trait's modifier is the only place their visibility is stated.
+    if language == "rust":
+        return refine_rust_visibility(def_node, visibility, src), False
+    return visibility, False
+
+
+def _dart_mixin_parent(def_node: Node, config: LanguageConfig, src: str) -> str | None:
+    """Name of the Dart ``mixin`` enclosing *def_node*, if it is the nearest type."""
+    ancestor = def_node.parent
+    while ancestor is not None:
+        if ancestor.type == "mixin_declaration":
+            ident = next((c for c in ancestor.children if c.type == "identifier"), None)
+            return _node_text(ident, src) if ident is not None else None
+        if ancestor.type in config.parent_class_types:
+            return None
+        ancestor = ancestor.parent
+    return None
+
+
 class ASTParser:
     """Unified AST parser — works for all languages via .scm query files.
 
@@ -653,6 +902,7 @@ class ASTParser:
         file_info: FileInfo,
         src: str,
     ) -> list[Symbol]:
+        language = file_info.language
         symbols: list[Symbol] = []
         seen: set[tuple[int, str]] = set()  # (start_line, name) — dedup decorated dupes
         # Parallel to ``symbols`` (same indices) -- only populated/consumed
@@ -668,512 +918,285 @@ class ASTParser:
         # Deferred-export names (``export { x }`` / ``export default x``),
         # computed once per file for the TS/JS visibility refinement.
         ts_deferred_exports: frozenset[str] | None = None
-        if file_info.language in _TS_JS_LANGUAGES:
+        if language in _TS_JS_LANGUAGES:
             ts_deferred_exports = ts_deferred_export_names(src)
-
-        # tree-sitter-cpp parses ``struct EXPORT Name { ... }`` and
-        # ``struct EXPORT Name;`` with ``EXPORT`` as the specifier name and the
-        # real type name as a bare declarator. cpp.scm marks those matches so
-        # the specifier can keep its class/struct kind while the outer recovery
-        # node supplies the real range and nested-member context when present.
-        cpp_export_type_defs: dict[int, _CppExportType] = {}
-        cpp_export_type_parents: dict[int, str] = {}
-        cpp_export_type_capture_ids: set[int] = set()
-        cpp_export_macro_names: set[str] = set()
-        cpp_export_macro_def_ids: set[int] = set()
-        if file_info.language == "cpp":
-            cpp_export_matches = [
-                capture_dict
-                for capture_dict in matches
-                if capture_dict.get("symbol.cpp_export_type", [])
-            ]
-            has_forward_candidate = any(
-                capture_dict["symbol.cpp_export_type"][0].type
-                in _CPP_EXPORT_FORWARD_DECLARATION_NODES
-                for capture_dict in cpp_export_matches
-            )
-            cpp_macro_facts = (
-                _build_cpp_macro_facts(matches, src) if has_forward_candidate else None
-            )
-
-            for capture_dict in cpp_export_matches:
-                type_nodes = capture_dict.get("symbol.cpp_export_type", [])
-                def_nodes = capture_dict.get("symbol.def", [])
-                name_nodes = capture_dict.get("symbol.name", [])
-                macro_nodes = capture_dict.get("symbol.cpp_export_macro", [])
-                if not type_nodes or not def_nodes or not name_nodes:
-                    continue
-                type_name = _node_text(name_nodes[0], src)
-                if not type_name:
-                    continue
-                capture_node = type_nodes[0]
-                is_forward_declaration = capture_node.type in _CPP_EXPORT_FORWARD_DECLARATION_NODES
-                range_node = capture_node
-                if (
-                    is_forward_declaration
-                    and capture_node.parent is not None
-                    and capture_node.parent.type == "template_declaration"
-                ):
-                    range_node = capture_node.parent
-                active_macro_def: Node | None = None
-                if is_forward_declaration:
-                    if cpp_macro_facts is None:
-                        continue
-                    macro_names = {
-                        _cpp_normalize_identifier(_node_text(node, src)) for node in macro_nodes
-                    } - {""}
-                    if len(macro_names) != 1:
-                        continue
-                    macro_name = next(iter(macro_names))
-                    # A bodiless decorated type is syntactically identical to
-                    # an ordinary ``struct Tag variable;`` declaration.
-                    active_macro_def = cpp_macro_facts.empty_definition_at(macro_name, capture_node)
-                    if active_macro_def is None:
-                        continue
-                else:
-                    # Body-form matches are unambiguous. Preserve #1896's
-                    # name-based suppression across conditional definitions.
-                    cpp_export_macro_names.update(
-                        _cpp_normalize_identifier(_node_text(node, src)) for node in macro_nodes
-                    )
-                cpp_export_type_defs[def_nodes[0].id] = _CppExportType(
-                    range_node=range_node,
-                    name=type_name,
-                    is_forward_declaration=is_forward_declaration,
-                )
-                cpp_export_type_capture_ids.add(capture_node.id)
-                cpp_export_type_parents[capture_node.id] = type_name
-                cpp_export_type_parents[range_node.id] = type_name
-                if active_macro_def is not None:
-                    cpp_export_macro_def_ids.add(active_macro_def.id)
-
-        cpp_export_type_parent_ids = frozenset(cpp_export_type_parents)
+        cpp_exports = (
+            collect_cpp_export_types(matches, src) if language == "cpp" else CppExportTypes()
+        )
 
         for capture_dict in matches:
-            def_nodes = capture_dict.get("symbol.def", [])
-            name_nodes = capture_dict.get("symbol.name", [])
-            params_nodes = capture_dict.get("symbol.params", [])
-            modifier_nodes = capture_dict.get("symbol.modifiers", [])
-            receiver_nodes = capture_dict.get("symbol.receiver", [])
-            captured_export_type_nodes = capture_dict.get("symbol.cpp_export_type", [])
-
-            if (
-                captured_export_type_nodes
-                and captured_export_type_nodes[0].id not in cpp_export_type_capture_ids
-            ):
-                # The query also sees ordinary ``struct Tag variable;`` forms;
-                # discard only the unsupported recovery match.
-                continue
-
-            if not def_nodes or not name_nodes:
-                continue
-
-            def_node = def_nodes[0]
-            name = config.symbol_name_fn(_node_text(name_nodes[0], src), def_node.type)
-            if not name:
-                continue
-
-            if file_info.language == "elixir":
-                # A `def` inside `quote do ... end` is macro body, not a
-                # definition of the module that writes it.
-                if _elixir_is_template_definition(def_node, src):
-                    continue
-                # `defimpl Proto, for: Type` is named for the module the
-                # compiler generates, not for the protocol alone.
-                name = _elixir_symbol_name(def_node, name, src)
-
-            elif file_info.language == "objectivec":
-                # `typedef NS_ENUM(NSInteger, Kind) { ... }` has no grammar
-                # rule, so only its enum *cases* survive as declarators and
-                # each would become a symbol named as though it were the type.
-                if _objc_is_macro_enum(def_node, src):
-                    continue
-                # A method is named by its whole selector
-                # (`initWithName:age:`), which no single node holds, and a
-                # category by the class it extends plus its own name.
-                name = _objc_symbol_name(def_node, name, src)
-
-            export_type = cpp_export_type_defs.get(def_node.id)
-            if export_type is not None and name != export_type.name:
-                # The ordinary struct/class query sees the same specifier, but
-                # tree-sitter calls the export macro its name. Keep only the
-                # dedicated match whose name is the outer declarator.
-                continue
-
-            if def_node.type == "preproc_def" and (
-                _cpp_normalize_identifier(name) in cpp_export_macro_names
-                or def_node.id in cpp_export_macro_def_ids
-            ):
-                # Body-form macros are suppressed by name as before #1901;
-                # ambiguous forward declarations suppress only the exact
-                # active definition that made recovery safe.
-                continue
-
-            start_line = def_node.start_point[0] + 1
-            if export_type is not None:
-                start_line = export_type.range_node.start_point[0] + 1
-            dedup_key = (start_line, name)
-            if dedup_key in seen:
-                continue
-            seen.add(dedup_key)
-
-            # Kind from node type
-            node_type = def_node.type
-            kind = config.symbol_node_types.get(node_type)
-            if kind is None:
-                continue
-
-            # Skip symbols nested inside another function/method body. The
-            # Tree-sitter query is recursive, so helpers defined inside a
-            # React component or an async orchestrator method get hoisted
-            # to the top-level symbol list and read as unused public
-            # exports. Filtering by callable ancestor restricts extraction
-            # to module-top-level + class-body members. Class bodies don't
-            # match (``class_definition`` is not callable), so methods are
-            # preserved. Module-anchored node types skip the check: their
-            # .scm patterns only match at module/program level, and a TS
-            # variable_declarator's parent (lexical_declaration → "function")
-            # would otherwise read as a callable ancestor.
-            if node_type not in _MODULE_ANCHORED_NODE_TYPES and _has_callable_ancestor(
-                def_node, config.symbol_node_types, cpp_export_type_parent_ids
-            ):
-                continue
-
-            # F#: a ``let`` nested in another binding's body has the same node
-            # shape as a top-level one, so the ancestor filter above cannot
-            # see it -- what it captures is the binding's left-hand side, and
-            # a nested binding's left-hand side has no callable ancestor
-            # either. A ``let`` inside a type body is a field and stays.
-            if file_info.language == "fsharp" and node_type in (
-                "function_declaration_left",
-                "value_declaration_left",
-            ):
-                if _fsharp_binding_is_nested(def_node):
-                    continue
-                # A value binding that carries parameter patterns beside its
-                # name is a function the grammar reparsed as a value because
-                # of its return-type annotation.
-                if node_type == "value_declaration_left" and _fsharp_binding_has_params(
-                    def_node
-                ):
-                    kind = "function"
-
-            # Refine "struct" kind for Go type_spec (check if struct or interface body)
-            if kind == "struct" and config.parent_extraction == "receiver":
-                kind = refine_go_type_kind(def_node, src)
-
-            # Refine "class" kind for Kotlin (interface / enum class share class_declaration)
-            if (
-                kind == "class"
-                and file_info.language == "kotlin"
-                and def_node.type == "class_declaration"
-            ):
-                kind = refine_kotlin_class_kind(def_node)
-
-            # Refine "class" kind for Pascal (declType wraps class / record /
-            # object / interface / class-helper / enum / set / array / alias
-            # in one node shape -- see the spec docstring and
-            # refine_pascal_type_kind's own docstring for the disambiguation).
-            if kind == "class" and file_info.language == "pascal" and def_node.type == "declType":
-                kind = refine_pascal_type_kind(def_node)
-
-            # Elixir: every definition is a ``call``, so the node type cannot
-            # name the kind and the config maps it to a deliberately
-            # non-callable placeholder (see refine_elixir_call_kind). The
-            # keyword in the call's target is what actually says what was
-            # defined.
-            if file_info.language == "elixir" and def_node.type == "call":
-                kind = refine_elixir_call_kind(def_node, src)
-
-            # F# writes a class, a struct and an interface with the same
-            # ``anon_type_defn`` node; only the body says which it is.
-            if (
-                kind == "class"
-                and file_info.language == "fsharp"
-                and def_node.type == "anon_type_defn"
-            ):
-                kind = refine_fsharp_type_kind(def_node)
-
-            # Dart: a function is a ``function_signature`` whose BODY is a
-            # sibling ``function_body`` node (members wrap the signature in
-            # ``method_signature``). Two consequences the generic path can't
-            # see: local functions nested inside another function's body have
-            # no callable *ancestor* (the enclosing signature is a sibling),
-            # so filter them here; and the symbol's line range must extend to
-            # the trailing body sibling or call-site attribution stops at the
-            # signature line.
-            end_line = def_node.end_point[0] + 1
-            if config.symbol_end_line_fn is not None:
-                end_line = config.symbol_end_line_fn(def_node, end_line)
-            if export_type is not None:
-                end_line = export_type.range_node.end_point[0] + 1
-            # F#: the captured node is the binding's left-hand side, so its
-            # own span stops at the parameter list. Extend it over the body
-            # (and any return-type annotation between the two) or every call
-            # in the body is attributed to whatever encloses the binding.
-            if file_info.language == "fsharp" and node_type in (
-                "function_declaration_left",
-                "value_declaration_left",
-            ):
-                end_line = _fsharp_binding_end_line(def_node)
-            if file_info.language == "dart" and node_type in (
-                "function_signature",
-                "getter_signature",
-                "setter_signature",
-            ):
-                ancestor = def_node.parent
-                is_local = False
-                while ancestor is not None:
-                    if ancestor.type in ("function_body", "function_expression"):
-                        is_local = True
-                        break
-                    ancestor = ancestor.parent
-                if is_local:
-                    continue
-                anchor = def_node
-                if def_node.parent is not None and def_node.parent.type == "method_signature":
-                    anchor = def_node.parent
-                body_sibling = anchor.next_named_sibling
-                if body_sibling is not None and body_sibling.type == "function_body":
-                    end_line = body_sibling.end_point[0] + 1
-
-            # Refine module-level assignments: SCREAMING_CASE names are
-            # constants by convention; the rest are module variables
-            # (singletons like ``app = FastAPI()``, registries, caches).
-            # ``str.isupper()`` requires at least one cased char, so names
-            # with no letters (``_``, ``__all__``) fall to "variable" rather
-            # than being mislabelled constants by ``name == name.upper()``.
-            if node_type in _MODULE_ANCHORED_NODE_TYPES:
-                # TS/JS: the symbol query admits call_expression values so
-                # forwardRef / memo / onCall / styled() bindings exist at all,
-                # which also lets `const svc = require('./svc')` through. Those
-                # bind a module and are already imports — drop them here rather
-                # than in the query, which cannot see past the await / paren /
-                # non-null / member-pick shells.
-                if file_info.language in _TS_JS_LANGUAGES and declarator_value_is_module_ref(
-                    def_node, src
-                ):
-                    continue
-                # A declarator whose value is structurally callable is not
-                # data, whatever its name looks like: `const C =
-                # forwardRef(fn)` and `const f = function(){}` are a component
-                # and a function. Naming decides only for the rest, which is
-                # what it was ever able to answer.
-                callable_kind = (
-                    declarator_binds_callable(def_node, src)
-                    if file_info.language in _TS_JS_LANGUAGES
-                    else None
-                )
-                kind = callable_kind or ("constant" if name.isupper() else "variable")
-
-            # Params signature text
-            params_text = _node_text(params_nodes[0], src) if params_nodes else ""
-
-            # Visibility
-            modifier_texts = [_node_text(m, src) for m in modifier_nodes]
-
-            # Rust: outer attributes (#[...]) are preceding siblings of the item
-            rust_attrs: list[str] = []
-            if file_info.language == "rust" and def_node.parent is not None:
-                siblings = def_node.parent.children
-                for j, sib in enumerate(siblings):
-                    if sib.id == def_node.id:
-                        k = j - 1
-                        while k >= 0 and siblings[k].type == "attribute_item":
-                            attr_text = _node_text(siblings[k], src).strip()
-                            # Strip #[ and ] to get the inner attribute text
-                            if attr_text.startswith("#[") and attr_text.endswith("]"):
-                                rust_attrs.append(attr_text[2:-1])
-                            k -= 1
-                        break
-
-            # C#: [Obsolete] / [System.Obsolete] are ``attribute_list`` nodes.
-            # In tree-sitter-c-sharp the attribute_list is child[0] of the
-            # declaration node itself (method_declaration, class_declaration, etc.),
-            # NOT a preceding sibling in the class body. Iterate def_node.children
-            # and collect attribute_list nodes until the first non-attribute child.
-            # Strip the outer [ ] so the inner content matches the same
-            # _DEPRECATED_DECORATOR_BASES the analyzer uses for every other lang.
-            csharp_attrs: list[str] = []
-            if file_info.language == "csharp":
-                for child in def_node.children:
-                    if child.type != "attribute_list":
-                        break
-                    attr_text = _node_text(child, src).strip()
-                    # "[Obsolete]" → "Obsolete"
-                    if attr_text.startswith("[") and attr_text.endswith("]"):
-                        csharp_attrs.append(attr_text[1:-1])
-
-            # C/C++: [[deprecated]] / [[deprecated("reason")]] are
-            # ``attribute_declaration`` nodes. In tree-sitter-cpp the
-            # attribute_declaration is child[0] of function_definition itself
-            # (NOT a preceding sibling at translation_unit level). Iterate
-            # def_node.children and collect attribute_declaration nodes until
-            # the first non-attribute child.
-            # Strip the outer [[ ]] so the inner content lands in the same
-            # checker as the Rust and C# forms.
-            cpp_attrs: list[str] = []
-            if file_info.language in ("cpp", "c"):
-                for child in def_node.children:
-                    if child.type != "attribute_declaration":
-                        break
-                    attr_text = _node_text(child, src).strip()
-                    # "[[deprecated]]" → "deprecated"
-                    if attr_text.startswith("[[") and attr_text.endswith("]]"):
-                        cpp_attrs.append(attr_text[2:-2])
-
-            visibility = config.visibility_fn(name, modifier_texts)
-            is_exported_symbol = False
-            # C/C++ visibility is dictated by AST context (access
-            # specifiers / storage class / export attributes), not by
-            # modifier text. Refine after the generic fn ran.
-            if file_info.language in ("cpp", "c"):
-                visibility, is_exported_symbol = refine_cpp_visibility(def_node, visibility, src)
-            # C#: an unmodified declaration's default depends on what encloses
-            # it, which the modifier-text fn cannot see.
-            elif file_info.language == "csharp":
-                visibility = refine_csharp_visibility(def_node, visibility)
-            # TS/JS: a top-level declaration is only public when exported —
-            # inline, via ``export { x }`` lists, or ``export default x``.
-            elif file_info.language in _TS_JS_LANGUAGES:
-                visibility = refine_ts_visibility(def_node, visibility, name, ts_deferred_exports)
-            # Rust: a trait's items may not write ``pub`` of their own, so the
-            # trait's modifier is the only place their visibility is stated.
-            elif file_info.language == "rust":
-                visibility = refine_rust_visibility(def_node, visibility, src)
-
-            # Parent class detection
-            parent_name = self._find_parent(def_node, config, receiver_nodes, src)
-
-            if parent_name is None and file_info.language == "cpp" and export_type is None:
-                parent_name = _cpp_export_macro_parent(def_node, cpp_export_type_parents)
-
-            # Dart mixin_declaration exposes no ``name`` field, so
-            # ``_find_parent``'s field lookup misses mixin members.
-            if parent_name is None and file_info.language == "dart":
-                ancestor = def_node.parent
-                while ancestor is not None:
-                    if ancestor.type == "mixin_declaration":
-                        ident = next((c for c in ancestor.children if c.type == "identifier"), None)
-                        if ident is not None:
-                            parent_name = _node_text(ident, src)
-                        break
-                    if ancestor.type in config.parent_class_types:
-                        break
-                    ancestor = ancestor.parent
-
-            # F#: no type node carries a ``name`` field -- the name hangs off
-            # a ``type_name`` child -- so the generic walk finds the ancestor
-            # and then reads nothing off it.
-            if parent_name is None and file_info.language == "fsharp":
-                parent_name = _fsharp_parent_name(def_node, src)
-
-            # C/C++ qualified definitions: ``void Foo::method() { … }``
-            # carries the class as the scope of a ``qualified_identifier``
-            # parent of the name node. Without this resolution, every
-            # ``Class::method`` lands as a free function and bloats the
-            # unused_export pass with thousands of method symbols.
-            if parent_name is None and file_info.language in ("cpp", "c") and name_nodes:
-                parent_name = _qualified_cpp_parent(name_nodes[0], src)
-
-            # Pascal out-of-line implementation: ``function TFoo.Bar(...);``
-            # -- the ``defProc`` node lives in the unit's implementation
-            # section, outside the class's ``declType`` body declared in the
-            # interface section, so nesting-based ``_find_parent`` above
-            # can't see it. The qualifying class lives beside the captured
-            # name in the ``genericDot`` header instead.
-            if parent_name is None and file_info.language == "pascal" and name_nodes:
-                parent_name = _qualified_pascal_parent(name_nodes[0], src)
-
-            # Elixir: the enclosing ``defmodule`` is a ``call`` with no
-            # ``name`` field for the generic nesting walk to read, so the
-            # module name has to be dug out of its first argument.
-            if parent_name is None and file_info.language == "elixir":
-                parent_name = _elixir_module_parent(def_node, src)
-
-            # Objective-C: an @interface / @implementation / @protocol names
-            # itself with a bare first identifier and no ``name`` field, so
-            # the nesting walk above finds the right ancestor and reads
-            # nothing off it.
-            if parent_name is None and file_info.language == "objectivec":
-                parent_name = _objc_container_parent(def_node, config.parent_class_types, src)
-
-            # A ``field_declaration`` cannot occur outside a class body, so a
-            # missing parent means the class did not parse. Grammar recovery,
-            # not a member function.
-            if node_type == "function_declarator" and parent_name is None:
-                continue
-
-            # Upgrade function → method when a parent class is detected.
-            # F#: a nested module is a parent too (for id uniqueness), but it
-            # is not a type, so a `let` inside one stays a function.
-            if parent_name and kind == "function" and (
-                file_info.language != "fsharp" or _fsharp_parent_is_type(def_node)
-            ):
-                kind = "method"
-
-            # Build signature
-            signature = build_signature(node_type, name, params_text, def_node, src)
-
-            # Docstring
-            docstring = extract_symbol_docstring(def_node, src, file_info.language)
-
-            # Async detection
-            is_async = _is_async_node(def_node, src)
-
-            sym_id = (
-                f"{file_info.path}::{parent_name}::{name}"
-                if parent_name
-                else f"{file_info.path}::{name}"
+            built = self._symbol_from_match(
+                capture_dict, config, file_info, src, cpp_exports, ts_deferred_exports, seen
             )
-            qualified = _build_qualified_name(file_info.path, parent_name, name)
-
-            symbols.append(
-                Symbol(
-                    id=sym_id,
-                    name=name,
-                    qualified_name=qualified,
-                    kind=kind,  # type: ignore[arg-type]
-                    signature=signature,
-                    start_line=start_line,
-                    end_line=end_line,
-                    docstring=docstring,
-                    decorators=(
-                        [m for m in modifier_texts if m.startswith("@")]
-                        + rust_attrs
-                        + csharp_attrs
-                        + cpp_attrs
-                    ),
-                    visibility=visibility,  # type: ignore[arg-type]
-                    is_async=is_async,
-                    language=file_info.language,
-                    parent_name=parent_name,
-                    is_exported_symbol=is_exported_symbol,
-                    is_declaration=(
-                        node_type in config.declaration_node_types
-                        or (export_type is not None and export_type.is_forward_declaration)
-                        or (
-                            export_type is None
-                            and _is_bodiless_cpp_type(file_info.language, node_type, def_node)
-                        )
-                    ),
-                )
-            )
-            node_types.append(node_type)
-            if file_info.language == "objectivec":
+            if built is None:
+                continue
+            symbol, def_node = built
+            symbols.append(symbol)
+            node_types.append(def_node.type)
+            if language == "objectivec":
                 container = _objc_container_node(def_node, config.parent_class_types)
                 objc_container_kinds.append(container.type if container else None)
 
-        if file_info.language == "pascal":
+        if language == "pascal":
             symbols = _dedupe_pascal_interface_symbols(symbols, node_types)
 
         # A .m file routinely declares its private methods in a class
         # extension and defines them below in the @implementation, which
         # builds each symbol id twice in one file.
-        if file_info.language == "objectivec":
+        if language == "objectivec":
             symbols = _dedupe_objc_interface_symbols(symbols, node_types, objc_container_kinds)
 
         return symbols
+
+    def _symbol_from_match(
+        self,
+        capture_dict: dict,
+        config: LanguageConfig,
+        file_info: FileInfo,
+        src: str,
+        cpp_exports: CppExportTypes,
+        ts_deferred_exports: frozenset[str] | None,
+        seen: set[tuple[int, str]],
+    ) -> tuple[Symbol, Node] | None:
+        """One query match as a symbol and its definition node, or None to drop it.
+
+        Records the match's ``(start_line, name)`` in *seen* once it passes the
+        name checks, so a later duplicate is dropped even if this one is.
+        """
+        language = file_info.language
+        def_nodes = capture_dict.get("symbol.def", [])
+        name_nodes = capture_dict.get("symbol.name", [])
+        captured_export_type_nodes = capture_dict.get("symbol.cpp_export_type", [])
+
+        if (
+            captured_export_type_nodes
+            and captured_export_type_nodes[0].id not in cpp_exports.capture_ids
+        ):
+            # The query also sees ordinary ``struct Tag variable;`` forms;
+            # discard only the unsupported recovery match.
+            return None
+
+        if not def_nodes or not name_nodes:
+            return None
+
+        def_node = def_nodes[0]
+        name = _language_symbol_name(
+            language, def_node, config.symbol_name_fn(_node_text(name_nodes[0], src), def_node.type), src
+        )
+        if name is None:
+            return None
+
+        export_type = cpp_exports.defs.get(def_node.id)
+        if export_type is not None and name != export_type.name:
+            # The ordinary struct/class query sees the same specifier, but
+            # tree-sitter calls the export macro its name. Keep only the
+            # dedicated match whose name is the outer declarator.
+            return None
+
+        if def_node.type == "preproc_def" and (
+            _cpp_normalize_identifier(name) in cpp_exports.macro_names
+            or def_node.id in cpp_exports.macro_def_ids
+        ):
+            # Body-form macros are suppressed by name as before #1901;
+            # ambiguous forward declarations suppress only the exact
+            # active definition that made recovery safe.
+            return None
+
+        start_line = def_node.start_point[0] + 1
+        if export_type is not None:
+            start_line = export_type.range_node.start_point[0] + 1
+        dedup_key = (start_line, name)
+        if dedup_key in seen:
+            return None
+        seen.add(dedup_key)
+
+        node_type = def_node.type
+        kind = self._symbol_kind(def_node, config, language, src, cpp_exports.parent_ids)
+        if kind is None:
+            return None
+
+        end_line = _symbol_end_line(def_node, config, language, export_type)
+        if end_line is None:
+            return None
+
+        if node_type in _MODULE_ANCHORED_NODE_TYPES:
+            kind = _module_binding_kind(def_node, name, language, src)
+            if kind is None:
+                return None
+
+        modifier_texts = [_node_text(m, src) for m in capture_dict.get("symbol.modifiers", [])]
+        visibility, is_exported_symbol = _refine_visibility(
+            def_node,
+            language,
+            config.visibility_fn(name, modifier_texts),
+            name,
+            ts_deferred_exports,
+            src,
+        )
+
+        parent_name = self._resolve_parent_name(
+            def_node,
+            config,
+            capture_dict.get("symbol.receiver", []),
+            name_nodes,
+            language,
+            src,
+            no_export_type=export_type is None,
+            export_type_parents=cpp_exports.parents,
+        )
+
+        # A ``field_declaration`` cannot occur outside a class body, so a
+        # missing parent means the class did not parse. Grammar recovery,
+        # not a member function.
+        if node_type == "function_declarator" and parent_name is None:
+            return None
+
+        # Upgrade function → method when a parent class is detected.
+        # F#: a nested module is a parent too (for id uniqueness), but it
+        # is not a type, so a `let` inside one stays a function.
+        if parent_name and kind == "function" and (
+            language != "fsharp" or _fsharp_parent_is_type(def_node)
+        ):
+            kind = "method"
+
+        params_nodes = capture_dict.get("symbol.params", [])
+        params_text = _node_text(params_nodes[0], src) if params_nodes else ""
+        sym_id = (
+            f"{file_info.path}::{parent_name}::{name}"
+            if parent_name
+            else f"{file_info.path}::{name}"
+        )
+        symbol = Symbol(
+            id=sym_id,
+            name=name,
+            qualified_name=_build_qualified_name(file_info.path, parent_name, name),
+            kind=kind,  # type: ignore[arg-type]
+            signature=build_signature(node_type, name, params_text, def_node, src),
+            start_line=start_line,
+            end_line=end_line,
+            docstring=extract_symbol_docstring(def_node, src, language),
+            decorators=(
+                [m for m in modifier_texts if m.startswith("@")]
+                + _attribute_decorators(def_node, language, src)
+            ),
+            visibility=visibility,  # type: ignore[arg-type]
+            is_async=_is_async_node(def_node, src),
+            language=language,
+            parent_name=parent_name,
+            is_exported_symbol=is_exported_symbol,
+            is_declaration=(
+                node_type in config.declaration_node_types
+                or (export_type is not None and export_type.is_forward_declaration)
+                or (
+                    export_type is None
+                    and _is_bodiless_cpp_type(language, node_type, def_node)
+                )
+            ),
+        )
+        return symbol, def_node
+
+    def _symbol_kind(
+        self,
+        def_node: Node,
+        config: LanguageConfig,
+        language: str,
+        src: str,
+        export_type_parent_ids: frozenset[int],
+    ) -> str | None:
+        """The symbol kind for *def_node*, or None when it is not a symbol here."""
+        node_type = def_node.type
+        kind = config.symbol_node_types.get(node_type)
+        if kind is None:
+            return None
+
+        # Skip symbols nested inside another function/method body. The
+        # Tree-sitter query is recursive, so helpers defined inside a
+        # React component or an async orchestrator method get hoisted
+        # to the top-level symbol list and read as unused public
+        # exports. Filtering by callable ancestor restricts extraction
+        # to module-top-level + class-body members. Class bodies don't
+        # match (``class_definition`` is not callable), so methods are
+        # preserved. Module-anchored node types skip the check: their
+        # .scm patterns only match at module/program level, and a TS
+        # variable_declarator's parent (lexical_declaration → "function")
+        # would otherwise read as a callable ancestor.
+        if node_type not in _MODULE_ANCHORED_NODE_TYPES and _has_callable_ancestor(
+            def_node, config.symbol_node_types, export_type_parent_ids
+        ):
+            return None
+
+        # F#: a ``let`` nested in another binding's body has the same node
+        # shape as a top-level one, so the ancestor filter above cannot
+        # see it -- what it captures is the binding's left-hand side, and
+        # a nested binding's left-hand side has no callable ancestor
+        # either. A ``let`` inside a type body is a field and stays.
+        if _is_fsharp_binding(language, node_type) and _fsharp_binding_is_nested(def_node):
+            return None
+        return _refine_symbol_kind(kind, def_node, config, language, src)
+
+    def _resolve_parent_name(
+        self,
+        def_node: Node,
+        config: LanguageConfig,
+        receiver_nodes: list[Node],
+        name_nodes: list[Node],
+        language: str,
+        src: str,
+        *,
+        no_export_type: bool,
+        export_type_parents: dict[int, str],
+    ) -> str | None:
+        """The enclosing type or module name, trying each language's own shape."""
+        parent_name = self._find_parent(def_node, config, receiver_nodes, src)
+        if parent_name is not None:
+            return parent_name
+
+        if language == "cpp" and no_export_type:
+            parent_name = _cpp_export_macro_parent(def_node, export_type_parents)
+            if parent_name is not None:
+                return parent_name
+
+        # Dart mixin_declaration exposes no ``name`` field, so
+        # ``_find_parent``'s field lookup misses mixin members.
+        if language == "dart":
+            return _dart_mixin_parent(def_node, config, src)
+
+        # F#: no type node carries a ``name`` field -- the name hangs off
+        # a ``type_name`` child -- so the generic walk finds the ancestor
+        # and then reads nothing off it.
+        if language == "fsharp":
+            return _fsharp_parent_name(def_node, src)
+
+        # C/C++ qualified definitions: ``void Foo::method() { … }``
+        # carries the class as the scope of a ``qualified_identifier``
+        # parent of the name node. Without this resolution, every
+        # ``Class::method`` lands as a free function and bloats the
+        # unused_export pass with thousands of method symbols.
+        if language in ("cpp", "c") and name_nodes:
+            return _qualified_cpp_parent(name_nodes[0], src)
+
+        # Pascal out-of-line implementation: ``function TFoo.Bar(...);``
+        # -- the ``defProc`` node lives in the unit's implementation
+        # section, outside the class's ``declType`` body declared in the
+        # interface section, so nesting-based ``_find_parent`` above
+        # can't see it. The qualifying class lives beside the captured
+        # name in the ``genericDot`` header instead.
+        if language == "pascal" and name_nodes:
+            return _qualified_pascal_parent(name_nodes[0], src)
+
+        # Elixir: the enclosing ``defmodule`` is a ``call`` with no
+        # ``name`` field for the generic nesting walk to read, so the
+        # module name has to be dug out of its first argument.
+        if language == "elixir":
+            return _elixir_module_parent(def_node, src)
+
+        # Objective-C: an @interface / @implementation / @protocol names
+        # itself with a bare first identifier and no ``name`` field, so
+        # the nesting walk above finds the right ancestor and reads
+        # nothing off it.
+        if language == "objectivec":
+            return _objc_container_parent(def_node, config.parent_class_types, src)
+        return None
 
     def _find_parent(
         self,
