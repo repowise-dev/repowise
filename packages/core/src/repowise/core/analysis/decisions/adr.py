@@ -78,14 +78,8 @@ def find_adr_files(repo_path: Path) -> list[Path]:
 
         in_adr_dir = rel_dir in _ADR_DIRS
         for fname in filenames:
-            low = fname.lower()
-            if not low.endswith(".md"):
-                continue
-            if in_adr_dir:
-                bucket = conventional
-            elif "adr" in low and low != "readme.md" and "template" not in low:
-                bucket = loose
-            else:
+            bucket = _adr_bucket(fname, in_adr_dir, conventional, loose)
+            if bucket is None:
                 continue
             if ignore.match_file(f"{rel_dir}/{fname}" if rel_dir else fname):
                 continue
@@ -97,6 +91,44 @@ def find_adr_files(repo_path: Path) -> list[Path]:
     # No dedup pass: walk_repo yields each directory once, and each file
     # lands in exactly one bucket.
     return [*conventional, *loose][:_MAX_ADR_FILES]
+
+
+def _adr_bucket(
+    fname: str, in_adr_dir: bool, conventional: list[Path], loose: list[Path]
+) -> list[Path] | None:
+    """Which candidate list *fname* belongs in, or None if it is no ADR."""
+    low = fname.lower()
+    if not low.endswith(".md"):
+        return None
+    if in_adr_dir:
+        return conventional
+    if "adr" in low and low != "readme.md" and "template" not in low:
+        return loose
+    return None
+
+
+def read_front_matter(content: str) -> tuple[str, str, str]:
+    """``(status, title, body)`` from an ADR's optional YAML front matter.
+
+    Status and title are empty when the front matter does not set them, and
+    the body is the document after the front matter (all of it when absent).
+    """
+    status = ""
+    title = ""
+    fm = _ADR_FRONTMATTER_RE.match(content)
+    if not fm:
+        return status, title, content
+    for line in fm.group(1).splitlines():
+        if ":" not in line:
+            continue
+        k, _, v = line.partition(":")
+        key = k.strip().lower()
+        val = v.strip().strip("\"'")
+        if key == "status":
+            status = val
+        elif key == "title":
+            title = val
+    return status, title, content[fm.end() :]
 
 
 def split_headings(text: str) -> dict[str, str]:

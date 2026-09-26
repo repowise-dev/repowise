@@ -61,9 +61,13 @@ from repowise.core.analysis.decisions.scope import (
     selected_scope_files,
 )
 
-from .adr import _ADR_FRONTMATTER_RE, _ADR_STATUS_MAP, bullets, find_adr_files, split_headings
+from .adr import _ADR_STATUS_MAP, bullets, find_adr_files, read_front_matter, split_headings
 from .commit_signals import count_decision_signals
-from .markers import _CODE_FENCE_RE, MARKER_RE, strip_code_blocks
+from .markers import (  # noqa: F401  (MARKER_RE re-exported)
+    MARKER_RE,
+    find_markers,
+    strip_code_blocks,
+)
 from .prompts import (
     _SYSTEM_PROMPT,
     COMMENT_ARCHAEOLOGY_PROMPT,
@@ -395,6 +399,117 @@ def _scope_from_selection(
 
 
 
+def _signal_commit_info(commit: dict) -> dict | None:
+    """The prompt-ready record of a commit with decision signals, else None."""
+    msg = commit.get("message", "")
+    body = commit.get("body", "")
+    # Scan subject + body for signals — squash-merge repos carry the
+    # decision rationale in the body, not the one-line subject.
+    signal_count = count_decision_signals(f"{msg}\n{body}".lower())
+    if signal_count <= 0:
+        return None
+    return {
+        "sha": commit.get("sha", ""),
+        "message": msg,
+        "body": body,
+        "author": commit.get("author", ""),
+        "date": commit.get("date", ""),
+        "signal_count": signal_count,
+    }
+
+async def _run_batches(
+    source: str,
+    items: Sequence[Any],
+    size: int,
+    process: Any,
+) -> list[ExtractedDecision]:
+    """Run *process* over *items* in batches of *size*, concurrently.
+
+    Each batch's failure is contained and counted by :func:`_collect_batches`,
+    which raises only when every batch failed.
+    """
+    batches = [items[i : i + size] for i in range(0, len(items), size)]
+    results = await asyncio.gather(*[process(b) for b in batches], return_exceptions=True)
+    return _collect_batches(source, list(results))
+
+
+def _attribute_to_commit(
+    decision: ExtractedDecision,
+    batch: list[dict],
+    subject_key: str,
+    files_by_sha: dict[str, list[str]],
+    source_by_sha: dict[str, str],
+) -> str:
+    """Bind a decision mined from a batch of commits to the commit it came from.
+
+    Prefers the sha the model reported, else the first commit whose subject
+    (``batch[i][subject_key]``, first 40 chars) appears in the title. Scopes
+    the decision to that commit's files and returns the sha, or ``""`` when
+    nothing matched.
+    """
+    sha = decision.evidence_commits[0] if decision.evidence_commits else ""
+    if not sha:
+        # Try to match back to a commit
+        for c in batch:
+            if c[subject_key][:40].lower() in decision.title.lower():
+                sha = c["sha"]
+                break
+    if sha:
+        decision.evidence_commits = [sha]
+        decision.affected_files, decision.scope_basis = _scope_from_selection(
+            decision, files_by_sha.get(sha)
+        )
+        decision.source_text = source_by_sha.get(sha, "")
+    # Cleared whether or not the sha resolved: an unattributed decision has no
+    # commit to validate paths against, so the model's list is unusable rather
+    # than merely unused.
+    decision.proposed_files = None
+    return sha
+
+
+def _load_json_payload(content: str) -> Any | None:
+    """Decode a model's JSON answer, tolerating code fences and surrounding prose."""
+    if content.startswith("```"):
+        # Remove markdown code fences
+        lines = content.split("\n")
+        content = "\n".join(line for line in lines if not line.strip().startswith("```"))
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+    # Try to find JSON array in the response
+    match = re.search(r"\[.*\]", content, re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group())
+    except json.JSONDecodeError:
+        return None
+
+
+def _decision_from_item(item: dict) -> ExtractedDecision:
+    """One decision from one object of a model's JSON answer."""
+    return ExtractedDecision(
+        title=item.get("title", ""),
+        context=item.get("context", ""),
+        decision=item.get("decision", ""),
+        rationale=item.get("rationale", ""),
+        alternatives=item.get("alternatives", []),
+        consequences=item.get("consequences", []),
+        tags=item.get("tags", []),
+        # Only the two commit prompts ask for this. Every other prompt omits
+        # the key, so this stays None and the miner that owns those decisions
+        # keeps scoping them its own way.
+        proposed_files=_coerce_paths(item.get("affected_files")),
+        evidence_commits=[item["commit_sha"]] if "commit_sha" in item else [],
+        # Which marker this came from, for the inline-marker miner's per-marker
+        # attribution. Absent (and left None) for every other prompt; they
+        # scope by sha or by file instead.
+        evidence_line=_coerce_line(item.get("marker_line")),
+        source_quote=item.get("source_quote", ""),
+    )
+
+
 class DecisionExtractor:
     """Extracts architectural decisions from multiple sources."""
 
@@ -457,103 +572,70 @@ class DecisionExtractor:
                     markers_found=sum(len(v) for v in markers_by_file.values()),
                 )
 
-            lines = text.splitlines()
-            # Track whether we're inside a fenced code block in markdown
-            # files so we don't treat example markers as real decisions.
-            is_markdown = Path(rel_path).suffix.lower() in (".md", ".mdx", ".rst")
-            in_code_fence = False
-            for line_num, line in enumerate(lines, start=1):
-                if is_markdown:
-                    fence_match = _CODE_FENCE_RE.match(line)
-                    if fence_match:
-                        in_code_fence = not in_code_fence
-                        continue
-                    if in_code_fence:
-                        continue
-                m = MARKER_RE.match(line)
-                if m:
-                    # Collect continuation lines (same comment prefix, no keyword)
-                    marker_text = m.group("text").strip()
-                    for cont_line in lines[line_num : line_num + 5]:
-                        cont = cont_line.strip()
-                        if cont.startswith(("#", "//", "--", "*")) and ":" not in cont[:20]:
-                            # Strip comment prefix
-                            cleaned = re.sub(r"^\s*(?:#|//|--|/\*|\*)\s*", "", cont)
-                            if cleaned:
-                                marker_text += " " + cleaned
-                        else:
-                            break
-
-                    # Context window: ±20 lines
-                    ctx_start = max(0, line_num - 21)
-                    ctx_end = min(len(lines), line_num + 20)
-                    context = "\n".join(lines[ctx_start:ctx_end])
-
-                    markers_by_file.setdefault(rel_path, []).append(
-                        {
-                            "keyword": m.group("keyword"),
-                            "text": marker_text,
-                            "line": line_num,
-                            "context": context,
-                        }
-                    )
+            found = find_markers(rel_path, text)
+            if found:
+                markers_by_file.setdefault(rel_path, []).extend(found)
 
         if not markers_by_file:
             return []
 
         marker_llm = self._llm("inline_marker")
         decisions: list[ExtractedDecision] = []
-
         for file_path, markers in markers_by_file.items():
-            # Get 1-hop graph neighbors for affected_files
-            affected = self._get_neighbors(file_path)
-
-            markers_by_line = {m["line"]: m for m in markers}
-
-            if marker_llm:
-                # Use LLM to structure markers
-                try:
-                    llm_decisions = await self._structure_markers_via_llm(file_path, markers)
-                    for d in llm_decisions:
-                        # Attribute the decision to the one marker it was drawn
-                        # from (the prompt asks for `marker_line`, which the
-                        # parser lands in `evidence_line`). Joining every
-                        # marker's context into one span and handing it to all
-                        # of them let the substring gate stamp a decision
-                        # `exact` against a *different* marker's text, and put
-                        # marker 1's line number on marker 3's decision. A
-                        # decision we cannot attribute gets no source span at
-                        # all: the gate then leaves it `unverified`, which is
-                        # the honest verdict, rather than verifying it against
-                        # a neighbour.
-                        marker = markers_by_line.get(d.evidence_line)
-                        if marker is None and len(markers) == 1:
-                            marker = markers[0]  # unambiguous without the hint
-                        d.evidence_file = file_path
-                        d.evidence_line = marker["line"] if marker else None
-                        d.affected_files = list({file_path} | set(affected))
-                        d.affected_modules = self._infer_modules(d.affected_files)
-                        d.source = "inline_marker"
-                        d.status = "active"
-                        d.confidence = 0.95
-                        d.source_text = marker.get("context", "") if marker else ""
-                    decisions.extend(llm_decisions)
-                except Exception:
-                    logger.warning(
-                        "decision_extractor.llm_structuring_failed",
-                        file=file_path,
-                    )
-                    # Fall through to raw extraction below
-                    for marker in markers:
-                        decisions.append(
-                            self._raw_decision_from_marker(file_path, marker, affected)
-                        )
-            else:
-                # No LLM — create minimal decisions from raw marker text
-                for marker in markers:
-                    decisions.append(self._raw_decision_from_marker(file_path, marker, affected))
-
+            decisions.extend(await self._decisions_from_markers(file_path, markers, marker_llm))
         return decisions
+
+    async def _decisions_from_markers(
+        self, file_path: str, markers: list[dict], marker_llm: Any | None
+    ) -> list[ExtractedDecision]:
+        """One file's markers as decisions: model-structured when possible, else raw."""
+        # Get 1-hop graph neighbors for affected_files
+        affected = self._get_neighbors(file_path)
+        if not marker_llm:
+            # No LLM — create minimal decisions from raw marker text
+            return [self._raw_decision_from_marker(file_path, m, affected) for m in markers]
+        try:
+            llm_decisions = await self._structure_markers_via_llm(file_path, markers)
+            self._attribute_to_markers(llm_decisions, file_path, markers, affected)
+        except Exception:
+            logger.warning(
+                "decision_extractor.llm_structuring_failed",
+                file=file_path,
+            )
+            # Fall through to raw extraction
+            return [self._raw_decision_from_marker(file_path, m, affected) for m in markers]
+        return llm_decisions
+
+    def _attribute_to_markers(
+        self,
+        decisions: list[ExtractedDecision],
+        file_path: str,
+        markers: list[dict],
+        affected: list[str],
+    ) -> None:
+        """Bind each model-structured decision to the marker it was drawn from."""
+        markers_by_line = {m["line"]: m for m in markers}
+        for d in decisions:
+            # Attribute the decision to the one marker it was drawn from (the
+            # prompt asks for `marker_line`, which the parser lands in
+            # `evidence_line`). Joining every marker's context into one span
+            # and handing it to all of them let the substring gate stamp a
+            # decision `exact` against a *different* marker's text, and put
+            # marker 1's line number on marker 3's decision. A decision we
+            # cannot attribute gets no source span at all: the gate then leaves
+            # it `unverified`, which is the honest verdict, rather than
+            # verifying it against a neighbour.
+            marker = markers_by_line.get(d.evidence_line)
+            if marker is None and len(markers) == 1:
+                marker = markers[0]  # unambiguous without the hint
+            d.evidence_file = file_path
+            d.evidence_line = marker["line"] if marker else None
+            d.affected_files = list({file_path} | set(affected))
+            d.affected_modules = self._infer_modules(d.affected_files)
+            d.source = "inline_marker"
+            d.status = "active"
+            d.confidence = 0.95
+            d.source_text = marker.get("context", "") if marker else ""
 
     def _raw_decision_from_marker(
         self,
@@ -626,42 +708,7 @@ class DecisionExtractor:
         if not provider or not self._git_meta_map:
             return []
 
-        # Collect unique significant commits with decision signals
-        commit_map: dict[str, dict] = {}  # sha → commit info
-        commit_files: dict[str, list[str]] = {}  # sha → files
-
-        for file_path, meta in self._git_meta_map.items():
-            commits_json = meta.get("significant_commits_json", "[]")
-            if isinstance(commits_json, str):
-                try:
-                    commits = json.loads(commits_json)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-            else:
-                commits = commits_json
-
-            for commit in commits:
-                sha = commit.get("sha", "")
-                if not sha or sha in commit_map:
-                    commit_files.setdefault(sha, []).append(file_path)
-                    continue
-                msg = commit.get("message", "")
-                body = commit.get("body", "")
-                # Scan subject + body for signals — squash-merge repos carry the
-                # decision rationale in the body, not the one-line subject.
-                signal_text = f"{msg}\n{body}".lower()
-                signal_count = count_decision_signals(signal_text)
-                if signal_count > 0:
-                    commit_map[sha] = {
-                        "sha": sha,
-                        "message": msg,
-                        "body": body,
-                        "author": commit.get("author", ""),
-                        "date": commit.get("date", ""),
-                        "signal_count": signal_count,
-                    }
-                    commit_files.setdefault(sha, []).append(file_path)
-
+        commit_map, commit_files = self._signal_commits()
         if not commit_map:
             return []
 
@@ -673,9 +720,6 @@ class DecisionExtractor:
         )[:20]
 
         # Batch LLM calls (5 commits per batch)
-        decisions: list[ExtractedDecision] = []
-        batches = [ranked[i : i + 5] for i in range(0, len(ranked), 5)]
-
         async def _process_batch(batch: list[dict]) -> list[ExtractedDecision]:
             commits_block = ""
             source_by_sha: dict[str, str] = {}
@@ -702,23 +746,7 @@ class DecisionExtractor:
 
             # Enrich with commit metadata
             for d in extracted:
-                sha = d.evidence_commits[0] if d.evidence_commits else ""
-                if not sha:
-                    # Try to match back to a commit
-                    for c in batch:
-                        if c["message"][:40].lower() in d.title.lower():
-                            sha = c["sha"]
-                            break
-                if sha:
-                    d.evidence_commits = [sha]
-                    d.affected_files, d.scope_basis = _scope_from_selection(
-                        d, commit_files.get(sha)
-                    )
-                    d.source_text = source_by_sha.get(sha, "")
-                # Cleared whether or not the sha resolved: an unattributed
-                # decision has no commit to validate paths against, so the
-                # model's list is unusable rather than merely unused.
-                d.proposed_files = None
+                sha = _attribute_to_commit(d, batch, "message", commit_files, source_by_sha)
                 d.source = "git_archaeology"
                 d.status = "proposed"
                 signal = max(
@@ -730,13 +758,35 @@ class DecisionExtractor:
 
             return extracted
 
-        results = await asyncio.gather(
-            *[_process_batch(b) for b in batches],
-            return_exceptions=True,
-        )
-        decisions.extend(_collect_batches("git_archaeology", list(results)))
+        return await _run_batches("git_archaeology", ranked, 5, _process_batch)
 
-        return decisions
+    def _signal_commits(self) -> tuple[dict[str, dict], dict[str, list[str]]]:
+        """Unique significant commits carrying decision signals, and each one's files.
+
+        Returns ``(sha -> commit info, sha -> files it touched)``.
+        """
+        commit_map: dict[str, dict] = {}  # sha → commit info
+        commit_files: dict[str, list[str]] = {}  # sha → files
+
+        for file_path, meta in self._git_meta_map.items():
+            commits_json = meta.get("significant_commits_json", "[]")
+            if isinstance(commits_json, str):
+                try:
+                    commits = json.loads(commits_json)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            else:
+                commits = commits_json
+
+            for commit in commits:
+                sha = commit.get("sha", "")
+                if sha and sha not in commit_map:
+                    info = _signal_commit_info(commit)
+                    if info is None:
+                        continue
+                    commit_map[sha] = info
+                commit_files.setdefault(sha, []).append(file_path)
+        return commit_map, commit_files
 
     # ------------------------------------------------------------------
     # Source 3: ADR auto-discovery (deterministic-first)
@@ -801,22 +851,7 @@ class DecisionExtractor:
         decision is grounded by construction and passes the substring gate as
         ``exact``.
         """
-        status = ""
-        title = ""
-        body = content
-        fm = _ADR_FRONTMATTER_RE.match(content)
-        if fm:
-            for line in fm.group(1).splitlines():
-                if ":" in line:
-                    k, _, v = line.partition(":")
-                    key = k.strip().lower()
-                    val = v.strip().strip("\"'")
-                    if key == "status":
-                        status = val
-                    elif key == "title":
-                        title = val
-            body = content[fm.end() :]
-
+        status, title, body = read_front_matter(content)
         sections = split_headings(body)
         if not title:
             m = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
@@ -896,7 +931,6 @@ class DecisionExtractor:
             return []
 
         ranked = list(candidates.values())[:_MAX_PR_BODIES]
-        batches = [ranked[i : i + 5] for i in range(0, len(ranked), 5)]
 
         async def _process_batch(batch: list[dict]) -> list[ExtractedDecision]:
             bodies_block = ""
@@ -926,29 +960,14 @@ class DecisionExtractor:
             )
             extracted = self._parse_decisions_json(response.content)
             for d in extracted:
-                sha = d.evidence_commits[0] if d.evidence_commits else ""
-                if not sha:
-                    for c in batch:
-                        if c["subject"][:40].lower() in d.title.lower():
-                            sha = c["sha"]
-                            break
-                if sha:
-                    d.evidence_commits = [sha]
-                    d.affected_files, d.scope_basis = _scope_from_selection(
-                        d, files_by_sha.get(sha)
-                    )
-                    d.source_text = source_by_sha.get(sha, "")
-                d.proposed_files = None
+                _attribute_to_commit(d, batch, "subject", files_by_sha, source_by_sha)
                 d.source = "pr"
                 d.status = "proposed"
                 d.confidence = 0.80
                 d.affected_modules = self._infer_modules(d.affected_files)
             return extracted
 
-        results = await asyncio.gather(
-            *[_process_batch(b) for b in batches], return_exceptions=True
-        )
-        return _collect_batches("pr", list(results))
+        return await _run_batches("pr", ranked, 5, _process_batch)
 
     # ------------------------------------------------------------------
     # Source 5: Comment archaeology (centrality-bounded)
@@ -977,9 +996,6 @@ class DecisionExtractor:
                 snippets.append((fp, prose))
         if not snippets:
             return []
-
-        decisions: list[ExtractedDecision] = []
-        batches = [snippets[i : i + 4] for i in range(0, len(snippets), 4)]
 
         async def _process_batch(batch: list[tuple[str, str]]) -> list[ExtractedDecision]:
             comments_block = ""
@@ -1012,11 +1028,7 @@ class DecisionExtractor:
                 d.affected_modules = self._infer_modules([best_fp])
             return extracted
 
-        results = await asyncio.gather(
-            *[_process_batch(b) for b in batches], return_exceptions=True
-        )
-        decisions.extend(_collect_batches("comment", list(results)))
-        return decisions
+        return await _run_batches("comment", snippets, 4, _process_batch)
 
     # ------------------------------------------------------------------
     # Source 6: Conventions (deterministic, graph-counted)
@@ -1412,55 +1424,13 @@ class DecisionExtractor:
             raise EmptyModelResponseError(
                 "the model returned no content for this batch"
             )
-        if content.startswith("```"):
-            # Remove markdown code fences
-            lines = content.split("\n")
-            content = "\n".join(line for line in lines if not line.strip().startswith("```"))
-
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError:
-            # Try to find JSON array in the response
-            match = re.search(r"\[.*\]", content, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError:
-                    return []
-            else:
-                return []
-
+        data = _load_json_payload(content)
         if isinstance(data, dict):
             data = [data]
         if not isinstance(data, list):
             return []
-
-        decisions = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            title = item.get("title", "")
-            if not title:
-                continue
-            decisions.append(
-                ExtractedDecision(
-                    title=title,
-                    context=item.get("context", ""),
-                    decision=item.get("decision", ""),
-                    rationale=item.get("rationale", ""),
-                    alternatives=item.get("alternatives", []),
-                    consequences=item.get("consequences", []),
-                    tags=item.get("tags", []),
-                    # Only the two commit prompts ask for this. Every other
-                    # prompt omits the key, so this stays None and the miner
-                    # that owns those decisions keeps scoping them its own way.
-                    proposed_files=_coerce_paths(item.get("affected_files")),
-                    evidence_commits=[item["commit_sha"]] if "commit_sha" in item else [],
-                    # Which marker this came from, for the inline-marker miner's
-                    # per-marker attribution. Absent (and left None) for every
-                    # other prompt — they scope by sha or by file instead.
-                    evidence_line=_coerce_line(item.get("marker_line")),
-                    source_quote=item.get("source_quote", ""),
-                )
-            )
-        return decisions
+        return [
+            _decision_from_item(item)
+            for item in data
+            if isinstance(item, dict) and item.get("title", "")
+        ]

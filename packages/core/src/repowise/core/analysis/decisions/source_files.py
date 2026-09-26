@@ -111,13 +111,16 @@ def iter_source_files(repo_path: Path) -> Iterator[Path]:
             fpath = Path(dirpath) / fname
             if fpath.suffix.lower() in _BINARY_EXTENSIONS:
                 continue
-            if tracked is not None:
-                try:
-                    if fpath.resolve() not in tracked:
-                        continue
-                except OSError:
-                    continue
+            if tracked is not None and not _is_tracked(fpath, tracked):
+                continue
             yield fpath
+
+
+def _is_tracked(fpath: Path, tracked: set[Path]) -> bool:
+    try:
+        return fpath.resolve() in tracked
+    except OSError:
+        return False
 
 
 def extract_leading_prose(repo_path: Path, file_path: str) -> str:
