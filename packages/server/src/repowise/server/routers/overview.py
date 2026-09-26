@@ -24,6 +24,7 @@ from repowise.core.analysis.health.aggregation import (
     severity_breakdown as health_severity_breakdown,
 )
 from repowise.core.analysis.health.scoring import hotspot_health
+from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -314,6 +315,10 @@ async def overview_summary(
         ({"language": lang or "other", "file_count": n} for lang, n in lang_rows),
         key=lambda r: -r["file_count"],
     )
+    # Same definition as stats_highlights.build_scale: code languages only.
+    # "languages" keeps every format for the composition bar.
+    code = REGISTRY.code_languages()
+    language_count = sum(1 for row in languages if row["language"] in code)
 
     # --- Health KPIs + deltas vs previous snapshot ------------------------
     # Loaded once and handed to both consumers below: the KPI rollup and the
@@ -538,6 +543,7 @@ async def overview_summary(
             "hotspot_count": hotspot_count,
             "silo_count": silo_count,
             "module_count": module_count,
+            "language_count": language_count,
             # Summed from the health metrics already loaded above, so it costs
             # nothing. It is here because Overview's only use for the whole
             # Stats "By the Numbers" endpoint was this one figure, and that
