@@ -180,7 +180,9 @@ def _compose(findings: list, suggestions: list) -> tuple[list, dict]:
     from repowise.core.analysis.health.refactoring.opportunity import compose_opportunities
 
     leads = primary_biomarker_by_file(findings) if findings else {}
-    opportunities = compose_opportunities(suggestions, primary_biomarker_by_file=leads)
+    opportunities = compose_opportunities(
+        suggestions, primary_biomarker_by_file=leads, findings=findings or None
+    )
     return opportunities, leads
 
 
