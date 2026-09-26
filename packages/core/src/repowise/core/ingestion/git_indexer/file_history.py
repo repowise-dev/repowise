@@ -1,11 +1,8 @@
-"""Per-file git history indexing — the ESSENTIAL baseline plus optional
-FULL-tier blame enrichment.
+"""Per-file git history indexing: the ESSENTIAL baseline plus FULL-tier blame.
 
-``index_file`` parses a single file's commit history (from a precomputed
-commit index when available, else a per-file ``git log``) and derives commit
-counts, authorship, line churn, the temporal hotspot score, and significant
-commits. The expensive ``git blame`` ownership pass is gated by
-*include_blame* so the ESSENTIAL tier can skip it.
+``index_file`` derives commit counts, authorship, churn, the temporal hotspot
+score and significant commits from a precomputed commit index or a per-file
+``git log``. *include_blame* gates the expensive ``git blame`` pass.
 """
 
 from __future__ import annotations
@@ -50,10 +47,9 @@ from .records import (
 def _body_carries_decision(subject: str, body: str) -> bool:
     """Whether a commit body is worth retaining for decision mining.
 
-    The body is stored once per file the commit touched, so retaining it
-    indiscriminately bloats the index. Keep it only when the subject/body shows
-    decision intent — a decision-signal keyword or a PR-description marker — i.e.
-    exactly the commits the PR / git-archaeology miners would consume.
+    The body is stored once per file the commit touched, so it is kept only
+    when the subject or body carries a decision-signal keyword or a
+    PR-description marker: the commits the PR and git-archaeology miners read.
     """
     if not body:
         return False
@@ -67,15 +63,12 @@ logger = structlog.get_logger(__name__)
 
 __all__ = ["DECAY_REFRESH_KEYS", "index_file", "new_meta"]
 
-# The anchor-dependent window/decay fields — the only git-metadata columns that
-# *recover* as the repo's newest-commit anchor advances (see issue #728). An
-# incremental update recomputes just these for idle (unchanged) files off the
-# repo-wide walk and persists a decay-only partial row, leaving ownership / age
-# / authorship (which need full history and are only correct from the init
-# walk) untouched. ``co_change_partners_json`` / ``co_change_partner_count`` /
-# ``co_change_mass`` / ``change_entropy`` /
-# ``prior_defect_*`` are merged onto the metadata after the per-file pass, so
-# they refresh together with the window churn fields ``index_file`` computes.
+# The anchor-dependent window/decay fields: the only git-metadata columns that
+# recover as the repo's newest-commit anchor advances. An incremental update
+# recomputes just these for idle files off the repo-wide walk and persists a
+# decay-only partial row; ownership, age and authorship need full history and
+# come only from the init walk. The co-change, entropy and prior-defect keys are
+# merged onto the metadata after the per-file pass, so they refresh together.
 DECAY_REFRESH_KEYS = (
     "commit_count_90d",
     "commit_count_30d",
@@ -113,7 +106,6 @@ def new_meta(file_path: str) -> dict[str, Any]:
         "is_stable": False,
         "churn_percentile": 0.0,
         "age_days": 0,
-        # Phase 2 fields
         "lines_added_90d": 0,
         "lines_deleted_90d": 0,
         "avg_commit_size": 0.0,
@@ -121,41 +113,32 @@ def new_meta(file_path: str) -> dict[str, Any]:
         "recent_owner_commit_pct": None,
         "bus_factor": 0,
         "contributor_count": 0,
-        # Phase 3 fields
         "original_path": None,
         "merge_commit_count_90d": 0,
-        # Prior-defect history: count of bug-fix commits touching this file in
-        # the trailing PRIOR_DEFECT_WINDOW_DAYS window (anchored to as_of_ts when
-        # set, so T0 benchmark scoring stays leakage-free). Consumed by the
-        # ``prior_defect`` health biomarker; mirrors the benchmark's
-        # prior-defects baseline definition (product == benchmark). The raw
-        # variant is the same walk before fix-shape filtering (fix_shape.py).
+        # Bug-fix commits touching this file in the trailing
+        # PRIOR_DEFECT_WINDOW_DAYS, anchored to as_of_ts; read by ``prior_defect``.
+        # The raw count is the same walk before fix-shape filtering.
         "prior_defect_count": 0,
         "prior_defect_raw_count": 0,
         # Repo-relative rank of prior_defect_count; see enrich.compute_percentiles.
         "prior_defect_pct": 0.0,
-        # Agent provenance rollup: how much of this file's indexed history is
-        # agent-attributed (local channels only — see agent_provenance module).
-        # agent_authored_pct stays None when the file has no commits at all.
+        # Share of this file's indexed history that is agent-attributed (local
+        # channels only); agent_authored_pct stays None for a file with no commits.
         "agent_commit_count": 0,
         "agent_authored_pct": None,
         "agent_tier_counts_json": "{}",
-        # Line-level agent share (agent-trace ranges[]): distinct AI-written
-        # lines + {model_id: line_count}. Merged in by the orchestrator from the
-        # repo-wide trace index (path-keyed, like co-change/prior-defects), so
-        # these stay at the default unless the repo ships .agent-trace/.
+        # Distinct agent-written lines and {model_id: line_count} from the
+        # repo-wide trace index, merged in by the orchestrator; default unless
+        # the repo ships .agent-trace/.
         "agent_line_count": 0,
         "agent_line_model_json": "{}",
-        # Temporal hotspot score (exponentially decayed churn)
         "temporal_hotspot_score": 0.0,
-        # Change entropy (Hassan HCM) — populated repo-wide by the co-change
-        # walk, percentile by enrich.compute_percentiles. Default 0.0 leaves
-        # the signal silent on the ESSENTIAL tier / files that never co-changed.
+        # Change entropy (Hassan HCM) from the repo-wide co-change walk. 0.0
+        # keeps the signal silent on the ESSENTIAL tier and never-co-changed files.
         "change_entropy": 0.0,
         "change_entropy_pct": 0.0,
-        # Co-change breadth over every partner the repo-wide walk found, not
-        # the length of the truncated partner list. Defaults leave
-        # ``co_change_scatter`` silent when the walk did not run.
+        # Co-change breadth over every partner found, not the truncated list's
+        # length; defaults keep ``co_change_scatter`` silent without the walk.
         "co_change_partner_count": 0,
         "co_change_mass": 0.0,
         "co_change_scatter_pct": 0.0,
@@ -223,13 +206,8 @@ def _per_file_log_args(file_path: str, commit_limit: int, follow_renames: bool) 
     walk = [f"-{commit_limit}", "--numstat", f"--format={_LOG_FORMAT}", "--", file_path]
     if follow_renames:
         return ["--follow", *walk]
-    # Match the recent/deep repo-wide lanes. Without one shared non-merge
-    # contract, a file moving between fallback and shared sampling could
-    # lose a retained merge even while ``commit_limit`` increased.
-    # A pathspec normally restricts numstat to this file, which represents
-    # a rename differently from the repo-wide lanes. Full-diff keeps commit
-    # selection per-file but makes churn and changed-path provenance use
-    # the same complete diff as the recent/deep walks.
+    # The repo-wide lanes' contract: no merges, and the full diff for churn and
+    # changed paths, so a file moving between lanes keeps the same history.
     return ["--no-merges", "--full-diff", *walk]
 
 
@@ -320,21 +298,14 @@ def index_file(
 ) -> dict:
     """Index a single file's git history. Runs in executor.
 
-    When *precomputed_commits* is provided (the default when called from the
-    batched full-repo path), the per-file ``git log`` subprocess is skipped
-    entirely — eliminating the dominant process-spawn cost on large repos.
+    With *precomputed_commits* (the batched full-repo path) no per-file
+    ``git log`` runs. *include_blame* gates the FULL-tier ``git blame``
+    ownership pass; the ESSENTIAL tier falls back to commit-author ownership.
 
-    *include_blame* gates the FULL-tier ``git blame`` ownership pass; the
-    ESSENTIAL tier sets it False and falls back to commit-author ownership.
-
-    *as_of_ts* anchors the recency windows (90d/30d, age, temporal decay) to a
-    fixed reference time — the timestamp of the repo's most recent commit,
-    supplied by the orchestrator. Anchoring to the repo's own HEAD rather than
-    wall-clock ``now()`` makes indexing **deterministic** (re-indexing the same
-    commit later yields identical windows) and **correct for historical
-    checkouts** (scoring a worktree at an old commit measures the 90 days before
-    *that* commit, not an empty window 6 months in its future). Falls back to
-    ``now()`` when not supplied.
+    *as_of_ts* anchors the 90d/30d windows, age and temporal decay to the
+    repo's newest commit, so re-indexing the same commit yields the same
+    windows and a historical checkout measures the 90 days before it. Falls
+    back to ``now()``.
     """
     now = _window_anchor(as_of_ts)
     ninety_days_ago_ts = (now - timedelta(days=90)).timestamp()
@@ -455,10 +426,8 @@ class _Authors:
         return authors
 
     def _prefer_email(self, name: str, email: str) -> None:
-        # Group by name, but pick a stable email per person: fold GitHub
-        # noreply variants together and prefer a real address over a
-        # noreply one, so a contributor who committed both ways doesn't
-        # split into two buckets downstream (owner_profile keys on email).
+        # One email per name: fold GitHub noreply variants and prefer a real
+        # address, so owner_profile (keyed on email) does not split a person.
         canon = canonicalize_author_email(email) or email
         existing = self.emails.get(name)
         if existing is None or (
@@ -595,11 +564,7 @@ def _significant_entry(c: _CommitRec, msg: str) -> dict[str, Any]:
     if pr_match:
         pr_num = pr_match.group(1) or pr_match.group(2) or pr_match.group(3)
         entry["pr_number"] = int(pr_num)
-    # Retain the commit body (byte-capped) only for significant
-    # commits whose body shows decision intent — squash-merge repos
-    # carry the full rationale here, which the PR/squash miner
-    # consumes. The decision gate + cap keep the per-file JSON from
-    # ballooning (the body is duplicated across every touched file).
+    # Squash-merge bodies carry the rationale the PR miner reads.
     raw_body = getattr(c, "body", "") or ""
     if _body_carries_decision(c.subject, raw_body):
         body = _truncate_body(raw_body)
