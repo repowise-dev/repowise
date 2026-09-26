@@ -33,6 +33,7 @@ from repowise.server.schemas import (
     GraphMetricsResponse,
     SymbolNodeSummary,
 )
+from repowise.server.schemas.intelligence import SymbolRelationGroup
 from repowise.server.services.symbol_relations import load_symbol_relations
 
 router = APIRouter()
@@ -50,34 +51,23 @@ async def get_graph_metrics(
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
 
-    # Percentiles computed against all file-type nodes
-    all_files = await crud.get_all_file_metrics(session, repo_id)
-    all_pr = [n.pagerank or 0.0 for n in all_files]
-    all_bw = [n.betweenness or 0.0 for n in all_files]
-
-    # Scoped by layer. This endpoint feeds the same symbol component as
-    # /api/symbols/detail (the drawer, where that page is the drill-down), so
-    # an unscoped count here made one symbol report two different degrees
-    # depending on which of the two the user opened.
-    degrees = await crud.get_node_degree_counts(
-        session,
-        repo_id,
-        node_id,
-        edge_types=(
-            sorted(SYMBOL_USE_EDGE_TYPES)
-            if node.node_type == "symbol"
-            else sorted(FILE_DEPENDENCY_EDGE_TYPES)
-        ),
+    pagerank = node.pagerank or 0.0
+    betweenness = node.betweenness or 0.0
+    kind, file = (node.kind, node.file_path) if node.node_type == "symbol" else (None, None)
+    pagerank_percentile, betweenness_percentile = await _file_percentiles(
+        session, repo_id, pagerank, betweenness
     )
+
+    degrees = await _layer_degrees(session, repo_id, node)
     meta = parse_community_meta(node)
 
     return GraphMetricsResponse(
         target=node_id,
         node_type=node.node_type or "file",
-        pagerank=round(node.pagerank or 0.0, 6),
-        pagerank_percentile=percentile_rank(node.pagerank or 0.0, all_pr),
-        betweenness=round(node.betweenness or 0.0, 6),
-        betweenness_percentile=percentile_rank(node.betweenness or 0.0, all_bw),
+        pagerank=round(pagerank, 6),
+        pagerank_percentile=pagerank_percentile,
+        betweenness=round(betweenness, 6),
+        betweenness_percentile=betweenness_percentile,
         betweenness_scored=node.betweenness_commit is not None,
         community_id=node.community_id or 0,
         community_label=meta.get("label") or None,
@@ -85,8 +75,35 @@ async def get_graph_metrics(
         in_degree=degrees["in_degree"],
         out_degree=degrees["out_degree"],
         entry_point_score=meta.get("entry_point_score"),
-        kind=node.kind if node.node_type == "symbol" else None,
-        file=node.file_path if node.node_type == "symbol" else None,
+        kind=kind,
+        file=file,
+    )
+
+
+async def _layer_degrees(session: AsyncSession, repo_id: str, node: GraphNode) -> dict[str, int]:
+    """In/out degree over the node's own layer: symbol-use or file-dependency edges.
+
+    This endpoint feeds the same symbol component as /api/symbols/detail (the
+    drawer, where that page is the drill-down), so an unscoped count here made
+    one symbol report two different degrees depending on which the user opened.
+    """
+    is_symbol = node.node_type == "symbol"
+    return await crud.get_node_degree_counts(
+        session,
+        repo_id,
+        node.node_id,
+        edge_types=sorted(SYMBOL_USE_EDGE_TYPES if is_symbol else FILE_DEPENDENCY_EDGE_TYPES),
+    )
+
+
+async def _file_percentiles(
+    session: AsyncSession, repo_id: str, pagerank: float, betweenness: float
+) -> tuple[int, int]:
+    """Rank a pagerank and betweenness against every file node in the repo."""
+    all_files = await crud.get_all_file_metrics(session, repo_id)
+    return (
+        percentile_rank(pagerank, [n.pagerank or 0.0 for n in all_files]),
+        percentile_rank(betweenness, [n.betweenness or 0.0 for n in all_files]),
     )
 
 
@@ -125,62 +142,74 @@ async def get_callers_callees(
 
     et_filter = {t.strip() for t in edge_types.split(",") if t.strip()}
 
-    # Resolve symbol: exact then fuzzy
-    node = await crud.get_graph_node(session, repo_id, symbol_id)
-    if node is None or node.node_type != "symbol":
-        # Fuzzy: try bare name
-        bare = symbol_id.split("::")[-1] if "::" in symbol_id else symbol_id
-        result = await session.execute(
-            select(GraphNode).where(
-                GraphNode.repository_id == repo_id,
-                GraphNode.node_type == "symbol",
-                GraphNode.name == bare,
-            )
-        )
-        rows = list(result.scalars().all())
-        if not rows:
-            raise HTTPException(status_code=404, detail=f"Symbol not found: {symbol_id}")
-        if "::" in symbol_id:
-            file_hint = symbol_id.split("::")[0]
-            for r in rows:
-                if r.file_path == file_hint:
-                    node = r
-                    break
-        if node is None or node.node_type != "symbol":
-            rows.sort(key=lambda r: r.node_id)
-            node = rows[0]
-
+    node = await _resolve_symbol(session, repo_id, symbol_id)
     relations = await load_symbol_relations(
         session, repo_id, node.node_id, present=True, call_row_cap=limit
     )
-    groups = [
-        g
-        for g in relations.groups
-        if (not et_filter or g.edge_type in et_filter)
-        and (direction == "both" or (direction == "callers") == (g.direction == "in"))
-    ]
+    groups = [g for g in relations.groups if _wants_group(g, et_filter, direction)]
 
-    wants_in = direction in ("callers", "both")
-    wants_out = direction in ("callees", "both")
+    callers, caller_count = (
+        (relations.callers, relations.caller_total) if direction != "callees" else ([], 0)
+    )
+    callees, callee_count = (
+        (relations.callees, relations.callee_total) if direction != "callers" else ([], 0)
+    )
     return CallersCalleesResponse(
         symbol_id=node.node_id,
-        symbol=SymbolNodeSummary(
-            symbol_id=node.node_id,
-            name=node.name or node.node_id,
-            kind=node.kind or "unknown",
-            file=node.file_path or node.node_id,
-            start_line=node.start_line,
-            signature=node.signature,
-        ),
-        callers=relations.callers if wants_in else [],
-        callees=relations.callees if wants_out else [],
-        caller_count=relations.caller_total if wants_in else 0,
-        callee_count=relations.callee_total if wants_out else 0,
+        symbol=_symbol_summary(node),
+        callers=callers,
+        callees=callees,
+        caller_count=caller_count,
+        callee_count=callee_count,
         relations=groups,
-        truncated=(
-            (wants_in and len(relations.callers) < relations.caller_total)
-            or (wants_out and len(relations.callees) < relations.callee_total)
-        ),
+        truncated=len(callers) < caller_count or len(callees) < callee_count,
+    )
+
+
+async def _resolve_symbol(session: AsyncSession, repo_id: str, symbol_id: str) -> GraphNode:
+    """The symbol node with this id, else one sharing its bare name.
+
+    Among same-named symbols, one in the id's own file wins; otherwise the
+    lowest node id, so the pick is stable.
+    """
+    node = await crud.get_graph_node(session, repo_id, symbol_id)
+    if node is not None and node.node_type == "symbol":
+        return node
+
+    parts = symbol_id.split("::")
+    result = await session.execute(
+        select(GraphNode).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "symbol",
+            GraphNode.name == parts[-1],
+        )
+    )
+    rows = list(result.scalars().all())
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Symbol not found: {symbol_id}")
+    if len(parts) > 1:
+        in_file = next((r for r in rows if r.file_path == parts[0]), None)
+        if in_file is not None:
+            return in_file
+    return min(rows, key=lambda r: r.node_id)
+
+
+def _wants_group(group: SymbolRelationGroup, edge_types: set[str], direction: str) -> bool:
+    """Whether a relation group passes the edge-type filter and the direction."""
+    if edge_types and group.edge_type not in edge_types:
+        return False
+    return direction == "both" or (direction == "callers") == (group.direction == "in")
+
+
+def _symbol_summary(node: GraphNode) -> SymbolNodeSummary:
+    """The response header for a symbol, degrading null columns to its id."""
+    return SymbolNodeSummary(
+        symbol_id=node.node_id,
+        name=node.name or node.node_id,
+        kind=node.kind or "unknown",
+        file=node.file_path or node.node_id,
+        start_line=node.start_line,
+        signature=node.signature,
     )
 
 
@@ -194,62 +223,66 @@ async def get_execution_flows(
     _repo: object = Depends(with_repo),
 ) -> ExecutionFlowsResponse:
     """Return top entry points with BFS call-path traces."""
-    entry_nodes: list[tuple[GraphNode, float]] = []
-
     if entry_point:
         node = await crud.get_graph_node(session, repo_id, entry_point)
         if node is None:
             raise HTTPException(status_code=404, detail=f"Entry point not found: {entry_point}")
-        entry_nodes = [(node, _ep_score(node))]
+        entry_nodes = [node]
     else:
-        top_nodes = await crud.get_top_entry_points(session, repo_id, min_score=0.0, limit=top_n)
-        for n in top_nodes:
-            entry_nodes.append((n, _ep_score(n)))
+        entry_nodes = await crud.get_top_entry_points(session, repo_id, min_score=0.0, limit=top_n)
 
     if not entry_nodes:
         return ExecutionFlowsResponse(total_entry_points=0, flows=[])
 
     node_cache: dict[str, GraphNode] = {}
-    flows: list[ExecutionFlowEntry] = []
-
-    for ep_node, ep_score in entry_nodes:
-        hop_origins: dict[tuple[str, str], str] = {}
-        termination: dict[str, Any] = {}
-        trace = await bfs_trace(
-            session,
-            repo_id,
-            ep_node.node_id,
-            max_depth,
-            node_cache,
-            hop_origins,
-            termination,
-        )
-        communities_visited, crosses = await resolve_trace_communities(
-            session, repo_id, trace, node_cache
-        )
-
-        # Null rather than a list of nulls on an older index, so a consumer can
-        # tell "no origins recorded" from "this hop has none".
-        via = [hop_origins.get(pair) for pair in pairwise(trace)]
-
-        flows.append(
-            ExecutionFlowEntry(
-                entry_point=ep_node.node_id,
-                entry_point_name=ep_node.name or ep_node.node_id.split("::")[-1],
-                entry_point_score=round(ep_score, 3),
-                trace=trace,
-                depth=len(trace) - 1,
-                crosses_community=crosses,
-                communities_visited=communities_visited,
-                termination=termination.get("reason"),
-                termination_detail=termination.get("detail") or None,
-                trace_via=via if any(via) else None,
-            )
-        )
-
+    flows = [
+        await _trace_flow(session, repo_id, ep_node, max_depth, node_cache)
+        for ep_node in entry_nodes
+    ]
     flows.sort(key=lambda f: -f.entry_point_score)
 
     return ExecutionFlowsResponse(
         total_entry_points=len(flows),
         flows=flows,
+    )
+
+
+async def _trace_flow(
+    session: AsyncSession,
+    repo_id: str,
+    ep_node: GraphNode,
+    max_depth: int,
+    node_cache: dict[str, GraphNode],
+) -> ExecutionFlowEntry:
+    """BFS the call path from one entry point, with per-hop origins."""
+    hop_origins: dict[tuple[str, str], str] = {}
+    termination: dict[str, Any] = {}
+    trace = await bfs_trace(
+        session,
+        repo_id,
+        ep_node.node_id,
+        max_depth,
+        node_cache,
+        hop_origins,
+        termination,
+    )
+    communities_visited, crosses = await resolve_trace_communities(
+        session, repo_id, trace, node_cache
+    )
+
+    # Null rather than a list of nulls on an older index, so a consumer can
+    # tell "no origins recorded" from "this hop has none".
+    via = [hop_origins.get(pair) for pair in pairwise(trace)]
+
+    return ExecutionFlowEntry(
+        entry_point=ep_node.node_id,
+        entry_point_name=ep_node.name or ep_node.node_id.split("::")[-1],
+        entry_point_score=round(_ep_score(ep_node), 3),
+        trace=trace,
+        depth=len(trace) - 1,
+        crosses_community=crosses,
+        communities_visited=communities_visited,
+        termination=termination.get("reason"),
+        termination_detail=termination.get("detail") or None,
+        trace_via=via if any(via) else None,
     )
