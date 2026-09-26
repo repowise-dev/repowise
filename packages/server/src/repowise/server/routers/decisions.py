@@ -178,17 +178,9 @@ async def list_decisions(
     decision under the unreviewed proposals the indexer had just mined, so
     page one was entirely machine guesses.
     """
-    # The acceptance half of the lane is a SQL predicate, so a page of a lane
-    # is a page of that lane. The currency half cannot be: ``needs_review`` and
-    # ``uncheckable`` are derived from the record's scope and staleness. Those
-    # lanes therefore over-fetch the accepted set and cut the page afterwards,
-    # which is affordable because an accepted decision requires a human action
-    # and the set stays small by construction.
-    # Every lane but ``candidates`` filters the accepted set by currency, and a
-    # currency is derived from the record rather than stored, so the page has
-    # to be cut after the derivation. ``governing`` is in here for the same
-    # reason as the rest: cutting first returned an empty tab on a repository
-    # whose newest accepted records had all been superseded.
+    # Acceptance is a SQL predicate, but every lane except ``candidates`` also
+    # filters on a derived currency, so those over-fetch the accepted set (small,
+    # since each acceptance is a human action) and are paged after derivation.
     derived = lane is not None and lane != "candidates"
     decisions = await crud.list_decisions(
         session,
@@ -312,9 +304,7 @@ async def get_decision_graph(
     proposed statuses. Decision→decision typed edges and decision→code links are
     returned without an additional cap (they scale with the node set).
     """
-    # Fetch decisions ordered by staleness (most relevant first): active, then
-    # superseded/proposed, then deprecated. Use list_decisions without status
-    # filter so we get all statuses, capped.
+    # No status filter: every status is a node, capped in priority order.
     all_decisions = await crud.list_decisions(
         session,
         repo_id,
@@ -500,17 +490,10 @@ async def update_decision_settings(
 async def _live_decision_id(session: AsyncSession, decision_id: str) -> str:
     """The id a caller-supplied decision id names today.
 
-    Only for an id that no longer names a record. Ids get retired underneath
-    the places they were written down when a decision moves onto a derived id,
-    and following the alias is what keeps those working instead of reading as
-    deleted.
-
-    A live record always wins, so this cannot redirect one request to a
-    different decision. ``resolve_decision_id`` alone would: it follows a merge
-    even when the merged record still exists, which is right where the caller
-    is asking about the constraint, and wrong here, where the caller named a
-    row it is looking at in the candidates lane. An id with neither record nor
-    alias resolves to itself, so the handler still raises its own 404.
+    A retired id follows its alias, so ids written down before a decision moved
+    onto a derived id keep working. A live record always wins: unlike
+    ``resolve_decision_id`` alone, this never redirects to a merge target. An
+    id with neither record nor alias resolves to itself, so the caller 404s.
     """
     if await crud.get_decision(session, decision_id) is not None:
         return decision_id
@@ -616,12 +599,9 @@ async def create_decision(
     unaccepted. The response's ``status`` says which of the two happened, and a
     form can predict it from the same one field.
     """
-    # ``upsert_decision`` dedups on the title and overwrites the scope with
-    # whatever the body carries, so a second post of an accepted decision's
-    # title with no files would clear the scope it governs and leave its
-    # acceptance row pointing at a record that no longer binds. Refuse, and
-    # name the record, rather than quietly retiring somebody's decision from a
-    # call that says "create".
+    # ``upsert_decision`` dedups on the title and overwrites the scope, so a
+    # scope-less re-post of an accepted decision would silently withdraw what
+    # it governs. Refuse and name the record instead.
     existing = await crud.find_decision_by_title(
         session, repo_id, body.title, source="cli"
     )
@@ -663,11 +643,7 @@ async def create_decision(
         # No confidence: upsert_decision scores a manual entry.
     )
     if scoped:
-        # Same rule as the scope-less case above: what the contract will not
-        # accept is kept as a candidate, not refused. An entry stating no
-        # reason reaches here, and discarding everything the author typed over
-        # a missing rationale would be the worse answer. The response's
-        # ``status`` reports which of the two happened.
+        # A refused acceptance (e.g. no rationale) keeps the record as a candidate.
         with contextlib.suppress(crud.AcceptanceRefusedError):
             await crud.accept_decision(session, rec, accepter="web", kind="person")
     return await _one_with_signature(session, repo_id, rec)
