@@ -448,6 +448,35 @@ def _governance_reason(dr: Any, currency: str, conflict_decision_ids: set[str]) 
     return None
 
 
+def _project_recommendation(row: dict[str, Any]) -> dict[str, Any]:
+    """Drop what a reader can rebuild from the row it ships beside.
+
+    ``analyze_test_impact`` builds ``source_files`` and ``bases`` by folding
+    ``evidence`` (``core/analysis/test_impact.py:256-270``), so on the wire they
+    are the same fact twice. ``test_file`` differs from ``test_id`` only for a
+    measured row whose id carries a ``::`` selector, and ``source_format`` is
+    None on every inferred row. The typed row core hands its own callers is
+    untouched; this is the projection get_risk emits.
+    """
+    out = {k: v for k, v in row.items() if k not in {"repository", "repository_id"}}
+    evidence = out.get("evidence")
+    if isinstance(evidence, list):
+        sources = sorted({e["source_file"] for e in evidence if isinstance(e, dict)})
+        if out.get("source_files") == sources:
+            out.pop("source_files", None)
+        out["evidence"] = [
+            {k: v for k, v in e.items() if not (k == "source_format" and v is None)}
+            if isinstance(e, dict)
+            else e
+            for e in evidence
+        ]
+    if out.get("bases") == [out.get("basis")]:
+        out.pop("bases", None)
+    if out.get("test_file") in (out.get("test_id"), None):
+        out.pop("test_file", None)
+    return out
+
+
 def _build_pr_directive(
     response: dict,
     pr_blast_radius: dict,
@@ -469,6 +498,10 @@ def _build_pr_directive(
     # Everything trimmed below is persisted via the collector so the
     # response carries an expandable [repowise#<ref>] marker for it.
     for r in response["targets"].values():
+        # The counts below would be the structural zeros get_risk stopped
+        # emitting for a card that resolved nothing.
+        if r.get("resolved") is False:
+            continue
         partners = r.get("co_change_partners") or []
         if len(partners) > 3:
             r["co_change_partners"] = partners[:3]
@@ -703,6 +736,35 @@ def _build_pr_directive(
             label=f"directive.{key} beyond cap={cap}",
             preserve_counts=(key in {"missing_tests", "tests_to_run", "test_recommendations"}),
         )
+
+    # Name the repository once instead of on every recommendation: both values
+    # are single arguments to ``analyze_test_impact``, so every row it builds
+    # carries the same pair by construction, not by coincidence.
+    emitted_recommendations = directive.get("test_recommendations") or []
+    if emitted_recommendations:
+        first = emitted_recommendations[0]
+        directive["test_recommendations_repository"] = first.get("repository")
+        directive["test_recommendations_repository_id"] = first.get("repository_id")
+        directive["test_recommendations"] = [
+            _project_recommendation(row) for row in emitted_recommendations
+        ]
+
+    # The same rows also ride under ``pr_blast_radius.test_impact`` as the full
+    # population the directive's cap trimmed. Two copies of one row in one
+    # payload must not disagree about their shape, so the projection applies to
+    # both. ``trimmed_blast`` is a shallow copy of the analyzer's dict, so the
+    # nested block is copied before it is rewritten.
+    blast = response.get("pr_blast_radius")
+    if isinstance(blast, dict):
+        blast_impact = blast.get("test_impact")
+        if isinstance(blast_impact, dict) and blast_impact.get("recommendations"):
+            rows = blast_impact["recommendations"]
+            blast["test_impact"] = {
+                **blast_impact,
+                "recommendations_repository": rows[0].get("repository"),
+                "recommendations_repository_id": rows[0].get("repository_id"),
+                "recommendations": [_project_recommendation(row) for row in rows],
+            }
 
     for key, total in (
         ("will_break_consumers", will_break_total),

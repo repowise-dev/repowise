@@ -510,6 +510,28 @@ def _load_commit_categories(meta: Any) -> dict:
     return categories
 
 
+def _unresolved_reason(target: str, lookup_path: str, repo_root: str | None) -> str:
+    """Why *target* names nothing this tool can score, in the caller's terms.
+
+    ``not_indexed`` and ``no_such_path`` are spelled as
+    ``get_health._unresolved_targets`` spells them. The other two are not
+    borrowed: ``get_health``'s ``no_such_module`` means "no module of that
+    name", and it resolves a directory to ``not_indexed`` — both would
+    prescribe a fix that cannot help here.
+    """
+    if target.startswith("module:"):
+        return "unsupported_target_kind"
+    try:
+        on_disk = Path(repo_root) / lookup_path if repo_root else Path(lookup_path)
+        if on_disk.is_dir():
+            return "directory"
+        if on_disk.exists():
+            return "not_indexed"
+    except (OSError, ValueError):
+        pass
+    return "no_such_path"
+
+
 async def _assess_one_target(
     session: AsyncSession,
     repository: Repository,
@@ -641,6 +663,24 @@ async def _assess_one_target(
         )
     )
     meta = res.scalar_one_or_none()
+
+    symbol_target = "::" in target
+    if meta is None and lookup_path not in node_meta and not symbol_target:
+        # Nothing below measured this target, so every numeric field would be
+        # a structural zero no reader could tell from a measured one. Name the
+        # miss and emit no counts.
+        #
+        # All three conditions are required. A graph node without a git row is
+        # a real target (a new file); a ``path::Symbol`` id is an accepted
+        # input shape here, so rejecting one is a different change.
+        return {
+            "target": target,
+            "resolved": False,
+            "unresolved_reason": _unresolved_reason(target, lookup_path, repository.local_path),
+            "risk_summary": (
+                f"{target} — not resolved to an indexed file; no risk signal was computed"
+            ),
+        }
 
     if meta is None:
         result_data["hotspot_score"] = 0.0

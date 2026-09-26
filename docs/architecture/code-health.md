@@ -158,7 +158,7 @@ cli/src/repowise/cli/commands/
 ```
 server/src/repowise/server/
 ├── mcp_server/
-│   ├── tool_health.py              # @mcp.tool get_health(targets, include, repo, limit)
+│   ├── tool_health/                # @mcp.tool get_health(targets, include, repo, limit)
 │   ├── tool_risk.py                # enriched: health_score, top_biomarkers, coverage_pct
 │   ├── tool_context.py             # include=["health"]: score, top 2 biomarkers, suggestion
 │   └── tool_overview.py            # code_health block with KPIs
@@ -296,16 +296,17 @@ returning a list of `BiomarkerResult`s.
 
 ### The full roster
 
-`biomarkers/registry.py` registers **49 detectors**; counting the three
+`biomarkers/registry.py` registers **51 detectors**; counting the three
 governance findings written by the additive pass (`governance.py`) there
-are **52 marker ids**. They divide by what each is permitted to affect:
+are **54 marker ids**. They divide by what each is permitted to affect:
 
 | Group | Count | Scores into |
 |---|---:|---|
-| Defect-scoring | 26 | `defect` (8 of them also `maintainability`) |
+| Defect-scoring | 25 | `defect` (8 of them also `maintainability`) |
 | Performance | 20 | `performance` only |
 | SQL | 3 | `maintainability` only |
 | Governance | 3 | nothing — the finding surfaces, the score is untouched |
+| Advisory | 3 | nothing — measured by construction, kept out of impact-ranked lists unless requested |
 
 The authority is `scoring._BIOMARKER_DIMENSIONS`. Any biomarker **not** listed
 there defaults into `defect`, which is why every `sql_*` and every performance
@@ -316,7 +317,7 @@ golden guarantee (§6).
 
 | Category               | Cap  | Markers |
 |------------------------|------|------------|
-| Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect, ungoverned_hotspot†, stale_governance†, contradictory_decision† |
+| Organizational         | −3.5‡ | developer_congestion, knowledge_loss, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect, ungoverned_hotspot†, stale_governance†, contradictory_decision† |
 | Structural complexity  | −2.5 | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
 | Test coverage gradient | −2.0 | coverage_gradient |
@@ -330,6 +331,15 @@ writes them runs *after* scoring completes and never touches
 `HealthFileMetric.score` — so in practice they never deduct. They are counted
 in the table above because `scoring.py` maps them, not because they move a
 number.
+
+‡ A ceiling. The live cap is `history_cap(structure)`, `min(3.5, 1.0 + structure)`,
+where `structure` is the file's capped deduction from every other defect
+category, so git history alone costs a file at most 1.0.
+
+`hidden_coupling` is advisory: still detected, stored and listed, it deducts
+nothing. On its own it ranks defect-prone files near chance (AUC about 0.55), and
+a pre-registered test on 12 repositories no earlier health study used found the
+score without it non-inferior at predicting defects.
 
 The maintainability dimension has its own independent tables
 (`_MAINTAINABILITY_CATEGORY`, caps: structural_complexity 4.0,
@@ -359,7 +369,7 @@ file in the trailing ~6-month window, read from `prior_defect_count`. The
 git indexer classifies a commit as a fix with the **same keyword rule the
 defect benchmark labels fixes with** (`_constants.is_fix_commit`), counts only
 non-merge commits inside the window, and anchors the window to the index's
-`as_of` reference (`REPOWISE_GIT_WINDOW_ANCHOR`): so scoring a historical T0
+`as_of` reference (the indexed commit's committer date): so scoring a historical T0
 checkout measures the fixes *before* T0, never leaking the post-T0 fixes that
 form the benchmark's labels. It carries a **neutral (1.0) weight by design**:
 on the calibration corpus prior-defect history is largely redundant with the
@@ -724,7 +734,7 @@ silently re-scored for changed files only.
 
 ### `get_health(targets?, include?, repo?, limit?)`
 
-Defined in `tool_health.py`. Modes:
+Defined in `tool_health/tool.py`, which dispatches to one module per mode and block. Modes:
 
 - **Dashboard mode** (`targets=None`): returns repo-level KPIs (with the
   repo `band`) + the NLOC-weighted `distribution` across the bands +
@@ -775,7 +785,7 @@ module per surface, sharing `scope.py`, `counts.py`, `file_filters.py` and
 | `GET /files/breakdown` | one file's metric + score breakdown + findings + suggestions + per-file `trend` + `signals` |
 | `GET /files/trend` | one file's score-over-time series + current delta + `declining` flag (`?file_path=`) |
 | `GET /trend` | repo KPI history + alerts + last-two-snapshot per-file deltas |
-| `GET /findings` | findings list, filterable by `biomarker_type`, `file_path`, `dimension`, `status` and severity (`severity` exact, or the `min_severity` floor). Performance is excluded unless asked for by name |
+| `GET /findings` | findings list, filterable by `biomarker_type`, `file_path`, `dimension`, `status` and severity (`severity` exact, or the `min_severity` floor). The zero-impact dimensions, performance and advisory, are out of the ranked list: name one in `dimension`, name a marker in `biomarker_type`, or pass `include_zero_impact=true` |
 | `GET /coverage` | coverage summary + per-file rows |
 | `POST /coverage` | ingest a coverage report (used by some CI integrations) |
 | `GET /refactoring-targets` | the work queue: files carrying findings, ranked by `total_impact / effort_bucket`. Takes the findings filters plus `search`, `module` and the `only_hotspots` / `only_untested` / `only_failing` row filters, pages by `limit` + `offset`, and returns `total` with `finding_total` beside it. Impact counts open findings only, so dismissing work moves a file down |
@@ -945,7 +955,7 @@ phases may revisit; the constraints kept v1 shippable.
   flag.
 - **No symbol-level scoring.** Score lives at the file granularity to
   match how engineers think about refactor units. Symbol-level CCN
-  still feeds the file score via `function_metrics`.
+  still feeds the file score via `all_functions`.
 - **No `complexity_estimate` propagation backfill.** The walker writes
   the field as a side effect during the current run; old indexes don't
   get touched until a re-index.
@@ -973,7 +983,7 @@ phases may revisit; the constraints kept v1 shippable.
 | Change the suggestion text for a marker | `suggestions._TEMPLATES` |
 | Adjust the trend-alert threshold | `trends.DECLINE_THRESHOLD` / `DECLINE_LOOKBACK` |
 | Change snapshot retention | `crud.HEALTH_SNAPSHOT_RETENTION` |
-| Add a new MCP `include` flag | `tool_health.py`: append handling near the existing `"coverage"` / `"refactoring"` branches |
+| Add a new MCP `include` flag | `tool_health/`: name it in `request.py`, read it in `loading.py`, render it in `blocks.py` beside the existing `"coverage"` / `"refactoring"` blocks |
 | Add a new REST route | `routers/code_health.py`: auth is wired at the router level |
 | Add a new dashboard view | new file under `packages/web/src/app/repos/[id]/health/`, primitives under `packages/ui/src/health/` |
 | Add a CLI flag | `packages/cli/src/repowise/cli/commands/health_cmd.py` |

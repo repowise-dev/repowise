@@ -45,6 +45,15 @@ def test_every_source_has_a_confidence_rank() -> None:
         assert source in provenance.SOURCE_RANK, source
 
 
+def test_accepter_kinds_match_the_lifecycle_registry() -> None:
+    assert _FIXTURE["accepter_kinds"] == list(lifecycle.ACCEPTER_KINDS)
+
+
+def test_unrecorded_accepter_kind_is_not_one_of_them() -> None:
+    """The pre-provenance value is not a kind, so no surface may label it one."""
+    assert lifecycle.UNRECORDED_ACCEPTER_KIND not in _FIXTURE["accepter_kinds"]
+
+
 def test_statuses_match_the_one_ladder() -> None:
     assert _FIXTURE["statuses"] == list(lifecycle.DECISION_STATUS_ORDER)
 
@@ -75,6 +84,10 @@ def test_stored_currencies_are_a_subset_of_the_vocabulary() -> None:
 def test_review_states_and_actions_match_lifecycle() -> None:
     assert _FIXTURE["candidate_review_states"] == list(lifecycle.CANDIDATE_REVIEW_STATES)
     assert _FIXTURE["acceptance_actions"] == list(lifecycle.ACCEPTANCE_ACTIONS)
+
+
+def test_kinds_match_lifecycle() -> None:
+    assert _FIXTURE["kinds"] == list(lifecycle.DECISION_KINDS)
 
 
 def test_review_lanes_match_lifecycle() -> None:
@@ -131,6 +144,7 @@ def test_typescript_declares_the_same_words() -> None:
         ("DECISION_STATUSES", "statuses"),
         ("DECISION_CURRENCIES", "currencies"),
         ("CANDIDATE_REVIEW_STATES", "candidate_review_states"),
+        ("DECISION_KINDS", "kinds"),
         ("DECISION_LANES", "review_lanes"),
         ("DECISION_PRESETS", "presets"),
     ):

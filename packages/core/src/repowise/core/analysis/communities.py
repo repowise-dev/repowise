@@ -21,6 +21,7 @@ import networkx as nx
 import structlog
 
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
+from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
 from repowise.core.support_paths import is_example_path
 from repowise.core.test_paths import is_test_related_path
@@ -640,11 +641,19 @@ def detect_file_communities(
     # Labels and conductance come from the production members: tests were kept
     # out of the partition so they would not shape a community, and they must
     # not name it either. The non-core catch-all is labelled from what it has.
+    #
+    # External and framework nodes are stored as files, so they reach the
+    # partition, but they must not name a community either. They have no
+    # directory, so a big community with no dominant segment fell through to
+    # the filename-stem strategy, where eight `external:rich.*` imports share
+    # the stem `external:rich` and won: this repo's largest community was
+    # labelled after a third-party library that every view hides.
     label_members: dict[int, list[str]] = {}
     for cid, members in community_members.items():
         sorted_members = sorted(members)
         prod_members = [m for m in sorted_members if not non_core[m]]
-        label_members[cid] = prod_members or sorted_members
+        owned = [m for m in prod_members if not is_external(m)]
+        label_members[cid] = owned or prod_members or sorted_members
         communities_info[cid] = CommunityInfo(
             community_id=cid,
             label=_heuristic_label(label_members[cid], cid, extra_generic),

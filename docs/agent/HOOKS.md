@@ -27,7 +27,7 @@ crashes or blocks your agent.
 | **Codex context + staleness** | Codex | `repowise init --codex` | SessionStart / edit / shell | Reminds Codex to use the MCP tools and flags stale context after edits |
 
 Every agent hook records what it said and whether the agent acted on it — see
-[`repowise hook stats`](#is-any-of-this-actually-helping--repowise-hook-stats).
+[`repowise hook stats`](#hook-efficacy-repowise-hook-stats).
 
 ---
 

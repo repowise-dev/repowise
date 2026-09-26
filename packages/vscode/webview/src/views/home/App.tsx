@@ -30,6 +30,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { scoreTextColor } from "@repowise-dev/ui/health/tokens";
+import { formatScore } from "@repowise-dev/types/health";
 import type {
   HomeSummary,
   PanelViewId,
@@ -329,7 +330,7 @@ function Hero({
             <span
               className={`text-4xl font-bold leading-none tracking-tight tabular-nums ${scoreTone(headline)}`}
             >
-              {headline.toFixed(1)}
+              {formatScore(headline)}
             </span>
             <span className="pb-0.5 text-xs text-[var(--color-text-tertiary)]">/ 10</span>
           </div>
@@ -338,7 +339,7 @@ function Hero({
             {hasHotspot ? (
               <>
                 <span aria-hidden className="text-[var(--color-text-tertiary)]">·</span>
-                <span>hotspot {health?.hotspot?.toFixed(1)}</span>
+                <span>hotspot {health?.hotspot != null ? formatScore(health.hotspot) : undefined}</span>
                 <DeltaChip delta={health?.hotspotDelta ?? null} />
               </>
             ) : null}

@@ -213,6 +213,52 @@ async def test_coverage_query_failure_is_explicitly_degraded(async_session, monk
     assert impact["recommendations"][0]["basis"] == "inferred"
 
 
+async def test_head_commit_read_failure_is_degraded_not_absent(async_session, monkeypatch):
+    fixture = _fixture()
+    repo = await insert_repo(async_session, name="head-read-fails", head_commit="fixture-head")
+    await _seed(async_session, repo.id, fixture)
+
+    real_execute = async_session.execute
+
+    async def _execute(statement, *args, **kwargs):
+        if "head_commit" in str(statement) and "repositories" in str(statement):
+            raise RuntimeError("head commit read failed")
+        return await real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(async_session, "execute", _execute)
+    impact = await analyze_test_impact(
+        async_session,
+        repo.id,
+        ["src/measured.py"],
+        repository_alias="head-read-fails",
+    )
+
+    freshness = impact["coverage"]["freshness"]
+    assert freshness["status"] == "unknown"
+    assert freshness["reason"] == "index_commit_read_failed"
+    assert freshness["error"] == "RuntimeError"
+    assert impact["analysis"]["degraded"] is True
+    assert impact["analysis"]["status"] == "degraded"
+
+
+async def test_missing_head_commit_is_unavailable_not_degraded(async_session):
+    fixture = _fixture()
+    repo = await insert_repo(async_session, name="no-head")
+    await _seed(async_session, repo.id, fixture)
+
+    impact = await analyze_test_impact(
+        async_session,
+        repo.id,
+        ["src/measured.py"],
+        repository_alias="no-head",
+    )
+
+    freshness = impact["coverage"]["freshness"]
+    assert freshness["reason"] == "coverage_or_index_commit_unavailable"
+    assert "error" not in freshness
+    assert impact["analysis"]["degraded"] is False
+
+
 async def test_dedup_retains_measured_and_inferred_basis(async_session):
     repo = await insert_repo(async_session, name="dual-basis")
     await save_test_coverage(

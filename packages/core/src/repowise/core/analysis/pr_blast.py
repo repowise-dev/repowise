@@ -201,6 +201,8 @@ class PRBlastRadiusAnalyzer:
             meta = meta_by_path.get(path)
             node = node_by_path.get(path)
             temporal = float(getattr(meta, "temporal_hotspot_score", 0.0) or 0.0)
+            churn_pct = float(getattr(meta, "churn_percentile", 0.0) or 0.0)
+            hotspot = bool(getattr(meta, "is_hotspot", False))
             centrality = float(getattr(node, "pagerank", 0.0) or 0.0)
             structural_score = self._score_file(temporal, centrality)
             results.append(
@@ -210,6 +212,11 @@ class PRBlastRadiusAnalyzer:
                     # Compatibility alias for pre-semantics clients.
                     "risk_score": round(structural_score, 4),
                     "temporal_hotspot": round(temporal, 4),
+                    "churn_percentile": round(churn_pct, 4),
+                    # Published so a consumer stops re-deriving it from the
+                    # churn conjunct alone, which on a dormant repository is
+                    # just its top quartile.
+                    "is_hotspot": hotspot,
                     "centrality": round(centrality, 6),
                 }
             )
@@ -219,7 +226,20 @@ class PRBlastRadiusAnalyzer:
 
     @staticmethod
     def _score_file(temporal_hotspot_score: float, centrality: float) -> float:
-        """Compute file-level risk: centrality * (1 + temporal_hotspot_score)."""
+        """Compute file-level risk: centrality * (1 + temporal_hotspot_score).
+
+        Both inputs are repo-coupled -- the multiplier grows with commit
+        velocity, and pagerank sums to 1 so mean centrality is ``1/file_count``
+        -- so the score compares files within one change set and nothing across
+        repositories.
+
+        Substituting ``churn_percentile`` here was measured on 397 merged PRs
+        and rejected: it moved every moderate-band PR into localized, because a
+        bounded [1, 2] multiplier collapses an exponential tuned against an
+        unbounded one, and re-tuning that exponent would fit the constant to
+        this repository's file count. The rank is published beside the raw
+        value instead.
+        """
         return centrality * (1.0 + temporal_hotspot_score)
 
     async def _transitive_affected(

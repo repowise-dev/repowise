@@ -53,6 +53,38 @@ def test_stdlib_miss_is_external_too() -> None:
     assert ctx.graph.nodes["external:subprocess"]["language"] == "external"
 
 
+def test_stdlib_import_never_stem_matches_a_nested_file() -> None:
+    path = "pkg/specs/json.py"
+    ctx = ResolverContext(path_set={*PATHS, path}, stem_map={"json": [path]}, graph=nx.DiGraph())
+    assert resolve_python_import("json", "app.py", ctx) == "external:json"
+
+
+def test_removed_stdlib_names_are_still_stdlib() -> None:
+    """``distutils`` left the stdlib in 3.12 but old setup.py files import it."""
+    path = "pkg/tools/distutils.py"
+    ctx = ResolverContext(
+        path_set={*PATHS, path}, stem_map={"distutils": [path]}, graph=nx.DiGraph()
+    )
+    assert resolve_python_import("distutils", "app.py", ctx) == "external:distutils"
+
+
+def test_a_script_sibling_shadows_the_stdlib_module() -> None:
+    """A script's own directory comes first on sys.path, so its sibling wins."""
+    paths = {"tools/deploy.py", "tools/secrets.py"}
+    ctx = ResolverContext(
+        path_set=paths, stem_map={"secrets": ["tools/secrets.py"]}, graph=nx.DiGraph()
+    )
+    assert resolve_python_import("secrets", "tools/deploy.py", ctx) == "tools/secrets.py"
+
+
+def test_non_stdlib_stem_fallback_still_resolves() -> None:
+    path = "pkg/helpers/shared.py"
+    ctx = ResolverContext(
+        path_set={*PATHS, path}, stem_map={"shared": [path]}, graph=nx.DiGraph()
+    )
+    assert resolve_python_import("shared", "app.py", ctx) == path
+
+
 def test_relative_miss_stays_none_and_adds_nothing() -> None:
     ctx = _ctx()
     assert resolve_python_import(".missing", "app.py", ctx) is None

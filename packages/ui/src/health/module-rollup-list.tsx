@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { HealthBadge } from "./health-badge";
+import { formatScore } from "@repowise-dev/types/health";
 
 export interface ModuleRollupRow {
   module: string;
@@ -69,7 +70,7 @@ const COLUMNS: ResponsiveColumn<ModuleRollupRow>[] = [
       >
         {m.worst_performer_path}{" "}
         <span className="text-[var(--color-text-tertiary)]">
-          ({m.worst_performer_score.toFixed(1)})
+          ({formatScore(m.worst_performer_score)})
         </span>
       </span>
     ),

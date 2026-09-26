@@ -283,7 +283,22 @@ def structural_impact_contract(score: float, *, full_scale: bool = False) -> dic
                     "note": (
                         "Unbounded exponentially-decayed sum of per-commit churn "
                         "(halflife 180 d); each commit contributes up to 3.0. "
-                        "Use churn_percentile for a normalised 0-1 rank."
+                        "Grows with commit velocity, so it ranks files within one "
+                        "repository and does not compare across repositories. "
+                        "Use direct_risks.churn_percentile for a normalised 0-1 rank."
+                    ),
+                },
+                "direct_risks.churn_percentile": {
+                    "kind": "repo_relative_rank",
+                    "unit": "percentile",
+                    "range": {"minimum": 0.0, "maximum": 1.0},
+                    "note": (
+                        "The rank of direct_risks.temporal_hotspot among this "
+                        "repository's files. Comparable across repositories as a "
+                        "rank and not as activity: 0.9 in a dormant repository and "
+                        "0.9 in a fast one describe very different absolute churn. "
+                        "Reported beside the score, not folded into it -- "
+                        "structural_score keeps the raw multiplier."
                     ),
                 },
                 "direct_risks.centrality": {

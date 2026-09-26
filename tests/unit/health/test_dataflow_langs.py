@@ -1388,3 +1388,23 @@ def test_hoisted_binding_precompute_matches_the_direct_test() -> None:
                     precomputed = any(low <= d <= high and u < low for d, u in hoisted)
                     assert precomputed == directly(def_lines, use_lines, low, high)
     assert compared, "the corpus produced no spans to compare"
+
+
+def test_tsx_parses_without_error_recovery() -> None:
+    """A .tsx file is tagged ``typescript`` and needs the JSX grammar here too.
+
+    Read without it, every element lands in ERROR recovery and the CFG is built
+    over a tree that does not describe the file.
+    """
+    from repowise.core.analysis.health.dataflow.parsing import parse_source
+
+    source = b"export function C({ n }: P) {\n  return <div id={n}>{n + 1}</div>;\n}\n"
+    parsed = parse_source("src/C.tsx", "typescript", source)
+    if parsed is None:
+        pytest.skip("tree-sitter typescript pack missing")
+    root, _ = parsed
+    assert not root.has_error
+    # The same bytes under a .ts path keep the grammar the tag alone picks.
+    as_ts = parse_source("src/C.ts", "typescript", source)
+    assert as_ts is not None
+    assert as_ts[0].has_error

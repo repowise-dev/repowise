@@ -1,20 +1,21 @@
 import * as React from "react";
 import { healthBand } from "../health/tokens";
+import { formatScore } from "@repowise-dev/types/health";
 import { LedeLink, PageLede } from "../shared/page-lede";
 
 export interface HealthLedeProps {
-  /** Defect-risk headline, 1–10. Null until the first health run. */
+  /** Code-health headline, 1–10. Higher is better. Null before the first run. */
   score: number | null;
-  maintainability?: number | null;
-  /** Static performance risk, 1–10. */
-  performance?: number | null;
+  maintainability?: number | null | undefined;
+  /** Static performance score, 1–10. Higher is better, like the other two. */
+  performance?: number | null | undefined;
   /** Health of the highest-churn files. The interesting number, usually. */
-  hotspotHealth?: number | null;
-  hotspotCount?: number;
-  fileCount?: number;
+  hotspotHealth?: number | null | undefined;
+  hotspotCount?: number | undefined;
+  fileCount?: number | undefined;
   /** "Full health report →" target. */
   href: string;
-  LinkComponent?: React.ElementType;
+  LinkComponent?: React.ElementType | undefined;
 }
 
 /**
@@ -61,9 +62,14 @@ export function HealthLede({
   // pillar and not the other, and the naive version produced "Maintainability
   // scores 8.6. The three are scored separately" (there were two) or a sentence
   // starting lowercase when only performance was present.
+  // "static performance risk 9.7" read as an alarm and meant the opposite: the
+  // figure is a score on the same 1-10 ladder as the other two, where 9.7 is
+  // close to clean. The noun has to agree with the direction of the number, so
+  // it is named like its siblings and the word "risk" is left to the findings
+  // count on the health page, where more genuinely is worse.
   const pillars: string[] = [];
-  if (maintainability != null) pillars.push(`maintainability ${maintainability.toFixed(1)}`);
-  if (performance != null) pillars.push(`static performance risk ${performance.toFixed(1)}`);
+  if (maintainability != null) pillars.push(`maintainability ${formatScore(maintainability)}`);
+  if (performance != null) pillars.push(`static performance ${formatScore(performance)}`);
   const pillarSentence =
     pillars.length === 0
       ? null
@@ -76,7 +82,7 @@ export function HealthLede({
   return (
     <PageLede
       label="Code health"
-      value={score.toFixed(1)}
+      value={formatScore(score)}
       valueColor={band.color}
       unit="out of 10"
       band={band}
@@ -89,23 +95,30 @@ export function HealthLede({
       <p>
         This codebase scores{" "}
         <strong className="font-semibold text-[var(--color-text-primary)]">
-          {score.toFixed(1)} out of 10
+          {formatScore(score)} out of 10
         </strong>{" "}
-        on defect risk, which we rate {band.label.toLowerCase()}.
+        for code health, which we rate {band.label.toLowerCase()}.
         {pillarSentence && ` ${pillarSentence}`}
+        {/* This used to open "The files you change most are the weak spot",
+            which reads as an indictment of something every codebase does. Hot
+            files scoring below the average is the premise the whole product
+            rests on, not a failure: it is why ranking by git history finds
+            defects that reading the code alone does not. Same two figures,
+            stated as the finding they are, and pointed at the files rather
+            than at the reader. */}
         {hotspotCount > 0 && hot && (
           <>
             {" "}
-            The files you change most are the weak spot:{" "}
+            Risk is concentrated, as it usually is:{" "}
             <strong className="font-semibold text-[var(--color-text-primary)]">
               {hotspotCount.toLocaleString()}
               {fileCount > 0 ? ` of ${fileCount.toLocaleString()}` : ""} files
             </strong>{" "}
             are git hotspots, and they average{" "}
             <strong className="font-semibold" style={{ color: hot.color }}>
-              {hotspotHealth!.toFixed(1)}
+              {formatScore(hotspotHealth!)}
             </strong>
-            .
+            {" "}— which is where the fixes pay off most.
           </>
         )}
       </p>

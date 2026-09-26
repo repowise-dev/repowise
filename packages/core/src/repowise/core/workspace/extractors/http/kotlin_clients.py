@@ -30,15 +30,8 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from ..langs import KOTLIN
-from .client_calls import (
-    KOTLIN_SYNTAX,
-    ClientCallMatch,
-    call_arguments,
-    consumer_contracts,
-    match_paren,
-    method_from_argument,
-    string_constants,
-)
+from ..strings import KOTLIN_SYNTAX, call_arguments, match_paren, string_constants
+from .client_calls import ClientCallMatch, consumer_contracts, method_from_argument
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract

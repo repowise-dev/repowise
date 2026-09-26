@@ -663,3 +663,134 @@ class Counter {
         result = parser.parse_file(fi, src)
         call_targets = [c.target_name for c in result.calls]
         assert "#increment" in call_targets
+
+
+class TestTypeScriptClassFieldFunctions:
+    """A class property holding a function is a symbol.
+
+    Regression for #2302: the only ``public_field_definition`` pattern
+    captured the property's *type annotation*, never the property, so the
+    common ``static create = (...) => {}`` factory shape produced no symbol
+    at all. It could not be called and could not be reported as unused.
+
+    The new pattern is gated on the initialiser being an arrow function or a
+    function expression. A pattern matching every class field would mint
+    symbols for ordinary data properties, which is a different and much
+    larger change, so the data-property case is pinned here too.
+    """
+
+    SOURCE = b"""\
+class Thing {
+  static create = (name: string) => new Thing(name);
+  handler = () => { return 1; };
+  named = function () { return 2; };
+  unparenthesized = x => x;
+  annotated: (x: number) => number = (x) => x;
+  count = 0;
+  label: string = "x";
+  items = [1, 2, 3];
+}
+"""
+
+    def _symbols(self, parser: ASTParser, path: str = "src/thing.ts"):
+        fi = _make_file_info(path, "typescript")
+        return parser.parse_file(fi, self.SOURCE).symbols
+
+    def test_static_factory_field_is_a_symbol(self, parser: ASTParser) -> None:
+        symbols = self._symbols(parser)
+        create = next(s for s in symbols if s.name == "create")
+        assert create.kind == "method"
+        assert create.parent_name == "Thing"
+
+    def test_instance_arrow_handler_is_a_symbol(self, parser: ASTParser) -> None:
+        symbols = self._symbols(parser)
+        handler = next(s for s in symbols if s.name == "handler")
+        assert handler.kind == "method"
+        assert handler.parent_name == "Thing"
+
+    def test_function_expression_field_is_a_symbol(self, parser: ASTParser) -> None:
+        assert "named" in {s.name for s in self._symbols(parser)}
+
+    def test_unparenthesized_arrow_field_is_a_symbol(self, parser: ASTParser) -> None:
+        # ``one = x => x`` carries a bare identifier, not a formal_parameters
+        # node; the pattern accepts both parameter shapes.
+        assert "unparenthesized" in {s.name for s in self._symbols(parser)}
+
+    def test_annotated_function_field_is_a_symbol(self, parser: ASTParser) -> None:
+        # A type annotation beside the initialiser must not stop the value
+        # from matching: this property is both a type use and a definition.
+        symbols = self._symbols(parser)
+        annotated = next(s for s in symbols if s.name == "annotated")
+        assert annotated.kind == "method"
+
+    def test_plain_data_field_is_not_a_symbol(self, parser: ASTParser) -> None:
+        """The scope of this change: data properties stay out.
+
+        ``count = 0`` has no arrow_function / function_expression value, so
+        the pattern must not match it. A pattern matching every class field
+        would mint symbols for every data property in every class.
+        """
+        names = {s.name for s in self._symbols(parser)}
+        assert "count" not in names
+        assert "label" not in names
+        assert "items" not in names
+
+    def test_existing_type_annotation_capture_still_intact(
+        self, parser: ASTParser
+    ) -> None:
+        # The type-annotation pattern is untouched; the new definition pattern
+        # sits beside it. ``f: Field`` must still emit its field_type ref.
+        src = b"""\
+class Holder {
+  f: Field;
+  g = () => 1;
+}
+"""
+        fi = _make_file_info("src/holder.ts", "typescript")
+        result = parser.parse_file(fi, src)
+        refs = {(r.type_name, r.origin) for r in result.type_refs}
+        assert ("Field", "field_type") in refs
+
+    def test_class_field_function_visibility_follows_modifier(
+        self, parser: ASTParser
+    ) -> None:
+        src = b"""\
+class Svc {
+  private handler = () => 1;
+  open = () => 2;
+}
+"""
+        fi = _make_file_info("src/svc.ts", "typescript")
+        symbols = {s.name: s for s in parser.parse_file(fi, src).symbols}
+        assert symbols["handler"].visibility == "private"
+        assert symbols["open"].visibility == "public"
+
+    def test_tsx_grammar_variant_agrees(self, parser: ASTParser) -> None:
+        from_ts = {s.name for s in self._symbols(parser, "src/thing.ts")}
+        from_tsx = {s.name for s in self._symbols(parser, "src/thing.tsx")}
+        assert from_ts == from_tsx
+        assert "create" in from_tsx
+        assert "count" not in from_tsx
+
+    def test_method_inside_a_class_expression_field_stays_out(
+        self, parser: ASTParser
+    ) -> None:
+        """A consequence of the kind, pinned so it is deliberate.
+
+        ``public_field_definition`` is now a callable kind, so it joins the
+        callable-ancestor filter that already drops helpers nested inside
+        another callable. A method inside a class *expression* assigned to a
+        field therefore no longer lands as a member of the OUTER class, which
+        is what it did before: it was attributed to a class it does not
+        belong to. The module-level analogue
+        (``const K = class Foo { m() {} }``) has always behaved this way.
+        """
+        src = b"""\
+class Outer {
+  f = class { inner() { return 1; } };
+}
+"""
+        fi = _make_file_info("src/outer.ts", "typescript")
+        symbols = parser.parse_file(fi, src).symbols
+        assert [s.name for s in symbols] == ["Outer"]
+        assert "inner" not in {s.name for s in symbols}

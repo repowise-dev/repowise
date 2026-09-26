@@ -14,6 +14,7 @@ from repowise.core.analysis.health.duplication.token_cache import (
     DuplicationTokenCache,
 )
 from repowise.core.analysis.health.duplication.tokenizer import Token
+from repowise.core.analysis.health.engine import HEALTH_ANALYZER_VERSION
 
 
 def _pf(path: str, abs_path: str) -> SimpleNamespace:
@@ -78,7 +79,7 @@ def test_second_run_hits_cache_and_edit_misses(tmp_path: Path):
     cache_dir = tmp_path / ".repowise"
     detect_clones(parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir)
 
-    cache = DuplicationTokenCache(cache_dir, 20)
+    cache = DuplicationTokenCache(cache_dir, 20, HEALTH_ANALYZER_VERSION)
     cache.load()
     import hashlib
 
@@ -88,7 +89,7 @@ def test_second_run_hits_cache_and_edit_misses(tmp_path: Path):
 
     # Edit one file -> its hash misses; the others still hit.
     (tmp_path / "a.py").write_text(_BODY.replace("doit", "changed"))
-    fresh = DuplicationTokenCache(cache_dir, 20)
+    fresh = DuplicationTokenCache(cache_dir, 20, HEALTH_ANALYZER_VERSION)
     fresh.load()
     a_digest = hashlib.sha256((tmp_path / "a.py").read_bytes()).hexdigest()
     assert fresh.get(a_digest) is None
@@ -103,7 +104,7 @@ def test_window_size_mismatch_invalidates(tmp_path: Path):
     cache_dir = tmp_path / ".repowise"
     detect_clones(parsed, window_tokens=20, min_lines=4, cache_dir=cache_dir)
 
-    other = DuplicationTokenCache(cache_dir, 10)
+    other = DuplicationTokenCache(cache_dir, 10, HEALTH_ANALYZER_VERSION)
     other.load()
     assert other._entries == {}
 
@@ -120,7 +121,7 @@ def test_corrupt_cache_degrades_to_full_run(tmp_path: Path):
 
 
 def test_cache_shares_interned_kinds_and_can_release_memory(tmp_path: Path):
-    cache = DuplicationTokenCache(tmp_path, 20)
+    cache = DuplicationTokenCache(tmp_path, 20, HEALTH_ANALYZER_VERSION)
     kinds = [bytearray(b"identifier").decode() for _ in range(2)]
 
     cache.put("digest", kinds, 1, [(1, 0, 1, 1)])

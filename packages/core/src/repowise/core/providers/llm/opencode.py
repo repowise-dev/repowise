@@ -20,12 +20,14 @@ import re
 import shutil
 import subprocess
 import uuid
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from repowise.core.providers.llm._concurrency import resolve_concurrency
 from repowise.core.providers.llm.base import (
     BaseProvider,
     CacheHint,
@@ -37,6 +39,8 @@ from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
 
 log = structlog.get_logger(__name__)
+
+_CONCURRENCY_ENV = "REPOWISE_OPENCODE_CONCURRENCY"
 
 _DEFAULT_MODEL_LABEL = "opencode/default"
 _EXEC_TIMEOUT_SECONDS = 600
@@ -106,38 +110,50 @@ def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any]]:
     content_parts: list[str] = []
     usage: dict[str, Any] = {}
 
+    for event in _iter_jsonl_events(stdout):
+        event_type = event.get("type")
+        part = event.get("part") or {}
+        if event_type == "text":
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                content_parts.append(text)
+        elif event_type == "step_finish":
+            tokens = part.get("tokens")
+            if isinstance(tokens, dict):
+                _add_token_counts(usage, tokens)
+
+    return "\n".join(content_parts), usage
+
+
+def _iter_jsonl_events(stdout: str) -> Iterator[Any]:
+    """Decoded JSON lines, skipping blank and undecodable ones."""
     for raw_line in stdout.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         try:
-            event = json.loads(line)
+            yield json.loads(line)
         except json.JSONDecodeError:
             continue
 
-        event_type = event.get("type")
-        if event_type == "text":
-            part = event.get("part") or {}
-            text = part.get("text")
-            if isinstance(text, str) and text:
-                content_parts.append(text)
-        elif event_type == "step_finish":
-            part = event.get("part") or {}
-            tokens = part.get("tokens")
-            if isinstance(tokens, dict):
-                for key, value in tokens.items():
-                    if isinstance(value, dict):
-                        existing = usage.get(key, {})
-                        if not isinstance(existing, dict):
-                            existing = {}
-                        for sub_key, sub_value in value.items():
-                            if isinstance(sub_value, (int, float)):
-                                existing[sub_key] = existing.get(sub_key, 0) + int(sub_value)
-                        usage[key] = existing
-                    elif isinstance(value, (int, float)):
-                        usage[key] = usage.get(key, 0) + int(value)
 
-    return "\n".join(content_parts), usage
+def _add_token_counts(usage: dict[str, Any], tokens: dict[str, Any]) -> None:
+    """Sum one step's token counts into *usage*, one level of nesting deep.
+
+    ``step_finish`` reports flat counts (``input``, ``output``) alongside
+    nested ones (``cache: {read, write}``); both accumulate across steps.
+    """
+    for key, value in tokens.items():
+        if isinstance(value, dict):
+            existing = usage.get(key, {})
+            if not isinstance(existing, dict):
+                existing = {}
+            for sub_key, sub_value in value.items():
+                if isinstance(sub_value, (int, float)):
+                    existing[sub_key] = existing.get(sub_key, 0) + int(sub_value)
+            usage[key] = existing
+        elif isinstance(value, (int, float)):
+            usage[key] = usage.get(key, 0) + int(value)
 
 
 def _tail(text: str, max_chars: int = _MAX_STDERR_CHARS) -> str:
@@ -155,6 +171,19 @@ def _error_message(stderr: str, stdout: str, returncode: int) -> str:
             continue
         return candidate
 
+    msg = _error_event_message(stdout)
+    if msg:
+        return msg
+
+    return f"opencode run exited with {returncode}"
+
+
+def _error_event_message(stdout: str) -> str | None:
+    """Message of the first ``error`` event in *stdout*.
+
+    Stops at the first line that is not JSON: past that point the output is
+    not an event stream, so nothing later is trusted.
+    """
     try:
         for raw_line in stdout.splitlines():
             line = raw_line.strip()
@@ -168,8 +197,7 @@ def _error_message(stderr: str, stdout: str, returncode: int) -> str:
                     return str(msg)
     except Exception:
         pass
-
-    return f"opencode run exited with {returncode}"
+    return None
 
 
 _MODEL_LINE_RE = re.compile(r"^\s*([a-zA-Z0-9][a-zA-Z0-9._\-]*)/([a-zA-Z0-9][a-zA-Z0-9._/\-]*)\s*$")
@@ -317,7 +345,9 @@ class OpenCodeProvider(BaseProvider):
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
         if self._semaphore_loop is not loop:
-            self._subprocess_semaphore = asyncio.Semaphore(1)
+            self._subprocess_semaphore = asyncio.Semaphore(
+                resolve_concurrency(_CONCURRENCY_ENV, "opencode")
+            )
             self._semaphore_loop = loop
         return self._subprocess_semaphore  # type: ignore[return-value]
 
@@ -358,6 +388,26 @@ class OpenCodeProvider(BaseProvider):
             request_id=request_id,
         )
 
+        returncode, stdout, stderr = await self._run(cmd, prompt)
+        if returncode != 0:
+            raise ProviderError(
+                "opencode",
+                _error_message(stderr, stdout, returncode),
+                status_code=returncode,
+            )
+
+        response = self._response_from_output(stdout, stderr)
+        log.debug(
+            "opencode.generate.done",
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            cached_tokens=response.cached_tokens,
+            request_id=request_id,
+        )
+        return response
+
+    async def _run(self, cmd: list[str], prompt: str) -> tuple[int, str, str]:
+        """Run ``opencode run`` with *prompt* on stdin; returns (code, stdout, stderr)."""
         async with self._get_semaphore():
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -396,14 +446,10 @@ class OpenCodeProvider(BaseProvider):
 
         stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
         stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+        return proc.returncode, stdout, stderr
 
-        if proc.returncode != 0:
-            raise ProviderError(
-                "opencode",
-                _error_message(stderr, stdout, proc.returncode),
-                status_code=proc.returncode,
-            )
-
+    def _response_from_output(self, stdout: str, stderr: str) -> GeneratedResponse:
+        """Build the response from a successful run's JSONL event stream."""
         content, usage = _parse_jsonl(stdout)
         if not content:
             raise ProviderError(
@@ -411,35 +457,22 @@ class OpenCodeProvider(BaseProvider):
                 "opencode run completed but no text was found in JSONL output.",
             )
 
-        usage_missing = not usage
-        input_tokens = int(usage.get("input", 0) or 0)
-        output_tokens = int(usage.get("output", 0) or 0)
-        cached_tokens = int((usage.get("cache") or {}).get("read", 0) or 0)
-
-        log.debug(
-            "opencode.generate.done",
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached_tokens,
-            request_id=request_id,
-        )
         usage_payload = {
             **usage,
             "source": "opencode_run",
             "model": self.model_name,
             "stderr": _tail(stderr) if stderr.strip() else "",
         }
-        if usage_missing:
+        if not usage:
             usage_payload["estimated"] = True
 
         return GeneratedResponse(
             content=content,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached_tokens,
+            input_tokens=int(usage.get("input", 0) or 0),
+            output_tokens=int(usage.get("output", 0) or 0),
+            cached_tokens=int((usage.get("cache") or {}).get("read", 0) or 0),
             usage=usage_payload,
         )
-
 
 async def _close_subprocess_transport(proc: asyncio.subprocess.Process) -> None:
     transport = getattr(proc, "_transport", None)

@@ -431,6 +431,8 @@ export interface CommitDetailResponse {
   agent_confidence?: string | null;
   drivers?: RiskDriverResponse[];
   agent_channel?: string | null;
+  files?: CommitFileResponse[];
+  health?: CommitHealthResponse | null;
 }
 
 /**
@@ -462,6 +464,46 @@ export interface CommitEvolutionResponse {
   granularity: string;
   first_commit_at?: string | null;
   last_commit_at?: string | null;
+}
+
+/** One file a commit touched, with what it cost and what it carries. */
+export interface CommitFileResponse {
+  path: string;
+  lines_added: number;
+  lines_deleted: number;
+  prior_fixes?: number | null;
+}
+
+/** One thing a commit introduced or worsened. */
+export interface CommitHealthFindingResponse {
+  change_kind: string;
+  dimension: string;
+  biomarker_type: string;
+  severity: string;
+  severity_before?: string | null;
+  path: string;
+  symbol?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  attribution_basis: string;
+  reason: string;
+}
+
+/**
+ * What a commit did to code health, as computed at index time.
+ *
+ * Absent on the commit, rather than empty, when the commit was never
+ * scanned — the scan is bounded, so older commits routinely have no row and
+ * that is not the same claim as "changed nothing".
+ */
+export interface CommitHealthResponse {
+  status: string;
+  introduced_count: number;
+  worsened_count: number;
+  resolved_count: number;
+  files_analyzed: number;
+  files_skipped: number;
+  findings?: CommitHealthFindingResponse[];
 }
 
 /**
@@ -756,6 +798,7 @@ export interface DecisionCountsResponse {
 
 export interface DecisionCreate {
   title: string;
+  kind?: "architectural" | "agreement" | null;
   context?: string;
   decision?: string;
   rationale?: string;
@@ -888,6 +931,7 @@ export interface DecisionRecordResponse {
   confidence: number;
   staleness_score: number;
   verification?: string;
+  kind?: string;
   scope?: string | null;
   superseded_by: string | null;
   last_code_change: string | null;
@@ -896,6 +940,9 @@ export interface DecisionRecordResponse {
   evidence_count?: number | null;
   evidence_preview?: EvidencePreview | null;
   currency?: string | null;
+  accepter?: string | null;
+  accepter_kind?: string | null;
+  accepter_session?: string | null;
 }
 
 /** The resolved decision capture policy for one repository. */
@@ -903,6 +950,7 @@ export interface DecisionSettings {
   enabled?: boolean;
   llm?: boolean;
   preset?: string;
+  agent_acceptance?: boolean;
   discovery?: DecisionDiscoveryBudget;
   sources?: DecisionSourceState[];
   provider_available?: boolean;
@@ -916,6 +964,7 @@ export interface DecisionSettingsUpdate {
   enabled?: boolean | null;
   llm?: boolean | null;
   preset?: string | null;
+  agent_acceptance?: boolean | null;
   sources?: Record<string, DecisionSourcePatch> | null;
   discovery?: DecisionDiscoveryPatch | null;
   etag?: string | null;
@@ -981,49 +1030,91 @@ export interface DirectRiskEntry {
   structural_score: number;
   risk_score: number;
   temporal_hotspot: number;
+  churn_percentile: number;
+  is_hotspot: boolean;
   centrality: number;
 }
 
-export interface DistillSavingsGroup {
-  group: string;
-  events: number;
-  raw_tokens: number;
-  distilled_tokens: number;
-  saved_tokens: number;
+/**
+ * A naming document that carries drift somewhere in it.
+ *
+ * ``findings`` counts the whole document, not assertions about the file that
+ * was asked about. A drifted reference resolves to nothing, so no row here
+ * can say a document's description of that file is wrong.
+ */
+export interface DocDriftDocumentDriftResponse {
+  document: string;
+  findings: number;
 }
 
 /**
- * Savings rollup for the Costs page hero card.
+ * One assertion a document makes that the repository no longer satisfies.
  *
- * The ``distill`` block (``saved_tokens`` etc.) covers the ``repowise
- * distill`` command/hook path. The ``mcp`` block surfaces tokens already
- * dropped past MCP response budgets (the ``omissions`` store), which the
- * distill ledger never recorded. Savings are priced at the *coding agent's*
- * detected model (``pricing_model`` / ``pricing_agent`` / ``pricing_source``)
- * — they are input tokens that agent never had to read. ``available`` is
- * False when the repo has no omission store on disk (feature unused).
+ * ``file_path`` is the *document* to edit, never the target it names. A
+ * reader who reads it as the broken file has been told the opposite of the
+ * truth, which is why the field keeps the name every other drift surface
+ * gives it.
  */
-export interface DistillSavingsResponse {
-  available: boolean;
-  events?: number;
-  raw_tokens?: number;
-  distilled_tokens?: number;
-  saved_tokens?: number;
-  estimated_usd_saved?: number;
-  pricing_model?: string;
-  pricing_agent?: string;
-  pricing_source?: string;
-  per_filter?: DistillSavingsGroup[];
-  per_day?: DistillSavingsGroup[];
-  mcp_events?: number;
-  mcp_tokens?: number;
-  mcp_queries?: number;
-  mcp_per_tool?: McpDropGroup[];
-  missed_events?: number;
-  missed_tokens_est?: number;
-  missed_window_days?: number;
-  reread_events?: number;
-  reread_tokens_est?: number;
+export interface DocDriftFindingResponse {
+  id: string;
+  file_path: string;
+  line_number: number;
+  kind: string;
+  target: string;
+  confidence: number;
+  origin: string;
+  reason: string;
+  raw: string;
+  context: string;
+  evidence: string[];
+}
+
+/**
+ * A document that names a file the repository still has.
+ *
+ * Deliberately weaker than a finding: it does not claim the document
+ * describes the file, or that its prose is current.
+ */
+export interface DocDriftReferenceResponse {
+  document: string;
+  line: number;
+  kind: string;
+  section?: string;
+}
+
+/** Which documents name one file: the reverse view, over HTTP. */
+export interface DocDriftReferencesResponse {
+  target_path: string;
+  references: DocDriftReferenceResponse[];
+  references_emitted: number;
+  references_total: number;
+  documents: number;
+  documents_with_drift: DocDriftDocumentDriftResponse[];
+  references_basis: string;
+  unavailable?: "not_computed" | "index_predates_doc_drift" | "drift_read_failed" | null;
+}
+
+/** Findings for a repository, with the rollup that makes them legible. */
+export interface DocDriftResponse {
+  findings: DocDriftFindingResponse[];
+  findings_emitted: number;
+  summary: DocDriftSummaryResponse | null;
+  unavailable?: "not_computed" | "index_predates_doc_drift" | "drift_read_failed" | null;
+}
+
+/**
+ * The rollup above the list, computed server-side over the same rows.
+ *
+ * ``findings_total`` counts every finding matching the query, including any
+ * the display cap left out, so a client cannot recompute a page as if it were
+ * the repository.
+ */
+export interface DocDriftSummaryResponse {
+  findings_total: number;
+  documents: number;
+  confidence: Record<string, number>;
+  by_kind: Record<string, number>;
+  findings_basis: string;
 }
 
 export interface EgoGraphResponse {
@@ -1742,21 +1833,6 @@ export interface KnowledgeMapTarget {
   doc_words: number;
 }
 
-/**
- * Per-tool MCP savings (``tool`` with the ``mcp:`` prefix stripped).
- *
- * ``kind`` distinguishes a ``"counterfactual"`` saving (the answer replaced raw
- * file exploration — recorded in the savings ledger) from a ``"truncation"``
- * drop (content trimmed past the response budget — the only signal for tools
- * without a counterfactual estimator yet).
- */
-export interface McpDropGroup {
-  tool: string;
-  events: number;
-  tokens: number;
-  kind?: string;
-}
-
 /** One tool in the configurable surface, with the flags a UI needs. */
 export interface McpToolInfo {
   name: string;
@@ -2434,6 +2510,97 @@ export interface RiskScaleRange {
   maximum: number | null;
 }
 
+/** One agent's savings, labelled from the identity registry. */
+export interface SavingsAgentRow {
+  agent: string;
+  agent_display_name?: string | null;
+  events?: number;
+  saved_input_tokens?: number;
+}
+
+/**
+ * One bucket of a savings breakdown.
+ *
+ * ``group`` is nullable because one bucket genuinely has no name: an event
+ * written before its rate could be resolved has no model, and that is a real
+ * quantity -- how much saving carries no pricing evidence -- rather than a
+ * gap to drop from the list.
+ */
+export interface SavingsBreakdownRow {
+  group?: string | null;
+  events?: number;
+  saved_input_tokens?: number;
+}
+
+/** One kind of observed opportunity. Never part of achieved savings. */
+export interface SavingsOpportunityRow {
+  kind: string;
+  observations?: number;
+  estimated_potential_input_tokens?: number;
+}
+
+/**
+ * What agents avoided in one repository over one window.
+ *
+ * Every figure comes from the canonical savings ledger through the one core
+ * report service, so this response, the repository overview headline and
+ * ``repowise saved`` cannot disagree -- which the three of them did, in four
+ * separate ways, when each aggregated and priced the ledger for itself.
+ *
+ * Three things it deliberately keeps apart. *Measured* reductions are known
+ * before/after sizes from an operation that really ran; *inferred* avoidance
+ * is a documented counterfactual. *Priced* and *unpriced* tokens are split
+ * because an event records the rate it was worth at the time and some events
+ * carry none, and reporting a total as though it were all priced would be a
+ * guess. *Observed opportunities* are things that could have been saved and
+ * were not: they never enter the headline.
+ *
+ * ``available`` is False when the repository has no savings sidecar at all,
+ * which means "nothing has been measured here" and is different from a
+ * measured zero.
+ */
+export interface SavingsResponse {
+  available: boolean;
+  window_days?: number | null;
+  as_of?: string;
+  first_event_at?: string | null;
+  last_event_at?: string | null;
+  unique_events?: number;
+  successful_or_usable_partial_events?: number;
+  saving_interactions?: number;
+  mcp_queries_answered?: number;
+  dead_ends?: number;
+  saved_input_tokens?: number;
+  measured_saved_input_tokens?: number;
+  inferred_saved_input_tokens?: number;
+  priced_saved_input_tokens?: number;
+  unpriced_saved_input_tokens?: number;
+  priced_input_savings_usd?: number;
+  saved_output_tokens?: number | null;
+  priced_saved_output_tokens?: number;
+  unpriced_saved_output_tokens?: number;
+  priced_output_savings_usd?: number;
+  baseline_events?: number;
+  reducing_events?: number;
+  baseline_input_tokens?: number;
+  baseline_saved_input_tokens?: number;
+  input_reduction_ratio?: number | null;
+  input_reduction_ratio_p90?: number | null;
+  per_operation?: SavingsBreakdownRow[];
+  per_surface?: SavingsBreakdownRow[];
+  per_agent?: SavingsAgentRow[];
+  per_model?: SavingsBreakdownRow[];
+  per_day?: SavingsBreakdownRow[];
+  opportunity_count?: number;
+  opportunity_tokens_excluded?: number;
+  per_opportunity_kind?: SavingsOpportunityRow[];
+  missed_events?: number;
+  missed_tokens_est?: number;
+  missed_window_days?: number;
+  reread_events?: number;
+  reread_tokens_est?: number;
+}
+
 export interface SearchResultResponse {
   page_id: string;
   title: string;
@@ -2745,10 +2912,22 @@ export interface WorkspaceCoChangeEntry {
   last_date: string;
 }
 
+/** What declared structure connects one co-changing file pair. */
+export interface WorkspaceCoChangeStructure {
+  pair_links: WorkspaceContractLinkEntry[];
+  repo_links_total: number;
+  repo_links_by_type: Record<string, number>;
+  source_file_links: number;
+  target_file_links: number;
+}
+
 export interface WorkspaceCoChangesResponse {
   co_changes: WorkspaceCoChangeEntry[];
   total: number;
   total_mined?: number;
+  per_repo_pair_cap?: number | null;
+  total_cap?: number | null;
+  truncated_by?: "total" | "per_repo_pair" | null;
 }
 
 export interface WorkspaceConformanceResponse {
@@ -2820,6 +2999,7 @@ export interface WorkspaceContractLinkEntry {
   consumer_service?: string | null;
   provider_symbol_id?: string | null;
   consumer_symbol_id?: string | null;
+  consumer_contract_id?: string | null;
 }
 
 export interface WorkspaceContractSummary {
@@ -2954,6 +3134,13 @@ export interface WorkspaceRepoEntry {
   status?: string;
   docs_enabled?: boolean;
   docs_skip_reason?: string | null;
+}
+
+/** Response returned when a repo is removed from the workspace config. */
+export interface WorkspaceRepoRemovedResponse {
+  ok?: boolean;
+  alias: string;
+  remaining_repos: number;
 }
 
 export interface WorkspaceResponse {

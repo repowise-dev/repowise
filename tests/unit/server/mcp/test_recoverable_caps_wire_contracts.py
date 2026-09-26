@@ -223,9 +223,9 @@ async def test_context_used_by_and_relations_recover_in_one_bounded_query_shape(
                 GraphEdge(
                     id=f"sealed-import-{index}",
                     repository_id=setup_mcp,
-                    source_node_id=file_id,
-                    target_node_id="src/auth/service.py",
-                    edge_type="imports",
+                    source_node_id=f"{file_id}::Use{index:03d}",
+                    target_node_id="src/auth/service.py::AuthService",
+                    edge_type="references",
                     imported_names_json='["AuthService"]',
                     created_at=_NOW,
                 ),
@@ -611,7 +611,7 @@ async def test_why_real_minimum_and_typical_wire_shapes(
 async def test_why_real_adversarial_wire_recovers_decisions_docs_and_episodes(
     setup_mcp: str, session: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import repowise.server.mcp_server.tool_why as why_mod
+    import repowise.server.mcp_server.tool_why.search as why_search
 
     _configure_omissions(tmp_path)
     await _seed_why_decisions(session, setup_mcp, 9)
@@ -659,8 +659,8 @@ async def test_why_real_adversarial_wire_recovers_decisions_docs_and_episodes(
             full.extend(population)
         return population[:3], pending
 
-    monkeypatch.setattr(why_mod, "_semantic_lanes", sealed_semantic)
-    monkeypatch.setattr(why_mod, "episode_evidence", sealed_episodes)
+    monkeypatch.setattr(why_search, "_semantic_lanes", sealed_semantic)
+    monkeypatch.setattr(why_search, "episode_evidence", sealed_episodes)
 
     result = await tool_middleware(get_why)(
         "why use sealed response contract",
@@ -751,6 +751,8 @@ async def test_why_health_and_targets_only_modes_are_bounded_and_recoverable(
             "conflicts": [
                 {"detail": f"HEALTH_CONFLICT_{index}"} for index in range(12)
             ],
+            "retired_decisions": [("superseded", record) for record in records],
+            "unscoped_decisions": records,
         }
 
     monkeypatch.setattr(crud_mod, "get_decision_health_summary", sealed_health)
@@ -809,7 +811,8 @@ async def test_why_fallback_archaeology_and_rationale_wire_recover_annotated_tai
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import repowise.server.mcp_server.tool_why as why_mod
+    import repowise.server.mcp_server.tool_why.archaeology as why_archaeology
+    import repowise.server.mcp_server.tool_why.path_mode as why_path_mode
 
     _configure_omissions(tmp_path)
     commits = [
@@ -872,9 +875,9 @@ async def test_why_fallback_archaeology_and_rationale_wire_recover_annotated_tai
             for index in range(23)
         ]
 
-    monkeypatch.setattr(why_mod, "_run_git_log", sealed_git_log)
+    monkeypatch.setattr(why_archaeology, "_run_git_log", sealed_git_log)
     monkeypatch.setattr(
-        why_mod,
+        why_path_mode,
         "_mine_rationale",
         lambda *_args, **_kwargs: [
             {

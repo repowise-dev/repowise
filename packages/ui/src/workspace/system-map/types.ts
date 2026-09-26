@@ -21,6 +21,8 @@ export interface SystemMapNodeData {
   health: RepoHealth | null;
   /** Overlay state applied this render (Phase 3+ ripple / badges). */
   overlay: NodeOverlayState | null;
+  /** Architecture role label ("Core", "Shared"...), named in text on the node. */
+  role: string | null;
   [key: string]: unknown;
 }
 

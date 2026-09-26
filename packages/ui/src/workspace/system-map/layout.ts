@@ -11,7 +11,7 @@ import type { SystemEdgeKind, SystemGraph } from "@repowise-dev/types";
 import { collapseToRepos } from "./collapse";
 
 /** Uniform service-node footprint on the map. */
-export const SYSTEM_MAP_NODE_SIZE = { width: 200, height: 84 } as const;
+export const SYSTEM_MAP_NODE_SIZE = { width: 208, height: 96 } as const;
 
 export interface SystemMapView {
   /** Edge kinds to keep; an edge survives only if its kind is in the set. */
@@ -91,7 +91,11 @@ export async function computeSystemMapPositions(graph: SystemGraph): Promise<Sys
       width: SYSTEM_MAP_NODE_SIZE.width,
       height: SYSTEM_MAP_NODE_SIZE.height,
     })),
-    graph.edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+    // Structural edges only: placement should read as dependency direction,
+    // and co-change pairs are undirected history that would add layers.
+    graph.edges
+      .filter((e) => e.structural)
+      .map((e) => ({ id: e.id, source: e.source, target: e.target })),
   );
   return { positions, simplified: false };
 }

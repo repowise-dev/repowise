@@ -30,6 +30,8 @@ import type { DecisionRecord } from "@repowise-dev/types/decisions";
  */
 export type DecisionStalenessKind =
   | "unscoped"
+  /** An agreement: no files by design, so nothing went unchecked. */
+  | "repo_wide"
   | "unscored"
   | "unchanged"
   | "moved";
@@ -67,6 +69,7 @@ export function describeStaleness(
   affectedFiles: readonly string[] | null | undefined,
   stalenessScore: number | null | undefined,
   status?: string | null,
+  kind?: string | null,
 ): DecisionStaleness {
   const fileCount = affectedFiles?.length ?? 0;
   const score = Number.isFinite(stalenessScore) ? (stalenessScore as number) : 0;
@@ -78,6 +81,20 @@ export function describeStaleness(
       changedCount: 0,
       sentence: `Staleness is only recomputed for active and proposed records, so it was not measured for this ${status} one.`,
       short: "not scored",
+    };
+  }
+
+  // An agreement governs the repository rather than part of it, so it has no
+  // files by design and nothing about it has gone unchecked. Reporting it as
+  // unscoped states the defining property of the noun as a gap in the record.
+  if (kind === "agreement" && fileCount === 0) {
+    return {
+      kind: "repo_wide",
+      fileCount: 0,
+      changedCount: 0,
+      sentence:
+        "This is a working agreement, so it governs the whole repository rather than particular files.",
+      short: "repository-wide",
     };
   }
 
@@ -136,12 +153,13 @@ export function describeStaleness(
 export function describeRecordStaleness(
   decision: Pick<
     DecisionRecord,
-    "affected_files" | "staleness_score" | "status"
+    "affected_files" | "staleness_score" | "status" | "kind"
   >,
 ): DecisionStaleness {
   return describeStaleness(
     decision.affected_files,
     decision.staleness_score,
     decision.status,
+    decision.kind,
   );
 }

@@ -13,15 +13,19 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from .models import Severity
+from .models import Severity, primary_finding
 from .ranking import worst_metric
 from .rows import detail_map, field
 from .scoring import (
     CATEGORY_CAPS,
+    HISTORY_CATEGORY,
     SCORE_FLOOR,
     SCORE_MAX,
     biomarker_category,
     biomarker_weight,
+    deduction_split,
+    history_cap,
+    is_advisory,
     severity_deduction,
 )
 
@@ -30,8 +34,11 @@ __all__ = [
     "SEVERITY_ORDER",
     "biomarker_breakdown",
     "finding_base_deduction",
+    "finding_raw_deduction",
     "module_label",
     "module_rollups",
+    "primary_and_magnitude",
+    "primary_and_magnitude_by_file",
     "score_breakdown",
     "severity_breakdown",
 ]
@@ -140,9 +147,14 @@ def severity_breakdown(findings: Iterable[Any]) -> dict[str, int]:
     ``dict`` keeps the key it was built with — so the returned keys stay plain
     strings even when every finding carried an enum. Do not "fix" that by
     coercing: the wire shape depends on it.
+
+    Advisory findings are excluded so this agrees with ``open_findings``,
+    which is rendered beside it in the same payload.
     """
     out = dict.fromkeys(SEVERITY_ORDER, 0)
     for finding in findings:
+        if is_advisory(field(finding, "biomarker_type", "") or ""):
+            continue
         severity = _severity_key(field(finding, "severity", None))
         if severity in out:
             out[severity] += 1
@@ -183,6 +195,46 @@ def finding_base_deduction(finding: Any) -> float:
     return severity_deduction(_severity_key(field(finding, "severity", None)))
 
 
+def finding_raw_deduction(finding: Any) -> float:
+    """One finding's deduction before any category cap redistributed it.
+
+    ``base x weight``, the quantity ``_score_dimension`` computes and then
+    scales away. ``health_impact`` is what survives that scaling, so it moves
+    when a *neighbour* in the same capped category appears or goes away; this
+    one depends on the finding alone. A breakdown needs it to say how much a
+    category shed, and a change comparison needs it to ask whether one finding
+    got worse without hearing about its neighbours.
+    """
+    return finding_base_deduction(finding) * biomarker_weight(
+        field(finding, "biomarker_type", None)
+    )
+
+
+def primary_and_magnitude(findings: Sequence[Any]) -> dict[str, Any]:
+    """Dominant cause + pre-clamp deduction magnitude for one file's findings.
+
+    ``total_deduction`` sums stored ``health_impact``, the applied (capped)
+    value; :func:`finding_raw_deduction` is unscaled and differs on capped files.
+    """
+    if not findings:
+        return {"primary_biomarker": None, "primary_reason": None, "total_deduction": None}
+    primary = primary_finding(findings)
+    total = sum(float(field(x, "health_impact", 0.0) or 0.0) for x in findings)
+    return {
+        "primary_biomarker": field(primary, "biomarker_type") if primary else None,
+        "primary_reason": field(primary, "reason") if primary else None,
+        "total_deduction": round(total, 3),
+    }
+
+
+def primary_and_magnitude_by_file(findings: Iterable[Any]) -> dict[str, dict[str, Any]]:
+    """:func:`primary_and_magnitude` for each ``file_path`` in *findings*."""
+    by_file: dict[str, list[Any]] = {}
+    for f in findings:
+        by_file.setdefault(field(f, "file_path"), []).append(f)
+    return {path: primary_and_magnitude(fs) for path, fs in by_file.items()}
+
+
 def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
     """Reconstruct one file's per-category deductions from its open findings.
 
@@ -197,19 +249,23 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
     """
     per_category: dict[str, list[Any]] = {}
     for finding in findings:
-        category = biomarker_category(field(finding, "biomarker_type", None))
-        per_category.setdefault(category, []).append(finding)
+        biomarker = field(finding, "biomarker_type", None)
+        # No deduction to explain. Left in, it reports a raw deduction the
+        # file never paid and a ``capped`` flag on an uncapped category.
+        if is_advisory(biomarker or ""):
+            continue
+        per_category.setdefault(biomarker_category(biomarker), []).append(finding)
 
     categories: list[dict[str, Any]] = []
     total_deduction = 0.0
-    for category, cap in CATEGORY_CAPS.items():
+    # The history cap follows the structure half, so report the one it scored under.
+    structure, _ = deduction_split(findings)
+    for category, static_cap in CATEGORY_CAPS.items():
         entries = per_category.get(category, [])
         if not entries:
             continue
-        raw_each = [
-            finding_base_deduction(f) * biomarker_weight(field(f, "biomarker_type", None))
-            for f in entries
-        ]
+        cap = history_cap(structure) if category == HISTORY_CATEGORY else static_cap
+        raw_each = [finding_raw_deduction(f) for f in entries]
         applied_each = [float(field(f, "health_impact", 0.0) or 0.0) for f in entries]
         raw_sum = sum(raw_each)
         applied_sum = sum(applied_each)

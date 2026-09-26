@@ -213,6 +213,12 @@ def _render_card(name: str, card: dict) -> None:
     summary = card.get("risk_summary")
     if summary:
         console.print(f"  {escape(str(summary))}")
+    if card.get("resolved") is False:
+        # The line below defaults its missing fields to numbers rather than
+        # gating on them, so stop here rather than print "0 direct dependents".
+        reason = escape(str(card.get("unresolved_reason") or "unknown"))
+        console.print(f"  [dim]unresolved: {reason}[/dim]")
+        return
     trend = card.get("trend") or "unknown"
     console.print(
         f"  [dim]hotspot {float(card.get('hotspot_score') or 0.0):.0%} ({trend}) · "

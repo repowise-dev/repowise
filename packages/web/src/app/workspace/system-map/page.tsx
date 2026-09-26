@@ -1,23 +1,34 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Waypoints, Boxes, ArrowLeftRight, Share2, Zap, AlertTriangle, ShieldAlert, Gauge } from "lucide-react";
+import { Waypoints } from "lucide-react";
 import {
   SystemMap,
-  SystemMapBlastPanel,
-  SystemMapBreakingPanel,
-  SystemMapConformancePanel,
+  SYSTEM_MAP_CANVAS_HEIGHT,
+  SystemMapFindings,
+  SystemMapLensControl,
+  SystemMapLensResults,
+  buildArchitectureOverlay,
   buildBlastRadiusOverlay,
   buildBreakingChangeOverlay,
   buildConformanceOverlay,
-  buildArchitectureOverlay,
+  plural,
+  selectionRepo,
+  type ContractRef,
   type RepoHealth,
+  type SegmentOption,
+  type SystemMapLens,
   type SystemMapSelection,
 } from "@repowise-dev/ui/workspace/system-map";
-import type { NodeArchitectureRole } from "@/lib/api/types";
-import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
+import { PageShell } from "@repowise-dev/ui/shared/page-shell";
+import { PageLede } from "@repowise-dev/ui/shared/page-lede";
+import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
+import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
+import type { NodeArchitectureRole, SystemGraph, ConformanceReport } from "@/lib/api/types";
 import {
   useWorkspaceSystemGraph,
   useWorkspaceGraph,
@@ -26,14 +37,34 @@ import {
   useWorkspaceConformance,
   useWorkspaceArchitecture,
 } from "@/lib/hooks/use-workspace";
+import { useRepoContracts } from "./use-repo-contracts";
+
+const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];
+
+function contractHref(ref: ContractRef): string {
+  const params = new URLSearchParams({ contract: ref.contract_id, repo: ref.repo });
+  if (ref.file_path) params.set("file", ref.file_path);
+  return `/workspace/contracts?${params.toString()}`;
+}
+
+function contractsHref(repo: string): string {
+  return `/workspace/contracts?${new URLSearchParams({ repo }).toString()}`;
+}
 
 export default function SystemMapPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+
+  // One wave above the fold: the graph, repo health, and the three small
+  // reports the lede, the lens counts and "Needs attention" all read. Blast
+  // radius and per-repo contracts are fetched only when asked for.
   const { data: graph, isLoading, error } = useWorkspaceSystemGraph();
   const { data: repoGraph } = useWorkspaceGraph();
+  const { data: architecture, error: architectureError } = useWorkspaceArchitecture();
+  const { data: conformance, error: conformanceError } = useWorkspaceConformance();
+  const { data: breaking, error: breakingError } = useWorkspaceBreakingChanges();
 
-  // Selection lives in the URL so a service or seam you found can be linked to.
+  // Selection, lens and blast target live in the URL, so a view can be linked to.
   const selection = useMemo<SystemMapSelection>(() => {
     const node = searchParams.get("node");
     if (node) return { type: "node", id: node };
@@ -41,47 +72,63 @@ export default function SystemMapPage() {
     if (edge) return { type: "edge", id: edge };
     return null;
   }, [searchParams]);
+  const lensOptions = useMemo(
+    () =>
+      lensOptionsFor(graph, breaking, conformance, architecture, {
+        breaking: Boolean(breakingError),
+        conformance: Boolean(conformanceError),
+        architecture: Boolean(architectureError),
+      }),
+    [graph, breaking, conformance, architecture, breakingError, conformanceError, architectureError],
+  );
+  // A lens from the URL that cannot act here (0 findings, or its report
+  // failed) reads as no lens, rather than a checked option nobody can reach.
+  const lensParam = searchParams.get("lens") as SystemMapLens | null;
+  const lens: SystemMapLens =
+    lensParam && LENSES.includes(lensParam) && !lensOptions.find((o) => o.value === lensParam)?.disabledReason
+      ? lensParam
+      : "none";
+  const blastTarget = lens === "blast" ? searchParams.get("from") : null;
 
-  const onSelectionChange = useCallback(
-    (next: SystemMapSelection) => {
+  const replaceParams = useCallback(
+    (edit: (p: URLSearchParams) => void) => {
       const params = new URLSearchParams(searchParams.toString());
-      params.delete("node");
-      params.delete("edge");
-      if (next) params.set(next.type, next.id);
+      edit(params);
       const query = params.toString();
-      // `replace`, not `push`: clicking around a diagram should not build a
-      // back-button history of every node you glanced at.
+      // `replace`, not `push`: exploring a diagram should not fill the back button.
       router.replace(query ? `?${query}` : "/workspace/system-map", { scroll: false });
     },
     [router, searchParams],
   );
 
-  // Blast-radius target. Driven by a page-level picker (and re-targetable from
-  // the impacted panel) so the map component stays unchanged — the ripple rides
-  // its existing `overlay` prop.
-  const [blastTarget, setBlastTarget] = useState<string | null>(null);
+  const onSelectionChange = useCallback(
+    (next: SystemMapSelection) =>
+      replaceParams((p) => {
+        p.delete("node");
+        p.delete("edge");
+        if (next) p.set(next.type, next.id);
+      }),
+    [replaceParams],
+  );
+
+  const setLens = useCallback(
+    (next: SystemMapLens, from?: string | null) =>
+      replaceParams((p) => {
+        if (next === "none") p.delete("lens");
+        else p.set("lens", next);
+        if (next === "blast" && from !== undefined) {
+          if (from) p.set("from", from);
+          else p.delete("from");
+        } else if (next !== "blast") p.delete("from");
+      }),
+    [replaceParams],
+  );
+
   const [includeBehavioral, setIncludeBehavioral] = useState(true);
-  const { data: blast, isLoading: blastLoading } = useWorkspaceBlastRadius(blastTarget, {
-    includeBehavioral,
-  });
+  const { data: blast, isLoading: blastLoading, error: blastError } = useWorkspaceBlastRadius(blastTarget, { includeBehavioral });
 
-  // Breaking-change guard. Lazy-fetched the first time it's toggled on; its
-  // at-risk badges ride the map's overlay prop when no blast target is focused.
-  const [showBreaking, setShowBreaking] = useState(false);
-  const { data: breaking, isLoading: breakingLoading } =
-    useWorkspaceBreakingChanges(showBreaking);
-
-  // Architecture conformance. Lazy-fetched on toggle; violation/cycle badges ride
-  // the same overlay prop when no blast target or breaking-change view is active.
-  const [showConformance, setShowConformance] = useState(false);
-  const { data: conformance, isLoading: conformanceLoading } =
-    useWorkspaceConformance(showConformance);
-
-  // Architecture metrics. Always fetched (cheap, deterministic): it feeds the
-  // score stat and the per-service role shown in the inspector. The cyclic-core
-  // highlight is an opt-in overlay toggle.
-  const { data: architecture } = useWorkspaceArchitecture();
-  const [showArchitecture, setShowArchitecture] = useState(false);
+  const focusRepo = useMemo(() => selectionRepo(graph, selection), [graph, selection]);
+  const { data: repoContracts, isLoading: repoContractsLoading } = useRepoContracts(focusRepo);
 
   const roleByNodeId = useMemo<Map<string, NodeArchitectureRole>>(() => {
     const m = new Map<string, NodeArchitectureRole>();
@@ -89,247 +136,285 @@ export default function SystemMapPage() {
     return m;
   }, [architecture]);
 
-  // Join repo health (from the repo-level graph) onto service nodes by alias.
-  // The map keys health by `SystemNode.repo`; the repo graph's node `name` is
-  // the repo alias.
-  const healthByRepo = useMemo<Map<string, RepoHealth>>(() => {
-    const m = new Map<string, RepoHealth>();
+  // Repo health by alias; the repo graph's node `name` is the alias.
+  const { healthByRepo, repoIdByAlias } = useMemo(() => {
+    const health = new Map<string, RepoHealth>();
+    const ids = new Map<string, string>();
     for (const n of repoGraph?.nodes ?? []) {
-      m.set(n.name, { score: n.health_score, source: n.health_score_source });
+      health.set(n.name, { score: n.health_score, source: n.health_score_source });
+      ids.set(n.name, n.repo_id);
     }
-    return m;
+    return { healthByRepo: health, repoIdByAlias: ids };
   }, [repoGraph]);
 
-  // A blast-radius selection focuses the map (dim + ripple) and takes precedence;
-  // otherwise the breaking-change overlay badges the at-risk seams additively.
   const overlay = useMemo(() => {
     if (!graph) return undefined;
-    if (blast) return buildBlastRadiusOverlay(graph, blast);
-    if (showConformance && conformance) return buildConformanceOverlay(graph, conformance);
-    if (showBreaking && breaking) return buildBreakingChangeOverlay(graph, breaking);
-    if (showArchitecture && architecture) return buildArchitectureOverlay(graph, architecture);
+    if (lens === "blast" && blast) return buildBlastRadiusOverlay(graph, blast);
+    if (lens === "breaking" && breaking) return buildBreakingChangeOverlay(graph, breaking);
+    if (lens === "conformance" && conformance) return buildConformanceOverlay(graph, conformance);
+    if (lens === "core" && architecture) {
+      // Nodes already name their role; a "core" badge would say it twice.
+      const { nodeBadges: _named, ...core } = buildArchitectureOverlay(graph, architecture);
+      return core;
+    }
     return undefined;
-  }, [graph, blast, showBreaking, breaking, showConformance, conformance, showArchitecture, architecture]);
+  }, [graph, lens, blast, breaking, conformance, architecture]);
 
-  // Contract ids are `<type>::<method>::<path>`, and the Contracts page filters
-  // by type, not by id. Carry the type across so the drill-down lands on the
-  // right family instead of on an unfiltered list.
-  const openContract = useCallback(
-    (contractId: string) => {
-      const type = contractId.split("::")[0];
-      router.push(type ? `/workspace/contracts?type=${encodeURIComponent(type)}` : "/workspace/contracts");
-    },
-    [router],
+  const drawer = useMemo(
+    () => ({
+      repoContracts,
+      repoContractsLoading,
+      cycles: conformance?.cycles ?? [],
+      contractHref,
+      contractsHref,
+      repoHref: (alias: string) => {
+        const id = repoIdByAlias.get(alias);
+        return id ? `/repos/${id}/overview` : null;
+      },
+      coChangesHref: "/workspace/co-changes",
+      LinkComponent: Link,
+      onShowBlastRadius: (id: string) => setLens("blast", id),
+    }),
+    [repoContracts, repoContractsLoading, conformance, repoIdByAlias, setLens],
   );
 
-  const diag = graph?.diagnostics;
-  const serviceCount = graph?.nodes.length ?? 0;
-  const edgeCount = graph?.edges.length ?? 0;
-
   return (
-    <div className="p-5 sm:p-8 space-y-6 max-w-[1400px]">
-      <div>
-        <div className="flex items-center gap-2.5 mb-1">
-          <Waypoints className="h-6 w-6 text-[var(--color-accent-primary)]" />
-          <h1 className="text-2xl font-semibold text-[var(--color-text-primary)]">
-            System Map
-          </h1>
-        </div>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          A live diagram of your services and the typed relationships between
-          them, derived from code on every update.
-        </p>
-      </div>
+    <PageShell
+      title="System map"
+      icon={<Waypoints className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+      description="Services and the typed relationships between them, rebuilt from code and git history on every workspace update."
+      maxWidth="wide"
+    >
+      {graph && <Lede graph={graph} architecture={architecture} conformance={conformance} />}
+      {graph && <StatRibbon stats={ribbon(graph, architecture)} LinkComponent={Link} />}
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <MetricCard
-          label="Architecture score"
-          value={architecture ? `${architecture.score.toFixed(1)} / 10` : "—"}
-          description={
-            architecture
-              ? `${architecture.propagation_cost_pct.toFixed(1)}% propagation cost`
-              : "Coupling + core roll-up"
-          }
-          icon={<Gauge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
-        />
-        <MetricCard
-          label="Services"
-          value={isLoading ? "—" : serviceCount}
-          icon={<Boxes className="h-4 w-4" />}
-        />
-        <MetricCard
-          label="Relationships"
-          value={isLoading ? "—" : edgeCount}
-          icon={<Share2 className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
-        />
-        <MetricCard
-          label="Providers / Consumers"
-          value={diag ? `${diag.total_providers} / ${diag.total_consumers}` : "—"}
-          icon={<ArrowLeftRight className="h-4 w-4 text-[var(--color-success)]" />}
-        />
-        <MetricCard
-          label="Orphans / Weak links"
-          value={diag ? `${diag.orphan_providers.length} / ${diag.weak_link_count}` : "—"}
-          description="Providers with no consumer; low-confidence links"
-          icon={<Share2 className="h-4 w-4 text-[var(--color-warning)]" />}
-        />
-      </div>
-
-      {/* Blast-radius controls: pick a service to see what breaks downstream. */}
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-4 py-2.5">
-        <span className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--color-text-primary)]">
-          <Zap className="h-4 w-4 text-[var(--color-accent-primary)]" />
-          Blast radius
-        </span>
-        <select
-          aria-label="Blast-radius source service"
-          className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-canvas)] px-2 py-1 text-sm text-[var(--color-text-primary)]"
-          value={blastTarget ?? ""}
-          onChange={(e) => setBlastTarget(e.target.value || null)}
-          disabled={!graph || serviceCount === 0}
-        >
-          <option value="">Select a service…</option>
-          {(graph?.nodes ?? [])
-            .slice()
-            .sort((a, b) => a.id.localeCompare(b.id))
-            .map((n) => (
-              <option key={n.id} value={n.id}>
-                {n.service_path ? `${n.repo} · ${n.name}` : n.name}
-              </option>
-            ))}
-        </select>
-        <label className="inline-flex items-center gap-1.5 text-sm text-[var(--color-text-secondary)]">
-          <input
-            type="checkbox"
-            checked={includeBehavioral}
-            onChange={(e) => setIncludeBehavioral(e.target.checked)}
-          />
-          Include co-change
-        </label>
-        <button
-          type="button"
-          onClick={() => {
-            setShowArchitecture((v) => !v);
-            if (!showArchitecture) {
-              setShowBreaking(false);
-              setShowConformance(false);
-            }
-          }}
-          aria-pressed={showArchitecture}
-          className={`ml-auto inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
-            showArchitecture
-              ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
-              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-          }`}
-          title="Highlight the cyclic architectural core"
-        >
-          <Gauge className="h-4 w-4" />
-          Core
-          {showArchitecture && architecture && architecture.core_size > 0 && (
-            <span className="font-semibold">· {architecture.core_size}</span>
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setShowConformance((v) => !v);
-            if (!showConformance) {
-              setShowBreaking(false);
-              setShowArchitecture(false);
-            }
-          }}
-          aria-pressed={showConformance}
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
-            showConformance
-              ? "border-[var(--color-risk-high)] text-[var(--color-risk-high)]"
-              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-          }`}
-        >
-          <ShieldAlert className="h-4 w-4" />
-          Conformance
-          {showConformance && conformance && conformance.violation_count > 0 && (
-            <span className="font-semibold">· {conformance.violation_count}</span>
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setShowBreaking((v) => !v);
-            if (!showBreaking) {
-              setShowConformance(false);
-              setShowArchitecture(false);
-            }
-          }}
-          aria-pressed={showBreaking}
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
-            showBreaking
-              ? "border-[var(--color-risk-high)] text-[var(--color-risk-high)]"
-              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-          }`}
-        >
-          <AlertTriangle className="h-4 w-4" />
-          Breaking changes
-          {showBreaking && breaking && breaking.breaking_count > 0 && (
-            <span className="font-semibold">· {breaking.breaking_count}</span>
-          )}
-        </button>
-        {blastTarget && (
-          <button
-            type="button"
-            onClick={() => setBlastTarget(null)}
-            className="text-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-          >
-            Clear
-          </button>
-        )}
-      </div>
-
-      <div className="rounded-lg overflow-hidden border border-[var(--color-border-default)] h-[calc(100vh-360px)] min-h-[560px]">
+      <OverviewSection
+        title="Services and relationships"
+        description="Each box is a service; each line is a contract, import or co-change between two of them. Pick a lens to ask the map one question at a time."
+      >
         {isLoading ? (
-          <div className="p-4 h-full">
-            <Skeleton className="h-full w-full" />
+          // Same rows as the loaded map: lens, filters, legend, then the canvas.
+          <div className="flex flex-col gap-3" aria-hidden>
+            <Skeleton className="h-8 w-[480px] max-w-full" />
+            <Skeleton className="h-8 w-[640px] max-w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className={`w-full rounded-lg ${SYSTEM_MAP_CANVAS_HEIGHT}`} />
           </div>
         ) : (
           <SystemMap
             graph={graph}
             error={error ?? null}
             healthByRepo={healthByRepo}
-            {...(overlay ? { overlay } : {})}
             roleByNodeId={roleByNodeId}
+            {...(overlay ? { overlay } : {})}
             selection={selection}
             onSelectionChange={onSelectionChange}
-            onOpenContract={openContract}
-            rail={
-              blast || showBreaking || showConformance ? (
-                <>
-                  <SystemMapBlastPanel
-                    result={blast}
-                    loading={blastLoading}
-                    onSelectTarget={setBlastTarget}
-                    onClear={() => setBlastTarget(null)}
-                  />
-                  {showBreaking && (
-                    <SystemMapBreakingPanel
-                      report={breaking}
-                      loading={breakingLoading}
-                      onSelectNode={setBlastTarget}
-                      onClear={() => setShowBreaking(false)}
-                    />
-                  )}
-                  {showConformance && (
-                    <SystemMapConformancePanel
-                      report={conformance}
-                      loading={conformanceLoading}
-                      onSelectNode={setBlastTarget}
-                      onClear={() => setShowConformance(false)}
-                    />
-                  )}
-                </>
-              ) : null
+            drawer={drawer}
+            toolbar={
+              <SystemMapLensControl
+                value={lens}
+                options={lensOptions}
+                onChange={(next) => setLens(next, next === "blast" ? (selection?.type === "node" ? selection.id : null) : undefined)}
+                nodes={graph?.nodes ?? []}
+                blastTarget={blastTarget}
+                onBlastTargetChange={(id) => setLens("blast", id)}
+                includeBehavioral={includeBehavioral}
+                onIncludeBehavioralChange={setIncludeBehavioral}
+              />
             }
           />
         )}
-      </div>
-    </div>
+      </OverviewSection>
+
+      {graph && (
+        <SystemMapLensResults
+          lens={lens}
+          graph={graph}
+          selection={selection}
+          onSelect={onSelectionChange}
+          blastTarget={blastTarget}
+          blast={blast}
+          blastLoading={blastLoading}
+          blastError={Boolean(blastError)}
+          includeBehavioral={includeBehavioral}
+          breaking={breaking}
+          conformance={conformance}
+          architecture={architecture}
+          conformanceHref="/workspace/conformance"
+          LinkComponent={Link}
+        />
+      )}
+
+      {graph && (
+        <SystemMapFindings
+          graph={graph}
+          conformance={conformance}
+          breaking={breaking}
+          diagnostics={graph.diagnostics}
+          conformanceError={Boolean(conformanceError)}
+          breakingError={Boolean(breakingError)}
+          onSelect={onSelectionChange}
+          onLensChange={(next) => setLens(next)}
+          unmatchedHref="/workspace/contracts?role=consumer&linked=no"
+          conformanceHref="/workspace/conformance"
+          LinkComponent={Link}
+        />
+      )}
+    </PageShell>
   );
+}
+
+/** Counts and disabled reasons for each lens, from data already on the page. */
+function lensOptionsFor(
+  graph: SystemGraph | null,
+  breaking: ReturnType<typeof useWorkspaceBreakingChanges>["data"],
+  conformance: ConformanceReport | null,
+  architecture: ReturnType<typeof useWorkspaceArchitecture>["data"],
+  failed: { breaking: boolean; conformance: boolean; architecture: boolean },
+): SegmentOption<SystemMapLens>[] {
+  const hasEdges = (graph?.edges.length ?? 0) > 0;
+  const breakingTotal = breaking ? breaking.breaking_count + breaking.warning_count : 0;
+  const findings = conformance ? conformance.violation_count + (conformance.total_cycles ?? conformance.cycle_count) : 0;
+  return [
+    { value: "none", label: "None", hint: "The map as extracted, no lens" },
+    {
+      value: "blast",
+      label: "Blast radius",
+      hint: "What depends on one service, directly or through others",
+      disabledReason: hasEdges ? undefined : "No relationships to trace yet.",
+    },
+    {
+      value: "breaking",
+      label: "Breaking changes",
+      count: breaking ? String(breakingTotal) : undefined,
+      disabledReason: failed.breaking
+        ? "Could not load the breaking-change report."
+        : !breaking
+        ? "Loading the breaking-change report."
+        : !breaking.generated_at
+          ? "Breaking-change detection has not run. Run a workspace update."
+          : breakingTotal === 0
+            ? "No provider contract changed incompatibly in the most recent update."
+            : undefined,
+    },
+    {
+      value: "conformance",
+      label: "Conformance",
+      count: conformance ? String(findings) : undefined,
+      hint: "Rule violations and dependency cycles",
+      disabledReason: failed.conformance
+        ? "Could not load the conformance report."
+        : !conformance
+        ? "Loading the conformance report."
+        : !conformance.generated_at
+          ? "Conformance has not been checked. Run a workspace update."
+          : findings === 0
+            ? "No rule violations or dependency cycles."
+            : undefined,
+    },
+    {
+      value: "core",
+      label: "Core",
+      count: architecture ? String(architecture.core_size) : undefined,
+      hint: "The largest group of services that all depend on each other, and every service's role",
+      disabledReason: failed.architecture
+        ? "Could not load the architecture metrics."
+        : !architecture
+          ? "Loading architecture metrics."
+          : architecture.core_size === 0 && architecture.roles.length === 0
+            ? "No services to classify."
+            : undefined,
+    },
+  ];
+}
+
+function Lede({
+  graph,
+  architecture,
+  conformance,
+}: {
+  graph: SystemGraph;
+  architecture: ReturnType<typeof useWorkspaceArchitecture>["data"];
+  conformance: ConformanceReport | null;
+}) {
+  const name = (id: string) => graph.nodes.find((n) => n.id === id)?.name ?? id;
+  const repos = new Set(graph.nodes.map((n) => n.repo)).size;
+  const structural = graph.edges.filter((e) => e.structural).length;
+  const behavioral = graph.edges.length - structural;
+  const cycles = conformance?.cycles ?? [];
+  const totalCycles = conformance ? (conformance.total_cycles ?? conformance.cycle_count) : 0;
+  const first = cycles[0];
+
+  return (
+    <PageLede
+      label="Architecture score"
+      labelHint="A 1 to 10 roll-up of propagation cost, the size of the cyclic core, dependency cycles and rule violations, over structural edges only. Higher means less coupled."
+      value={architecture ? architecture.score.toFixed(1) : "–"}
+      unit="out of 10"
+      layout="beside"
+    >
+      <p>
+        {plural(graph.nodes.length, "service", "services")} in {plural(repos, "repository", "repositories")}, joined by{" "}
+        {plural(graph.edges.length, "relationship", "relationships")}: {structural} structural (a contract or import
+        in code) and {behavioral} co-change (files that change in the same commits, not a call).
+      </p>
+      {first ? (
+        <p>
+          <span className="font-medium text-[var(--color-text-primary)]">
+            {first.nodes.map(name).join(" and ")} depend on each other
+          </span>
+          , a dependency cycle: none of them can change a contract, build or deploy alone.
+          {totalCycles > 1 ? ` ${plural(totalCycles - 1, "more cycle is", "more cycles are")} listed under Needs attention.` : " It is listed under Needs attention with a prompt to break it."}
+        </p>
+      ) : conformance?.generated_at ? (
+        <p>No dependency cycles: every service can change without a loop back to itself.</p>
+      ) : null}
+      {architecture && (
+        <p>
+          On average a service reaches {architecture.propagation_cost_pct.toFixed(1)}% of the others through
+          dependencies, and {architecture.core_size > 0 ? `${plural(architecture.core_size, "service forms", "services form")} the cyclic core` : "there is no cyclic core"}
+          . Those two figures drive the score.
+        </p>
+      )}
+    </PageLede>
+  );
+}
+
+function ribbon(
+  graph: SystemGraph,
+  architecture: ReturnType<typeof useWorkspaceArchitecture>["data"],
+): RibbonStat[] {
+  const diag = graph.diagnostics;
+  const repos = new Set(graph.nodes.map((n) => n.repo)).size;
+  const structural = graph.edges.filter((e) => e.structural).length;
+  return [
+    {
+      label: "Services",
+      value: formatNumber(graph.nodes.length),
+      sub: `in ${plural(repos, "repository", "repositories")}`,
+    },
+    {
+      label: "Relationships",
+      value: formatNumber(graph.edges.length),
+      sub: `${structural} structural, ${graph.edges.length - structural} co-change`,
+    },
+    {
+      label: "Propagation cost",
+      value: architecture ? `${architecture.propagation_cost_pct.toFixed(1)}%` : "–",
+      sub: "of other services the average one reaches",
+      hint: "The share of other services the average service can reach through structural dependencies. 0% is fully decoupled, 100% is everything reaching everything.",
+    },
+    {
+      label: "Contract links",
+      value: diag ? formatNumber(diag.total_links) : "–",
+      sub: diag ? `from ${formatNumber(diag.total_providers)} providers, ${formatNumber(diag.total_consumers)} consumers` : undefined,
+      hint: "Consumer calls matched to the provider that serves them, across services.",
+    },
+    {
+      label: "Unmatched consumers",
+      value: diag ? formatNumber(diag.unmatched_consumers.length) : "–",
+      sub: "calls with no provider in the workspace",
+      hint: "Consumer contracts that matched no provider: missing, a third-party host, or inside the same service.",
+    },
+  ];
 }

@@ -6,6 +6,11 @@ from pathlib import Path
 import pytest
 
 from repowise.core.sessions import CodexAdapter, Event
+from repowise.core.sessions.adapters.base import (
+    INTENT_SHELL_CALLS,
+    INTENT_TOOL_CALLS,
+    INTENT_TURNS,
+)
 from repowise.core.sessions.adapters.codex import _normalize_tool_name
 from repowise.core.sessions.miners.decisions import mine_events
 
@@ -256,3 +261,59 @@ def test_a_string_search_output_survives_rewriting(adapter: CodexAdapter) -> Non
 
     assert event is not None
     assert event.tool_results[0].content == "Output:\nsrc/app.py\n"
+
+
+#: A session bulk-imported from another harness into the Codex store.
+IMPORTED_FIXTURE = Path(__file__).parent / "data" / "codex_imported_session.jsonl"
+
+
+@pytest.mark.parametrize("intent", [INTENT_TURNS, INTENT_SHELL_CALLS, INTENT_TOOL_CALLS])
+def test_cwd_threads_under_the_gate_production_runs(adapter: CodexAdapter, intent: str) -> None:
+    """The scoping guard has to hold on the gated path, not just the bare one.
+
+    Every consumer passes a prefilter. A gate that drops ``session_meta``
+    leaves ``cwd`` unset on every event, and the miners' scoping test reads a
+    blank cwd as "no opinion" rather than as a miss, so one machine's every
+    session lands in whichever repo is being indexed.
+    """
+    events = list(adapter.iter_events(FIXTURE, prefilter=adapter.prefilter(intent)))
+
+    assert events
+    assert all(e.cwd for e in events)
+
+
+def test_another_repos_session_is_scoped_out_under_the_gate(adapter: CodexAdapter) -> None:
+    prefilter = adapter.prefilter(INTENT_TURNS)
+    events = list(adapter.iter_events(FIXTURE, prefilter=prefilter))
+
+    assert mine_events(events, r"d:\some\other\repo") == []
+
+
+def test_bulk_imported_session_yields_nothing_minable(adapter: CodexAdapter) -> None:
+    """An import is the other harness's session, and its adapter already read it.
+
+    Mining it here would count one session twice: once under the harness that
+    recorded it and once under the store it was copied into.
+    """
+    prefilter = adapter.prefilter(INTENT_TURNS)
+    events = list(adapter.iter_events(IMPORTED_FIXTURE, prefilter=prefilter))
+
+    assert all(not e.text for e in events)
+    assert mine_events(events, r"c:\users\dev\projects\demo") == []
+
+
+def test_the_import_gate_does_not_catch_a_native_session(adapter: CodexAdapter) -> None:
+    """The fixture's own originator is ``Codex Desktop``, so that is not the signal."""
+    prefilter = adapter.prefilter(INTENT_TURNS)
+    events = list(adapter.iter_events(FIXTURE, prefilter=prefilter))
+
+    assert mine_events(events, REPO_PREFIX)
+
+
+def test_import_state_does_not_leak_between_files(adapter: CodexAdapter) -> None:
+    """One adapter drives many transcripts; the latch is per file."""
+    prefilter = adapter.prefilter(INTENT_TURNS)
+    list(adapter.iter_events(IMPORTED_FIXTURE, prefilter=prefilter))
+    events = list(adapter.iter_events(FIXTURE, prefilter=prefilter))
+
+    assert mine_events(events, REPO_PREFIX)

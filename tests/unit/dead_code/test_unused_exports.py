@@ -276,3 +276,42 @@ def test_unused_export_not_rescued_for_index_stem():
     )
     names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
     assert "stranded_export" in names
+
+
+def test_unused_export_rust_impl_non_importable():
+    """An impl block cannot be imported by name and must not be flagged as unused export."""
+    g = _build_graph(
+        nodes={
+            "src/lib.rs": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "language": "rust",
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "MyStruct",
+                        "kind": "impl",
+                        "visibility": "public",
+                        "language": "rust",
+                        "decorators": [],
+                        "start_line": 10,
+                        "end_line": 25,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_internals": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "MyStruct" not in names
+

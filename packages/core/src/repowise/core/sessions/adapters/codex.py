@@ -32,6 +32,18 @@ _SHELL_COMMAND_RE = re.compile(r'"command"\s*:\s*"([^"]*)"')
 _RG_MATCH_RE = re.compile(r"^(?P<path>[^:]+(?::[^:\\/]*[\\/][^:]*)?):\d+:")
 #: Lines the exec wrapper prints around a command's real output.
 _EXEC_NOISE = ("Script ", "Exit code:", "Wall time", "Output:")
+#: Codex writes ``cwd`` once, on this line, and every later event inherits it
+#: from adapter state. A gate that drops it leaves every event unscoped, so
+#: every intent admits it however narrow the rest of the gate is.
+_SESSION_META = '"type":"session_meta"'
+#: Turn id on sessions bulk-imported from another harness into the Codex
+#: store. Those turns are that harness's, and its own adapter already reads
+#: them, so mining them here counts one session twice.
+_IMPORTED_TURN_PREFIX = "external-import-turn"
+#: Lines read from the top of a transcript to recover the facts a resume
+#: starts past. Both sit in the first two on every rollout measured; the
+#: margin is for a writer that adds a preamble, not for a search.
+_HEAD_LINES = 8
 
 
 def _tool_calls_prefilter(raw: str) -> bool:
@@ -40,11 +52,13 @@ def _tool_calls_prefilter(raw: str) -> bool:
         or '"type":"custom_tool_call_output"' in raw
         or '"type":"function_call"' in raw
         or '"type":"function_call_output"' in raw
+        # Last: it matches once per file, and every other line pays the scan.
+        or _SESSION_META in raw
     )
 
 
 def _turns_prefilter(raw: str) -> bool:
-    return '"type":"event_msg"' in raw or '"type":"response_item"' in raw
+    return '"type":"event_msg"' in raw or '"type":"response_item"' in raw or _SESSION_META in raw
 
 
 @register_adapter
@@ -52,11 +66,25 @@ class CodexAdapter(HarnessAdapter):
     """Normalizes Codex session JSONL into the shared Event stream."""
 
     name: ClassVar[str] = "codex"
+    #: Codex reaches a file through apply_patch or a shell command, and
+    #: _normalize_tool_name folds every one of those onto this single token,
+    #: so the set is one name rather than a family. Inert until Codex edits
+    #: carry a path: their input is the patch text under ``command``, and
+    #: nothing scrapes the ``*** Update File:`` markers out of it yet, so no
+    #: Codex edit currently reaches a consumer of this set.
+    edit_tool_names: ClassVar[frozenset[str]] = frozenset({"edit_file"})
+    #: ``bash`` is what _normalize_tool_name folds ``exec``/``run_command``
+    #: onto; the other three are Codex's interactive shell, where one command
+    #: opens a session and its output arrives across later calls.
+    shell_tool_names: ClassVar[frozenset[str]] = frozenset(
+        {"bash", "shell_command", "exec_command", "write_stdin", "wait"}
+    )
 
     def __init__(self):
         self._tool_calls: dict[str, ToolUse] = {}
         self._current_session: str | None = None
         self._current_cwd: str | None = None
+        self._imported = False
 
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
         """Every Codex rollout, not just this repo's.
@@ -80,6 +108,15 @@ class CodexAdapter(HarnessAdapter):
             return None
 
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        # Only an import's turns carry the marker; the messages it replays
+        # look native. The latch is armed from the head in begin_file, so it
+        # holds for a gate that admits no turn lines and for a resumed read,
+        # and this is the belt for a marker that arrives later than the head.
+        turn_id = payload.get("turn_id")
+        if isinstance(turn_id, str) and turn_id.startswith(_IMPORTED_TURN_PREFIX):
+            self._imported = True
+        if self._imported:
+            return None
         entry_kind = (
             entry.get("type") if isinstance(entry.get("type"), str) and entry.get("type") else None
         )
@@ -153,11 +190,42 @@ class CodexAdapter(HarnessAdapter):
         self._tool_calls.clear()
         self._current_session = None
         self._current_cwd = None
+        self._imported = False
+        if path is not None:
+            self._seed_from_head(path)
+
+    def _seed_from_head(self, path: Path) -> None:
+        """Read the scoping facts off the top of the file, every pass.
+
+        Codex states ``cwd`` once and marks an import once, both within the
+        first few lines, and a cursored resume starts past them. Rebuilding
+        from the head rather than from the stream is what makes those facts
+        hold on an incremental run: without it the second pass onward carries
+        no cwd, and a blank cwd reads as "no opinion" to the miners, so one
+        repo's sessions land in another's records.
+
+        Normalizing those lines rather than re-reading their fields is the
+        point: the state they set is exactly what this needs, so there is one
+        parser to keep right. The events themselves are discarded, and the
+        correlation map with them, because the calls they pair with are
+        either behind the cursor already or still ahead of it.
+        """
+        try:
+            with path.open(encoding="utf-8", errors="replace") as fh:
+                for _ in range(_HEAD_LINES):
+                    raw = fh.readline()
+                    if not raw or self._imported:
+                        break
+                    self.normalize(raw)
+        except OSError:
+            pass
+        self._tool_calls.clear()
 
     def end_file(self) -> None:
         self._tool_calls.clear()
         self._current_session = None
         self._current_cwd = None
+        self._imported = False
 
     def _fill_response_item(self, event: Event, payload: dict[str, Any]) -> None:
         """Handles response_item entries in Codex transcripts, and converts them to either text, tool uses or tool results

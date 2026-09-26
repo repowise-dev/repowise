@@ -17,6 +17,7 @@
 
 import type { C4IoKind } from "./external-systems.js";
 import type { Paginated } from "./pagination.js";
+import type { StepClassification, ValidationBasis, ValidationVia } from "./refactoring.js";
 
 /** Finding severity used across the health surface. */
 export type HealthSeverity = "low" | "medium" | "high" | "critical";
@@ -39,14 +40,33 @@ export type HealthSeverity = "low" | "medium" | "high" | "critical";
  * a parity test (`__tests__/health.test.ts` here,
  * `tests/unit/health/test_scoring_dimensions.py` in core).
  */
-export type HealthDimension = "defect" | "maintainability" | "performance";
+export type ScoredHealthDimension = "defect" | "maintainability" | "performance";
 
-/** Canonical dimension order (parity-locked against core's `DIMENSIONS`). */
-export const HEALTH_DIMENSIONS: readonly HealthDimension[] = [
+/**
+ * The non-scoring fourth dimension. A marker homes here when it measures
+ * something no defect corpus labels, so it can never be calibrated and never
+ * earns weight. Its findings carry a zero health impact by construction and so
+ * are kept out of every impact-ranked queue, describing without accusing. That
+ * is about ranking, not existence: a surface that ranks nothing, such as one
+ * file's findings in an editor, asks for them and gets them.
+ *
+ * Mirror of `ADVISORY_DIMENSION` in core's `scoring.py`. Deliberately outside
+ * `HEALTH_DIMENSIONS`, which stays exactly the set that carries a score.
+ */
+export type AdvisoryHealthDimension = "advisory";
+
+/** Every dimension label a finding may carry on the wire, scored or not. */
+export type HealthDimension = ScoredHealthDimension | AdvisoryHealthDimension;
+
+/** Canonical SCORED dimension order (parity-locked against core's `DIMENSIONS`). */
+export const HEALTH_DIMENSIONS: readonly ScoredHealthDimension[] = [
   "defect",
   "maintainability",
   "performance",
 ] as const;
+
+/** The dimension whose findings never move a number. */
+export const ADVISORY_DIMENSION: AdvisoryHealthDimension = "advisory";
 
 /**
  * What a code-health figure counts. `everything` is the calibrated score;
@@ -71,6 +91,7 @@ export const HEALTH_DIMENSION_LABEL: Record<HealthDimension, string> = {
   defect: "Code health",
   maintainability: "Maintainability",
   performance: "Performance",
+  advisory: "Advisory",
 };
 
 /**
@@ -140,6 +161,17 @@ export function bandForScore(score: number): HealthBand {
   if (score >= FAIR_MIN) return "fair";
   if (score >= NEEDS_WORK_MIN) return "needs_work";
   return "at_risk";
+}
+
+/**
+ * A 1-10 score at one decimal, rounded down, for display beside its band.
+ * Rounding to nearest would print 6.98 as "7.0" beside "Fair"; flooring can
+ * never cross a band edge, and the band itself stays on the unrounded value.
+ * Mirror of `grading.format_score` in core.
+ */
+export function formatScore(score: number): string {
+  const nearest = Number(score.toFixed(1));
+  return (nearest > score ? nearest - 0.1 : nearest).toFixed(1);
 }
 
 export interface HealthBandShare {
@@ -310,6 +342,8 @@ export interface PerformanceOpportunityFix {
   strategy: string;
   safety: "proven" | "advisory";
   rationale: string;
+  /** The concrete construct the edit uses (a bulk call, a bound), when one was found. */
+  api?: string;
 }
 
 export interface PerformanceOpportunityEvidence {
@@ -324,7 +358,7 @@ export interface PerformanceOpportunityEvidence {
   provenance: string;
 }
 
-export type PerformanceActionabilityState = "plan_ready" | "advisory" | "investigate";
+export type PerformanceActionabilityState = "plan_ready" | "advisory" | "investigate" | "expected";
 export type PerformancePlanStatus = "available" | "no_safe_plan" | "not_persisted";
 
 /** One rank term, the input it read, and the points it contributed. */
@@ -333,6 +367,13 @@ export interface PerformanceWhyRanked {
   value: string | number | boolean | null;
   points: number;
 }
+
+/**
+ * Whether the loop's trip count grows with data, read off every member of the
+ * group. `n/a` is for markers whose amplification is not per_iteration or
+ * quadratic, so there is no loop to measure.
+ */
+export type PerformanceLoopMagnitude = "grows_with_data" | "bounded" | "unknown" | "n/a";
 
 /**
  * The facets that are not published anywhere else on the row.
@@ -345,6 +386,49 @@ export interface PerformanceOpportunityFacets {
   amplification: string;
   leverage: string;
   change_risk: string;
+  /** Absent on rows stored before the fact existed. */
+  loop_magnitude?: PerformanceLoopMagnitude;
+}
+
+/**
+ * Another cause observed on the same source lines. `relation` is from this
+ * opportunity's own view: `preferred` means the sibling's fix is the
+ * stronger one, `alternative` means this one is, `same_site` is no
+ * preference either way.
+ */
+export interface PerformanceOpportunitySibling {
+  opportunity_id: string;
+  biomarker_type: string;
+  strategy: string | null;
+  relation: "preferred" | "alternative" | "same_site";
+}
+
+/** How to validate a stored plan. Shares its vocabulary with refactoring's
+ *  `RecommendationValidation`, trimmed to the fields the queue materializes. */
+export interface PerformanceOpportunityValidation {
+  basis: ValidationBasis;
+  via: ValidationVia | null;
+  total: number;
+  tests: string[];
+  commands: string[];
+}
+
+/** One ordered edit in a stored plan. */
+export interface PerformanceOpportunityPlanStep {
+  order: number;
+  action: string;
+  symbol: string | null;
+  file_path: string | null;
+  line: number | null;
+  applicability: StepClassification;
+}
+
+/** Ranking inputs behind a plan, not a cost/benefit ledger. */
+export interface PerformanceOpportunityPlanEconomics {
+  effort_bucket: string;
+  benefit: number;
+  cost: number;
+  risk: number;
 }
 
 export interface PerformanceOpportunity {
@@ -387,6 +471,15 @@ export interface PerformanceOpportunity {
   plan_id: string | null;
   plan_status: PerformancePlanStatus;
   plan_reason: string;
+  /** Other causes flagged on the same lines. Always present (may be empty) on
+   *  new stores; absent on payloads from an older store. */
+  siblings?: PerformanceOpportunitySibling[];
+  /** How to validate the stored plan. Absent when there is no stored plan. */
+  validation?: PerformanceOpportunityValidation;
+  /** Ordered edits for the stored plan. Absent when there is no stored plan. */
+  plan_steps?: PerformanceOpportunityPlanStep[];
+  /** Ranking inputs behind the stored plan, not a verdict. */
+  plan_economics?: PerformanceOpportunityPlanEconomics;
 }
 
 /** Whether a quoted id still names something this index can resolve. */

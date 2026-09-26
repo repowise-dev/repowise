@@ -70,7 +70,8 @@
     "amplification",
     "change_risk",
     "exposure",
-    "leverage"
+    "leverage",
+    "loop_magnitude"
   ],
   "evidence": [
     "biomarker_type",
@@ -89,6 +90,7 @@
     "value"
   ],
   "fix": [
+    "api",
     "rationale",
     "safety",
     "strategy"

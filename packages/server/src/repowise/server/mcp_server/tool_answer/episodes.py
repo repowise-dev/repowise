@@ -1,18 +1,9 @@
 """Attach a dated episode that disagrees with a synthesised answer.
 
-``get_answer`` reasons from the code as it is now, and it is confidently wrong
-about what was *decided*. The reproduction this module exists for: asked
-whether to run the declared formatter before committing, the tool reads a
-``format`` target out of the build files and answers yes — while the checkout's
-own episode store holds a ``formatter_drift`` record saying the tree is not
-formatter-clean and a repo-wide run would produce a large unrelated diff.
-
-**Add, never replace.** The synthesis stays exactly as it was; a matching
-episode is appended beside it as a dated, attributed quotation. Replacing the
-answer would introduce the failure this exists to prevent, because the episode
-is sometimes the stale one and the synthesis the correct one. A reader who sees
-"recorded at ``acd24602``" next to "run the formatter" does not run it, and
-nothing is lost when the episode has expired.
+``get_answer`` reasons from the code as it is now and can be confidently wrong
+about what was *decided*. **Add, never replace:** a matching episode is appended
+beside the synthesis as a dated quotation, because sometimes the episode is the
+stale one.
 
 Three preconditions, checked in this order:
 
@@ -20,10 +11,8 @@ Three preconditions, checked in this order:
 2. the episode is still true,
 3. the synthesis is below ``confidence: high``.
 
-Any one missing means silence, and silence is byte-identical to today's
-payload. This runs at **serve time on both the fresh and the cached path**, so
-the episode is read fresh on every call and a disagreement is never frozen into
-a cache row — which is also why adding it needs no answer-schema bump.
+Any one missing means silence. Runs at serve time on the fresh and cached paths,
+so an episode is never frozen into a cache row.
 """
 
 from __future__ import annotations
@@ -52,20 +41,13 @@ _MAX_EPISODES = 1
 #: stays recoverable via ``repowise expand`` rather than vanishing.
 _MAX_BODY_CHARS = 600
 
-#: How many node-scoped candidates are tested for staleness before giving up.
-#: Each test may cost one git query, so this is what keeps the sanctioned
-#: read-time exception bounded no matter how large the store grows. One
-#: repo-wide candidate may follow them (see :func:`_candidate_window`), so the
-#: ceiling on git queries per call is this plus one.
+#: Node-scoped candidates tested for staleness. Each may cost one git query, so
+#: this bounds the read-time git cost; with one possible repo-wide candidate
+#: (see :func:`_candidate_window`) the ceiling is this plus one.
 _MAX_SCOPED_CANDIDATES = 4
 
-#: The tiers this guard is willing to put in front of a reader. Shared with
-#: every other episode reader (:mod:`repowise.server.mcp_server._episodes`),
-#: because "which tiers are shareable" is a property of the store rather than
-#: of one tool, and the first version of this constant reached the wrong answer
-#: by being local: an unnamed default let the store's second tier arrive
-#: uninvited, and with 56 of this repository's 426 sessions recorded the guard
-#: went **silent on its own reproduction** and served a session instead.
+#: Shared with every episode reader: which tiers are shareable is a property
+#: of the store, not of one tool.
 _SERVED_TIERS = SERVED_TIERS
 
 #: Room the block needs before it is worth attaching at all.
@@ -187,25 +169,11 @@ def _attach(
 def _candidate_window(scoped: list[tuple[dict, list[str]]]) -> list[tuple[dict, list[str]]]:
     """The candidates staleness is tested on: bounded, and never one-sided.
 
-    Ranking puts path matches above subject matches, which is right. But a
-    node-scoped episode is *suppressed outright* when anything has touched its
-    files since, while a repo-wide one is served with its age labelled. A store
-    holding hundreds of the former and a handful of the latter would therefore
-    fill the whole window with candidates that can only fall through, and the
-    surface would go silent on a repository that had more history rather than
-    less.
-
-    So the best repo-wide candidate is **appended** when the window would
-    otherwise hold none. Appended rather than substituted, and the difference
-    is the whole point: a repo-wide verdict never suppresses, so putting one
-    in the last slot would not fall back to it, it would pre-empt the
-    node-scoped candidate standing there — trading a git-verified "nothing in
-    its scope has changed" for an unchecked claim about the whole tree, which
-    is backwards on a surface whose bar is precision at the acting stage.
-
-    It costs one more possible git query in the worst case, and that is the
-    honest price of a fifth candidate rather than something to hide by
-    dropping the fourth.
+    A stale node-scoped episode is suppressed, while a repo-wide one is served
+    with its age labelled, so a window of node-scoped candidates alone could
+    all fall through. The best repo-wide candidate is therefore **appended**
+    when the window holds none. Not substituted: a repo-wide verdict never
+    suppresses, so in the last slot it would pre-empt a git-verified candidate.
     """
     window = scoped[:_MAX_SCOPED_CANDIDATES]
     if any(not matched for _row, matched in window):
@@ -228,28 +196,20 @@ def _scope(
 ) -> list[str] | None:
     """The part of the answer this episode is about, or None if it is not.
 
-    Two rules, one per shape of episode. An episode that names files is scoped
-    by those files. An episode with an **empty node set is a claim about the
-    checkout as a whole** — it is not "unknown scope", and it does not
-    therefore intersect everything: read that way, the repo-wide facts would
-    ride along on every sub-high-confidence answer in the repository, which is
-    the noise this gate exists to prevent. Repo-wide episodes are scoped by
-    their subject instead, which the store already defines as the field that
-    discriminates episodes within a kind.
+    An episode that names files is scoped by them. An empty node set is a claim
+    about the whole checkout, not "unknown scope" that intersects everything,
+    so repo-wide episodes are scoped by their subject instead.
     """
     nodes = [n for n in (row.get("nodes") or []) if isinstance(n, str) and n]
     if nodes:
         return sorted({p for p in answer_paths if _covers(nodes, p)}) or None
 
     subject = (row.get("subject") or "").strip()
-    # A subject with no word character (``nested_repos`` uses ``.`` for the
-    # repo root) is not a topic — and ``\b`` around pure punctuation matches in
-    # places no reader would call a mention.
+    # A punctuation-only subject (``.`` for the repo root) is not a topic, and
+    # ``\b`` around punctuation matches nonsense.
     if not re.search(r"\w", subject):
         return None
-    # A subject equal to the repository's own name has no topic scope: every
-    # answer in a repo names the repo, so matching on it is matching on
-    # nothing.
+    # Every answer names its own repo, so that subject scopes nothing.
     if repo_name and subject.casefold() == repo_name.strip().casefold():
         return None
     if not re.search(rf"\b{re.escape(subject.casefold())}\b", haystack):

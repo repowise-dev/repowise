@@ -44,7 +44,7 @@ class NestedLoopWithIoDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={"boundary_kind": hit.detail},
+                    details={"boundary_kind": hit.detail, **hit.loop_facts()},
                     reason=(
                         f"{phrasing} runs inside a nested loop (O(n·m) round-trips); "
                         "batch the inner query or restructure the loops"

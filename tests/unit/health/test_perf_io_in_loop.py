@@ -183,6 +183,123 @@ _CASES = [
         [],
         "sync helpers on an imported I/O pkg (isCancel/create) are not sinks",
     ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Names: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Names.Count - 1 do\n"
+        b"    CopyFile(PChar(Names[I]), PChar('dest'), False);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "bare CopyFile in a data-dependent loop",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Names: TStringList; FS: TFileStream);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Names.Count - 1 do\n"
+        b"    FS.SaveToFile(Names[I]);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "attribute-call stream I/O (SaveToFile) in a loop",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Items: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"    WinExec(PAnsiChar(Items[I]), 0);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "subprocess")],
+        "process spawn per iteration",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(S: string; Items: TStringList);\nvar I: Integer; T: string;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"  begin\n"
+        b"    T := Copy(S, 1, I);\n"
+        b"    DoNormalWork(T);\n"
+        b"  end;\n"
+        b"end;\nend.\n",
+        [],
+        "built-in substring Copy() is not TFile.Copy -- ordinary computation",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open();\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "DB dataset .Open() in a loop, gated by a FireDAC uses-clause import",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, IdHTTP;\nimplementation\n"
+        b"procedure F(Http: TIdHTTP; Urls: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Urls.Count - 1 do\n"
+        b"    Http.Get(Urls[I]);\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "network")],
+        "HTTP client .Get() in a loop, gated by an IdHTTP uses-clause import",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open();\n"
+        b"end;\nend.\n",
+        [],
+        "the same .Open() call with no uses-clause DB evidence is not a sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(L: TStringList; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    L.Delete(0);\n"
+        b"end;\nend.\n",
+        [],
+        "TStringList.Delete is not a DB verb even with no uses evidence",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"    Q.Open;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "parenless .Open (no exprCall node at all) is still a DB sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure F(Items: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Items.Count - 1 do\n"
+        b"    FindClose;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "filesystem")],
+        "parenless bare FindClose is still a filesystem sink",
+    ),
+    (
+        "pascal",
+        b"unit U;\ninterface\nuses SysUtils, FireDAC.Comp.Client;\nimplementation\n"
+        b"procedure F(Q: TFDQuery; Ids: TStringList);\nvar I: Integer;\nbegin\n"
+        b"  for I := 0 to Ids.Count - 1 do\n"
+        b"  begin\n"
+        b"    if I = 0 then Exit;\n"
+        b"    inherited;\n"
+        b"    Q.Open;\n"
+        b"  end;\n"
+        b"end;\nend.\n",
+        [("io_in_loop", "db")],
+        "bare Exit/inherited in the same statement-wrapper shape do not false-fire",
+    ),
 ]
 
 
@@ -275,3 +392,26 @@ def test_perf_findings_score_performance_not_defect():
     assert scores["performance"] < 10.0
     # Every perf finding carries 0 defect-pillar impact.
     assert all(d == 0.0 for d in deductions)
+
+
+@pytest.mark.parametrize(
+    ("header", "chunked"),
+    [
+        ("for start in range(0, len(ids), CHUNK):", True),
+        ("for batch in itertools.batched(ids, 50):", True),
+        ("for start in range(0, len(ids), 1):", False),
+        ("for i in ids:", False),
+    ],
+)
+def test_a_sink_in_a_chunked_loop_carries_the_fact(header: str, chunked: bool):
+    source = (
+        "async def f(client, ids):\n"
+        f"    {header}\n"
+        "        await client.table('t').select('*').execute()\n"
+    ).encode()
+    fc = walk_file("f.py", "python", source)
+    loop_hits = [h for h in fc.perf_hits if h.kind in {"io_in_loop", "serial_await_in_loop"}]
+    assert loop_hits
+    assert all((h.loop is not None and h.loop.chunked) is chunked for h in loop_hits)
+    finding = IoInLoopDetector().detect(_ctx(loop_hits))[0]
+    assert finding.details.get("chunked_iteration", False) is chunked

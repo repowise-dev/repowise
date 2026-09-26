@@ -161,8 +161,9 @@ toward the modules you and your agent ask about most, with no switch needed.
 | **Graph** | File + symbol dependencies across 26 AST-parsed languages, confidence-stamped call resolution, communities, centrality, cycles, and execution flows |
 | **Git** | Hotspots, ownership, co-change, bus factor, and bug-fix history: behavioral signals static analysis cannot see |
 | **Docs** | A wiki for every module and file, rebuilt incrementally with freshness and confidence scoring plus hybrid search |
+| **Documentation drift** | Your own markdown checked against the tree: the claims each document makes, resolved against the graph, and the ones the code refutes |
 | **Decisions** | Architectural rationale mined from five index-time sources plus human and agent capture, each claim traced to evidence |
-| **Code health** | 49 deterministic detectors across defect risk, maintainability, and performance, followed by concrete refactoring plans |
+| **Code health** | 51 deterministic detectors across defect risk, maintainability, and performance, followed by concrete refactoring plans |
 
 The structural wiki needs no model. Model-written prose is an optional upgrade, one
 page or directory at a time. Six of the seven decision sources are deterministic too;
@@ -193,7 +194,7 @@ rewrites noisy commands automatically, shown to you for approval first.
 
 <div align="center">
 <img src=".github/assets/savings.png" alt="repowise Costs dashboard: tokens and dollars saved across distill and the MCP tools" width="100%" />
-<p align="center"><sub>The <strong>Costs</strong> dashboard tallies both savings surfaces, priced at your own agent's model. Example from a week of heavy local use.</sub></p>
+<p align="center"><sub>The <strong>Costs</strong> dashboard tallies both savings surfaces. Every event is priced from the model that produced it, never repriced at whatever you are running today, and the total is a deliberate floor: where the evidence is ambiguous it declines to claim a saving. Example from a week of heavy local use.</sub></p>
 </div>
 
 Full guide: **[docs/agent/DISTILL.md →](docs/agent/DISTILL.md)**
@@ -309,7 +310,7 @@ every file, locates where the risk concentrates, and then names the specific fix
 <img src=".github/assets/health-loop.svg" alt="repowise code-health loop: deterministic markers fan into three signals, the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans your agent executes" width="100%" />
 </div>
 
-Every file is scored 1-10 by **49 deterministic detectors** (McCabe complexity, brain
+Every file is scored 1-10 by **51 deterministic detectors** (McCabe complexity, brain
 methods, LCOM4 cohesion, god classes, native Rabin-Karp clone detection, untested
 hotspots, change entropy, prior-defect history and more), split into three lenses:
 **defect risk**, **maintainability**, and **performance**: static N+1 and I/O-in-loop
@@ -846,7 +847,7 @@ August 2026. Unmarked rows are capability presence, not measurements.</sub>
 | | repowise | CodeScene |
 |---|---|---|
 | Self-hostable, open source | ✅ AGPL-3.0 | ⚠️ on-prem Docker, proprietary |
-| Code health score (1-10) | ✅ 49 detectors, 26 scoring | ✅ 25-30 |
+| Code health score (1-10) | ✅ 51 detectors, 26 scoring | ✅ 25-30 |
 | Brain Method / LCOM4 / god class | ✅ | ✅ |
 | **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
 | **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
@@ -1004,10 +1005,12 @@ repowise risk main..HEAD  # score a branch or PR range for defect risk
 repowise risk -t <file>   # what history says about touching a file
 repowise impacted-tests   # only the tests a diff actually exercises
 repowise dead-code        # unreachable-code report
+repowise doc-drift        # documentation the code no longer supports
 repowise decision list    # architectural decisions
 repowise export --format structurizr  # the architecture as Structurizr DSL, no LLM
 repowise distill pytest   # compact, errors-first, reversible command output
 repowise saved            # tokens and dollars saved by distillation
+repowise savings          # the full agent savings ledger, priced per event
 repowise workspace add    # multi-repo workspace management
 repowise doctor           # check setup, API keys, index drift
 repowise uninstall        # remove what repowise wrote, and say what it left

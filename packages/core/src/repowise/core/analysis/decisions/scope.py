@@ -9,9 +9,28 @@ records to the widest level.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Container, Sequence
 
-__all__ = ["commit_scope_files", "derive_decision_scope", "resolve_module_nodes"]
+from repowise.core.support_paths import file_population
+from repowise.core.test_paths import is_test_related_path
+
+__all__ = [
+    "MAX_GOVERNING_FILES",
+    "NON_BINDING_SCOPE_BASES",
+    "SCOPE_BASIS_FOOTPRINT",
+    "SCOPE_BASIS_PROXIMITY",
+    "SCOPE_BASIS_REPOSITORY",
+    "SCOPE_BASIS_SELECTED",
+    "SCOPE_BASIS_STATED",
+    "bind_scope_files",
+    "binds_to_paths",
+    "commit_scope_basis",
+    "commit_scope_files",
+    "derive_decision_scope",
+    "resolve_module_nodes",
+    "selected_scope_files",
+    "session_scope_basis",
+]
 
 #: Upper bound on the directories one record may claim. A record naming files
 #: across more directories than this is not scoped by its module list anyway —
@@ -27,8 +46,103 @@ _MAX_MODULES = 12
 #: files (17 ``git_archaeology``, 86 ``pr``) carry 1,468 scope entries beyond
 #: it. 20 keeps the p75 record whole and matches the number ``inline_marker``
 #: already caps its graph neighbours at — a different quantity, but reusing the
-#: value avoids a third cap to reason about.
+#: value avoids a third cap to reason about. Also the ceiling on a
+#: session-mined record, through :func:`bind_scope_files`: a decision made in
+#: one conversation is not about every file that conversation happened to open.
 _MAX_FILES = 20
+
+
+#: The basis value marking a scope that is a commit's footprint rather than a
+#: claim about particular files. Stored on the record, read wherever a file is
+#: asked what governs it. Any other value (including the empty default) binds.
+SCOPE_BASIS_FOOTPRINT = "commit_footprint"
+
+#: The basis value marking files a session merely had open around the moment a
+#: decision was stated. A session candidate takes the paths it was near --
+#: the last few touched, plus what the next few events touch -- so the list is
+#: proximity and not a claim, and a decision that spans unrelated parts of the
+#: tree is usually a working rule that the session happened to restate while
+#: editing them.
+SCOPE_BASIS_PROXIMITY = "session_proximity"
+
+#: The basis value for a record whose scope is the repository itself. A
+#: working agreement governs how the work is conducted, so it is true
+#: everywhere and specific nowhere; :data:`AGREEMENT_SCOPE` is the same claim
+#: on the acceptance row.
+SCOPE_BASIS_REPOSITORY = "repository"
+
+#: The basis value marking a commit-derived scope the mining model chose file
+#: by file, rather than the commit's whole footprint. It binds, and the
+#: legacy backfill never touches it, so a selected scope survives the repair
+#: that stamps every pre-selector commit record as a footprint.
+#:
+#: **Measured twice, and the second number is the one to quote.** Offline, on
+#: 43 selections over 29 records, it scored 93% governs and 0% noise against
+#: 27%/18% for the same records' whole commit lists
+#: (``capture-2026-09-19/RESULTS.md``). On the first real index after the
+#: miners' token budget was fixed it scores **71% governs and 3% noise** over a
+#: census of 208 pairs (``tier-2026-09-20/RESULTS.md``).
+#:
+#: So the basis fixed noise and not relevance: what survives is a wide
+#: ``related`` band, files genuinely touched by the change a record describes
+#: where the record is still not a rule about them. It is good enough to offer
+#: an agent as a candidate and not good enough to answer "what governs this
+#: file", which is why ``decision_inject._EVIDENCE_TIERS`` excludes it.
+SCOPE_BASIS_SELECTED = "commit_selected"
+
+#: The basis value marking a scope a person stated: typed at the CLI, written
+#: into the manifest, or confirmed on review. It binds, like the empty default
+#: does; the difference is that the backfill repairs an empty basis and never
+#: touches this one, so a hand-narrowed scope is not re-marked as a footprint
+#: on the next index.
+SCOPE_BASIS_STATED = "stated"
+
+#: Above this many files, a commit-derived list stops being a claim about
+#: files and becomes the footprint of the change it was mined from.
+#:
+#: **Only the fallback path still consults this.** Both commit miners now ask
+#: the model which files each decision is about and store the answer under
+#: :data:`SCOPE_BASIS_SELECTED`, so breadth decides the scope of one case: a
+#: response that did not answer at all, from a provider that has not seen the
+#: prompt. ``backfill_scope_basis`` no longer consults it, because a legacy
+#: list is a commit's footprint at any width. The reasoning below is kept for
+#: the history of the number, not as a description of the live rule.
+#:
+#: The miner read one decision out of one commit body and had no per-file
+#: evidence, so it took the commit's whole list: true about the commit, false
+#: about most of the files in it.
+#:
+#: A breadth rule rather than a relevance one because relevance was tried and
+#: does not work. Overlap between a decision's text and a file's own diff hunk
+#: scores the worst answers highest, since lexical similarity tracks the
+#: subsystem a file sits in and not whether the decision governs it.
+#:
+#: Five, not ten. Ten was set from a sample the rule was then scored on; the
+#: first out-of-sample measurement put it at 49% on topic with 26% outright
+#: noise. Measured over 61 fresh pairs drawn from files and records that
+#: chose no rule, the drop is sharp and sits well below ten:
+#:
+#:     <=2 files   100% on topic,  0% noise
+#:     <=5 files    94% on topic,  0% noise
+#:     <=8 files    68% on topic, 23% noise
+#:     <=10 files   49% on topic, 26% noise
+MAX_GOVERNING_FILES = 5
+
+
+#: Which population a scope entry is ranked under, narrowest claim first. A
+#: decision is about the system, so production code outranks the test that
+#: exercises it, which outranks an example, which outranks the docs and
+#: config files that describe it.
+_POPULATION_RANK = {"production": 0, "test": 1, "example": 2, "doc": 3}
+
+
+def _normalized(files: Sequence[str] | None) -> list[str]:
+    """POSIX-separated, stripped, deduped, in first-seen order."""
+    seen: dict[str, None] = {}
+    for f in files or []:
+        if f and f.strip():
+            seen.setdefault(f.replace("\\", "/").strip(), None)
+    return list(seen)
 
 
 def commit_scope_files(files: Sequence[str] | None) -> list[str]:
@@ -37,8 +151,126 @@ def commit_scope_files(files: Sequence[str] | None) -> list[str]:
     Sorted before truncating so which files survive the cap is reproducible,
     rather than depending on the order git happened to list them in.
     """
-    seen = {f.replace("\\", "/").strip() for f in files or [] if f and f.strip()}
-    return sorted(seen)[:_MAX_FILES]
+    return sorted(_normalized(files))[:_MAX_FILES]
+
+
+def selected_scope_files(
+    chosen: Sequence[str] | None,
+    commit_files: Sequence[str] | None,
+) -> list[str]:
+    """The files a mining model picked, kept only where the commit touched them.
+
+    The model is shown the commit's file list and asked which of those files
+    the decision is about, so a path outside that list is a path it invented.
+    Intersecting rather than trusting is the whole of the validation: the
+    miner has no other way to tell a real path from a plausible one, and a
+    hallucinated path binds a decision to a file nobody ever changed.
+
+    An empty result is a correct and common answer -- roughly one record in
+    six, where the file the decision is about never reached the commit list at
+    all -- and it means the record binds to nothing rather than to the
+    commit's bystanders.
+    """
+    allowed = set(_normalized(commit_files))
+    return sorted(f for f in _normalized(chosen) if f in allowed)[:_MAX_FILES]
+
+
+def commit_scope_basis(files: Sequence[str] | None) -> str:
+    """The scope basis for a record mined from one commit's file list.
+
+    Takes the commit's *whole* list, before :func:`commit_scope_files` caps
+    it, so that a large commit stored as a capped list is still a footprint.
+    """
+    return SCOPE_BASIS_FOOTPRINT if len(_normalized(files)) > MAX_GOVERNING_FILES else ""
+
+
+#: Every basis that answers "these files are not what this record is about".
+#: One set so a new one is added in a single place and every surface honours
+#: it at once.
+NON_BINDING_SCOPE_BASES: frozenset[str] = frozenset(
+    {SCOPE_BASIS_FOOTPRINT, SCOPE_BASIS_PROXIMITY, SCOPE_BASIS_REPOSITORY}
+)
+
+
+def session_scope_basis(files: Sequence[str] | None, *, is_agreement: bool) -> str:
+    """The scope basis for a record mined from a session transcript.
+
+    Session scope is not a footprint -- ``bind_scope_files`` already caps and
+    orders it -- so breadth in files is the wrong measure and does not
+    separate. What separates is whether the files sit together. Measured over
+    32 labelled file/decision pairs: a record whose files share one directory
+    governs them 67% of the time, one spanning two or more governs 19%, and
+    one spanning three or more top-level packages governs none of them.
+
+    That is the same distinction :func:`derive_decision_scope` already draws,
+    so it is drawn with the same rule rather than a second threshold: a
+    session record that is cross-module is a rule the session restated while
+    working, not a claim about the files it was working on.
+    """
+    if is_agreement:
+        return SCOPE_BASIS_REPOSITORY
+    kept = _normalized(files)
+    if len(kept) <= 1:
+        return ""
+    return (
+        SCOPE_BASIS_PROXIMITY
+        if len(resolve_module_nodes(kept)) > 1
+        else ""
+    )
+
+
+def binds_to_paths(scope_basis: str | None) -> bool:
+    """Whether a record with this basis may answer "what governs this path".
+
+    The one predicate every path-scoped surface asks, so the wiki pages, the
+    ``get_why`` lanes, ``get_context``, the decision graph and the health
+    findings agree on which records are specific enough to name a path. A
+    record that fails it keeps its files and its place in repository-wide
+    answers -- search, the overview, a lookup by id.
+
+    Modules are gated with files. A record's module list is
+    :func:`resolve_module_nodes` over the same file list, so it is no better
+    evidenced, and gating one without the other would leave the surfaces
+    reading this column disagreeing with the ones reading the graph.
+    """
+    return scope_basis not in NON_BINDING_SCOPE_BASES
+
+
+def bind_scope_files(
+    files: Sequence[str] | None,
+    indexed: Container[str] | None,
+) -> list[str]:
+    """The entries of *files* the index holds, best claim first.
+
+    *indexed* is the indexed file set — ingestion's ``source_map`` keys, the
+    only thing that has applied gitignore, size, binary and generated-file
+    rules. Validating against it rather than against the tree is what keeps a
+    plan doc, a scratchpad script, or a file belonging to a sibling checkout
+    out of a scope: those resolve on disk and are still not this codebase.
+    ``None`` means no set was supplied and nothing is filtered, so a caller
+    that cannot reach one keeps its previous behaviour. An empty set is the
+    same case and callers pass ``None`` for it, because filtering everything
+    away is never the right reading of a missing set.
+
+    Ceiling: ``source_map`` is keyed on the files that parsed, so a file that
+    was traversed and then failed to read or parse is dropped from a scope
+    naming it. That is the whole of the gap — a file with no parser never
+    reaches the traverser's own ``FileInfo`` either — and it is worth the
+    narrowing, because ``source_map`` is the one set both the full and the
+    incremental pipeline already carry to this point.
+
+    Order is the claim quality: population first, then the order the caller
+    supplied, which is where a producer that knows which paths were edited
+    puts them first. Stable, so both rankings survive together.
+    """
+    kept = _normalized(files)
+    if indexed is not None:
+        kept = [f for f in kept if f in indexed]
+    ranked = sorted(
+        kept,
+        key=lambda f: _POPULATION_RANK[file_population(f, is_test=is_test_related_path(f))],
+    )
+    return ranked[:_MAX_FILES]
 
 
 def resolve_module_nodes(files: Sequence[str] | None) -> list[str]:

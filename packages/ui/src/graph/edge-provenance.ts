@@ -66,6 +66,11 @@ const ORIGINS = {
     because: "a framework decorator retyped the receiver, and that class is in this file",
     tier: "direct",
   },
+  receiver_extension_same_file: {
+    label: "Extension method, same file",
+    because: "an extension method in this file extends the receiver's type",
+    tier: "direct",
+  },
   return_type_same_file: {
     label: "Return type, same file",
     because: "the inner call's declared return type is a class in this file",
@@ -128,6 +133,11 @@ const ORIGINS = {
     because: "the receiver's declared type is a class in the same package",
     tier: "scoped",
   },
+  receiver_extension_import: {
+    label: "Extension method, imported",
+    because: "an imported file extends the receiver's type with this method",
+    tier: "scoped",
+  },
   receiver_typed_import: {
     label: "Inferred type, imported",
     because: "the receiver's declared type was found in an imported file",
@@ -178,6 +188,11 @@ const ORIGINS = {
   receiver_global: {
     label: "Name match",
     because: "that class and method pair exists somewhere in the repo",
+    tier: "name_match",
+  },
+  receiver_extension_global: {
+    label: "Name match",
+    because: "one extension method in the repo extends this type with this name",
     tier: "name_match",
   },
   receiver_typed_global: {

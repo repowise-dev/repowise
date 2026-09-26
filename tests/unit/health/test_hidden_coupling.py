@@ -52,7 +52,6 @@ def _ctx(
         nloc=120,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta={
             "commit_count_total": self_commits,
             "co_change_partners_json": _partners(
@@ -130,7 +129,6 @@ def test_unlabelled_partner_is_not_a_finding():
         nloc=120,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta={
             "commit_count_total": 20,
             "co_change_partners_json": json.dumps(
@@ -178,7 +176,6 @@ def test_essential_tier_empty_partners_short_circuits():
         nloc=120,
         has_test_file=False,
         module=None,
-        function_metrics={},
         git_meta={"commit_count_total": 100, "co_change_partners_json": "[]"},
         dependents_count=0,
     )

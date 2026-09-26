@@ -14,7 +14,14 @@ import pytest
 
 from repowise.cli.agent_adapters import claude_code as claude_module
 from repowise.cli.agent_adapters import codex as codex_module
-from repowise.cli.agent_adapters.base import RewriteResult, unmatched_tool_names
+from repowise.cli.agent_adapters.base import (
+    SHELL_POSIX,
+    SHELL_POWERSHELL,
+    RewriteResult,
+    dialect_for_hook_source,
+    hook_source_for,
+    unmatched_tool_names,
+)
 from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
 from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER, CodexAdapter
 from repowise.cli.editor_integrations import claude_config, codex_config
@@ -34,6 +41,7 @@ from repowise.cli.editor_integrations.codex_config import (
     remove_agents_md_distill_section,
     uninstall_codex_rewrite_hook,
 )
+from repowise.cli.rewrite_hook import decide
 
 
 @pytest.fixture
@@ -743,3 +751,53 @@ class TestAgentsMdDistillSection:
     def test_remove_when_absent(self, tmp_path) -> None:
         assert remove_agents_md_distill_section(tmp_path) is False
         assert agents_md_distill_section_installed(tmp_path) is False
+
+
+class TestSourceCarriesTheDialect:
+    """The ``--source`` label is how ``repowise distill`` learns which shell to
+    run a command in, so the two vocabularies have to stay inverse.
+
+    This is not a style point. ``_decide`` writes the label from the dialect
+    and ``distill_cmd`` reads the dialect back out of the label to pick an
+    interpreter, in a different process. A rename on one side alone would not
+    fail — it would run a POSIX command line in cmd.exe and report success.
+    """
+
+    @pytest.mark.parametrize("dialect", [SHELL_POSIX, SHELL_POWERSHELL])
+    def test_the_label_round_trips_to_the_dialect_that_wrote_it(self, dialect) -> None:
+        assert dialect_for_hook_source(hook_source_for(dialect)) == dialect
+
+    def test_every_source_the_hook_can_emit_names_a_dialect(self, tmp_path) -> None:
+        """Pinned through ``decide`` rather than the helper, so the assertion
+        covers the string the agent actually receives."""
+        (tmp_path / ".repowise").mkdir()
+        for dialect in (SHELL_POSIX, SHELL_POWERSHELL):
+            result = decide("git status", str(tmp_path), dialect)
+            assert result is not None
+            source = result.command.split("--source ", 1)[1].split(None, 1)[0]
+            assert dialect_for_hook_source(source) == dialect
+
+    def test_an_adapter_supplied_source_names_no_dialect(self) -> None:
+        """Codex sets its own ``savings_source``, and ``hook-codex`` says
+        nothing about a shell. None is the honest answer, and every caller
+        reads it as the host default, so an unknown label can never pick an
+        interpreter."""
+        assert CodexAdapter.savings_source == "hook-codex"
+        assert dialect_for_hook_source(CodexAdapter.savings_source) is None
+        assert dialect_for_hook_source("cli") is None
+
+    def test_an_older_distill_still_understands_what_the_hook_writes(self, tmp_path) -> None:
+        """Why the dialect rides on ``--source`` instead of a flag of its own.
+
+        ``distill_command`` takes ``ignore_unknown_options`` with
+        ``allow_interspersed_args=False``, which puts an unrecognized option
+        at the *front of the wrapped command* — so a flag an older build did
+        not know would be run as the program name and the agent's command
+        would never execute. Every option the hook emits must therefore be one
+        that has been there all along.
+        """
+        (tmp_path / ".repowise").mkdir()
+        result = decide("ls src && git diff a.ts", str(tmp_path), SHELL_POSIX)
+        assert result is not None
+        options = [tok for tok in result.command.split() if tok.startswith("--")]
+        assert options == ["--source"]

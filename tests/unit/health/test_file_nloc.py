@@ -90,7 +90,7 @@ def test_health_metric_nloc_uses_file_nloc():
     metric, _, _ = HealthAnalyzer(graph=None)._evaluate_file(
         pf,
         fcx,
-        path_basenames={"route.js"},
+        paired_tests=set(),
         package_roots=set(),
         disabled=[],
         dup_report=DuplicationReport(),

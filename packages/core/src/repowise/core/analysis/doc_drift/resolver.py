@@ -50,6 +50,12 @@ class Resolution:
     origin: str = ""
     """Set only on ``MISSING``; names the strategy that concluded it, which is
     what carries the confidence."""
+    resolved_target: str = ""
+    """Set only on ``RESOLVED``, and only when the reference names a concrete
+    repository file: the path it resolved to. Not the same as ``ref.target``,
+    which is what the document wrote --- a link joined relative to its own
+    document resolves elsewhere. The reverse view needs the resolved path, and
+    this is where it was already computed."""
 
     @property
     def confidence(self) -> float:
@@ -226,11 +232,11 @@ def _exists(idx: RepoIndex, target: str) -> bool:
 def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resolution:
     target = ref.target
     if _exists(idx, target):
-        return Resolution(ref, DriftVerdict.RESOLVED, "exact")
+        return Resolution(ref, DriftVerdict.RESOLVED, "exact", resolved_target=target)
 
     relative = _join_relative(ref.doc_path, target)
     if relative != target and _exists(idx, relative):
-        return Resolution(ref, DriftVerdict.RESOLVED, "relative-to-doc")
+        return Resolution(ref, DriftVerdict.RESOLVED, "relative-to-doc", resolved_target=relative)
 
     # Anchoring. A reference is evidence about THIS repository only when it
     # carries a separator and its first segment names a directory the
@@ -294,7 +300,7 @@ def _resolve_anchor(idx: RepoIndex, ref: DocReference) -> Resolution:
     if target not in idx._doc_text:
         return Resolution(ref, DriftVerdict.UNCHECKABLE, "host-doc-unread")
     if github_slug(frag) in idx.doc_anchors(target):
-        return Resolution(ref, DriftVerdict.RESOLVED, "heading")
+        return Resolution(ref, DriftVerdict.RESOLVED, "heading", resolved_target=target)
     return Resolution(ref, DriftVerdict.MISSING, "no-heading", "anchor_no_heading")
 
 

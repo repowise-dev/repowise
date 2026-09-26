@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from repowise.core.cancellation import (
     get_active_token,
     set_active_token,
 )
-from repowise.core.docs_mode import DocsMode, docs_mode_state_fields, resolve_docs_mode
+from repowise.core.docs_mode import DocsMode
 from repowise.core.persistence.crud import (
     get_generation_job,
     get_repository,
@@ -33,17 +34,36 @@ from repowise.core.pipeline import persist_pipeline_result, run_pipeline
 from repowise.core.pipeline.modes import OrchestratorMode
 from repowise.server.job_events import JobEventBuffer, create_event_buffer
 
+# The ``noqa: F401`` names live in the sibling job modules and are re-exported
+# because the repos router and the tests import them from here.
+from repowise.server.job_generate import (  # noqa: F401
+    _build_generate_intent,
+    _build_generation_config,
+    _effective_cascade,
+    _ranked_coverage_pct,
+    _resolve_generate_scope,
+    _run_generate_job,
+)
+from repowise.server.job_incremental import (
+    _incremental_page_regen,
+    _plan_incremental_page_regen,  # noqa: F401
+)
+from repowise.server.job_records import _complete_job_row, _finalize_job_status
+from repowise.server.job_state import (
+    _load_state,  # noqa: F401
+    _persist_initial_index_state,
+    _stamp_last_sync_commit,
+)
+
 logger = structlog.get_logger(__name__)
 
 
 def _repo_exclude_patterns(repo: Any, repo_path: str) -> list[str]:
     """Collect a server job's exclude patterns from both config sources.
 
-    Web-managed repos store settings in ``Repository.settings_json``; CLI and
-    ``repowise init`` workflows write them to ``.repowise/config.yaml``. Server
-    jobs should honor either, so we merge both — order-preserving and
-    de-duplicated, settings first. A missing or malformed source is ignored
-    rather than fatal.
+    ``Repository.settings_json`` (web UI) and ``.repowise/config.yaml`` (CLI),
+    merged in order, de-duplicated, settings first. A missing or malformed
+    source is ignored.
     """
     patterns: list[str] = []
 
@@ -62,8 +82,7 @@ def _repo_exclude_patterns(repo: Any, repo_path: str) -> list[str]:
     except (TypeError, ValueError):
         logger.debug("repo_settings_json_unparsable", repo_path=repo_path)
 
-    # Source 2: repo-local .repowise/config.yaml (CLI/init). Reuse the shared
-    # loader so we inherit its YAML + flat-format fallback handling.
+    # Source 2: repo-local .repowise/config.yaml (CLI/init), via the shared loader.
     try:
         from repowise.core.repo_config import load_repo_config
 
@@ -79,11 +98,9 @@ def _repo_exclude_patterns(repo: Any, repo_path: str) -> list[str]:
 def _repo_wiki_style(repo: Any, repo_path: str) -> str:
     """Resolve a server job's effective wiki style from both config sources.
 
-    Web-managed repos store the style in ``Repository.settings_json`` (set via the
-    PATCH endpoint); CLI/``repowise init`` write it to ``.repowise/config.yaml``.
-    Settings take precedence (the web UI is the more deliberate, recent signal),
-    then config.yaml, then the default. Unknown values resolve to the default
-    rather than failing the job.
+    ``Repository.settings_json`` wins (the web UI is the more deliberate
+    signal), then ``.repowise/config.yaml``, then the default. Unknown values
+    resolve to the default rather than failing the job.
     """
     from repowise.core.generation.styles import resolve_style
 
@@ -108,9 +125,7 @@ def _repo_wiki_style(repo: Any, repo_path: str) -> str:
     return resolve_style(style, repo_path=repo_path).name
 
 
-# Valid job execution modes handled by execute_job.
-# NOTE: "generate" (HTTP repowise generate) and "single_page" (scoped page resync)
-# are dispatched to _run_generate_job below, so validation must accept them upfront.
+# Job modes execute_job handles; "generate" and "single_page" go to _run_generate_job.
 VALID_JOB_MODES: set[str] = {
     "sync",
     "full_resync",
@@ -159,11 +174,8 @@ class JobProgressCallback:
         self._pending_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         # Batch DB writes: flush every N items to avoid per-item overhead
         self._flush_interval = 5
-        # Time-based throttling: hold off issuing a new write while one is
-        # already in flight or one fired in the last second. Without this,
-        # a tight phase (e.g. 1000 fast items) would create N concurrent
-        # writes that all contend with the main pipeline's bulk persist
-        # transaction, producing "database is locked" errors.
+        # At most one write in flight and one per second, or a fast phase
+        # contends with the pipeline's persist ("database is locked").
         self._min_write_interval_s = 1.0
         self._last_write_at: float = 0.0
         self._inflight: bool = False
@@ -176,8 +188,7 @@ class JobProgressCallback:
         self._completed = 0
         self._total = total
         self._pending_flush = 0
-        # Force a write at phase boundaries so the UI label updates promptly
-        # even if a throttled write was just issued.
+        # Force a write so the UI's phase label updates promptly.
         self._sync_job_status(force=True)
         logger.info("job_phase_start", job_id=self._job_id, phase=phase, total=total)
 
@@ -196,10 +207,8 @@ class JobProgressCallback:
     def _sync_job_status(self, *, force: bool = False) -> None:
         """Fire-and-forget progress update in the current event loop.
 
-        Tracks task references to allow cancellation before final status.
-        Throttled: skipped if another write is already in flight, or if the
-        last write was less than ``_min_write_interval_s`` ago — unless
-        ``force=True`` (used at phase boundaries).
+        Throttled unless ``force=True``: skipped while a write is in flight or
+        within ``_min_write_interval_s`` of the last.
         """
         if self._stopped:
             return
@@ -229,13 +238,9 @@ class JobProgressCallback:
     async def drain_and_stop(self) -> None:
         """Wait for in-flight progress updates to finish, then prevent new ones.
 
-        Must be called before writing the final job status to avoid a race
-        where a late progress update overwrites ``completed`` with ``running``.
-
-        We do NOT cancel tasks — a cancelled task whose DB write is already
-        past the ``await`` will leave the session in a dirty state.  Instead
-        we set the stopped flag (preventing new tasks) and let existing ones
-        finish naturally.
+        Call before the final status write, or a late update can overwrite
+        ``completed`` with ``running``. Tasks are not cancelled: one cancelled
+        mid-write leaves the session dirty.
         """
         self._stopped = True
         if self._pending_tasks:
@@ -250,13 +255,11 @@ class JobProgressCallback:
                     self._job_id,
                     "running",
                     completed_pages=self._completed,
-                    total_pages=self._total,
+                    total_pages=self._total if self._total is not None else 0,
                     current_level=_PHASE_LEVELS.get(self._phase, 0),
                 )
         except Exception as exc:
-            # Lock contention with the main pipeline transaction is recoverable —
-            # the next throttled write will pick up the latest counts. Log a
-            # brief one-liner instead of a multi-page traceback.
+            # Lock contention is recoverable: the next write carries the counts.
             msg = str(exc)
             if "database is locked" in msg or "OperationalError" in type(exc).__name__:
                 logger.debug(
@@ -277,6 +280,81 @@ def get_cancel_tokens(app_state: Any) -> dict[str, CancellationToken]:
     return tokens
 
 
+@dataclass(frozen=True)
+class _JobSpec:
+    """What a job row and its repository ask for, read in one session."""
+
+    job_id: str
+    repo_id: str
+    repo_path: str
+    config: dict
+    mode: str
+    exclude_patterns: list[str]
+    wiki_style: str
+
+    @property
+    def is_full_resync(self) -> bool:
+        return self.mode == "full_resync"
+
+    @property
+    def is_initial_index(self) -> bool:
+        return self.mode == "initial_index"
+
+    @property
+    def is_index_only(self) -> bool:
+        return self.mode == "index_only"
+
+
+@dataclass
+class _JobRun:
+    """A started job plus the resources every step of it writes through."""
+
+    spec: _JobSpec
+    session_factory: Any
+    fts: Any
+    vector_store: Any
+    llm_client: Any
+    docs_skip_reason: str | None
+    progress: JobProgressCallback
+    start: float
+
+
+@dataclass(frozen=True)
+class _DocsPlan:
+    """Which wiki an index job writes: model prose, templates, or none."""
+
+    llm: bool
+    deterministic: bool
+
+    @classmethod
+    def for_job(cls, spec: _JobSpec, llm_client: Any) -> _DocsPlan:
+        want_docs = bool(spec.config.get("generate_docs", True))
+        return cls(
+            # LLM docs: an initial index or full resync with a provider configured.
+            llm=(
+                (spec.is_full_resync or spec.is_initial_index)
+                and llm_client is not None
+                and want_docs
+            ),
+            # Keyless first index: a template wiki, as `repowise init --index-only`
+            # renders. Initial index only, so a keyless full_resync never
+            # overwrites a model-written wiki with templates.
+            deterministic=spec.is_initial_index and llm_client is None and want_docs,
+        )
+
+    @property
+    def generate(self) -> bool:
+        return self.llm or self.deterministic
+
+    @property
+    def pipeline_mode(self) -> OrchestratorMode:
+        return OrchestratorMode.DETERMINISTIC if self.deterministic else OrchestratorMode.STANDARD
+
+    @property
+    def docs_mode(self) -> DocsMode:
+        return "llm" if self.llm else "deterministic" if self.deterministic else "none"
+
+
 async def execute_job(
     job_id: str,
     app_state: Any,
@@ -284,372 +362,61 @@ async def execute_job(
 ) -> None:
     """Execute a pending pipeline job in the background.
 
-    This is the single entry point called by the endpoint via
-    ``asyncio.create_task()``.  It:
-
-    1. Marks the job as ``running``
-    2. Resolves the LLM provider from server config
-    3. Runs ``run_pipeline()``
-    4. Persists all results via ``persist_pipeline_result()``
-    5. Marks the job as ``completed`` (or ``failed`` on error,
-       ``cancelled`` on a user cancel)
+    The single entry point the endpoint starts with ``asyncio.create_task()``.
+    Marks the job running, runs and persists the pipeline, then marks it
+    ``completed``, ``failed`` or ``cancelled``.
 
     Job modes (``config_json.mode``): ``sync`` (default) indexes then
     regenerates only changed pages; ``full_resync`` regenerates all docs;
-    ``initial_index`` is the first-ever index of a repo triggered from the
-    API — full pipeline with docs plus the ``state.json``/``config.yaml``
-    baseline the CLI writes at ``repowise init``; ``index_only`` refreshes
-    the index/analysis without any LLM work.
+    ``initial_index`` is a first API-triggered index, also writing the
+    baseline ``repowise init`` writes; ``index_only`` does no LLM work.
 
-    In workspace mode, each repo has its own ``wiki.db`` and the route
-    handler that created this job committed it to a per-repo session
-    factory (``app_state.workspace_sessions[repo_id]``), not the primary
-    one. The caller must pass that same factory in
-    ``session_factory_override`` so we read from the same database — else
-    we'd see "job_not_found" and the row would stay pending forever.
+    In workspace mode, pass the per-repo session factory the route committed
+    the job to as ``session_factory_override``, or the job is never found.
     """
     start = time.monotonic()
     progress: JobProgressCallback | None = None
     session_factory = None
 
-    # Cooperative cancellation: the cancel endpoint flips this token (which
-    # unwinds the CPU-bound loops that poll check_cancelled) and cancels the
-    # asyncio task (which interrupts the awaits in between). The core token
-    # slot is a process global, so when two jobs overlap the later one's token
-    # occupies it and the earlier job's CPU loops poll the wrong token — its
-    # async awaits still cancel, only an in-flight to_thread worker runs on.
-    # Acceptable for the single-active-job norm; worker isolation is the
-    # upgrade path.
+    # Cancel flips this token (for CPU loops) and cancels the task (for awaits).
+    # The token slot is process-global, so with overlapping jobs the earlier
+    # one's thread work runs on. Fine for one active job; isolate workers if not.
     cancel_token = CancellationToken()
     get_cancel_tokens(app_state)[job_id] = cancel_token
     set_active_token(cancel_token)
 
     try:
-        # Resolve required app_state attributes inside the try block so a
-        # missing attribute (e.g., partially-initialised app_state during
-        # development hot-reload) gets recorded as a job failure instead of
-        # leaving the row stuck in 'pending' forever.
+        # Inside the try, so a missing app_state attribute fails the job
+        # instead of leaving it pending.
         session_factory = session_factory_override or app_state.session_factory
         fts = app_state.fts
 
-        # ---- Fetch job + repo metadata ------------------------------------
-        async with get_session(session_factory) as session:
-            job = await get_generation_job(session, job_id)
-            if job is None:
-                logger.error("job_not_found", job_id=job_id)
-                return
+        spec = await _start_job(session_factory, job_id)
+        if spec is None:
+            return
+        vector_store = await _resolve_job_vector_store(app_state, spec)
+        logger.info("job_started", job_id=job_id, repo_path=spec.repo_path, mode=spec.mode)
+        llm_client, docs_skip_reason = _resolve_llm_client(spec)
 
-            repo = await get_repository(session, job.repository_id)
-            if repo is None:
-                logger.error("repo_not_found", job_id=job_id, repo_id=job.repository_id)
-                await update_job_status(
-                    session, job_id, "failed", error_message="Repository not found"
-                )
-                return
-
-            repo_path = repo.local_path
-            repo_id = repo.id
-            # Resolve excludes while ``repo`` is still session-attached. Every
-            # job entry point flows through here, so this covers them all.
-            exclude_patterns = _repo_exclude_patterns(repo, repo_path)
-            # Resolve the wiki style while ``repo`` is still session-attached.
-            wiki_style = _repo_wiki_style(repo, repo_path)
-            config = json.loads(job.config_json) if job.config_json else {}
-            mode = str(config.get("mode") or "sync")
-            if mode not in VALID_JOB_MODES:
-                valid_str = ", ".join(sorted(VALID_JOB_MODES))
-                raise ValueError(
-                    f"Invalid job mode '{mode}'. Expected one of: {valid_str}"
-                )
-
-            is_full_resync = mode == "full_resync"
-            is_initial_index = mode == "initial_index"
-            is_index_only = mode == "index_only"
-
-            # Mark running
-            await update_job_status(session, job_id, "running")
-
-        # Vector writes and deletes must follow the repository, just like its
-        # routed SQL session. This opens/creates <repo>/.repowise/lancedb and
-        # caches it by repo id; the global primary store is only a fallback for
-        # partially initialized development app states.
-        from repowise.server.search_helpers import resolve_repo_vector_store
-
-        vector_store = await resolve_repo_vector_store(
-            app_state,
-            repo_id,
-            repo_path=repo_path,
-            create=True,
-        )
-        if vector_store is None:
-            vector_store = app_state.vector_store
-
-        logger.info("job_started", job_id=job_id, repo_path=repo_path, mode=mode)
-
-        # ---- Resolve LLM provider -----------------------------------------
-        llm_client = None
-        docs_skip_reason: str | None = None
-        if not is_index_only:
-            try:
-                from repowise.server.provider_config import get_chat_provider_instance
-
-                # Pass the repo id *and* path so the job resolves exactly what
-                # the UI's provider picker chose. The picker persists its choice
-                # per repo, under ``repos[repo_id]`` — the most specific step in
-                # the resolver and the only one that carries a deliberate user
-                # decision. Resolving on path alone skipped it entirely, so a
-                # repo whose settings named a provider still fell through to the
-                # auto-detect step and indexed with whatever it guessed.
-                llm_client = get_chat_provider_instance(repo_path=repo_path, repo_id=repo_id)
-            except Exception as exc:
-                docs_skip_reason = f"no provider configured: {exc}"
-                logger.warning("no_provider_configured", error=str(exc))
-                # Continue without LLM — ingestion + analysis still work
-
-        # ---- Run pipeline --------------------------------------------------
         events = create_event_buffer(app_state, job_id)
         progress = JobProgressCallback(job_id, session_factory, events)
-
-        # ---- Scoped generation mode ---------------------------------------
-        # `repowise generate` over HTTP: write an explicit subset of pages via
-        # the shared core engine, not a full re-index. `single_page` is the
-        # legacy per-page regenerate alias for the same path.
-        if mode in ("generate", "single_page"):
-            if llm_client is None:
-                raise RuntimeError(
-                    docs_skip_reason or "No LLM provider is configured for this repository."
-                )
-            await _run_generate_job(
-                job_id=job_id,
-                repo_id=repo_id,
-                repo_path=Path(repo_path),
-                config=config,
-                session_factory=session_factory,
-                provider=llm_client,
-                vector_store=vector_store,
-                fts=fts,
-                progress=progress,
-                exclude_patterns=exclude_patterns or [],
-                wiki_style=wiki_style,
-                start=start,
-            )
-            return
-
-        want_docs = bool(config.get("generate_docs", True))
-        # LLM docs: an initial index or full resync with a provider configured.
-        generate_docs_llm = (
-            (is_full_resync or is_initial_index) and llm_client is not None and want_docs
-        )
-        # Keyless deterministic fallback: a first index of a repo with NO
-        # provider still renders a complete template wiki (no model, no key, no
-        # cost), exactly like `repowise init --index-only`, so the repo reads as
-        # a real, upgradable wiki in the web UI rather than an empty index.
-        # Scoped to initial_index: a keyless full_resync of a model-written wiki
-        # must not overwrite every page with a template (and full_resync writes
-        # no docs_mode here anyway).
-        deterministic_docs = is_initial_index and llm_client is None and want_docs
-        generate_docs = generate_docs_llm or deterministic_docs
-        pipeline_mode = (
-            OrchestratorMode.DETERMINISTIC if deterministic_docs else OrchestratorMode.STANDARD
-        )
-
-        if is_initial_index:
-            # First index of an API-registered repo: make sure the repo-local
-            # data directory exists before the pipeline writes artifacts.
-            (Path(repo_path) / ".repowise").mkdir(parents=True, exist_ok=True)
-            if deterministic_docs:
-                progress.on_message(
-                    "info",
-                    "No LLM provider configured; rendering a template wiki from the "
-                    "code's structure (no model, no cost). Configure a provider and "
-                    "run a full resync to write the wiki with a model.",
-                )
-
-        result = await run_pipeline(
-            Path(repo_path),
-            generate_docs=generate_docs,
-            llm_client=llm_client,
+        run = _JobRun(
+            spec=spec,
+            session_factory=session_factory,
+            fts=fts,
             vector_store=vector_store,
+            llm_client=llm_client,
+            docs_skip_reason=docs_skip_reason,
             progress=progress,
-            exclude_patterns=exclude_patterns or None,
-            wiki_style=wiki_style,
-            mode=pipeline_mode,
+            start=start,
         )
-
-        # ---- Incremental page regeneration for sync mode ------------------
-        # Sync runs run_pipeline(generate_docs=False) for the full index,
-        # then regenerates only the wiki pages affected by recent changes.
-        # This keeps docs fresh without the cost of a full re-index.
-        incremental_pages: list = []
-        if mode == "sync" and llm_client is not None:
-            # D3: hand the incremental regen the vector store (so re-rendered
-            # pages are re-embedded, not silently dropped from semantic search)
-            # and the prior pages (so an unchanged page whose prompt still hashes
-            # the same is reused, not re-billed on every sync).
-            from repowise.core.persistence import load_prior_pages
-
-            async with get_session(session_factory) as session:
-                prior_pages = await load_prior_pages(session, repo_id)
-            incremental_pages = await _incremental_page_regen(
-                Path(repo_path),
-                result,
-                llm_client,
-                config,
-                progress,
-                repo_wiki_style=wiki_style,
-                vector_store=vector_store,
-                prior_pages=prior_pages,
-                session_factory=session_factory,
-                repo_id=repo_id,
-            )
-
-        # ---- Persist results -----------------------------------------------
-        async with get_session(session_factory) as session:
-            swept_page_ids = await persist_pipeline_result(result, session, repo_id)
-
-            # Persist incrementally regenerated pages (batched: one SELECT +
-            # one flush instead of a round-trip per page on the hosted DB).
-            if incremental_pages:
-                from repowise.core.persistence import upsert_pages_from_generated
-
-                await upsert_pages_from_generated(session, incremental_pages, repo_id)
-
-                # These pages were generated from a changed-file subset, so
-                # they carry the placement a partial set could work out, which
-                # is none. They land after persist_pipeline_result already
-                # rebuilt the tree, so rebuild again or they stay unplaced.
-                from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
-
-                await rebuild_page_tree(session, repo_id)
-
-            # Drop swept pages from the vector store *before* the SQL session
-            # commits. The vector store is a separate engine/file (pgvector DB,
-            # LanceDB dir, or in-memory), so there is no SQLite write-lock
-            # conflict and the idempotent delete leaves the durable SQL commit
-            # last: an interrupted run self-heals (embedding already gone, SQL
-            # rows follow on commit).
-            if swept_page_ids and vector_store is not None:
-                await vector_store.delete_many(swept_page_ids)
-
-        # FTS deletes/indexing run after the session closes: the FTS index can
-        # share the SQLite file with the session, so writing it while the
-        # session holds a write lock raises "database is locked". The swept-id
-        # delete is idempotent (orphan FTS rows only) and must stay here.
-        all_pages = (result.generated_pages or []) + incremental_pages
-        if fts is not None and swept_page_ids:
-            await fts.delete_many(swept_page_ids)
-        if fts is not None and all_pages:
-            for page in all_pages:
-                await fts.index(
-                    page.page_id,
-                    page.title,
-                    page.content,
-                    summary=page.summary,
-                    target_path=page.target_path,
-                )
-
-        # ---- Mark completed ------------------------------------------------
-        # Stop progress updates before writing final status to prevent a
-        # late "running" update from overwriting "completed".
-        await progress.drain_and_stop()
-
-        elapsed = time.monotonic() - start
-        total_input = sum(p.input_tokens for p in all_pages)
-        total_output = sum(p.output_tokens for p in all_pages)
-        from repowise.core.generation.models import count_stub_fallbacks
-
-        pages_generated = len(all_pages)
-        # A stub the generator put up for a failed provider call has a row but
-        # no prose. The hosted UI reads this job row, so counting it as
-        # completed is what would let an outage look like a clean run.
-        stub_fallbacks = count_stub_fallbacks(all_pages)
-
-        async with get_session(session_factory) as session:
-            job = await get_generation_job(session, job_id)
-            # Store summary in config for the frontend to display
-            final_config = config.copy()
-            final_config.update(
-                {
-                    "total_input_tokens": total_input,
-                    "total_output_tokens": total_output,
-                    "elapsed_seconds": round(elapsed, 1),
-                    "file_count": result.file_count,
-                    "symbol_count": result.symbol_count,
-                    "pages_generated": pages_generated,
-                }
-            )
-            if job is not None:
-                job.config_json = json.dumps(final_config)
-
-            await update_job_status(
-                session,
-                job_id,
-                "completed",
-                completed_pages=(
-                    pages_generated - stub_fallbacks if pages_generated else result.file_count
-                ),
-                failed_pages=stub_fallbacks,
-                total_pages=pages_generated if pages_generated else result.file_count,
-            )
-
-        # Update state.json so CLI incremental updates know the new baseline.
-        # An initial index also persists the full baseline (docs flags, run
-        # mode, config) that `repowise init` would have written.
-        try:
-            if is_initial_index:
-                await asyncio.to_thread(
-                    _persist_initial_index_state,
-                    Path(repo_path),
-                    llm_client=llm_client,
-                    # With a provider the pages are model-written ("llm"); with
-                    # none they are rendered from templates ("deterministic");
-                    # only a run that asked for no docs ends up with "none".
-                    docs_mode=(
-                        "llm"
-                        if generate_docs_llm
-                        else "deterministic"
-                        if deterministic_docs
-                        else "none"
-                    ),
-                    docs_skip_reason=docs_skip_reason,
-                    total_pages=len(all_pages),
-                    wiki_style=wiki_style,
-                    exclude_patterns=exclude_patterns,
-                )
-            else:
-                await asyncio.to_thread(_stamp_last_sync_commit, Path(repo_path))
-        except Exception:
-            logger.debug("state_json_update_failed", job_id=job_id, exc_info=True)
-
-        # Hot-reload cross-repo enricher if available (workspace mode)
-        try:
-            enricher = getattr(app_state, "cross_repo_enricher", None)
-            if enricher is not None and hasattr(enricher, "reload"):
-                enricher.reload()
-                # Imported here because a single-repo server never gets this
-                # far: the contract map and the consumer indexes the join
-                # reads change together, so a reload of one invalidates both.
-                from repowise.server.mcp_server._test_impact import (
-                    close_test_impact_indexes,
-                )
-
-                await close_test_impact_indexes()
-        except Exception:
-            logger.debug("enricher_reload_failed", job_id=job_id, exc_info=True)
-
-        logger.info(
-            "job_completed",
-            job_id=job_id,
-            elapsed=round(elapsed, 1),
-            files=result.file_count,
-            symbols=result.symbol_count,
-            pages=pages_generated,
-        )
+        if spec.mode in ("generate", "single_page"):
+            await _run_scoped_generation(run)
+        else:
+            await _run_index_job(run, app_state)
 
     except (PipelineCancelled, asyncio.CancelledError):
-        # User-requested cancel: the endpoint flipped our token and/or
-        # cancelled the task. Record the terminal state and swallow — this is
-        # the top of a background task, nothing above us awaits the result.
+        # Record and swallow: nothing awaits a background task's result.
         logger.info("job_cancelled", job_id=job_id)
         await _finalize_job_status(
             app_state,
@@ -671,680 +438,314 @@ async def execute_job(
         )
     finally:
         get_cancel_tokens(app_state).pop(job_id, None)
-        # Disarm only if the global slot still holds our token; a later job
-        # may have replaced it, and its token must not be clobbered. Reset to
-        # None rather than the captured previous token — that one may belong
-        # to a job that already finished (possibly cancelled), and re-arming
-        # it would poison the next check_cancelled() poll.
+        # Disarm only our own token, and to None: a previous token may belong
+        # to a finished (cancelled) job and would poison the next poll.
         if get_active_token() is cancel_token:
             set_active_token(None)
 
 
-async def _finalize_job_status(
-    app_state: Any,
-    session_factory: Any,
-    progress: JobProgressCallback | None,
-    job_id: str,
-    *,
-    status: str,
-    error_message: str,
-) -> None:
-    """Best-effort terminal status write shared by the failure and cancel paths.
+async def _start_job(session_factory: Any, job_id: str) -> _JobSpec | None:
+    """Read the job and its repository, validate the mode, and mark it running.
 
-    Drains in-flight progress updates first so a late fire-and-forget write
-    can't overwrite the terminal status with "running". Falls back to the
-    app-level session factory when the job's own factory was never resolved,
-    so the row never stays stuck in pending.
+    ``None`` means there is nothing to run; a missing repository is recorded
+    as a failure on the job row first.
     """
-    if progress is not None:
-        try:
-            await progress.drain_and_stop()
-        except Exception:
-            logger.debug("drain_failed_on_error_path", job_id=job_id, exc_info=True)
-    recovery_factory = session_factory or getattr(app_state, "session_factory", None)
-    if recovery_factory is None:
-        logger.error("job_status_update_skipped_no_session", job_id=job_id)
-        return
-    try:
-        async with get_session(recovery_factory) as session:
-            await update_job_status(
-                session,
-                job_id,
-                status,
-                error_message=error_message,
-            )
-    except Exception:
-        logger.exception("job_status_update_failed", job_id=job_id)
-
-
-# ---------------------------------------------------------------------------
-# state.json / config.yaml writers
-# ---------------------------------------------------------------------------
-
-
-def _read_head_sha(repo_path: Path) -> str | None:
-    import subprocess as _sp
-
-    try:
-        result = _sp.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except Exception:
-        return None
-    return result.stdout.strip() if result.returncode == 0 else None
-
-
-def _load_state(repo_path: Path) -> dict:
-    state_path = repo_path / ".repowise" / "state.json"
-    if state_path.is_file():
-        return json.loads(state_path.read_text(encoding="utf-8"))
-    return {}
-
-
-def _save_state(repo_path: Path, state: dict) -> None:
-    state_path = repo_path / ".repowise" / "state.json"
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-
-def _stamp_last_sync_commit(repo_path: Path) -> None:
-    """Record the synced HEAD so CLI incremental updates know the baseline."""
-    head = _read_head_sha(repo_path)
-    if not head:
-        return
-    state = _load_state(repo_path)
-    state["last_sync_commit"] = head
-    _save_state(repo_path, state)
-
-
-def _persist_initial_index_state(
-    repo_path: Path,
-    *,
-    llm_client: Any,
-    docs_mode: DocsMode,
-    docs_skip_reason: str | None,
-    total_pages: int,
-    wiki_style: str,
-    exclude_patterns: list[str],
-) -> None:
-    """Write the ``repowise init`` baseline after a first API-driven index.
-
-    Mirrors what the CLI persists at the end of ``init``: a complete
-    ``state.json`` (sync baseline, docs flags, run mode, store-format stamp,
-    config fingerprint) and a ``config.yaml`` recording the provider/model
-    and style the run used, so later CLI ``update`` runs and server jobs
-    resolve the same configuration.
-    """
-    from repowise.core.generation.styles import DEFAULT_STYLE
-    from repowise.core.repo_config import (
-        config_fingerprint,
-        load_repo_config,
-        save_repo_config,
-    )
-
-    # ---- config.yaml (written first: the fingerprint below covers it) ----
-    config = load_repo_config(repo_path)
-    if llm_client is not None:
-        config["provider"] = getattr(llm_client, "provider_name", "") or config.get("provider")
-        config["model"] = getattr(llm_client, "model_name", "") or config.get("model")
-    if wiki_style and wiki_style != DEFAULT_STYLE and not config.get("wiki_style"):
-        config["wiki_style"] = wiki_style
-    if exclude_patterns and not config.get("exclude_patterns"):
-        config["exclude_patterns"] = exclude_patterns
-    try:
-        save_repo_config(repo_path, config)
-    except Exception:
-        logger.debug("config_yaml_write_failed", repo_path=str(repo_path), exc_info=True)
-
-    # ---- state.json ----
-    state = _load_state(repo_path)
-    head = _read_head_sha(repo_path)
-    if head:
-        state["last_sync_commit"] = head
-    state.update(docs_mode_state_fields(docs_mode))
-    if docs_skip_reason and docs_mode == "none":
-        state["docs_skip_reason"] = docs_skip_reason
-    state["run_mode"] = "standard"
-    state["git_tier"] = "full"
-    state["include_submodules"] = False
-    state["total_pages"] = total_pages
-    if llm_client is not None:
-        state["provider"] = getattr(llm_client, "provider_name", "")
-        state["model"] = getattr(llm_client, "model_name", "")
-
-    try:
-        from importlib.metadata import version as _dist_version
-
-        from repowise.core.upgrade import stamp as _stamp_store_version
-
-        try:
-            _pkg_version: str | None = _dist_version("repowise")
-        except Exception:
-            _pkg_version = None
-        # This is the full-index persist (concept tree included), so stamp the
-        # terminal store-format version rather than clamping at the reindex gate.
-        _stamp_store_version(state, package_version=_pkg_version, full_index=True)
-    except Exception:
-        logger.debug("store_version_stamp_failed", repo_path=str(repo_path), exc_info=True)
-
-    state["config_fingerprint"] = config_fingerprint(repo_path)
-    _save_state(repo_path, state)
-
-
-def _persist_generate_job_state(
-    repo_path: Path,
-    *,
-    total_pages: int,
-    remaining_templates: int,
-    pages_generated: int,
-) -> None:
-    """Persist a scoped generation's Git baseline and page metadata."""
-    head = _read_head_sha(repo_path)
-    state = _load_state(repo_path)
-    if head:
-        state["last_sync_commit"] = head
-    state["total_pages"] = total_pages
-    if remaining_templates == 0 and pages_generated and resolve_docs_mode(state) != "llm":
-        state.update(docs_mode_state_fields("llm"))
-    _save_state(repo_path, state)
-
-
-# ---------------------------------------------------------------------------
-# Incremental page regeneration helper
-# ---------------------------------------------------------------------------
-
-
-def _build_generate_intent(config: dict) -> Any:
-    """Turn a generate job's config into a :class:`PageSelectionIntent`.
-
-    Understands the new ``selection`` block (all / unwritten / stale / page_ids /
-    path_prefix) and the legacy ``single_page`` shape (``page_id``). Defaults to
-    ``unwritten`` — the index-only upgrade case — when nothing is specified.
-    """
-    from repowise.core.generation.page_selection import PageSelectionIntent
-
-    if config.get("mode") == "single_page":
-        pid = config.get("page_id")
-        return PageSelectionIntent(page_ids=(pid,) if pid else ())
-
-    sel = config.get("selection") or {}
-    kind = sel.get("kind", "unwritten")
-    if kind == "all":
-        return PageSelectionIntent(all_pages=True)
-    if kind == "stale":
-        return PageSelectionIntent(stale=True)
-    if kind == "page_ids":
-        return PageSelectionIntent(page_ids=tuple(sel.get("page_ids") or ()))
-    if kind == "path_prefix":
-        prefix = sel.get("path_prefix")
-        return PageSelectionIntent(path_globs=(prefix,) if prefix else ())
-    if kind == "ranked":
-        # The seed comes from build_ranked_seed and short-circuits resolve_scope,
-        # so the intent is unused; return an empty one rather than picking a kind.
-        return PageSelectionIntent()
-    return PageSelectionIntent(unwritten=True)
-
-
-def _effective_cascade(config: dict) -> str:
-    """Resolve the cascade mode, honoring the same defaults the CLI uses.
-
-    An explicit ``cascade`` in the config always wins. Left unset, a ranked
-    coverage selection defaults to ``none`` (the ranked set is already a coherent
-    slice) and the legacy single-page alias to ``none``; everything else defaults
-    to ``dependents`` (an explicit selection pulls in its container pages).
-    """
-    explicit = config.get("cascade")
-    if explicit:
-        return explicit
-    sel = config.get("selection") or {}
-    if sel.get("kind") == "ranked" or config.get("mode") == "single_page":
-        return "none"
-    return "dependents"
-
-
-def _ranked_coverage_pct(selection: dict, n_files: int) -> float:
-    """The coverage fraction a ranked selection resolves to.
-
-    ``coverage_pct`` is used verbatim (a fraction in ``(0, 1]``); ``top_n`` maps
-    to ``n / n_files`` so the budget picks about N pages. ``top_n`` is a target,
-    not an exact count — per-type floors and always-emitted repo-wide/onboarding
-    pages nudge the real number, which the estimate and job report faithfully.
-    """
-    pct = selection.get("coverage_pct")
-    if pct is not None:
-        return float(pct)
-    top_n = int(selection.get("top_n") or 0)
-    return min(1.0, max(0.0, top_n / max(1, n_files)))
-
-
-def _narrow_plan_to_model_written(plan: Any) -> Any:
-    """Drop structural pages from a resolved plan so generate writes only prose.
-
-    A generate request resolves against every page type, but a structural page
-    has no model to write it: including it would re-render a template (a no-op
-    that leaves it "unwritten") and inflate the count. Keep only the
-    model-written pages in both the generate set and the cascade fallout, and
-    re-price from what remains. Mirrors the CLI's ``_narrow_to_model_written``.
-    """
-    from dataclasses import replace
-
-    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
-    from repowise.core.generation.scope import build_cost_plans
-
-    gen = {pid for pid in plan.generate_ids if pid.split(":", 1)[0] in MODEL_WRITTEN_PAGE_TYPES}
-    stale = {pid for pid in plan.stale_ids if pid.split(":", 1)[0] in MODEL_WRITTEN_PAGE_TYPES}
-    return replace(plan, generate_ids=gen, stale_ids=stale, cost_plans=build_cost_plans(gen))
-
-
-def _resolve_generate_scope(config: dict, rehydrated: Any, gen_config: Any) -> Any:
-    """Resolve a generate config + rehydrated repo into a :class:`ScopePlan`.
-
-    The one place a ranked coverage seed is built, so the estimate endpoint and
-    the launched job resolve the *identical* page set — the estimate cannot
-    under-quote. A ranked selection runs the core ``build_ranked_seed`` (the same
-    importance model ``repowise init`` uses at that coverage); everything else
-    resolves its intent normally. The plan is then narrowed to the model-written
-    types, so generate works on the concept layer only, mirroring the CLI.
-    """
-    from repowise.core.generation.scope import build_ranked_seed, resolve_scope
-
-    selection = config.get("selection") or {}
-    ranked_seed: set[str] | None = None
-    if selection.get("kind") == "ranked":
-        pct = _ranked_coverage_pct(selection, len(rehydrated.parsed_files))
-        ranked_seed = build_ranked_seed(
-            parsed_files=rehydrated.parsed_files,
-            graph_builder=rehydrated.graph_builder,
-            config=gen_config,
-            kg_ctx=rehydrated.kg_ctx,
-            records=rehydrated.records,
-            repo_name=rehydrated.repo_name,
-            coverage_pct=pct,
-        )
-    plan = resolve_scope(
-        records=rehydrated.records,
-        intent=_build_generate_intent(config),
-        cascade_mode=_effective_cascade(config),
-        deps=rehydrated.deps,
-        ranked_seed=ranked_seed,
-    )
-    return _narrow_plan_to_model_written(plan)
-
-
-def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> Any:
-    """Build the ``GenerationConfig`` a generate job (or its estimate) runs with.
-
-    Shared by the executor and the estimate endpoint so both resolve the same
-    style / reasoning / language / concurrency, and therefore the same scope and
-    cost. A per-request ``style`` override (carried in the job config) wins over
-    the repo's default, matching the single-page regenerate contract.
-    """
-    from repowise.core.generation import GenerationConfig
-    from repowise.core.generation.styles import resolve_style
-    from repowise.core.reasoning import resolve_reasoning
-    from repowise.core.repo_config import load_repo_config
-
-    repo_cfg = load_repo_config(repo_path)
-    effective_style = resolve_style(config.get("style") or wiki_style, repo_path=repo_path).name
-    return GenerationConfig.from_repo_config(
-        repo_cfg,
-        reasoning=resolve_reasoning(config=repo_cfg),
-        wiki_style=effective_style,
-        language=repo_cfg.get("language", "en"),
-        enable_onboarding=bool(repo_cfg.get("enable_onboarding", True)),
-        max_concurrency=int(config.get("concurrency") or 12),
-    )
-
-
-async def _run_generate_job(
-    *,
-    job_id: str,
-    repo_id: str,
-    repo_path: Path,
-    config: dict,
-    session_factory: Any,
-    provider: Any,
-    vector_store: Any | None,
-    fts: Any | None,
-    progress: JobProgressCallback,
-    exclude_patterns: list[str],
-    wiki_style: str,
-    start: float,
-) -> None:
-    """Run one scoped generation job through the shared core engine.
-
-    Rehydrates the graph + git, resolves the requested scope + cascade, writes
-    exactly that subset of pages, and records the terminal job status. The whole
-    generate/persist/heal half is the same code the CLI ``repowise generate``
-    runs, so behaviour matches across the two surfaces.
-    """
-    from repowise.core.pipeline.scoped_generation import (
-        execute_scoped_generation,
-        rehydrate_repo,
-    )
-
-    gen_config = _build_generation_config(repo_path, config, wiki_style)
-
-    state = _load_state(repo_path)
-    rehydrated = await rehydrate_repo(
-        session_factory,
-        repo_id,
-        repo_path,
-        generation_config=gen_config,
-        exclude_patterns=exclude_patterns,
-        include_submodules=bool(state.get("include_submodules", False)),
-        include_nested_repos=bool(state.get("include_nested_repos", False)),
-    )
-    if rehydrated is None:
-        raise RuntimeError("Repository has no wiki pages yet; run an index first.")
-
-    # Resolve the scope (ranked seed included) through the shared helper so the
-    # job writes exactly what its estimate priced.
-    plan = _resolve_generate_scope(config, rehydrated, gen_config)
-
-    generated_pages: list = []
-    marked_stale = 0
-    if plan.generate_ids:
-        progress.on_phase_start("generation", len(plan.generate_ids))
-        gen_result = await execute_scoped_generation(
-            session_factory=session_factory,
-            repo_id=repo_id,
-            repo_path=repo_path,
-            rehydrated=rehydrated,
-            plan=plan,
-            provider=provider,
-            generation_config=gen_config,
-            # The resolved server vector store carries its own embedder, exactly
-            # like the sync path — no separate embedder needed here.
-            embedder=None,
-            vector_store=vector_store,
-            fts=fts,
-            progress=progress,
-            # The server derives spend from the generated pages' token counts
-            # rather than a per-repo CostTracker, so none is wired here.
-            cost_tracker=None,
-            concurrency=gen_config.max_concurrency,
-        )
-        generated_pages = gen_result.generated_pages
-        marked_stale = gen_result.marked_stale
-    else:
-        logger.info(
-            "generate_job_empty_scope",
-            job_id=job_id,
-            unknown_page_ids=list(plan.unknown_page_ids),
-        )
-
-    await progress.drain_and_stop()
-
-    elapsed = time.monotonic() - start
-    total_input = sum(getattr(p, "input_tokens", 0) for p in generated_pages)
-    total_output = sum(getattr(p, "output_tokens", 0) for p in generated_pages)
-    from repowise.core.generation.models import count_stub_fallbacks
-
-    pages_generated = len(generated_pages)
-    stub_fallbacks = count_stub_fallbacks(generated_pages)
-
     async with get_session(session_factory) as session:
         job = await get_generation_job(session, job_id)
-        final_config = dict(config)
-        final_config.update(
-            {
-                "total_input_tokens": total_input,
-                "total_output_tokens": total_output,
-                "elapsed_seconds": round(elapsed, 1),
-                "pages_generated": pages_generated,
-                "pages_marked_stale": marked_stale,
-                # Surface requested-but-missing ids on the job record, not just in
-                # logs, so the UI can tell a caller a --page id resolved to nothing.
-                "unknown_page_ids": list(plan.unknown_page_ids),
-            }
-        )
-        if job is not None:
-            job.config_json = json.dumps(final_config)
-        await update_job_status(
-            session,
-            job_id,
-            "completed",
-            completed_pages=pages_generated - stub_fallbacks,
-            failed_pages=stub_fallbacks,
-            total_pages=pages_generated,
-        )
-        total_pages, remaining_templates = await _repo_page_counts(session, repo_id)
+        if job is None:
+            logger.error("job_not_found", job_id=job_id)
+            return None
 
-    # Keep state.json in step with what the server wrote: the sync baseline, the
-    # page count, and docs_mode — which flips to "llm" only once no template page
-    # remains, mirroring the CLI so a later `repowise update` reads the same mode.
-    try:
-        await asyncio.to_thread(
-            _persist_generate_job_state,
-            repo_path,
-            total_pages=total_pages,
-            remaining_templates=remaining_templates,
-            pages_generated=pages_generated,
+        repo = await get_repository(session, job.repository_id)
+        if repo is None:
+            logger.error("repo_not_found", job_id=job_id, repo_id=job.repository_id)
+            await update_job_status(
+                session, job_id, "failed", error_message="Repository not found"
+            )
+            return None
+
+        repo_path = repo.local_path
+        config = json.loads(job.config_json) if job.config_json else {}
+        mode = str(config.get("mode") or "sync")
+        spec = _JobSpec(
+            job_id=job_id,
+            repo_id=repo.id,
+            repo_path=repo_path,
+            config=config,
+            mode=mode,
+            # Both resolved while ``repo`` is still session-attached.
+            exclude_patterns=_repo_exclude_patterns(repo, repo_path),
+            wiki_style=_repo_wiki_style(repo, repo_path),
         )
-    except Exception:
-        logger.debug("state_json_update_failed", job_id=job_id, exc_info=True)
+        if mode not in VALID_JOB_MODES:
+            valid_str = ", ".join(sorted(VALID_JOB_MODES))
+            raise ValueError(
+                f"Invalid job mode '{mode}'. Expected one of: {valid_str}"
+            )
+
+        # Mark running
+        await update_job_status(session, job_id, "running")
+    return spec
+
+
+async def _resolve_job_vector_store(app_state: Any, spec: _JobSpec) -> Any:
+    """The repository's own vector store, like its routed SQL session.
+
+    The global store is only a fallback for a partially initialized app state."""
+    from repowise.server.search_helpers import resolve_repo_vector_store
+
+    vector_store = await resolve_repo_vector_store(
+        app_state,
+        spec.repo_id,
+        repo_path=spec.repo_path,
+        create=True,
+    )
+    if vector_store is None:
+        vector_store = app_state.vector_store
+    return vector_store
+
+
+def _resolve_llm_client(spec: _JobSpec) -> tuple[Any, str | None]:
+    """The job's chat provider, or ``None`` and why docs will be skipped.
+
+    Index-only jobs never ask for one. A job whose provider cannot be built
+    continues without it: ingestion and analysis still work.
+    """
+    if spec.is_index_only:
+        return None, None
+    try:
+        from repowise.server.provider_config import get_chat_provider_instance
+
+        # The repo id reaches the UI picker's per-repo choice, which a
+        # path-only resolve would skip for auto-detection.
+        return (
+            get_chat_provider_instance(repo_path=spec.repo_path, repo_id=spec.repo_id),
+            None,
+        )
+    except Exception as exc:
+        logger.warning("no_provider_configured", error=str(exc))
+        return None, f"no provider configured: {exc}"
+
+
+async def _run_scoped_generation(run: _JobRun) -> None:
+    """`repowise generate` over HTTP: write an explicit subset of pages via
+    the shared core engine, not a full re-index. `single_page` is the
+    legacy per-page regenerate alias for the same path."""
+    if run.llm_client is None:
+        raise RuntimeError(
+            run.docs_skip_reason or "No LLM provider is configured for this repository."
+        )
+    spec = run.spec
+    await _run_generate_job(
+        job_id=spec.job_id,
+        repo_id=spec.repo_id,
+        repo_path=Path(spec.repo_path),
+        config=spec.config,
+        session_factory=run.session_factory,
+        provider=run.llm_client,
+        vector_store=run.vector_store,
+        fts=run.fts,
+        progress=run.progress,
+        exclude_patterns=spec.exclude_patterns or [],
+        wiki_style=spec.wiki_style,
+        start=run.start,
+    )
+
+
+async def _run_index_job(run: _JobRun, app_state: Any) -> None:
+    """Index the repository, persist everything, and record the outcome."""
+    spec = run.spec
+    docs = _DocsPlan.for_job(spec, run.llm_client)
+    result = await _run_index_pipeline(run, docs)
+    incremental_pages = await _sync_incremental_pages(run, result)
+    swept_page_ids = await _persist_index_result(run, result, incremental_pages)
+
+    all_pages = (result.generated_pages or []) + incremental_pages
+    await _refresh_fts(run.fts, swept_page_ids, all_pages)
+
+    # Stop progress updates first, so none overwrites "completed".
+    await run.progress.drain_and_stop()
+
+    elapsed = time.monotonic() - run.start
+    pages_generated = await _record_index_completion(run, result, all_pages, elapsed)
+    await _write_index_state(run, docs, total_pages=len(all_pages))
+    await _reload_cross_repo_enricher(app_state, spec.job_id)
 
     logger.info(
-        "generate_job_completed",
-        job_id=job_id,
-        pages=pages_generated,
-        marked_stale=marked_stale,
+        "job_completed",
+        job_id=spec.job_id,
         elapsed=round(elapsed, 1),
+        files=result.file_count,
+        symbols=result.symbol_count,
+        pages=pages_generated,
     )
 
 
-async def _repo_page_counts(session: Any, repo_id: str) -> tuple[int, int]:
-    """Return ``(total_pages, remaining_stub_pages)`` for a repo.
-
-    The stub count is scoped to the model-written page types: a structural page
-    is stamped ``template`` forever, so counting every template page would keep
-    the ``docs_mode -> llm`` flip below from ever firing once file pages exist.
-    A remaining stub is a concept/onboarding page a model has not written yet.
-    """
-    from sqlalchemy import func as sa_func
-    from sqlalchemy import select as sa_select
-
-    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
-    from repowise.core.persistence.models import Page
-
-    total = int(
-        (
-            await session.execute(
-                sa_select(sa_func.count()).select_from(Page).where(Page.repository_id == repo_id)
+async def _run_index_pipeline(run: _JobRun, docs: _DocsPlan) -> Any:
+    spec = run.spec
+    if spec.is_initial_index:
+        # First index of an API-registered repo: make sure the repo-local
+        # data directory exists before the pipeline writes artifacts.
+        (Path(spec.repo_path) / ".repowise").mkdir(parents=True, exist_ok=True)
+        if docs.deterministic:
+            run.progress.on_message(
+                "info",
+                "No LLM provider configured; rendering a template wiki from the "
+                "code's structure (no model, no cost). Configure a provider and "
+                "run a full resync to write the wiki with a model.",
             )
-        ).scalar_one()
+
+    return await run_pipeline(
+        Path(spec.repo_path),
+        generate_docs=docs.generate,
+        llm_client=run.llm_client,
+        vector_store=run.vector_store,
+        progress=run.progress,
+        exclude_patterns=spec.exclude_patterns or None,
+        wiki_style=spec.wiki_style,
+        mode=docs.pipeline_mode,
     )
-    stubs = int(
-        (
-            await session.execute(
-                sa_select(sa_func.count())
-                .select_from(Page)
-                .where(
-                    Page.repository_id == repo_id,
-                    Page.page_type.in_(sorted(MODEL_WRITTEN_PAGE_TYPES)),
-                    Page.provider_name == "template",
-                )
-            )
-        ).scalar_one()
-    )
-    return total, stubs
 
 
-async def _incremental_page_regen(
-    repo_path: Path,
-    result: Any,
-    llm_client: Any,
-    job_config: dict,
-    progress: Any | None,
-    repo_wiki_style: str = "comprehensive",
-    *,
-    vector_store: Any | None = None,
-    prior_pages: dict[str, Any] | None = None,
-    session_factory: Any | None = None,
-    repo_id: str | None = None,
-) -> list:
-    """Regenerate only wiki pages affected by recent changes.
+async def _sync_incremental_pages(run: _JobRun, result: Any) -> list:
+    """Incremental page regeneration for sync mode.
 
-    Uses the graph from the just-completed pipeline run + git diff to detect
-    which pages need updating.  Returns a list of GeneratedPage objects (may
-    be empty if nothing changed or no base ref is available).
+    Sync indexes without docs, then regenerates only the pages affected by
+    recent changes.
     """
-    try:
-        # Feed existing stale-page ages into the cascade so a constrained
-        # budget spends its LLM calls on the oldest stale pages rather than
-        # reordering purely by importance (issues #847 / #851). Keep the DB
-        # lookup async; the synchronous Git/graph planning below is the unit
-        # that belongs in a worker thread.
-        stale_pages: dict[str, float] = {}
-        if session_factory is not None and repo_id is not None:
-            try:
-                from repowise.core.persistence import (
-                    get_session,
-                    get_stale_file_page_ages,
-                )
-
-                async with get_session(session_factory) as session:
-                    stale_pages = await get_stale_file_page_ages(session, repo_id)
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("incremental_page_regen_stale_lookup_failed", error=str(exc))
-
-        plan = await asyncio.to_thread(
-            _plan_incremental_page_regen,
-            repo_path,
-            result,
-            job_config,
-            stale_pages,
-        )
-        if plan is None:
-            return []
-        affected_parsed, affected_source, changed_count, affected_count, cascade_budget = plan
-
-        logger.info(
-            "incremental_page_regen_start",
-            changed_files=changed_count,
-            affected_pages=affected_count,
-            cascade_budget=cascade_budget,
-        )
-
-        if progress:
-            progress.on_phase_start("generation", affected_count)
-
-        from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
-
-        # Effective style: a per-page override carried in the job config (set by
-        # the regenerate endpoint, D10) wins over the repo's default style.
-        from repowise.core.generation.styles import resolve_style
-        from repowise.core.reasoning import resolve_reasoning
-        from repowise.core.repo_config import load_repo_config
-
-        effective_style = resolve_style(
-            job_config.get("style") or repo_wiki_style, repo_path=repo_path
-        ).name
-        repo_cfg = load_repo_config(repo_path)
-        generation_config = GenerationConfig.from_repo_config(
-            repo_cfg,
-            reasoning=resolve_reasoning(config=repo_cfg),
-            wiki_style=effective_style,
-            # Regenerate in the repo's configured output language, not default
-            # English (PageGenerator picks the language up from the config).
-            language=repo_cfg.get("language", "en"),
-            # A sync feeds generate_all a parsed_files filtered to the changed
-            # files. Levels 3 and up describe the whole repository from
-            # parsed_files, so without this a one-commit sync would rewrite the
-            # codebase map, module and overview pages from a truncated view (the
-            # D4 shape the CLI update path already fixed). Stop the ladder after
-            # level 2 and leave the repo-wide pages for a full run.
-            file_pages_only=True,
-        )
-        assembler = ContextAssembler(generation_config, repo_path=repo_path)
-        # D3: pass the vector store (re-embed re-rendered pages) and prior pages
-        # (reuse an unchanged page instead of re-billing it), matching the CLI
-        # incremental path. Without these, every sync re-billed the repo-wide
-        # pages and dropped them from semantic search.
-        generator = PageGenerator(
-            llm_client,
-            assembler,
-            generation_config,
-            vector_store=vector_store,
-            prior_pages=prior_pages or {},
-            repo_path=repo_path,
-        )
-
-        pages = await generator.generate_all(
-            affected_parsed,
-            affected_source,
-            result.graph_builder,
-            result.repo_structure,
-            result.repo_name,
-            git_meta_map=result.git_meta_map,
-            repo_path=repo_path,
-        )
-
-        logger.info("incremental_page_regen_done", pages=len(pages))
-        return pages
-
-    except Exception as exc:
-        logger.warning("incremental_page_regen_failed", error=str(exc))
+    spec = run.spec
+    if spec.mode != "sync" or run.llm_client is None:
         return []
+    # The vector store re-embeds re-rendered pages; prior pages let an
+    # unchanged prompt reuse its page instead of re-billing.
+    from repowise.core.persistence import load_prior_pages
+
+    async with get_session(run.session_factory) as session:
+        prior_pages = await load_prior_pages(session, spec.repo_id)
+    return await _incremental_page_regen(
+        Path(spec.repo_path),
+        result,
+        run.llm_client,
+        spec.config,
+        run.progress,
+        repo_wiki_style=spec.wiki_style,
+        vector_store=run.vector_store,
+        prior_pages=prior_pages,
+        session_factory=run.session_factory,
+        repo_id=spec.repo_id,
+    )
 
 
-def _plan_incremental_page_regen(
-    repo_path: Path,
-    result: Any,
-    job_config: dict,
-    stale_pages: dict[str, float],
-) -> tuple[list[Any], dict[str, Any], int, int, int] | None:
-    """Build an incremental regeneration plan without blocking the event loop.
+async def _persist_index_result(run: _JobRun, result: Any, incremental_pages: list) -> Any:
+    """Write the pipeline result and any regenerated pages; return the swept page ids."""
+    repo_id = run.spec.repo_id
+    async with get_session(run.session_factory) as session:
+        swept_page_ids = await persist_pipeline_result(result, session, repo_id)
 
-    The caller runs this synchronous unit in a worker thread. Keeping the Git
-    command, GitPython-backed ``ChangeDetector``, graph ranking, and related
-    filesystem reads together avoids moving only the cheapest operation while
-    leaving the rest of change detection on the async server thread.
+        if incremental_pages:
+            from repowise.core.persistence import upsert_pages_from_generated
+
+            await upsert_pages_from_generated(session, incremental_pages, repo_id)
+
+            # These pages land after persist_pipeline_result rebuilt the tree
+            # and carry no placement, so rebuild again.
+            from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
+
+            await rebuild_page_tree(session, repo_id)
+
+        # Vector deletes before the SQL commit: a separate store, so no lock
+        # conflict, and the idempotent delete keeps the durable commit last.
+        if swept_page_ids and run.vector_store is not None:
+            await run.vector_store.delete_many(swept_page_ids)
+    return swept_page_ids
+
+
+async def _refresh_fts(fts: Any, swept_page_ids: Any, pages: list) -> None:
+    """FTS writes, after the session closes: the index can share its SQLite
+    file, whose write lock the session would hold."""
+    if fts is None:
+        return
+    if swept_page_ids:
+        await fts.delete_many(swept_page_ids)
+    for page in pages:
+        await fts.index(
+            page.page_id,
+            page.title,
+            page.content,
+            summary=page.summary,
+            target_path=page.target_path,
+        )
+
+
+async def _record_index_completion(
+    run: _JobRun, result: Any, all_pages: list, elapsed: float
+) -> int:
+    """Mark the job completed with its run summary; return the pages generated."""
+    from repowise.core.generation.models import count_stub_fallbacks
+
+    pages_generated = len(all_pages)
+    # Stubs from failed provider calls count as failed, or an outage reads
+    # as a clean run.
+    stub_fallbacks = count_stub_fallbacks(all_pages)
+    async with get_session(run.session_factory) as session:
+        await _complete_job_row(
+            session,
+            run.spec.job_id,
+            run.spec.config,
+            {
+                "total_input_tokens": sum(p.input_tokens for p in all_pages),
+                "total_output_tokens": sum(p.output_tokens for p in all_pages),
+                "elapsed_seconds": round(elapsed, 1),
+                "file_count": result.file_count,
+                "symbol_count": result.symbol_count,
+                "pages_generated": pages_generated,
+            },
+            completed_pages=(
+                pages_generated - stub_fallbacks if pages_generated else result.file_count
+            ),
+            failed_pages=stub_fallbacks,
+            total_pages=pages_generated if pages_generated else result.file_count,
+        )
+    return pages_generated
+
+
+async def _write_index_state(run: _JobRun, docs: _DocsPlan, *, total_pages: int) -> None:
+    """Update state.json so CLI incremental updates know the new baseline.
+
+    An initial index also persists the full baseline (docs flags, run
+    mode, config) that `repowise init` would have written.
     """
-    base_ref = _load_state(repo_path).get("last_sync_commit") or job_config.get("before")
-    if not base_ref:
-        logger.info("incremental_page_regen_skipped", reason="no_base_ref")
-        return None
+    spec = run.spec
+    try:
+        if spec.is_initial_index:
+            await asyncio.to_thread(
+                _persist_initial_index_state,
+                Path(spec.repo_path),
+                llm_client=run.llm_client,
+                docs_mode=docs.docs_mode,
+                docs_skip_reason=run.docs_skip_reason,
+                total_pages=total_pages,
+                wiki_style=spec.wiki_style,
+                exclude_patterns=spec.exclude_patterns,
+            )
+        else:
+            await asyncio.to_thread(_stamp_last_sync_commit, Path(spec.repo_path))
+    except Exception:
+        logger.debug("state_json_update_failed", job_id=spec.job_id, exc_info=True)
 
-    head = _read_head_sha(repo_path)
-    if not head:
-        return None
-    if head == base_ref:
-        logger.info("incremental_page_regen_skipped", reason="no_new_commits")
-        return None
 
-    from repowise.core.ingestion import ChangeDetector
-    from repowise.core.ingestion.change_detector import compute_adaptive_budget
+async def _reload_cross_repo_enricher(app_state: Any, job_id: str) -> None:
+    """Hot-reload cross-repo enricher if available (workspace mode)."""
+    try:
+        enricher = getattr(app_state, "cross_repo_enricher", None)
+        if enricher is not None and hasattr(enricher, "reload"):
+            enricher.reload()
+            # Workspace only. The contract map and the test-impact indexes
+            # change together, so reloading one invalidates both.
+            from repowise.server.mcp_server._test_impact import (
+                close_test_impact_indexes,
+            )
 
-    detector = ChangeDetector(repo_path)
-    file_diffs = detector.get_changed_files(base_ref, head)
-    if not file_diffs:
-        return None
-
-    cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
-    affected = detector.get_affected_pages(
-        file_diffs,
-        result.graph_builder.graph(),
-        cascade_budget,
-        pagerank=result.graph_builder.pagerank(),
-        stale_pages=stale_pages,
-    )
-    if not affected.regenerate:
-        logger.info("incremental_page_regen_skipped", reason="no_affected_pages")
-        return None
-
-    regen_set = set(affected.regenerate)
-    affected_parsed = [pf for pf in result.parsed_files if pf.file_info.path in regen_set]
-    affected_source = {p: s for p, s in result.source_map.items() if p in regen_set}
-    return (
-        affected_parsed,
-        affected_source,
-        len(file_diffs),
-        len(affected.regenerate),
-        cascade_budget,
-    )
+            await close_test_impact_indexes()
+    except Exception:
+        logger.debug("enricher_reload_failed", job_id=job_id, exc_info=True)

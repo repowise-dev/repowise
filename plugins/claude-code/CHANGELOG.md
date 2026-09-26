@@ -2,6 +2,35 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.53.0
+
+### Changed
+- Version bump only. No command, skill or hook changed this cycle: the server
+  still lists the same 18 tools, every tool named in a command or skill is one
+  of them, no CLI flag a command documents changed, and `hooks.json` still
+  mirrors the augment matcher in `claude_config.py`.
+
+## 0.52.0
+
+### Changed
+- The `decision` command reflects what acceptance now requires. A record whose
+  body only restates its own title can no longer be confirmed, so the command
+  tells the caller to state a reason rather than leaving it to be discovered at
+  `confirm` time. It documents `--kind agreement` for a working agreement — a
+  rule about how the work is conducted, which names no file and is not checked
+  against the code — and `--evidence-commit`, which ties a record to the commit
+  the choice was made in and is what stops the same commit being asked about
+  twice.
+- The command no longer claims a fixed source count. Capture sources are
+  individually switchable and transcript mining is now off unless a repository
+  turns it on, so it points at `repowise decision source list` instead.
+- No tool-surface change this cycle: the server still lists the same 18 tools,
+  every tool named in a command or skill is one of them, and `hooks.json` still
+  mirrors the shared augment matcher in `claude_config.py`. The shell
+  `PostToolUse` entry the new decision capture prompt needs is installed by
+  `repowise decision config capture-prompt --on`, deliberately not by the
+  plugin, so the measured narrowing of the shared matcher is not reversed.
+
 ## 0.51.0
 
 ### Fixed

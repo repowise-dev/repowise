@@ -74,17 +74,18 @@ per-line blame index built for every file.
 
 ## The markers, and what each is allowed to do
 
-Repowise ships **49 registered detectors (52 marker ids)**, but only **26 are
+Repowise ships **51 registered detectors (54 marker ids)**, but only **25 are
 permitted to move the headline number**. That restriction is deliberate: the
 defect score carries published accuracy claims, so only markers that earned
 their weight against a bug corpus may affect it.
 
 | Tier | Markers | What it may do |
 |---|---:|---|
-| **Defect-scoring** | **26** | Calibrated weights; moves the 1-10 score |
+| **Defect-scoring** | **25** | Calibrated weights; moves the 1-10 score |
 | **Performance** | **20** | Own pillar, own cap; never touches the defect score |
 | **Maintainability-only (SQL)** | **3** | Maintainability only |
 | **Governance** | **3** | Surfaces as a finding; never deducts |
+| **Advisory** | **3** | Measured and reported; never deducts, and stays out of impact-ranked lists unless asked for |
 
 Nothing is inert, but "doesn't move the number" means three different things:
 
@@ -133,7 +134,7 @@ capped per category, so no single category can dominate:
 
 | Category | Cap |
 |---|---|
-| Organizational | −3.5 |
+| Organizational | −3.5, less on cleaner code (below) |
 | Structural complexity | −2.5 |
 | Test coverage | −2.0 |
 | Test coverage gradient | −2.0 |
@@ -155,6 +156,11 @@ history deduction climbs, and the headline barely moves. Each file therefore
 stores its deduction as two numbers, `structure_deduction` and
 `history_deduction`, which sum to the total. Nothing is hidden: the split is on
 every metric row, and the Counts control below reads it back.
+
+Git history on its own measures activity, so its cap follows the code: history
+can cost a file at most 1.0, plus one point for each point the other categories
+deduct, up to 3.5. A file with no code-shape finding never reads below 9.0 from
+history alone.
 
 Three repo-level KPIs: **Hotspot Health** (NLOC-weighted average over files the
 git layer classifies as hotspots), **Average Health** (NLOC-weighted over all
@@ -387,9 +393,10 @@ Reports:
 
 ## Three health signals: defect risk, maintainability, and performance
 
-The three signals are computed from the same marker stream by one shared scoring
-kernel against independent weight, category and cap tables. They are co-equal
-views, **never blended into a single number**.
+The three scored signals are computed from the same marker stream by one shared
+scoring kernel against independent weight, category and cap tables. They are
+co-equal views, **never blended into a single number**. A fourth dimension,
+`advisory`, carries markers that never score at all. See below.
 
 **Defect risk** is the calibrated headline: the number on the dashboard ring,
 the band, the badge, and every accuracy claim above.
@@ -415,6 +422,81 @@ Every finding carries a `dimension` naming its pillar, and all three surface
 identically: `summary.*_average` on the REST overview, `kpis.*` on MCP
 `get_health`, per-file scores on every metric row, and a line each in `CLAUDE.md`
 and `repowise status`.
+
+### The fourth dimension: `advisory`, which never scores
+
+Some things are worth measuring and impossible to calibrate. No defect corpus
+labels how much of a test is mock setup, so a mock-density marker has no
+calibration story and never will. Weighting it anyway would move a number that
+claims to predict bugs using evidence that says nothing about bugs.
+
+`advisory` is where those markers live. It is deliberately **not** one of the
+three scored dimensions: there is no weight table, category or cap keyed on it,
+so "never deducts" is structural rather than a promise. Its findings carry a
+`health_impact` of exactly `0.0`, are never counted in a change's
+introduced/worsened totals, and can never make a review verdict blocking.
+
+They are also out of every impact-ranked list, which is a statement about
+ranking rather than about existence: a zero-impact row appended to a list
+ordered by impact reads as a deduction that rounded away. Ask for the dimension
+and you get it, and a surface that ranks nothing -- one file's findings in an
+editor, or a list already filtered to one marker -- gets it without asking.
+
+| Marker | Languages | What it measures |
+|---|---|---|
+| `assertion_free_test` | Python · TypeScript / JavaScript | A test case that runs the code under test and checks nothing |
+| `mock_saturated_test` | Python · TypeScript / JavaScript | Mock-setup statements per assertion in a test function |
+| `hidden_coupling` | every language with git history | Files that change together with no import between them |
+
+`hidden_coupling` is here for the other reason: it was measured and carried no
+signal. Alone it ranks defect-prone files near chance (AUC about 0.55), and a
+pre-registered test on 12 repositories no earlier health study used found the
+score without it non-inferior at predicting defects, so it stopped deducting.
+
+A marker earns weight by clearing the house precision bar (roughly 70%
+hand-labelled) on a real corpus. `mock_saturated_test` has not, and precision is
+measured per language because it does not transfer: **67%** on Python (32
+findings) and **40%** on TypeScript (30 findings), each the complete population
+at the shipped gate. Both figures predate the assertion count gaining the
+oracle shapes listed in
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage), which grew this
+marker's denominator on Python and TypeScript. A larger denominator lowers the
+ratio, so the change can only suppress findings, never add one — but the two
+numbers above were measured against the smaller denominator and are now a
+ceiling rather than a current reading.
+
+It stays advisory until two false-positive families are separated: value-object builders named `Fake*` passed as input to real logic, and
+boundary isolation where the assertion reads a real artifact. Both turn on
+whether an assertion observes a double or production output, which is a dataflow
+question the pass does not ask — and on the TypeScript sample that one question
+accounted for every false positive.
+
+`assertion_free_test` measures at least **71%** on TypeScript — a floor
+rather than a current reading, three false-positive families having been closed
+since the labelling (31 findings, the complete
+population of two corpora; an earlier pass published 51% for the larger
+pre-change population, which re-labels to 43.1% against this rubric) and **86%** on Python (29 hand-labelled, a systematic
+sample of 172), and does not report on Go or Java at all; the per-language
+reasoning is in
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage). A test that
+delegates its oracle to a helper is resolved in the same file by name, and in
+another file when the call graph binds the call, which is what closed most of
+the TypeScript gap. The marker stays advisory on both: neither population is large
+enough to settle the bar.
+
+It asks a question with a yes-or-no answer rather than a
+threshold, which is why it can be stated plainly: a test case with no oracle of
+any kind — no assertion, no mock verification, no `raise`/`throw` the author
+wrote by hand, and no call to an assertion helper from a position the statement
+scan cannot classify. Four questions, every one of them yes or no and none of
+them a threshold. A **mock verification counts as an
+assertion here**, the opposite of the marker above it, because a test whose only
+oracle is `verify(...)` does check something. The two markers read the same call
+for two different questions; the tiers that keep them apart are in
+`complexity/assertions.py`.
+
+Per-language coverage, and why Go and Java are blocked for each marker:
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage).
 
 ## Performance risk
 
@@ -462,6 +544,27 @@ round-trip, it does not claim the work is avoidable. Database and network
 findings are usually batchable; filesystem ones often are not, since deleting N
 files genuinely needs N unlinks. The finding still tells you where the time
 goes.
+
+A few more things keep the plans honest:
+
+- **Proven means the transformation, not the runtime.** Parallelizing awaits
+  against a database or network client is advisory with a
+  `bounded_concurrency` prerequisite, however clean the dataflow. A loop that
+  already walks its input in chunks (`range(0, n, CHUNK)`, `batched(...)`) is
+  reported as `loop_already_chunked` rather than told to batch.
+- **One line, one problem.** When `io_in_loop` and `serial_await_in_loop` fire
+  on the same call, each names the other in `siblings`, and batching is queued
+  right before the parallelize variant.
+- **Plans carry steps and validation.** Each performance plan lists its edits
+  (`mechanical` only when the strategy is proven) and the tests that validate
+  it: coverage, then call graph, then import graph, then a test named for the
+  file (`via: "name-match"`).
+
+**Over-fetch.** `unbounded_read_reduced_in_memory` (Python, advisory) flags a
+query with no limit or aggregate whose rows are then deduplicated per key in
+code, in the same function or one same-file helper. It is the one shape here
+that is not a loop around I/O: the query runs once and returns too much, and
+the fix is to select one row per key in the database.
 
 Methodology and raw data:
 [perf-detection](https://github.com/repowise-dev/repowise-bench/tree/master/perf-detection).
@@ -575,5 +678,7 @@ unchanged files stay put; no nightly full re-index.
   the full marker roster, and the complete weight tables.
 - [`docs/BENCHMARKS.md`](../BENCHMARKS.md): every published number with its
   sample size and test.
+- [DOC_DRIFT.md](DOC_DRIFT.md): the other thing this layer checks, your own
+  documentation against the tree.
 - [REFACTORING.md](REFACTORING.md) · [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md) ·
   [BUG_HISTORY.md](BUG_HISTORY.md)

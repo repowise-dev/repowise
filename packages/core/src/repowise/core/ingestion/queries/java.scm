@@ -177,7 +177,7 @@
 ; type of a factory, the element type of ``new Foo()``. The single
 ; ``@param.type`` capture is reused across languages
 ; (see parser._extract_type_refs); the Java head extractor in
-; parser_helpers.py unwraps ``T[]`` / ``Foo<...>`` / ``ns.Foo`` / annotated
+; lang_helpers/type_heads.py unwraps ``T[]`` / ``Foo<...>`` / ``ns.Foo`` / annotated
 ; types and filters primitives plus the most ubiquitous ``java.lang`` /
 ; ``java.util`` / ``java.util.function`` builtins.
 

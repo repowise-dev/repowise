@@ -9,7 +9,7 @@ Tree-sitter AST walker. Single AST pass per file computes:
 > |--------|----------------|
 > | `walker.py` | Orchestration (`walk_file` / `walk_file_complexity`) + public re-exports |
 > | `models.py` | Output dataclasses (`FunctionComplexity`, `ClassComplexity`, `PerfHit`, ...) |
-> | `ast_utils.py` | Name/text helpers, function-node collection, parameter counting |
+> | `ast_utils.py` | Name/text helpers, callee-name reading, function-node collection, parameter counting |
 > | `nloc.py` | Non-blank / non-comment line counting |
 > | `cyclomatic.py` | The CCN / cognitive / max-nesting engine (`_walk_function_body`) |
 > | `assertions.py` | Assertion-block detection (test-quality smells) |
@@ -60,6 +60,10 @@ from repowise.core.analysis.health.complexity import (
 fcx: FileComplexity = walk_file(abs_path, language, source_bytes)
 fcx.functions  # list[FunctionComplexity]
 fcx.classes    # list[ClassComplexity]
+
+# Optional 4th argument: the repository's own assertion names, from the
+# `assertions:` config block. Reaches the broad assertion tier only.
+fcx = walk_file(abs_path, language, source_bytes, frozenset({"ensureinvariant"}))
 
 # Back-compat shortcut for callers that only need functions:
 results: list[FunctionComplexity] = walk_file_complexity(
@@ -160,8 +164,15 @@ opt-in fields:
   kinds whose callee name starts with `assert` or `expect` (covers
   `assertEqual` / `assert_eq!` / `expect(...).toBe(...)`).
 
-A language that maps neither produces no assertion blocks — never a false
-positive. (Languages without an `expression_statement` wrapper — e.g.
+These two fields say which *nodes* can be an assertion. Which *names* count is
+separate, in `../asserts/lexicon.py`, and is two-tiered: the `assert`/`expect`
+prefixes above feed the calibrated block markers and never change, while a
+per-language row (Go's `t.Fatalf`, testify's `require`, should.js's `.should.`)
+feeds the advisory assertion total only. Adding a language's names is a row
+there; adding a language at all still starts here.
+
+A language that maps neither field produces no assertion facts at all — never a
+false positive, and no vocabulary row can give it any. (Languages without an `expression_statement` wrapper — e.g.
 Kotlin, where the call node sits directly in the statement list — are
 handled too: the call node is matched as the statement itself.)
 

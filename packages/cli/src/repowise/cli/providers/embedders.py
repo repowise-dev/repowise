@@ -124,6 +124,21 @@ def embedder_was_requested(embedder_flag: str | None, pinned_embedder: Any = Non
     )
 
 
+def template_run_embedder(embedder_name_resolved: str, embedder_was_requested: bool) -> str:
+    """The embedder a template-only run actually embeds with.
+
+    That mode is sold as "no key, no spend", and :func:`resolve_embedder` infers
+    a hosted embedder from any LLM key in the environment — right for a run
+    already paying a model, wrong for one that promised nothing. So a hosted
+    embedder is used only when the user named it.
+
+    Shared because ``init`` has to predict this answer before the pipeline, to
+    build the run's vector store with the backend generation will actually use.
+    """
+    hosted = embedder_name_resolved not in ("mock", "ollama")
+    return "mock" if hosted and not embedder_was_requested else embedder_name_resolved
+
+
 def resolve_embedder_for_repo(repo_path: Any) -> str:
     """Return the embedder that can read *repo_path*'s vector store.
 

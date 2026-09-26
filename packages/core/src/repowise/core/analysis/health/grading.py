@@ -98,6 +98,17 @@ def band_for(score: float) -> HealthBand:
     return "at_risk"
 
 
+def format_score(score: float) -> str:
+    """A 1-10 score at one decimal, rounded down, for display beside its band.
+
+    Rounding to nearest would print 6.98 as "7.0" beside "Fair"; flooring can
+    never cross a band edge, and :func:`band_for` stays on the unrounded value.
+    Mirror of ``formatScore`` in ``packages/types``.
+    """
+    nearest = float(f"{score:.1f}")
+    return f"{nearest - 0.1 if nearest > score else nearest:.1f}"
+
+
 def distribution(metrics: list[Any]) -> dict[str, Any]:
     """NLOC-weighted file distribution across the bands.
 

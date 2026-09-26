@@ -28,16 +28,8 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from ..langs import RUBY
-from .client_calls import (
-    RUBY_SYNTAX,
-    ClientCallMatch,
-    call_arguments,
-    consumer_contracts,
-    match_paren,
-    method_from_argument,
-    split_first_arg,
-    string_constants,
-)
+from ..strings import RUBY_SYNTAX, call_arguments, match_paren, split_first_arg, string_constants
+from .client_calls import ClientCallMatch, consumer_contracts, method_from_argument
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract

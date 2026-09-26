@@ -428,18 +428,30 @@ class ClaudeCliProvider(BaseProvider):
 
         raw_usage = payload.get("usage")
         usage = raw_usage if isinstance(raw_usage, dict) else {}
-        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        # Claude Code reports only the *uncached remainder* of the prompt as
+        # ``input_tokens``. A page prompt is large and its stable prefix is
+        # cached, so the bulk of it arrives as a cache write (the first page of
+        # a type) or a cache read (every later page of that type). Persisting
+        # this field alone recorded ``input_tokens=2`` against a ~20k-token
+        # page, which is what made ``repowise status`` sum to zero for a whole
+        # wiki of claude_cli pages (#2267).
+        uncached_input_tokens = int(usage.get("input_tokens", 0) or 0)
         output_tokens = int(usage.get("output_tokens", 0) or 0)
-        # The CLI reports cache reads and creations separately; repowise wants a
-        # single "served from cache" number, which is the read half.
+        # The read half is the "served from cache" number repowise reports.
         cached_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
         cache_creation_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        # The three are disjoint (a prompt token is sent uncached, read from the
+        # cache, or written to it), so their sum is the prompt total the rest of
+        # the codebase means by ``input_tokens``. ``cached_tokens`` stays the
+        # read half, separately, exactly as the provider docs describe.
+        input_tokens = uncached_input_tokens + cached_tokens + cache_creation_tokens
 
         stop_reason, provider_stop_reason = normalize_stop_reason(payload.get("stop_reason"))
 
         log.debug(
             "claude_cli.generate.done",
             input_tokens=input_tokens,
+            uncached_input_tokens=uncached_input_tokens,
             output_tokens=output_tokens,
             cached_tokens=cached_tokens,
             request_id=request_id,
@@ -449,6 +461,8 @@ class ClaudeCliProvider(BaseProvider):
             **usage,
             "source": "claude_cli",
             "model": self.model_name,
+            "input_tokens": input_tokens,
+            "uncached_input_tokens": uncached_input_tokens,
             "cache_creation_input_tokens": cache_creation_tokens,
             # Recorded for auditing only. Cost is priced at zero in the cost
             # table: this is subscription usage, not API spend.
@@ -459,7 +473,7 @@ class ClaudeCliProvider(BaseProvider):
         if not usage:
             usage_payload["estimated"] = True
 
-        return GeneratedResponse(
+        response = GeneratedResponse(
             content=content,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -468,3 +482,27 @@ class ClaudeCliProvider(BaseProvider):
             stop_reason=stop_reason,
             provider_stop_reason=provider_stop_reason,
         )
+
+        tracker = getattr(self, "_cost_tracker", None)
+        if tracker is not None:
+            # Booked under the prefixed label so the ledger prices the call at
+            # $0.00 (``claude_cli/`` is a zero-cost prefix: a seat is not API
+            # spend) while ``repowise costs`` still shows the run's token
+            # volume. Without this the provider wrote no ``llm_costs`` row at
+            # all and ``repowise costs`` reported "No cost records found" for a
+            # whole claude_cli wiki (#2267).
+            #
+            # Awaited inline rather than fired off as a detached task: a
+            # fire-and-forget write can still be in flight when the event loop
+            # is torn down after generation. ``record()`` swallows its own
+            # persistence errors, so generation is unaffected either way.
+            with contextlib.suppress(Exception):
+                await tracker.record(
+                    model=self.model_name,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    operation=tracker.operation,
+                    file_path=None,
+                )
+
+        return response

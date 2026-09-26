@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import { HeartPulse } from "lucide-react";
-import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import { bandForScore, formatScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import { EmptyState } from "../shared/empty-state";
 import { VirtualizedTable, useVirtualRows } from "../shared/virtualized-table";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "../health/score-breakdown";
@@ -10,7 +10,7 @@ import { BiomarkerDetails, type BiomarkerDetailsRecord } from "../health/biomark
 import {
   biomarkerInfo,
   biomarkerLabel,
-  biomarkerDimension,
+  asBiomarkerDimension,
   CATEGORY_LABEL,
   DIMENSION_LABEL,
   type BiomarkerDimension,
@@ -143,7 +143,7 @@ export function FileHealthTab({
     if (metric.maintainability_score != null) {
       pillars.push({
         label: "Maintainability",
-        value: metric.maintainability_score.toFixed(1),
+        value: formatScore(metric.maintainability_score),
         valueColor: healthBandTextColor(bandForScore(metric.maintainability_score)),
         sub: HEALTH_BAND_LABEL[bandForScore(metric.maintainability_score)],
       });
@@ -151,7 +151,7 @@ export function FileHealthTab({
     if (metric.performance_score != null) {
       pillars.push({
         label: "Performance",
-        value: metric.performance_score.toFixed(1),
+        value: formatScore(metric.performance_score),
         valueColor: healthBandTextColor(bandForScore(metric.performance_score)),
         sub: HEALTH_BAND_LABEL[bandForScore(metric.performance_score)],
       });
@@ -375,12 +375,5 @@ export function FileHealthTab({
 
 /** A finding's home pillar, preferring the server value over the glossary. */
 function findingDimension(f: { dimension?: string; biomarker_type: string }): BiomarkerDimension {
-  if (
-    f.dimension === "defect" ||
-    f.dimension === "maintainability" ||
-    f.dimension === "performance"
-  ) {
-    return f.dimension;
-  }
-  return biomarkerDimension(f.biomarker_type);
+  return asBiomarkerDimension(f.dimension, f.biomarker_type);
 }

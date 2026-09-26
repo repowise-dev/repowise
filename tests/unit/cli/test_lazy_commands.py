@@ -34,11 +34,12 @@ from repowise.core.registry import CLIRegistry, LazyCommand
 _EXPECTED_NAMES = frozenset(
     {
         "agents", "ask", "augment", "context", "corrections", "costs", "coverage",
-        "dead-code", "decision", "delete", "distill", "doctor", "expand",
+        "dead-code", "decision", "delete", "distill", "doc-drift", "doctor",
+        "expand",
         "export", "generate", "generate-claude-md", "health", "hook",
         "impacted-tests", "init", "login", "logout", "mcp", "overlap", "reindex",
         "restyle",
-        "risk", "saved", "search", "security", "serve", "status", "symbol",
+        "risk", "saved", "savings", "search", "security", "serve", "status", "symbol",
         "telemetry", "uninstall", "update", "watch", "whats-new", "whoami", "why",
         "wiki-styles", "workspace",
     }

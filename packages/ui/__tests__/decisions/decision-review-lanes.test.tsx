@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import {
   DECISION_LANES,
@@ -6,11 +6,6 @@ import {
   type DecisionLane,
 } from "../../src/decisions/decision-review-lanes";
 import type { DecisionRecord } from "@repowise-dev/types/decisions";
-
-// jsdom has no scrollIntoView; `ViewTabs` keeps the active tab in view on mount.
-beforeAll(() => {
-  Element.prototype.scrollIntoView = vi.fn();
-});
 
 function record(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
   return {
@@ -259,6 +254,75 @@ describe("currency marks the exception, not the default", () => {
     // And the row says the same thing in its own words rather than only in a
     // colour: this record names nothing at all.
     expect(rows().getByText("names nothing")).toBeInTheDocument();
+  });
+});
+
+describe("who signed is marked where it is not a person", () => {
+  const rows = () => within(screen.getByRole("list"));
+
+  it("says nothing about the case the surface was built for", () => {
+    renderLanes("active", {
+      decisions: [
+        record({ currency: "active", accepter: "Raghav", accepter_kind: "person" }),
+      ],
+    });
+
+    expect(rows().queryByText(/Signed by/)).not.toBeInTheDocument();
+  });
+
+  it("names an agent, and the session behind it", () => {
+    renderLanes("active", {
+      decisions: [
+        record({
+          currency: "active",
+          accepter: "claude_code",
+          accepter_kind: "agent",
+          accepter_session: "sess-42",
+        }),
+      ],
+    });
+
+    const mark = rows().getByText("Signed by an agent");
+    expect(mark).toBeInTheDocument();
+    expect(mark).toHaveAttribute(
+      "title",
+      "Signed by an agent: claude_code, session sess-42",
+    );
+  });
+
+  it("does not call a machine withdrawal an acceptance", () => {
+    // The evolution stage retires records as `agent`, so the badge on a
+    // history row is over a revocation, not a grant.
+    renderLanes("history", {
+      decisions: [
+        record({
+          currency: "superseded",
+          accepter: "evolution",
+          accepter_kind: "agent",
+        }),
+      ],
+    });
+
+    expect(rows().queryByText(/Accepted by/)).not.toBeInTheDocument();
+    expect(rows().getByText("Signed by an agent")).toBeInTheDocument();
+  });
+
+  it("marks a row written before the kind was recorded", () => {
+    // '' is not `person`: leaving it unmarked would read as one.
+    renderLanes("active", {
+      decisions: [
+        record({ currency: "active", accepter: "Raghav", accepter_kind: "" }),
+      ],
+    });
+
+    expect(rows().getByText("Signer not recorded")).toBeInTheDocument();
+  });
+
+  it("says nothing about a candidate, which nobody signed", () => {
+    renderLanes("candidates", { decisions: [record({ currency: null })] });
+
+    expect(rows().queryByText(/Signed by/)).not.toBeInTheDocument();
+    expect(rows().queryByText("Signer not recorded")).not.toBeInTheDocument();
   });
 });
 

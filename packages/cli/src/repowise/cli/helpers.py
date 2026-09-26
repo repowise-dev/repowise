@@ -57,6 +57,17 @@ T = TypeVar("T")
 console = Console(width=resolve_console_width(sys.stdout))
 err_console = Console(stderr=True, width=resolve_console_width(sys.stderr))
 
+
+def warn(text: str) -> None:
+    """Print a warning to stderr with the shared yellow ``Warning:`` prefix.
+
+    Every CLI warning funnels through this helper so warnings render on the
+    same ``err_console`` stream (never stdout) and use one ``[yellow]Warning:[/yellow]``
+    spelling instead of hand-synced copies scattered across commands.
+    """
+    err_console.print(f"[yellow]Warning:[/yellow] {text}")
+
+
 STATE_FILENAME = "state.json"
 REPOWISE_DIR = ".repowise"
 
@@ -619,8 +630,8 @@ def head_commit_ts(repo_path: Path) -> float | None:
     """Committer timestamp of the repo's HEAD, or None when git is unavailable.
 
     Anchors the periodic idle-file health re-score gate (#728) to repo time
-    rather than wall clock, so the cadence is deterministic under
-    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+    rather than wall clock, the same anchor the git history windows use, so
+    the cadence is deterministic and correct for historical checkouts.
 
     Shared with ``init`` so a fresh index can stamp ``last_full_rescore_at`` in
     the same units the gate reads it back in.
@@ -742,8 +753,8 @@ def _persist_provider_key(repo_path: Path, provider: str) -> None:
         try:
             save_repo_env_key(repo_path, env_var, value)
         except (OSError, ValueError) as exc:
-            err_console.print(
-                f"[yellow]Warning:[/yellow] could not save {env_var} to "
+            warn(
+                f"could not save {env_var} to "
                 f".repowise/.env ({exc}). The index is complete, but "
                 f"`repowise mcp` will need {env_var} in its environment."
             )
@@ -927,8 +938,8 @@ def resolve_provider(
     """Resolve a provider instance from CLI flags or environment variables.
 
     Resolution order:
-      1. Explicit ``--provider`` flag
-      2. ``REPOWISE_PROVIDER`` env var
+      1. Explicit ``--provider`` / ``--model`` flag
+      2. ``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env var
       3. ``.repowise/config.yaml`` (written by ``repowise init``)
       4. Auto-detect from API key env vars
     """
@@ -954,6 +965,9 @@ def resolve_provider(
 
     if provider_name is None and cfg.get("provider"):
         provider_name = cfg["provider"]
+
+    if model is None:
+        model = (os.environ.get("REPOWISE_MODEL") or "").strip() or None
 
     # Honor the config model regardless of how the provider was resolved (#416).
     if model is None and cfg.get("model"):
@@ -1006,7 +1020,7 @@ def resolve_provider(
         warnings = validate_provider_config(provider_name)
         if warnings:
             for warning in warnings:
-                err_console.print(f"[yellow]Warning:[/yellow] {warning}")
+                warn(warning)
             # For explicit provider requests, we still try to create it
             # The provider constructor will fail if the API key is actually required
 
@@ -1343,6 +1357,31 @@ class CommandTarget:
         if entry is None:
             return None
         return (self.ws_root / entry.path).resolve()
+
+    def single_repo_path(self) -> Path:
+        """The one repository to read, narrowing workspace mode to a repo.
+
+        ``--repo <alias>`` resolves to ``mode="workspace"`` with ``repo_path``
+        left ``None``, so a command that reads ``repo_path`` directly refuses
+        every ``--repo`` call it advertises. Three commands already hand-roll
+        this narrowing (``dead-code``, ``health``, ``costs``); this is where it
+        belongs, beside :meth:`primary_path` and :meth:`resolve_repo_alias`.
+
+        Raises ``click.ClickException`` when the alias is unknown or the
+        workspace declares no primary.
+        """
+        if not self.is_workspace:
+            assert self.repo_path is not None
+            return self.repo_path
+        if self.repo_filter is not None:
+            picked = self.resolve_repo_alias(self.repo_filter)
+            if picked is None:
+                raise click.ClickException(f"Unknown repo alias: {self.repo_filter}")
+            return picked
+        primary = self.primary_path()
+        if primary is None:
+            raise click.ClickException("Workspace has no primary repo configured.")
+        return primary
 
     # ------------------------------------------------------------------
     # Notice rendering — every command should call this so users always

@@ -41,7 +41,7 @@ class PrimitiveObsessionDetector:
         if ctx.nloc < _MIN_FILE_NLOC:
             return []
         out: list[BiomarkerResult] = []
-        for fn in ctx.function_metrics.values():
+        for fn in ctx.all_functions:
             threshold = _PARAM_THRESHOLD
             if fn.name in _CTOR_NAMES:
                 threshold += _CTOR_GRACE

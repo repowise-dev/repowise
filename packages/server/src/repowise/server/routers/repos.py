@@ -3,36 +3,50 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import io
 import logging
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GenerationJob,
-    GitMetadata,
     GraphNode,
-    HealthSnapshot,
     Page,
     Repository,
 )
 from repowise.server.deps import get_db_session, get_fts, verify_api_key
 from repowise.server.job_executor import execute_job
-from repowise.server.mcp_server._meta import read_live_head, resolve_indexed_commit
-from repowise.server.routers._sorting import repository_sort_key
+from repowise.server.routers._repo_generate import (
+    GenerateRequestBody,
+    GenerateSelectionBody,  # noqa: F401 - re-exported beside the body that nests it
+    _generate_job_config,
+    _reject_unknown_style,
+    _validate_generate_selection,
+    _validate_generate_style,
+)
+from repowise.server.routers._repo_listing import (
+    attach_workspace_metadata,
+    flag_unindexed,
+    heal_indexed_commits,
+    load_repositories,
+    unregistered_workspace_rows,
+)
+from repowise.server.routers._repo_pricing import (
+    cost_fields,
+    count_files,
+    probe_provider,
+    resolve_provider,
+)
+from repowise.server.routers._repo_summary import _freshness_for, _summary_rows_for
 from repowise.server.schemas import (
     JobAcceptedResponse,
     RepoCreate,
@@ -53,6 +67,13 @@ router = APIRouter(
 )
 
 
+async def _get_repo_or_404(session: AsyncSession, repo_id: str) -> Repository:
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    return repo
+
+
 @router.post("", response_model=RepoResponse, status_code=201)
 async def create_repo(
     body: RepoCreate,
@@ -69,10 +90,7 @@ async def create_repo(
     as ``initial_job_id`` so clients can attach to its progress stream.
     """
     if not body.index:
-        # Metadata-only registration (kept for API compatibility and tests):
-        # the row lands in the ambient DB; per-repo storage is established
-        # when the repo is first indexed (here with index=true, or later via
-        # POST /api/repos/{id}/index).
+        # Metadata-only registration: per-repo storage is created on first index.
         repo = await crud.upsert_repository(
             session,
             name=body.name,
@@ -131,16 +149,20 @@ async def create_repo(
     return response
 
 
+async def _has_active_job(session: AsyncSession, repo_id: str) -> bool:
+    active = await session.execute(
+        select(GenerationJob.id)
+        .where(GenerationJob.repository_id == repo_id)
+        .where(GenerationJob.status.in_(["pending", "running"]))
+        .limit(1)
+    )
+    return active.scalar_one_or_none() is not None
+
+
 async def _enqueue_index_job(request: Request, session_factory, repo_id: str) -> str | None:
     """Create and launch an ``initial_index`` job unless one is already active."""
     async with get_session(session_factory) as session:
-        active = await session.execute(
-            select(GenerationJob.id)
-            .where(GenerationJob.repository_id == repo_id)
-            .where(GenerationJob.status.in_(["pending", "running"]))
-            .limit(1)
-        )
-        if active.scalar_one_or_none() is not None:
+        if await _has_active_job(session, repo_id):
             return None
         job = await crud.upsert_generation_job(
             session,
@@ -170,295 +192,26 @@ async def list_repos(
     what powers the web UI sidebar — silently dropping unindexed repos
     used to cause the "I only see the primary" Discord report.
     """
-    has_files_subq = (
-        select(GraphNode.repository_id)
-        .where(GraphNode.node_type == "file")
-        .group_by(GraphNode.repository_id)
-        .subquery()
+    app_state = request.app.state
+    repos, indexed_repo_ids = await load_repositories(
+        session, getattr(app_state, "workspace_sessions", {})
     )
-    result = await session.execute(
-        select(Repository, has_files_subq.c.repository_id.is_not(None))
-        .outerjoin(has_files_subq, Repository.id == has_files_subq.c.repository_id)
-        .order_by(Repository.updated_at.desc())
-    )
-    repos: list[Repository] = []
-    indexed_repo_ids: set[str] = set()
-    for r, is_indexed in result.all():
-        repos.append(r)
-        if is_indexed:
-            indexed_repo_ids.add(r.id)
-    seen_ids = {r.id for r in repos}
-
-    # In workspace mode, also fetch repos from other workspace DBs
-    ws_sessions: dict = getattr(request.app.state, "workspace_sessions", {})
-    for repo_id, ws_factory in ws_sessions.items():
-        if repo_id in seen_ids:
-            continue
-        try:
-            async with ws_factory() as ws_session:
-                ws_result = await ws_session.execute(
-                    select(Repository, has_files_subq.c.repository_id.is_not(None))
-                    .outerjoin(has_files_subq, Repository.id == has_files_subq.c.repository_id)
-                    .where(Repository.id == repo_id)
-                )
-                row = ws_result.first()
-                if row:
-                    ws_repo, ws_is_indexed = row
-                    repos.append(ws_repo)
-                    seen_ids.add(ws_repo.id)
-                    if ws_is_indexed:
-                        indexed_repo_ids.add(ws_repo.id)
-        except Exception:
-            pass
-
-    # Repository rows are merged across database backends in workspace mode.
-    # Normalize their timestamps before sorting because PostgreSQL returns aware
-    # datetimes while SQLite may return naive UTC values.
-    repos.sort(key=repository_sort_key, reverse=True)
     responses = [RepoResponse.from_orm(r) for r in repos]
-
-    # Self-heal the freshness stamp on read: prefer each repo's state.json
-    # last_sync_commit over a possibly-stale DB head_commit, so a row left
-    # un-stamped by an older build doesn't make the extension report "index
-    # behind checkout". The DB row is repaired for good on the next update.
-    from repowise.server.mcp_server._meta import resolve_indexed_commit
-
-    for resp in responses:
-        if resp.local_path:
-            resp.head_commit = resolve_indexed_commit(resp.head_commit, resp.local_path)
-
-    # Flag registered-but-never-indexed repos. head_commit can't signal this
-    # (registration stamps it from the live git HEAD), so the honest check is
-    # whether file-typed graph nodes exist in the database.
-    # Reuses the workspace "needs_index" / "missing_dir" contract the sidebar renders.
-    for resp in responses:
-        if resp.workspace_status is None and resp.local_path and resp.id not in indexed_repo_ids:
-            try:
-                if not Path(resp.local_path).is_dir():
-                    resp.workspace_status = "missing_dir"
-                else:
-                    resp.workspace_status = "needs_index"
-            except OSError:
-                resp.workspace_status = "needs_index"
+    heal_indexed_commits(responses)
+    flag_unindexed(responses, indexed_repo_ids)
 
     # Augment with workspace metadata. We do this in a second pass (rather
     # than during from_orm) because the workspace context lives on
     # app.state, not on the Repository row.
-    ws_config = getattr(request.app.state, "workspace_config", None)
-    ws_root = getattr(request.app.state, "workspace_root", None)
+    ws_config = getattr(app_state, "workspace_config", None)
+    ws_root = getattr(app_state, "workspace_root", None)
     if ws_config is None or ws_root is None:
         return responses
 
-    import json as _json
-
     ws_root_path = Path(ws_root)
-    # Map local_path → alias entry for quick attach on registered rows.
-    by_path: dict[str, object] = {
-        str((ws_root_path / e.path).resolve()): e for e in ws_config.repos
-    }
-
-    # Attach alias + identity + docs status to registered rows.
-    matched_aliases: set[str] = set()
-    for resp in responses:
-        if not resp.local_path:
-            continue
-        entry = by_path.get(str(Path(resp.local_path).resolve()))
-        if entry is None:
-            continue
-        resp.workspace_alias = entry.alias
-        resp.is_primary = bool(entry.is_primary)
-        if resp.id in indexed_repo_ids:
-            resp.workspace_status = "indexed"
-        matched_aliases.add(entry.alias)
-
-        # The docs mode and index tier are recorded per-repo in state.json.
-        # Read it once per response: cheap, and never failing.
-        state_path = Path(resp.local_path) / ".repowise" / "state.json"
-        if state_path.is_file():
-            try:
-                state = _json.loads(state_path.read_text(encoding="utf-8"))
-                resp.docs_mode = resolve_docs_mode(state)
-                # A state file predating every docs field used to report
-                # docs_enabled=True by default. Deriving the flag from the
-                # resolved mode alone would flip those old indexes to False,
-                # so keep the legacy default when nothing at all is recorded.
-                if not any(k in state for k in ("docs_mode", "docs_enabled", "provider", "model")):
-                    resp.docs_enabled = True
-                else:
-                    resp.docs_enabled = resp.docs_mode != "none"
-                resp.docs_skip_reason = state.get("docs_skip_reason")
-                resp.run_mode = state.get("run_mode")
-                resp.git_tier = state.get("git_tier")
-            except Exception:
-                pass
-
-    # Synthesize entries for repos in the workspace that aren't registered yet.
-    from datetime import UTC as _UTC
-    from datetime import datetime
-
-    now = datetime.now(_UTC)
-    for entry in ws_config.repos:
-        if entry.alias in matched_aliases:
-            continue
-        abs_path = (ws_root_path / entry.path).resolve()
-        status = "needs_index" if abs_path.is_dir() else "missing_dir"
-        # Synthetic, stable, prefixed ID so the frontend can route to a
-        # CTA card without colliding with real repo UUIDs.
-        synthetic_id = f"ws:{entry.alias}"
-        responses.append(
-            RepoResponse(
-                id=synthetic_id,
-                name=entry.alias,
-                url="",
-                local_path=str(abs_path),
-                default_branch="main",
-                head_commit=None,
-                settings={},
-                created_at=now,
-                updated_at=now,
-                workspace_alias=entry.alias,
-                workspace_status=status,
-                is_primary=bool(entry.is_primary),
-                docs_enabled=False,
-                docs_mode="none",
-                docs_skip_reason="not indexed yet",
-            )
-        )
-
+    matched = attach_workspace_metadata(responses, ws_config, ws_root_path, indexed_repo_ids)
+    responses.extend(unregistered_workspace_rows(ws_config, ws_root_path, matched))
     return responses
-
-
-def _fresh_case(column: Any, value: Any) -> Any:
-    """Portable conditional count. ``count(...) FILTER (WHERE ...)`` needs
-    SQLite 3.30+ and this project ships no version floor, so every conditional
-    count in the codebase is a ``sum(case(...))`` — see ``routers/git.py``."""
-    return func.coalesce(func.sum(case((column == value, 1), else_=0)), 0)
-
-
-async def _summary_rows_for(session: AsyncSession) -> dict[str, dict[str, Any]]:
-    """Headline figures for every repo in one database, five queries total.
-
-    Grouped by ``repository_id`` rather than filtered per repo: the route this
-    replaces ran six queries *per repository* for the stats alone, and
-    ``/git-summary`` hydrated every ``git_metadata`` row (one per file, ~3.5k on
-    this repo) to produce two integers.
-
-    A table that does not exist yet — a repo registered but never analysed, an
-    older store — degrades that section to zero rather than 500-ing the whole
-    dashboard, which is the same contract ``routers/stats.py`` documents.
-    """
-    out: dict[str, dict[str, Any]] = {}
-
-    def row_for(repo_id: str) -> dict[str, Any]:
-        return out.setdefault(repo_id, {})
-
-    # Files, symbols and entry points. `graph_nodes` holds symbol rows in the
-    # same table, so every count here is scoped to `node_type == "file"`; the
-    # unscoped count is what makes /stats report 38,813 "files" for 3,600.
-    with contextlib.suppress(SQLAlchemyError):
-        result = await session.execute(
-            select(
-                GraphNode.repository_id,
-                func.count(GraphNode.id),
-                func.coalesce(func.sum(GraphNode.symbol_count), 0),
-                _fresh_case(GraphNode.is_entry_point, True),
-            )
-            .where(GraphNode.node_type == "file")
-            .group_by(GraphNode.repository_id)
-        )
-        for repo_id, files, symbols, entries in result.all():
-            row_for(repo_id).update(
-                file_count=int(files or 0),
-                symbol_count=int(symbols or 0),
-                entry_point_count=int(entries or 0),
-            )
-
-    # Documentation pages and the fresh subset. Never selects `content`.
-    with contextlib.suppress(SQLAlchemyError):
-        result = await session.execute(
-            select(
-                Page.repository_id,
-                func.count(Page.id),
-                _fresh_case(Page.freshness_status, "fresh"),
-            ).group_by(Page.repository_id)
-        )
-        for repo_id, pages, fresh in result.all():
-            row_for(repo_id).update(
-                doc_page_count=int(pages or 0),
-                doc_fresh_page_count=int(fresh or 0),
-            )
-
-    # Open unused exports — the one dead-code figure the dashboard quotes.
-    with contextlib.suppress(SQLAlchemyError):
-        result = await session.execute(
-            select(DeadCodeFinding.repository_id, func.count(DeadCodeFinding.id))
-            .where(
-                DeadCodeFinding.kind == "unused_export",
-                DeadCodeFinding.status == "open",
-            )
-            .group_by(DeadCodeFinding.repository_id)
-        )
-        for repo_id, dead in result.all():
-            row_for(repo_id).update(dead_export_count=int(dead or 0))
-
-    # Hotspots, and the tracked-file denominator they are meaningful against.
-    with contextlib.suppress(SQLAlchemyError):
-        result = await session.execute(
-            select(
-                GitMetadata.repository_id,
-                func.count(GitMetadata.id),
-                _fresh_case(GitMetadata.is_hotspot, True),
-            ).group_by(GitMetadata.repository_id)
-        )
-        for repo_id, tracked, hotspots in result.all():
-            row_for(repo_id).update(
-                tracked_file_count=int(tracked or 0),
-                hotspot_count=int(hotspots or 0),
-            )
-
-    # Latest health snapshot per repo. Three scalar columns only: a snapshot
-    # row carries `per_file_scores_json`, ~186 KB apiece, and selecting the
-    # entity would pull the whole retained history's worth of it for two
-    # floats (see crud.get_health_snapshot_headline's docstring). Reduced in
-    # Python rather than with a window function, because retention bounds the
-    # row count to tens per repo and window syntax is not uniform across the
-    # two supported backends.
-    with contextlib.suppress(SQLAlchemyError):
-        result = await session.execute(
-            select(
-                HealthSnapshot.repository_id,
-                HealthSnapshot.taken_at,
-                HealthSnapshot.average_health,
-                HealthSnapshot.hotspot_health,
-            ).order_by(HealthSnapshot.taken_at.asc(), HealthSnapshot.id.asc())
-        )
-        for repo_id, taken_at, average, hotspot in result.all():
-            # Ascending order means the last write per repo wins.
-            row_for(repo_id).update(
-                average_health=round(float(average), 2) if average is not None else None,
-                hotspot_health=round(float(hotspot), 2) if hotspot is not None else None,
-                health_taken_at=taken_at,
-            )
-
-    return out
-
-
-def _freshness_for(repo: RepoResponse) -> tuple[str | None, str | None, bool | None]:
-    """(indexed commit, live HEAD, is the index behind) for one repo.
-
-    Both reads are plain file I/O — `read_live_head` parses `.git/HEAD` and
-    follows at most one ref rather than spawning git — so this stays cheap
-    enough to run per repo on a page load. Returns ``None`` for
-    ``index_behind`` when either side is unavailable, so "current" and
-    "could not tell" never collapse into the same answer.
-    """
-    if not repo.local_path:
-        return None, None, None
-    indexed = resolve_indexed_commit(repo.head_commit, repo.local_path)
-    live = read_live_head(repo.local_path)
-    if not indexed or not live:
-        return (indexed[:12] if indexed else None), (live[:12] if live else None), None
-    return indexed[:12], live[:12], indexed != live
 
 
 @router.get("/summary", response_model=ReposSummaryResponse)
@@ -468,20 +221,12 @@ async def repos_summary(
 ) -> ReposSummaryResponse:
     """One-call payload for the multi-repo dashboard.
 
-    Replaces a `2N+1` waterfall — `/api/repos`, then `/stats` and
-    `/git-summary` per repository — with a single request whose cost does not
-    grow with the number of repos.
-
-    Declared **before** ``/{repo_id}``: FastAPI matches in declaration order,
-    so a literal path registered after the parameterised one is unreachable
-    and would answer 404 "Repository not found" instead.
+    Its cost does not grow with the number of repos. Declared **before**
+    ``/{repo_id}``: FastAPI matches in declaration order.
     """
     repos = await list_repos(request, session)
 
-    # Grouped aggregates from the ambient DB. In workspace mode each repo
-    # keeps its own wiki.db and the primary session cannot see those rows, so
-    # fan out the same way `list_repos` does. One unreadable DB drops that
-    # repo's figures to zero rather than failing the page.
+    # Workspace repos keep their own wiki.db, so fan out; an unreadable one reads as zeros.
     stats = await _summary_rows_for(session)
     ws_sessions: dict = getattr(request.app.state, "workspace_sessions", {})
     for repo_id, ws_factory in ws_sessions.items():
@@ -518,10 +263,7 @@ async def get_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
     """Get a single repository by ID."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
-    return RepoResponse.from_orm(repo)
+    return RepoResponse.from_orm(await _get_repo_or_404(session, repo_id))
 
 
 @router.patch("/{repo_id}", response_model=RepoResponse)
@@ -531,9 +273,7 @@ async def update_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
     """Update repository fields."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = await _get_repo_or_404(session, repo_id)
 
     if body.name is not None:
         repo.name = body.name
@@ -544,20 +284,55 @@ async def update_repo(
     if body.settings is not None:
         import json
 
-        from repowise.core.generation.styles import is_known_style, list_styles
-
         # Validate a wiki_style setting up front so a typo surfaces as a 400 here
         # rather than silently falling back to the default during generation.
         style = body.settings.get("wiki_style")
-        if style is not None and not is_known_style(style):
-            valid = ", ".join(s.name for s in list_styles())
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown wiki_style '{style}'. Valid styles: {valid}.",
-            )
+        if style is not None:
+            _reject_unknown_style(style, "wiki_style")
         repo.settings_json = json.dumps(body.settings)
     await session.flush()
     return RepoResponse.from_orm(repo)
+
+
+def _forget_workspace_member(app_state: Any, alias: str) -> bool:
+    """Remove an unregistered workspace member from the workspace config.
+
+    Backs deleting a synthetic ``ws:<alias>`` row. Returns False when the
+    server is not in workspace mode or knows no such alias.
+    """
+    ws_config = getattr(app_state, "workspace_config", None)
+    ws_root = getattr(app_state, "workspace_root", None)
+    if ws_config is None or ws_root is None:
+        return False
+    ws_root_path = Path(ws_root)
+    entry = ws_config.get_repo(alias)
+    if entry is None:
+        return False
+    repo_path_str = str((ws_root_path / entry.path).resolve())
+    ws_config.remove_repo(alias)
+    ws_config.save(ws_root_path)
+    app_state.workspace_config = ws_config
+    path_to_rid = getattr(app_state, "workspace_path_to_repo_id", None)
+    if path_to_rid and repo_path_str in path_to_rid:
+        path_to_rid.pop(repo_path_str)
+    return True
+
+
+async def _drop_repo_routing(app_state: Any, repo_id: str) -> None:
+    # Drop per-repo routing and the primary-DB registry row, if any, so the
+    # repo neither lingers in listings nor resurrects on the next restart.
+    ws_sessions = getattr(app_state, "workspace_sessions", None) or {}
+    if repo_id not in ws_sessions:
+        return
+    ws_sessions.pop(repo_id, None)
+    getattr(app_state, "workspace_fts", {}).pop(repo_id, None)
+    try:
+        async with get_session(app_state.session_factory) as primary:
+            registry = await crud.get_repository(primary, repo_id)
+            if registry is not None:
+                await crud.delete_repository(primary, repo_id)
+    except Exception:
+        logger.debug("registry_row_delete_failed", extra={"repo_id": repo_id})
 
 
 @router.delete("/{repo_id}", response_model=RepoDeletedResponse)
@@ -568,38 +343,31 @@ async def delete_repo(
     fts=Depends(get_fts),
 ) -> dict:
     """Delete a repository and all its data."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
+    app_state = request.app.state
+    if repo_id.startswith("ws:") and _forget_workspace_member(app_state, repo_id[3:]):
+        return {"ok": True, "deleted_pages": 0}
+
+    await _get_repo_or_404(session, repo_id)
 
     # Collect page IDs before CASCADE deletes the Page rows
     page_ids = await crud.list_page_ids(session, repo_id)
 
     # Clean up FTS index (FTS5 virtual table has no FK cascade). Use the
     # repo's own FTS instance when it lives in a per-repo database.
-    repo_fts = getattr(request.app.state, "workspace_fts", {}).get(repo_id) or fts
+    repo_fts = getattr(app_state, "workspace_fts", {}).get(repo_id) or fts
     if repo_fts is not None:
         await repo_fts.delete_many(page_ids)
 
     # Delete repository — CASCADE handles all child ORM tables
     await crud.delete_repository(session, repo_id)
 
-    # Drop per-repo routing and the primary-DB registry row, if any, so the
-    # repo neither lingers in listings nor resurrects on the next restart.
-    app_state = request.app.state
-    ws_sessions = getattr(app_state, "workspace_sessions", None) or {}
-    if repo_id in ws_sessions:
-        ws_sessions.pop(repo_id, None)
-        getattr(app_state, "workspace_fts", {}).pop(repo_id, None)
-        try:
-            async with get_session(app_state.session_factory) as primary:
-                registry = await crud.get_repository(primary, repo_id)
-                if registry is not None:
-                    await crud.delete_repository(primary, repo_id)
-        except Exception:
-            logger.debug("registry_row_delete_failed", extra={"repo_id": repo_id})
-
+    await _drop_repo_routing(app_state, repo_id)
     return {"ok": True, "deleted_pages": len(page_ids)}
+
+
+async def _scalar_or(session: AsyncSession, stmt: Any, default: Any) -> Any:
+    """The single value ``stmt`` selects, or ``default`` when it is NULL or zero."""
+    return (await session.execute(stmt)).scalar_one() or default
 
 
 @router.get("/{repo_id}/stats", response_model=RepoStatsResponse)
@@ -608,65 +376,60 @@ async def get_repo_stats(
     session: AsyncSession = Depends(get_db_session),
 ) -> RepoStatsResponse:
     """Get aggregate stats for a repository."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
+    await _get_repo_or_404(session, repo_id)
 
-    # File nodes only. `graph_nodes` holds symbol rows in the same table, so
-    # the unscoped count reported ~10x the real figure — 38,813 against 3,600
-    # on this codebase — under a field named `file_count`. Both surfaces that
-    # read it printed that as "N files": the multi-repo dashboard and the chat
-    # empty state.
-    file_count_result = await session.execute(
+    # File nodes only: `graph_nodes` also holds symbol rows.
+    file_count = await _scalar_or(
+        session,
         select(func.count(GraphNode.id)).where(
             GraphNode.repository_id == repo_id,
             GraphNode.node_type == "file",
+        ),
+        0,
+    )
+    symbol_count = int(
+        await _scalar_or(
+            session,
+            select(func.sum(GraphNode.symbol_count)).where(GraphNode.repository_id == repo_id),
+            0,
         )
     )
-    file_count = file_count_result.scalar_one() or 0
-
-    symbol_count_result = await session.execute(
-        select(func.sum(GraphNode.symbol_count)).where(GraphNode.repository_id == repo_id)
-    )
-    symbol_count = int(symbol_count_result.scalar_one() or 0)
-
-    entry_count_result = await session.execute(
+    entry_point_count = await _scalar_or(
+        session,
         select(func.count(GraphNode.id)).where(
             GraphNode.repository_id == repo_id,
             GraphNode.is_entry_point == True,  # noqa: E712
+        ),
+        0,
+    )
+    avg_confidence = float(
+        await _scalar_or(
+            session, select(func.avg(Page.confidence)).where(Page.repository_id == repo_id), 0.0
         )
     )
-    entry_point_count = entry_count_result.scalar_one() or 0
-
-    avg_conf_result = await session.execute(
-        select(func.avg(Page.confidence)).where(Page.repository_id == repo_id)
-    )
-    avg_confidence = float(avg_conf_result.scalar_one() or 0.0)
     doc_coverage_pct = avg_confidence * 100
-
-    dead_result = await session.execute(
+    dead_export_count = await _scalar_or(
+        session,
         select(func.count(DeadCodeFinding.id)).where(
             DeadCodeFinding.repository_id == repo_id,
             DeadCodeFinding.kind == "unused_export",
             DeadCodeFinding.status == "open",
-        )
+        ),
+        0,
     )
-    dead_export_count = dead_result.scalar_one() or 0
 
     # Compute true freshness score from actual page freshness statuses
-    total_pages_result = await session.execute(
-        select(func.count(Page.id)).where(Page.repository_id == repo_id)
+    total_pages = await _scalar_or(
+        session, select(func.count(Page.id)).where(Page.repository_id == repo_id), 0
     )
-    total_pages = total_pages_result.scalar_one() or 0
-
-    fresh_pages_result = await session.execute(
+    fresh_pages = await _scalar_or(
+        session,
         select(func.count(Page.id)).where(
             Page.repository_id == repo_id,
             Page.freshness_status == "fresh",
-        )
+        ),
+        0,
     )
-    fresh_pages = fresh_pages_result.scalar_one() or 0
-
     freshness_score = (fresh_pages / total_pages * 100) if total_pages > 0 else doc_coverage_pct
 
     return RepoStatsResponse(
@@ -697,16 +460,28 @@ async def _ensure_no_active_job(session: AsyncSession, repo_id: str) -> None:
     cancel-token slot, so a second concurrent job is refused rather than started.
     Shared by every job-launching endpoint.
     """
-    active = await session.execute(
-        select(GenerationJob.id)
-        .where(GenerationJob.repository_id == repo_id)
-        .where(GenerationJob.status.in_(["pending", "running"]))
-        .limit(1)
-    )
-    if active.scalar_one_or_none() is not None:
+    if await _has_active_job(session, repo_id):
         raise HTTPException(
             status_code=409, detail="A job is already in progress for this repository"
         )
+
+
+async def _start_pending_job(
+    request: Request, session: AsyncSession, repo_id: str, config: dict | None = None
+) -> JobAcceptedResponse:
+    """Record a pending job, launch it in the background, and return the 202 payload."""
+    job = await crud.upsert_generation_job(
+        session,
+        repository_id=repo_id,
+        status="pending",
+        config=config,
+    )
+    # Commit (not just flush) so the background task's separate session can
+    # see the job row.  SQLite WAL isolation hides uncommitted rows from
+    # other connections, so flush() alone is not sufficient.
+    await session.commit()
+    _launch_job_task(request, job.id, repo_id)
+    return _accepted(job.id)
 
 
 @router.post("/{repo_id}/sync", response_model=JobAcceptedResponse, status_code=202)
@@ -720,23 +495,9 @@ async def sync_repo(
     Creates a generation job, launches the pipeline in the background,
     and returns immediately with the job ID.
     """
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
-
+    await _get_repo_or_404(session, repo_id)
     await _ensure_no_active_job(session, repo_id)
-
-    job = await crud.upsert_generation_job(
-        session,
-        repository_id=repo_id,
-        status="pending",
-    )
-    # Commit (not just flush) so the background task's separate session can
-    # see the job row.  SQLite WAL isolation hides uncommitted rows from
-    # other connections, so flush() alone is not sufficient.
-    await session.commit()
-    _launch_job_task(request, job.id, repo_id)
-    return _accepted(job.id)
+    return await _start_pending_job(request, session, repo_id)
 
 
 @router.post("/{repo_id}/full-resync", response_model=JobAcceptedResponse, status_code=202)
@@ -750,148 +511,9 @@ async def full_resync(
     Creates a generation job, launches the pipeline in the background,
     and returns immediately with the job ID.
     """
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
-
+    await _get_repo_or_404(session, repo_id)
     await _ensure_no_active_job(session, repo_id)
-
-    job = await crud.upsert_generation_job(
-        session,
-        repository_id=repo_id,
-        status="pending",
-        config={"mode": "full_resync"},
-    )
-    # Commit (not just flush) so the background task's separate session can
-    # see the job row.  See sync_repo comment for rationale.
-    await session.commit()
-    _launch_job_task(request, job.id, repo_id)
-    return _accepted(job.id)
-
-
-class GenerateSelectionBody(BaseModel):
-    """Which pages a generate request targets.
-
-    Two selection philosophies, kept distinct exactly as the CLI keeps them:
-
-    - **Explicit**: ``all`` / ``unwritten`` / ``stale``, an explicit ``page_ids``
-      list, or every page under a ``path_prefix`` — the caller names the pages.
-    - **Ranked** (``kind="ranked"``): write the most important slice by the same
-      importance model ``repowise init`` uses, sized by ``coverage_pct`` (a
-      fraction in ``(0, 1]``; ``1.0`` == everything) or ``top_n`` (a target page
-      count, not exact). The two are mutually exclusive.
-
-    The two philosophies cannot be combined; :func:`_validate_generate_selection`
-    enforces it with an actionable 400.
-    """
-
-    kind: Literal["all", "unwritten", "stale", "page_ids", "path_prefix", "ranked"] = "unwritten"
-    page_ids: list[str] | None = None
-    path_prefix: str | None = None
-    # Ranked selection only. ``coverage_pct`` is a fraction (0.2 == the top 20%);
-    # ``top_n`` targets ~N pages (mapped to a coverage fraction downstream).
-    coverage_pct: float | None = None
-    top_n: int | None = None
-
-
-class GenerateRequestBody(BaseModel):
-    """Body for the generate + estimate endpoints.
-
-    ``cascade`` is optional: left unset it resolves to ``none`` for a ranked
-    selection (the ranked set is already a coherent slice) and ``dependents`` for
-    an explicit one, matching the CLI ``generate`` defaults.
-    """
-
-    selection: GenerateSelectionBody = Field(default_factory=GenerateSelectionBody)
-    cascade: Literal["none", "dependents", "full"] | None = None
-    style: str | None = None
-
-
-def _validate_generate_selection(sel: GenerateSelectionBody) -> None:
-    """Reject an incoherent selection with an actionable 400.
-
-    Ranked and explicit selection are distinct philosophies (see
-    :class:`GenerateSelectionBody`) and may not be mixed; ``coverage_pct`` and
-    ``top_n`` are mutually exclusive and belong only to a ranked selection.
-    """
-    if sel.kind == "page_ids":
-        from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
-
-        structural = [
-            pid
-            for pid in (sel.page_ids or [])
-            if pid.split(":", 1)[0] not in MODEL_WRITTEN_PAGE_TYPES
-        ]
-        if structural:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "generate writes the concept layer only; these pages render "
-                    "from structure and refresh on update, not generate: " + ", ".join(structural)
-                ),
-            )
-
-    is_ranked = sel.kind == "ranked"
-    has_coverage = sel.coverage_pct is not None
-    has_top_n = sel.top_n is not None
-
-    if is_ranked:
-        if has_coverage == has_top_n:
-            raise HTTPException(
-                status_code=400,
-                detail="A ranked selection needs exactly one of coverage_pct or top_n.",
-            )
-        if has_coverage and not 0.0 < sel.coverage_pct <= 1.0:
-            raise HTTPException(
-                status_code=400,
-                detail="coverage_pct must be a fraction in (0, 1] (0.2 == the top 20%, 1.0 == all).",
-            )
-        if has_top_n and sel.top_n <= 0:
-            raise HTTPException(status_code=400, detail="top_n must be a positive number of pages.")
-        if sel.page_ids is not None or sel.path_prefix is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="A ranked selection cannot also carry page_ids or path_prefix.",
-            )
-    elif has_coverage or has_top_n:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "coverage_pct / top_n rank pages by importance and require "
-                'selection kind "ranked", not "' + sel.kind + '".'
-            ),
-        )
-
-
-def _validate_generate_style(style: str | None) -> None:
-    """Reject an unknown wiki style with a 400 listing the valid ones."""
-    if style is None:
-        return
-    from repowise.core.generation.styles import is_known_style, list_styles
-
-    if not is_known_style(style):
-        valid = ", ".join(s.name for s in list_styles())
-        raise HTTPException(
-            status_code=400, detail=f"Unknown style '{style}'. Valid styles: {valid}."
-        )
-
-
-def _generate_job_config(body: GenerateRequestBody) -> dict:
-    """Build the executor's job config from a validated request body."""
-    selection: dict = {"kind": body.selection.kind}
-    if body.selection.kind == "page_ids":
-        selection["page_ids"] = body.selection.page_ids or []
-    elif body.selection.kind == "path_prefix":
-        selection["path_prefix"] = body.selection.path_prefix
-    elif body.selection.kind == "ranked":
-        if body.selection.coverage_pct is not None:
-            selection["coverage_pct"] = body.selection.coverage_pct
-        if body.selection.top_n is not None:
-            selection["top_n"] = body.selection.top_n
-    config: dict = {"mode": "generate", "selection": selection, "cascade": body.cascade}
-    if body.style is not None:
-        config["style"] = body.style
-    return config
+    return await _start_pending_job(request, session, repo_id, {"mode": "full_resync"})
 
 
 @router.post("/{repo_id}/generate", response_model=JobAcceptedResponse, status_code=202)
@@ -907,25 +529,12 @@ async def generate_pages(
     the requested selection + cascade, and writes exactly those pages via the
     shared core engine. Returns immediately with a job id to stream.
     """
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
+    await _get_repo_or_404(session, repo_id)
 
     _validate_generate_selection(body.selection)
     _validate_generate_style(body.style)
     await _ensure_no_active_job(session, repo_id)
-
-    job = await crud.upsert_generation_job(
-        session,
-        repository_id=repo_id,
-        status="pending",
-        config=_generate_job_config(body),
-    )
-    # Commit (not just flush) so the background task's separate session sees the
-    # job row.  See sync_repo comment for rationale.
-    await session.commit()
-    _launch_job_task(request, job.id, repo_id)
-    return _accepted(job.id)
+    return await _start_pending_job(request, session, repo_id, _generate_job_config(body))
 
 
 @router.post("/{repo_id}/generate/estimate")
@@ -942,9 +551,7 @@ async def generate_estimate(
     job spends. Heavier than the pre-index preflight because it walks the real
     dependency graph rather than a file count.
     """
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = await _get_repo_or_404(session, repo_id)
 
     _validate_generate_selection(body.selection)
     _validate_generate_style(body.style)
@@ -965,17 +572,8 @@ async def generate_estimate(
     gen_config = _build_generation_config(repo_path, job_config, wiki_style)
 
     # Price with the repo's configured provider/model, if one resolves.
-    provider_name: str | None = None
-    model_name: str | None = None
-    provider_error: str | None = None
-    try:
-        from repowise.server.provider_config import get_chat_provider_instance
-
-        llm_client = get_chat_provider_instance(repo_path=str(repo_path))
-        provider_name = getattr(llm_client, "provider_name", None)
-        model_name = getattr(llm_client, "model_name", None)
-    except Exception as exc:
-        provider_error = str(exc)
+    _client, provider_name, model_name, provider_error = resolve_provider(str(repo_path))
+    provider = {"name": provider_name, "model": model_name, "error": provider_error}
 
     session_factory = _resolve_repo_session_factory(request.app.state, repo_id)
     state = _load_state(repo_path)
@@ -1003,7 +601,7 @@ async def generate_estimate(
             "pages_by_type": {},
             "pages_to_mark_stale": 0,
             "unknown_page_ids": [],
-            "provider": {"name": provider_name, "model": model_name, "error": provider_error},
+            "provider": provider,
             "estimate": None,
             "note": note,
         }
@@ -1012,28 +610,20 @@ async def generate_estimate(
     # coverage seed, so the estimate's page count and cost never under-quote.
     plan = _resolve_generate_scope(job_config, rehydrated, gen_config)
     pages_by_type = {p.page_type: p.count for p in plan.cost_plans}
-    total_pages = sum(pages_by_type.values())
 
     estimate: dict | None = None
     if provider_name and model_name and plan.cost_plans:
         from repowise.core.cost_estimator import estimate_cost
 
         est = estimate_cost(plan.cost_plans, provider_name, model_name, repo_path=str(repo_path))
-        estimate = {
-            "estimated_cost_usd": round(est.estimated_cost_usd, 4),
-            "cost_low_usd": round(est.cost_range.low, 4) if est.cost_range else None,
-            "cost_high_usd": round(est.cost_range.high, 4) if est.cost_range else None,
-            "estimated_input_tokens": est.estimated_input_tokens,
-            "estimated_output_tokens": est.estimated_output_tokens,
-            "is_calibrated": est.is_calibrated,
-        }
+        estimate = cost_fields(est)
 
     return {
-        "total_pages": total_pages,
+        "total_pages": sum(pages_by_type.values()),
         "pages_by_type": pages_by_type,
         "pages_to_mark_stale": len(plan.stale_ids),
         "unknown_page_ids": list(plan.unknown_page_ids),
-        "provider": {"name": provider_name, "model": model_name, "error": provider_error},
+        "provider": provider,
         "estimate": estimate,
     }
 
@@ -1054,9 +644,7 @@ async def index_repo(
     """
     from repowise.server.repo_db import ensure_repo_registration
 
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = await _get_repo_or_404(session, repo_id)
 
     # Carry settings (e.g. a wiki_style chosen at registration) into the
     # repo-local row this call may be creating; an existing row is never
@@ -1100,80 +688,30 @@ async def preflight_index(
     from a fast file walk (no parsing), so page counts are approximate; the
     reported range absorbs the variance.
     """
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = await _get_repo_or_404(session, repo_id)
 
     repo_path = repo.local_path
     from repowise.server.job_executor import _repo_exclude_patterns
 
     exclude_patterns = _repo_exclude_patterns(repo, repo_path)
 
-    # ---- Provider smoke test (same probe the CLI uses at init) ----
-    provider_ok = False
-    provider_name: str | None = None
-    model_name: str | None = None
-    provider_error: str | None = None
-    llm_client = None
-    try:
-        from repowise.server.provider_config import get_chat_provider_instance
-
-        llm_client = get_chat_provider_instance(repo_path=repo_path)
-        provider_name = getattr(llm_client, "provider_name", None)
-        model_name = getattr(llm_client, "model_name", None)
-    except Exception as exc:
-        provider_error = str(exc)
-
-    if llm_client is not None:
-        try:
-            await llm_client.generate("You are a test.", "Reply with OK.", max_tokens=50)
-            provider_ok = True
-        except Exception as exc:
-            provider_error = str(exc)
-
-    # ---- File count + cost estimate ----
-    def _count_files() -> int:
-        from repowise.core.ingestion import FileTraverser
-
-        traverser = FileTraverser(
-            Path(repo_path),
-            extra_exclude_patterns=exclude_patterns or None,
-        )
-        return sum(1 for _ in traverser.traverse())
+    provider = await probe_provider(repo_path)
 
     try:
-        file_count = await asyncio.to_thread(_count_files)
+        file_count = await asyncio.to_thread(count_files, repo_path, exclude_patterns)
     except Exception:
         logger.exception("preflight_file_count_failed", extra={"repo_id": repo_id})
         file_count = 0
 
     estimate: dict | None = None
-    if provider_name and model_name:
+    if provider["name"] and provider["model"]:
         from repowise.core.cost_estimator import approximate_generation_plan, estimate_cost
 
         plans = approximate_generation_plan(file_count, coverage_pct=coverage_pct)
-        est = estimate_cost(plans, provider_name, model_name, repo_path=repo_path)
-        estimate = {
-            "total_pages": est.total_pages,
-            "estimated_cost_usd": round(est.estimated_cost_usd, 4),
-            "cost_low_usd": round(est.cost_range.low, 4) if est.cost_range else None,
-            "cost_high_usd": round(est.cost_range.high, 4) if est.cost_range else None,
-            "estimated_input_tokens": est.estimated_input_tokens,
-            "estimated_output_tokens": est.estimated_output_tokens,
-            "is_calibrated": est.is_calibrated,
-            "coverage_pct": coverage_pct,
-        }
+        est = estimate_cost(plans, provider["name"], provider["model"], repo_path=repo_path)
+        estimate = {"total_pages": est.total_pages, **cost_fields(est), "coverage_pct": coverage_pct}
 
-    return {
-        "provider": {
-            "ok": provider_ok,
-            "name": provider_name,
-            "model": model_name,
-            "error": provider_error,
-        },
-        "file_count": file_count,
-        "estimate": estimate,
-    }
+    return {"provider": provider, "file_count": file_count, "estimate": estimate}
 
 
 def _resolve_repo_session_factory(app_state, repo_id: str):
@@ -1278,9 +816,7 @@ async def export_wiki(
     session: AsyncSession = Depends(get_db_session),
 ) -> StreamingResponse:
     """Export all wiki pages as a ZIP of markdown files with folder structure."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = await _get_repo_or_404(session, repo_id)
 
     pages = (
         (await session.execute(select(Page).where(Page.repository_id == repo_id))).scalars().all()
@@ -1335,14 +871,10 @@ async def get_file_content(
     user's provider API keys) and ``.git/config`` live inside the root too, so
     the endpoint was an exfiltration path for anything under the checkout.
     """
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="Repository not found")
+    repo = await _get_repo_or_404(session, repo_id)
 
-    # Belt and braces alongside the index membership test below. Only the two
-    # directories that hold credentials are named: the traverser walks other
-    # dot-paths, so `.github/workflows/ci.yml` and `.eslintrc.json` are indexed
-    # files a reader can legitimately open.
+    # Backs up the index membership test below. Only credential directories are
+    # named; other dot-paths (e.g. `.github/`) are indexed and readable.
     segments = file_path.replace("\\", "/").split("/")
     if segments and segments[0] in (".git", ".repowise"):
         raise HTTPException(status_code=400, detail="Invalid file path")

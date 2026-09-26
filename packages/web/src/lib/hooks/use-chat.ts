@@ -257,21 +257,29 @@ export function useChat(repoId: string) {
                   ],
                 };
 
-              case "tool_result":
+              case "tool_result": {
+                // The server reports an unservable read as an `error` key plus
+                // an "Error: ..." summary. Without this the failed row renders
+                // exactly like a good one, so the answer above it reads as
+                // evidence-backed when nothing was read.
+                const data = ev.artifact.data as unknown as Record<string, unknown>;
+                const failed =
+                  typeof data === "object" && data !== null && "error" in data;
                 return {
                   ...m,
                   toolCalls: m.toolCalls.map((tc) =>
                     tc.id === ev.tool_id
                       ? {
                           ...tc,
-                          result: ev.artifact.data as unknown as Record<string, unknown>,
+                          result: data,
                           summary: ev.summary,
                           artifact: ev.artifact,
-                          status: "done" as const,
+                          status: failed ? ("error" as const) : ("done" as const),
                         }
                       : tc,
                   ),
                 };
+              }
 
               case "truncated":
                 return { ...m, truncated: true };

@@ -88,4 +88,5 @@ def collect_crossfn_io_in_loop(
         kind=CROSSFN_KIND,
         index=index,
         max_depth=max_depth,
+        carry_loop=True,
     )

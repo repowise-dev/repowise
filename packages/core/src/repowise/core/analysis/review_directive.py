@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .change_health.models import ChangeHealthDelta
+from .health.scoring import ADVISORY_DIMENSION
 
 #: How much of a lane's evidence was actually computed.
 #:
@@ -46,8 +47,9 @@ ReviewActionKind = Literal[
 
 _BLOCKING_SEVERITIES = {"high", "critical"}
 
-#: Dimensions whose findings are advice, not a gate.
-_ADVISORY_DIMENSIONS = {"performance"}
+#: Dimensions whose findings are advice, not a gate. An unlisted dimension
+#: gates like a defect, which is the safe default.
+_ADVISORY_DIMENSIONS = {"performance", ADVISORY_DIMENSION}
 
 #: Delta statuses that mean the comparison did not happen.
 _NOT_COMPARED = {"unavailable", "unsupported_range", "too_large", "timeout"}
@@ -137,10 +139,13 @@ def _verdict(delta: ChangeHealthDelta) -> tuple[ReviewStatus, str, EvidenceState
             f"starting with {lead.biomarker_type} in {lead.path}.",
             state,
         )
-    if delta.findings:
+    # Performance is excluded from BLOCKING above but still counts here: it
+    # moves a score. Advisory never does.
+    scoring = [f for f in delta.findings if f.dimension != ADVISORY_DIMENSION]
+    if scoring:
         return (
             "review_recommended",
-            f"{len(delta.findings)} new {_plural('finding', len(delta.findings))} "
+            f"{len(scoring)} new {_plural('finding', len(scoring))} "
             "of low or advisory severity.",
             state,
         )

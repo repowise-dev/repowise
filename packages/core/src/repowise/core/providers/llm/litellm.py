@@ -19,9 +19,8 @@ Reference: https://docs.litellm.ai/docs/providers
 
 from __future__ import annotations
 
-import contextlib
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -30,22 +29,22 @@ from tenacity import RetryError, retry
 from repowise.core.providers.llm.base import (
     BaseProvider,
     ChatStreamEvent,
-    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
-    RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
     is_temperature_rejection,
     normalize_stop_reason,
-    parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    rate_limit_error_from,
+    record_generation_cost,
     remember_temperature_rejection,
     temperature_kwargs,
 )
+from repowise.core.providers.llm.openai_compat import iter_chat_stream_events
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -54,22 +53,164 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_LITELLM_REASONING_MODES: tuple[ReasoningMode, ...] = ("low", "medium", "high")
+_NON_TEXT_MODEL_MODES = {
+    "embedding",
+    "image_generation",
+    "image_edit",
+    "audio_transcription",
+    "audio_speech",
+    "rerank",
+    "video_generation",
+    "search",
+    "ocr",
+    "moderation",
+    "realtime",
+    "vector_store",
+}
 
 
-def _litellm_supports_reasoning(model: str) -> bool:
-    try:
-        import litellm  # type: ignore[import-untyped]
+def _litellm_reasoning_modes_from_metadata(metadata: object) -> tuple[ReasoningMode, ...]:
+    """Map LiteLLM's model metadata to the exact portable effort choices."""
 
-        return bool(litellm.supports_reasoning(model=model))
-    except Exception:
+    if not isinstance(metadata, dict):
+        return ()
+
+    explicit = metadata.get("reasoning_effort_levels")
+    effort_flags = (
+        "supports_none_reasoning_effort",
+        "supports_minimal_reasoning_effort",
+        "supports_low_reasoning_effort",
+        "supports_xhigh_reasoning_effort",
+        "supports_max_reasoning_effort",
+    )
+    if (
+        metadata.get("supports_reasoning") is not True
+        and not isinstance(explicit, list)
+        and not any(metadata.get(flag) is True for flag in effort_flags)
+    ):
+        return ()
+
+    if isinstance(explicit, list):
+        return tuple(
+            mode
+            for mode in ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+            if mode in explicit and not (mode == "none" and metadata.get("thinking_always_on"))
+        )
+
+    modes: list[ReasoningMode] = []
+    if metadata.get("supports_none_reasoning_effort") is True and not metadata.get(
+        "thinking_always_on"
+    ):
+        modes.append("none")
+    if metadata.get("supports_minimal_reasoning_effort") is True:
+        modes.append("minimal")
+    if metadata.get("supports_low_reasoning_effort") is not False:
+        modes.append("low")
+    modes.extend(("medium", "high"))
+    if metadata.get("supports_xhigh_reasoning_effort") is True:
+        modes.append("xhigh")
+    if metadata.get("supports_max_reasoning_effort") is True:
+        modes.append("max")
+    return tuple(modes)
+
+
+def _litellm_metadata_decides_reasoning(metadata: object) -> bool:
+    if not isinstance(metadata, dict):
         return False
+    if isinstance(metadata.get("reasoning_effort_levels"), list):
+        return True
+    fields = (
+        "supports_reasoning",
+        "supports_none_reasoning_effort",
+        "supports_minimal_reasoning_effort",
+        "supports_low_reasoning_effort",
+        "supports_xhigh_reasoning_effort",
+        "supports_max_reasoning_effort",
+    )
+    return any(metadata.get(field) is not None for field in fields)
+
+
+def _litellm_catalog_reasoning_modes(
+    model: str,
+    catalog: Mapping[str, object],
+    catalog_keys: Mapping[str, str],
+) -> tuple[ReasoningMode, ...] | None:
+    """Resolve direct or provider-prefixed metadata from the loaded catalog."""
+    if model not in catalog:
+        return None
+
+    metadata = catalog[model]
+    modes = _litellm_reasoning_modes_from_metadata(metadata)
+    if modes or _litellm_metadata_decides_reasoning(metadata):
+        return modes
+
+    if isinstance(metadata, dict):
+        provider = metadata.get("litellm_provider")
+        prefix = f"{provider}/" if isinstance(provider, str) else ""
+        if prefix and model.startswith(prefix):
+            bare_key = catalog_keys.get(model.removeprefix(prefix).casefold())
+            bare_metadata = catalog.get(bare_key) if bare_key is not None else None
+            bare_modes = _litellm_reasoning_modes_from_metadata(bare_metadata)
+            if bare_modes or _litellm_metadata_decides_reasoning(bare_metadata):
+                return bare_modes
+
+    return ()
+
+
+def _litellm_supported_reasoning_modes_from_sources(
+    litellm: Any,
+    model: str,
+    catalog: Mapping[str, object],
+    catalog_keys: Mapping[str, str],
+) -> tuple[ReasoningMode, ...]:
+    catalog_modes = _litellm_catalog_reasoning_modes(model, catalog, catalog_keys)
+    if catalog_modes is not None:
+        return catalog_modes
+
+    provider, separator, provider_model = model.partition("/")
+    if not separator:
+        return ()
+    try:
+        metadata: object = litellm.get_model_info(
+            provider_model,
+            custom_llm_provider=provider or None,
+        )
+    except Exception:
+        metadata = {}
+    modes = _litellm_reasoning_modes_from_metadata(metadata)
+    if modes:
+        return modes
+    if _litellm_metadata_decides_reasoning(metadata):
+        return ()
+    try:
+        if not bool(
+            litellm.supports_reasoning(
+                model=provider_model,
+                custom_llm_provider=provider or None,
+            )
+        ):
+            return ()
+    except Exception:
+        return ()
+
+    return _litellm_reasoning_modes_from_metadata({"supports_reasoning": True})
 
 
 def _litellm_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
-    if _litellm_supports_reasoning(model):
-        return _LITELLM_REASONING_MODES
-    return ()
+    try:
+        import litellm  # type: ignore[import-untyped]
+
+        raw_catalog = getattr(litellm, "model_cost", {}) or {}
+        catalog = raw_catalog if isinstance(raw_catalog, Mapping) else {}
+        catalog_keys = {key.casefold(): key for key in catalog if isinstance(key, str)}
+        return _litellm_supported_reasoning_modes_from_sources(
+            litellm,
+            model,
+            catalog,
+            catalog_keys,
+        )
+    except Exception:
+        return ()
 
 
 def _litellm_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, object]:
@@ -80,42 +221,54 @@ def _litellm_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, object]:
 
 
 def _litellm_model_options(fallback_model: str) -> tuple[ProviderModelOption, ...]:
-    fallback = fallback_model_option(
-        fallback_model,
-        reasoning_modes=("auto", *_litellm_supported_reasoning_modes(fallback_model)),
-    )
     try:
         import litellm  # type: ignore[import-untyped]
 
+        raw_catalog = getattr(litellm, "model_cost", {}) or {}
+        catalog = raw_catalog if isinstance(raw_catalog, Mapping) else {}
+        catalog_keys = {key.casefold(): key for key in catalog if isinstance(key, str)}
         model_ids = sorted(
             {
                 model
                 for model in getattr(litellm, "model_list", []) or []
-                if isinstance(model, str) and model
+                if isinstance(model, str)
+                and model
+                and (
+                    not isinstance(catalog.get(model), dict)
+                    or catalog[model].get("mode") not in _NON_TEXT_MODEL_MODES
+                )
             }
         )
     except Exception:
-        return (fallback,)
+        return (fallback_model_option(fallback_model),)
+
+    fallback = fallback_model_option(
+        fallback_model,
+        reasoning_modes=(
+            "auto",
+            *_litellm_supported_reasoning_modes_from_sources(
+                litellm,
+                fallback_model,
+                catalog,
+                catalog_keys,
+            ),
+        ),
+    )
 
     if not model_ids:
         return (fallback,)
 
     options: list[ProviderModelOption] = []
     for model_id in model_ids:
-        try:
-            supports_reasoning = bool(litellm.supports_reasoning(model=model_id))
-        except Exception:
-            supports_reasoning = False
-        reasoning_modes = (
-            (
-                "auto",
-                *_LITELLM_REASONING_MODES,
-            )
-            if supports_reasoning
-            else ("auto",)
+        model_modes = _litellm_supported_reasoning_modes_from_sources(
+            litellm,
+            model_id,
+            catalog,
+            catalog_keys,
         )
+        reasoning_modes = ("auto", *model_modes)
         notes = ""
-        if supports_reasoning:
+        if model_modes:
             notes = "LiteLLM reports reasoning support"
         options.append(
             ProviderModelOption(
@@ -247,34 +400,13 @@ class LiteLLMProvider(BaseProvider):
             "max_tokens": max_tokens,
             **temperature_kwargs(self._model, temperature),
         }
-        if self._api_key:
-            call_kwargs["api_key"] = self._api_key
-        if self._api_base:
-            call_kwargs["api_base"] = self._api_base
+        self._add_endpoint_kwargs(call_kwargs)
         call_kwargs.update(_litellm_reasoning_kwargs(reasoning))
 
         try:
-            try:
-                response = await litellm.acompletion(**call_kwargs)
-            except litellm.APIError as exc:
-                # LiteLLM proxies arbitrary vendors, same as OpenRouter: the
-                # models that reject `temperature` cannot be enumerated up
-                # front, so learn from the rejection and retry once without it.
-                if "temperature" not in call_kwargs or not is_temperature_rejection(exc):
-                    raise
-                remember_temperature_rejection(self._model)
-                log.debug("litellm.temperature.unsupported", model=self._model)
-                call_kwargs.pop("temperature")
-                response = await litellm.acompletion(**call_kwargs)
+            response = await self._acompletion(litellm, call_kwargs)
         except litellm.RateLimitError as exc:
-            raise RateLimitError(
-                "litellm",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
+            raise rate_limit_error_from("litellm", exc) from exc
         except litellm.APIError as exc:
             raise ProviderError("litellm", str(exc)) from exc
         except Exception as exc:
@@ -300,23 +432,32 @@ class LiteLLMProvider(BaseProvider):
             request_id=request_id,
         )
 
-        if self._cost_tracker is not None:
-            # Await the cost record inline rather than spawning a detached
-            # task. A fire-and-forget create_task can still be flushing its
-            # aiosqlite write when the event loop is torn down (e.g. the
-            # asyncio.run teardown after doc generation), which surfaces as a
-            # noisy "Event loop is closed" worker-thread traceback. record()
-            # swallows its own persistence errors, so generation is unaffected.
-            with contextlib.suppress(Exception):
-                await self._cost_tracker.record(
-                    model=self._model,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    operation=self._cost_tracker.operation,
-                    file_path=None,
-                )
-
+        await record_generation_cost(self._cost_tracker, model=self._model, result=result)
         return result
+
+    def _add_endpoint_kwargs(self, call_kwargs: dict[str, Any]) -> None:
+        """Route the call with the configured key and base URL, when set."""
+        if self._api_key:
+            call_kwargs["api_key"] = self._api_key
+        if self._api_base:
+            call_kwargs["api_base"] = self._api_base
+
+    async def _acompletion(self, litellm: Any, call_kwargs: dict[str, Any]) -> Any:
+        """Complete, retrying once without a rejected ``temperature``.
+
+        LiteLLM proxies arbitrary vendors, same as OpenRouter: the models that
+        reject ``temperature`` cannot be enumerated up front, so learn from the
+        rejection and retry once without it.
+        """
+        try:
+            return await litellm.acompletion(**call_kwargs)
+        except litellm.APIError as exc:
+            if "temperature" not in call_kwargs or not is_temperature_rejection(exc):
+                raise
+            remember_temperature_rejection(self._model)
+            log.debug("litellm.temperature.unsupported", model=self._model)
+            call_kwargs.pop("temperature")
+            return await litellm.acompletion(**call_kwargs)
 
     # --- ChatProvider protocol implementation ---
 
@@ -330,8 +471,6 @@ class LiteLLMProvider(BaseProvider):
         request_id: str | None = None,
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        import json as _json
-
         import litellm  # type: ignore[import-untyped]
 
         litellm.set_verbose = False
@@ -347,80 +486,19 @@ class LiteLLMProvider(BaseProvider):
         }
         if tools:
             call_kwargs["tools"] = tools
-        if self._api_key:
-            call_kwargs["api_key"] = self._api_key
-        if self._api_base:
-            call_kwargs["api_base"] = self._api_base
+        self._add_endpoint_kwargs(call_kwargs)
 
         try:
             stream = await litellm.acompletion(**call_kwargs)
         except litellm.RateLimitError as exc:
-            raise RateLimitError(
-                "litellm",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
+            raise rate_limit_error_from("litellm", exc) from exc
         except litellm.APIError as exc:
             raise ProviderError("litellm", str(exc)) from exc
 
-        tool_calls_acc: dict[int, dict[str, Any]] = {}
-
         try:
-            async for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice:
-                    continue
-
-                delta = choice.delta
-                finish = choice.finish_reason
-
-                if delta and getattr(delta, "content", None):
-                    yield ChatStreamEvent(type="text_delta", text=delta.content)
-
-                if delta and getattr(delta, "tool_calls", None):
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id": getattr(tc_delta, "id", "") or "",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        acc = tool_calls_acc[idx]
-                        if getattr(tc_delta, "id", None):
-                            acc["id"] = tc_delta.id
-                        fn = getattr(tc_delta, "function", None)
-                        if fn:
-                            if getattr(fn, "name", None):
-                                acc["name"] = fn.name
-                            if getattr(fn, "arguments", None):
-                                acc["arguments"] += fn.arguments
-
-                if finish:
-                    for idx in sorted(tool_calls_acc.keys()):
-                        acc = tool_calls_acc[idx]
-                        try:
-                            args = _json.loads(acc["arguments"]) if acc["arguments"] else {}
-                        except Exception:
-                            args = {}
-                        yield ChatStreamEvent(
-                            type="tool_start",
-                            tool_call=ChatToolCall(id=acc["id"], name=acc["name"], arguments=args),
-                        )
-                    tool_calls_acc.clear()
-                    stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
-                    yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
+            async for event in iter_chat_stream_events(stream, emit_usage=False):
+                yield event
         except litellm.RateLimitError as exc:
-            raise RateLimitError(
-                "litellm",
-                str(exc),
-                status_code=429,
-                retry_after=parse_retry_after(
-                    getattr(getattr(exc, "response", None), "headers", None)
-                ),
-            ) from exc
+            raise rate_limit_error_from("litellm", exc) from exc
         except Exception as exc:
             raise ProviderError("litellm", f"{type(exc).__name__}: {exc}") from exc

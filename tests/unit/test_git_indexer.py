@@ -173,30 +173,30 @@ class TestCoChangeDetection:
         )
         mock_repo.git.log.return_value = raw_log
 
-        result, _entropy = compute_co_changes_and_entropy(mock_repo, all_files, commit_limit=500)
+        result = compute_co_changes_and_entropy(mock_repo, all_files, commit_limit=500)
 
         # a.py <-> b.py should appear (co-changed 4 times)
-        assert "a.py" in result
-        partner_paths = [p["file_path"] for p in result["a.py"]]
+        assert "a.py" in result.partners
+        partner_paths = [p["file_path"] for p in result.partners["a.py"]]
         assert "b.py" in partner_paths
 
-        assert "b.py" in result
-        partner_paths_b = [p["file_path"] for p in result["b.py"]]
+        assert "b.py" in result.partners
+        partner_paths_b = [p["file_path"] for p in result.partners["b.py"]]
         assert "a.py" in partner_paths_b
 
         # Three of the four commits are the pair alone, so each contributes its
         # full weight; the three-file commit contributes half.
-        co_count = next(p["co_change_count"] for p in result["a.py"] if p["file_path"] == "b.py")
+        co_count = next(p["co_change_count"] for p in result.partners["a.py"] if p["file_path"] == "b.py")
         assert 3.4 <= co_count <= 3.6
 
         # The plain count is undecayed and unsplit.
-        entry_b = next(p for p in result["a.py"] if p["file_path"] == "b.py")
+        entry_b = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
         assert entry_b["frequency"] == 4
         assert entry_b["self_commits"] == 4
         assert entry_b["partner_commits"] == 4
 
         # Verify last_co_change date is present
-        entry = next(p for p in result["a.py"] if p["file_path"] == "b.py")
+        entry = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
         assert "last_co_change" in entry
         assert entry["last_co_change"] is not None
 
@@ -405,6 +405,8 @@ class TestStableClassification:
                 f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1fAlice\x1falice@example.com\x1f{ts}\x1f{_iso(ts)}\x1f\x1ffeat: old commit {i}\x1f"
             )
         mock_repo.git.log.return_value = "\n".join(log_lines)
+        # HEAD moved on today in another file; this one sat idle.
+        mock_repo.head.commit.committed_date = int(datetime.now(UTC).timestamp())
 
         meta = indexer._index_file("stable_file.py", mock_repo)
 
@@ -448,9 +450,8 @@ class TestStableClassification:
 
 
 class TestGitWindowAnchor:
-    """REPOWISE_GIT_WINDOW_ANCHOR anchors recency windows to the repo's most
-    recent commit instead of wall-clock now() — default off (product unchanged),
-    on for historical T0 scoring so windowed signals aren't silently empty."""
+    """Recency windows are anchored to the indexed commit by default;
+    REPOWISE_GIT_WINDOW_ANCHOR=now opts back into wall-clock time."""
 
     def _mock_repo_with_old_commits(self) -> tuple[MagicMock, datetime]:
         mock_repo = MagicMock()
@@ -466,16 +467,20 @@ class TestGitWindowAnchor:
         mock_repo.head.commit.committed_date = int(old_date.timestamp())
         return mock_repo, old_date
 
-    def test_default_uses_wall_clock(self, monkeypatch) -> None:
-        monkeypatch.delenv("REPOWISE_GIT_WINDOW_ANCHOR", raising=False)
+    def test_wall_clock_opt_in(self, monkeypatch) -> None:
+        monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "now")
         indexer = GitIndexer("/tmp/repo")
         mock_repo, _ = self._mock_repo_with_old_commits()
         meta = indexer._index_file("f.py", mock_repo)
         # 180-day-old commits are outside a now()-anchored 90d window.
         assert meta["commit_count_90d"] == 0
 
-    def test_anchor_to_head_commit(self, monkeypatch) -> None:
-        monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "head")
+    @pytest.mark.parametrize("value", [None, "head"])
+    def test_anchor_to_head_commit(self, monkeypatch, value) -> None:
+        if value is None:
+            monkeypatch.delenv("REPOWISE_GIT_WINDOW_ANCHOR", raising=False)
+        else:
+            monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", value)
         indexer = GitIndexer("/tmp/repo")
         mock_repo, _ = self._mock_repo_with_old_commits()
         meta = indexer._index_file("f.py", mock_repo)
@@ -964,8 +969,35 @@ class TestCoChangeBelowThresholdSkipped:
     """A pair is kept on shared commits, not on the decayed weight."""
 
     def test_an_old_pair_survives_where_a_weight_cutoff_would_drop_it(self) -> None:
-        """Three co-changes two years ago decay to a weight under any useful
-        cutoff, but they are still three co-changes and the pair is real."""
+        """Three co-changes buried deep in the history decay to a weight under
+        any useful cutoff, but they are still three co-changes and the pair is
+        real. Deep in COMMITS, not in days: the pair weight decays on the walk
+        position, which is the only clock this measure uses."""
+        mock_repo = MagicMock()
+        import time
+
+        now = int(time.time())
+        # 2,000 unrelated commits ahead of the pair, so it sits four
+        # commit-tau deep in the walk.
+        blocks = [f"\x00{now - i}\nnoise_a.py\nnoise_b.py\n" for i in range(2000)]
+        blocks += [f"\x00{now - 2000 - i}\np.py\nq.py\n" for i in range(3)]
+        mock_repo.git.log.return_value = "".join(blocks)
+
+        result = compute_co_changes_and_entropy(
+            mock_repo,
+            {"p.py", "q.py", "noise_a.py", "noise_b.py"},
+            commit_limit=5000,
+        )
+
+        (partner,) = result.partners["p.py"]
+        assert partner["frequency"] == 3
+        assert partner["co_change_count"] < 0.1
+
+    def test_calendar_age_alone_does_not_decay_a_pair(self) -> None:
+        """The regression the commit clock exists to stop. A repo whose whole
+        indexed history is old is not a repo whose coupling is stale: under the
+        calendar decay these three two-year-old commits weighed ~0.01, and
+        under the commit clock they are the newest commits there are."""
         mock_repo = MagicMock()
         import time
 
@@ -974,13 +1006,48 @@ class TestCoChangeBelowThresholdSkipped:
             f"\x00{old - i * 86400}\np.py\nq.py\n" for i in range(3)
         )
 
-        result, _entropy = compute_co_changes_and_entropy(
+        result = compute_co_changes_and_entropy(
             mock_repo, {"p.py", "q.py"}, commit_limit=500
         )
 
-        (partner,) = result["p.py"]
-        assert partner["frequency"] == 3
-        assert partner["co_change_count"] < 0.1
+        (partner,) = result.partners["p.py"]
+        assert partner["co_change_count"] > 2.9
+        # Breadth is measured over every partner, not the truncated list.
+        assert result.partner_count["p.py"] == 1
+        # Same quantity, stored to one more decimal place than the record.
+        assert result.partner_mass["p.py"] == pytest.approx(
+            partner["co_change_count"], abs=1e-4
+        )
+
+
+class TestCoChangeBreadth:
+    """partner_count / partner_mass are measured before the storage cap."""
+
+    def test_breadth_counts_past_the_partner_cap(self) -> None:
+        import time
+
+        from repowise.core.co_change import MAX_PARTNERS_PER_FILE
+
+        peers = [f"peer_{i}.py" for i in range(MAX_PARTNERS_PER_FILE + 20)]
+        all_files = {"hub.py", *peers}
+        mock_repo = MagicMock()
+
+        now = int(time.time())
+        # Two commits per pair, so every pair clears MIN_CO_CHANGE_SUPPORT.
+        blocks = []
+        for i, peer in enumerate(peers):
+            for rep in range(2):
+                blocks.append(f"\x00{now - (i * 2 + rep)}\nhub.py\n{peer}\n")
+        mock_repo.git.log.return_value = "".join(blocks)
+
+        result = compute_co_changes_and_entropy(mock_repo, all_files, commit_limit=5000)
+
+        # The stored list saturates at the cap; the count does not.
+        assert len(result.partners["hub.py"]) == MAX_PARTNERS_PER_FILE
+        assert result.partner_count["hub.py"] == len(peers)
+        assert result.partner_mass["hub.py"] > sum(
+            p["co_change_count"] for p in result.partners["hub.py"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1021,18 +1088,18 @@ class TestChangeEntropy:
         mock_repo = MagicMock()
         mock_repo.git.log.return_value = "".join(blocks)
 
-        _co, entropy = compute_co_changes_and_entropy(
+        entropy = compute_co_changes_and_entropy(
             mock_repo, all_files, commit_limit=2000
         )
 
         # Focused file changed alone → no entropy entry.
-        assert entropy.get("focused.py", 0.0) == 0.0
+        assert entropy.entropy.get("focused.py", 0.0) == 0.0
         # Scattered file accrued positive entropy.
-        assert entropy.get("scattered.py", 0.0) > 0.0
+        assert entropy.entropy.get("scattered.py", 0.0) > 0.0
         # Mass-edit commit excluded → bigcommit.py gets nothing from it.
-        assert entropy.get("bigcommit.py", 0.0) == 0.0
+        assert entropy.entropy.get("bigcommit.py", 0.0) == 0.0
         # Scattered clearly dominates focused.
-        assert entropy["scattered.py"] > entropy.get("focused.py", 0.0)
+        assert entropy.entropy["scattered.py"] > entropy.entropy.get("focused.py", 0.0)
 
     def test_change_entropy_percentile_silent_when_all_zero(self) -> None:
         """ESSENTIAL-tier shape (no entropy on any file) → all pct stay 0.0."""
@@ -1146,12 +1213,12 @@ class TestCoChangeCommitWidth:
             wide,
         )
 
-        result, _entropy = compute_co_changes_and_entropy(
+        result = compute_co_changes_and_entropy(
             mock_repo, all_files, commit_limit=500
         )
 
-        narrow = next(p for p in result["a.py"] if p["file_path"] == "b.py")
-        broad = next(p for p in result["w0.py"] if p["file_path"] == "w1.py")
+        narrow = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
+        broad = next(p for p in result.partners["w0.py"] if p["file_path"] == "w1.py")
         assert narrow["frequency"] == broad["frequency"] == 2
         assert narrow["co_change_count"] > broad["co_change_count"] * 10
 
@@ -1170,11 +1237,11 @@ class TestCoChangeCommitWidth:
             now, ("hub.py", *others), ("hub.py", *others)
         )
 
-        result, _entropy = compute_co_changes_and_entropy(
+        result = compute_co_changes_and_entropy(
             mock_repo, all_files, commit_limit=500
         )
 
-        assert len(result["hub.py"]) == MAX_PARTNERS_PER_FILE
+        assert len(result.partners["hub.py"]) == MAX_PARTNERS_PER_FILE
 
     def test_partner_records_carry_each_side_own_commit_total(self) -> None:
         """The two totals differ, which is what makes confidence directional."""
@@ -1190,11 +1257,11 @@ class TestCoChangeCommitWidth:
             ("readme.md", "other.md"),
         )
 
-        result, _entropy = compute_co_changes_and_entropy(
+        result = compute_co_changes_and_entropy(
             mock_repo, {"readme.md", "bench.md", "other.md"}, commit_limit=500
         )
 
-        bench = next(p for p in result["readme.md"] if p["file_path"] == "bench.md")
+        bench = next(p for p in result.partners["readme.md"] if p["file_path"] == "bench.md")
         assert bench["self_commits"] == 4
         assert bench["partner_commits"] == 2
 
@@ -1210,11 +1277,11 @@ class TestCoChangeCommitWidth:
         mock_repo = MagicMock()
         mock_repo.git.log.return_value = self._log(now, shared, shared, *([alone] * 9))
 
-        result, _entropy = compute_co_changes_and_entropy(
+        result = compute_co_changes_and_entropy(
             mock_repo, {"config.py", "loader.py"}, commit_limit=500
         )
 
-        (partner,) = result["config.py"]
+        (partner,) = result.partners["config.py"]
         assert partner["frequency"] == 2
         assert partner["self_commits"] == 11  # 2 shared + 9 alone
         assert partner["partner_commits"] == 2

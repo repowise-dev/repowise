@@ -27,7 +27,7 @@ from ....analysis.health.ranking import (
 )
 from ....analysis.health.rows import detail_map
 from ....analysis.health.scope import scores_language
-from ....analysis.health.scoring import nloc_weighted_attr
+from ....analysis.health.scoring import ADVISORY_DIMENSION, nloc_weighted_attr
 from ....test_paths import is_test_related_path
 from ...models import (
     GraphNode,
@@ -713,7 +713,9 @@ async def get_health_summary(
         "average_health": round(avg, 2),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
-        "open_findings": len(findings),
+        # Advisory findings carry a zero health impact, so counting them
+        # here would grow the headline without anything having got worse.
+        "open_findings": len(findings) - by_dim.get(ADVISORY_DIMENSION, 0),
         "maintainability_average": _rounded(maintainability_average),
         "performance_average": _rounded(performance_average),
         # The headline's two halves, in deduction points. Both come off columns

@@ -620,7 +620,7 @@ parse, where hitting it corrupts everything downstream. Object Pascal is the cur
 `.dpr`/`.dpk`/`.lpr` project files write `unit in 'path.pas'` clauses in their
 `uses` list, a syntax tree-sitter-pascal has no rule for, and hitting one used to
 corrupt every unit named after it in the same clause. Its sanitizer
-(`prepare_pascal_source` in `ingestion/parser_helpers.py`) is gated on `path`'s
+(`prepare_pascal_source` in `ingestion/lang_helpers/source_prep.py`) is gated on `path`'s
 extension (that syntax is invalid in a plain `.pas`/`.pp` unit file) and is a
 no-op everywhere else, same contract as the `_LOCATORS` path. Registering a
 sanitizer this way, rather than as an if-block in `parser.py`, means it stays
@@ -996,3 +996,29 @@ Method**. A `DefUseDialect` owns the read-vs-write classification of each
 statement and the parameter binders; the CFG builder, the reaching-definitions
 fixpoint and the Extract Method slicer stay language-agnostic (the control-flow
 grammar they branch on lives on the `LanguageNodeMap`). Requires
+`assignment_kinds` / `augmented_assign_kinds` / `local_decl_kinds` on that map.
+The full pass runs only for functions a structural marker already flagged
+(`large_method` / `brain_method` / `complex_method`), so it stays within the
+health-pass budget.
+
+A dialect is only half the requirement. See
+[what a new language does not get for free](#what-a-new-language-does-not-get-for-free)
+for the grammar-shaped reasons a dialect alone cannot serve a language.
+`find_extractions` also refuses a function whose subtree carries a parse error
+(`Node.has_error`): macro-heavy C/C++ headers make tree-sitter emit one bogus
+`function_definition` spanning a whole class, and proposing to lift "statements"
+out of that is a wrong suggestion.
+
+All three registries are purely additive and degrade to silence: an unmapped
+language produces no findings rather than wrong ones.
+
+---
+
+## Workspace contract extraction
+
+In workspace mode (multiple repos indexed together), repowise links
+service-to-service contracts (HTTP routes, gRPC services, message topics,
+sockets, and DB tables) so a provider in one repo connects to its consumers in
+another. The extractors live in `core/workspace/extractors/` and share one
+dialect shape: each framework or client library is an independent module
+registered in a tuple, and one walk-and-dispatch loop runs them all.

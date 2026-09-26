@@ -12,29 +12,45 @@ same keyword rule the benchmark labels fixes with, and anchored to the index's
 ``as_of`` reference so a historical/T0 checkout measures the window *before* that
 commit — no leakage from future fixes. This biomarker is the consumer.
 
-Fires whenever the file carries ≥1 prior fix; severity scales with the count
-(and escalates on hotspots, where recent defect history compounds high churn):
+Fires when the file's fix count is in the top fifth *for this repository*
+(``prior_defect_pct`` ≥ 0.80). The count itself is not repo-relative: six
+months is a fixed window, so a repository landing many commits a day
+accumulates more fixes per file inside it than a quiet one, and an entry gate
+of one fix then fires on a large share of the tree. Ranking the count decides
+the entry; the ladder below, which the benchmark calibrated, decides severity:
 
 - 1 fix      -> LOW
 - 2 fixes    -> MEDIUM
 - 3-4 fixes  -> HIGH   (CRITICAL if also a churn hotspot)
 - 5+ fixes   -> CRITICAL
 
-When git indexing was skipped the field is absent/zero and the detector is
+The rank is taken over every file, ties sharing a rank, because a file with no
+fixes in the window was measured and found clean rather than not measured.
+
+When git indexing was skipped the fields are absent/zero and the detector is
 silent.
 """
 
 from __future__ import annotations
 
 from ..models import Severity
+from ..semantics import format_top_percentile
 from .base import BiomarkerResult, FileContext
 
 _WINDOW_DAYS = 180
+_MIN_PERCENTILE = 0.80
 
 
 def _as_int(value: object, default: int = 0) -> int:
     try:
         return int(value or 0)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
 
@@ -47,6 +63,9 @@ class PriorDefectDetector:
         meta = ctx.git_meta or {}
         count = _as_int(meta.get("prior_defect_count"))
         if count < 1:
+            return []
+        percentile = _as_float(meta.get("prior_defect_pct"))
+        if percentile < _MIN_PERCENTILE:
             return []
 
         is_hotspot = bool(meta.get("is_hotspot"))
@@ -69,12 +88,15 @@ class PriorDefectDetector:
                 line_end=None,
                 details={
                     "prior_defect_count": count,
+                    # 0-100, as every other emitted percentile.
+                    "prior_defect_pct": round(percentile * 100.0, 1),
                     "window_days": _WINDOW_DAYS,
                 },
                 reason=(
-                    f"{count} bug-{fixes} touched this file in the last "
-                    f"~6 months; recent defect history is the strongest "
-                    f"cost-effective predictor of further defects"
+                    f"{count} bug-{fixes} touched this file in the last ~6 months "
+                    f"({format_top_percentile(percentile, 'files in this repository')}); "
+                    f"recent defect history is the strongest cost-effective "
+                    f"predictor of further defects"
                 ),
             )
         ]

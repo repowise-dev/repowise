@@ -783,10 +783,15 @@ def run_update(
     resolved_index_only = _resolve_index_only_mode(
         index_only=index_only, docs_flag=docs_flag, state=state
     )
+    # ``or``, not ``get``'s default: a repo that has never had a docs pass
+    # carries ``last_docs_commit`` as an explicit null rather than omitting it,
+    # and a default only applies to a missing key. Reading it with a default
+    # handed back that null and the update aborted with "No previous sync
+    # found" against a store holding a perfectly good ``last_sync_commit``.
     base_ref = since or (
         state.get("last_sync_commit")
         if resolved_index_only
-        else state.get("last_docs_commit", state.get("last_sync_commit"))
+        else state.get("last_docs_commit") or state.get("last_sync_commit")
     )
     head = get_head_commit(repo_path)
 
@@ -1603,7 +1608,8 @@ def run_update(
                         decay_paths=affected.decay_only,
                         degraded=degraded,
                     )
-                state["last_docs_commit"] = head
+                if head:
+                    state["last_docs_commit"] = head
                 console.print(
                     f"  [green]✓[/green] Re-rendered [bold]{len(det_pages)}[/bold] "
                     "wiki pages from structure"
@@ -1851,6 +1857,10 @@ def run_update(
     # collect the observation-qualified promotions. They ride the same
     # decision upsert as the marker re-scan below. Everything stays local, and
     # the lane ships off: `decision source set session --on` enables it.
+    # The indexed file set bounds what a session-mined record may claim to
+    # govern: a transcript names scratch files, plan docs and sibling
+    # checkouts, and only this set knows which paths are this codebase.
+    indexed_files = frozenset(source_map) if source_map else None
     session_decisions: list = []
     try:
         from repowise.core.sessions.miners.decisions import mine_session_decisions
@@ -1861,7 +1871,9 @@ def run_update(
                 mine_session_decisions(
                     repo_path,
                     provider=session_provider,
+                    harnesses=decision_policy.harnesses,
                     collect_discovery_spans=decision_policy.llm_allowed("session_discovery"),
+                    indexed=indexed_files,
                 )
             )
             if session_decisions and verbose:
@@ -1883,6 +1895,7 @@ def run_update(
                     repo_path,
                     provider=provider,
                     policy=decision_policy,
+                    indexed=indexed_files,
                 )
             )
         session_decisions = [*session_decisions, *outcome.decisions]
@@ -2369,8 +2382,13 @@ def run_update(
             console.print(f"[yellow]Knowledge-graph export skipped: {exc}[/yellow]")
             degraded.append(f"Knowledge-graph export: {exc}")
 
-    state["last_sync_commit"] = head
-    state["last_docs_commit"] = head
+    # Never write a null pointer. ``get_head_commit`` returns None whenever
+    # ``git rev-parse HEAD`` fails, and erasing a good baseline strands the
+    # store: the next update reads the null as its base and refuses to run.
+    # #1507 guarded the same write in ``generate``; these are the rest of it.
+    if head:
+        state["last_sync_commit"] = head
+        state["last_docs_commit"] = head
     # Real DB total, not an accumulation: regeneration upserts existing pages,
     # so adding len(generated_pages) every run inflated the count forever.
     state["total_pages"] = db_total_pages

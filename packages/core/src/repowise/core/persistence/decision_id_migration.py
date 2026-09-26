@@ -21,6 +21,7 @@ derived and does nothing.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -56,6 +57,45 @@ logger = structlog.get_logger(__name__)
 #: same decision rather than a different one that was folded into it.
 ALIAS_REASON = "rekeyed"
 
+#: Written on the alias left behind by a fold. ``merged`` is right here in a
+#: way it is not for a rekey: the old id names a record that no longer exists,
+#: because another record was the same decision.
+FOLD_REASON = "merged"
+
+#: ``(table, column)`` pairs a fold drops instead of repointing, with the
+#: reason. Everything else in :data:`_DEPENDENT_COLUMNS` moves to the keeper.
+#:
+#: Note the pair, not the table: ``decision_candidate_meta`` appears in
+#: ``_DEPENDENT_COLUMNS`` twice, and only one of the two is a singleton.
+#: ``decision_id`` is the table's primary key, so the loser's own review row
+#: cannot move onto a keeper that already has one. ``merged_into`` is a plain
+#: nullable column on some *other* candidate's row, and that candidate is
+#: still alive; dropping its row would take a live decision's whole review
+#: state with it, so it is repointed like anything else.
+_DROPPED_ON_FOLD: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("decision_candidate_meta", "decision_id"),
+        # Keyed ``(decision_id, node_id, link_type)``, so the loser's links
+        # would collide with the keeper's wherever the two governed the same
+        # file. Dropping is safe because ``sync_decision_node_links`` rebuilds
+        # a decision's links from ``affected_files_json`` on every index.
+        ("decision_node_links", "decision_id"),
+    }
+)
+
+#: Unique constraints a fold can walk into, as ``table -> the other columns
+#: that make a row unique beside the decision id``. Two records that fold were
+#: duplicates, so they are exactly the pair most likely to hold the same
+#: evidence row, the same acceptance sequence, or the same edge. Repointing
+#: blindly raises ``IntegrityError`` out of a migration that runs at the head
+#: of every index, so the loser's row is dropped when the keeper already has
+#: its equivalent and moved when it does not.
+_FOLD_CONFLICT_KEYS: dict[str, tuple[str, ...]] = {
+    "decision_evidence": ("source", "evidence_file", "evidence_commit"),
+    "decision_acceptances": ("seq",),
+    "decision_edges": ("src_decision_id", "dst_decision_id", "kind"),
+}
+
 #: Every column that carries a decision id, including the two that hold one
 #: without a foreign key and so are swept along by nothing the database does on
 #: its own.
@@ -88,9 +128,15 @@ class IdMigrationPlan:
     """The per-record outcomes for one repository."""
 
     rows: list[IdRowPlan] = field(default_factory=list)
+    #: The quote each record's identity is keyed on, backfilled for records
+    #: captured before the column existed so ``apply`` can write it down.
+    pinned_quotes: dict[str, str] = field(default_factory=dict)
 
     def rewrites(self) -> list[IdRowPlan]:
         return [row for row in self.rows if row.outcome == "rewrite"]
+
+    def folds(self) -> list[IdRowPlan]:
+        return [row for row in self.rows if row.outcome == "fold"]
 
     def counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -104,10 +150,10 @@ async def plan_id_migration(session: AsyncSession, repository_id: str) -> IdMigr
 
     Three outcomes. ``stable`` is a record whose id already derives from its
     own identity, which is what a second run sees for everything. ``rewrite``
-    is a move. ``collision`` is a record whose derived id is already spoken
-    for, and it is left exactly as it is: two records cannot share a primary
-    key, and picking a winner would be resolving a duplicate on the user's
-    behalf.
+    is a move. ``fold`` is a record whose identity another record already
+    holds, which under evidence-keyed identity is not a collision but the
+    answer: the two are one decision worded twice, so the later one is merged
+    into the earlier and leaves an alias where it was.
     """
     result = await session.execute(
         select(DecisionRecord)
@@ -115,46 +161,109 @@ async def plan_id_migration(session: AsyncSession, repository_id: str) -> IdMigr
         .order_by(DecisionRecord.created_at, DecisionRecord.id)
     )
     records = list(result.scalars().all())
-    existing_ids = {rec.id for rec in records}
-    claimed: dict[str, str] = {}
-    rows: list[IdRowPlan] = []
+    quotes = await _pinned_quotes(session, records)
+    flagged = await _flagged_ids(session, repository_id)
 
-    for rec in records:
-        new_id = derive_decision_id(
+    # Derived first, for every record, before anything is classified. A
+    # record's outcome depends on what the others derive, not on what they
+    # hold now, so a single pass in creation order would call the first
+    # arrival a collision with an id its holder is about to vacate.
+    derived = {
+        rec.id: derive_decision_id(
             rec.repository_id,
             rec.title,
             source=rec.source,
             evidence_file=rec.evidence_file,
+            affected_files=_json_list(rec.affected_files_json),
+            evidence_line=rec.evidence_line,
+            identity_quote=quotes.get(rec.id, ""),
+            needs_split=rec.id in flagged,
         )
-        if new_id == rec.id:
-            rows.append(IdRowPlan(rec.id, new_id, rec.title, "stable"))
-            continue
-        if new_id in existing_ids:
-            rows.append(
-                IdRowPlan(
-                    rec.id,
-                    new_id,
-                    rec.title,
-                    "collision",
-                    "derived id already belongs to another record",
-                )
-            )
-            continue
-        if new_id in claimed:
-            rows.append(
-                IdRowPlan(
-                    rec.id,
-                    new_id,
-                    rec.title,
-                    "collision",
-                    f"another record derives the same id ({claimed[new_id]})",
-                )
-            )
-            continue
-        claimed[new_id] = rec.id
-        rows.append(IdRowPlan(rec.id, new_id, rec.title, "rewrite"))
+        for rec in records
+    }
+    # The record that keeps each derived id: the first in creation order. Its
+    # title and its acceptance are the ones the folded group ends up under,
+    # which is the oldest reading of the decision rather than the newest.
+    keeper: dict[str, str] = {}
+    for rec in records:
+        keeper.setdefault(derived[rec.id], rec.id)
 
-    return IdMigrationPlan(rows=rows)
+    rows: list[IdRowPlan] = []
+    for rec in records:
+        new_id = derived[rec.id]
+        if keeper[new_id] != rec.id:
+            rows.append(
+                IdRowPlan(
+                    rec.id,
+                    new_id,
+                    rec.title,
+                    "fold",
+                    f"same identity as {keeper[new_id]}",
+                )
+            )
+        elif new_id == rec.id:
+            rows.append(IdRowPlan(rec.id, new_id, rec.title, "stable"))
+        else:
+            rows.append(IdRowPlan(rec.id, new_id, rec.title, "rewrite"))
+
+    return IdMigrationPlan(rows=rows, pinned_quotes=quotes)
+
+
+def _json_list(raw: str | None) -> list[str]:
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
+async def _flagged_ids(session: AsyncSession, repository_id: str) -> set[str]:
+    """Records whose review row says the claim bundles two decisions.
+
+    Their identity keeps the title, so they are held out of the fold: a
+    bundled claim shares files and evidence with the decisions it bundles,
+    and folding them would file two decisions under a third one's name.
+    """
+    result = await session.execute(
+        select(DecisionCandidateMeta.decision_id).where(
+            DecisionCandidateMeta.repository_id == repository_id,
+            DecisionCandidateMeta.needs_split.is_(True),
+        )
+    )
+    return set(result.scalars().all())
+
+
+async def _pinned_quotes(
+    session: AsyncSession, records: list[DecisionRecord]
+) -> dict[str, str]:
+    """The quote each record's identity is keyed on.
+
+    A record captured since the column exists carries its own, written once.
+    One captured before it has an empty column and is backfilled here from
+    the strongest evidence row it already holds, which is the span it would
+    have pinned had the column existed. Falling back to the decision text
+    keeps a record with no evidence row from keying on the empty string,
+    which would fold every such record together.
+    """
+    pinned = {rec.id: rec.identity_quote for rec in records if rec.identity_quote}
+    missing = [rec for rec in records if not rec.identity_quote]
+    if not missing:
+        return pinned
+    result = await session.execute(
+        select(
+            DecisionEvidence.decision_id,
+            DecisionEvidence.source_quote,
+        )
+        .where(DecisionEvidence.decision_id.in_([rec.id for rec in missing]))
+        .order_by(DecisionEvidence.source_rank.desc(), DecisionEvidence.id)
+    )
+    strongest: dict[str, str] = {}
+    for decision_id, quote in result.all():
+        if quote and decision_id not in strongest:
+            strongest[decision_id] = quote
+    for rec in missing:
+        pinned[rec.id] = strongest.get(rec.id) or rec.decision or rec.title
+    return pinned
 
 
 def _table_names(sync_connection: Any) -> set[str]:
@@ -241,6 +350,104 @@ async def _rewrite_one(
     )
 
 
+async def _fold_one(
+    session: AsyncSession,
+    repository_id: str,
+    row: IdRowPlan,
+    tables: set[str],
+) -> None:
+    """Merge one record into the record its identity already names.
+
+    The dependents move first and the record is released last, for the same
+    reason a rewrite copies before it deletes: a foreign key cascades on
+    delete and does nothing on update, so a row pointed at a decision that
+    stops existing goes with it.
+
+    Two records only fold because they were duplicates, which makes them the
+    pair most likely to hold the same evidence row, the same acceptance
+    sequence, or the same edge. So a row the keeper already has an equivalent
+    of is dropped rather than moved: repointing it would raise on the unique
+    constraint, out of a migration that runs at the head of every index.
+    """
+    for table, column in _DEPENDENT_COLUMNS:
+        if table not in tables:
+            continue
+        if (table, column) in _DROPPED_ON_FOLD:
+            await session.execute(
+                _sql_text(f"DELETE FROM {table} WHERE {column} = :old_id"),
+                {"old_id": row.old_id},
+            )
+            continue
+        conflict = _FOLD_CONFLICT_KEYS.get(table)
+        if conflict:
+            await _drop_rows_the_keeper_already_has(session, table, column, conflict, row)
+        await session.execute(
+            _sql_text(f"UPDATE {table} SET {column} = :new_id WHERE {column} = :old_id"),
+            {"new_id": row.new_id, "old_id": row.old_id},
+        )
+
+    await session.execute(
+        _sql_text("DELETE FROM decision_records WHERE id = :old_id"),
+        {"old_id": row.old_id},
+    )
+
+    if "decision_aliases" not in tables:
+        return
+    if await session.get(DecisionAlias, row.old_id) is not None:
+        return
+    session.add(
+        DecisionAlias(
+            alias_id=row.old_id,
+            repository_id=repository_id,
+            decision_id=row.new_id,
+            reason=FOLD_REASON,
+            created_at=_now_utc(),
+        )
+    )
+
+
+async def _drop_rows_the_keeper_already_has(
+    session: AsyncSession,
+    table: str,
+    column: str,
+    conflict: tuple[str, ...],
+    row: IdRowPlan,
+) -> None:
+    """Delete the loser's rows that would collide once they are repointed.
+
+    Compares on the columns that make a row unique beside the decision id.
+    ``IS NOT DISTINCT FROM`` is not available on SQLite and those columns are
+    nullable, so the comparison is spelled out: equal, or both absent.
+
+    An edge between the two records being folded is dropped as well. Once they
+    are one record it points at itself, which is a relationship the graph has
+    no reading for.
+    """
+    others = [name for name in conflict if name != column]
+    matches = "".join(
+        f" AND (keeper.{name} = {table}.{name}"
+        f" OR (keeper.{name} IS NULL AND {table}.{name} IS NULL))"
+        for name in others
+    )
+    await session.execute(
+        _sql_text(
+            f"DELETE FROM {table} WHERE {column} = :old_id AND EXISTS ("
+            f" SELECT 1 FROM {table} AS keeper"
+            f" WHERE keeper.{column} = :new_id{matches})"
+        ),
+        {"new_id": row.new_id, "old_id": row.old_id},
+    )
+    for name in others:
+        if not name.endswith("decision_id"):
+            continue
+        await session.execute(
+            _sql_text(
+                f"DELETE FROM {table} WHERE {column} = :old_id AND {name} = :new_id"
+            ),
+            {"new_id": row.new_id, "old_id": row.old_id},
+        )
+
+
 def _detach_moved(session: AsyncSession) -> None:
     """Drop every loaded decision row from the session's identity map.
 
@@ -325,14 +532,29 @@ async def apply_id_migration(
     plan: IdMigrationPlan | None = None,
     vector_store: Any = None,
 ) -> IdMigrationPlan:
-    """Move every rewritable record onto its derived id, and re-key its vector.
+    """Settle every record onto its derived id, and re-key its vector.
 
-    Idempotent, because the plan classifies an already-derived id as ``stable``
-    and this touches nothing else.
+    Three things happen, in this order, and the order is forced. The pinned
+    quote is written down first, so the identity a record derives stops
+    depending on a backfill being recomputed the same way next run. Rewrites
+    come next, so every keeper is sitting on its derived id. Folds come last,
+    because a fold points dependents at the keeper's *new* id.
+
+    Idempotent: a second run classifies every id as ``stable``, finds no
+    rewrites and no folds, and touches nothing.
     """
     plan = plan or await plan_id_migration(session, repository_id)
     rewrites = plan.rewrites()
-    if not rewrites:
+    folds = plan.folds()
+
+    # Written even when nothing moves: a store whose ids already derive can
+    # still be carrying records that have never pinned their quote, and the
+    # pin is what makes the next re-extraction leave those ids alone.
+    pinned = await _pin_quotes(session, plan)
+
+    if not rewrites and not folds:
+        if pinned:
+            await session.flush()
         return plan
 
     # The rewrites are raw SQL, so a record already loaded keeps the id it was
@@ -349,21 +571,72 @@ async def apply_id_migration(
         # and that the next run would faithfully rekey rather than clean.
         async with session.begin_nested():
             await _rewrite_one(session, repository_id, row, tables)
+    for row in folds:
+        async with session.begin_nested():
+            await _fold_one(session, repository_id, row, tables)
     await session.flush()
     _detach_moved(session)
 
     rekeyed = 0
+    dropped = 0
     if vector_store is not None:
         rekeyed = await _rekey_vectors(vector_store, session, rewrites)
+        dropped = await _drop_folded_vectors(vector_store, folds)
 
-    # Collisions are left where they are, so name them rather than letting a
-    # count imply everything moved.
-    collisions = [row for row in plan.rows if row.outcome == "collision"]
     logger.info(
         "decision_ids_derived",
         repository_id=repository_id,
         rewritten=len(rewrites),
+        folded=len(folds),
+        quotes_pinned=pinned,
         vectors_rekeyed=rekeyed,
-        unchanged_collisions=[row.old_id for row in collisions],
+        vectors_dropped=dropped,
     )
     return plan
+
+
+async def _pin_quotes(session: AsyncSession, plan: IdMigrationPlan) -> int:
+    """Write each record's identity quote into the row it belongs to.
+
+    The plan derived it, from the strongest evidence row for anything
+    captured before the column existed. Storing it is what stops the
+    derivation from depending on evidence that a later run may have accreted
+    more of: the pin is the point, and a pin nobody writes down is a
+    recomputation.
+    """
+    written = 0
+    for row in plan.rows:
+        if row.outcome == "fold":
+            continue
+        quote = plan.pinned_quotes.get(row.old_id)
+        if not quote:
+            continue
+        rec = await session.get(DecisionRecord, row.old_id)
+        if rec is not None and not rec.identity_quote:
+            rec.identity_quote = quote
+            written += 1
+    return written
+
+
+async def _drop_folded_vectors(vector_store: Any, folds: list[IdRowPlan]) -> int:
+    """Delete the vector of every record a fold removed.
+
+    The keeper's vector stays and still describes the decision. The loser's
+    describes a record that no longer exists, so leaving it would let search
+    return an id nothing resolves to.
+    """
+    if not folds:
+        return 0
+    try:
+        present = await vector_store.list_page_ids()
+    except Exception:
+        return 0
+    stale = [
+        f"{DECISION_VECTOR_PREFIX}{row.old_id}"
+        for row in folds
+        if f"{DECISION_VECTOR_PREFIX}{row.old_id}" in present
+    ]
+    if not stale:
+        return 0
+    await vector_store.delete_many(sorted(stale))
+    return len(stale)

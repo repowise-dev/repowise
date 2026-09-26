@@ -17,23 +17,20 @@ limit_blas_threads()
 # ruff: noqa: E402 — the BLAS pin above is only effective before these run.
 import logging
 import os
+import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import update as sa_update
 
 from repowise.core.persistence.database import (
     create_engine,
     create_session_factory,
-    get_session,
     init_db,
     resolve_db_url,
 )
-from repowise.core.persistence.models import GenerationJob
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.providers.embedding import is_semantic_embedder
 from repowise.core.providers.embedding.base import KeylessEmbedder
@@ -49,6 +46,7 @@ from repowise.server.routers import (
     coupling,
     dead_code,
     decisions,
+    doc_drift,
     episodes,
     external_systems,
     feedback,
@@ -75,26 +73,40 @@ from repowise.server.routers import (
     workspace,
 )
 from repowise.server.scheduler import setup_scheduler
+from repowise.server.workspace_startup import (
+    attach_workspace,
+    fail_interrupted_jobs,
+    init_workspace_state,
+    reset_workspace_stale_jobs,
+    workspace_primary_db_url,
+)
 
 logger = logging.getLogger(__name__)
 
 
-async def reset_workspace_stale_jobs(app_state) -> int:
-    """Mark interrupted pending/running jobs failed across workspace repo DBs."""
-    reset_count = 0
-    for ws_factory in getattr(app_state, "workspace_sessions", {}).values():
-        async with get_session(ws_factory) as session:
-            stale_result = await session.execute(
-                sa_update(GenerationJob)
-                .where(GenerationJob.status.in_(["running", "pending"]))
-                .values(
-                    status="failed",
-                    error_message="Server restarted; job interrupted",
-                    finished_at=datetime.now(UTC),
-                )
+def _gemini_embedder():
+    from repowise.core.providers.embedding.gemini import GeminiEmbedder
+
+    dims_raw = os.environ.get("REPOWISE_EMBEDDING_DIMS")
+    dims = 768
+    if dims_raw:
+        try:
+            parsed = int(dims_raw)
+        except (ValueError, OverflowError):
+            parsed = 0
+        if parsed > 0:
+            dims = parsed
+        else:
+            print(
+                f"REPOWISE_EMBEDDING_DIMS={dims_raw!r} is not a positive integer; using {dims}.",
+                file=sys.stderr,
             )
-            reset_count += stale_result.rowcount or 0
-    return reset_count
+    # Honour the indexed embedding model so serve doesn't silently rebuild
+    # the embedder with a different default than init used (issue #426).
+    model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
+    if model:
+        return GeminiEmbedder(model=model, output_dimensionality=dims)
+    return GeminiEmbedder(output_dimensionality=dims)
 
 
 def _build_embedder():
@@ -113,31 +125,7 @@ def _build_embedder():
 
         return OllamaEmbedder()
     if name == "gemini":
-        from repowise.core.providers.embedding.gemini import GeminiEmbedder
-
-        dims_raw = os.environ.get("REPOWISE_EMBEDDING_DIMS")
-        dims = 768
-        if dims_raw:
-            try:
-                parsed = int(dims_raw)
-            except (ValueError, OverflowError):
-                parsed = 0
-            if parsed > 0:
-                dims = parsed
-            else:
-                import sys
-
-                print(
-                    f"REPOWISE_EMBEDDING_DIMS={dims_raw!r} is not a positive integer;"
-                    f" using {dims}.",
-                    file=sys.stderr,
-                )
-        # Honour the indexed embedding model so serve doesn't silently rebuild
-        # the embedder with a different default than init used (issue #426).
-        model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
-        if model:
-            return GeminiEmbedder(model=model, output_dimensionality=dims)
-        return GeminiEmbedder(output_dimensionality=dims)
+        return _gemini_embedder()
     if name == "openai":
         from repowise.core.providers.embedding.openai import OpenAIEmbedder
 
@@ -170,75 +158,126 @@ def _build_query_embedder():
     return CachingEmbedder(embedder) if is_semantic_embedder(embedder) else embedder
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Startup: create DB engine, session factory, FTS, vector store, scheduler.
-    Shutdown: dispose engine, stop scheduler, close vector store.
-    """
-    # Database
+def _resolve_server_db_url() -> str:
     # In workspace mode, prefer the primary repo's DB over the global default.
-    # This prevents the global ~/.repowise/wiki.db (which may contain stale
-    # repos from old test runs) from being used as the main DB.
     db_url = resolve_db_url()
     if not os.environ.get("REPOWISE_DB_URL") and not os.environ.get("REPOWISE_DATABASE_URL"):
-        try:
-            from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
+        db_url = workspace_primary_db_url() or db_url
+    return db_url
 
-            _ws_root = find_workspace_root()
-            if _ws_root is not None:
-                _ws_cfg = WorkspaceConfig.load(_ws_root)
-                _primary = _ws_cfg.get_primary()
-                _primary_path = _ws_root / (_primary.path if _primary else ".")
-                _primary_db = (_primary_path / ".repowise" / "wiki.db").resolve()
-                if _primary_db.exists():
-                    db_url = f"sqlite+aiosqlite:///{_primary_db.as_posix()}"
-                    logger.info("workspace_primary_db", extra={"db": str(_primary_db)})
-        except Exception:
-            pass  # Fall back to default
 
-    engine = create_engine(db_url)
-    await init_db(engine)
-    session_factory = create_session_factory(engine)
-
-    # Reset any jobs left in "running" or "pending" state from a previous
-    # server instance (crash, restart, or cancellation between row-insert and
-    # background-task launch) — they can never complete now and would block
-    # new syncs via the active-job guard in the repos router.
-    # Note: with multi-worker deployments this is a best-effort race; the
-    # try/except prevents a SQLite lock error from crashing startup.
+async def _reset_stale_jobs(session_factory) -> None:
+    # Jobs left running by a previous process can never finish and would block
+    # new syncs. Best effort: a lock error must not crash startup.
     try:
-        from datetime import UTC as _UTC
-        from datetime import datetime
-
-        from sqlalchemy import update as sa_update
-
-        from repowise.core.persistence.models import GenerationJob
-
-        async with get_session(session_factory) as session:
-            stale_result = await session.execute(
-                sa_update(GenerationJob)
-                .where(GenerationJob.status.in_(["running", "pending"]))
-                .values(
-                    status="failed",
-                    error_message="Server restarted — job interrupted",
-                    finished_at=datetime.now(_UTC),
-                )
-            )
-            if stale_result.rowcount:
-                logger.warning("reset_stale_jobs", extra={"count": stale_result.rowcount})
+        count = await fail_interrupted_jobs(session_factory, "Server restarted — job interrupted")
+        if count:
+            logger.warning("reset_stale_jobs", extra={"count": count})
     except Exception as exc:
         logger.warning("stale_job_reset_failed", extra={"error": str(exc)})
 
-    # Full-text search. A failure here used to abort startup, so a store whose
-    # index could not be upgraded served no documentation at all (issue #1309):
-    # the wiki, the graph and the health pages were all unreachable over a
-    # search index. Keyword search degrades to whatever shape the index is
-    # already in, or to the vector arm alone; everything else keeps working.
+
+async def _open_fts(engine) -> FullTextSearch:
+    # An index that cannot be upgraded degrades keyword search only; it must
+    # not take the rest of the server down with it.
     fts = FullTextSearch(engine)
     try:
         await fts.ensure_index()
     except Exception as exc:
         logger.warning("fts_ensure_index_failed", extra={"error": str(exc)})
+    return fts
+
+
+def _publish_core_state(
+    app_state,
+    *,
+    engine,
+    session_factory,
+    db_url: str,
+    fts: FullTextSearch,
+    vector_store,
+    primary_vector_repo_id: str | None,
+) -> None:
+    # Store on app state (before scheduler, so scheduler can reference app_state)
+    app_state.engine = engine
+    app_state.session_factory = session_factory
+    app_state.db_url = db_url
+    app_state.fts = fts
+    app_state.vector_store = vector_store
+    app_state.primary_vector_repo_id = primary_vector_repo_id
+    app_state.background_tasks = set()  # Strong refs to prevent GC of asyncio tasks
+    app_state.job_tasks = {}  # job_id → asyncio.Task (cancel endpoint)
+    app_state.job_cancel_tokens = {}  # job_id → CancellationToken
+    app_state.job_events = {}  # job_id → JobEventBuffer (SSE message frames)
+
+
+async def _rediscover_repo_dbs(app_state) -> None:
+    # Repos added via the API keep data in their own wiki.db. Runs after
+    # workspace detection so workspace members are skipped.
+    try:
+        from repowise.server.repo_db import rediscover_repo_dbs
+
+        rediscovered = await rediscover_repo_dbs(app_state)
+        if rediscovered:
+            logger.info("repo_dbs_rediscovered", extra={"count": rediscovered})
+            # Jobs interrupted by the restart live in those per-repo DBs; the
+            # earlier resets only covered the primary and workspace DBs.
+            stale = await reset_workspace_stale_jobs(app_state)
+            if stale:
+                logger.warning("reset_stale_jobs", extra={"count": stale})
+    except Exception:
+        logger.debug("repo_db_rediscovery_skipped", exc_info=True)
+
+
+async def _release_workspace_tools(app_state) -> None:
+    # Release the per-repo contexts the chat tools resolved through
+    _repo_registry = getattr(app_state, "repo_registry", None)
+    if _repo_registry is None:
+        return
+    from repowise.server.chat_tools import set_tool_workspace
+
+    with suppress(Exception):
+        await _repo_registry.close()
+    # The enricher is only ever published alongside the registry.
+    set_tool_workspace(registry=None, workspace_root=None, cross_repo_enricher=None)
+    # The test-impact join holds its own session per consumer repo.
+    from repowise.server.mcp_server._test_impact import close_test_impact_indexes
+
+    with suppress(Exception):
+        await close_test_impact_indexes()
+
+
+async def _shutdown(app: FastAPI, *, scheduler, vector_store, engine) -> None:
+    scheduler.shutdown(wait=False)
+    with suppress(Exception):
+        await vector_store.close()
+    # Close cached per-repo vector stores (LanceDB connections).
+    try:
+        from repowise.server.search_helpers import close_workspace_vector_stores
+
+        await close_workspace_vector_stores(app)
+    except Exception:
+        logger.debug("workspace_vector_store_close_failed", exc_info=True)
+    await _release_workspace_tools(app.state)
+    # Dispose workspace repo engines first
+    for ws_engine in getattr(app.state, "workspace_engines", []):
+        with suppress(Exception):
+            await ws_engine.dispose()
+    await engine.dispose()
+    logger.info("repowise_server_stopped")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Startup: create DB engine, session factory, FTS, vector store, scheduler.
+    Shutdown: dispose engine, stop scheduler, close vector store.
+    """
+    db_url = _resolve_server_db_url()
+    engine = create_engine(db_url)
+    await init_db(engine)
+    session_factory = create_session_factory(engine)
+    await _reset_stale_jobs(session_factory)
+    fts = await _open_fts(engine)
 
     # Reuse the repo-local LanceDB index written by CLI init/update. A fresh
     # in-memory store is used only when this database cannot be associated with
@@ -251,18 +290,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         db_url,
         embedder,
     )
-
-    # Store on app state (before scheduler, so scheduler can reference app_state)
-    app.state.engine = engine
-    app.state.session_factory = session_factory
-    app.state.db_url = db_url
-    app.state.fts = fts
-    app.state.vector_store = vector_store
-    app.state.primary_vector_repo_id = primary_vector_repo_id
-    app.state.background_tasks = set()  # Strong refs to prevent GC of asyncio tasks
-    app.state.job_tasks = {}  # job_id → asyncio.Task (cancel endpoint)
-    app.state.job_cancel_tokens = {}  # job_id → CancellationToken
-    app.state.job_events = {}  # job_id → JobEventBuffer (SSE message frames)
+    _publish_core_state(
+        app.state,
+        engine=engine,
+        session_factory=session_factory,
+        db_url=db_url,
+        fts=fts,
+        vector_store=vector_store,
+        primary_vector_repo_id=primary_vector_repo_id,
+    )
 
     # Background scheduler (pass app.state so polling can launch jobs)
     scheduler = setup_scheduler(session_factory, app_state=app.state)
@@ -270,7 +306,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.scheduler = scheduler
 
     # Initialize chat tool state (bridges FastAPI state to MCP tool globals)
-    from repowise.server.chat_tools import init_tool_state, set_tool_workspace
+    from repowise.server.chat_tools import init_tool_state
 
     init_tool_state(
         session_factory=session_factory,
@@ -278,242 +314,79 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         vector_store=vector_store,
     )
 
-    # Workspace detection — mirrors MCP _server.py:_detect_workspace()
-    app.state.workspace_config = None
-    app.state.workspace_root = None
-    app.state.cross_repo_enricher = None
-    app.state.repo_registry = None  # RepoRegistry, workspace mode only
-    app.state.workspace_sessions = {}  # repo_id → session_factory
-    app.state.workspace_path_to_repo_id = {}  # local_path → repo_id
-    app.state.workspace_engines = []  # engines to dispose on shutdown
-    # Per-repo FTS instances keyed by repo_id, used by the search router
-    # to fan out across every workspace repo (single-repo FTS lives on
-    # app.state.fts and stays as the primary).
-    app.state.workspace_fts = {}  # repo_id → FullTextSearch
-    # repo_id → vector store (LanceDB-backed) for per-repo semantic search.
-    # Populated lazily by the search router on first use, then cached.
-    app.state.workspace_vector_stores = {}  # repo_id → VectorStore
-    if primary_vector_repo_id is not None:
-        app.state.workspace_vector_stores[primary_vector_repo_id] = vector_store
-
-    try:
-        from pathlib import Path as _Path
-
-        from repowise.core.workspace.config import (
-            WORKSPACE_DATA_DIR,
-            WorkspaceConfig,
-            find_workspace_root,
-        )
-
-        ws_root = find_workspace_root()
-        if ws_root is not None:
-            ws_config = WorkspaceConfig.load(ws_root)
-            app.state.workspace_config = ws_config
-            app.state.workspace_root = str(ws_root)
-
-            from repowise.core.persistence.database import get_configured_db_url
-
-            configured_db_url = get_configured_db_url()
-            if configured_db_url is not None:
-                # Shared database mode (e.g. PostgreSQL, REPOWISE_DB_URL).
-                # Member repos are registered in the shared database and do not
-                # have per-repo .repowise/wiki.db files.
-                from repowise.core.persistence.crud import get_repository_by_path
-
-                async with get_session(session_factory) as session:
-                    for repo_entry in ws_config.repos:
-                        repo_path = (_Path(ws_root) / repo_entry.path).resolve()
-                        try:
-                            repo = await get_repository_by_path(session, str(repo_path))
-                            if repo is not None:
-                                app.state.workspace_sessions[repo.id] = session_factory
-                                app.state.workspace_fts[repo.id] = fts
-                                app.state.workspace_path_to_repo_id[str(repo_path)] = repo.id
-                        except Exception:
-                            logger.debug(
-                                "workspace_shared_db_repo_lookup_failed",
-                                extra={"path": str(repo_path)},
-                                exc_info=True,
-                            )
-            else:
-                # Create per-repo DB engines so all workspace repos are accessible
-                # via the same REST API (sidebar, repo-specific pages, etc.)
-                import sqlite3 as _sqlite3
-
-                for repo_entry in ws_config.repos:
-                    repo_path = (_Path(ws_root) / repo_entry.path).resolve()
-                    repo_db = repo_path / ".repowise" / "wiki.db"
-                    if not repo_db.exists():
-                        continue
-                    # Read repo_id from this DB
-                    try:
-                        conn = _sqlite3.connect(str(repo_db))
-                        row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
-                        conn.close()
-                        if not row:
-                            continue
-                        repo_id = row[0]
-                        app.state.workspace_path_to_repo_id[str(repo_path)] = repo_id
-                    except Exception:
-                        continue
-
-                    # Skip if this is the primary DB we already connected to
-                    # (the main engine already serves this repo) — but still
-                    # register the primary's FTS under its repo_id so the
-                    # search fan-out can include it.
-                    db_url_posix = repo_db.as_posix()
-                    if db_url and db_url_posix in db_url.replace("\\", "/"):
-                        app.state.workspace_fts[repo_id] = fts
-                        continue
-
-                    repo_engine = create_engine(f"sqlite+aiosqlite:///{db_url_posix}")
-                    await init_db(repo_engine)
-                    repo_sf = create_session_factory(repo_engine)
-                    app.state.workspace_sessions[repo_id] = repo_sf
-                    app.state.workspace_engines.append(repo_engine)
-
-                    # Build a per-repo FTS instance so the search router can
-                    # fan out queries across every workspace repo. Without
-                    # this, full-text search only ever sees the primary DB.
-                    try:
-                        repo_fts = FullTextSearch(repo_engine)
-                        await repo_fts.ensure_index()
-                        app.state.workspace_fts[repo_id] = repo_fts
-                    except Exception:
-                        logger.debug(
-                            "workspace_fts_init_failed",
-                            extra={"repo_id": repo_id},
-                            exc_info=True,
-                        )
-
-            if app.state.workspace_sessions:
-                logger.info(
-                    "workspace_repo_dbs_loaded",
-                    extra={"count": len(app.state.workspace_sessions)},
-                )
-
-            # Give the MCP tool functions a RepoRegistry, the same one the
-            # stdio MCP lifespan builds (_server.py). Without it every chat
-            # tool call falls into the single-repo branch of
-            # _resolve_repo_context() and dies with "Repository not found:
-            # <alias>", because the alias is looked up in the primary repo's
-            # wiki.db only (issue #970). Contexts load lazily, so the repo
-            # the first chat call names pays the engine/FTS open cost inline.
-            # The registry holds its own handles on each repo's wiki.db,
-            # separate from app.state.workspace_sessions above; collapsing
-            # the two onto one set of connections is worth doing but is a
-            # bigger change than this fix.
-            from repowise.core.workspace.registry import RepoRegistry
-
-            repo_registry = RepoRegistry(
-                workspace_root=_Path(ws_root),
-                ws_config=ws_config,
-                embedder_factory=_build_query_embedder,
-            )
-            app.state.repo_registry = repo_registry
-            set_tool_workspace(registry=repo_registry, workspace_root=str(ws_root))
-
-            # Reset stale jobs in non-primary workspace DBs too. The primary
-            # DB was handled before workspace detection, but each secondary
-            # repo has its own generation_jobs table and stale running rows
-            # there would keep the UI showing an in-progress sync forever.
-            try:
-                reset_count = await reset_workspace_stale_jobs(app.state)
-                if reset_count:
-                    logger.warning(
-                        "reset_workspace_stale_jobs",
-                        extra={"count": reset_count},
-                    )
-            except Exception as exc:
-                logger.warning("workspace_stale_job_reset_failed", extra={"error": str(exc)})
-
-            from repowise.core.workspace.breaking_change import BREAKING_CHANGES_FILENAME
-            from repowise.core.workspace.conformance import CONFORMANCE_FILENAME
-            from repowise.core.workspace.contracts import CONTRACTS_FILENAME
-            from repowise.core.workspace.system_graph import SYSTEM_GRAPH_FILENAME
-            from repowise.server.mcp_server._enrichment import CrossRepoEnricher
-
-            cross_repo_path = _Path(ws_root) / WORKSPACE_DATA_DIR / "cross_repo_edges.json"
-            contracts_path = _Path(ws_root) / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME
-            system_graph_path = _Path(ws_root) / WORKSPACE_DATA_DIR / SYSTEM_GRAPH_FILENAME
-            breaking_changes_path = _Path(ws_root) / WORKSPACE_DATA_DIR / BREAKING_CHANGES_FILENAME
-            conformance_path = _Path(ws_root) / WORKSPACE_DATA_DIR / CONFORMANCE_FILENAME
-            enricher = CrossRepoEnricher(
-                cross_repo_path,
-                contracts_path=contracts_path,
-                system_graph_path=system_graph_path,
-                breaking_changes_path=breaking_changes_path,
-                conformance_path=conformance_path,
-            )
-            if enricher.has_data or enricher.has_contract_data or enricher.has_system_graph:
-                app.state.cross_repo_enricher = enricher
-                set_tool_workspace(cross_repo_enricher=enricher)
-                logger.info(
-                    "repowise_workspace_detected",
-                    extra={
-                        "repos": len(ws_config.repos),
-                        "co_changes": len(getattr(enricher, "_co_changes", [])),
-                        "contract_links": len(getattr(enricher, "_contract_links", [])),
-                    },
-                )
-            else:
-                logger.info("repowise_workspace_detected", extra={"repos": len(ws_config.repos)})
-    except Exception:
-        logger.debug("Workspace detection skipped", exc_info=True)
-
-    # Re-register per-repo databases for repos added via the API (their data
-    # lives in <repo>/.repowise/wiki.db; the primary DB only holds a registry
-    # row). Runs after workspace detection so already-registered workspace
-    # repos are skipped.
-    try:
-        from repowise.server.repo_db import rediscover_repo_dbs
-
-        rediscovered = await rediscover_repo_dbs(app.state)
-        if rediscovered:
-            logger.info("repo_dbs_rediscovered", extra={"count": rediscovered})
-            # Jobs interrupted by the restart live in those per-repo DBs; the
-            # earlier resets only covered the primary and workspace DBs.
-            stale = await reset_workspace_stale_jobs(app.state)
-            if stale:
-                logger.warning("reset_stale_jobs", extra={"count": stale})
-    except Exception:
-        logger.debug("repo_db_rediscovery_skipped", exc_info=True)
+    init_workspace_state(app.state, vector_store, primary_vector_repo_id)
+    await attach_workspace(
+        app.state,
+        session_factory=session_factory,
+        fts=fts,
+        db_url=db_url,
+        embedder_factory=_build_query_embedder,
+    )
+    await _rediscover_repo_dbs(app.state)
 
     logger.info("repowise_server_started", extra={"version": __version__})
     try:
         yield
     finally:
-        # Shutdown. The finally matters for the workspace globals below: they
-        # outlive the app object, so skipping this on a shutdown exception
-        # would leave the tool layer pointing at disposed engines.
-        scheduler.shutdown(wait=False)
-        with suppress(Exception):
-            await vector_store.close()
-        # Close cached per-repo vector stores (LanceDB connections).
-        try:
-            from repowise.server.search_helpers import close_workspace_vector_stores
+        # The workspace tool globals outlive the app, so shut down even on error.
+        await _shutdown(app, scheduler=scheduler, vector_store=vector_store, engine=engine)
 
-            await close_workspace_vector_stores(app)
-        except Exception:
-            logger.debug("workspace_vector_store_close_failed", exc_info=True)
-        # Release the per-repo contexts the chat tools resolved through
-        _repo_registry = getattr(app.state, "repo_registry", None)
-        if _repo_registry is not None:
-            with suppress(Exception):
-                await _repo_registry.close()
-            # The enricher is only ever published alongside the registry.
-            set_tool_workspace(registry=None, workspace_root=None, cross_repo_enricher=None)
-            # The test-impact join holds its own session per consumer repo.
-            from repowise.server.mcp_server._test_impact import close_test_impact_indexes
 
-            with suppress(Exception):
-                await close_test_impact_indexes()
-        # Dispose workspace repo engines first
-        for ws_engine in getattr(app.state, "workspace_engines", []):
-            with suppress(Exception):
-                await ws_engine.dispose()
-        await engine.dispose()
-        logger.info("repowise_server_stopped")
+def _cors_settings() -> tuple[list[str], bool]:
+    """``(allowed origins, allow credentials)`` from the environment."""
+    # Browsers reject a wildcard origin with credentials, so credentials need
+    # explicit REPOWISE_CORS_ORIGINS; unset means any origin, no credentials.
+    cors_origins_env = os.environ.get("REPOWISE_CORS_ORIGINS", "").strip()
+    if cors_origins_env:
+        return [o.strip() for o in cors_origins_env.split(",") if o.strip()], True
+    # Warn when the old wildcard-with-credentials setting is still configured.
+    if os.environ.get("REPOWISE_CORS_ALLOW_CREDENTIALS", "").lower() in ("1", "true", "yes"):
+        logger.warning(
+            "cors.wildcard_with_credentials_rejected: "
+            "REPOWISE_CORS_ORIGINS=* cannot be used with credentials; "
+            "set REPOWISE_CORS_ORIGINS to explicit origins"
+        )
+    return ["*"], False
+
+
+# Registration order is route precedence: a literal path must be registered
+# before a parameterised one that would otherwise match it.
+_ROUTERS = (
+    health,
+    repos,
+    pages,
+    search,
+    jobs,
+    symbols,
+    graph,
+    c4,
+    webhooks,
+    git,
+    dead_code,
+    doc_drift,
+    code_health,
+    coupling,
+    claude_md,
+    decisions,
+    episodes,
+    chat,
+    providers,
+    mcp,
+    meta,
+    costs,
+    security,
+    blast_radius,
+    refactoring,
+    knowledge_map,
+    workspace,
+    owners,
+    modules,
+    overview,
+    stats,
+    files,
+    external_systems,
+    feedback,
+)
 
 
 def create_app() -> FastAPI:
@@ -525,11 +398,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS — allow all origins for local development
+    cors_origins, cors_allow_credentials = _cors_settings()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -544,38 +417,7 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     # Include routers
-    app.include_router(health.router)
-    app.include_router(repos.router)
-    app.include_router(pages.router)
-    app.include_router(search.router)
-    app.include_router(jobs.router)
-    app.include_router(symbols.router)
-    app.include_router(graph.router)
-    app.include_router(c4.router)
-    app.include_router(webhooks.router)
-    app.include_router(git.router)
-    app.include_router(dead_code.router)
-    app.include_router(code_health.router)
-    app.include_router(coupling.router)
-    app.include_router(claude_md.router)
-    app.include_router(decisions.router)
-    app.include_router(episodes.router)
-    app.include_router(chat.router)
-    app.include_router(providers.router)
-    app.include_router(mcp.router)
-    app.include_router(meta.router)
-    app.include_router(costs.router)
-    app.include_router(security.router)
-    app.include_router(blast_radius.router)
-    app.include_router(refactoring.router)
-    app.include_router(knowledge_map.router)
-    app.include_router(workspace.router)
-    app.include_router(owners.router)
-    app.include_router(modules.router)
-    app.include_router(overview.router)
-    app.include_router(stats.router)
-    app.include_router(files.router)
-    app.include_router(external_systems.router)
-    app.include_router(feedback.router)
+    for router_module in _ROUTERS:
+        app.include_router(router_module.router)
 
     return app

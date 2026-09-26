@@ -60,7 +60,7 @@ Critical files:
 
 ### Standing decisions (ask `get_why` before diverging)
 {% for d in data.decisions[:3] %}
-- {{ d.title }}{% if d.rationale %} — {{ d.rationale }}{% endif %}
+- {{ d.title }}{{ d.signed_by }}{% if d.rationale %} — {{ d.rationale }}{% endif %}
 
 {% endfor %}
 {% endif %}

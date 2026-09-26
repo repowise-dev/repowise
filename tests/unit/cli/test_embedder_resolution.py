@@ -842,3 +842,19 @@ def test_a_repo_pin_outranks_the_global_config(
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
 
     assert resolve_embedder_for_repo(repo) == "mock"
+
+
+@pytest.mark.parametrize(
+    ("resolved", "requested", "expected"),
+    [
+        ("openai", False, "mock"),  # inferred from an LLM key: downgraded
+        ("openai", True, "openai"),  # named by the user: honoured
+        ("mock", False, "mock"),  # already free, nothing to downgrade
+        ("ollama", False, "ollama"),
+    ],
+)
+def test_template_run_embedder_downgrades_only_an_unasked_hosted_backend(
+    resolved: str, requested: bool, expected: str
+) -> None:
+    """``init`` predicts this answer to build the run's store before the pipeline."""
+    assert providers.template_run_embedder(resolved, requested) == expected

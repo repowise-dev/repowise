@@ -134,3 +134,40 @@ def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
             }
         )
     return rows
+
+
+def _file_rows_for(sha: str, changes: list) -> list[dict]:
+    """One row per distinct path in *changes*.
+
+    numstat can repeat a path (a split rename pair); (sha, path) is the natural
+    key, so fold rather than let the upsert pick one arbitrarily.
+    """
+    seen: set[str] = set()
+    rows: list[dict] = []
+    for path, added, deleted in changes:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        rows.append(
+            {
+                "sha": sha,
+                "file_path": path,
+                "lines_added": max(int(added or 0), 0),
+                "lines_deleted": max(int(deleted or 0), 0),
+            }
+        )
+    return rows
+
+
+def build_commit_file_rows(parsed_commits: list[dict]) -> list[dict]:
+    """Build ``git_commit_files`` rows from the same sunk records.
+
+    The per-file detail ``build_commit_rows`` aggregates away. Same input, same
+    walk, so the two must always be built from one batch.
+    """
+    return [
+        row
+        for c in parsed_commits
+        if c.get("sha")
+        for row in _file_rows_for(c["sha"], c.get("changes") or [])
+    ]

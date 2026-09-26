@@ -27,6 +27,7 @@ from .models import (
     DocDriftReport,
     DriftKind,
     DriftVerdict,
+    ResolvedDocReference,
 )
 from .resolver import RepoIndex, resolve
 
@@ -140,6 +141,7 @@ class DocDriftAnalyzer:
             on_step("index")
 
         findings: list[DocDriftFindingData] = []
+        resolved: list[ResolvedDocReference] = []
         verdict_counts: dict[str, int] = {v.value: 0 for v in DriftVerdict}
         references_checked = 0
 
@@ -153,6 +155,14 @@ class DocDriftAnalyzer:
                 verdict_counts[res.verdict.value] += 1
                 if res.verdict is DriftVerdict.MISSING:
                     findings.append(_to_finding(res))
+                elif res.resolved_target and res.resolved_target != rel:
+                    # Retention, not recomputation. Only a resolution naming
+                    # a real file sets ``resolved_target``, so an ambiguous or
+                    # uncheckable reference cannot land here as a fact. A
+                    # document naming itself is dropped: a table of contents
+                    # answers the reverse question with the file the reader is
+                    # already in.
+                    resolved.append(_to_resolved(res))
         if on_step:
             on_step("resolve")
 
@@ -181,7 +191,19 @@ class DocDriftAnalyzer:
             anchor_renderer=index.renderers.summary(),
             hidden_below_threshold=hidden,
             documents=frozenset(documents),
+            resolved_references=resolved,
         )
+
+
+def _to_resolved(res: Any) -> ResolvedDocReference:
+    ref = res.ref
+    return ResolvedDocReference(
+        doc_path=ref.doc_path,
+        target_path=res.resolved_target,
+        kind=ref.kind,
+        line=ref.line,
+        section=ref.section,
+    )
 
 
 def _to_finding(res: Any) -> DocDriftFindingData:

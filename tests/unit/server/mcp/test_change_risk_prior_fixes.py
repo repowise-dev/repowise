@@ -163,9 +163,12 @@ async def test_concentration_only_names_a_file_the_block_shows(monkeypatch):
     ],
 )
 def test_a_missing_table_is_told_apart_from_a_broken_read(message, missing):
+    """Shared by every tool that reads an analysis table, hence its home."""
+    from repowise.server.mcp_server._helpers import is_missing_table
+
     exc = OperationalError("SELECT 1", {}, Exception(message))
 
-    assert tool._is_missing_table(exc) is missing
+    assert is_missing_table(exc) is missing
 
 
 def test_the_failure_reason_names_the_class_without_quoting_the_driver():

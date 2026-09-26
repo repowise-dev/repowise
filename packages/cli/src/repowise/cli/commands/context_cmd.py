@@ -19,12 +19,13 @@ _INCLUDE_BLOCKS = (
     "decisions",
     "health",
     "skeleton",
+    "doc_drift",
 )
 
 #: Card keys the projection replaces or drops. Everything else passes through.
 #:
-#: A denylist, not an allowlist. Most of what a card carries is opt-in: nine
-#: ``--include`` blocks, each landing under its own key, and an allowlist that
+#: A denylist, not an allowlist. Most of what a card carries is opt-in: every
+#: ``--include`` block lands under its own key, and an allowlist that
 #: misses one turns ``--include ownership`` into a flag that changes nothing
 #: the caller can see. The failure mode of a denylist is a payload slightly
 #: larger than intended; the failure mode of an allowlist is a silently

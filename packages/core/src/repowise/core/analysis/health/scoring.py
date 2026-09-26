@@ -6,7 +6,7 @@ cap. Final score is clamped to [1.0, 10.0].
 
 The recalibrated category caps (plan §3.1):
 
-    organizational        -> -3.5   # was -1.0 (process-aware signals)
+    organizational        -> -3.5   # ceiling; the live cap is history_cap()
     structural_complexity -> -2.5   # was -3.5
     test_coverage         -> -2.0
     size_and_complexity   -> -1.5   # was -2.0
@@ -67,6 +67,33 @@ CATEGORY_CAPS: dict[str, float] = {
     # squeezed by - the predictive categories.
     "error_handling": 0.5,
 }
+
+# The one defect category derived from git rather than from the code itself.
+# Splitting on it is what lets a surface say which half of the score moved: a
+# refactor changes the structure half, and nothing a reader types today changes
+# the history half.
+HISTORY_CATEGORY = "organizational"
+
+# History markers read how a file has been changed, not what it is, so on their
+# own they measure activity: a simple file that changes often is busy, not
+# broken. History therefore amplifies code risk rather than standing alone: its
+# cap is 1.0 plus one point per point of structure deduction (every other defect
+# category, already capped), up to the category's 3.5. A file with no code-shape
+# finding keeps at least 9.0. Checked against the defect benchmark: no
+# measurable predictive cost. The weights are unchanged; fit the base and slope
+# with them in the next calibration pass.
+HISTORY_CAP_BASE: float = 1.0
+HISTORY_CAP_PER_STRUCTURE: float = 1.0
+
+
+def history_cap(structure: float) -> float:
+    """The most git history may deduct from a file whose other defect
+    categories deduct *structure* points."""
+    return min(
+        CATEGORY_CAPS[HISTORY_CATEGORY],
+        HISTORY_CAP_BASE + HISTORY_CAP_PER_STRUCTURE * max(structure, 0.0),
+    )
+
 
 # Per-biomarker deduction by severity. The scorer caps the per-category
 # total at the value in ``CATEGORY_CAPS``.
@@ -142,8 +169,8 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     # (0.3 x 0.5 = 0.15/finding) + the 0.5 category cap keep the impact
     # bounded at half a point per file regardless of hit count.
     "error_handling": 0.5,
-    # (coverage_gap, hidden_coupling, large_assertion_block,
-    #  duplicated_assertion_block default to 1.0 - kept at prior)
+    # (coverage_gap, large_assertion_block, duplicated_assertion_block
+    #  default to 1.0 - kept at prior)
     # Governance - additive pass, weights are informational
     "contradictory_decision": 1.0,
     "stale_governance": 0.9,
@@ -169,6 +196,7 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "coverage_gradient": "test_coverage_gradient",
     "developer_congestion": "organizational",
     "knowledge_loss": "organizational",
+    # Advisory (deducts nothing); kept here so history-grouped surfaces file it.
     "hidden_coupling": "organizational",
     "function_hotspot": "organizational",
     "code_age_volatility": "organizational",
@@ -179,6 +207,10 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "prior_defect": "organizational",
     "large_assertion_block": "test_quality",
     "duplicated_assertion_block": "test_quality",
+    # Never reaches a deduction; mapped so category-grouped surfaces do not
+    # file it under the ``size_and_complexity`` default.
+    "assertion_free_test": "test_quality",
+    "mock_saturated_test": "test_quality",
     "error_handling": "error_handling",
     # Governance biomarkers - written by the additive governance pass
     "ungoverned_hotspot": "organizational",
@@ -202,6 +234,23 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
 # score byte-for-byte for any input. If that drifts, the split is wrong.
 
 DIMENSIONS: tuple[str, ...] = ("defect", "maintainability", "performance")
+
+# The one dimension that does not score. Deliberately NOT in ``DIMENSIONS``,
+# which is exactly the set ``score_file`` returns a number for: keeping it out
+# means there is no weight, category or cap table it can acquire. A marker homes
+# here when no defect corpus labels what it measures, or when a held-out test
+# found no defect signal in it. It still carries a severity, a reason and a home
+# for display.
+ADVISORY_DIMENSION: str = "advisory"
+
+# Every dimension label a finding may carry, scored or not. Surfaces that filter
+# or display by dimension read this; scoring reads ``DIMENSIONS``.
+ALL_DIMENSIONS: tuple[str, ...] = (*DIMENSIONS, ADVISORY_DIMENSION)
+
+# Findings here carry a zero ``health_impact``, so they must stay out of
+# anything ranked or totalled by impact. ``performance`` deducts on its own
+# pillar only; ``advisory`` does not deduct at all.
+ZERO_IMPACT_DIMENSIONS: frozenset[str] = frozenset({"performance", ADVISORY_DIMENSION})
 
 # Which dimensions each biomarker's deduction feeds. Biomarkers not listed here
 # contribute to ``defect`` only - the historical behaviour, since every
@@ -242,6 +291,8 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     "resource_construction_in_loop": {"performance"},
     "lock_in_loop": {"performance"},
     "serial_await_in_loop": {"performance"},
+    "unbounded_read_reduced_in_memory": {"performance"},
+    "lazy_load_in_loop": {"performance"},
     "membership_test_against_list_in_loop": {"performance"},
     # Phase 7b centrality-gated moat markers - performance-only.
     "nested_loop_with_io": {"performance"},
@@ -263,6 +314,13 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     "sql_select_star": {"maintainability"},
     "sql_update_delete_without_where": {"maintainability"},
     "sql_cartesian_join": {"performance"},
+    # Advisory. Must also appear in ``_ADVISORY_HOME``: the two tables are
+    # independent, and a marker in only one of them still deducts from defect.
+    "assertion_free_test": {ADVISORY_DIMENSION},
+    "mock_saturated_test": {ADVISORY_DIMENSION},
+    # Near-chance defect AUC alone, and dropping it was non-inferior on a fresh
+    # 12-repo pre-registered test (docs/architecture/code-health.md).
+    "hidden_coupling": {ADVISORY_DIMENSION},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -405,6 +463,10 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     # SQL comma-join with no predicate: high-precision by AST shape, advisory
     # weight pending a corpus spot-check like every new perf marker.
     "sql_cartesian_join": 0.6,
+    # Advisory pending a corpus precision gate, like every new perf marker.
+    "unbounded_read_reduced_in_memory": 0.4,
+    # Advisory until the pre-registered precision tiers are measured (2026-09-26).
+    "lazy_load_in_loop": 0.4,
 }
 
 # All perf biomarkers share one ``performance`` category, so the single cap
@@ -430,6 +492,8 @@ _PERFORMANCE_CATEGORY: dict[str, str] = {
     "array_spread_in_reduce": "performance",
     "goroutine_in_unbounded_loop": "performance",
     "sql_cartesian_join": "performance",
+    "unbounded_read_reduced_in_memory": "performance",
+    "lazy_load_in_loop": "performance",
 }
 
 # One bounded performance category cap. 2.0 is a deliberately conservative
@@ -464,7 +528,15 @@ _PERFORMANCE_HOME: frozenset[str] = frozenset(
         "array_spread_in_reduce",
         "goroutine_in_unbounded_loop",
         "sql_cartesian_join",
+        "unbounded_read_reduced_in_memory",
+        "lazy_load_in_loop",
     }
+)
+
+# The display half of the pairing above; ``test_advisory_dimension.py`` locks
+# the two together for every registered biomarker.
+_ADVISORY_HOME: frozenset[str] = frozenset(
+    {"assertion_free_test", "mock_saturated_test", "hidden_coupling"}
 )
 
 
@@ -495,11 +567,18 @@ def dimensions_for(name: str) -> set[str]:
 
 def biomarker_dimension(name: str) -> str:
     """The finding's single 'home' dimension for display / per-pillar filtering."""
+    if name in _ADVISORY_HOME:
+        return ADVISORY_DIMENSION
     if name in _PERFORMANCE_HOME:
         return "performance"
     if name in _MAINTAINABILITY_HOME:
         return "maintainability"
     return "defect"
+
+
+def is_advisory(name: str) -> bool:
+    """True when *name* is a non-scoring marker (see ``ADVISORY_DIMENSION``)."""
+    return name in _ADVISORY_HOME
 
 
 def maintainability_weight(name: str) -> float:
@@ -527,12 +606,17 @@ def _score_dimension(
     weight_fn: Callable[[str], float],
     category_fn: Callable[[str], str],
     caps: dict[str, float],
+    conditioned_cap: tuple[str, Callable[[float], float]] | None = None,
 ) -> tuple[float, list[float]]:
     """Aggregate one dimension's deductions -> ``(score, per_result_deductions)``.
 
     The single, shared scoring kernel: weight each finding, accumulate per
     category, cap each category, clamp to ``[1.0, 10.0]``. Every dimension runs
     the identical algorithm against its own weight / category / cap tables.
+
+    *conditioned_cap* ``(category, cap_fn)`` replaces that one category's cap
+    with ``cap_fn(sum of every other category's capped total)``; only the
+    defect dimension uses it, for the history category.
     """
     raw: dict[str, list[tuple[int, float]]] = {}
     for idx, r in enumerate(results_list):
@@ -547,8 +631,17 @@ def _score_dimension(
 
     per_result = [0.0] * len(results_list)
     total = 0.0
+    cap_for: dict[str, float] = {}
+    if conditioned_cap is not None:
+        cond_cat, cap_fn = conditioned_cap
+        others = sum(
+            min(sum(d for _, d in entries), caps.get(cat, 1.0))
+            for cat, entries in raw.items()
+            if cat != cond_cat
+        )
+        cap_for[cond_cat] = cap_fn(others)
     for cat, entries in raw.items():
-        cap = caps.get(cat, 1.0)
+        cap = cap_for.get(cat, caps.get(cat, 1.0))
         cat_sum = sum(d for _, d in entries)
         if cat_sum <= cap:
             for idx, d in entries:
@@ -621,7 +714,11 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     ]
     defect_results = [results_list[i] for i in defect_idx]
     defect_score, defect_sub = _score_dimension(
-        defect_results, biomarker_weight, biomarker_category, CATEGORY_CAPS
+        defect_results,
+        biomarker_weight,
+        biomarker_category,
+        CATEGORY_CAPS,
+        conditioned_cap=(HISTORY_CATEGORY, history_cap),
     )
     defect_deductions = [0.0] * len(results_list)
     for sub_i, orig_i in enumerate(defect_idx):
@@ -653,13 +750,6 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
         "performance": perf_score,
     }
     return scores, defect_deductions
-
-
-# The one defect category derived from git rather than from the code itself.
-# Splitting on it is what lets a surface say which half of the score moved: a
-# refactor changes the structure half, and nothing a reader types today changes
-# the history half.
-HISTORY_CATEGORY = "organizational"
 
 
 def deduction_split(findings: Iterable[Any]) -> tuple[float, float]:

@@ -175,3 +175,19 @@ describe("ContractTestsSection", () => {
     expect(screen.getByText("Test impact is unavailable.")).toBeTruthy();
   });
 });
+
+describe("ContractTestsSection compact", () => {
+  it("sets every heading below the drawer's h4 at micro-label scale", () => {
+    render(
+      <ContractTestsSection
+        result={response({ recommendations: [rec()], unresolved: [unresolved()] })}
+        contractId={CONTRACT}
+        compact
+      />,
+    );
+    expect(screen.getByRole("heading", { level: 4, name: "Tests to run" })).toBeInTheDocument();
+    const could = screen.getByRole("heading", { level: 5, name: "Could not determine" });
+    expect(could.className).toContain("text-[10px]");
+    expect(screen.getByRole("heading", { level: 5, name: "web" })).toBeInTheDocument();
+  });
+});

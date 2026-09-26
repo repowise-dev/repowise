@@ -46,17 +46,17 @@ class FastApiDialect:
     name = "fastapi"
     extensions = PYTHON
 
-    def collect_mounts(self, content: str) -> dict[str, str]:
-        """Find ``include_router(var, prefix=...)`` mounts declared in *content*.
+    def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
+        """Find ``include_router(var, prefix=...)`` mounts declared in the file.
 
         Keyed by the router variable's final name segment (``pkg.router`` ->
         ``router``); only mounts that carry an explicit ``prefix=`` are recorded.
         """
-        if flask_file(content):
+        if flask_file(ctx.content):
             return {}
         out: dict[str, str] = {}
-        for m in _INCLUDE_ROUTER_RE.finditer(content):
-            args = balanced_args(content, m.end() - 1)  # m.end()-1 is the '('
+        for m in _INCLUDE_ROUTER_RE.finditer(ctx.content):
+            args = balanced_args(ctx.content, m.end() - 1)  # m.end()-1 is the '('
             var_m = _FIRST_ARG_RE.match(args)
             pm = _PREFIX_KW_RE.search(args)
             if var_m and pm:

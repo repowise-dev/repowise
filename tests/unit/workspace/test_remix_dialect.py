@@ -27,10 +27,10 @@ from repowise.core.ingestion.framework_routes import (
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
+from repowise.core.workspace.extractors.http import HttpExtractor
 from repowise.core.workspace.extractors.http.express import ExpressDialect
 from repowise.core.workspace.extractors.http.next_app import NextAppDialect
 from repowise.core.workspace.extractors.http.remix import RemixDialect
-from repowise.core.workspace.extractors.http_extractor import HttpExtractor
 
 NOTE_ROUTE_TSX = """\
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";

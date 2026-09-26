@@ -78,6 +78,14 @@ Models:    opencode models  (list available models)
 
 The opencode provider does not pass reasoning effort flags. OpenCode handles reasoning through its own model and agent configuration.
 
+## Concurrency
+
+Up to 4 `opencode run` subprocesses run at once. Set `REPOWISE_OPENCODE_CONCURRENCY` to change the limit; values below 1 are treated as 1.
+
+```bash
+REPOWISE_OPENCODE_CONCURRENCY=2 repowise generate --unwritten
+```
+
 ## Comparison with Codex CLI
 
 | Aspect | `opencode` | `codex_cli` |

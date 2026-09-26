@@ -122,7 +122,7 @@ class TestSolutionIngestion:
 class TestCrossRepoWorkspace:
     def test_project_ref_and_internal_nuget_detected(self) -> None:
         """The two-repo .NET workspace produces both kinds of cross-repo deps."""
-        from repowise.core.workspace.cross_repo import detect_package_dependencies
+        from repowise.core.workspace.manifests import detect_package_dependencies
 
         repos = {
             "api-service": DOTNET_WORKSPACE / "api-service",

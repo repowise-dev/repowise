@@ -124,6 +124,58 @@ describe("useChat lifecycle", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([
+    ["an errored read", { error: "no git metadata available" }, "error"],
+    ["a good read", { targets: { "a.py": {} } }, "done"],
+  ] as const)("marks %s on the tool call", async (_label, data, expected) => {
+    // The server reports an unservable read as an `error` key. Before this,
+    // tool_result set "done" unconditionally, so a failed read rendered
+    // identically to a good one and the answer above it looked evidence-backed.
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+    mocks.postChatMessage.mockImplementationOnce(() =>
+      Promise.resolve(new Response(stream)),
+    );
+    const { result } = renderHook(() => useChat("r1"));
+
+    act(() => {
+      void result.current.sendMessage("What is risky here?");
+    });
+    await act(async () => {
+      streamController.enqueue(
+        new TextEncoder().encode(
+          [
+            `data: ${JSON.stringify({
+              type: "tool_start",
+              tool_id: "t1",
+              tool_name: "get_risk",
+              input: {},
+            })}
+`,
+            `data: ${JSON.stringify({
+              type: "tool_result",
+              tool_id: "t1",
+              tool_name: "get_risk",
+              summary: "Risk assessment",
+              artifact: { type: "risk_report", data },
+            })}
+`,
+          ].join(""),
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.messages.at(-1)?.toolCalls?.[0]?.status).toBe(expected);
+
+    act(() => result.current.cancel());
+  });
+
   it.each(["resolve", "reject"] as const)(
     "ignores a late conversation %s from the previous repository",
     async (outcome) => {

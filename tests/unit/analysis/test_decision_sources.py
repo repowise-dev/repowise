@@ -98,6 +98,27 @@ async def test_discover_adrs_maps_superseded_status_from_frontmatter(tmp_path):
 
 
 
+def test_conventional_adrs_win_the_cap_over_earlier_loose_matches(tmp_path, monkeypatch):
+    """Loose name matches walked first must not fill the cap before an ADR dir."""
+    from repowise.core.analysis.decisions import adr
+
+    monkeypatch.setattr(adr, "_MAX_ADR_FILES", 3)
+    for i in range(3):
+        (tmp_path / f"adr-note-{i}.md").write_text("# note\n", encoding="utf-8")
+    adr_dir = tmp_path / "docs" / "adr"
+    adr_dir.mkdir(parents=True)
+    for i in range(3):
+        (adr_dir / f"000{i}-choice.md").write_text("# choice\n", encoding="utf-8")
+
+    found = adr.find_adr_files(tmp_path)
+
+    assert sorted(p.relative_to(tmp_path).as_posix() for p in found) == [
+        "docs/adr/0000-choice.md",
+        "docs/adr/0001-choice.md",
+        "docs/adr/0002-choice.md",
+    ]
+
+
 class TestAdrDiscoveryHonorsIgnoreFiles:
     """A path git cannot see must not become a decision record.
 

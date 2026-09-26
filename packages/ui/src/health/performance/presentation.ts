@@ -5,6 +5,7 @@ import {
   type PerformanceFacetKey,
   type PerformanceOpportunity,
   type PerformanceOpportunityConfidence,
+  type PerformanceOpportunitySibling,
   type PerformanceWhyRanked,
 } from "@repowise-dev/types/health";
 import type { C4IoKind } from "@repowise-dev/types/external-systems";
@@ -43,12 +44,14 @@ export const ACTIONABILITY_LABEL: Record<PerformanceActionabilityState, string> 
   plan_ready: "Plan ready",
   advisory: "Advisory",
   investigate: "Needs investigation",
+  expected: "Expected",
 };
 
 export const ACTIONABILITY_HINT: Record<PerformanceActionabilityState, string> = {
   plan_ready: "A named intervention the analysis considers safe to apply.",
   advisory: "A coherent intervention, but the analysis cannot prove it is safe.",
   investigate: "Evidence worth reading before any change is proposed.",
+  expected: "The repetition is real and there is no change to make.",
 };
 
 export const CONFIDENCE_LABEL: Record<PerformanceOpportunityConfidence, string> = {
@@ -204,4 +207,9 @@ export function planPresentation(opportunity: PerformanceOpportunity): PlanPrese
  */
 export function agentHandoffCall(opportunityId: string): string {
   return `get_health(opportunity_id="${opportunityId}")`;
+}
+
+/** A sibling's fix, in words, for the drawer's "also flagged" line. */
+export function siblingFixLabel(sibling: PerformanceOpportunitySibling): string {
+  return humanizeToken(sibling.strategy ?? sibling.biomarker_type);
 }

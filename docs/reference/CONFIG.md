@@ -14,7 +14,8 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `hooks:` block](#the-hooks-block) ·
 [The `mcp:` block](#the-mcp-block) ·
 [The `decisions:` block](#the-decisions-block) ·
-[The `refactoring:` block](#the-refactoring-block)
+[The `refactoring:` block](#the-refactoring-block) ·
+[The `assertions:` block](#the-assertions-block)
 
 **Code health rules**
 [The `health-rules.json` file](#the-health-rulesjson-file)
@@ -126,6 +127,9 @@ mcp:                                 # see "The mcp: block" below
 
 refactoring:                         # see "The refactoring: block" below
   enabled: true
+
+assertions:                          # see "The assertions: block" below
+  extra_names: []
 ```
 
 You can edit this file directly. Changes take effect on the next `init`,
@@ -405,7 +409,32 @@ decisions:
   discovery:                # budget for that one pass, per update
     max_sessions: 12        # 1-24
     max_input_tokens: 30000 # 2000-60000
+  harnesses:                # whose transcripts the session lane reads
+    - claude_code           # the default; add codex to read that store too
+  agent_acceptance: false   # may an agent grant a decision authority?
+  capture_prompt: false     # ask the agent to record what it just committed
 ```
+
+`agent_acceptance` is the one key here that is not about capture. Off, an agent
+can propose candidates and withdraw authority but never grant it; on, it may
+accept, and the acceptance is recorded as an agent's — with the session that
+signed it — on every surface, never as yours. It ships off and no preset turns
+it on.
+
+`capture_prompt` is the other. On, a successful `git commit` whose message
+carries two or more decision signals prompts the agent, once per session, to
+run `repowise decision add` — never for a commit a record already cites, and
+never as anything but a proposal. An agent cannot decline a hook, so this also
+ships off and no preset turns it on:
+`repowise decision config capture-prompt --on`.
+
+That command also installs what it needs. The shared PostToolUse matcher
+deliberately excludes the shell tools — measured at 51% of hook invocations
+for 0.7% of emissions — so switching the prompt on adds a separate
+`Bash|PowerShell` PostToolUse entry, and switching it off removes it. The
+entry is per install rather than per repository: other repositories on the
+machine pay a process start on shell calls and emit nothing unless they
+switch it on too, and switching it off here turns it off for all of them.
 
 Every key is optional. **A config with no `decisions:` block behaves exactly as
 it did before these switches existed**: every source that shipped on is on,
@@ -558,6 +587,35 @@ refactoring:
 - Per-path disables reuse the `.repowise/health-rules.json` glob mechanism (the
   same one markers use).
 - Full reference: [REFACTORING.md](../layers/REFACTORING.md).
+
+### The `assertions:` block
+
+Names your own assertion helpers, for the test-quality markers that divide by a
+test's assertion count.
+
+```yaml
+assertions:
+  extra_names: [ensureInvariant, mustMatch]   # exact callee names, not prefixes
+```
+
+Repowise recognises the xUnit and BDD families out of the box (`assert*`,
+`expect*`) plus a per-language vocabulary for the idioms those miss, such as
+Go's `t.Fatalf` and testify's `require`. A house helper that follows neither
+convention is invisible to it, and a test built entirely of those helpers reads
+as having no assertions at all. This block is the escape hatch, the same one
+SonarQube, Qodana and ESLint's `expect-expect` rule each provide.
+
+- **Names are exact and case-insensitive, never prefixes.** `ensureInvariant`
+  matches `ensureInvariant(...)` and not `ensureConnectionPool(...)`. Prefix
+  matching was measured against three real test corpora and matched production
+  functions under test far more often than assertions.
+- A name matches whether it is the call itself or the receiver of one, so both
+  `ensureInvariant(x)` and `ensureInvariant(x).isTrue()` count.
+- **Nothing here can change a health score.** These names reach only the
+  advisory assertion total; the calibrated `large_assertion_block` and
+  `duplicated_assertion_block` markers read a separate count that takes no
+  configuration. Adding a wrong name costs you signal, never a wrong score.
+- Changing the list re-walks the affected files on the next `init` / `update`.
 
 ---
 
@@ -726,6 +784,12 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 repowise init --provider ollama --model llama3.2
 ```
 
+Repowise sizes the model's context window (`num_ctx`) to each prompt, so pages
+are not cut to Ollama's small default window. Set `REPOWISE_OLLAMA_NUM_CTX` to
+pin it instead, for example to stay within a machine's memory. Requests are sent
+one at a time; if the server runs with `OLLAMA_NUM_PARALLEL` above 1, set the
+same value where you run repowise to send that many at once.
+
 ### LiteLLM (100+ providers)
 
 ```bash
@@ -862,6 +926,8 @@ The `.repowise/.env` file is gitignored automatically.
 | `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang, 9router, and other compatible endpoints) |
 | `GEMINI_BASE_URL` | Override the Gemini API base URL |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
+| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; unset sizes it to each prompt |
+| `OLLAMA_NUM_PARALLEL` | Ollama requests repowise sends at once (default: 1) |
 | `DEEPSEEK_BASE_URL` | Override the DeepSeek API base URL |
 | `KIMI_BASE_URL` | Override the Kimi API base URL |
 | `LITELLM_BASE_URL` | Override the LiteLLM proxy base URL |
@@ -922,7 +988,7 @@ Anonymous usage telemetry is **enabled by default** (opt-out).
 
 | Variable | Description |
 |----------|-------------|
-| `REPOWISE_GIT_WINDOW_ANCHOR` | Set to `head` to anchor git "now" to the latest commit instead of wall-clock time |
+| `REPOWISE_GIT_WINDOW_ANCHOR` | Git history windows (90-day churn, prior defects, decay, blame age) are measured from the indexed commit's committer date by default. Set to `now` to measure them from wall-clock time instead |
 | `REPOWISE_SKIP_EDITOR_SETUP` | Truthy value stops `init` writing to your machine-wide editor config: the Claude Code / Claude Desktop MCP entry, the Claude Code hooks, and the distill rewrite-hook offer. Same switch as `init --no-editor-setup` ([CLI_REFERENCE.md](CLI_REFERENCE.md#repowise-init-path)); the env var is the one to use for CI, sandboxes, and benchmark runs that index many repos. Project-local files (`.repowise/mcp.json`, `CLAUDE.md`, Codex config) are written either way |
 | `REPOWISE_CHANGELOG` | Override the changelog source used by the "what's new" check |
 | `REPOWISE_PARSE_WORKERS` | How many processes parse files during indexing. Defaults to your CPU count capped at 8, and never exceeds the number of files to parse. Each worker is a separate interpreter holding roughly 50 MB, so lower it on a memory-constrained machine; raising it above 8 is not measurably faster |

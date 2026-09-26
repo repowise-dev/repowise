@@ -21,6 +21,7 @@ from repowise.core.analysis.decisions.manifest import (
     render_manifest,
     write_manifest,
 )
+from repowise.core.analysis.decisions.provenance import compute_confidence, rank_for_source
 from repowise.core.persistence.crud import bulk_upsert_decisions
 from repowise.core.persistence.crud.authority import (
     accept_decision,
@@ -254,6 +255,87 @@ async def test_an_edited_entry_is_reconciled_rather_than_reported_unchanged(
     acceptance = await latest_acceptance(async_session, rec.id)
     assert acceptance.reason == "a colleague corrected this"
     assert acceptance.scope_json == '["src/corrected.py"]'
+
+
+async def test_an_edited_entry_is_rescored_from_its_evidence_not_from_the_file(
+    async_session, tmp_path
+):
+    """The file exports accepted decisions, and most of those were mined.
+
+    Scoring such a record from the file's two fields would fight
+    ``reconcile_decision_confidence``, which re-derives it from the evidence
+    on the next index: the value would oscillate and ``updated_at`` would
+    churn forever. The file only supplies the score when it is the whole
+    record.
+    """
+    repo = await insert_repo(async_session)
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_dict("Mined then edited", context="the situation", consequences=["a cost"])],
+    )
+    rec = (
+        (
+            await async_session.execute(
+                select(DecisionRecord).where(DecisionRecord.repository_id == repo.id)
+            )
+        )
+        .scalars()
+        .one()
+    )
+    await accept_decision(async_session, rec, accepter="tester")
+    scored_from_evidence = rec.confidence
+    await export_manifest(async_session, repo.id, tmp_path)
+
+    entries, _ = load_manifest(tmp_path)
+    write_manifest(tmp_path, [replace(entries[0], reason="a colleague corrected this")])
+    await import_manifest(async_session, repo.id, tmp_path)
+    await async_session.refresh(rec)
+
+    # The file sees 2 of 5 body fields; the record still has 4 and its
+    # evidence rows. Scoring from the file would land somewhere else.
+    assert rec.confidence == scored_from_evidence
+    assert rec.confidence != compute_confidence(
+        rank_for_source("session"), 1, "exact", filled_fields=2
+    )
+
+
+async def test_a_file_only_decision_is_scored_on_the_ladder_not_at_one(
+    async_session, tmp_path
+):
+    """A decision the file is the only record of has no evidence to derive
+    from, so the import scores it: full rank credit, never the old 1.0."""
+    repo = await insert_repo(async_session)
+    write_manifest(
+        tmp_path,
+        [
+            ManifestDecision(
+                id="f" * 32,
+                title="Only in the file",
+                decision="Route through the client",
+                reason="one place to change the retry policy",
+                scope=["src/app.py"],
+                accepted_at="2026-01-01T00:00:00+00:00",
+                accepted_by="tester",
+                evidence=[],
+                source="cli",
+            )
+        ],
+    )
+
+    await import_manifest(async_session, repo.id, tmp_path)
+
+    rec = (
+        (
+            await async_session.execute(
+                select(DecisionRecord).where(DecisionRecord.repository_id == repo.id)
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert rec.confidence == compute_confidence(rank_for_source("cli"), 1, "exact")
+    assert rec.confidence < 1.0
 
 
 async def test_an_entry_missing_a_reason_is_skipped_not_guessed_at(

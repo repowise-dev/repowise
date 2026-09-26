@@ -156,6 +156,30 @@ def test_pascal_complex_method_ccn():
     assert many.param_count == 5
 
 
+def test_pascal_foreach_counts_as_a_loop():
+    # Regression: ``for x in collection do`` parses as a distinct `foreach`
+    # node (not a `for` variant), which was absent from loop_kinds -- the
+    # walker skipped it entirely, undercounting both CCN and nesting for any
+    # for-in loop (common over TList/TStringList/generics in real Delphi
+    # code).
+    src = (
+        b"unit U;\ninterface\nimplementation\n"
+        b"procedure Bar(Lst: TList);\nvar X: Integer;\nbegin\n"
+        b"  for X in Lst do\n"
+        b"  begin\n"
+        b"    if X > 0 then\n"
+        b"    begin\n"
+        b"      WriteLn(X);\n"
+        b"    end;\n"
+        b"  end;\n"
+        b"end;\nend.\n"
+    )
+    fn = _find(walk_file("u.pas", "pascal", src).functions, "Bar")
+    assert fn is not None
+    assert fn.ccn == 3, f"expected CCN 3 (base + foreach + if), got {fn.ccn}"
+    assert fn.max_nesting == 2, f"expected the if nested inside the foreach, got {fn.max_nesting}"
+
+
 def test_pascal_else_if_chain_is_flat_not_nested():
     # Regression: found on a real ~40-arm `else if` VK-code dispatch chain
     # (StringToVK in a real Delphi codebase) — every arm nests the grammar's

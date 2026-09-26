@@ -7,6 +7,7 @@ orchestrator.py) imports these phase functions. No CLI/click/rich imports.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Container
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -363,6 +364,7 @@ async def _run_session_discovery(
     llm_client: Any | None,
     policy: Any,
     report: Any,
+    indexed: Container[str] | None = None,
 ) -> DiscoveryOutcome:
     """The one broad session-discovery call, folded into the decision report.
 
@@ -375,6 +377,7 @@ async def _run_session_discovery(
                 repo_path,
                 provider=llm_client,
                 policy=policy,
+                indexed=indexed,
             ),
             timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
         )
@@ -411,6 +414,11 @@ async def _run_decision_extraction(
         enabled = policy.enabled_index_sources()
         if progress:
             progress.on_phase_start("decisions", len(enabled))
+
+        # The indexed file set bounds what a session-mined record may claim
+        # to govern: a transcript names scratch files, plan docs and sibling
+        # checkouts, and only this set knows which paths are this codebase.
+        indexed = frozenset(source_map) if source_map else None
 
         extractor = DecisionExtractor(
             repo_path=repo_path,
@@ -451,7 +459,9 @@ async def _run_decision_extraction(
                     mine_session_decisions(
                         repo_path,
                         provider=session_provider,
+                        harnesses=policy.harnesses,
                         collect_discovery_spans=policy.llm_allowed("session_discovery"),
+                        indexed=indexed,
                     ),
                     timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
                 )
@@ -467,7 +477,7 @@ async def _run_decision_extraction(
         # what filled its span queue. At most one call, and it reports its own
         # zero so a switched-off source never reads as an empty repository.
         discovery = await _run_session_discovery(
-            repo_path, llm_client=llm_client, policy=policy, report=report
+            repo_path, llm_client=llm_client, policy=policy, report=report, indexed=indexed
         )
 
         if progress:

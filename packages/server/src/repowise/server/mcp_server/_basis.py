@@ -30,6 +30,7 @@ GUESSED_ORIGINS: frozenset[str] = frozenset(
     {
         "global_unique",
         "receiver_global",
+        "receiver_extension_global",
         "receiver_typed_global",
         "receiver_field_global",
         "receiver_framework_global",

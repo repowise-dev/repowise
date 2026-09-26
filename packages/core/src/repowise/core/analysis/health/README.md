@@ -141,7 +141,7 @@ the analyzer engine.
 
 `HealthFileMetric.module` is populated from graph community labels by the
 orchestrator (falls back to the top-level directory). The MCP tool
-(`tool_health.py`) and the API endpoint (`routers/code_health/`) both call
+(`tool_health/`) and the API endpoint (`routers/code_health/`) both call
 `aggregation.module_rollups` for NLOC-weighted module aggregates and accept
 `module:foo` targets.
 
@@ -192,7 +192,7 @@ parallel path automatically when `len(parsed_files) >= 500`.
 
 - CLI: `packages/cli/src/repowise/cli/commands/health_cmd.py`,
   `status_cmd.py`, `update_cmd.py`.
-- MCP tools: `packages/server/src/repowise/server/mcp_server/tool_health.py`
+- MCP tools: `packages/server/src/repowise/server/mcp_server/tool_health/`
   + enrichments in `tool_risk.py`, `tool_context.py`, `tool_overview.py`.
 - API: `packages/server/src/repowise/server/routers/code_health.py`.
 - UI primitives: `packages/ui/src/health/`. Web routes:

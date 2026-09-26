@@ -73,6 +73,10 @@ _DB_NAMES: frozenset[str] = frozenset({
     # Ruby (require-feature names; ``pg`` / ``mysql2`` / ``redis`` above are
     # shared with the Node ecosystem).
     "activerecord", "active_record", "sequel", "mongoid", "sqlite3", "mongo",
+    # Object Pascal / Delphi (``uses`` clause unit names; ``firedac`` resolves
+    # a qualified ``FireDAC.Comp.Client`` too via the progressive dotted-prefix
+    # candidates the import classifier already generates).
+    "firedac", "adodb",
 })
 
 _NETWORK_NAMES: frozenset[str] = frozenset({
@@ -101,6 +105,13 @@ _NETWORK_NAMES: frozenset[str] = frozenset({
     # Ruby (require-feature names; ``require "net/http"`` resolves via its
     # ``http`` segment above).
     "httparty", "faraday", "rest-client", "rest_client", "typhoeus", "excon",
+    # Object Pascal / Delphi (``uses`` clause unit names). Indy's client unit
+    # is ``IdHTTP`` itself, not a package root, so it is seeded bare. The
+    # modern RTL client is the fully qualified ``System.Net.HttpClient`` --
+    # deliberately NOT the bare ``system.net.http`` prefix shared with .NET
+    # above, since Pascal's own ``System`` unit is ubiquitous and a bare
+    # ``System`` or ``System.Net`` prefix would over-match almost every file.
+    "idhttp", "system.net.httpclient", "fphttpclient",
 })
 
 _FILESYSTEM_NAMES: frozenset[str] = frozenset({

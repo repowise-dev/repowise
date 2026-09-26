@@ -247,7 +247,7 @@ Returns rich context for one or more files, modules, or symbols: documentation, 
 
 **Parameters:**
 - `targets` (list of strings) — file paths, module names, or symbol names
-- `include` (optional) — subset of `["docs", "ownership", "last_change", "decisions", "freshness"]`
+- `include` (optional) — opt-in blocks such as `"ownership"`, `"last_change"`, `"decisions"`, `"callers"`, `"metrics"`, `"skeleton"`, `"health"`, and `"doc_drift"` (the documents that name this file)
 - `compact` (optional, default `True`) — when `True`, drops the `structure` block, the `imported_by` list, and per-symbol docstrings/end-line fields to keep the response under ~10K characters. Pass `compact=False` to receive the full payload, e.g. when you specifically need the import-graph dependents or every symbol docstring on a dense file.
 
 **When to use:** Before reading or editing any file. Faster and richer than reading the raw source.
@@ -374,16 +374,14 @@ refresh.
 the benchmarked, population-relative authority for live change review.
 `fix_history` reports the recency-weighted bug-fix record of the
 files touched, which is what distinguishes a small dangerous change from a large
-boring one. The supporting `score` is an offline-calibrated 0-10 diff-size and
-spread output, not a probability (see `score_measures`), with
-the `score_unit` it is calibrated on, repo-relative `risk_percentile` /
-`review_priority` / `classification` for that diff shape, a `fallback_band` when
-there was no baseline to rank against, plus `impacted_tests` when a per-test
-coverage map is ingested (`repowise coverage add`). `risk_authority` names the
-field to act on; `include=["scales"]` supplies the kind, units, range,
-calibration, authority, and shared thresholds for each value. `fallback_band`
-is an absolute per-commit classification, not the population-relative
-percentile classification.
+boring one. `diff_shape` is one sentence on size and spread, beside repo-relative
+`risk_percentile` / `review_priority` / `classification`, plus
+`impacted_tests` when a per-test coverage map is ingested
+(`repowise coverage add`). The raw 0-10 `score` and its absolute
+`fallback_band` sit behind `include=["diagnostics"]`: the score ranks 0.99
+against lines added, so the percentile already carries the ranking.
+`include=["scales"]` supplies the kind, units, range, calibration, authority
+and shared thresholds for each value.
 
 **When to use:** Before merging a commit or PR range, or on work you have not
 committed yet.
@@ -403,7 +401,8 @@ same deterministic markers as `repowise health`. Zero LLM calls.
 **Parameters:**
 - `targets` (optional) — file paths, or `module:foo`; empty = dashboard mode
 - `include` (optional) — opt-in blocks such as `"biomarkers"`, `"refactoring"`,
-  `"trend"`, `"coverage"`, `"accuracy"`, `"signals"`, `"churn_complexity"`
+  `"trend"`, `"coverage"`, `"accuracy"`, `"signals"`, `"churn_complexity"`,
+  `"doc_drift"`
 - `limit` (optional, int) — max lowest-scoring files (default 20)
 
 **When to use:** Self-check a change before opening a PR, or find the worst

@@ -20,6 +20,21 @@
   parameters: (parameters) @symbol.params
 ) @symbol.def
 
+; function_signature_item WITH visibility -- a bodiless ``fn foo();``. Shared by
+; a trait's undefaulted methods, which may not write a modifier, and an
+; ``extern "C"`` block's declarations, which may and often do.
+(function_signature_item
+  (visibility_modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
+; function_signature_item WITHOUT visibility
+(function_signature_item
+  name: (identifier) @symbol.name
+  parameters: (parameters) @symbol.params
+) @symbol.def
+
 ; struct_item WITH visibility
 (struct_item
   (visibility_modifier) @symbol.modifiers
@@ -321,30 +336,17 @@
 ; edges. The dead-code reference the old captures existed to provide is
 ; preserved, because type_use is a file-level use edge.
 ;
-; Each pattern captures the bare ``type_identifier`` rather than the enclosing
-; type node, keeping this a 1:1 move; the Rust head extractor in
-; parser_helpers.py unwraps ``&T`` / ``Box<T>`` / ``dyn T`` / ``std::io::Error``
-; for the day a capture widens, and filters the 55 rust builtins.
+; Each pattern captures the parameter/return type node itself (whatever shape
+; it is), not just a bare ``type_identifier``; the Rust head extractor in
+; lang_helpers/type_heads.py unwraps ``&T`` / ``Box<T>`` / ``dyn T`` / ``impl T`` /
+; ``std::io::Error`` down to the head identifier, and filters the 55 rust
+; builtins, so a wrapper capture cannot mint a wrong edge -- it resolves to
+; the same head name a bare capture would, or to nothing.
 
-; Type reference in function parameter: fn foo(x: MyType)
+; Type reference in function parameter: fn foo(x: MyType), fn foo(x: &Foo),
+; fn foo(x: &dyn MyTrait), fn foo(x: impl MyTrait), fn foo(x: std::io::Error)
 (parameter
-  type: (type_identifier) @param.type
-)
-
-; Type reference via &dyn: fn foo(x: &dyn MyTrait)
-(parameter
-  type: (reference_type
-    type: (dynamic_type
-      (type_identifier) @param.type
-    )
-  )
-)
-
-; Type reference via impl Trait: fn foo(x: impl MyTrait)
-(parameter
-  type: (abstract_type
-    (type_identifier) @param.type
-  )
+  type: (_) @param.type
 )
 
 ; Trait bound in generic parameter: fn foo<T: MyTrait>()
@@ -353,9 +355,10 @@
   (type_identifier) @param.type
 )
 
-; Return type reference: fn foo() -> MyType
+; Return type reference: fn foo() -> MyType, fn foo() -> &Foo,
+; fn foo() -> std::io::Error
 (function_item
-  return_type: (type_identifier) @param.type
+  return_type: (_) @param.type
 )
 
 ; dyn Trait in type arguments: Box<dyn MyTrait>, Arc<dyn MyTrait>
@@ -370,6 +373,26 @@
   type_arguments: (type_arguments
     (type_identifier) @param.type
   )
+)
+
+; Type argument: Option<MyType>, Vec<super::MyType>, HashMap<K, MyType>.
+; One pattern for every shape: the Rust head extractor unwraps
+; ``scoped_type_identifier`` / ``reference_type`` / ``generic_type`` and
+; filters the builtins, so widening the capture costs nothing.
+(type_arguments
+  (_) @param.type
+)
+
+; Field type: struct Foo { bar: MyType }, including ``&T``, ``super::T`` and
+; ``Option<T>``. ``enum_variant`` reuses ``field_declaration`` for struct-like
+; variant bodies (``Received { state: MyType }``), so this covers those too.
+;
+; Rust intra-crate field references need no ``use`` -- path-qualified or
+; same-module access is legal without importing -- so without this capture the
+; reference never becomes a graph edge and the field's type reads as having no
+; importers.
+(field_declaration
+  type: (_) @param.type
 )
 
 ; ---------------------------------------------------------------------------

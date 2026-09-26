@@ -320,7 +320,7 @@ TARGETS are file paths, module paths, or `path/to/file.py::Symbol` ids.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--include` | choice | — | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `health`, `skeleton` |
+| `--include` | choice | — | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `health`, `skeleton`, `doc_drift` |
 | `--no-compact` | flag | false | Add structure, imports and docstrings to each card |
 | `--path` | string | cwd | Repo (or workspace) root |
 | `--repo` | string | — | Workspace repo alias to query |

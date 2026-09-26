@@ -28,7 +28,7 @@ from ._constants import (
     _FILE_INDEX_TIMEOUT_SECS,
     _MAX_PARTNERS_PER_FILE,
 )
-from .co_change import compute_co_changes_and_entropy
+from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import DECAY_REFRESH_KEYS, index_file
 from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
@@ -50,6 +50,10 @@ __all__ = ["GitIndexer", "git_worker_count"]
 # is a 40-char argv entry, and Windows caps a command line near 32k characters —
 # 200 leaves generous headroom while keeping the subprocess count low.
 _OFFSET_LOOKUP_CHUNK = 200
+
+# ``REPOWISE_GIT_WINDOW_ANCHOR`` values that measure windows from wall-clock
+# time instead of the indexed commit. Unset, or any other value, anchors to HEAD.
+_WALL_CLOCK_ANCHORS = frozenset({"now", "0", "false", "no", "off"})
 
 _GIT_WORKERS_ENV = "REPOWISE_GIT_WORKERS"
 _MAX_GIT_WORKERS = 8
@@ -268,7 +272,7 @@ class GitIndexer:
             fallback_note_agents = load_git_ai_note_agents(repo, None)
 
         include_blame = self.tier.includes_blame
-        as_of_ts = self._resolve_as_of_ts(repo, commit_index)
+        as_of_ts = self._resolve_as_of_ts(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
         semaphore = asyncio.Semaphore(workers)
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
@@ -325,7 +329,7 @@ class GitIndexer:
 
         file_tasks = [index_one(fp) for fp in indexable_files]
 
-        async def _co_change_task() -> tuple[dict[str, list[dict]], dict[str, float]]:
+        async def _co_change_task() -> CoChangeWalk:
             # ESSENTIAL tier defers co-change entirely (the expensive repo-wide
             # walk) — return empty and let a FULL backfill fill it in. Change
             # entropy rides the same walk, so it's deferred together.
@@ -333,7 +337,7 @@ class GitIndexer:
                 if on_co_change_done is not None:
                     with contextlib.suppress(Exception):
                         on_co_change_done()
-                return {}, {}
+                return CoChangeWalk()
             result = await loop.run_in_executor(
                 executor,
                 compute_co_changes_and_entropy,
@@ -351,7 +355,7 @@ class GitIndexer:
             return result
 
         try:
-            metadata_list, (co_changes, change_entropy) = await asyncio.gather(
+            metadata_list, walk = await asyncio.gather(
                 asyncio.gather(*file_tasks, return_exceptions=True),
                 _co_change_task(),
             )
@@ -402,10 +406,13 @@ class GitIndexer:
         # share into metadata.
         for meta in results:
             fp = meta["file_path"]
-            if fp in co_changes:
-                meta["co_change_partners_json"] = json.dumps(co_changes[fp])
-            if fp in change_entropy:
-                meta["change_entropy"] = change_entropy[fp]
+            if fp in walk.partners:
+                meta["co_change_partners_json"] = json.dumps(walk.partners[fp])
+            if fp in walk.entropy:
+                meta["change_entropy"] = walk.entropy[fp]
+            if fp in walk.partner_count:
+                meta["co_change_partner_count"] = walk.partner_count[fp]
+                meta["co_change_mass"] = walk.partner_mass.get(fp, 0.0)
             if fp in prior_defects.counts:
                 meta["prior_defect_count"] = prior_defects.counts[fp]
             if fp in prior_defects.raw_counts:
@@ -422,13 +429,19 @@ class GitIndexer:
         # in rename-tracking mode (no batched commit index) and failure-isolated
         # so a change_risk hiccup never breaks file-level git metadata.
         commit_rows: list[dict] = []
+        commit_file_rows: list[dict] = []
         if commit_sink:
             try:
-                from .commit_rows import build_commit_rows
+                from .commit_rows import build_commit_file_rows, build_commit_rows
 
-                commit_rows = build_commit_rows(commit_sink)
+                built = build_commit_rows(commit_sink)
+                built_files = build_commit_file_rows(commit_sink)
             except Exception as exc:
                 logger.debug("commit_rows_build_failed", error=str(exc))
+            else:
+                # Assigned together: a half-built pair would write commits
+                # whose file detail describes a different set.
+                commit_rows, commit_file_rows = built, built_files
 
         duration = time.monotonic() - start
         hotspots = sum(1 for m in results if m.get("is_hotspot", False))
@@ -440,6 +453,7 @@ class GitIndexer:
             stable_files=stable,
             duration_seconds=duration,
             commit_rows=commit_rows,
+            commit_file_rows=commit_file_rows,
             fix_event_rows=fix_event_rows,
             fix_oldest_ts=fix_walk.oldest_fix_ts,
             fix_events_built=built_ok,
@@ -596,7 +610,7 @@ class GitIndexer:
             from ..git_commit_index import load_git_ai_note_agents
 
             fallback_note_agents = load_git_ai_note_agents(repo, None)
-        as_of_ts = self._resolve_as_of_ts(repo, commit_index)
+        as_of_ts = self._resolve_as_of_ts(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
         semaphore = asyncio.Semaphore(workers)
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
@@ -714,7 +728,7 @@ class GitIndexer:
         if self.tier.includes_co_change and all_files:
             try:
                 with timed(timings, "rebuild.git.co_change"):
-                    co_changes, change_entropy = await loop.run_in_executor(
+                    walk = await loop.run_in_executor(
                         executor,
                         compute_co_changes_and_entropy,
                         repo,
@@ -727,12 +741,15 @@ class GitIndexer:
                     )
                 for meta in results:
                     fp = meta["file_path"]
-                    if fp in co_changes:
-                        meta["co_change_partners_json"] = json.dumps(co_changes[fp])
-                    if fp in change_entropy:
-                        meta["change_entropy"] = change_entropy[fp]
+                    if fp in walk.partners:
+                        meta["co_change_partners_json"] = json.dumps(walk.partners[fp])
+                    if fp in walk.entropy:
+                        meta["change_entropy"] = walk.entropy[fp]
+                    if fp in walk.partner_count:
+                        meta["co_change_partner_count"] = walk.partner_count[fp]
+                        meta["co_change_mass"] = walk.partner_mass.get(fp, 0.0)
                 if co_change_sink is not None:
-                    co_change_sink.update(co_changes)
+                    co_change_sink.update(walk.partners)
 
                 # Idle-file decay refresh (#728): recompute only the
                 # anchor-dependent window/decay fields for every idle file with
@@ -751,8 +768,7 @@ class GitIndexer:
                                 commit_index,
                                 as_of_ts,
                                 prov_clf,
-                                co_changes,
-                                change_entropy,
+                                walk,
                                 prior_defects,
                             )
                         )
@@ -777,8 +793,7 @@ class GitIndexer:
         commit_index: dict[str, list[_CommitRec]],
         as_of_ts: float | None,
         prov_clf: Any,
-        co_changes: dict[str, list[dict]],
-        change_entropy: dict[str, float],
+        walk: CoChangeWalk,
         prior_defects: PriorDefects,
     ) -> dict[str, dict]:
         """Decay-only partial rows for *idle_paths* (see ``index_changed_files``).
@@ -804,15 +819,22 @@ class GitIndexer:
                 as_of_ts=as_of_ts,
                 provenance_classifier=prov_clf,
             )
-            meta["change_entropy"] = change_entropy.get(fp, 0.0)
-            meta["co_change_partners_json"] = json.dumps(co_changes.get(fp, []))
+            meta["change_entropy"] = walk.entropy.get(fp, 0.0)
+            meta["co_change_partners_json"] = json.dumps(walk.partners.get(fp, []))
+            meta["co_change_partner_count"] = walk.partner_count.get(fp, 0)
+            meta["co_change_mass"] = walk.partner_mass.get(fp, 0.0)
             meta["prior_defect_count"] = prior_defects.counts.get(fp, 0)
             meta["prior_defect_raw_count"] = prior_defects.raw_counts.get(fp, 0)
             out[fp] = {"file_path": fp, **{k: meta[k] for k in DECAY_REFRESH_KEYS}}
         return out
 
-    def capture_new_commit_rows(self, *, since_ts: int | None = None) -> list[dict]:
+    def capture_new_commit_rows(
+        self, *, since_ts: int | None = None, file_rows_sink: list[dict] | None = None
+    ) -> list[dict]:
         """Build ``git_commits`` rows for commits newer than *since_ts*.
+
+        *file_rows_sink*, when given, is extended with the matching
+        ``git_commit_files`` rows from the same walk.
 
         The incremental counterpart to the ``commit_sink`` capture on
         ``index_repo``: walks the repo-wide commit index (one ``git log`` pass,
@@ -831,7 +853,7 @@ class GitIndexer:
                 return []
 
             from ..git_commit_index import load_commit_index
-            from .commit_rows import build_commit_rows
+            from .commit_rows import build_commit_file_rows, build_commit_rows
 
             sink: list[dict] = []
             # Empty indexable set: we only want the full-footprint sink, not the
@@ -844,7 +866,13 @@ class GitIndexer:
                 since_ts=since_ts,
                 provenance_classifier=self._provenance_classifier(),
             )
-            return build_commit_rows(sink)
+            rows = build_commit_rows(sink)
+            files = build_commit_file_rows(sink)
+            # Only after both succeed: the sink is the caller's list, and a
+            # partial extend would outlive the failure that caused it.
+            if file_rows_sink is not None:
+                file_rows_sink.extend(files)
+            return rows
         except Exception as exc:
             logger.debug("incremental_commit_rows_failed", error=str(exc))
             return []
@@ -1053,33 +1081,22 @@ class GitIndexer:
 
             return AgentTraceIndex()
 
-    def _resolve_as_of_ts(
-        self, repo: Any, commit_index: dict[str, list[_CommitRec]] | None = None
-    ) -> float | None:
-        """Optional reference 'now' for recency windows (90d/30d, age, decay).
+    def _resolve_as_of_ts(self, repo: Any) -> float | None:
+        """Reference 'now' for every history window (90d/30d, age, decay, blame).
 
-        Default (env unset) returns ``None`` → callers anchor to wall-clock
-        ``now()``, preserving the live-product meaning of "churned lately /
-        is_stable" as *relative to today*.
+        The committer date of the indexed commit (HEAD), so the same tree scores
+        the same whenever it is indexed, and a historical checkout measures the
+        window before *that* commit. This is the anchor the defect benchmark
+        calibrates on. Full index, update, idle refresh and fix events all
+        resolve it here, so they agree whenever HEAD does.
 
-        When ``REPOWISE_GIT_WINDOW_ANCHOR`` is truthy (e.g. ``head``), anchor
-        instead to the repo's most recent commit timestamp. This makes indexing
-        deterministic and correct for **historical checkouts**: scoring a
-        worktree at an old commit then measures the 90 days before *that* commit
-        rather than an empty window in its future. Used by the defect benchmark,
-        which scores repos at a past T0 — without it every windowed process
-        signal (churn, entropy, co-change, congestion) is silently zero."""
+        ``REPOWISE_GIT_WINDOW_ANCHOR=now`` opts back into wall-clock time and
+        returns ``None``, which every consumer reads as ``now()``. So does a
+        repo whose HEAD cannot be read."""
         anchor = os.environ.get("REPOWISE_GIT_WINDOW_ANCHOR", "").strip().lower()
-        if anchor in ("", "0", "false", "no", "now"):
+        if anchor in _WALL_CLOCK_ANCHORS:
             return None
         try:
-            if commit_index:
-                ts = max(
-                    (c.ts for recs in commit_index.values() for c in recs if c.ts > 0),
-                    default=0.0,
-                )
-                if ts > 0:
-                    return float(ts)
             return float(repo.head.commit.committed_date)
         except Exception:
             return None

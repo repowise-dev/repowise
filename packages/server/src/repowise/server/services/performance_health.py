@@ -66,8 +66,11 @@ like the current product concept.
 CANONICAL_SORTS = ("rank", "leverage", "observations")
 CANONICAL_VIEWS = ("detail", "summary")
 _CONFIDENCES = ("high", "medium", "low")
-_ACTIONABILITIES = ("plan_ready", "advisory", "investigate")
+_ACTIONABILITIES = ("plan_ready", "advisory", "investigate", "expected")
 _BOUNDARIES = ("db", "network", "filesystem", "subprocess", "lock", "none")
+
+_DEFAULT_ACTIONABILITIES = frozenset({"plan_ready", "advisory", "investigate"})
+"""``expected`` rows are true but offer nothing to change, so they are asked for, not queued."""
 
 _PLAN_REASONS = {
     "available": "A stored performance plan addresses this exact opportunity.",
@@ -115,6 +118,13 @@ class PerformanceQuery:
             return None
         alias = _DEPRECATED_CONTEXTS.get(self.context)
         return alias if alias is not None else frozenset({self.context})
+
+    @property
+    def actionabilities(self) -> frozenset[str]:
+        """The set the queue is filtered to: one explicit state, or the default three."""
+        if self.actionability is None:
+            return _DEFAULT_ACTIONABILITIES
+        return frozenset({self.actionability})
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +181,8 @@ def parse_query(
             return None
         if value in allowed:
             return value
-        ignored[name] = value
+        # Name the vocabulary, so a rejected value is recoverable from the reply.
+        ignored[name] = f"{value} (accepted: {', '.join(allowed)})"
         return None
 
     resolved_context: PerformanceContext = DEFAULT_CONTEXT
@@ -181,7 +192,9 @@ def parse_query(
         else:
             # Named, so the caller learns the value was not understood, then
             # treated as absent like every other unrecognized filter.
-            ignored["performance_context"] = context
+            ignored["performance_context"] = (
+                f"{context} (accepted: {', '.join((*CANONICAL_CONTEXTS, 'all'))})"
+            )
     return (
         PerformanceQuery(
             context=resolved_context,
@@ -234,7 +247,7 @@ class PerformanceHealthService:
             contexts=query.contexts,
             boundary=query.boundary,
             confidence=query.confidence,
-            actionability=query.actionability,
+            actionabilities=query.actionabilities,
             file_paths=query.file_paths,
             sort=query.sort,
             limit=query.limit,
@@ -399,6 +412,7 @@ class PerformanceHealthService:
             "plan_ready_total": counts.get("plan_ready", 0),
             "advisory_total": counts.get("advisory", 0),
             "investigate_total": counts.get("investigate", 0),
+            "expected_total": counts.get("expected", 0),
         }
         if summary["status"] == "stale_model":
             return {
@@ -432,6 +446,7 @@ class PerformanceHealthService:
             "plan_state": lead["plan_state"],
             "plan_reason": _PLAN_REASONS[lead["plan_state"]],
             "prerequisites": lead["prerequisites"],
+            **_plan_brief(lead.get("plan"), economics=False),
             "next_action": {
                 "tool": "get_health",
                 "arguments": {"opportunity_id": lead["opportunity_id"]},
@@ -539,12 +554,15 @@ class PerformanceHealthService:
             "actionability_reason": details.get("actionability_reason"),
             "prerequisites": details.get("prerequisites", []),
             "rank_factors": details.get("rank_factors", {}),
+            "siblings": details.get("siblings", []),
+            **_plan_brief(details.get("plan")),
             "fix": None
             if fix_strategy is None
             else {
                 "strategy": fix_strategy,
                 "safety": row.fix_safety,
                 "rationale": details.get("fix_rationale") or "",
+                **({"api": details["fix_api"]} if details.get("fix_api") else {}),
             },
         }
 
@@ -630,6 +648,21 @@ def evidence_block(
         block["evidence_reduced_reason"] = "evidence_page"
         block["evidence_next_cursor"] = emitted
     return block
+
+
+def _plan_brief(plan: dict[str, Any] | None, *, economics: bool = True) -> dict[str, Any]:
+    """The stored plan's validation (and steps, economics), or nothing on an older store."""
+    if not plan:
+        return {}
+    validation = plan.get("validation") or {}
+    keys = ("basis", "via", "total", "tests", "commands") if economics else ("basis", "via", "total")
+    brief: dict[str, Any] = {"validation": {key: validation.get(key) for key in keys}}
+    if economics:
+        brief["plan_steps"] = plan.get("steps", [])
+        brief["plan_economics"] = {
+            key: plan.get(key) for key in ("effort_bucket", "benefit", "cost", "risk")
+        }
+    return brief
 
 
 def _title(lead: dict[str, Any]) -> str:

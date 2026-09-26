@@ -19,7 +19,8 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from ..langs import CSHARP
-from .client_calls import CSHARP_SYNTAX, ClientCallMatch, consumer_contracts, matches_in
+from ..strings import CSHARP_SYNTAX
+from .client_calls import ClientCallMatch, consumer_contracts, matches_in
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract

@@ -101,6 +101,27 @@ public class Repo : Microsoft.EntityFrameworkCore.DbContext, IRepository<User>
         assert "DbContext" in names
         assert "IRepository" in names
 
+    def test_builtin_bcl_parents_filtered(self, parser: ASTParser) -> None:
+        src = b"""\
+namespace App;
+public class CustomEventArgs : EventArgs {}
+public class CustomAttribute : Attribute {}
+public class MainForm : Form {}
+public class CustomControl : Control {}
+public class Entity : MarshalByRefObject, IDisposable, INotifyPropertyChanged {}
+"""
+        result = parser.parse_file(_file(), src)
+        names = {r.parent_name for r in result.heritage}
+        assert "EventArgs" not in names
+        assert "Attribute" not in names
+        assert "Form" not in names
+        assert "Control" not in names
+        assert "MarshalByRefObject" not in names
+        assert "IDisposable" not in names
+        assert "INotifyPropertyChanged" not in names
+        assert len(result.heritage) == 0
+
+
 
 # ---------------------------------------------------------------------------
 # Bindings

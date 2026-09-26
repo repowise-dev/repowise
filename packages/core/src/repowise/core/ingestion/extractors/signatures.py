@@ -33,8 +33,10 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         # Detect async via child "async" keyword (tree-sitter-python >= 0.23)
         prefix = "async " if any(c.type == "async" for c in def_node.children) else ""
         return f"{prefix}def {name}{params_text}{_ret(('return_type',))}"
-    if node_type == "function_item":
-        # Rust: return_type field
+    if node_type in ("function_item", "function_signature_item"):
+        # Rust: return_type field. A bodiless ``function_signature_item`` carries
+        # the same ``name`` / ``parameters`` / ``return_type`` fields, so it
+        # takes this branch rather than the bare-name fallback at the end.
         return f"fn {name}{params_text}{_ret(('return_type',))}"
     if node_type in ("function_declaration", "generator_function_declaration"):
         # TS/JS use return_type; Go uses result

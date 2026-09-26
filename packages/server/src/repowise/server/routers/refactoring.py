@@ -24,6 +24,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     blast_size,
     hydrate_recommendations,
 )
+from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES, summarize_plans
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
 from repowise.server.deps import get_db_session, verify_api_key
@@ -140,34 +141,12 @@ def _to_response(data: dict[str, Any]) -> RefactoringPlanResponse:
     return RefactoringPlanResponse(**data)
 
 
-_STRUCTURAL_TYPES = {"split_file", "break_cycle", "extract_class", "move_method"}
+_STRUCTURAL_TYPES = STRUCTURAL_TYPES
 _EFFORT_ORDER = {"S": 0, "M": 1, "L": 2, "XL": 3}
 
 
 def _summary(recommendations: list[Any]) -> RefactoringSummary:
-    by_type: dict[str, int] = {}
-    for recommendation in recommendations:
-        suggestion = recommendation.suggestion
-        by_type[suggestion.refactoring_type] = by_type.get(suggestion.refactoring_type, 0) + 1
-    return RefactoringSummary(
-        total=len(recommendations),
-        by_type=[
-            RefactoringTypeCount(type=kind, count=count)
-            for kind, count in sorted(by_type.items(), key=lambda item: (-item[1], item[0]))
-        ],
-        files_total=len({item.suggestion.file_path for item in recommendations}),
-        structural_total=sum(
-            item.suggestion.refactoring_type in _STRUCTURAL_TYPES for item in recommendations
-        ),
-        performance_total=by_type.get("performance_fix", 0),
-        small_effort_total=sum(item.suggestion.effort_bucket == "S" for item in recommendations),
-        health_recovery_total=sum(item.suggestion.impact_delta >= 0.1 for item in recommendations),
-        negligible_health_total=sum(item.suggestion.impact_delta < 0.5 for item in recommendations),
-        best_health_gain=round(
-            max((float(item.suggestion.impact_delta) for item in recommendations), default=0.0),
-            3,
-        ),
-    )
+    return RefactoringSummary(**summarize_plans(item.suggestion for item in recommendations))
 
 
 def _csv_values(value: str | None) -> set[str]:

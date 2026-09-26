@@ -37,6 +37,7 @@ import tomllib
 from pathlib import Path
 
 from repowise.cli.errors import reasoned_error
+from repowise.core.agents import identity
 
 from ..types import (
     Capability,
@@ -50,8 +51,9 @@ from ..types import (
     WriteResult,
 )
 
-ID = "codex"
-DISPLAY_NAME = "Codex CLI"
+IDENTITY = identity.CODEX
+ID = IDENTITY.cli_target_id
+DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://developers.openai.com/codex/cli"
 
 #: Config key for this agent's managed instruction file (``AGENTS.md``).
@@ -978,8 +980,8 @@ class CodexTarget:
     id = ID
     display_name = DISPLAY_NAME
     docs_url = DOCS_URL
-    hook_adapter = "codex"
-    session_adapter = "codex"
+    hook_adapter = IDENTITY.hook_adapter
+    session_adapter = IDENTITY.session_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 

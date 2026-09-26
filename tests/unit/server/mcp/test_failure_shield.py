@@ -43,8 +43,10 @@ async def test_uninitialized_repo_is_success_shaped(empty_mcp):
     assert "repowise init" in result["remedy"]
     # The user decides whether to index; the agent must not run init itself.
     assert "user" in result["remedy"]
-    # Session-scoped guidance: use built-in tools instead of retrying forever.
-    assert "Read/Grep/Glob" in result["guidance"]
+    # Session-scoped guidance: fall back to the agent's own tools, named by
+    # capability rather than by one host's tool names.
+    assert "file-reading and searching tools" in result["guidance"]
+    assert "Read/Grep/Glob" not in result["guidance"]
 
 
 @pytest.mark.asyncio
@@ -99,6 +101,10 @@ async def test_a_store_older_than_the_models_says_run_update_not_give_up():
     assert "repowise update" in result["remedy"]
     assert "user" in result["remedy"]
     assert "Retry this call once" not in result.get("guidance", "")
+    # The same capability wording as the not-indexed shape; this is the second
+    # of the two sites, and a host tool name here would not travel either.
+    assert "file-reading and searching tools" in result["guidance"]
+    assert "Read/Grep/Glob" not in result["guidance"]
 
 
 @pytest.mark.asyncio

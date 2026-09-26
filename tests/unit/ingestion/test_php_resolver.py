@@ -10,7 +10,7 @@ import networkx as nx
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.php import resolve_php_import
 from repowise.core.ingestion.resolvers.php_composer import (
-    read_composer_psr4,
+    get_or_build_psr4_map,
     resolve_via_psr4,
 )
 
@@ -36,24 +36,40 @@ def _write_composer(repo: Path, autoload: dict, autoload_dev: dict | None = None
     (repo / "composer.json").write_text(json.dumps(data))
 
 
-class TestComposerParsing:
+class TestPsr4Map:
     def test_psr4_single_string_value(self, tmp_path: Path) -> None:
         _write_composer(tmp_path, {"App\\": "src/"})
-        psr4 = read_composer_psr4(tmp_path)
-        assert psr4 == {"App\\": ["src"]}
+        assert get_or_build_psr4_map(_ctx(tmp_path, [])) == {"App\\": ["src"]}
 
     def test_psr4_list_value(self, tmp_path: Path) -> None:
         _write_composer(tmp_path, {"App\\": ["src/", "lib/"]})
-        psr4 = read_composer_psr4(tmp_path)
-        assert psr4 == {"App\\": ["src", "lib"]}
+        assert get_or_build_psr4_map(_ctx(tmp_path, [])) == {"App\\": ["src", "lib"]}
 
     def test_psr4_merges_autoload_dev(self, tmp_path: Path) -> None:
         _write_composer(tmp_path, {"App\\": "src/"}, autoload_dev={"Tests\\": "tests/"})
-        psr4 = read_composer_psr4(tmp_path)
+        psr4 = get_or_build_psr4_map(_ctx(tmp_path, []))
         assert psr4 == {"App\\": ["src"], "Tests\\": ["tests"]}
 
     def test_missing_composer(self, tmp_path: Path) -> None:
-        assert read_composer_psr4(tmp_path) == {}
+        assert get_or_build_psr4_map(_ctx(tmp_path, [])) == {}
+
+    def test_nested_manifest_is_rebased_after_the_root(self, tmp_path: Path) -> None:
+        _write_composer(tmp_path, {"App\\": "app/"})
+        pkg = tmp_path / "packages" / "billing"
+        pkg.mkdir(parents=True)
+        _write_composer(pkg, {"Billing\\": "src/", "App\\": "extra/"})
+        psr4 = get_or_build_psr4_map(_ctx(tmp_path, []))
+        assert psr4 == {
+            "App\\": ["app", "packages/billing/extra"],
+            "Billing\\": ["packages/billing/src"],
+        }
+
+    def test_vendor_packages_are_left_out(self, tmp_path: Path) -> None:
+        _write_composer(tmp_path, {"App\\": "app/"})
+        dep = tmp_path / "vendor" / "acme" / "lib"
+        dep.mkdir(parents=True)
+        _write_composer(dep, {"Acme\\": "src/"})
+        assert get_or_build_psr4_map(_ctx(tmp_path, [])) == {"App\\": ["app"]}
 
 
 class TestPsr4Resolution:
@@ -67,6 +83,27 @@ class TestPsr4Resolution:
         _write_composer(tmp_path, {"App\\": "src/"})
         ctx = _ctx(tmp_path, ["src/Models/User.php"])
         assert resolve_via_psr4("App\\Models\\User", ctx) == "src/Models/User.php"
+
+    def test_shorter_prefix_is_tried_when_the_longest_misses(self, tmp_path: Path) -> None:
+        # Composer's loader falls back to shorter prefixes; laravel/framework
+        # maps Illuminate\Support\ to four dirs and leaves Str to Illuminate\.
+        _write_composer(
+            tmp_path,
+            {
+                "Illuminate\\": "src/Illuminate/",
+                "Illuminate\\Support\\": ["src/Illuminate/Macroable/"],
+            },
+        )
+        ctx = _ctx(tmp_path, ["src/Illuminate/Support/Str.php", "types/Support/Str.php"])
+        got = resolve_via_psr4("Illuminate\\Support\\Str", ctx)
+        assert got == "src/Illuminate/Support/Str.php"
+
+    def test_nested_package_prefix_resolves(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "packages" / "billing"
+        pkg.mkdir(parents=True)
+        _write_composer(pkg, {"Billing\\": "src/"})
+        ctx = _ctx(tmp_path, ["packages/billing/src/Invoice.php"])
+        assert resolve_via_psr4("Billing\\Invoice", ctx) == "packages/billing/src/Invoice.php"
 
     def test_falls_through_when_no_match(self, tmp_path: Path) -> None:
         _write_composer(tmp_path, {"App\\": "src/"})
@@ -92,6 +129,43 @@ class TestPhpResolverIntegration:
         ctx = _ctx(tmp_path, ["src/Foo.php"])
         result = resolve_php_import("Vendor\\Lib\\Missing", "src/Foo.php", ctx)
         assert result == "external:Vendor\\Lib\\Missing"
+
+    def test_dependency_namespace_does_not_stem_match_a_local_file(self, tmp_path: Path) -> None:
+        # Illuminate\Http\Request is a vendor class; the local Request.php
+        # and config/request.php must not claim it.
+        _write_composer(tmp_path, {"App\\": "app/"})
+        ctx = _ctx(tmp_path, ["app/Http/Requests/Request.php", "config/request.php"])
+        result = resolve_php_import("Illuminate\\Http\\Request", "app/Http/Kernel.php", ctx)
+        assert result == "external:Illuminate\\Http\\Request"
+
+    def test_catch_all_prefix_claims_every_namespace(self, tmp_path: Path) -> None:
+        _write_composer(tmp_path, {"": "src/"})
+        ctx = _ctx(tmp_path, ["legacy/Mailer.php"])
+        got = resolve_php_import("Foo\\Mailer", "src/X.php", ctx)
+        assert got == "legacy/Mailer.php"
+
+    def test_classmapped_file_may_still_claim_an_unprefixed_class(self, tmp_path: Path) -> None:
+        (tmp_path / "composer.json").write_text(
+            json.dumps({"autoload": {"psr-4": {"App\\": "app/"}, "classmap": ["legacy/"]}})
+        )
+        ctx = _ctx(tmp_path, ["legacy/Mailer.php", "other/Request.php"])
+        assert resolve_php_import("Old\\Mailer", "app/X.php", ctx) == "legacy/Mailer.php"
+        assert resolve_php_import("Http\\Request", "app/X.php", ctx) == "external:Http\\Request"
+
+    def test_name_fallback_needs_the_whole_file_name(self, tmp_path: Path) -> None:
+        # No composer: the class-name fallback must not take LoginRequest.php
+        # for Request.
+        ctx = _ctx(tmp_path, ["app/Http/Requests/Auth/LoginRequest.php"])
+        got = resolve_php_import("Illuminate\\Http\\Request", "app/X.php", ctx)
+        assert got == "external:Illuminate\\Http\\Request"
+
+    def test_first_party_namespace_keeps_the_stem_fallback(self, tmp_path: Path) -> None:
+        # A claimed prefix whose directory layout PSR-4 cannot reach still
+        # falls back to the class name.
+        _write_composer(tmp_path, {"App\\": "app/"})
+        ctx = _ctx(tmp_path, ["legacy/Mailer.php"])
+        got = resolve_php_import("App\\Services\\Mailer", "app/X.php", ctx)
+        assert got == "legacy/Mailer.php"
 
 
 class TestFileBasedRequires:
@@ -162,3 +236,39 @@ class TestRequireExtraction:
         assert modules == [
             "/inc/auth.php", "/inc/db.php", "config/app.php", "lib/helpers.php",
         ]
+
+
+class TestUseDeclarations:
+    @staticmethod
+    def _imports(src: bytes) -> list[tuple[str, list[str]]]:
+        from datetime import datetime
+
+        from repowise.core.ingestion.models import FileInfo
+        from repowise.core.ingestion.parser import ASTParser
+
+        fi = FileInfo(
+            path="a.php", abs_path="/tmp/a.php", language="php",
+            size_bytes=1, git_hash="", last_modified=datetime.now(),
+            is_test=False, is_config=False, is_api_contract=False,
+            is_entry_point=False,
+        )
+        pf = ASTParser().parse_file(fi, src)
+        return [(i.module_path, i.imported_names) for i in pf.imports]
+
+    def test_grouped_use_becomes_one_import_per_class(self) -> None:
+        got = self._imports(b"<?php\nuse App\\Models\\{User, Http\\Post as P};\n")
+        assert got == [
+            ("App\\Models\\User", ["User"]),
+            ("App\\Models\\Http\\Post", ["P"]),
+        ]
+
+    def test_function_and_const_imports_bind_no_class(self) -> None:
+        got = self._imports(
+            b"<?php\nuse function App\\fmt;\nuse const App\\LIMIT;\n"
+            b"use App\\{function b, const C, D};\n"
+        )
+        assert got == [("App\\D", ["D"])]
+
+    def test_comma_separated_use_keeps_every_clause(self) -> None:
+        got = self._imports(b"<?php\nuse \\App\\X, App\\Y as Z;\n")
+        assert got == [("App\\X", ["X"]), ("App\\Y", ["Z"])]

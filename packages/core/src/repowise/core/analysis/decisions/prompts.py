@@ -36,7 +36,30 @@ Return a JSON array of decision objects. If a marker is not an architectural \
 decision, skip it. Return [] if none qualify.
 """
 
-GIT_ARCHAEOLOGY_PROMPT = """\
+#: How the two commit miners ask for ``affected_files``. Shared so the wording
+#: cannot drift between them, and concatenated into each prompt rather than
+#: interpolated, because both templates are ``.format()``-ed later with their
+#: own block and an extra field would be a second placeholder to thread.
+#:
+#: The instruction is written so that returning nothing feels correct, because
+#: it is: measured out of sample, the empty answer is what holds noise at zero
+#: on the roughly one record in six whose subject never reached the commit's
+#: file list at all.
+_FILE_SELECTION_RULE = """\
+For "affected_files", copy paths verbatim from that commit's "Files changed" \
+line and keep only the files the decision is *about* -- the ones whose own \
+content it is a rule or a choice about. A file the change merely passed \
+through, a caller updated to match, a re-export or barrel, a lockfile, a \
+changelog, or a test that happens to exercise the subject does not belong. \
+Where one commit yields several decisions, divide its files between them \
+rather than giving each of them all. Return [] when the file the decision is \
+about is not in that commit's list; that is a correct answer and a common \
+one. Never write a path the commit does not list.\
+"""
+
+
+GIT_ARCHAEOLOGY_PROMPT = (
+    """\
 Analyze these git commits to determine if they represent architectural decisions.
 
 {commits_block}
@@ -49,14 +72,20 @@ system structure, patterns, migrations, or technology), return a JSON object:
   "context": "what situation forced this",
   "decision": "what was chosen or changed",
   "rationale": "why this approach (infer from message and files only)",
+  "affected_files": ["which of that commit's files this decision is about"],
   "alternatives": [],
   "consequences": [],
   "tags": ["relevant tags"]
 }}
 
+"""
+    + _FILE_SELECTION_RULE
+    + """
+
 Return a JSON array. Skip commits that are just bug fixes or minor changes. \
 Return [] if none qualify. Do not hallucinate rationale.
 """
+)
 
 README_MINING_PROMPT = """\
 Analyze this documentation file and extract any architectural decisions.
@@ -86,7 +115,8 @@ Return a JSON array of decisions:
 Only extract explicit decisions. Return [] if none found.
 """
 
-PR_BODY_MINING_PROMPT = """\
+PR_BODY_MINING_PROMPT = (
+    """\
 These are squash-merge / PR commit bodies. Extract any architectural decision \
 described in them (technology choices, migrations, structural changes, things \
 deliberately rejected).
@@ -100,15 +130,21 @@ For each decision return a JSON object:
   "context": "what situation forced this (only if stated)",
   "decision": "what was chosen or changed",
   "rationale": "why (quote/paraphrase the body — never invent)",
+  "affected_files": ["which of that commit's files this decision is about"],
   "alternatives": ["rejected alternatives if mentioned"],
   "consequences": [],
   "tags": [],
   "source_quote": "the exact sentence from the body this came from"
 }}
 
+"""
+    + _FILE_SELECTION_RULE
+    + """
+
 Return a JSON array. Skip bodies that are just checklists or release noise. \
 Return [] if none qualify.
 """
+)
 
 COMMENT_ARCHAEOLOGY_PROMPT = """\
 These are block comments / docstrings from high-centrality code (the files \

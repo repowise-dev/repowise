@@ -47,6 +47,7 @@ from repowise.cli.helpers import (
     run_async,
     save_config_partial,
     save_state,
+    warn,
 )
 from repowise.cli.providers import resolve_embedder
 from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
@@ -102,6 +103,30 @@ from .persistence import (
 )
 from .reporting import show_analysis_summary, show_completion
 from .workspace import _workspace_init
+
+
+def _catch_up_savings(repo_path: Path) -> None:
+    """Bank the savings this repository's agents were shown before indexing.
+
+    Keyless, time-budgeted and best-effort, following the session-decision
+    stage that runs here for the same reason: the history is already on disk,
+    and a first index that ignores it shows an empty savings page for a
+    repository that has been saving tokens for months.
+
+    Not in ``repowise update``: update runs on every commit, and this reads a
+    corpus bounded by how much the user has worked rather than by the repo.
+    """
+    try:
+        from repowise.core.savings.transcript import sync_transcript_savings
+
+        outcome = sync_transcript_savings(repo_path)
+    except Exception:
+        return
+    if outcome.recorded:
+        console.print(
+            f"  [{OK}]✓[/] Recovered {outcome.saved_input_tokens:,} saved tokens "
+            f"from agent history"
+        )
 
 
 def _record_init_outcome(
@@ -238,20 +263,11 @@ def _run_deterministic_generation_phase(
     Returns the embedder actually used, which the caller persists so a later
     ``repowise update`` embeds the same way rather than re-deciding.
     """
+    from repowise.cli.providers import template_run_embedder
     from repowise.core.generation import GenerationConfig
     from repowise.core.providers.llm.template import TemplateProvider
 
-    # This mode is sold as "no key, no spend", and embedding 2000+ pages
-    # through a hosted embedder is a real bill. ``resolve_embedder`` infers one
-    # from any LLM key it finds in the environment, which is the right default
-    # for a run that is already paying a model and the wrong one here: nobody
-    # who typed --index-only asked to be charged. So a hosted embedder is used
-    # only when the user named it, through --embedder or REPOWISE_EMBEDDER.
-    # Anything else falls back to the mock, which keeps full-text search
-    # working and leaves semantic search to be built later with
-    # ``repowise reindex``.
-    hosted = embedder_name_resolved not in ("mock", "ollama")
-    embedder = "mock" if hosted and not embedder_was_requested else embedder_name_resolved
+    embedder = template_run_embedder(embedder_name_resolved, embedder_was_requested)
 
     print_phase_header(
         console,
@@ -398,8 +414,8 @@ def _run_generation_phase(
     # Warn when a local provider runs with default concurrency
     local_providers = ("ollama", "codex_cli", "claude_cli", "opencode")
     if provider.provider_name in local_providers and concurrency > 4:
-        console.print(
-            f"  [{WARN}]Warning:[/] {provider.provider_name} is a local provider "
+        warn(
+            f"  {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "
             f"If you see timeout errors, try [bold]--concurrency 1[/bold]."
         )
@@ -927,10 +943,30 @@ def init_command(
         detected = detect_worktree_base(repo_path)
         if detected is not None and base_is_seedable(detected):
             seed_base = detected
-            console.print(
-                f"[dim]\\[worktree][/dim] Linked worktree of {detected} detected; "
-                f"seeding its index."
-            )
+            if not force:
+                console.print(
+                    f"[dim]\\[worktree][/dim] Linked worktree of {detected} detected; "
+                    f"seeding its index."
+                )
+
+    # ``--force`` asks for the re-index seeding exists to avoid, so the two do
+    # not combine. The block below delegates to ``run_update`` and used to hand
+    # it ``full=force``, but ``full`` is not "re-index": it is ``update --full``,
+    # the fast -> full upgrade that resolves a provider and regenerates the
+    # whole wiki with a model. So ``init --force`` in a seedable worktree either
+    # died with "No provider configured" or spent money the user never asked for
+    # (#1482), and ``--index-only --force`` was swallowed the same way. Dropping
+    # the seed lets the ordinary init path below run, which is exactly what
+    # ``init --force`` does outside a worktree: re-index and regenerate every
+    # page in the mode the user invoked, free when that mode is structural.
+    # ``update --full`` stays the only paid path.
+    if seed_base is not None and force:
+        requested = "the index at" if not seed_from else "the requested seed"
+        console.print(
+            f"[dim]\\[worktree][/dim] --force re-indexes this checkout from "
+            f"scratch, so {requested} {seed_base} is not used."
+        )
+        seed_base = None
 
     if seed_base is not None:
         seed_root = scan.root if getattr(scan, "root", None) else repo_path
@@ -976,7 +1012,12 @@ def init_command(
                     repo_alias=None,
                     index_only=index_only,
                     docs_flag=None,
-                    full=force,
+                    # Never ``force``. This delegate is the worktree *seed*
+                    # catch-up, and ``full`` means ``update --full``: provider
+                    # resolution plus whole-repo model regeneration. A
+                    # ``--force`` run never reaches this block (the seed is
+                    # dropped above), so this is a constant, not a pass-through.
+                    full=False,
                     agents_md=agents_md,
                     concurrency=concurrency,
                     no_cost_tracking=no_cost_tracking,
@@ -1412,6 +1453,25 @@ def init_command(
 
     orchestrator_mode = OrchestratorMode.FAST if run_mode == "fast" else OrchestratorMode.STANDARD
 
+    # The store generation would build anyway, hoisted so the analysis
+    # checkpoint inside the pipeline can dedup decisions against it;
+    # ``run_repo_generation`` reuses this object. Never more than that store,
+    # so the exclusions are the runs that build none: a dry run, and index-only
+    # fast mode, which also pins no embedder for a table to be read back with.
+    # Keyless is dropped rather than handed to a matcher that refuses it.
+    index_vector_store = None
+    if not dry_run and not (index_only and run_mode == "fast"):
+        from repowise.cli.providers import build_embedder, build_vector_store, template_run_embedder
+        from repowise.core.providers.embedding import store_has_semantic_vectors
+
+        _store_embedder = (
+            template_run_embedder(embedder_name_resolved, embedder_was_requested)
+            if index_only or no_provider
+            else embedder_name_resolved
+        )
+        _candidate = build_vector_store(repo_path, build_embedder(_store_embedder, repo_path))
+        index_vector_store = _candidate if store_has_semantic_vectors(_candidate) else None
+
     index_columns: list[Any] = [
         SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
         TextColumn("[progress.description]{task.description}"),
@@ -1466,6 +1526,7 @@ def init_command(
                     include_submodules=include_submodules,
                     generate_docs=False,
                     llm_client=llm_client,
+                    vector_store=index_vector_store,
                     concurrency=concurrency,
                     test_run=test_run,
                     mode=orchestrator_mode,
@@ -1672,6 +1733,8 @@ def init_command(
     callback.table.stop("run")
     phase_timings: dict[str, float] = callback.timings
     console.print(f"  [{OK}]✓[/] Database updated")
+
+    _catch_up_savings(repo_path)
 
     # Persist the onboarding choice so subsequent `repowise update` runs
     # honor it without re-passing the flag. Default True is omitted to keep

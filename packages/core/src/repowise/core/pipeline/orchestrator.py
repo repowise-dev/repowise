@@ -129,6 +129,10 @@ class PipelineResult:
     # data module. Populated post-traversal during the graph build phase.
     tech_stack: list[dict] = field(default_factory=list)
 
+    repo_path: str = ""
+    """Working tree this run walked. Empty when the caller did not set it;
+    persistence steps that need the tree (the per-commit health scan) skip."""
+
     # External systems parsed from repo manifests (package.json,
     # pyproject.toml, Cargo.toml, go.mod, .csproj). Powers the C4 L1
     # System Context view. Plain dicts mirroring ExternalSystemRecord fields
@@ -662,6 +666,10 @@ async def run_pipeline(
     # complete, so an interrupt during the long generation phase below can
     # resume past analysis instead of recomputing it. Skipped when we already
     # rehydrated analysis (it's by definition persisted) — best-effort.
+    #
+    # The store goes with them: this is where a decision record is first
+    # written, so it is the only pass that can fold a paraphrase into an
+    # existing one. By the end-of-run persist every group matches on title.
     if resume_controller is not None and not skip_analysis:
         await resume_controller.checkpoint_analysis(
             parsed_files=parsed_files,
@@ -670,6 +678,7 @@ async def run_pipeline(
             decision_report=decision_report,
             doc_drift_report=doc_drift_report,
             git_metadata_list=git_metadata_list,
+            vector_store=vector_store,
             progress=progress,
         )
 
@@ -922,6 +931,7 @@ async def run_pipeline(
     symbol_count = sum(len(pf.symbols) for pf in parsed_files)
 
     return PipelineResult(
+        repo_path=str(repo_path),
         parsed_files=parsed_files,
         file_infos=file_infos,
         repo_structure=repo_structure,

@@ -38,12 +38,12 @@ def parse_source(
     try:
         from tree_sitter import Parser
 
-        from repowise.core.ingestion.parser import _get_language
+        from repowise.core.ingestion.parser import _get_language, grammar_tag_for
     except Exception as exc:
         log.debug("dataflow_import_failed", error=str(exc))
         return None
 
-    grammar = _get_language(language)
+    grammar = _get_language(grammar_tag_for(language, abs_path))
     if grammar is None:
         return None
 

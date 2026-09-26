@@ -20,10 +20,19 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import currency_for_legacy_status
+from repowise.core.analysis.decisions.kinds import classify_kind
+from repowise.core.analysis.decisions.lifecycle import (
+    AGREEMENT_KIND,
+    RETIRED_STATUSES,
+    currency_for_legacy_status,
+)
+from repowise.core.analysis.decisions.scope import (
+    SCOPE_BASIS_FOOTPRINT,
+    session_scope_basis,
+)
 
 from .crud.authority import (
     AcceptanceRefusedError,
@@ -32,14 +41,29 @@ from .crud.authority import (
     record_acceptance,
     upsert_candidate_meta,
 )
-from .models import DecisionCandidateMeta, DecisionRecord
+from .decision_graph import (
+    DecisionNodeLink,
+    expected_node_links,
+    set_record_scope,
+    sync_links_from_record,
+)
+from .models import (
+    DecisionAcceptance,
+    DecisionCandidateMeta,
+    DecisionRecord,
+    GraphNode,
+)
 
 __all__ = [
     "MigrationPlan",
     "RowPlan",
     "apply_migration",
+    "backfill_decision_node_links",
+    "backfill_scope_basis",
+    "backfill_session_scope_basis",
     "plan_json",
     "plan_migration",
+    "prune_unindexed_scope_files",
     "render_plan",
 ]
 
@@ -50,9 +74,6 @@ __all__ = [
 #: purpose.
 _SELF_ACCEPTING_SOURCES: frozenset[str] = frozenset({"cli", "adr"})
 
-#: Statuses that record a retirement somebody performed. The migration keeps
-#: them: reclassifying one as an open candidate would undo the retirement.
-_RETIRED_STATUSES: frozenset[str] = frozenset({"dismissed", "deprecated", "superseded"})
 
 
 @dataclass(slots=True)
@@ -67,6 +88,12 @@ class RowPlan:
     reason: str
     review_state: str = "open"
     duplicate_of: str | None = None
+    #: Which noun this row is, or blank where the migration does not reclassify
+    #: it. Blank for a row already carrying an acceptance or a review state,
+    #: because changing the noun of a record somebody already ruled on would
+    #: change what it governs behind them, and blank for a tombstone, whose
+    #: noun nothing reads.
+    kind: str = ""
 
 
 @dataclass(slots=True)
@@ -97,6 +124,7 @@ class MigrationPlan:
                     "reason": r.reason,
                     "review_state": r.review_state,
                     "duplicate_of": r.duplicate_of,
+                    "kind": r.kind,
                 }
                 for r in self.rows
             ],
@@ -196,7 +224,7 @@ async def plan_migration(
         # it as an unreviewed candidate would put a decision the user retired
         # back in front of them asking to be accepted, so all three retired
         # statuses keep their status and carry a tombstone.
-        if rec.status in _RETIRED_STATUSES:
+        if rec.status in RETIRED_STATUSES:
             plan.rows.append(
                 RowPlan(
                     rec.id,
@@ -225,6 +253,14 @@ async def plan_migration(
             )
             continue
 
+        # Only the rows still in play reach this: the branches above return a
+        # row already accepted, already reviewed or retired, and changing the
+        # noun of one of those would change what it governs behind the person
+        # who ruled on it.
+        kind = classify_kind(
+            rec.title, rec.decision, rec.rationale, source=rec.source
+        )
+
         currency = currency_for_legacy_status(rec.status)
         if currency is None:
             plan.rows.append(
@@ -236,6 +272,7 @@ async def plan_migration(
                     "candidate",
                     "never accepted: it was awaiting review",
                     duplicate_of=dup_of,
+                    kind=kind,
                 )
             )
             continue
@@ -251,10 +288,18 @@ async def plan_migration(
                     f"{rec.status} by recurrence, not by a person: "
                     f"a {rec.source} row carries no acceptance event",
                     duplicate_of=dup_of,
+                    kind=kind,
                 )
             )
             continue
 
+        # Only a self-accepting source reaches here, and no self-accepting
+        # source can be classified as an agreement: ``_SELF_ACCEPTING_SOURCES``
+        # and the classifier's prose sources are disjoint. That disjointness is
+        # load-bearing rather than incidental. Were it broken, a row classified
+        # an agreement on the first run would report a scope on the second (the
+        # contract answers with the repo-wide marker) and be auto-accepted under
+        # ``migration:<source>``, and this runs on every index.
         gaps: list[str] = []
         if not (rec.rationale.strip() or rec.decision.strip()):
             gaps.append("no rationale")
@@ -270,6 +315,7 @@ async def plan_migration(
                     "candidate",
                     f"authored via {rec.source} but {' and '.join(gaps)}",
                     duplicate_of=dup_of,
+                    kind=kind,
                 )
             )
             continue
@@ -283,6 +329,7 @@ async def plan_migration(
                 "decision",
                 f"authored via {rec.source}, with a reason and a scope",
                 duplicate_of=dup_of,
+                kind=kind,
             )
         )
     return plan
@@ -318,7 +365,9 @@ async def apply_migration(
         rec = records.get(row.decision_id)
         if rec is None or row.outcome == "already_migrated":
             continue
-        if rec.status in _RETIRED_STATUSES and row.outcome != "decision":
+        if row.kind:
+            rec.kind = row.kind
+        if rec.status in RETIRED_STATUSES and row.outcome != "decision":
             # Record the tombstone without touching the status that carries the
             # retirement.
             existed = await session.get(DecisionCandidateMeta, rec.id) is not None
@@ -336,6 +385,7 @@ async def apply_migration(
                     action="accepted",
                     currency="active",
                     accepter=f"migration:{rec.source}",
+                    kind="import",
                     note="reconstructed from a self-authored legacy record",
                 )
             except AcceptanceRefusedError as exc:
@@ -372,6 +422,241 @@ async def apply_migration(
     return plan
 
 
+#: Sources whose file list was only ever a commit's whole file list. Neither
+#: miner ever chose a file. Every other source names files it saw, so none of
+#: them is repaired here.
+_COMMIT_FOOTPRINT_SOURCES: frozenset[str] = frozenset({"pr", "git_archaeology"})
+
+
+async def backfill_scope_basis(session: AsyncSession, repository_id: str) -> int:
+    """Mark legacy commit-derived records whose files are a footprint.
+
+    Returns the number of records changed. A runtime repair for the same
+    reason as the rest of this module: the rows predate the column, and only
+    code that runs on an existing store can fix them.
+
+    **Every** legacy row is repaired now, not only the wide ones. The miners
+    ask the model which files each decision is about and store that under
+    :data:`SCOPE_BASIS_SELECTED`, so an empty basis on a commit-derived row
+    means the row predates the selector and its file list is a commit
+    footprint whatever its length. Measured out of sample, those lists are 27%
+    on topic with 18% outright noise, and narrowness does not rescue them: at
+    a five-file cutoff, 82% of the rows that still bound came from commits
+    that had touched more than five files, because the miner's list is an
+    inversion of per-file git metadata rather than the commit's diff. The
+    breadth rule was the best available signal until the model was asked
+    directly, and it is not needed now.
+
+    Only rows with an **empty** basis are touched, which makes this idempotent
+    and leaves a scope the model chose alone.
+
+    A record somebody accepted is left alone too, and by its acceptance rather
+    than by its basis: ``accept_decision`` writes
+    :data:`SCOPE_BASIS_STATED` only when the accepter passed an explicit
+    scope, and neither ``repowise decision confirm`` nor the web accept route
+    does. Filtering on the basis alone would therefore silently drop the file
+    links of every decision a reviewer had confirmed as-is -- and take their
+    hotspots with it, since ``governed_files`` is built from accepted
+    path-binding records and an ``ungoverned_hotspot`` finding is emitted for
+    every hotspot outside it.
+
+    The record keeps its files and loses its decision-graph links. Those are
+    dropped here rather than left to the next ``bulk_upsert_decisions``: a
+    record nothing re-extracts is never rewritten, and would keep answering
+    path questions from the graph forever.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(DecisionRecord).where(
+                    DecisionRecord.repository_id == repository_id,
+                    DecisionRecord.source.in_(tuple(_COMMIT_FOOTPRINT_SOURCES)),
+                    DecisionRecord.scope_basis == "",
+                    ~select(DecisionAcceptance.id)
+                    .where(DecisionAcceptance.decision_id == DecisionRecord.id)
+                    .exists(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    changed = 0
+    for rec in rows:
+        try:
+            files = json.loads(rec.affected_files_json or "[]")
+        except ValueError:
+            continue
+        if not files:
+            continue
+        rec.scope_basis = SCOPE_BASIS_FOOTPRINT
+        await session.execute(
+            delete(DecisionNodeLink).where(DecisionNodeLink.decision_id == rec.id)
+        )
+        changed += 1
+    if changed:
+        await session.flush()
+    return changed
+
+
+async def backfill_session_scope_basis(
+    session: AsyncSession, repository_id: str
+) -> int:
+    """Mark legacy session-mined records whose files are proximity, not scope.
+
+    Returns the number of records changed. The companion to
+    :func:`backfill_scope_basis` for the other miner, and empty-basis-only for
+    the same reason: it repairs what the old code wrote and leaves a scope
+    somebody set by hand alone.
+
+    A session record's files are the paths the transcript was near when the
+    decision was stated, so a working rule restated while editing four
+    packages claims all four. Measured over 32 labelled pairs, a record whose
+    files share one directory governs them 67% of the time and one spanning
+    more governs 19%, which is the line :func:`session_scope_basis` draws.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(DecisionRecord).where(
+                    DecisionRecord.repository_id == repository_id,
+                    DecisionRecord.source == "session",
+                    DecisionRecord.scope_basis == "",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    changed = 0
+    for rec in rows:
+        try:
+            files = json.loads(rec.affected_files_json or "[]")
+        except ValueError:
+            continue
+        basis = session_scope_basis(files, is_agreement=rec.kind == AGREEMENT_KIND)
+        if not basis:
+            continue
+        rec.scope_basis = basis
+        await session.execute(
+            delete(DecisionNodeLink).where(DecisionNodeLink.decision_id == rec.id)
+        )
+        changed += 1
+    if changed:
+        await session.flush()
+    return changed
+
+
+async def backfill_decision_node_links(
+    session: AsyncSession, repository_id: str
+) -> int:
+    """Rebuild links for records whose scope never reached the graph.
+
+    Every hand-authored record predates :func:`sync_links_from_record`, and a
+    record with files but no links is invisible to every path-scoped surface.
+    Runs on each index, after the basis repairs so it mirrors the scope they
+    leave behind. Returns how many records were relinked.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    linked: dict[str, set[tuple[str, str]]] = {}
+    for decision_id, node_id, link_type in (
+        await session.execute(
+            select(
+                DecisionNodeLink.decision_id,
+                DecisionNodeLink.node_id,
+                DecisionNodeLink.link_type,
+            ).where(DecisionNodeLink.repository_id == repository_id)
+        )
+    ).all():
+        linked.setdefault(decision_id, set()).add((node_id, link_type))
+
+    changed = 0
+    for rec in rows:
+        files, modules = expected_node_links(rec)
+        want = {(n, "file") for n in files} | {(n, "module") for n in modules}
+        if want == linked.get(rec.id, set()):
+            continue
+        await sync_links_from_record(session, rec)
+        changed += 1
+    if changed:
+        await session.flush()
+    return changed
+
+
+#: Below this many indexed file nodes, the graph is treated as unbuilt rather
+#: than as evidence that a scope is wrong. Pruning against a graph that failed
+#: to build would empty every scope in the store, which is the one outcome
+#: worse than the stale entries this removes.
+_MIN_GRAPH_NODES_TO_PRUNE = 50
+
+
+async def prune_unindexed_scope_files(
+    session: AsyncSession, repository_id: str
+) -> int:
+    """Drop scope entries naming a file this repository does not index.
+
+    Returns the number of records changed. Repairs rows written before the
+    indexed-set filter reached the session miner: a transcript names plan
+    docs, scratch files, sibling checkouts and throwaway worktrees, and every
+    one of those resolved on disk and was bound as though it were this
+    codebase.
+
+    Validates against the graph's own file nodes, which is the set
+    ``decision_node_links`` points into, so an entry this drops could never
+    have been a valid link. Skipped entirely when the graph looks unbuilt.
+
+    Rewriting the file list moves the record's identity, which the id
+    migration at the head of the next index settles and leaves an alias for,
+    exactly as it does for a scope edited through the manifest or an
+    acceptance.
+    """
+    indexed = {
+        node_id
+        for (node_id,) in await session.execute(
+            select(GraphNode.node_id).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_type == "file",
+            )
+        )
+    }
+    if len(indexed) < _MIN_GRAPH_NODES_TO_PRUNE:
+        return 0
+
+    rows = (
+        (
+            await session.execute(
+                select(DecisionRecord).where(
+                    DecisionRecord.repository_id == repository_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    changed = 0
+    for rec in rows:
+        try:
+            files = json.loads(rec.affected_files_json or "[]")
+        except ValueError:
+            continue
+        kept = [f for f in files if f in indexed]
+        if len(kept) == len(files):
+            continue
+        await set_record_scope(session, rec, kept)
+        changed += 1
+    if changed:
+        await session.flush()
+    return changed
+
+
 def render_plan(plan: MigrationPlan, *, limit: int = 10) -> str:
     """A human-readable dry-run report."""
     counts = plan.counts()
@@ -384,6 +669,15 @@ def render_plan(plan: MigrationPlan, *, limit: int = 10) -> str:
         f"  Dismissed tombstones         {counts.get('tombstone', 0):>5}",
         f"  Already migrated             {counts.get('already_migrated', 0):>5}",
     ]
+    agreements = sum(1 for r in plan.rows if r.kind == AGREEMENT_KIND)
+    if agreements:
+        lines += [
+            "",
+            f"  Classified as working agreements {agreements:>5}",
+            "    Repo-wide rules about how the work is done, not about the",
+            "    code. They stop being counted as naming no scope, and can",
+            "    be accepted, which a record naming no files could not be.",
+        ]
     if plan.duplicate_clusters:
         clustered = sum(len(v) for v in plan.duplicate_clusters.values())
         lines += [

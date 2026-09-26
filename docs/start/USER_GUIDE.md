@@ -166,6 +166,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 | `repowise health` | Lowest-scoring files and why. `--trend` for direction, `--refactoring-targets` for concrete plans. |
 | `repowise risk main..HEAD` | Repo-relative review percentile/classification plus a supporting 0-10 diff-shape score. |
 | `repowise dead-code` | What nothing references any more, by confidence tier. |
+| `repowise doc-drift` | Documentation whose claims about the tree no longer hold, by confidence. |
 | `repowise decision list` | Architectural decisions, their evidence and status. |
 | `repowise impacted-tests` | Only the tests a diff actually exercises. |
 

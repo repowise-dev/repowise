@@ -114,18 +114,18 @@ describe("System Map relayout", () => {
 
   it("re-runs ELK when collapse changes the node set, then reuses the result", async () => {
     render(<SystemMap graph={graph} />);
-    await screen.findByText("Service view");
+    await screen.findByText(/drawing 3 services/i);
     expect(computePositions).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByText("Service view"));
-    await screen.findByText("Repo view");
+    fireEvent.click(screen.getByRole("radio", { name: "Repositories" }));
+    await screen.findByText(/drawing 2 repositories/i);
     // Collapsing genuinely changes the shape, so it earns a layout.
     expect(computePositions).toHaveBeenCalledTimes(2);
 
-    fireEvent.click(screen.getByText("Repo view"));
-    await screen.findByText("Service view");
-    fireEvent.click(screen.getByText("Service view"));
-    await screen.findByText("Repo view");
+    fireEvent.click(screen.getByRole("radio", { name: "Services" }));
+    await screen.findByText(/drawing 3 services/i);
+    fireEvent.click(screen.getByRole("radio", { name: "Repositories" }));
+    await screen.findByText(/drawing 2 repositories/i);
     // Both shapes are already cached for this mount.
     expect(computePositions).toHaveBeenCalledTimes(2);
   });

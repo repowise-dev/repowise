@@ -79,6 +79,10 @@ meaningless for a script invoked by name. See
 [Beyond code files](#beyond-code-files), along with
 [config and data formats](#config-and-data).
 
+Cross-repo contracts (HTTP routes and calls, database tables, queues, sockets)
+are listed per language and framework in
+[WORKSPACES.md](../scale/WORKSPACES.md#api-contract-extraction).
+
 ## What the pipeline gives each tier
 
 | Stage | Full | Good | Partial | Lightweight | Structural |
@@ -217,7 +221,7 @@ their relationships:
 | C# | ASP.NET (attribute + minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
 | Go | net/http, gin, echo, chi, gRPC server registration |
 | Rust | Axum, Actix route → handler |
-| JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS |
+| JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS, Angular |
 | C++ | GoogleTest, Catch2, Boost.Test, doctest, Google Benchmark, libFuzzer |
 
 The dead-code analyzer knows each ecosystem's entry points, generated-file
@@ -254,7 +258,7 @@ bindings, heritage and a workspace resolver where their syntax supports them.
 |----------|-----------|--------------|
 | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
 | **Swift** | `.swift` | SPM `Package.swift` target → directory mapping, intra-module type references, `@main` entry points |
-| **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
+| **PHP** | `.php` | `use` declarations (grouped `use A\{B, C}` included) resolved through PSR-4 from the root and nested `composer.json` files, longest prefix first as composer does; same-namespace and `\Fully\Qualified` class references; Laravel edges (route files to controllers and aliased middleware, registered and discovered listeners, policies, providers, commands by signature), TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs, `package:` via every `pubspec.yaml`, Flutter route tables and `runApp()` edges. **Health markers included** |
 | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | Program IDs, sections, paragraphs and data levels; literal `CALL` and `PERFORM` targets resolve to program/procedure symbols. Dynamic calls and `COPY` edges are deliberately silent |
 
@@ -289,8 +293,8 @@ than tree-sitter.
   import edges, so model-level lineage, hotspots, co-change, ownership and
   communities all fall out free.
 - **App-to-database contracts** (workspace mode), table *providers* (DDL,
-  Alembic, ORM entities) pair with table *consumers* (SQL literals in app code)
-  on the Live System Map. See [WORKSPACES.md](../scale/WORKSPACES.md).
+  migrations, ORM models) pair with table *consumers* (SQL literals and query
+  builders in app code) on the Live System Map. See [WORKSPACES.md](../scale/WORKSPACES.md).
 - **Health markers**: stored routines get cyclomatic complexity, plus
   `sql_select_star`, `sql_update_delete_without_where` and `sql_cartesian_join`.
   All of them are **uncalibrated by construction** (no defect corpus covers
@@ -355,28 +359,445 @@ Health markers run off a per-language walker map that is **independent** of
 `.scm` parsing: a language can parse perfectly for the graph and still need this
 map before markers fire. This table is why a language is Full rather than Good.
 
-| Language | Complexity / nesting | Class metrics | Assertion smells | Extract Method | Performance risk |
-|----------|:---:|:---:|:---:|:---:|:---:|
-| Python | ✅ | ✅ | ✅ | ✅ | ✅ |
-| TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Svelte · Vue | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Java | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Go | ✅ | n/a | ✅ | ✅ | ✅ |
-| Rust | ✅ | ✅ | ✅ | ✅ | ✅ |
-| C++ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| C# | ✅ | ✅ | ✅ | later | ✅ |
-| Kotlin | ✅ | ✅ | ✅ | blocked | ✅ |
-| Scala | ✅ | ✅ | ✅ | later | ✅ |
-| Ruby | ✅ | ✅ | ✅ | later | ✅ |
-| Dart | ✅ | n/a | ✅ | later | ✅ |
-| Object Pascal | ✅ | n/a | later | later | n/a |
-| Razor | ✅ | n/a | n/a | later | ✅ |
-| Shell | ✅ | n/a | n/a | n/a | n/a |
+| Language | Complexity / nesting | Class metrics | Assertion smells | Mock saturation | Assertion-free test | Extract Method | Performance risk |
+|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Python | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Svelte · Vue | ✅ | ✅ | ✅ | later | later | ✅ | ✅ |
+| Java | ✅ | ✅ | ✅ | blocked | blocked | ✅ | ✅ |
+| Go | ✅ | n/a | ✅ | blocked | blocked | ✅ | ✅ |
+| Rust | ✅ | ✅ | ✅ | later | later | ✅ | ✅ |
+| C++ | ✅ | ✅ | ✅ | later | later | ✅ | ✅ |
+| C# | ✅ | ✅ | ✅ | later | later | later | ✅ |
+| Kotlin | ✅ | ✅ | ✅ | later | later | blocked | ✅ |
+| Scala | ✅ | ✅ | ✅ | later | later | later | ✅ |
+| Ruby | ✅ | ✅ | ✅ | later | later | later | ✅ |
+| Dart | ✅ | n/a | ✅ | later | later | later | ✅ |
+| Object Pascal | ✅ | n/a | ✅ | n/a | n/a | later | ✅ |
+| Razor | ✅ | n/a | n/a | n/a | n/a | later | ✅ |
+| Shell | ✅ | n/a | n/a | n/a | n/a | n/a | n/a |
 
 Every cell is a deliberate call, not an oversight: a language reaches a dialect
 or it stays silent, and an `n/a` records a metric the language cannot carry
 rather than one nobody got to. Kotlin's Extract Method is **blocked on the
 grammar**, not unscheduled.
+
+**The assertion count** is the denominator of every test-quality ratio, counted
+in two tiers (`analysis/health/asserts/lexicon.py`). The narrow tier is the
+`assert` / `expect` prefix match that `large_assertion_block` and
+`duplicated_assertion_block` are calibrated on, and it never changes. The broad
+tier adds a per-language row plus anything a repository declares in the
+`assertions:` block, and feeds the advisory count alone, so a vocabulary edit
+cannot move a score. Broad-tier names are matched exactly, never as prefixes:
+over three corpora the `check` / `validate` / `approve` / `fail` prefix families
+matched ~600 production functions under test and not one assertion.
+
+Counted assertions, narrow tier then both, when the tiers were introduced:
+
+| Corpus | Test files | Narrow | Both |
+|---|---|---|---|
+| Go, stdlib `t.Errorf` idiom | 502 | 87 | **3,454** |
+| Go, testify idiom | 476 | 1,586 | **3,656** |
+| TypeScript, should.js present | 521 | 9,956 | **11,165** |
+| TypeScript, no should.js | 574 | 15,595 | 15,595 |
+
+Go was effectively invisible. Assertion *runs* were byte-identical in every
+corpus, which is what makes the broad tier safe.
+
+**Mock saturation** measures a test's mock setup against its assertions, so it
+needs both a mock vocabulary and a trustworthy assertion count. The vocabulary
+is one data row per language in
+`analysis/health/mocks/lexicon.py`; a language with no row produces no signal at
+all.
+
+Because the marker is advisory it ships below the 70% bar, so the line is not
+drawn on the precision number alone: **a language ships when its false positives
+are the families the marker already declares, and is blocked when its failure is
+a different one the marker cannot name.** TypeScript's every false positive was
+the known assertion-observes-production-output family. The two blocked languages
+fail differently, and for the same underlying reason — the assertion count is the
+denominator of every ratio, so a language whose assertions cannot be counted
+honestly cannot carry the marker at all:
+
+- **Go** — the assertion half is fixed (table above). What still blocks the
+  marker is the other half: no row in `mocks/lexicon.py` and no hand-labelled
+  precision figure.
+- **Java** — Mockito states a test's real checks as `verify(...)`, which is
+  deliberately not an assertion here (counting it would hide the very tests this
+  marker looks for). An over-mocked Java test therefore arrives with one vacuous
+  `assertDoesNotThrow` as its whole denominator, so the marker misses the tests
+  it is for and the ratio peaks instead on large controller tests whose setup is
+  irreducible fixture. Measured at 20% precision over 30 hand-labelled findings,
+  flat across every threshold tried — but the mechanism above, not that number,
+  is why it is blocked. Java now **does** carry a verification vocabulary, added
+  for `assertion_free_test`, and it deliberately does not help here: Mockito
+  verification is 1,087 calls over those 299 test files, and it reaches
+  `verification_count` rather than `assertion_count` precisely so that this
+  marker keeps dividing by state assertions alone.
+
+**Assertion-free test** asks whether a test case checks anything at all, so it
+needs two things the other markers do not: a per-function "is this a test case"
+rule, and a way to tell that a test checks nothing. The second is deliberately not one
+count: `assertion_count` is calibrated and shared with a scored marker, so the
+shapes it cannot classify — a hand-rolled `throw`, an assertion bound to a name
+— are answered beside it rather than folded into it. The rules live in
+`analysis/health/complexity/test_case.py`, one data row per language — a name
+prefix for Python, `go test`'s own case-sensitive `TestXxx` rule for Go, the
+`it(...)` / `test(...)` callback for JS/TS, and `@Test` and its JUnit siblings
+for Java. A language with no row classifies nothing. Go and Java are classified
+and counted, which is how their precision below was measured, but the marker
+does not report on them — the shipping set is a constant in the detector.
+
+Measured precision, hand-labelled: **71%** on TypeScript (31 findings, the
+complete population of two corpora) and **86%** on Python (29 findings, a
+systematic sample of 172). **Both are now a floor rather than a current
+reading**, as `mock_saturated_test`'s are a ceiling: three false-positive
+families have been closed since they were labelled, which removed findings
+from the numerator's denominator without re-labelling what survives. On the
+TypeScript population the same 22 true findings now sit in 26 rather than 31,
+which is 84.6% if none of the five removals took a true finding with it — they
+were each read, and none did. The marker ships advisory on both: the bar below is a
+property of the marker rather than of one language, and neither reading settles
+it on a population this size.
+
+Twenty-nine items cannot settle a 70% bar: 86% on that sample carries a 95%
+interval of roughly 68% to 96%, whose lower bound sits below the bar it appears
+to clear. The reading is consistent with clearing it and does not demonstrate
+it. What moved Python is that a test's oracle now reaches it from a function it
+calls in the same file, described below. That barely moved TypeScript, because a
+JS/TS suite keeps its helpers in a separate module; resolving the same
+delegation *across* a file is what took TypeScript from 43% to 71%, and how it
+is done is in the section after next.
+
+An earlier pass published 53% for Python. Re-labelling the pre-change findings
+of the same corpus, drawn the same way and read against this pass's rubric,
+gives 68.8% (22 of 32), so the gain below is that 68.8 to 86.2 and the 53% is
+superseded rather than contradicted. The two passes are not reconciled: 15
+points of the difference is labelling, on samples of about thirty, and the
+rubric behind the earlier number was not recorded. TypeScript read 52% then and 51% on
+the pass after it; re-labelled here it reads 43.1%, so the drift is on both
+languages and in the same direction rather than on Python alone. That withdraws
+the earlier reading of it as sample noise: what the three passes differ on is
+the rubric, and the only defence against that is to state the rubric and
+re-label both arms of a comparison together, which is what the section below
+does.
+
+### Resolving a test's oracle across a file boundary
+
+A test that hands its checks to a helper is not assertion-free, and the
+assertion count is per function, so the helper's checks are invisible from the
+test. Resolving that within one file took Python from 68.8% to 86.2%. A JS/TS
+suite keeps its helpers in another module, so the same question had to be asked
+of the call graph.
+
+It is asked in two lanes, because **a JS/TS test case is not a graph node**:
+every one of them is an anonymous callback handed to `it(...)`, and on one
+corpus 0 of 7,354 resolved to a symbol, against 5,212 of 5,212 for Python's
+named `def test_x`. Resolving from the enclosing module node instead would let
+one delegating test speak for every other test in its file, so it is not done.
+
+- **call-edge** — the test is a symbol; walk its own outgoing call edges, depth
+  bounded. Its job on Python is as much to answer *no* authoritatively as to
+  answer yes: while it answers, the looser lane below is never consulted.
+- **file-edge** — the test is a callback; require both that the *file* has a
+  resolved call edge to the asserting symbol and that the *function body* calls
+  it by name. The edge alone is file-scoped and the name alone is repo-scoped;
+  together they are neither.
+
+Only edges that bind **one** definition are read, which is a harder filter than
+the execution index applies. `import_merged` carries 0.85 confidence and means
+only "a function of this name exists in one of the files this file imports"; it
+was measured resolving `Silent().check()` to `Asserting.check` because the
+receiver could not be typed. An extra edge costs a performance pass a cheap
+false positive and costs this marker a hidden true finding, so the two filter
+differently on purpose.
+
+A suppression is available only where an edge is. An unresolved call is
+indistinguishable from a call to something that checks nothing, so it suppresses
+nothing and the marker fires — a missing edge leaves a false positive, where a
+wrong one would hide a real finding.
+
+Three consequences of that, all leaving findings in place rather than removing
+them, and all properties of a repository's layout as much as of the mechanism. A
+helper outside a test-named directory is not an oracle, so a suite keeping its
+helpers in `src/test-utils/` gets nothing from this while one using
+`src/testUtils.ts` does. A re-export is followed one hop, so a single barrel
+file works and a barrel of barrels does not. And an oracle living in a
+`beforeEach` is an anonymous callback with no symbol, so it is never in the sink
+set at all.
+
+Measured on the complete population of two corpora, both arms labelled in one
+pass against one rubric: **51 findings at 43.1% to 31 at 71.0%, with none of the
+22 true findings lost.** All 20 suppressions trace to three helpers, each read in
+full, and each does check something. The sharpest evidence that the oracle is
+per function rather than per file: `inspectTreeStructure` and
+`testParseSourceCodeDefinitions` live in the same helper module, and only the
+second asserts — the first's eleven callers all survive.
+
+An earlier pass published 51% for TypeScript. Re-labelling that same pre-change
+population against this pass's rubric gives 43.1%, so the gain is 43.1 to 71.0
+and the 51% is superseded rather than contradicted; the difference is that this
+pass counts a deliberate, commented "should not throw" as a false positive.
+
+Read that gain with its provenance. Both arms were labelled by one person in one
+unblinded pass, by the author of the change, and the re-label moved the baseline
+**down** -- the one direction that widens the reported gain. The post figure is
+the more defensible of the two, being a complete population rather than a
+sample; the 28-point delta is the part carrying the labeller. A second reader on
+the same population is the cheapest thing that would settle it. Note also that
+22 of 31 is a 95% interval of roughly 53% to 84%, whose lower bound sits below
+the 70% bar exactly as Python's 29-item reading does, so neither language
+demonstrates the bar on these populations. Four families accounted for the remainder, and three have since been closed
+by reading the test rather than the call graph — a wait helper that fails by
+throwing, a guard test whose body is a bare `throw`, and an `expect(...)` the
+statement scan declines because it is bound to a name or sits inside a nested
+function. What remains is a documented no-throw, which is a labelling question
+rather than a code one: every test that executes code already fails if that
+code raises, so a comment saying "should not throw" names an oracle the marker
+cannot distinguish from its absence. None of the four was introduced by
+resolving a call.
+
+Python moves on one corpus and not the other, and the split is the point. One
+corpus suppresses nothing: its tests keep their oracles inline or in the same
+file, where the existing rule already reaches them. The other goes from **501
+findings to 346**, and all 155 suppressions trace to just five helper methods --
+one of which, a `check_html` on a shared `SimpleTestCase` subclass, accounts for
+144 by itself. Every one of the five was read in full and every one asserts, so
+the verification is complete by oracle rather than sampled by finding.
+
+That is the base-class idiom listed below as Java's blocker, showing up in
+Python: the helper is inherited, so it is neither in the test's file nor named
+anything the assertion lexicon recognises. It is also why the depth is **2**
+rather than 1: depth 1 resolves only the single largest helper, missing eleven
+of the other four's callers, and depth 3 adds four more that reach
+`SimpleTestCase._assert_raises_or_warns_cm`, the framework's own `assertRaises`
+machinery, which is further than a test's oracle should have to be chased.
+
+A **mock verification counts as an assertion for this marker and not for the one
+above**, which is the deliberate inversion described in CODE_HEALTH.md. It
+matters only for Java: Python's `assert_called_once`, jest's
+`expect(m).toHaveBeenCalled()` and Go's `t.Error` already reach the narrow tier,
+so Mockito is the one dialect where verification is invisible. On a 299-test-file
+Java corpus it is 1,087 verifications, and counting them takes the marker from
+146 findings to 28 — 118 tests that each had a real oracle — while introducing
+none.
+
+Counting a test's oracle turned out to be where the work was. Four forms reached
+no tier at all before this. Each was found by reading findings that named an
+oracle the counter had not seen, and each is answered at the broad tier so that
+no calibrated run moves:
+
+| Form | Example | Why it was missed |
+|---|---|---|
+| Context-manager oracle | `with pytest.raises(ValueError):` | The call is in the `with` header, not a statement |
+| Split call shape | `Helpers.assertRejected(...)` | Java states a call as `object` + `name` and exposes no callee node |
+| Property-terminated chain | `expect(x).to.be.null` | chai ends in a property, so the statement is not a call |
+| Expression-bodied lambda | `it("x", () => expect(a).toBe(b))` | The body is the expression, so there is no statement to classify |
+
+A private helper (`_assert_no_leak(msg)`) was a fifth: the narrow prefixes anchor
+at the start of a name and a leading underscore breaks the anchor.
+
+Firing rate fell as they landed — on a 794-test-file Python corpus from 13.0% of
+its test cases to 3.7%, and on a 521-test-file TypeScript corpus from 1.6% to
+0.4%. A rate is not a precision measurement; what these five changes are measured
+to have done is stop the counter missing an oracle that was written down.
+
+**Go and Java are blocked, and for the same structural reason rather than a
+threshold.** Both languages conventionally delegate the oracle to a helper, and
+the assertion count is per function, so the helper's assertions are invisible
+from the test that calls it:
+
+- **Go** — the idiom is to hand `*testing.T` to a helper that asserts, as in
+  `parsertest.RunFileCases(t, ...)`. Measured on the findings themselves: **81 of
+  87** on one corpus and **119 of 121** on another pass the test handle to a
+  call. That is not a false-positive family a marker can declare and live with,
+  it is nearly the whole population, and suppressing on it would leave the marker
+  firing a handful of times per repository.
+- **Java** — the same shape without the handle, a helper on the test class that
+  asserts on the test's behalf. Hand-labelled at **33%** over 18 findings, and 10
+  of its 12 false positives were this family.
+
+Separating them needs the assertions of a called function to reach its caller.
+Within a single file that now happens. Neither language is unblocked by it: Go
+hands `*testing.T` to a package-level helper and Java inherits a base-class
+method, and both live in another file, so re-admitting either is a measurement
+of its own.
+
+**A called function's assertions reach its caller, inside one file.** The
+assertion count is per function, so a test that hands its checks to a helper
+beside it read as checking nothing. That was the largest false-positive family
+in every language the marker reports on. The walk now records the names each
+function calls, and the marker resolves them against same-file functions that
+assert. It counts nothing and no calibrated marker reads it.
+
+What it suppresses, by corpus:
+
+| Corpus | Findings | Test cases | Rate |
+|---|---|---|---|
+| 2,012-file Python | 763 to 501 | 17,966 | 4.2% to 2.8% |
+| 794-file Python | 194 to 172 | 5,212 | 3.7% to 3.3% |
+| 374-file TypeScript | 35 to 33 | 7,354 | 0.5% to 0.4% |
+| 562-file TypeScript | 18 to 18 | 4,761 | 0.4% to 0.4% |
+
+Six suppressions were read by hand across the two Python corpora and each is
+the declared family: a test whose whole body delegates to a helper that asserts,
+or one that parametrises a sibling test by calling it. The resolution matches
+names against same-file names and drops the receiver, so a call to an imported
+function sharing a local helper's name, or a method on a test-local double
+sharing a module-level function's name, suppresses wrongly. Both hide a finding
+rather than invent one. No instance turned up in the corpora above, and the
+shape is pinned by a test.
+
+What it deliberately does not reach is anything needing the call graph, which
+this pass does not consult: `super().test_x(...)`, a package-level Go helper
+handed the test handle, and the shared JS/TS fixture module that is most of
+TypeScript's remaining error.
+
+**A `.tsx` file is read with the JSX grammar.** It arrives tagged `typescript`,
+and the grammar that tag selects fails on the first `<Component />`; everything
+after it lands in ERROR recovery. The health pass picks the grammar from the
+path instead, in all three places it parses: the complexity walk, the clone
+tokenizer and the dataflow CFG. A React suite is read the way a `.ts` suite
+always was. What it was costing, measured on two React corpora (374 and 562
+`.tsx` files):
+
+| | 374-file corpus | 562-file corpus |
+|---|---|---|
+| Assertions counted on `.tsx` | 1,367 to 2,085 | 175 to 377 |
+| Assertion runs on `.tsx` | 264 to 391 | 30 to 69 |
+| `.tsx` files whose clone token stream changed | 365 of 374 | 550 of 562 |
+| Function names over 60 chars, a proxy for recovery wreckage | 124 to 0 | 20 to 3 |
+| `assertion_free_test` on `.tsx` | 15 to 0 | 0 to 1 |
+| Non-`.tsx` files whose walk or token stream moved | 0 of 1,165 | 0 of 1,868 |
+
+Every one of those 15 findings was the grammar rather than the test, which is
+why the marker declined `.tsx` files until now. The second corpus's one new
+finding is a test that genuinely asserts nothing, hidden by that same rule.
+
+Two calibrated markers read the same walk, and at the time both read it
+through the name-keyed `function_metrics`, which kept one row per distinct
+function name and so dropped all but one of a file's anonymous `it` callbacks.
+The section below removes that key; what follows here is the state as this
+grammar fix left it. That key is the
+thing to understand here. Recovery had been swallowing whole source spans into
+each callback's *name*, and those accidentally unique names were defeating it,
+so a `.tsx` file kept rows that a `.ts` file has always lost. Counting names
+longer than 60 characters as a proxy for that wreckage: 124 of them on the first
+corpus, 0 after. Measured as the share of walked functions that survive the key,
+`.tsx` goes from 44.4% to 22.9%, against a `.ts`/`.js` control of 16.0%.
+
+`large_assertion_block` does not move on either corpus (0 and 0, then 1 and 1).
+Its floor is fifteen assertions in one run and React cases are short, but the
+same name key dropped most of the newly visible runs before that floor was
+ever consulted, so the floor was not the whole reason. Removing the key turns
+that marker's 0 into a 6 on the second corpus below.
+
+`duplicated_assertion_block` falls from 304 to 262 on the first corpus, and this
+is a loss rather than a correction. Six of the lost findings were read by hand
+and every one is a genuine run of consecutive assertions, correctly bounded; the
+rows were real and the clone partner was real. What was not real is the
+mechanism that kept them visible, which was a mangled name defeating a lossy
+key. So at this point `.tsx` files under-reported duplicated assertion blocks
+exactly as `.ts` files always had, which the next section then fixes for both. The corpus carries more real assertion runs after this
+change, 264 to 391, and the marker reports fewer of them. Re-keying
+`function_metrics` is the fix for that, and the next section is that change.
+
+Svelte and Vue stay `later` rather than following TypeScript: an SFC is walked as
+a TypeScript buffer, but a single-file component is essentially never a test
+file, so the row would be untestable rather than useful.
+
+The marker is advisory and never deducts. See
+[CODE_HEALTH.md](CODE_HEALTH.md).
+
+### A marker reads the whole walked file, not one row per name
+
+Eleven markers used to read a `function_metrics` map keyed by function name. A
+map keyed that way keeps one row per distinct name, and a function name is not
+unique inside a file. Every `it(...)` callback in a spec file walks under the name
+`it callback`; `__init__` walks under one name on each class in a module. Every
+row after the first was dropped before a marker ever saw it. They read
+`all_functions` now, the whole walked list, which is what the two advisory
+test-quality markers already read for this reason.
+
+How much a file loses to that key is a property of how a language names its
+functions rather than of any marker. Measured across the walked functions of
+four corpora:
+
+| Corpus | Language | Walked functions | Survive the name key |
+|---|---|---|---|
+| 1,336 files | TypeScript / TSX | 12,257 | 37.8% |
+| 2,194 files | TypeScript / TSX | 17,261 | 72.3% |
+| 1,949 files | Python | 12,926 | 91.4% |
+| 1,714 files | Python | 30,747 | 87.9% |
+
+These count every walked file, so they do not line up with the test-file-only
+`.tsx` figures above and are not meant to.
+
+A JS/TS spec suite is the worst case by a wide margin, because its test bodies
+are anonymous callbacks that all walk under one name. Python loses about a tenth
+of its rows, mostly same-named methods on neighbouring classes.
+
+What each scoring marker sees, before the change and after. Note that the two
+assertion-block markers score but were never fitted on a defect corpus, and they
+are the two that move furthest:
+
+| Marker | TS/TSX (1,336 files) | TS/TSX (2,194 files) | Python (1,949 files) | Python (1,714 files) |
+|---|---|---|---|---|
+| `complex_method` | 496 to 506 | 1,005 to 1,015 | 443 to 468 | 483 to 537 |
+| `large_method` | 347 to 382 | 608 to 649 | 192 to 203 | 157 to 168 |
+| `nested_complexity` | 232 to 233 | 338 to 341 | 236 to 253 | 286 to 317 |
+| `bumpy_road` | 80 to 80 | 161 to 162 | 65 to 71 | 99 to 108 |
+| `complex_conditional` | 92 to 96 | 163 to 168 | 67 to 69 | 91 to 101 |
+| `primitive_obsession` | 54 to 54 | 106 to 107 | 685 to 859 | 449 to 599 |
+| `large_assertion_block` | 0 to 0 | 0 to 6 | 0 to 0 | 11 to 11 |
+| `duplicated_assertion_block` | 262 to 2,831 | 175 to 1,711 | 1,098 to 1,108 | 2,360 to 2,477 |
+
+Three markers are missing from that table because they need inputs this
+measurement does not build: `brain_method` needs graph centrality, and
+`code_age_volatility` and `function_hotspot` need git blame. They read the same
+list as the other eight, which is visible in the diff, but how far they move was
+not observed.
+
+Most of those cells are single-digit percentages. `complex_method`,
+`large_method`, `nested_complexity` and `complex_conditional` each clear ten
+percent on one corpus and stay below it on the other three. Two markers move
+much further, and they are the two worth reading carefully.
+
+`primitive_obsession` gains a quarter to a third of its findings on both Python
+corpora, 685 to 859 and 449 to 599, and almost nothing on either JS/TS one.
+Python modules define the same method name on several classes each, and the
+row that survived the key was the first of them in the file, so a wide signature
+on any of the others was invisible.
+
+`duplicated_assertion_block` is the large one: it rises about tenfold on both
+JS/TS corpora and barely moves on either Python one. That is the same fact as
+the survival table, seen from the other end.
+
+Six of the gained rows were read in the source, and each of those six is a
+correctly bounded run of consecutive assertions. Six labels cannot speak for
+2,569 rows, so that is evidence the marker is bounding blocks correctly, not a
+precision figure. What does speak for the population is its shape. On the first
+corpus the two arms' assertion-run-length histograms have closely matching
+profiles while the new arm is about eleven times larger, which is what uniform
+thinning looks like and not what a filter that selected for anything would look
+like. On that same corpus the marker goes from a median of one finding per test
+file to five, with one file at sixty. Neither measurement says whether a gained
+row is worth showing a reader; only counts and block lengths were measured.
+
+No floor was added to hold that number down. The name key was an accidental
+limiter and replacing it with a deliberate one is a calibration change, which
+needs its own defect-corpus evidence rather than a number that looks
+comfortable. What bounds the damage today is the `test_quality` category cap of
+0.5, which a single medium finding already exceeds: a test file with sixty of
+these loses the same half point as a test file with one, so the scores move far
+less than the counts do. Whether the finding list itself wants a cap is a
+question for the marker, not for the container it reads.
+
+The six findings `large_assertion_block` gains on the second JS/TS corpus were
+also read by hand. All six are runs of fifteen or more consecutive assertions in
+a single test, which is exactly what that marker declares it looks for, and all
+six are anonymous callbacks, so each sat in a file where another function of the
+same name had been holding the only row.
 
 Per-marker mechanics, every per-language precision ceiling and the reasoning
 behind each `n/a`: [CODE_HEALTH.md](CODE_HEALTH.md) and
@@ -407,7 +828,24 @@ cannot check.
 - **Razor has no import edges**, and an attribute-bound handler carries none.
 - **Object Pascal's `extends`/`implements` split is a naming heuristic**,
   inferred from the `I`-prefix convention rather than a language guarantee.
-- **GDScript resolves no `uid://` path and no string dispatch**, and a script
+- **Object Pascal's DB/network performance sinks are gated on file-wide
+  `uses`-clause evidence, not per-receiver evidence.** A file importing
+  `FireDAC` gates every `.Open` / `.ExecSQL` / `.Post` call in it, not only
+  calls on an actual `TFDQuery`, because a Pascal variable's declared type has
+  no textual link back to the unit it came from the way `client = requests.Session()`
+  does in Python.
+- **Object Pascal has no `assertion_free_test`.** `large_assertion_block` /
+  `duplicated_assertion_block` / `mock_saturated_test` all read the same
+  assertion counts and work for it; `assertion_free_test` additionally gates
+  on a `SHIPPING_LANGUAGES` allowlist that needs its own measured-precision
+  pass (see the module docstring) before Pascal joins it. It has no mock
+  dialect either, so `mock_saturated_test`'s mock-setup half stays at zero --
+  advisory and harmless, never a false `mock_saturated_test` positive.
+- **A GDScript `uid://` resolves through the `.uid` sidecar Godot writes for
+  scripts**, so a `preload` naming one reaches its file. A uid naming a scene
+  does not: Godot writes no sidecar for `.tscn` / `.tres`, and the
+  `[ext_resource]` header carrying such a uid also carries a `path=`, which is
+  what resolves. String dispatch is still unresolved, and a script
   without `class_name` gets no class symbol.
 - **A Godot `addons/` tree is exempt from dead-code reporting** only when a
   `project.godot` sits above it, so a plugin's own repo reports normally.
@@ -434,7 +872,7 @@ Per-language mechanics behind these:
 | C# | Full (health) | Dataflow dialect |
 | Dart | Good | riverpod / get_it dynamic hints, dataflow dialect |
 | GDScript | Good | The health dialects (complexity, performance, dataflow) that would take it to Full; the grammar supports all three |
-| Object Pascal | Good | Assertion and performance markers, a dedicated `uses` resolver |
+| Object Pascal | Good | A dedicated `uses` resolver; `assertion_free_test` needs a measured-precision pass before it joins its language allowlist |
 | COBOL | Good | Copybook resolution, source-format normalization, dialect coverage, health markers |
 | VB.NET | Good | Health markers, project-level `<Import Include=...>` as implicit imports |
 | Elixir | Good | Health markers, and a call-resolution strategy beyond same-file |

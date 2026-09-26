@@ -19,6 +19,7 @@ from typing import Any
 
 from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
+    blame_as_of,
     distinct_commits_in_range,
     median_author_time_in_range,
     owner_in_range,
@@ -35,7 +36,7 @@ def build_function_blame_rows(
     walked: list[tuple[Any, Any]],
     git_meta_map: dict[str, dict],
     *,
-    now_ts: int,
+    now_ts: int | None = None,
     recent_window_days: int = _RECENT_WINDOW_DAYS,
 ) -> list[dict]:
     """Build ``git_function_blame`` row dicts from walked files + blame indexes.
@@ -43,9 +44,8 @@ def build_function_blame_rows(
     *walked* is the engine's ``[(parsed_file, FileComplexity)]`` list; each
     file's blame index is looked up in *git_meta_map* under ``"blame_index"``
     (the FULL-tier git tier attaches it there). *now_ts* anchors the recent
-    window (unix seconds) — pass the index-time clock.
+    window (unix seconds); ``None`` uses each blame index's own anchor.
     """
-    since = now_ts - recent_window_days * 86400
     rows: list[dict] = []
 
     for pf, fcx in walked:
@@ -54,6 +54,7 @@ def build_function_blame_rows(
         idx = meta.get("blame_index")
         if not isinstance(idx, BlameIndex) or not idx.lines:
             continue
+        since = (now_ts if now_ts is not None else blame_as_of(idx)) - recent_window_days * 86400
         for fc in fcx.functions:
             start, end = fc.start_line, fc.end_line
             mod_count = len(distinct_commits_in_range(idx, start, end))

@@ -52,6 +52,11 @@
     "dismissed",
     "returned_to_review"
   ],
+  "accepter_kinds": [
+    "person",
+    "agent",
+    "import"
+  ],
   "capture_sources": [
     "inline_marker",
     "git_archaeology",
@@ -68,6 +73,10 @@
     "local_only",
     "balanced",
     "full"
+  ],
+  "kinds": [
+    "architectural",
+    "agreement"
   ],
   "review_lanes": [
     "active",

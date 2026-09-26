@@ -17,9 +17,15 @@ Optional ``include`` parameter widens the response:
   - include=["last_change"]→ last commit date and author
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
-  - include=["decisions"] → full decision records (default returns titles only)
+  - include=["decisions"] → decisions governing the target, in three labelled
+                            lanes: ``decisions`` (accepted and binding),
+                            ``candidates`` (proposed, nobody has agreed),
+                            ``history`` (accepted then withdrawn). The last
+                            two appear only when non-empty, and are capped.
+                            A dismissed record is in none of them.
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
   - include=["health"]    → code-health scores and biomarkers for the target
+  - include=["doc_drift"] → documents that name this file, and their drift
 
 An unrecognised key is dropped and named in ``ignored_arguments`` rather than
 silently ignored: an unknown key otherwise produces exactly the response the
@@ -47,20 +53,20 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
     attach_ignored_arguments,
+    drop_echoed_target,
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
-from repowise.server.mcp_server._meta import context_hint as _context_hint
+from repowise.server.mcp_server.tool_context.enrichment import attach_doc_references
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
 _log = logging.getLogger("repowise.mcp.context")
 
 # Every value ``include_set`` is tested against downstream, in ``targets.py``.
 # ``docs`` and ``freshness`` are always on but remain legal to pass explicitly.
-# ``source`` is tested in ``_meta.context_hint`` and left out deliberately: both
-# branches there return None, so accepting it would promise a block that does
-# nothing.
+# ``source`` is omitted: get_context serves triage cards and structural metadata,
+# not raw source bodies (which are served via include=["skeleton"] or the Read tool).
 _INCLUDE_BLOCKS = frozenset(
     {
         "docs",
@@ -75,6 +81,7 @@ _INCLUDE_BLOCKS = frozenset(
         "decisions",
         "skeleton",
         "health",
+        "doc_drift",
     }
 )
 
@@ -139,7 +146,8 @@ async def get_context(
     Args:
         targets: file paths, module paths, or "path::Symbol" ids.
         include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | metrics | community | decisions | skeleton | health.
+            | callees | metrics | community | decisions | skeleton | health
+            | doc_drift (documents naming this file).
             An unrecognised key is named in ignored_arguments.
         compact: default True; False adds structure+imports+docstrings.
         repo: usually omitted.
@@ -198,6 +206,19 @@ async def get_context(
             return_exceptions=True,
         )
 
+        # One batched read for every target that asked for it, on the session
+        # they share, and a no-op for every call that did not. Deliberately
+        # not per-target inside the gather above: savepoints opened
+        # concurrently on one session close each other, and
+        # ``attach_doc_references`` carries the account of that.
+        await attach_doc_references(
+            session,
+            repository,
+            {r["target"]: r for r in raw_results if isinstance(r, dict)},
+            exclude_spec=exclude_spec,
+            collector=collector,
+        )
+
         # repo="all" already returned above, so ctx here is always one repo.
         # Computed on the open session: never open a second one for this.
         scope_hint = await _scope_hint(session, repository, raw_results)
@@ -229,7 +250,6 @@ async def get_context(
         "targets": {r["target"]: r for r in results},
         "_meta": _build_meta(
             timing_ms=(_time.perf_counter() - _t0) * 1000,
-            hint=_context_hint(targets, compact, include_set),
             repository=repository,
             targets=targets,
         ),
@@ -290,6 +310,7 @@ async def get_context(
             if cross_repo:
                 target_data["cross_repo"] = cross_repo
 
+    drop_echoed_target(response.get("targets"))
     attach_ignored_arguments(response, ignored)
     collector.attach(response)
     return response

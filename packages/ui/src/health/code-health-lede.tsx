@@ -23,6 +23,7 @@
 
 import {
   bandForScore,
+  formatScore,
   type DefectAccuracy,
   type HealthDistribution,
   type HealthOverviewSummary,
@@ -134,7 +135,7 @@ export function CodeHealthLede({
     { label: "Files", value: formatNumber(summary.file_count), hint: FILES_HINT },
     {
       label: "Maintainability",
-      value: maint == null ? "" : maint.toFixed(1),
+      value: maint == null ? "" : formatScore(maint),
       valueColor: maint == null ? undefined : scoreTextColor(maint),
       hint: MAINTAINABILITY_HINT,
       // The map's lens marks its figure here now that the lede carries one
@@ -149,7 +150,7 @@ export function CodeHealthLede({
     },
     {
       label: "Hotspot health",
-      value: hotspot == null ? "" : hotspot.toFixed(1),
+      value: hotspot == null ? "" : formatScore(hotspot),
       valueColor: hotspot == null ? undefined : scoreTextColor(hotspot),
       hint: codeShape ? HOTSPOT_HINT_CODE_SHAPE : HOTSPOT_HINT,
     },
@@ -161,7 +162,7 @@ export function CodeHealthLede({
       <PageLede
         label="Code health"
         labelHint={codeShape ? CODE_SHAPE_HINT : HEALTH_HINT}
-        value={health.toFixed(1)}
+        value={formatScore(health)}
         valueColor={healthChip?.color}
         unit="out of 10"
         {...(healthChip ? { band: healthChip } : {})}
@@ -208,7 +209,7 @@ export function CodeHealthLede({
           </strong>
           , this codebase scores{" "}
           <strong className="font-semibold text-[var(--color-text-primary)]">
-            {health.toFixed(1)} out of 10
+            {formatScore(health)} out of 10
           </strong>{" "}
           for code health, weighted by lines of code and built from complexity,
           duplication, coverage
@@ -217,8 +218,11 @@ export function CodeHealthLede({
           {perf != null && (
             <>
               {" "}
-              Static performance risk is scored separately at {perf.toFixed(1)} out
-              of 10 and never blended into the health score.
+              {/* Not "performance risk": this is a score on the same ladder
+                  as the health number, so a risk noun inverts it. "risk" belongs
+                  to the findings count in the ribbon. Matches HealthLede. */}
+              Static performance is scored separately at {formatScore(perf)} out of
+              10 and never blended into the health score.
             </>
           )}
         </p>
@@ -253,7 +257,7 @@ export function CodeHealthLede({
               className="font-semibold"
               style={{ color: healthBandColor(bandForScore(hotspot)) }}
             >
-              {hotspot.toFixed(1)}
+              {formatScore(hotspot)}
             </strong>
             , {describeGap(hotspot, health)}
           </p>

@@ -335,8 +335,10 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
             )}
             options={[
               { value: "all", label: "All dimensions" },
-              { value: "defect", label: "Defect risk" },
+              { value: "defect", label: "Code health" },
               { value: "maintainability", label: "Maintainability" },
+              { value: "performance", label: "Performance" },
+              { value: "advisory", label: "Advisory" },
             ]}
           />
           <FilterSelect

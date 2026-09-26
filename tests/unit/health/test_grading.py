@@ -20,6 +20,7 @@ from repowise.core.analysis.health.grading import (
     TARGET_SCORE,
     band_for,
     distribution,
+    format_score,
 )
 
 
@@ -50,6 +51,16 @@ def test_band_for_boundaries() -> None:
     assert band_for(4.0) == "needs_work"
     assert band_for(3.99) == "at_risk"
     assert band_for(1.0) == "at_risk"
+
+
+def test_format_score_never_rounds_across_a_band_edge() -> None:
+    # 6.98 rounds to "7.0" but bands Fair; the shown figure must band the same.
+    for score in (6.98, 6.95, 8.49, 5.46, 3.999, 6.9999999):
+        assert band_for(float(format_score(score))) == band_for(score), score
+    assert format_score(6.98) == "6.9"
+    assert format_score(7.0) == "7.0"
+    assert format_score(5.6) == "5.6"
+    assert format_score(10.0) == "10.0"
 
 
 def test_every_band_has_a_label_a_range_and_a_colour() -> None:

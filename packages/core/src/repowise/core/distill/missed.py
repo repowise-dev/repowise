@@ -63,8 +63,6 @@ RATIO_FLOOR: dict[str, float] = {
 #: estimated savings fall under it would not have produced a marker anyway.
 _MIN_EST_TOKENS = 40
 
-_SHELL_TOOLS = ("Bash", "PowerShell")
-
 
 def empty_report(days: float = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
     return {
@@ -140,13 +138,17 @@ def _scan_file(
     prefilter = adapter.prefilter(INTENT_SHELL_CALLS)
     for event in adapter.iter_events(path, prefilter=prefilter):
         if event.kind == "assistant" and event.tool_uses:
-            _collect_tool_use(event, cutoff, repo_prefix, pending)
+            _collect_tool_use(event, cutoff, repo_prefix, pending, adapter.shell_tool_names)
         elif pending and event.tool_results:
             _collect_result(event, pending, per_filter)
 
 
 def _collect_tool_use(
-    event: Event, cutoff: float, repo_prefix: str, pending: dict[str, str]
+    event: Event,
+    cutoff: float,
+    repo_prefix: str,
+    pending: dict[str, str],
+    shell_tools: frozenset[str],
 ) -> None:
     if event.ts is not None and event.ts < cutoff:
         return
@@ -154,7 +156,7 @@ def _collect_tool_use(
     if not cwd.startswith(repo_prefix):
         return
     for use in event.tool_uses:
-        if use.name not in _SHELL_TOOLS:
+        if use.name not in shell_tools:
             continue
         command = str(use.input.get("command") or "")
         if not command or normalize_command(command).startswith("repowise"):

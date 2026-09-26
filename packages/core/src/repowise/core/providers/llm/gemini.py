@@ -11,7 +11,7 @@ Recommended models:
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import json
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -31,9 +31,11 @@ from repowise.core.providers.llm.base import (
     ensure_reasoning_supported,
     fallback_model_option,
     normalize_stop_reason,
+    parse_tool_arguments,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    record_generation_cost,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -127,65 +129,19 @@ def _gemini_model_options(
 ) -> tuple[ProviderModelOption, ...]:
     fallback = fallback_model_option(fallback_model)
     try:
-        import httpx
-
-        url = f"{base_url.rstrip('/')}/models" if base_url else _DEFAULT_MODELS_URL
-        models: list[dict[str, Any]] = []
-        page_token: str | None = None
-        while True:
-            params: dict[str, str | int] = {"pageSize": 1000}
-            if page_token:
-                params["pageToken"] = page_token
-            response = httpx.get(
-                url,
-                headers={"x-goog-api-key": api_key},
-                params=params,
-                timeout=5.0,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            raw_models = payload.get("models", [])
-            if isinstance(raw_models, list):
-                models.extend(raw for raw in raw_models if isinstance(raw, dict))
-            page_token = payload.get("nextPageToken")
-            if not isinstance(page_token, str) or not page_token:
-                break
+        models = _list_gemini_models(api_key, base_url)
     except Exception:
         return (fallback,)
 
     options: list[ProviderModelOption] = []
     thinking_models: set[str] = set()
     for raw in models:
-        name = raw.get("name")
-        if not isinstance(name, str):
+        option = _gemini_model_option(raw, fallback_model)
+        if option is None:
             continue
-        methods = raw.get("supportedGenerationMethods")
-        if isinstance(methods, list) and "generateContent" not in methods:
-            continue
-        model_id = name.removeprefix("models/")
-        display_name = raw.get("displayName")
-        has_thinking = raw.get("thinking") is True
-        if has_thinking:
-            thinking_models.add(model_id)
-        options.append(
-            ProviderModelOption(
-                model=model_id,
-                label=display_name if isinstance(display_name, str) else model_id,
-                reasoning_modes=(
-                    "auto",
-                    *_GEMINI_THINKING_MODES,
-                )
-                if has_thinking
-                else ("auto",),
-                recommended=model_id == fallback_model,
-                source="api",
-                notes=(
-                    "generateContent; thinking advertised by models.list"
-                    if has_thinking
-                    else "generateContent"
-                ),
-            )
-        )
+        options.append(option)
+        if len(option.reasoning_modes) > 1:
+            thinking_models.add(option.model)
 
     if thinking_models:
         _GEMINI_THINKING_MODELS_BY_BASE[_gemini_cache_key(base_url)] = thinking_models
@@ -195,6 +151,76 @@ def _gemini_model_options(
 
     options.sort(key=lambda option: option.model)
     return tuple(options)
+
+
+def _list_gemini_models(api_key: str, base_url: str | None) -> list[dict[str, Any]]:
+    """Page through ``models.list``; raises when any page cannot be fetched."""
+    import httpx
+
+    url = f"{base_url.rstrip('/')}/models" if base_url else _DEFAULT_MODELS_URL
+    models: list[dict[str, Any]] = []
+    page_token: str | None = None
+    while True:
+        params: dict[str, str | int] = {"pageSize": 1000}
+        if page_token:
+            params["pageToken"] = page_token
+        response = httpx.get(
+            url,
+            headers={"x-goog-api-key": api_key},
+            params=params,
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        raw_models = payload.get("models", [])
+        if isinstance(raw_models, list):
+            models.extend(raw for raw in raw_models if isinstance(raw, dict))
+        page_token = payload.get("nextPageToken")
+        if not isinstance(page_token, str) or not page_token:
+            return models
+
+
+def _gemini_model_option(raw: dict[str, Any], fallback_model: str) -> ProviderModelOption | None:
+    """One ``models.list`` entry as an option, or ``None`` if it cannot generate text."""
+    name = raw.get("name")
+    if not isinstance(name, str):
+        return None
+    methods = raw.get("supportedGenerationMethods")
+    if isinstance(methods, list) and "generateContent" not in methods:
+        return None
+    model_id = name.removeprefix("models/")
+    display_name = raw.get("displayName")
+    has_thinking = raw.get("thinking") is True
+    return ProviderModelOption(
+        model=model_id,
+        label=display_name if isinstance(display_name, str) else model_id,
+        reasoning_modes=("auto", *_GEMINI_THINKING_MODES) if has_thinking else ("auto",),
+        recommended=model_id == fallback_model,
+        source="api",
+        notes=(
+            "generateContent; thinking advertised by models.list"
+            if has_thinking
+            else "generateContent"
+        ),
+    )
+
+
+def _gemini_error(exc: Exception) -> ProviderError:
+    """Classify a google-genai failure; quota errors become ``RateLimitError``.
+
+    The SDK does not type its 429s consistently, so the status attribute and
+    the message text are both consulted.
+    """
+    exc_str = str(exc)
+    status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    if status_code == 429 or "429" in exc_str or "quota" in exc_str.lower():
+        return RateLimitError(
+            "gemini",
+            exc_str,
+            status_code=429,
+            retry_after=_gemini_retry_delay(exc_str),
+        )
+    return ProviderError("gemini", f"{type(exc).__name__}: {exc_str}")
 
 
 class GeminiProvider(BaseProvider):
@@ -321,31 +347,7 @@ class GeminiProvider(BaseProvider):
             from google import genai  # type: ignore[import-untyped]
             from google.genai import types as genai_types  # type: ignore[import-untyped]
 
-            if self._client is None:
-                client_kwargs: dict[str, Any] = {"api_key": api_key}
-                http_opts = None
-
-                if base_url:
-                    try:
-                        http_opts = genai_types.HttpOptions(base_url=base_url)
-                    except TypeError:
-                        log.warning(
-                            "gemini.http_options.base_url_unsupported",
-                            base_url=base_url,
-                        )
-
-                if http_opts is not None:
-                    try:
-                        self._client = genai.Client(**client_kwargs, http_options=http_opts)
-                    except TypeError:
-                        log.warning(
-                            "gemini.client.http_options_unsupported",
-                            base_url=base_url,
-                        )
-                        self._client = genai.Client(**client_kwargs)
-                else:
-                    self._client = genai.Client(**client_kwargs)
-            client = self._client
+            client = self._ensure_client(genai, genai_types, api_key, base_url)
             try:
                 thinking_config = _gemini_thinking_config(reasoning, genai_types)
                 config_kwargs: dict[str, Any] = {
@@ -362,16 +364,7 @@ class GeminiProvider(BaseProvider):
                     config=genai_types.GenerateContentConfig(**config_kwargs),
                 )
             except Exception as exc:
-                exc_str = str(exc)
-                status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-                if status_code == 429 or "429" in exc_str or "quota" in exc_str.lower():
-                    raise RateLimitError(
-                        "gemini",
-                        exc_str,
-                        status_code=429,
-                        retry_after=_gemini_retry_delay(exc_str),
-                    ) from exc
-                raise ProviderError("gemini", f"{type(exc).__name__}: {exc_str}") from exc
+                raise _gemini_error(exc) from exc
 
             usage = response.usage_metadata
             candidate = response.candidates[0] if response.candidates else None
@@ -408,23 +401,32 @@ class GeminiProvider(BaseProvider):
             request_id=request_id,
         )
 
-        if self._cost_tracker is not None:
-            # Await the cost record inline rather than spawning a detached
-            # task. A fire-and-forget create_task can still be flushing its
-            # aiosqlite write when the event loop is torn down (e.g. the
-            # asyncio.run teardown after doc generation), which surfaces as a
-            # noisy "Event loop is closed" worker-thread traceback. record()
-            # swallows its own persistence errors, so generation is unaffected.
-            with contextlib.suppress(Exception):
-                await self._cost_tracker.record(
-                    model=self._model,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    operation=self._cost_tracker.operation,
-                    file_path=None,
-                )
-
+        await record_generation_cost(self._cost_tracker, model=self._model, result=result)
         return result
+
+    def _ensure_client(
+        self, genai: Any, genai_types: Any, api_key: str | None, base_url: str | None
+    ) -> Any:
+        """Create the google-genai client once, tolerating SDKs without ``base_url``."""
+        if self._client is not None:
+            return self._client
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        http_opts = None
+        if base_url:
+            try:
+                http_opts = genai_types.HttpOptions(base_url=base_url)
+            except TypeError:
+                log.warning("gemini.http_options.base_url_unsupported", base_url=base_url)
+
+        if http_opts is None:
+            self._client = genai.Client(**client_kwargs)
+            return self._client
+        try:
+            self._client = genai.Client(**client_kwargs, http_options=http_opts)
+        except TypeError:
+            log.warning("gemini.client.http_options_unsupported", base_url=base_url)
+            self._client = genai.Client(**client_kwargs)
+        return self._client
 
     # --- ChatProvider protocol implementation ---
 
@@ -469,35 +471,12 @@ class GeminiProvider(BaseProvider):
                     config=config,
                 )
             except Exception as exc:
-                exc_str = str(exc)
-                status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-                if status_code == 429 or "429" in exc_str or "quota" in exc_str.lower():
-                    raise RateLimitError(
-                        "gemini",
-                        exc_str,
-                        status_code=429,
-                        retry_after=_gemini_retry_delay(exc_str),
-                    ) from exc
-                raise ProviderError("gemini", f"{type(exc).__name__}: {exc_str}") from exc
+                raise _gemini_error(exc) from exc
             return response
 
         from google.genai import types as genai_types  # type: ignore[import-untyped]
 
-        # Convert OpenAI tools to Gemini FunctionDeclarations
-        gemini_tools = None
-        if tools:
-            declarations = []
-            for t in tools:
-                fn = t.get("function", t)
-                params = fn.get("parameters", {})
-                declarations.append(
-                    genai_types.FunctionDeclaration(
-                        name=fn["name"],
-                        description=fn.get("description", ""),
-                        parameters=params if params else None,
-                    )
-                )
-            gemini_tools = [genai_types.Tool(function_declarations=declarations)]
+        gemini_tools = _to_gemini_tools(tools, genai_types)
 
         config = genai_types.GenerateContentConfig(
             system_instruction=system_prompt,
@@ -525,24 +504,9 @@ class GeminiProvider(BaseProvider):
             # The model's response content — preserved as-is for the next turn
             model_content = response.candidates[0].content
 
-            # Extract events from response parts
-            function_calls_found: list[tuple[str, str, dict]] = []
-            for part in model_content.parts:
-                if hasattr(part, "text") and part.text:
-                    yield ChatStreamEvent(type="text_delta", text=part.text)
-                elif hasattr(part, "function_call") and part.function_call:
-                    fc = part.function_call
-                    args = dict(fc.args) if fc.args else {}
-                    tc_id = f"gemini-{fc.name}-{id(part)}"
-                    function_calls_found.append((tc_id, fc.name, args))
-                    yield ChatStreamEvent(
-                        type="tool_start",
-                        tool_call=ChatToolCall(
-                            id=tc_id,
-                            name=fc.name,
-                            arguments=args,
-                        ),
-                    )
+            part_events, function_calls_found = _response_part_events(model_content)
+            for event in part_events:
+                yield event
 
             if not function_calls_found:
                 yield ChatStreamEvent(type="stop", stop_reason="end_turn")
@@ -582,6 +546,51 @@ class GeminiProvider(BaseProvider):
         yield ChatStreamEvent(type="stop", stop_reason="end_turn")
 
 
+def _to_gemini_tools(tools: list[dict[str, Any]], genai_types: Any) -> list[Any] | None:
+    """Convert OpenAI-format tool definitions to one Gemini ``Tool``."""
+    if not tools:
+        return None
+    declarations = []
+    for t in tools:
+        fn = t.get("function", t)
+        params = fn.get("parameters", {})
+        declarations.append(
+            genai_types.FunctionDeclaration(
+                name=fn["name"],
+                description=fn.get("description", ""),
+                parameters=params if params else None,
+            )
+        )
+    return [genai_types.Tool(function_declarations=declarations)]
+
+
+def _response_part_events(
+    model_content: Any,
+) -> tuple[list[ChatStreamEvent], list[tuple[str, str, dict]]]:
+    """Text and tool-call events for one model turn, in part order.
+
+    Also returns the requested calls as ``(id, name, args)`` so the caller can
+    execute them. Gemini assigns no call ids, so one is minted per part.
+    """
+    events: list[ChatStreamEvent] = []
+    function_calls: list[tuple[str, str, dict]] = []
+    for part in model_content.parts:
+        if hasattr(part, "text") and part.text:
+            events.append(ChatStreamEvent(type="text_delta", text=part.text))
+        elif hasattr(part, "function_call") and part.function_call:
+            fc = part.function_call
+            args = dict(fc.args) if fc.args else {}
+            tc_id = f"gemini-{fc.name}-{id(part)}"
+            function_calls.append((tc_id, fc.name, args))
+            events.append(
+                ChatStreamEvent(
+                    type="tool_start",
+                    tool_call=ChatToolCall(id=tc_id, name=fc.name, arguments=args),
+                )
+            )
+    return events, function_calls
+
+
 def _to_gemini_contents(messages: list[dict[str, Any]]) -> list:
     """Convert OpenAI-format messages to Gemini Content objects.
 
@@ -589,8 +598,6 @@ def _to_gemini_contents(messages: list[dict[str, Any]]) -> list:
     round-trips use native Gemini Content objects (preserving thought
     signatures).
     """
-    import json as _json
-
     from google.genai import types as genai_types  # type: ignore[import-untyped]
 
     contents = []
@@ -600,48 +607,47 @@ def _to_gemini_contents(messages: list[dict[str, Any]]) -> list:
             continue  # Handled via system_instruction
 
         gemini_role = "model" if role == "assistant" else "user"
-        parts = []
-
         if role == "tool":
-            # Tool result → function_response part
-            content_str = msg.get("content", "{}")
-            try:
-                response_data = (
-                    _json.loads(content_str) if isinstance(content_str, str) else content_str
-                )
-            except Exception:
-                response_data = {"result": content_str}
-            parts.append(
-                genai_types.Part.from_function_response(
-                    name=msg.get("name", "unknown"),
-                    response=response_data,
-                )
-            )
-            gemini_role = "user"
+            parts = [_tool_result_part(msg, genai_types)]
         elif role == "assistant":
-            text = msg.get("content")
-            if text:
-                parts.append(genai_types.Part.from_text(text=text))
-            for tc in msg.get("tool_calls", []):
-                fn = tc.get("function", {})
-                args_str = fn.get("arguments", "{}")
-                if isinstance(args_str, str):
-                    try:
-                        args = _json.loads(args_str)
-                    except Exception:
-                        args = {}
-                else:
-                    args = args_str
-                parts.append(
-                    genai_types.Part.from_function_call(
-                        name=fn.get("name", ""),
-                        args=args,
-                    )
-                )
+            parts = _assistant_parts(msg, genai_types)
         else:
-            parts.append(genai_types.Part.from_text(text=msg.get("content", "")))
+            parts = [genai_types.Part.from_text(text=msg.get("content", ""))]
 
         if parts:
             contents.append(genai_types.Content(role=gemini_role, parts=parts))
 
     return contents
+
+
+def _tool_result_part(msg: dict[str, Any], genai_types: Any) -> Any:
+    """An OpenAI ``tool`` message as a Gemini function_response part."""
+    content_str = msg.get("content", "{}")
+    try:
+        response_data = json.loads(content_str) if isinstance(content_str, str) else content_str
+    except Exception:
+        response_data = {"result": content_str}
+    return genai_types.Part.from_function_response(
+        name=msg.get("name", "unknown"),
+        response=response_data,
+    )
+
+
+def _assistant_parts(msg: dict[str, Any], genai_types: Any) -> list[Any]:
+    """An OpenAI ``assistant`` message as Gemini text and function_call parts."""
+    parts = []
+    text = msg.get("content")
+    if text:
+        parts.append(genai_types.Part.from_text(text=text))
+    for tc in msg.get("tool_calls", []):
+        fn = tc.get("function", {})
+        args = fn.get("arguments", "{}")
+        if isinstance(args, str):
+            args = parse_tool_arguments(args)
+        parts.append(
+            genai_types.Part.from_function_call(
+                name=fn.get("name", ""),
+                args=args,
+            )
+        )
+    return parts

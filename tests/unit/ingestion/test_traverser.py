@@ -1324,7 +1324,7 @@ class TestPackageScanPruning:
         (pkg / "a.js").write_text("var a=1;\n", encoding="utf-8")
         (pkg / "b.ts").write_text("const b: number = 1;\n", encoding="utf-8")
 
-        # ``_scan_package_dir`` imports walk_repo inside the function body, so
+        # ``_package_files`` imports walk_repo inside the function body, so
         # the patch has to land on the source module, not on the traverser.
         from repowise.core import fs_walk
 

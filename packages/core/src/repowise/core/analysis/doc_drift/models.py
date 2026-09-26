@@ -104,6 +104,32 @@ class DocDriftFindingData:
     context: str = ""
 
 
+@dataclass(frozen=True)
+class ResolvedDocReference:
+    """One reference that resolved: a document names this file, correctly.
+
+    The complement of :class:`DocDriftFindingData`, and a deliberately weaker
+    claim than that one. A finding says a document is wrong; this says only
+    that a document names a file the repository still has. Whether the prose
+    around the name still *describes* the file is not something this detector
+    can see, so no surface built on these rows may say "describes".
+
+    Only ``RESOLVED`` references that name a concrete repository file become
+    one of these. ``AMBIGUOUS`` is excluded because a basename match is not a
+    resolution, and ``COMMAND`` because a make target is not a file.
+    """
+
+    doc_path: str
+    """Repo-relative POSIX path of the document making the reference."""
+    target_path: str
+    """Repo-relative POSIX path of the file it resolved to."""
+    kind: DriftKind
+    line: int
+    """1-indexed line within the document."""
+    section: str = ""
+    """The enclosing heading trail, so a reader can find the passage."""
+
+
 @dataclass
 class DocDriftReport:
     """The drift pass's output for one repository."""
@@ -130,6 +156,11 @@ class DocDriftReport:
     the count. A document that missed ``source_map`` (transient read failure, or
     markdown over :data:`~.constants.MAX_DOC_BYTES`) is absent, which is what
     stops a scoped write from deleting findings it never recomputed."""
+    resolved_references: list[ResolvedDocReference] = field(default_factory=list)
+    """Every reference that resolved to a real file, for the reverse view
+    ("which documents mention this file"). Retained rather than recomputed,
+    because the resolver already had each one. Scoped by
+    ``authoritative_paths`` exactly as findings are."""
     authoritative_paths: frozenset[str] | None = field(default=None)
     """Document paths this report may speak for; ``None`` means all of them.
     Mirrors dead code's field of the same name so an incremental re-check can

@@ -265,8 +265,16 @@ def _find_rust_type_file(
         if type_name in defined_names.get(imp_file, _EMPTY_NAMES):
             return imp_file, False
 
+    # The stem match is Rust-only for the reason the unique-owner index below
+    # states: the stem map spans every language, so a type named ``Tool``
+    # matched ``Tool.tsx`` and a ``Meta`` matched a ``meta.json``.
     candidates = ctx.stem_map.get(type_name.lower(), [])
-    if len(candidates) == 1 and candidates[0] != from_path and graph.has_node(candidates[0]):
+    if (
+        len(candidates) == 1
+        and candidates[0] != from_path
+        and graph.has_node(candidates[0])
+        and graph.nodes[candidates[0]].get("language") == "rust"
+    ):
         return candidates[0], True
 
     owner = _rust_unique_owner_index(graph, defined_names).get(type_name)

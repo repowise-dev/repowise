@@ -34,10 +34,27 @@ export type { ChangeLineProps, ChangeStat } from "./change-line";
 export { CommitRows, DecisionRows } from "./activity-lists";
 export type { CommitRow, DecisionRow } from "./activity-lists";
 
+export { AttentionAreas } from "./attention-areas";
 export { AttentionRows } from "./attention-rows";
+export { AttentionSources } from "./attention-sources";
 export type { AttentionRowItem } from "./attention-rows";
 
 export { HotspotTable } from "./hotspot-table";
 export { ExploreList } from "./explore-list";
 export type { ExploreEntry } from "./explore-list";
 export { LanguageBar } from "./language-bar";
+
+export { OverviewBody } from "./overview-body";
+export type { OverviewBodyProps, OverviewBodySlots } from "./overview-body";
+
+export {
+  buildChangeStats,
+  buildExplore,
+  buildLanguageDistribution,
+  buildReads,
+  buildRibbon,
+  docPageCount,
+  previousSnapshotAt,
+  resolveOverviewRoutes,
+} from "./overview-model";
+export type { OverviewRoutes, ResolvedOverviewRoutes } from "./overview-model";

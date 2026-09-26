@@ -368,6 +368,26 @@ def test_context_projection_keeps_every_include_block():
     assert card["metrics"] == {"pagerank": 0.4}
 
 
+def test_cli_include_choices_match_the_tools_own_blocks():
+    """The CLI keeps its own copy of the block names, so pin the two together.
+
+    ``click.Choice`` is built at import time and the tool lives in the server
+    package, which the command imports lazily to keep CLI startup cheap --- so
+    the names are duplicated on purpose. Without this, a block added to the
+    tool is simply unreachable from the terminal, rejected by the parser with
+    a usage error naming every block but the new one. ``docs`` and
+    ``freshness`` are excluded because they are always returned, so offering
+    them as choices would advertise a flag that does nothing.
+    """
+    from repowise.cli.commands import context_cmd
+    from repowise.server.mcp_server.tool_context import context as tool_context
+
+    assert set(context_cmd._INCLUDE_BLOCKS) == set(tool_context._INCLUDE_BLOCKS) - {
+        "docs",
+        "freshness",
+    }
+
+
 def test_context_projection_keeps_a_tombstones_redirect():
     """The successor path is the whole point of a tombstone card."""
     payload = {
@@ -935,3 +955,25 @@ def test_why_renders_a_dominant_author_as_a_percentage_not_a_fraction():
     assert _owner_share(0.9956) == "100%"
     assert _owner_share(80.0) == "80%"
     assert _owner_share(None) == "?"
+
+
+def test_why_dashboard_projection_keeps_the_newly_named_lanes():
+    """``project_why`` keeps dashboard keys by a hardcoded tuple, so a new lane
+    is dropped here until it is added.
+    """
+    payload = {
+        "mode": "health",
+        "summary": "1 active",
+        "counts": {"active": 1, "superseded": 2, "unscoped": 1},
+        "retired_decisions": [
+            {"id": "r1", "title": "Retired one", "lane": "superseded"},
+            {"id": "r2", "title": "Retired two", "lane": "dismissed"},
+        ],
+        "unscoped_decisions": [{"id": "u1", "title": "Scopeless", "confidence": 0.4}],
+    }
+
+    out = project_why(payload)
+
+    assert [row["id"] for row in out["retired_decisions"]] == ["r1", "r2"]
+    assert out["retired_decisions"][1]["lane"] == "dismissed"
+    assert [row["id"] for row in out["unscoped_decisions"]] == ["u1"]

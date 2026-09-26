@@ -258,6 +258,37 @@ async def test_a_rows_count_matches_the_findings_behind_it(client, session, tmp_
     assert row["finding_count"] == len(behind) == 1
 
 
+async def test_a_zero_impact_finding_does_not_break_that_count(
+    client, session, tmp_path
+) -> None:
+    """The unfiltered pair, which the severity filter above never reaches.
+
+    Both sides leave the zero-impact dimensions out, and a per-file read only
+    widens past them when it says so. Naming a path is not saying so: this is
+    the caller that wants exactly what the row beside it counted.
+    """
+    repo_id = await _repo(
+        client,
+        session,
+        tmp_path,
+        [_metric("a.py", 4.0)],
+        [
+            _finding("a.py"),
+            _finding("a.py", "io_in_loop", impact=0.0, dimension="performance"),
+            _finding("a.py", "assertion_free_test", impact=0.0, dimension="advisory"),
+        ],
+    )
+
+    row = (await _queue(client, repo_id, ""))["targets"][0]
+    url = f"/api/repos/{repo_id}/health/findings?file_path=a.py"
+    behind = (await client.get(url)).json()
+    assert row["finding_count"] == len(behind) == 1
+
+    # And the caller that does say so gets all three.
+    widened = (await client.get(f"{url}&include_zero_impact=true")).json()
+    assert len(widened) == 3
+
+
 async def test_exact_severity_beats_the_threshold_on_the_findings_list(
     client, session, tmp_path
 ) -> None:

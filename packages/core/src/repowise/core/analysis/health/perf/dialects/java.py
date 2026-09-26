@@ -97,6 +97,10 @@ JAVA_RESOURCE_CTORS: frozenset[str] = frozenset({"RestTemplate", "OkHttpClient"}
 JAVA_RESOURCE_METHODS: frozenset[str] = frozenset({"getConnection"})
 # ``java.util.concurrent.locks.Lock`` acquisition (the contention side only).
 JAVA_LOCK_METHODS: frozenset[str] = frozenset({"lock", "lockInterruptibly"})
+# ``Lists.partition`` / ``ListUtils.partition`` / ``Iterables.partition`` and
+# hand-rolled peers, matched on the call's method name (the receiver is not
+# gated: a local helper counts too).
+_PARTITION_CALLS: frozenset[str] = frozenset({"partition", "chunked", "batches"})
 
 
 class JavaPerfDialect(BasePerfDialect):
@@ -231,6 +235,20 @@ class JavaPerfDialect(BasePerfDialect):
         if node.type == "synchronized_statement":
             return "lock_in_loop"
         return None
+
+    def is_chunked_loop(self, node: Node) -> bool:
+        """``for (int i = 0; i < n; i += step)``, or ``for (var c : Lists.partition(xs, n))``."""
+        if node.type == "for_statement":
+            return self._steps_by_chunk(node.child_by_field_name("update"))
+        if node.type == "enhanced_for_statement":
+            value = node.child_by_field_name("value")
+            if value is None or value.type != "method_invocation":
+                return False
+            name = value.child_by_field_name("name")
+            if name is None or name.text is None:
+                return False
+            return name.text.decode("utf-8", "replace") in _PARTITION_CALLS
+        return False
 
 
 DIALECT = JavaPerfDialect()

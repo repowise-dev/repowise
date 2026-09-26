@@ -21,11 +21,30 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
     validate_provider_config,
+    warn,
 )
 
 # ---------------------------------------------------------------------------
 # run_async
 # ---------------------------------------------------------------------------
+
+
+class TestWarn:
+    def test_warn_prints_warning_prefix_to_stderr(self, capsys):
+        warn("something went wrong")
+        captured = capsys.readouterr()
+        assert "Warning:" in captured.err
+        assert "something went wrong" in captured.err
+        # Nothing leaks to stdout.
+        assert captured.out == ""
+
+    def test_warn_prefix_rendered(self, capsys):
+        warn("boom")
+        captured = capsys.readouterr()
+        # Rich renders the [yellow] markup away when stderr isn't a tty, but the
+        # human-facing "Warning:" prefix must survive on the stderr stream.
+        assert captured.err.startswith("Warning: boom\n")
+        assert captured.out == ""
 
 
 class TestRunAsync:
@@ -657,6 +676,30 @@ class TestResolveProviderConfigModel:
 
         assert resolve_provider("openrouter", "anthropic/claude-opus-4", repo_path=tmp_path)
         assert captured["kwargs"].get("model") == "anthropic/claude-opus-4"
+
+    def test_env_model_used_when_set(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-sonnet-5")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "anthropic/claude-sonnet-5"
+
+    def test_env_model_overrides_config_model(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "anthropic/claude-opus-5"
+
+    def test_explicit_model_flag_overrides_env_model(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+        monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
+
+        assert resolve_provider("openrouter", "openai/gpt-5.6-luna", repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "openai/gpt-5.6-luna"
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,21 @@ HIGH_CONFIDENCE_THRESHOLD: float = 0.7
 REVIEW_CONFIDENCE_THRESHOLD: float = 0.4
 
 
+def confidence_tier(value: float) -> str:
+    """The house tier one confidence falls in: ``high``, ``medium`` or ``low``.
+
+    The only place the two thresholds are compared. A surface that wants to
+    colour or group a single finding asks for its tier rather than re-deriving
+    the boundaries, so a surface and the summary beside it cannot disagree
+    about where "high" starts.
+    """
+    if value >= HIGH_CONFIDENCE_THRESHOLD:
+        return "high"
+    if value >= REVIEW_CONFIDENCE_THRESHOLD:
+        return "medium"
+    return "low"
+
+
 def bucket_confidences(values) -> dict:
     """Bucket an iterable of confidences into the house high/medium/low tiers.
 
@@ -37,15 +52,47 @@ def bucket_confidences(values) -> dict:
     copies of the same three comprehensions; a shared function is cheaper than
     the test that would have had to pin them together.
     """
-    high = medium = low = 0
+    counts = {"high": 0, "medium": 0, "low": 0}
     for value in values:
-        if value >= HIGH_CONFIDENCE_THRESHOLD:
-            high += 1
-        elif value >= REVIEW_CONFIDENCE_THRESHOLD:
-            medium += 1
-        else:
-            low += 1
-    return {"high": high, "medium": medium, "low": low}
+        counts[confidence_tier(value)] += 1
+    return counts
+
+
+#: What every surface must say alongside a finding count, so no consumer can
+#: imply coverage or precision this detector does not have. Two facts, both
+#: measured: 702 of this repository's 1,783 references are UNCHECKABLE by
+#: design, and two of the 19 findings are known, deliberate false positives.
+#: One string rather than one sentence per surface, for the reason
+#: ``tests/unit/dead_code/test_confidence_parity.py`` exists.
+DETECTION_BASIS: str = (
+    "Covers only references this detector can resolve; uncheckable ones are "
+    "neither counted nor reported. A finding names the document to edit, not "
+    "the target it names, and is evidence to check rather than a proven defect."
+)
+
+
+#: :data:`DETECTION_BASIS`'s job for the reverse view, which makes a weaker
+#: claim: a row says a document names a file that exists, not that it explains
+#: it. Separate sentences, because the finding one applied to a reference count
+#: describes a number nobody took.
+REFERENCE_BASIS: str = (
+    "Lists documents that name this file and still resolve to it. It does not "
+    "claim they describe it, or that their prose is current. References this "
+    "detector cannot resolve are not listed, so absence is not proof that no "
+    "document mentions the file. A document reported as carrying drift has "
+    "some assertion that no longer holds, which need not be about this file."
+)
+
+
+#: Why a drift surface could not answer. Shared because a client keys on these
+#: strings, and a literal in two packages is how one gets renamed alone.
+#: ``NO_TABLE`` is an index older than the table; ``NOT_COMPUTED`` is a table
+#: that exists and was never filled, which must not render as a clean tree;
+#: ``READ_FAILED`` is anything else, since "your index is old" is wrong advice
+#: for a transient failure.
+UNAVAILABLE_NO_TABLE: str = "index_predates_doc_drift"
+UNAVAILABLE_NOT_COMPUTED: str = "not_computed"
+UNAVAILABLE_READ_FAILED: str = "drift_read_failed"
 
 
 #: Default ``--min-confidence`` cutoff. Matches the lowest shipping origin's

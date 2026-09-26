@@ -140,10 +140,21 @@ review as though they were the team's.
 |---------|-----------------|
 | `decision confirm ID...` | Accept, optionally editing the reason and scope on the way. Takes many ids. |
 | `decision confirm ID` on a decision | Reaffirm it after review. |
+| `decision confirm\|dismiss\|deprecate ID --agent SLUG` | A machine signing as itself. Only `confirm` needs the repository's permission. |
 | `decision merge ID INTO_ID` | Fold a candidate into an existing decision. The old id resolves to the target. |
+| `decision dedupe` | Fold candidates that duplicate another candidate, in one sweep. Dry run until `--apply`. |
 | `decision split ID` | Flag a candidate as bundling two choices. Never splits it for you. |
 | `decision dismiss ID...` | Tombstone it. On an accepted decision this also withdraws its authority. Takes many ids. |
 | `decision deprecate ID --superseded-by ID2` | Retire it with an explicit lineage edge. |
+
+`merge` folds one pair and needs the target to be an accepted decision, because
+that merge changes what governs. `dedupe` is the other case: a store that has
+been indexed many times accumulates the same decision written several ways, and
+none of those records governs anything yet. It folds each duplicate into the
+candidate it duplicates — evidence, governed files and all — and only ever into
+a record it is directly measured against, so a chain of near-neighbours is not
+collapsed into one decision. Run it without `--apply` first; it prints exactly
+what it would fold.
 
 `confirm` and `dismiss` take a list because a repository accumulates candidates
 faster than anyone reviews them one command at a time. Every id in a batch goes
@@ -467,6 +478,39 @@ of the acceptance event, not the authority itself — the acceptance is — but 
 two are kept in step, so a reader that only has the status column stays correct
 rather than merely stale. See [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_why).
 
+### An agent may withdraw authority; granting it is a switch
+
+An acceptance records what signed it — `person`, `agent` or `import` — beside
+who. The two are different questions, and only the first one was ever stored:
+`accepter` resolves to `git config user.name`, so an agent confirming a
+decision signed the maintainer's name and no surface could tell them apart.
+
+The asymmetry follows. A machine can withdraw authority without asking: the
+worst a wrong withdrawal does is stop a rule binding, and re-accepting undoes
+it. Granting authority mints a constraint nobody agreed to, under a signature
+that reads as an acceptance, so it is refused unless the repository says
+otherwise:
+
+```bash
+repowise decision config agent-acceptance --on   # off by default
+repowise decision confirm ID --agent claude_code --session $SESSION_ID
+```
+
+`--agent` takes the agent's slug and is accepted by `confirm`, `dismiss` and
+`deprecate` alike — withdrawing needs no switch, so it is the action an agent
+is likeliest to take, and the one it would otherwise take under your name. On
+`confirm` it is refused without the switch. What it
+records is visibly an agent's: `decision show --format json` returns
+`signature` with the kind and the session, the API carries `accepter_kind`
+on every decision row, and the dashboard badges any authority record a person
+did not sign. A row written before these columns existed reads as
+`unrecorded`, not as a person's — those are the two things the field exists to
+keep apart.
+
+The same log records withdrawals, so what is shown is who *signed*, never that
+they accepted. A record the evolution stage retired reads "Signed by an agent"
+beside a superseded status, not "accepted by" anything.
+
 ## Session-mined decisions
 
 `repowise update` (docs mode) reads your local coding-agent transcripts and mines
@@ -474,6 +518,21 @@ the durable decisions out of them: user corrections, explicit choices with a
 stated reason, and failed approaches replaced by working ones. Claude Code
 transcripts come from `~/.claude/projects/`, read incrementally from a cursor so
 each line is processed once.
+
+Claude Code is the only harness read unless you name another:
+
+```yaml
+decisions:
+  harnesses: [claude_code, codex]
+```
+
+Adding one is a real widening rather than a preference. Codex files its
+sessions by date rather than by project, so its store holds every session on
+the machine and the repository a line belongs to is decided by the working
+directory recorded in it, not by where the file sits. Sessions bulk-imported
+into that store from another harness are skipped, because the harness that
+recorded them already reads them and counting them here would count one
+conversation twice.
 
 Three stages, in order:
 
@@ -616,10 +675,11 @@ press the button. Re-recording the title of a decision that is already accepted
 without naming its scope is refused rather than applied, because it would clear
 the scope that decision governs.
 
-| `repowise decision add` | Guided interactive capture: title, context, decision, rationale, rejected alternatives, tradeoffs, affected files, tags. Answering the prompts is an acceptance, recorded as one. Name no files and it is kept as a candidate instead, because a decision that names nothing cannot be checked against the code. |
+| `repowise decision add` | Guided interactive capture: kind, title, context, decision, rationale, rejected alternatives, tradeoffs, affected files, tags. Answering the prompts is an acceptance, recorded as one. An architectural record that names no files is kept as a candidate instead, because a decision that names nothing cannot be checked against the code. `--kind agreement` records the other noun — a rule about how the work is conducted — which is accepted without naming files, because it governs the repository rather than part of it, and reaches an agent at session start rather than when a file is edited. |
 | `repowise decision list` | Table of id, title, status, source, confidence, staleness, created date. |
 | `repowise decision show ID` | Full record including alternatives, consequences, affected files, and the evidence file and line. |
-| `repowise decision confirm ID...` | Accept candidates. Refuses, naming the gap, when one has no reason, scope or evidence; `--reason`, `--scope` and `--evidence` supply them. A refused id does not stop the others. `--preview` writes nothing. |
+| `repowise decision add --evidence-commit SHA` | Record which commit a decision was made in. Repeatable. The capture prompt passes it, and it is what stops the prompt asking again for a commit already recorded. |
+| `repowise decision confirm ID...` | Accept candidates. Refuses, naming the gap, when one has no reason, scope or evidence; `--reason`, `--scope` and `--evidence` supply them. A refused id does not stop the others. `--preview` writes nothing. `--agent SLUG` signs as an agent rather than as you, and needs `decision config agent-acceptance --on`. |
 | `repowise decision dismiss ID...` | Tombstone them. Never re-proposed on reindex. `--preview` writes nothing. |
 | `repowise decision deprecate ID` | Retire it, optionally `--superseded-by <ID>`, which writes the lineage edge. |
 | `repowise decision candidates` | What is awaiting review, and why each was raised. |
@@ -631,6 +691,8 @@ the scope that decision governs.
 | `repowise decision status` | What capture did: policy and preset, per-source state and why, review lanes and backlog age, staging queues, model spend. |
 | `repowise decision config show` | The resolved capture policy: every source, its status, and why. |
 | `repowise decision config preset NAME` | Apply `off`, `local_only`, `balanced`, or `full`. |
+| `repowise decision config agent-acceptance --on/--off` | Whether an agent may grant a decision authority. Off by default; no preset changes it. |
+| `repowise decision config capture-prompt --on/--off` | After a commit whose message states a choice, ask the agent once a session to record it. Off by default; no preset turns it on. `--on` also installs the `Bash\|PowerShell` PostToolUse entry it fires from, because the shared matcher deliberately excludes the shell tools; `--off` removes it, for every repository on the machine. Silent while `decisions.enabled` is off. |
 | `repowise decision source list` | The source registry with capabilities and current state. |
 | `repowise decision source set SRC --on/--off` | Switch one source. `--llm/--no-llm` switches only its model stage. |
 | `repowise decision llm --on/--off` | Master switch for decision-extraction model calls. |

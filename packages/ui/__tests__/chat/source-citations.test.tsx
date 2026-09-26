@@ -17,6 +17,86 @@ function searchCall(results: Array<Record<string, unknown>>): ChatUIToolCall {
 }
 
 describe("extractSources", () => {
+  // These five tools produced no citation at all before: a reader could not
+  // check the scored claim the answer was built on. Field names are the live
+  // wire shapes, which differ per tool (`file` on get_symbol, `file_path`
+  // elsewhere, a path-keyed object on get_risk).
+  it("cites the files the scored tools actually read", () => {
+    const calls: ChatUIToolCall[] = [
+      {
+        id: "r1",
+        name: "get_risk",
+        arguments: {},
+        result: { targets: { "packages/core/persist.py": { hotspot_score: 0.9 } } },
+        status: "done",
+      },
+      {
+        id: "h1",
+        name: "get_health",
+        arguments: {},
+        result: { findings: [{ file_path: "packages/cli/command.py" }] },
+        status: "done",
+      },
+      {
+        id: "d1",
+        name: "get_dead_code",
+        arguments: {},
+        result: { high_confidence: [{ file_path: "packages/web/unused.ts" }] },
+        status: "done",
+      },
+      {
+        id: "s1",
+        name: "get_symbol",
+        arguments: {},
+        result: { file: "packages/ui/widget.tsx", name: "Widget" },
+        status: "done",
+      },
+    ];
+
+    const paths = extractSources(calls, "repo1").map((s) => s.targetPath);
+
+    expect(paths).toContain("packages/core/persist.py");
+    expect(paths).toContain("packages/cli/command.py");
+    expect(paths).toContain("packages/web/unused.ts");
+    expect(paths).toContain("packages/ui/widget.tsx");
+  });
+
+  it("does not cite a tool call that failed", () => {
+    // A failed read is marked status "error"; citing it would advertise
+    // evidence the answer never had.
+    const sources = extractSources(
+      [
+        {
+          id: "r2",
+          name: "get_risk",
+          arguments: {},
+          result: { error: "no git metadata available" },
+          status: "error",
+        },
+      ],
+      "repo1",
+    );
+
+    expect(sources).toHaveLength(0);
+  });
+
+  it("survives a malformed payload rather than throwing", () => {
+    const sources = extractSources(
+      [
+        {
+          id: "h2",
+          name: "get_health",
+          arguments: {},
+          result: { findings: [{ file_path: 42 }], targets: [null, "ok.py"] },
+          status: "done",
+        },
+      ],
+      "repo1",
+    );
+
+    expect(sources.map((s) => s.targetPath)).toEqual(["ok.py"]);
+  });
+
   it("reads the rank-normalized confidence, not the raw backend score", () => {
     // BM25 fallback scores are unbounded — reading relevance_score here is what
     // rendered "1808%" in the sources list.

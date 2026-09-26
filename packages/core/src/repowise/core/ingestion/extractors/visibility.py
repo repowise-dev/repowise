@@ -5,7 +5,8 @@ text alone (the ``visibility_fn`` shape). Some cannot, because the answer
 depends on surrounding AST context — C/C++ ``public:`` / ``private:``
 access specifier siblings, ``static`` storage class at file scope and
 ``__declspec(dllexport)`` attributes; C#'s no-modifier default, which
-differs by enclosing declaration; TS/JS export position. Each has a
+differs by enclosing declaration; TS/JS export position; Rust's
+trait items, which may not write a modifier of their own. Each has a
 ``refine_*_visibility`` the parser calls after the generic
 ``visibility_fn``.
 """
@@ -372,6 +373,109 @@ def refine_csharp_visibility(def_node: Node, current_visibility: str) -> str:
             break
         node = node.parent
     return current_visibility
+
+
+# ---------------------------------------------------------------------------
+# Rust node-aware visibility refinement
+# ---------------------------------------------------------------------------
+
+
+_RUST_TYPE_DECL_KINDS: frozenset[str] = frozenset(
+    {
+        "struct_item",
+        "enum_item",
+        "union_item",
+        "trait_item",
+        "type_item",
+    }
+)
+
+
+def _rust_extract_type_name(node: Node | None, src: str) -> str | None:
+    """Extract the base type identifier from a Rust type AST node."""
+    if node is None:
+        return None
+    if node.type == "type_identifier":
+        return node_text(node, src).strip() or None
+    if node.type == "scoped_type_identifier":
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            return _rust_extract_type_name(name_node, src)
+    if node.type in ("generic_type", "reference_type"):
+        inner = node.child_by_field_name("type")
+        if inner is not None:
+            return _rust_extract_type_name(inner, src)
+    for child in node.children:
+        if child.type == "type_identifier":
+            return node_text(child, src).strip() or None
+        nested = _rust_extract_type_name(child, src)
+        if nested:
+            return nested
+    return None
+
+
+def refine_rust_visibility(def_node: Node, current_visibility: str, src: str) -> str:
+    """Give a trait's items or an impl block the visibility the target declares.
+
+    Rust forbids a visibility modifier on trait items and impl blocks, so
+    ``rust_visibility`` reads empty modifier text and calls them private by default.
+    - For trait items: the enclosing trait's own modifier provides the visibility.
+    - For impl blocks: the target type (or trait) declaration in the same scope provides
+      the visibility.
+    """
+    if any(c.type == "visibility_modifier" for c in def_node.children):
+        return current_visibility
+
+    # Case 1: An `impl_item` block inherits the visibility of its target type or trait.
+    if def_node.type == "impl_item":
+        parent = def_node.parent
+        if parent is None:
+            return current_visibility
+
+        target_names: list[str] = []
+        type_name = _rust_extract_type_name(def_node.child_by_field_name("type"), src)
+        if type_name:
+            target_names.append(type_name)
+        trait_name = _rust_extract_type_name(def_node.child_by_field_name("trait"), src)
+        if trait_name and trait_name not in target_names:
+            target_names.append(trait_name)
+
+        if not target_names:
+            return current_visibility
+
+        for target in target_names:
+            for sibling in parent.children:
+                if sibling.type in _RUST_TYPE_DECL_KINDS:
+                    name_child = sibling.child_by_field_name("name")
+                    if name_child is None:
+                        name_child = next(
+                            (c for c in sibling.children if c.type == "type_identifier"),
+                            None,
+                        )
+                    if name_child is not None and node_text(name_child, src).strip() == target:
+                        modifier = next(
+                            (c for c in sibling.children if c.type == "visibility_modifier"),
+                            None,
+                        )
+                        if modifier is not None:
+                            return rust_visibility("", [node_text(modifier, src)])
+                        return "private"
+
+        return current_visibility
+
+    # Case 2: Trait items sit directly in the trait's ``declaration_list``. Matching
+    # that exact shape rather than walking ancestors keeps an item nested
+    # inside a defaulted method's body out of the trait's bucket.
+    decls = def_node.parent
+    if decls is None or decls.type != "declaration_list":
+        return current_visibility
+    trait = decls.parent
+    if trait is None or trait.type != "trait_item":
+        return current_visibility
+    modifier = next((c for c in trait.children if c.type == "visibility_modifier"), None)
+    if modifier is None:
+        return current_visibility
+    return rust_visibility("", [node_text(modifier, src)])
 
 
 # ---------------------------------------------------------------------------

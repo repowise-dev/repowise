@@ -1,12 +1,8 @@
 """The synthesis-less get_answer reply.
 
-Both ways synthesis can be missing — no provider resolvable, or the call failed —
-return the same payload from the same evidence. Only synthesis is missing here:
-retrieval ran, ranked the corpus and succeeded, and everything below the provider
-check (bodies, citations, best guesses, mined rationale, the next action) is read
-live off disk from index anchors and needs no LLM. The only thing that coupled
-that evidence to synthesis was that body selection matched against the answer
-text, so here the question's own identifiers stand in.
+No provider and a failed call share one payload. Retrieval succeeded and all
+evidence (bodies, citations, best guesses, rationale) is read live from disk
+with no LLM; body selection matches the question's identifiers, not prose.
 """
 
 from __future__ import annotations
@@ -41,19 +37,13 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
 def _degraded_summary(reason: str, symbol_bodies: list[dict], served: int) -> str:
     """The ``answer`` sentence a synthesis-less payload states about itself.
 
-    An empty ``answer`` beside a working retrieval reads as a failed call rather
-    than a partial one, and a reader who takes it at face value discards a usable
-    result and starts over. So the sentence is assembled from what the payload
-    actually carries — it can never claim more than it has, and it invents no
-    prose about the question itself, that being precisely the part that needs a
-    provider. Three cases, best evidence first: bodies in hand, a ranked
-    retrieval, or nothing.
+    An empty ``answer`` reads as a failed call and gets a usable result
+    discarded. Assembled only from what the payload carries, inventing no prose
+    about the question. Best evidence first: bodies, a ranked retrieval, nothing.
     """
     if symbol_bodies:
         names = ", ".join(f"`{b['name']}`" for b in symbol_bodies)
-        # Never say "full" over a body the payload itself flags as cut. The
-        # entry carries `truncated` and a `continuation` two keys away, so the
-        # claim is refutable from inside the same response.
+        # Never say "full" over a body the payload itself flags as cut.
         cut = any(b.get("truncated") for b in symbol_bodies)
         return (
             f"No synthesized prose ({reason}), but the evidence is here: "
@@ -95,16 +85,9 @@ async def _degraded_payload(
 ) -> dict:
     """Shape a synthesis-less get_answer response.
 
-    ``degraded`` is mirrored into ``_meta`` because consumers read freshness and
-    health signals from there; the failure path used to set only the top-level
-    key, so a caller watching ``_meta`` saw a normal empty answer.
-
-    ``confidence`` is graded by :func:`_degraded_confidence` from the retrieval
-    this payload actually served, not pinned. It rates what the caller can act on
-    without further work, which is the same thing it rates on the keyed path; the
-    boilerplate ``answer`` is why "high" is unreachable here rather than why the
-    field says nothing. ``retrieval_quality`` rates the retrieval on its own and
-    is what the grade is derived from, so the two can never disagree.
+    ``degraded`` is mirrored into ``_meta``, where consumers read health
+    signals. ``confidence`` is graded by :func:`_degraded_confidence` from
+    ``retrieval_quality``, so the two can never disagree.
     """
     retrieval_quality = _retrieval_quality(hits, agreement_dominant)
     confidence = _degraded_confidence(reason, retrieval_quality)
@@ -113,10 +96,7 @@ async def _degraded_payload(
         _gather_body_candidates(hits, "", anchor_names=question_ids or set()),
         repo_root,
     )
-    # Cite what is actually in hand. `[]` was right when the payload carried no
-    # source; with bodies inlined the paths they were read from are citations in
-    # the ordinary sense, and a caller filtering on non-empty `citations` stops
-    # discarding this reply.
+    # Inlined bodies are citations in the ordinary sense.
     citations = list(dict.fromkeys(b["path"] for b in symbol_bodies))
 
     summary = _degraded_summary(reason, symbol_bodies, len(hits))
@@ -161,11 +141,8 @@ async def _degraded_payload(
             "answer from that rather than re-reading the file."
         )
     elif best_guesses and retrieval_quality != "weak":
-        # No body, so the next step is a choice between files. Not on a weak
-        # retrieval: `_meta.hint` there says "refine the query rather than
-        # reading these files in order", and two hints that disagree are worse
-        # than one. Names `best_guesses`, not its excerpt — that copy is dropped
-        # on the way out, since this path always has a populated `retrieval`.
+        # Not on a weak retrieval, where `_meta.hint` says to refine the query
+        # and two disagreeing hints are worse than one.
         payload["next_action_hint"] = (
             f"Start from {best_guesses[0]['file']} — it ranked highest, and "
             "best_guesses says why each candidate is in the running."
@@ -190,18 +167,10 @@ async def _degraded_payload(
 async def _degraded_next_action(symbol_bodies: list[dict], ctx, repository, exclude_spec) -> str:
     """The one next step a degraded payload with bodies in hand should name.
 
-    A whole body is a terminal answer, so say so rather than sending the caller
-    to Read a file it already holds. A cut body is not: name the continuation, or
-    a withheld symbol when one resolves.
-
-    Two filters on the withheld ids, both already established on the synthesised
-    path. A withheld entry carrying the served body's OWN name is the enclosing
-    symbol continuing past the cut, not something that never arrived, so it is
-    dropped and the ``continuation``, which fetches exactly the missing part, is
-    the pointer. And the ids come from a regex scanner over source lines, so it
-    can name something that is not a symbol at all: ``_first_resolvable_id``
-    keeps a fabricated id from becoming the next action here exactly as it does
-    there.
+    A whole body is a terminal answer. A cut body names a withheld symbol that
+    resolves, else its ``continuation``. As on the synthesised path, the
+    enclosing symbol's own name is not a withheld symbol, and
+    ``_first_resolvable_id`` keeps a scanner-invented id out of the hint.
     """
     cut = next((b for b in symbol_bodies if b.get("continuation")), None)
     if cut is None:

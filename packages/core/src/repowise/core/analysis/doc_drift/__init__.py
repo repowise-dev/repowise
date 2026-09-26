@@ -15,6 +15,7 @@ from .models import (
     DocReference,
     DriftKind,
     DriftVerdict,
+    ResolvedDocReference,
 )
 
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     "DocReference",
     "DriftKind",
     "DriftVerdict",
+    "ResolvedDocReference",
     "summarize_confidence",
 ]

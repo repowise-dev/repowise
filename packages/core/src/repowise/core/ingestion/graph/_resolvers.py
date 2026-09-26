@@ -281,7 +281,8 @@ class ResolveMixin:
                     done(phase)
 
     def _resolve_cpp_header_pairs(self, progress: Any | None = None) -> None:
-        """Pair C/C++ headers with their same-stem same-dir implementations.
+        """Pair C/C++/Objective-C headers with their same-stem same-dir
+        implementations.
 
         ``foo.c`` → ``foo.h`` exists via the #include, but nothing ever
         points ``foo.h`` → ``foo.c`` — so a consumer that includes the
@@ -301,13 +302,19 @@ class ResolveMixin:
             ".cpp",
             ".cxx",
             ".c++",
+            # Objective-C and Objective-C++. Both carry ``language ==
+            # "objectivec"`` (``specs/objectivec.py`` claims ``.m`` and
+            # ``.mm``; nothing maps ``.mm`` to cpp), so without them the
+            # language gate below has nothing to admit for an ObjC repo.
+            ".m",
+            ".mm",
             *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
         )
 
         cpp_files = [
             p
             for p, pf in self._parsed_files.items()
-            if pf.file_info.language in ("c", "cpp")
+            if pf.file_info.language in ("c", "cpp", "objectivec")
         ]
         if not cpp_files:
             return
@@ -448,6 +455,34 @@ class ResolveMixin:
             log.info("same_module_edges", language="swift", added=added)
         except Exception as exc:
             log.warning("swift_same_module_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
+    def _resolve_php_same_namespace(self, progress: Any | None = None) -> None:
+        """Emit same-namespace ``imports`` edges for PHP files.
+
+        An unqualified class name resolves against the file's own namespace
+        with no ``use``, so a subclass never imported its base class (the
+        Laravel ``Controller`` every controller extends read as unreachable).
+        """
+        from ..languages.php_same_namespace import resolve_php_same_namespace_refs
+        from ..languages.scope_scan import collect_source_texts
+
+        if not any(pf.file_info.language == "php" for pf in self._parsed_files.values()):
+            return
+
+        phase = "graph.same_namespace_php"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            texts = collect_source_texts(self._parsed_files, ("php",), self._source_map)
+            added = resolve_php_same_namespace_refs(self._graph, self._parsed_files, texts)
+            log.info("same_namespace_edges", language="php", added=added)
+        except Exception as exc:
+            log.warning("php_same_namespace_failed", error=str(exc))
         finally:
             if progress:
                 done = getattr(progress, "on_phase_done", None)

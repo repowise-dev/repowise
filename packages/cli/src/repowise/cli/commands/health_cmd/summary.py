@@ -12,9 +12,9 @@ from repowise.cli.helpers import console
 
 
 def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> None:
-    """Honest performance headline: finding count + density + coverage + scope.
+    """Honest performance headline: risk count + density + coverage + scope.
 
-    Leads with the open-finding count and how much of the analyzed code a perf
+    Leads with the open-risk count and how much of the analyzed code a perf
     detector actually ran on, so a mostly-unsupported-language repo reads a low
     coverage % rather than a meaningless bounded 10/10. Silent when no code file
     carries a supported language (nothing to say).
@@ -29,14 +29,16 @@ def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> No
     )
     perf_avg = report.kpis.get("performance_average")
 
-    parts = [f"[bold]{perf_findings}[/bold] finding{'s' if perf_findings != 1 else ''}"]
+    parts = [f"[bold]{perf_findings}[/bold] risk{'s' if perf_findings != 1 else ''}"]
     if coverage.covered_nloc > 0:
         density = round(10000.0 * perf_findings / coverage.covered_nloc, 2)
         parts.append(f"{density}/10K covered LOC")
     if isinstance(perf_avg, (int, float)):
-        parts.append(f"avg {perf_avg:.1f}/10")
+        parts.append(f"avg score {perf_avg:.1f}/10")
     console.print(
-        "\n[bold]Performance risk[/bold] "
+        # "risk" sits on the count, where more is worse, not on a heading over
+        # a score where more is better.
+        "\n[bold]Performance[/bold] "
         "[dim](static, high-precision/low-recall)[/dim]: " + " · ".join(parts)
     )
 
@@ -94,13 +96,13 @@ def _render_badge(average_health: object) -> None:
     Emits a static shields badge for the current score (immediately usable) and
     documents the live endpoint form for a running Repowise server / hosted repo.
     """
-    from repowise.core.analysis.health.grading import BAND_BADGE_COLOR, band_for
+    from repowise.core.analysis.health.grading import BAND_BADGE_COLOR, band_for, format_score
 
     if not isinstance(average_health, (int, float)):
         console.print("[yellow]No health score yet — run `repowise health` first.[/yellow]")
         return
     color = BAND_BADGE_COLOR[band_for(float(average_health))]
-    msg = f"{float(average_health):.1f}/10"
+    msg = f"{format_score(float(average_health))}/10"
     static = f"https://img.shields.io/badge/health-{msg.replace('/', '%2F')}-{color}"
     console.print("[bold]Static badge (current score):[/bold]")
     console.print(f"  ![code health]({static})")

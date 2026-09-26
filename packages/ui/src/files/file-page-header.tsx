@@ -1,5 +1,5 @@
 import * as React from "react";
-import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import { bandForScore, formatScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
 import { AskAboutThis } from "../chat/ask-about-this";
 import { PageLede } from "../shared/page-lede";
@@ -100,7 +100,7 @@ export function FilePageHeader({
       {score != null ? (
         <PageLede
           label="Code health"
-          value={score.toFixed(1)}
+          value={formatScore(score)}
           valueColor={healthBandColor(bandForScore(score))}
           unit="out of 10"
           band={{

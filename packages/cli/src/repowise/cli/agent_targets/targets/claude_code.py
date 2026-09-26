@@ -29,6 +29,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from repowise.core.agents import identity
+
 from ..types import (
     Capability,
     DoctorReport,
@@ -41,8 +43,9 @@ from ..types import (
     WriteResult,
 )
 
-ID = "claude-code"
-DISPLAY_NAME = "Claude Code"
+IDENTITY = identity.CLAUDE_CODE
+ID = IDENTITY.cli_target_id
+DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://docs.claude.com/en/docs/claude-code"
 
 #: Name the plugin registers itself under in the host's plugin manifest.
@@ -341,8 +344,8 @@ class ClaudeCodeTarget:
     id = ID
     display_name = DISPLAY_NAME
     docs_url = DOCS_URL
-    hook_adapter = "claude-code"
-    session_adapter = "claude_code"
+    hook_adapter = IDENTITY.hook_adapter
+    session_adapter = IDENTITY.session_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -437,6 +440,7 @@ class ClaudeCodeTarget:
             claude_code_leftover_reason,
             claude_desktop_leftover_reason,
             uninstall_claude_code_augment_hooks,
+            uninstall_claude_code_distill_allow_rules,
             uninstall_claude_code_mcp_entry,
             uninstall_claude_code_rewrite_hook,
             uninstall_claude_desktop_mcp_entry,
@@ -455,6 +459,7 @@ class ClaudeCodeTarget:
         # `or` would skip the later removals whenever an earlier one succeeded.
         removed = uninstall_claude_code_rewrite_hook()
         removed = uninstall_claude_code_augment_hooks() or removed
+        removed = uninstall_claude_code_distill_allow_rules() or removed
         removed = uninstall_claude_code_mcp_entry() or removed
         # The Desktop config too, because `install` writes it and `detect` reads
         # it. Leaving it made a removed Claude Code still look wired, so the

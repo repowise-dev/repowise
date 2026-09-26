@@ -51,7 +51,7 @@ your agent in under five minutes, with no API key.
 | Doc | What it covers |
 |-----|----------------|
 | [layers/INTELLIGENCE_LAYERS.md](layers/INTELLIGENCE_LAYERS.md) | Overview of the five layers: graph, git, docs, decisions, code health |
-| [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability, and performance from 49 deterministic detectors |
+| [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability, and performance from 51 deterministic detectors |
 | [layers/REFACTORING.md](layers/REFACTORING.md) | Concrete, graph-aware refactoring plans (Extract Class, Move Method, Break Cycle) |
 | [layers/CHANGE_RISK.md](layers/CHANGE_RISK.md) | Score any commit or `base..HEAD` range 0-10 for defect risk |
 | [layers/BUG_HISTORY.md](layers/BUG_HISTORY.md) | Which files and symbols actually get bug-fixed, and how recently |
@@ -59,6 +59,7 @@ your agent in under five minutes, with no API key.
 | [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph: what is in it, how every edge is resolved, and how much to trust each one |
 | [layers/DECISIONS.md](layers/DECISIONS.md) | Architectural decisions mined from your repo and from your own agent sessions |
 | [layers/DEAD_CODE.md](layers/DEAD_CODE.md) | Unreachable files, unused exports, and zombie packages by confidence tier |
+| [layers/DOC_DRIFT.md](layers/DOC_DRIFT.md) | Documentation claims checked against the tree: what is checked, what is not, and how to read a finding |
 | [layers/SECURITY.md](layers/SECURITY.md) | The local pattern scan: what the sixteen patterns catch, what they do not, and how far to trust the result |
 | [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 26 parsed to a full AST, 40 on the five-rung ladder |
 | [layers/WIKI.md](layers/WIKI.md) | The generated wiki: page types, what `update` re-renders, styles, output language |
@@ -111,6 +112,7 @@ How repowise is built, for contributors and the curious.
 | [architecture/chat.md](architecture/chat.md) | Codebase chat: agent loop, streaming, artifact panel |
 | [architecture/structurizr-export.md](architecture/structurizr-export.md) | Export the architecture as Structurizr DSL and render it anywhere |
 | [architecture/editor-files.md](architecture/editor-files.md) | How `CLAUDE.md` and `AGENTS.md` get generated |
+| [architecture/savings-accounting.md](architecture/savings-accounting.md) | The agent savings ledger: one canonical event per interaction, priced from its own evidence |
 | [architecture/deep-dives.md](architecture/deep-dives.md) | Systems not covered elsewhere |
 | [architecture/pluggable-storage.md](architecture/pluggable-storage.md) | The capability seams: storage, graph, vector, CLI, MCP |
 | [design/theme-tokens.md](design/theme-tokens.md) | Resolved design tokens and the WCAG contrast matrix |

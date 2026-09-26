@@ -27,7 +27,13 @@ import json
 import os
 from typing import TYPE_CHECKING, ClassVar
 
-from repowise.cli.agent_adapters.base import AgentAdapter, RewriteRequest, RewriteResult
+from repowise.cli.agent_adapters.base import (
+    SHELL_POSIX,
+    SHELL_POWERSHELL,
+    AgentAdapter,
+    RewriteRequest,
+    RewriteResult,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -127,7 +133,7 @@ class CodexAdapter(AgentAdapter):
             # `decide`'s PowerShell-alias bailout, which exists precisely to
             # stop an alias command being re-run through cmd.exe. Dead code
             # until the gate above started matching; live now.
-            shell="powershell" if os.name == "nt" else "posix",
+            shell=SHELL_POWERSHELL if os.name == "nt" else SHELL_POSIX,
         )
 
     def render_response(self, result: RewriteResult) -> str:

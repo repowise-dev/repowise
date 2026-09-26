@@ -14,8 +14,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from repowise.core.persistence.crud import upsert_generation_job, upsert_repository
+from repowise.core.persistence.crud import (
+    get_generation_job,
+    update_job_status,
+    upsert_generation_job,
+    upsert_repository,
+)
 from repowise.server.job_executor import (
+    JobProgressCallback,
     _build_generation_config,
     _incremental_page_regen,
     _plan_incremental_page_regen,
@@ -768,3 +774,47 @@ async def test_execute_job_dispatches_generate_mode(session_factory, tmp_path):
         await execute_job(job_id, app_state)
 
     run_generate_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_phase_start_with_unknown_total_clears_stale_denominator(session_factory, tmp_path):
+    """A phase that starts with total=None must zero out a previous phase's
+    total_pages, not leave the record pairing a fresh numerator with a
+    denominator that describes different work (issue #2175)."""
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+
+    async with session_factory() as session:
+        await update_job_status(session, job_id, "running", completed_pages=241, total_pages=5)
+        await session.commit()
+
+    callback = JobProgressCallback(job_id, session_factory)
+    callback.on_phase_start("generation", None)
+    await callback.drain_and_stop()
+
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+        assert job.total_pages == 0
+        assert job.completed_pages == 0
+
+
+@pytest.mark.asyncio
+async def test_update_job_status_without_total_pages_preserves_existing_value(
+    session_factory, tmp_path
+):
+    """Callers that omit total_pages (None) must keep the record's existing
+    total unchanged, distinct from JobProgressCallback explicitly zeroing it
+    for an unknown-total phase."""
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+
+    async with session_factory() as session:
+        await update_job_status(session, job_id, "running", completed_pages=241, total_pages=5)
+        await session.commit()
+
+    async with session_factory() as session:
+        await update_job_status(session, job_id, "running", completed_pages=250)
+        await session.commit()
+
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+        assert job.total_pages == 5
+        assert job.completed_pages == 250

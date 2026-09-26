@@ -76,13 +76,19 @@ export function ToolCallBlock({
           <span className="font-medium text-[var(--color-text-secondary)]">
             {label}
           </span>
-          {toolCall.summary && !isRunning && (
-            <span className="text-[var(--color-text-tertiary)] truncate ml-1">
-              — {toolCall.summary}
+          {!isRunning && (toolCall.summary || isError) && (
+            // The server already composes a failed summary as "Error: ...", so
+            // a separate Failed badge beside it just says the same thing twice.
+            <span
+              className={cn(
+                "truncate ml-1",
+                isError
+                  ? "text-[var(--color-error)]"
+                  : "text-[var(--color-text-tertiary)]",
+              )}
+            >
+              — {toolCall.summary || "Failed"}
             </span>
-          )}
-          {isError && (
-            <span className="text-[var(--color-error)]">— Failed</span>
           )}
         </button>
         <span className="ml-auto flex items-center gap-2 shrink-0">

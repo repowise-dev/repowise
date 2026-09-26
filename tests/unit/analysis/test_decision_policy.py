@@ -606,3 +606,64 @@ def test_conventions_runs_with_no_model_once_it_is_switched_on():
     assert policy.source_enabled("conventions") is True
     assert policy.llm_allowed("conventions") is False
     assert "conventions" in policy.enabled_index_sources()
+
+
+# ---------------------------------------------------------------------------
+# Agent acceptance
+# ---------------------------------------------------------------------------
+
+
+def test_agent_acceptance_is_off_in_every_preset():
+    """The one setting that lets something other than a person grant authority."""
+    for name in PRESET_NAMES:
+        assert preset_policy(name).agent_acceptance is False
+
+
+def test_a_non_boolean_agent_acceptance_does_not_grant():
+    resolution = resolve_policy({"decisions": {"agent_acceptance": "yes"}})
+
+    assert resolution.policy.agent_acceptance is False
+    assert any("agent_acceptance" in w for w in resolution.warnings)
+
+
+def test_turning_agent_acceptance_off_again_actually_writes_it(tmp_path):
+    """``to_config_block`` omits a defaulted setting, so a merging write kept
+    the stored ``true`` and ``--off`` changed nothing at all."""
+    write_policy(tmp_path, preset_policy("default").with_agent_acceptance(True))
+    assert load_policy(tmp_path).policy.agent_acceptance is True
+
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(False))
+
+    assert load_policy(tmp_path).policy.agent_acceptance is False
+
+
+def test_a_policy_write_keeps_unrelated_keys_under_decisions(tmp_path):
+    """The replace is scoped to the keys the policy owns, not the whole block."""
+    from repowise.core.repo_config import load_repo_config, save_repo_config
+
+    write_policy(tmp_path, preset_policy("default"))
+    config = load_repo_config(tmp_path)
+    config["decisions"]["something_else"] = 7
+    save_repo_config(tmp_path, config)
+
+    write_policy(tmp_path, preset_policy("full"))
+
+    assert load_repo_config(tmp_path)["decisions"]["something_else"] == 7
+
+
+def test_the_agent_switch_does_not_rewrite_the_stored_preset(tmp_path):
+    """It is authority, not source membership, so it must not read as `custom`.
+
+    Dropping `preset:` also drops the pinning that keeps a source added in a
+    later release switched off, which is a capture change from a switch that
+    has nothing to do with capture.
+    """
+    from repowise.core.repo_config import load_repo_config
+
+    write_policy(tmp_path, preset_policy("balanced"))
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(True))
+
+    resolved = load_policy(tmp_path).policy
+    assert resolved.agent_acceptance is True
+    assert resolved.preset_name() == "balanced"
+    assert load_repo_config(tmp_path)["decisions"]["preset"] == "balanced"

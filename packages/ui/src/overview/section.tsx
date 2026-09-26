@@ -13,6 +13,15 @@ export interface OverviewSectionProps {
   flush?: boolean;
   /** Anchor target, for deep links that jump to one section of a page. */
   id?: string;
+  /** Turn the heading into a toggle. Native ``<details>``, so the section
+   *  stays a server component and keyboard handling comes free. */
+  collapsible?: boolean;
+  /** Only read when *collapsible*. Defaults to open: a section that hides its
+   *  content by default has to earn it. */
+  defaultOpen?: boolean;
+  /** Right-aligned on the toggle, e.g. a row count, so a collapsed section
+   *  still says how much is behind it. */
+  hint?: React.ReactNode;
   className?: string;
   children: React.ReactNode;
 }
@@ -36,9 +45,57 @@ export function OverviewSection({
   action,
   flush = false,
   id,
+  collapsible = false,
+  defaultOpen = true,
+  hint,
   className,
   children,
 }: OverviewSectionProps) {
+  const heading = (
+    <h2 className="text-base font-semibold tracking-tight text-[var(--color-text-primary)]">
+      {title}
+    </h2>
+  );
+  const body = (
+    <>
+      {description && (
+        <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-tertiary)] [text-wrap:pretty]">
+          {description}
+        </p>
+      )}
+      {children}
+    </>
+  );
+
+  if (collapsible) {
+    return (
+      <section
+        {...(id ? { id } : {})}
+        className={cn(
+          id && "scroll-mt-24",
+          !flush && "border-t border-[var(--color-border-default)] pt-6 sm:pt-8",
+          className,
+        )}
+      >
+        <details open={defaultOpen} className="group flex flex-col gap-3">
+          <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+            <span
+              className="text-[var(--color-text-tertiary)] transition-transform group-open:rotate-90"
+              aria-hidden
+            >
+              ▸
+            </span>
+            {heading}
+            {hint != null && (
+              <span className="ml-auto text-xs text-[var(--color-text-tertiary)]">{hint}</span>
+            )}
+          </summary>
+          <div className="mt-3 flex flex-col gap-3">{body}</div>
+        </details>
+      </section>
+    );
+  }
+
   return (
     <section
       {...(id ? { id } : {})}
@@ -51,17 +108,10 @@ export function OverviewSection({
       )}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h2 className="text-base font-semibold tracking-tight text-[var(--color-text-primary)]">
-          {title}
-        </h2>
+        {heading}
         {action}
       </div>
-      {description && (
-        <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-tertiary)] [text-wrap:pretty]">
-          {description}
-        </p>
-      )}
-      {children}
+      {body}
     </section>
   );
 }
