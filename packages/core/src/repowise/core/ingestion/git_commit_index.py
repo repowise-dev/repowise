@@ -1,21 +1,8 @@
-"""Single-pass repo-wide commit index for git_indexer.
+"""Repo-wide commit index for git_indexer: one ``git log --numstat`` pass, bucketed per file.
 
-The original per-file path in ``git_indexer._index_file`` spawned one
-``git log --numstat`` subprocess per tracked file. On a 5,000-file repo
-that meant 5,000 process spawns — ~50-100 ms each on Windows — which
-made the git phase dominate the total ``repowise init`` wall-clock.
-
-This module replaces the fan-out with one repo-wide ``git log`` pass
-and an in-memory bucketing step. The shape mirrors what
-``compute_co_changes_and_entropy`` already does — one subprocess, fan-out via
-Python dicts — so any future debugging only has one log format to
-understand.
-
-The batched path is only used when ``follow_renames=False`` (the
-default). It still keeps a file's history across a rename: the walk reads
-git's rename rows newest first and files older commits under the current
-name (see :class:`~.git_indexer.records.RenameTrail`). ``follow_renames``
-switches to the per-file ``--follow`` path instead.
+Used when ``follow_renames=False`` (the default). The walk reads git's rename
+rows newest first and files older commits under each file's current name (see
+:class:`~.git_indexer.records.RenameTrail`).
 """
 
 from __future__ import annotations
@@ -66,14 +53,10 @@ def _count_non_merge_commits(repo: object) -> int | None:
 def load_git_ai_note_agents(repo: object, commit_limit: int | None) -> dict[str, str]:
     """Map ``commit_sha → agent`` from git-ai authorship notes (``refs/notes/ai``).
 
-    Returns an empty dict when the ref is absent — the common case, gated by a
-    single cheap ``for-each-ref`` so 99.9% of repos pay nothing and add no git
-    pass. Only repos actually using git-ai incur a ``git log --notes=ai`` walk
-    here, whose ``sha → agent`` result the commit walk then reads by-key (no
-    re-parse per touched file). The walk is bounded when *commit_limit* is an
-    integer; ``None`` covers the complete history for the rare per-file
-    fallback lane. Any failure returns ``{}`` — a notes read must never break
-    the git index. See the git-ai standard v3.0.0 for the note format.
+    A repo without the ref costs one ``for-each-ref`` and gets ``{}``. The
+    notes walk covers *commit_limit* commits, or the whole history with
+    ``None``. Any failure returns ``{}``: a notes read must never break the git
+    index. See the git-ai standard v3.0.0 for the note format.
     """
     from .git_indexer import _FIELD_SEP, _RECORD_SEP
     from .git_indexer.agent_provenance import _agent_from_git_ai_note
@@ -453,8 +436,7 @@ def load_commit_index(
     files in the commit, not just the indexable subset, so change diffusion is
     measured against the real footprint). This rides the same single walk —
     no extra git pass — and lets the caller build per-commit rows downstream
-    (see :mod:`git_indexer.commit_rows`). The default (``None``) leaves the
-    return value and behaviour unchanged.
+    (see :mod:`git_indexer.commit_rows`).
 
     When *since_ts* is supplied (unix seconds), commits at or before it are
     skipped — used by the incremental path to capture only commits newer than
@@ -572,8 +554,7 @@ def load_deep_commit_index(
     *per_file_limit* per file — mirroring the per-file fallback's
     ``git log -<limit> -- <file>`` cap. One subprocess replaces one
     fallback spawn per missed file, which dominates the git phase on
-    repos whose history is much deeper than the window (a 9k-commit
-    monorepo left 3,295 of 4,857 files to the fallback).
+    repos whose history is much deeper than the window.
 
     Churn comes from the repo-wide diff (rename rows attribute edit churn
     through the rename) rather than the pathspec-limited fallback diff (which
@@ -586,7 +567,7 @@ def load_deep_commit_index(
     keep the per-file fallback path.
 
     Failures return an empty dict; every missed file then falls back to
-    the per-file path exactly as before.
+    the per-file path.
     """
     from .git_indexer import _LOG_FORMAT, _RECORD_SEP
 
