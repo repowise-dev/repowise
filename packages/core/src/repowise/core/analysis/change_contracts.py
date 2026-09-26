@@ -40,6 +40,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .signature_diff import (
+    EFFECT_COMPATIBLE,
+    EFFECT_NONE,
+    classify_signature_change,
+)
+from ..test_paths import is_test_related_path
+
 # Symbol kinds worth reporting on. Constants and variables produce enormous,
 # low-signal churn (every literal edit reads as a "signature change"), and the
 # call graph does not resolve calls *to* them anyway.
@@ -81,10 +88,16 @@ class SymbolContractChange:
     change: str
     start_line: int
     end_line: int
+    signature_effect: str | None = None
+    signature_reason: str | None = None
     outside_callers: list[str] = field(default_factory=list)
+    outside_production_callers: list[str] = field(default_factory=list)
+    outside_test_callers: list[str] = field(default_factory=list)
     inside_caller_count: int = 0
     callers_total: int = 0
     outside_callers_total: int = 0
+    outside_production_callers_total: int = 0
+    outside_test_callers_total: int = 0
 
     @property
     def is_breaking(self) -> bool:
@@ -94,7 +107,13 @@ class SymbolContractChange:
         holds, so listing its callers is noise. Added symbols have no prior
         callers by construction.
         """
-        return self.change in (CHANGE_REMOVED, CHANGE_SIGNATURE) and bool(self.outside_callers)
+        if self.change == CHANGE_REMOVED:
+            return bool(self.outside_callers)
+        if self.change == CHANGE_SIGNATURE:
+            if self.signature_effect in (EFFECT_NONE, EFFECT_COMPATIBLE):
+                return False
+            return bool(self.outside_callers)
+        return False
 
 
 @dataclass
@@ -251,6 +270,8 @@ def analyze_contract_impact(
 
         for name, facts in sorted(head_syms.items()):
             prior = base_syms.get(name)
+            sig_effect: str | None = None
+            sig_reason: str | None = None
             if prior is None:
                 # A file with no base side at all (added by this change, or
                 # missing from the snapshot) would otherwise report every symbol
@@ -260,20 +281,45 @@ def analyze_contract_impact(
                     continue
                 change = CHANGE_ADDED
             elif prior.signature != facts.signature:
-                change = CHANGE_SIGNATURE
+                effect, reason = classify_signature_change(
+                    prior.signature, facts.signature, facts.kind
+                )
+                if effect == EFFECT_NONE:
+                    if _overlaps(facts.start_line, facts.end_line, ranges):
+                        change = CHANGE_BODY
+                    else:
+                        continue
+                else:
+                    change = CHANGE_SIGNATURE
+                    sig_effect = effect
+                    sig_reason = reason
             elif _overlaps(facts.start_line, facts.end_line, ranges):
                 change = CHANGE_BODY
             else:
                 continue
             changes.append(
-                _with_callers(path, facts, change, callers, changed_set, callers_per_symbol)
+                _with_callers(
+                    path,
+                    facts,
+                    change,
+                    callers,
+                    changed_set,
+                    callers_per_symbol,
+                    signature_effect=sig_effect,
+                    signature_reason=sig_reason,
+                )
             )
 
         for name, facts in sorted(base_syms.items()):
             if name not in head_syms:
                 changes.append(
                     _with_callers(
-                        path, facts, CHANGE_REMOVED, callers, changed_set, callers_per_symbol
+                        path,
+                        facts,
+                        CHANGE_REMOVED,
+                        callers,
+                        changed_set,
+                        callers_per_symbol,
                     )
                 )
 
@@ -294,6 +340,7 @@ def _rank(c: SymbolContractChange) -> tuple:
     return (
         not c.is_breaking,
         _CHANGE_ORDER.get(c.change, 9),
+        -c.outside_production_callers_total,
         -c.outside_callers_total,
         c.file,
         c.name,
@@ -307,15 +354,29 @@ def _with_callers(
     callers: dict[str, list[str]],
     changed_set: set[str],
     cap: int | None,
+    signature_effect: str | None = None,
+    signature_reason: str | None = None,
 ) -> SymbolContractChange:
     inside = 0
-    outside: list[str] = []
+    outside_prod: list[str] = []
+    outside_test: list[str] = []
     for caller in callers.get(facts.symbol_id, ()):
-        if _containing_file(caller) in changed_set:
+        caller_file = _containing_file(caller)
+        if caller_file in changed_set:
             inside += 1
+        elif is_test_related_path(caller_file):
+            outside_test.append(caller)
         else:
-            outside.append(caller)
-    outside.sort()
+            outside_prod.append(caller)
+
+    outside_prod.sort()
+    outside_test.sort()
+    outside = outside_prod + outside_test
+
+    capped_outside = outside if cap is None else outside[:cap]
+    capped_prod = [c for c in capped_outside if not is_test_related_path(_containing_file(c))]
+    capped_test = [c for c in capped_outside if is_test_related_path(_containing_file(c))]
+
     return SymbolContractChange(
         file=path,
         name=facts.name,
@@ -324,10 +385,16 @@ def _with_callers(
         change=change,
         start_line=facts.start_line,
         end_line=facts.end_line,
-        outside_callers=outside if cap is None else outside[:cap],
+        signature_effect=signature_effect,
+        signature_reason=signature_reason,
+        outside_callers=capped_outside,
+        outside_production_callers=capped_prod,
+        outside_test_callers=capped_test,
         inside_caller_count=inside,
         callers_total=inside + len(outside),
         outside_callers_total=len(outside),
+        outside_production_callers_total=len(outside_prod),
+        outside_test_callers_total=len(outside_test),
     )
 
 
