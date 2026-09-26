@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
-from repowise.server.mcp_server._budget import (
-    OmissionCollector,
-)
+from repowise.server.mcp_server._budget import OmissionCollector
+
+_GIT_LOG_FORMAT = "--format=%H\t%an\t%ai\t%s"
 
 
 async def _git_archaeology_fallback(
@@ -23,21 +25,47 @@ async def _git_archaeology_fallback(
     result: dict[str, Any] = {"triggered": True}
 
     # --- Layer 1: File's own significant commits ---
-    file_commits = []
-    if git_meta and git_meta.significant_commits_json:
-        commits = json.loads(git_meta.significant_commits_json)
-        file_commits = [
-            {
-                "sha": c.get("sha", ""),
-                "message": c.get("message", ""),
-                "author": c.get("author", ""),
-                "date": c.get("date", ""),
-            }
-            for c in commits
-        ]
+    file_commits = _file_commits(git_meta)
     result["file_commits"] = file_commits
 
     # --- Layer 2: Cross-file search — other files' commits mentioning this file ---
+    basename, stem, search_terms = _search_terms(file_path)
+    unique_refs = _cross_references(file_path, basename, search_terms, all_git_meta)
+    result["cross_references"] = unique_refs
+
+    # --- Layer 3: Live git log (when local repo exists) ---
+    git_log_results = []
+    local_path = getattr(repository, "local_path", None)
+    if local_path and (Path(local_path) / ".git").exists():
+        git_log_results = await _run_git_log(local_path, file_path, stem)
+    result["git_log"] = git_log_results
+
+    # --- Summary ---
+    result["summary"] = _archaeology_summary(
+        file_path, len(file_commits), len(unique_refs), len(git_log_results)
+    )
+    return result
+
+
+def _commit_row(c: dict[str, Any]) -> dict[str, Any]:
+    """A stored significant commit as an archaeology row."""
+    return {
+        "sha": c.get("sha", ""),
+        "message": c.get("message", ""),
+        "author": c.get("author", ""),
+        "date": c.get("date", ""),
+    }
+
+
+def _file_commits(git_meta: Any | None) -> list[dict[str, Any]]:
+    """The file's own significant commits, as indexed."""
+    if not (git_meta and git_meta.significant_commits_json):
+        return []
+    return [_commit_row(c) for c in json.loads(git_meta.significant_commits_json)]
+
+
+def _search_terms(file_path: str) -> tuple[str, str, set[str]]:
+    """``(basename, stem, terms)`` a commit message can name this file by."""
     basename = file_path.rsplit("/", 1)[-1] if "/" in file_path else file_path
     stem = basename.rsplit(".", 1)[0] if "." in basename else basename
     # Convert snake_case/kebab to searchable terms: auth_cache_service -> {"auth", "cache", "service"}
@@ -45,7 +73,13 @@ async def _git_archaeology_fallback(
     search_terms.discard("")
     # Also search for the full basename
     search_terms.add(basename.lower())
+    return basename, stem, search_terms
 
+
+def _cross_references(
+    file_path: str, basename: str, search_terms: set[str], all_git_meta: list
+) -> list[dict[str, Any]]:
+    """Other files' commits that mention this one, one per SHA, newest first."""
     cross_references = []
     for gm in all_git_meta:
         if gm.file_path == file_path:
@@ -57,14 +91,7 @@ async def _git_archaeology_fallback(
             matched_terms = sorted(t for t in search_terms if t in msg_lower)
             if basename.lower() in msg_lower or len(matched_terms) >= 2:
                 cross_references.append(
-                    {
-                        "source_file": gm.file_path,
-                        "sha": c.get("sha", ""),
-                        "message": c.get("message", ""),
-                        "author": c.get("author", ""),
-                        "date": c.get("date", ""),
-                        "matched_terms": matched_terms,
-                    }
+                    {"source_file": gm.file_path, **_commit_row(c), "matched_terms": matched_terms}
                 )
     # Deduplicate by SHA and sort by date descending
     seen_shas: set[str] = set()
@@ -74,32 +101,25 @@ async def _git_archaeology_fallback(
             seen_shas.add(cr["sha"])
             unique_refs.append(cr)
     unique_refs.sort(key=lambda x: x.get("date", ""), reverse=True)
-    result["cross_references"] = unique_refs
+    return unique_refs
 
-    # --- Layer 3: Live git log (when local repo exists) ---
-    git_log_results = []
-    local_path = getattr(repository, "local_path", None)
-    if local_path and (Path(local_path) / ".git").exists():
-        git_log_results = await _run_git_log(local_path, file_path, stem)
-    result["git_log"] = git_log_results
 
-    # --- Summary ---
-    total = len(file_commits) + len(unique_refs) + len(git_log_results)
-    if total > 0:
-        result["summary"] = (
+def _archaeology_summary(
+    file_path: str, file_commits: int, cross_references: int, git_log: int
+) -> str:
+    """One sentence counting what each layer recovered, or saying none did."""
+    if file_commits + cross_references + git_log > 0:
+        return (
             f"No architectural decisions found for {file_path}, but git archaeology "
-            f"recovered {len(file_commits)} direct commit(s), "
-            f"{len(unique_refs)} cross-reference(s), and "
-            f"{len(git_log_results)} git log result(s). "
+            f"recovered {file_commits} direct commit(s), "
+            f"{cross_references} cross-reference(s), and "
+            f"{git_log} git log result(s). "
             "Review these to understand the intent behind this code."
         )
-    else:
-        result["summary"] = (
-            f"No architectural decisions or git history found for {file_path}. "
-            "This file may be new or not yet indexed."
-        )
-
-    return result
+    return (
+        f"No architectural decisions or git history found for {file_path}. "
+        "This file may be new or not yet indexed."
+    )
 
 
 async def _run_git_log(
@@ -108,88 +128,89 @@ async def _run_git_log(
     stem: str,
 ) -> list[dict]:
     """Run git log against the local repo for deeper history. Best-effort."""
-    import asyncio
-    import subprocess
-
-    def _sync_git_log() -> list[dict]:
-        import re
-
-        results: list[dict] = []
-        # Sanitize stem to prevent argument injection via --grep
-        safe_stem = re.sub(r"[^a-zA-Z0-9_\-.]", "", stem) if stem else ""
-        try:
-            proc = subprocess.run(
-                ["git", "log", "--follow", "--format=%H\t%an\t%ai\t%s", "-20", "--", file_path],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                # ``%s`` is the commit subject and ``%an`` the author name, both
-                # utf-8 from git. text=True alone decodes with the locale codec,
-                # which is cp1252 on a default Windows install.
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-                # See commits_since() in core/precedent/currency.py: a git child
-                # that inherits this server's JSON-RPC stdin can wedge the
-                # session, and the timeout above is not a reliable ceiling.
-                stdin=subprocess.DEVNULL,
-            )
-            if proc.returncode == 0:
-                for line in proc.stdout.strip().splitlines():
-                    parts = line.split("\t", 3)
-                    if len(parts) == 4:
-                        results.append(
-                            {
-                                "sha": parts[0][:12],
-                                "commit": parts[0],
-                                "author": parts[1],
-                                "date": parts[2][:10],
-                                "message": parts[3],
-                                "source": "git_log_follow",
-                            }
-                        )
-
-            if safe_stem and len(safe_stem) >= 3:
-                proc2 = subprocess.run(
-                    [
-                        "git",
-                        "log",
-                        "--all",
-                        "--grep",
-                        safe_stem,
-                        "--format=%H\t%an\t%ai\t%s",
-                        "-10",
-                        "--",  # end of options — prevent argument injection
-                    ],
-                    cwd=repo_path,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",  # see above
-                    errors="replace",
-                    timeout=10,
-                    stdin=subprocess.DEVNULL,  # see above
-                )
-                if proc2.returncode == 0:
-                    seen = {r["sha"] for r in results}
-                    for line in proc2.stdout.strip().splitlines():
-                        parts = line.split("\t", 3)
-                        if len(parts) == 4 and parts[0][:12] not in seen:
-                            seen.add(parts[0][:12])
-                            results.append(
-                                {
-                                    "sha": parts[0][:12],
-                                    "commit": parts[0],
-                                    "author": parts[1],
-                                    "date": parts[2][:10],
-                                    "message": parts[3],
-                                    "source": "git_log_grep",
-                                }
-                            )
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
-        return results
-
     try:
-        return await asyncio.wait_for(asyncio.to_thread(_sync_git_log), timeout=15)
+        return await asyncio.wait_for(
+            asyncio.to_thread(_sync_git_log, repo_path, file_path, stem), timeout=15
+        )
     except TimeoutError:
         return []
+
+
+def _sync_git_log(repo_path: str, file_path: str, stem: str) -> list[dict]:
+    """The file's own log, then commits whose message names its stem."""
+    results: list[dict] = []
+    # Sanitize stem to prevent argument injection via --grep
+    safe_stem = re.sub(r"[^a-zA-Z0-9_\-.]", "", stem) if stem else ""
+    try:
+        stdout = _git_log_stdout(
+            repo_path, ["--follow", _GIT_LOG_FORMAT, "-20", "--", file_path]
+        )
+        if stdout is not None:
+            results.extend(_parse_git_log(stdout, "git_log_follow"))
+
+        if safe_stem and len(safe_stem) >= 3:
+            stdout = _git_log_stdout(
+                repo_path,
+                [
+                    "--all",
+                    "--grep",
+                    safe_stem,
+                    _GIT_LOG_FORMAT,
+                    "-10",
+                    "--",  # end of options — prevent argument injection
+                ],
+            )
+            if stdout is not None:
+                seen = {r["sha"] for r in results}
+                results.extend(_parse_git_log(stdout, "git_log_grep", seen))
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return results
+
+
+def _git_log_stdout(repo_path: str, args: list[str]) -> str | None:
+    """``git log <args>`` output, or ``None`` when git exits non-zero."""
+    proc = subprocess.run(
+        ["git", "log", *args],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        # ``%s`` is the commit subject and ``%an`` the author name, both
+        # utf-8 from git. text=True alone decodes with the locale codec,
+        # which is cp1252 on a default Windows install.
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+        # See commits_since() in core/precedent/currency.py: a git child
+        # that inherits this server's JSON-RPC stdin can wedge the
+        # session, and the timeout above is not a reliable ceiling.
+        stdin=subprocess.DEVNULL,
+    )
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _parse_git_log(
+    stdout: str, source: str, seen: set[str] | None = None
+) -> list[dict]:
+    """Rows from ``_GIT_LOG_FORMAT`` output; with *seen*, skip SHAs already in it."""
+    rows: list[dict] = []
+    for line in stdout.strip().splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) != 4:
+            continue
+        sha = parts[0][:12]
+        if seen is not None:
+            if sha in seen:
+                continue
+            seen.add(sha)
+        rows.append(
+            {
+                "sha": sha,
+                "commit": parts[0],
+                "author": parts[1],
+                "date": parts[2][:10],
+                "message": parts[3],
+                "source": source,
+            }
+        )
+    return rows
