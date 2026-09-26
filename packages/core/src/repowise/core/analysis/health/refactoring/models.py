@@ -215,8 +215,8 @@ class RefactoringSuggestion:
     plan: dict[str, Any]
     # The signals that justify the suggestion (LCOM4, WMC, clone ranges, ...).
     evidence: dict[str, Any]
-    # Health score the refactoring would recover if applied (the deduction of
-    # the source biomarker finding). >= 0.
+    # Health score the refactoring would recover if applied: the part of the
+    # source biomarker finding's deduction that applying it removes. >= 0.
     impact_delta: float
     # Effort estimate — "S" | "M" | "L" | "XL" (from the target's size).
     effort_bucket: str

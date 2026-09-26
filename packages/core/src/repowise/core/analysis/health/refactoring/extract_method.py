@@ -7,6 +7,17 @@ changing behaviour, and infers that helper's signature (IN parameters,
 OUT return). This detector turns the best such span into one structured
 ``RefactoringSuggestion`` per flagged function.
 
+``impact_delta`` is what the extraction itself recovers, not the whole
+finding. The residual method keeps ``ccn - ccn_removed`` decision points and
+``nloc - slice_nloc + 1`` lines (the call replaces the span), the new helper
+carries ``ccn_removed + 1`` and ``slice_nloc``, and each is re-graded with the
+source biomarker's own severity rule. The finding's impact is credited in
+proportion to the severity deduction that disappears: all of it when both
+shapes fall below the biomarker's bar, the band difference when the residual
+only drops a band, and nothing when a CCN 209 method sheds 6 and stays
+critical. A function that needs several extractions therefore shows several
+partial steps rather than one step claiming the full finding.
+
 The candidate spans + IN/OUT come from ``dataflow.find_extractions``; this
 module only matches each analysed function to the biomarker finding that flags
 it (for the recovered impact), picks the strongest extraction, and renders the
@@ -34,16 +45,22 @@ Plan shape (open dict, no migration):
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from ..biomarkers.brain_method import BrainMethodDetector
+from ..biomarkers.complex_method import ComplexMethodDetector
+from ..biomarkers.large_method import LargeMethodDetector
 from ..complexity.languages import get_language_map
 from ..dataflow import find_extractions
+from ..scoring import severity_deduction
 from .models import RefactoringContext, RefactoringSuggestion
 from .naming import identifier_slug
 from .registry import RefactoringDetector, effort_bucket, register
 
 if TYPE_CHECKING:
     from ..dataflow import Extraction, FunctionAnalysis
+    from ..models import Severity
 
 # OUT values whose name describes the variable's role, not the block's
 # product: ``compute_result`` names nothing the reader did not know.
@@ -55,6 +72,13 @@ _UNINFORMATIVE_OUT = frozenset(
 # only offered an extraction when one of these flagged it, so the suggestion
 # list never exceeds (and stays consistent with) what health surfaces.
 _SOURCE_BIOMARKERS = ("brain_method", "large_method", "complex_method")
+
+# Each source biomarker's own ``(ccn, nloc) -> severity`` rule.
+_SEVERITY_RULE: dict[str, Callable[[int, int], Severity | None]] = {
+    "brain_method": BrainMethodDetector.severity_for,
+    "large_method": LargeMethodDetector.severity_for,
+    "complex_method": ComplexMethodDetector.severity_for,
+}
 
 
 @register
@@ -71,14 +95,15 @@ class ExtractMethodDetector(RefactoringDetector):
 
         out: list[RefactoringSuggestion] = []
         for analysis in analyses:
-            impact, source = self._impact_for(analysis, ctx.findings)
-            if not source:
+            matched = self._findings_for(analysis, ctx.findings)
+            if not matched:
                 # Only suggest where a method biomarker actually fired.
                 continue
             candidates = find_extractions(analysis, lmap)
             if not candidates:
                 continue
             best = candidates[0]  # already best-first
+            impact, source = self._impact_for(analysis, best, matched)
             out.append(
                 RefactoringSuggestion(
                     refactoring_type=self.name,
@@ -109,12 +134,11 @@ class ExtractMethodDetector(RefactoringDetector):
         return out
 
     @staticmethod
-    def _impact_for(analysis: FunctionAnalysis, findings: list[Any]) -> tuple[float, str]:
-        """Recovered impact + source biomarker for *analysis*, from the file's
-        method-smell findings. Matches by function name and line containment so
-        the right finding is picked when a name repeats."""
-        best_impact = 0.0
-        best_source = ""
+    def _findings_for(analysis: FunctionAnalysis, findings: list[Any]) -> list[Any]:
+        """The file's method-smell findings on *analysis*. Matches by function
+        name and line containment so the right finding is picked when a name
+        repeats."""
+        out = []
         for f in findings:
             if getattr(f, "biomarker_type", "") not in _SOURCE_BIOMARKERS:
                 continue
@@ -123,11 +147,23 @@ class ExtractMethodDetector(RefactoringDetector):
             line = getattr(f, "line_start", None)
             if line is not None and not (analysis.start_line <= line <= analysis.end_line):
                 continue
-            impact = float(getattr(f, "health_impact", 0.0) or 0.0)
-            if impact >= best_impact:
-                best_impact = impact
-                best_source = getattr(f, "biomarker_type", "")
-        return best_impact, best_source
+            out.append(f)
+        return out
+
+    @staticmethod
+    def _impact_for(
+        analysis: FunctionAnalysis, extraction: Extraction, findings: list[Any]
+    ) -> tuple[float, str]:
+        """Impact *extraction* recovers + the source biomarker it recovers it
+        from. The finding recovering the most wins; when none recovers
+        anything, the largest finding still names the cause."""
+        best: tuple[float, float, str] = (-1.0, -1.0, "")
+        for f in findings:
+            biomarker = getattr(f, "biomarker_type", "")
+            full = float(getattr(f, "health_impact", 0.0) or 0.0)
+            recovered = full * _recovered_fraction(biomarker, analysis, extraction)
+            best = max(best, (recovered, full, biomarker))
+        return best[0], best[2]
 
     @staticmethod
     def _suggested_name(analysis: FunctionAnalysis, extraction: Extraction) -> str | None:
@@ -167,3 +203,27 @@ class ExtractMethodDetector(RefactoringDetector):
         if extraction.ccn_removed >= 2 and len(extraction.params) <= 4:
             return "high"
         return "medium"
+
+
+def _recovered_fraction(
+    biomarker: str, analysis: FunctionAnalysis, extraction: Extraction
+) -> float:
+    """Share of *biomarker*'s deduction that applying *extraction* removes.
+
+    Both post-extraction shapes (the residual method and the new helper) are
+    graded with the biomarker's own rule; whatever deduction they still earn
+    is subtracted. Brain Method's file-level centrality gate is unchanged by a
+    local extraction, so only its size/complexity bar is re-checked.
+    """
+    rule = _SEVERITY_RULE[biomarker]
+    before = rule(analysis.ccn, analysis.nloc)
+    if before is None:
+        # These metrics do not reproduce the finding, so there is no band to
+        # re-grade against; keep the finding's own impact.
+        return 1.0
+    residual = rule(
+        analysis.ccn - extraction.ccn_removed, analysis.nloc - extraction.slice_nloc + 1
+    )
+    helper = rule(extraction.ccn_removed + 1, extraction.slice_nloc)
+    remaining = sum(severity_deduction(s) for s in (residual, helper) if s is not None)
+    return max(0.0, 1.0 - remaining / severity_deduction(before))

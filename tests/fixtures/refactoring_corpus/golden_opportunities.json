@@ -86,14 +86,14 @@
       "mechanical_steps": 1,
       "opportunity_id": "refop2_d82fe75fc83659cefa14",
       "rank_factors": {
-        "benefit": 1.452,
+        "benefit": 0.605,
         "cost": 1.0,
         "mechanical_share": 0.5,
         "primary_problem": 0.5,
         "risk": 0.0
       },
-      "rank_score": 1.452,
-      "recoverable_health": 1.452,
+      "rank_score": 0.605,
+      "recoverable_health": 0.605,
       "refactoring_model_version": 2,
       "step_count": 1,
       "steps": [
@@ -115,7 +115,7 @@
           "confidence": "high",
           "effort_bucket": "S",
           "file_path": "account.ts",
-          "impact_delta": 1.452,
+          "impact_delta": 0.605,
           "plan_id": "refac2_a5f94bcfa0d5e0e24f37",
           "refactoring_type": "extract_method",
           "relocated_by": null,
@@ -125,12 +125,12 @@
       ],
       "why_ranked": [
         {
-          "factor": "benefit",
-          "value": 1.452
-        },
-        {
           "factor": "cost",
           "value": 1.0
+        },
+        {
+          "factor": "benefit",
+          "value": 0.605
         },
         {
           "factor": "mechanical_share",
@@ -153,14 +153,14 @@
       "mechanical_steps": 1,
       "opportunity_id": "refop2_443f00cfefc5d4f86685",
       "rank_factors": {
-        "benefit": 1.452,
+        "benefit": 0.605,
         "cost": 1.0,
         "mechanical_share": 0.5,
         "primary_problem": 0.5,
         "risk": 0.0
       },
-      "rank_score": 1.452,
-      "recoverable_health": 1.452,
+      "rank_score": 0.605,
+      "recoverable_health": 0.605,
       "refactoring_model_version": 2,
       "step_count": 1,
       "steps": [
@@ -182,7 +182,7 @@
           "confidence": "high",
           "effort_bucket": "S",
           "file_path": "workspace.ts",
-          "impact_delta": 1.452,
+          "impact_delta": 0.605,
           "plan_id": "refac2_b21dea1501a82eec255a",
           "refactoring_type": "extract_method",
           "relocated_by": null,
@@ -192,12 +192,12 @@
       ],
       "why_ranked": [
         {
-          "factor": "benefit",
-          "value": 1.452
-        },
-        {
           "factor": "cost",
           "value": 1.0
+        },
+        {
+          "factor": "benefit",
+          "value": 0.605
         },
         {
           "factor": "mechanical_share",
