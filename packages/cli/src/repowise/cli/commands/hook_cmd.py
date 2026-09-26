@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+
 import click
 
 from repowise.cli.helpers import (
@@ -69,17 +72,7 @@ def hook_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
     from repowise.cli.hooks import install
 
     target = _hook_target(path, workspace, no_workspace)
-
-    if target.is_workspace:
-        assert target.ws_root is not None and target.ws_config is not None
-        for entry in target.ws_config.repos:
-            abs_path = (target.ws_root / entry.path).resolve()
-            result = install(abs_path)
-            console.print(f"  {entry.alias}: [green]{result}[/green]")
-    else:
-        assert target.repo_path is not None
-        result = install(target.repo_path)
-        console.print(f"Post-commit hook: [green]{result}[/green]")
+    _run_post_commit_action(target, install, action="installed")
 
 
 @hook_group.command("uninstall")
@@ -102,17 +95,29 @@ def hook_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> Non
     from repowise.cli.hooks import uninstall
 
     target = _hook_target(path, workspace, no_workspace)
+    _run_post_commit_action(target, uninstall, action="uninstalled")
 
-    if target.is_workspace:
-        assert target.ws_root is not None and target.ws_config is not None
-        for entry in target.ws_config.repos:
-            abs_path = (target.ws_root / entry.path).resolve()
-            result = uninstall(abs_path)
-            console.print(f"  {entry.alias}: {result}")
-    else:
-        assert target.repo_path is not None
-        result = uninstall(target.repo_path)
-        console.print(f"Post-commit hook: {result}")
+
+def _run_post_commit_action(target, run: Callable[[Path], str], *, action: str) -> None:
+    """Run a post-commit hook action across indexed targets."""
+    entries = _target_repo_entries(target)
+    if not entries:
+        raise click.ClickException(
+            "No indexed repositories found. Run `repowise init` before managing hooks."
+        )
+
+    succeeded = 0
+    for alias, repo_path in entries:
+        result = run(repo_path)
+        label = f"  {alias}" if target.is_workspace else "Post-commit hook"
+        if result.startswith("not "):
+            console.print(f"{label}: [yellow]{result}[/yellow]")
+            continue
+        succeeded += 1
+        console.print(f"{label}: [green]{result}[/green]")
+
+    if not succeeded:
+        raise click.ClickException(f"No post-commit hooks were {action}.")
 
 
 @hook_group.group("rewrite")
@@ -134,17 +139,26 @@ def rewrite_group() -> None:
     """
 
 
-def _target_repo_paths(target) -> list:
-    """The repo paths a hook subcommand should act on (repowise repos only)."""
+def _target_repo_entries(target) -> list[tuple[str, Path]]:
+    """The indexed aliases and paths a hook subcommand should act on."""
     if target.is_workspace:
         assert target.ws_root is not None and target.ws_config is not None
         return [
-            (target.ws_root / entry.path).resolve()
+            (entry.alias, (target.ws_root / entry.path).resolve())
             for entry in target.ws_config.repos
             if ((target.ws_root / entry.path).resolve() / ".repowise").is_dir()
         ]
     assert target.repo_path is not None
-    return [target.repo_path] if (target.repo_path / ".repowise").is_dir() else []
+    return (
+        [(target.repo_path.name, target.repo_path)]
+        if (target.repo_path / ".repowise").is_dir()
+        else []
+    )
+
+
+def _target_repo_paths(target) -> list[Path]:
+    """The repo paths a hook subcommand should act on (repowise repos only)."""
+    return [repo_path for _, repo_path in _target_repo_entries(target)]
 
 
 def _print_rewrite_hook_status(label: str, status) -> None:
