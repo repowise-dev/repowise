@@ -54,6 +54,14 @@ def restore_tool_globals():
     ) = saved
 
 
+@pytest.fixture(autouse=True)
+def live_server_loggers(monkeypatch):
+    """Alembic's ``fileConfig`` elsewhere in the suite disables existing loggers."""
+    for name, logger in list(logging.root.manager.loggerDict.items()):
+        if name.startswith("repowise") and isinstance(logger, logging.Logger):
+            monkeypatch.setattr(logger, "disabled", False)
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """No configured DB, no embedder, a private home, and cwd inside tmp_path."""
