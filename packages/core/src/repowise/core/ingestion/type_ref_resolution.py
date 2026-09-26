@@ -42,6 +42,7 @@ language tag.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -621,6 +622,10 @@ def _resolve_ts_type_refs(
             continue
         target = name_to_source.get(name) or namespace_to_source.get(name)
         if target is None:
+            target = _find_unique_ambient_declaration(
+                name, from_path, graph, defined_names, ctx
+            )
+        if target is None:
             target = _find_ts_type_in_stem_map(
                 name, from_path, ctx, graph, defined_names
             )
@@ -644,6 +649,75 @@ def _resolve_ts_type_refs(
             existing.update(same_file_refs)
 
     return emitted
+
+
+def _find_unique_ambient_declaration(
+    type_name: str,
+    from_path: str,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+    ctx: ResolverContext,
+) -> str | None:
+    """Resolve an unimported type from one ambient ``.d.ts`` owner."""
+    owners_by_name = getattr(ctx, "_ts_ambient_type_owners", None)
+    if owners_by_name is None:
+        owners_by_name: dict[str, list[str]] = {}
+        for path, names in defined_names.items():
+            if not path.endswith(".d.ts") or not graph.has_node(path):
+                continue
+            ambient_names = _ambient_declaration_names(path, names, ctx)
+            for name in ambient_names:
+                owners_by_name.setdefault(name, []).append(path)
+        ctx.__dict__["_ts_ambient_type_owners"] = owners_by_name
+    owners = [path for path in owners_by_name.get(type_name, ()) if path != from_path]
+    return owners[0] if len(owners) == 1 else None
+
+
+def _ambient_declaration_names(
+    path: str, defined_names: set[str], ctx: ResolverContext
+) -> set[str]:
+    """Names declared globally in a script or a module's ``declare global``."""
+    parsed = (ctx.parsed_files or {}).get(path)
+    if parsed is None:
+        return set()
+    has_module_syntax = bool(parsed.imports or parsed.exports)
+    if not has_module_syntax:
+        return set(defined_names)
+    raw = (ctx.source_map or {}).get(path)
+    if raw is None:
+        try:
+            raw = Path(parsed.file_info.abs_path).read_bytes()
+        except OSError:
+            return set()
+    try:
+        import tree_sitter_typescript as ts
+        from tree_sitter import Language, Parser
+
+        source = raw.decode("utf-8", errors="replace")
+        root = Parser(Language(ts.language_typescript())).parse(raw).root_node
+        encoded = source.encode("utf-8")
+    except Exception:
+        return set()
+    global_names: set[str] = set()
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "ambient_declaration":
+            prefix = encoded[node.start_byte : min(node.end_byte, node.start_byte + 40)]
+            if re.match(rb"declare\s+global\b", prefix):
+                nested = [node]
+                while nested:
+                    declaration = nested.pop()
+                    name = declaration.child_by_field_name("name")
+                    if name is not None:
+                        type_name = encoded[name.start_byte : name.end_byte].decode(
+                            "utf-8", errors="replace"
+                        )
+                        if type_name in defined_names:
+                            global_names.add(type_name)
+                    nested.extend(declaration.children)
+        stack.extend(node.children)
+    return global_names
 
 
 def _find_ts_type_in_stem_map(

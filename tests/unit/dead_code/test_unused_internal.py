@@ -2,11 +2,34 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
+import pytest
+
 from repowise.core.analysis.dead_code import (
     DeadCodeAnalyzer,
     DeadCodeKind,
 )
+from repowise.core.ingestion.models import FileInfo
+from repowise.core.ingestion.parser import ASTParser
 from tests.unit.dead_code._helpers import _build_graph
+
+
+def _ts_local_refs(tmp_path, filename, source):
+    path = str(tmp_path / filename)
+    info = FileInfo(
+        path=path,
+        abs_path=path,
+        language=("javascript" if filename.endswith((".js", ".jsx")) else "typescript"),
+        size_bytes=len(source),
+        git_hash="",
+        last_modified=datetime.now(),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    return ASTParser().parse_file(info, source.encode()).local_refs
 
 
 def test_unused_internal_default_on():
@@ -46,6 +69,115 @@ def test_unused_internal_default_on():
     internals = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
     assert any(f.symbol_name == "_helper" for f in internals)
     assert all(f.safe_to_delete is False for f in internals)
+
+
+def test_ts_value_references_rescue_only_referenced_private_symbols(tmp_path):
+    path = str(tmp_path / "handlers.ts")
+    source = (
+        "function shutdown() {}\n"
+        "function register() { process.on('SIGTERM', shutdown); }\n"
+        "function recursive() { recursive(); }\n"
+    )
+    local_refs = _ts_local_refs(tmp_path, "handlers.ts", source)
+    assert "shutdown" in local_refs
+    assert "recursive" not in local_refs
+
+    graph = _build_graph(
+        nodes={
+            path: {
+                "is_entry_point": False,
+                "is_test": False,
+                "local_refs": local_refs,
+                "symbols": [
+                    {"name": name, "kind": "function", "visibility": "private"}
+                    for name in ("shutdown", "register", "recursive")
+                ],
+            }
+        }
+    )
+    report = DeadCodeAnalyzer(graph, git_meta_map={}).analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    unused = {
+        finding.symbol_name
+        for finding in report.findings
+        if finding.kind == DeadCodeKind.UNUSED_INTERNAL
+    }
+    assert "shutdown" not in unused
+    assert "recursive" in unused
+
+
+def test_ts_local_use_does_not_hide_unused_export():
+    path = "sample/src/routes.ts"
+    graph = _build_graph(
+        nodes={
+            path: {
+                "is_entry_point": False,
+                "is_test": False,
+                "local_refs": frozenset({"LOCAL_ONLY_ROUTES"}),
+                "symbols": [
+                    {
+                        "name": "LOCAL_ONLY_ROUTES",
+                        "kind": "variable",
+                        "language": "typescript",
+                        "visibility": "public",
+                    }
+                ],
+            }
+        }
+    )
+    report = DeadCodeAnalyzer(graph).analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_internals": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    assert any(
+        finding.kind == DeadCodeKind.UNUSED_EXPORT
+        and finding.symbol_name == "LOCAL_ONLY_ROUTES"
+        for finding in report.findings
+    )
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        "const element = <Widget value={X} />;",
+        "const [value] = useState(() => X);",
+        "object.handler = X;",
+        "const spread = { ...X };",
+        "const shorthand = { X };",
+        "type AsType = X;",
+        "type AsValueType = typeof X;",
+        "export { X };",
+        "export default X;",
+    ],
+)
+def test_ts_same_file_reference_shapes_are_recorded(tmp_path, usage):
+    source = f"const X: any = {{}};\n{usage}\n"
+    assert "X" in _ts_local_refs(tmp_path, "refs.tsx", source)
+
+
+def test_ts_same_file_reference_ignores_shadowed_name(tmp_path):
+    source = "const X = 1;\nfunction local(X: number) { return X; }\n"
+    assert "X" not in _ts_local_refs(tmp_path, "shadow.ts", source)
+
+
+def test_ts_genuinely_unused_const_is_not_recorded(tmp_path):
+    source = "const neverUsed = 1;\n"
+    assert "neverUsed" not in _ts_local_refs(tmp_path, "unused.ts", source)
+
+
+def test_js_value_reference_is_recorded(tmp_path):
+    source = "const shutdown = () => {};\nprocess.on('SIGTERM', shutdown);\n"
+    assert "shutdown" in _ts_local_refs(tmp_path, "handlers.js", source)
 
 
 def test_unused_internal_explicit_opt_out():
@@ -377,4 +509,3 @@ def test_unused_internal_rust_impl_uncallable():
     )
     names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
     assert "MyStruct" not in names
-

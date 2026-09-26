@@ -52,6 +52,8 @@ def _graph(*, calls=False, extra=None):
     # Dependents for the centrality gate; untested_hotspot wants at least four.
     for i in range(6):
         g.add_edge(f"src/consumer_{i}.py", "src/parser.py", edge_type="imports")
+    for node in g:
+        g.nodes[node]["node_type"] = "symbol" if "::" in node else "file"
     return g
 
 

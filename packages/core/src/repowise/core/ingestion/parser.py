@@ -66,6 +66,7 @@ from .extractors.visibility import (
     ts_deferred_export_names,
     ts_export_aliases,
 )
+from .js_local_refs import extract_js_local_refs
 from .language_configs import LANGUAGE_CONFIGS, LanguageConfig
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .models import (
@@ -1156,6 +1157,10 @@ class ASTParser:
         if lang == "python":
             top_level_names = {s.name for s in symbols if s.name and not s.parent_name}
             local_refs = extract_python_local_refs(src, top_level_names)
+        elif lang in ("typescript", "javascript"):
+            local_refs = extract_js_local_refs(
+                file_info.path, src, {s.name for s in symbols if s.name}, root
+            )
 
         if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
             log.warning(

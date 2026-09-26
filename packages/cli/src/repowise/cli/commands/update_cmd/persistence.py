@@ -9,6 +9,7 @@ state-file updates and console reporting stay here.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import sys
 import time
@@ -19,6 +20,7 @@ import structlog
 
 from repowise.cli.helpers import console, head_commit_ts, load_config, run_async, save_state
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.pipeline import PhaseTimings, timed
 
 from .incremental import _build_repo_graph
@@ -465,8 +467,13 @@ def _persist_index_only_update(
     # only reached the changed files.
     last_full_rescore_at = state.get("last_full_rescore_at")
     health_analyzer_version = state.get("health_analyzer_version")
+    graph = graph_builder.graph() if callable(getattr(graph_builder, "graph", None)) else None
+    dependency_fingerprint = health_dependency_fingerprint(graph) if graph is not None else None
+    dependency_changed = graph is not None and health_dependency_changed(
+        state, graph, dependency_fingerprint
+    )
     rescored = False
-    if force_full_rescore or full_rescore_due(state, head_ts):
+    if force_full_rescore or dependency_changed or full_rescore_due(state, head_ts):
         with timed(timings, "rescore"):
             rescored = run_decay_health_rescore(
                 repo_path, graph_builder, parsed_files or [], exclude_patterns or []
@@ -503,6 +510,8 @@ def _persist_index_only_update(
         # here is exactly the cost the mode exists to avoid.
         "renderer_fingerprint": _current_renderer_fingerprint(repo_path),
     }
+    if dependency_fingerprint is not None and (rescored or not dependency_changed):
+        new_state["health_dependency_fingerprint"] = dependency_fingerprint
     if full_git_summary is not None:
         coverage = getattr(full_git_summary, "history_coverage", None)
         if coverage is not None:
@@ -1673,6 +1682,27 @@ def full_rescore_due(state: dict, head_ts: float | None) -> bool:
     if not isinstance(last, (int, float)):
         return True
     return (head_ts - float(last)) >= _full_rescore_interval_days() * 86400.0
+
+
+def health_dependency_fingerprint(graph: Any) -> str:
+    """Fingerprint code dependency pairs used by dependents and coupling health."""
+    relationships = sorted(
+        (str(src), str(dst))
+        for src, dst, data in graph.edges(data=True)
+        if data.get("edge_type") in FILE_DEPENDENCY_EDGE_TYPES
+        and graph.nodes[src].get("node_type") == "file"
+        and graph.nodes[dst].get("node_type") == "file"
+    )
+    payload = "\n".join(f"{src}\0{dst}" for src, dst in relationships).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def health_dependency_changed(
+    state: dict, graph: Any, fingerprint: str | None = None
+) -> bool:
+    """Whether a known dependency-topology baseline differs from this graph."""
+    stored = state.get("health_dependency_fingerprint")
+    return stored is not None and stored != (fingerprint or health_dependency_fingerprint(graph))
 
 
 def run_decay_health_rescore(

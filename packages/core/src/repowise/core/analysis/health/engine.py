@@ -30,6 +30,7 @@ from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
     distinct_commits_in_range,
 )
+from ...ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 
 # Package attribution lives in one place, shared with the traverser and with
 # the `repowise update` backfill, so all three agree on what a package is.
@@ -303,7 +304,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 31
+HEALTH_ANALYZER_VERSION = 32
 
 
 def walked_functions(
@@ -423,7 +424,7 @@ def _compute_repo_function_mod_p80(
 
 
 def _compute_repo_dependents_p80(parsed_files: list[Any], graph: Any) -> int | None:
-    """Repo-wide 80th percentile of file-level in-degree (dependents).
+    """Repo-wide 80th percentile of real file dependency counts.
 
     Restricted to files that actually have ≥1 dependent — this is the
     "top quintile of *connected* files", mirroring the mod-count p80
@@ -442,12 +443,23 @@ def _compute_repo_dependents_p80(parsed_files: list[Any], graph: Any) -> int | N
         if path not in graph:
             continue
         try:
-            deg = int(graph.in_degree(path))
+            deg = _file_dependents_count(graph, path)
         except Exception:
             continue
         if deg > 0:
             counts.append(deg)
     return _percentile_p80(counts)
+
+
+def _file_dependents_count(graph: Any, path: str) -> int:
+    """Count unique files with a dependency edge into *path*."""
+    return sum(
+        1
+        for pred in graph.predecessors(path)
+        if graph.nodes[pred].get("node_type") == "file"
+        if graph.get_edge_data(pred, path, {}).get("edge_type")
+        in FILE_DEPENDENCY_EDGE_TYPES
+    )
 
 
 def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | None:
@@ -1032,7 +1044,7 @@ class HealthAnalyzer:
             if path in out or path not in self.graph:
                 continue
             try:
-                out[path] = float(self.graph.in_degree(path))
+                out[path] = float(_file_dependents_count(self.graph, path))
             except Exception:
                 out[path] = 0.0
         return out
@@ -1269,7 +1281,7 @@ class HealthAnalyzer:
         dependents_count = 0
         if self.graph is not None and file_path in self.graph:
             try:
-                dependents_count = int(self.graph.in_degree(file_path))
+                dependents_count = _file_dependents_count(self.graph, file_path)
             except Exception:
                 dependents_count = 0
 

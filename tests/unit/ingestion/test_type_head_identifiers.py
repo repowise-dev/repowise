@@ -133,20 +133,19 @@ CASES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
         "typescript",
         "ts",
         "generic-builtin-outer",
-        # Defect: the builtin outer (Promise) is correctly filtered, but the
-        # inner user type (Foo) is never captured separately — TS has no
-        # equivalent of C#'s type_argument_list rescue. Produces nothing.
+        # The builtin outer (Promise) is filtered, and the inner generic
+        # argument (Foo) is captured via (type_arguments (type_identifier) @param.type).
         "function f(a: Promise<Foo>) {}\n",
-        [],
+        [("Foo", "param_type")],
     ),
     (
         "typescript",
         "ts",
         "generic-user-outer",
-        # Defect: same loss when the outer is a non-builtin — only the
-        # outer head (Container) survives; the inner arg (Foo) is dropped.
+        # Both the outer head (Container) and the inner generic argument
+        # (Foo) are captured.
         "function f(a: Container<Foo>) {}\n",
-        [("Container", "param_type")],
+        [("Container", "param_type"), ("Foo", "param_type")],
     ),
     ("typescript", "ts", "qualified", "function f(a: ns.Foo) {}\n", [("Foo", "param_type")]),
     ("typescript", "ts", "array-wrapper", "function f(a: Foo[]) {}\n", [("Foo", "param_type")]),

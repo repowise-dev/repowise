@@ -342,3 +342,7 @@
 (union_type (_) @param.type)
 (intersection_type (_) @param.type)
 (conditional_type (_) @param.type)
+
+; Generic type arguments can be the only mention of an ambient type:
+; ``Partial<AmbientSettings>`` or ``decodeConfig<AmbientSettings>()``.
+(type_arguments (type_identifier) @param.type)

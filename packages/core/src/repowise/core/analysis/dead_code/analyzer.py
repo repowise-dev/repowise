@@ -1334,7 +1334,7 @@ class DeadCodeAnalyzer:
                 # parser stamps these intra-module references on the file node
                 # (see ``ingestion/python_local_refs.py``); treat them as live.
                 local_refs = node_data.get("local_refs")
-                if local_refs and sym_name in local_refs:
+                if node_data.get("language") == "python" and local_refs and sym_name in local_refs:
                     continue
 
                 is_deprecated = _is_symbol_deprecated(
@@ -1464,7 +1464,11 @@ class DeadCodeAnalyzer:
         return findings
 
     def _get_unsatisfied_prop_guard(
-        self, sym_id: str, sym_name: str, visited: set[str] | None = None
+        self,
+        sym_id: str,
+        sym_name: str,
+        visited: set[str] | None = None,
+        memo: dict[str, tuple[str, str] | None] | None = None,
     ) -> tuple[str, str] | None:
         """Check if a symbol is rendered behind a prop guard that is never supplied."""
         if not self.graph.has_node(sym_id):
@@ -1472,6 +1476,10 @@ class DeadCodeAnalyzer:
 
         if visited is None:
             visited = set()
+        if memo is None:
+            memo = {}
+        if sym_id in memo:
+            return memo[sym_id]
         if sym_id in visited:
             return None
         visited.add(sym_id)
@@ -1483,8 +1491,10 @@ class DeadCodeAnalyzer:
             if self.graph[pred][sym_id].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
         ]
         if not predecessors:
+            memo[sym_id] = None
             return None
 
+        resolved_guards: list[tuple[str, str]] = []
         for pred in predecessors:
             pred_file = pred.split("::")[0] if "::" in pred else pred
             if not pred_file.endswith((".tsx", ".jsx", ".ts", ".js")):
@@ -1520,14 +1530,28 @@ class DeadCodeAnalyzer:
                             all_missing = False
                             break
                     if all_missing:
-                        return (prop_name, parent_name)
+                        resolved_guards.append((prop_name, parent_name))
+                        continue
 
             pred_name = pred.split("::")[-1]
-            parent_guard = self._get_unsatisfied_prop_guard(pred, pred_name, visited)
-            if parent_guard is not None:
-                return parent_guard
+            parent_guard = self._get_unsatisfied_prop_guard(
+                pred, pred_name, set(visited), memo
+            )
+            if parent_guard is None:
+                memo[sym_id] = None
+                return None
+            resolved_guards.append(parent_guard)
 
-        return None
+        # One blocked route is insufficient: any unguarded or satisfied route
+        # keeps the symbol reachable. Report only when every predecessor path
+        # resolves to an unsatisfied guard.
+        result = (
+            resolved_guards[0]
+            if resolved_guards and len(resolved_guards) == len(predecessors)
+            else None
+        )
+        memo[sym_id] = result
+        return result
 
     def _read_file_text(self, file_path: str) -> str | None:
         """Safely read the content of a file, using source_map if available."""
@@ -1637,6 +1661,12 @@ class DeadCodeAnalyzer:
                 in REACHABILITY_USE_EDGE_TYPES
                 for pred in self.graph.predecessors(node)
             )
+            # TS/JS value references do not necessarily produce symbol-level
+            # call edges. Ingestion stamps them on the file node so handlers
+            # such as ``process.on('SIGTERM', shutdown)`` remain live.
+            local_refs = file_data.get("local_refs")
+            if local_refs and sym_name in local_refs:
+                is_used = True
             if is_used:
                 continue
 

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import networkx as nx
+
 from repowise.core.analysis.health.biomarkers import FileContext
 from repowise.core.analysis.health.biomarkers.bumpy_road import BumpyRoadDetector
 from repowise.core.analysis.health.biomarkers.large_method import LargeMethodDetector
@@ -9,6 +13,21 @@ from repowise.core.analysis.health.biomarkers.primitive_obsession import (
     PrimitiveObsessionDetector,
 )
 from repowise.core.analysis.health.complexity import FunctionComplexity
+from repowise.core.analysis.health.engine import _compute_repo_dependents_p80
+
+
+def test_dependents_ignore_non_dependency_and_symbol_edges():
+    graph = nx.DiGraph()
+    graph.add_node("target.ts", node_type="file")
+    graph.add_node("importer.ts", node_type="file")
+    graph.add_node("history.ts", node_type="file")
+    graph.add_node("SomeSymbol", node_type="symbol")
+    graph.add_edge("importer.ts", "target.ts", edge_type="imports")
+    graph.add_edge("history.ts", "target.ts", edge_type="co_changes")
+    graph.add_edge("SomeSymbol", "target.ts", edge_type="calls")
+    parsed = [SimpleNamespace(file_info=SimpleNamespace(path="target.ts"))]
+
+    assert _compute_repo_dependents_p80(parsed, graph) == 1
 
 
 def _ctx(fns: list[FunctionComplexity]) -> FileContext:

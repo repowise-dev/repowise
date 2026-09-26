@@ -13,6 +13,8 @@ from repowise.cli.commands.update_cmd.persistence import (
     _full_rescore_interval_days,
     full_rescore_due,
     health_analyzer_changed,
+    health_dependency_changed,
+    health_dependency_fingerprint,
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
@@ -108,6 +110,25 @@ class TestFullRescoreDue:
         if stamp is not None:
             state["last_full_rescore_at"] = stamp
         assert full_rescore_due(state, 1_000_000.0) is True
+
+
+def test_dependency_fingerprint_tracks_dependency_topology():
+    import networkx as nx
+
+    graph = nx.DiGraph()
+    for path in ("target.ts", "first.ts", "second.ts", "elsewhere.ts"):
+        graph.add_node(path, node_type="file")
+    first = health_dependency_fingerprint(graph)
+    assert health_dependency_changed({}, graph) is False
+    assert health_dependency_changed({"health_dependency_fingerprint": first}, graph) is False
+
+    graph.add_edge("first.ts", "target.ts", edge_type="imports")
+    changed = health_dependency_fingerprint(graph)
+    assert health_dependency_changed({"health_dependency_fingerprint": first}, graph) is True
+
+    graph.remove_edge("first.ts", "target.ts")
+    graph.add_edge("second.ts", "target.ts", edge_type="type_use")
+    assert health_dependency_fingerprint(graph) != changed
 
 
 class TestInitStampsTheCadence:
