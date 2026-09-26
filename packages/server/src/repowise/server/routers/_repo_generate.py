@@ -46,6 +46,42 @@ class GenerateRequestBody(BaseModel):
     style: str | None = None
 
 
+def _reject_structural_page_ids(page_ids: list[str]) -> None:
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+
+    structural = [pid for pid in page_ids if pid.split(":", 1)[0] not in MODEL_WRITTEN_PAGE_TYPES]
+    if structural:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "generate writes the concept layer only; these pages render "
+                "from structure and refresh on update, not generate: " + ", ".join(structural)
+            ),
+        )
+
+
+def _validate_ranked(sel: GenerateSelectionBody) -> None:
+    has_coverage = sel.coverage_pct is not None
+    has_top_n = sel.top_n is not None
+    if has_coverage == has_top_n:
+        raise HTTPException(
+            status_code=400,
+            detail="A ranked selection needs exactly one of coverage_pct or top_n.",
+        )
+    if has_coverage and not 0.0 < sel.coverage_pct <= 1.0:
+        raise HTTPException(
+            status_code=400,
+            detail="coverage_pct must be a fraction in (0, 1] (0.2 == the top 20%, 1.0 == all).",
+        )
+    if has_top_n and sel.top_n <= 0:
+        raise HTTPException(status_code=400, detail="top_n must be a positive number of pages.")
+    if sel.page_ids is not None or sel.path_prefix is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="A ranked selection cannot also carry page_ids or path_prefix.",
+        )
+
+
 def _validate_generate_selection(sel: GenerateSelectionBody) -> None:
     """Reject an incoherent selection with an actionable 400.
 
@@ -54,45 +90,11 @@ def _validate_generate_selection(sel: GenerateSelectionBody) -> None:
     ``top_n`` are mutually exclusive and belong only to a ranked selection.
     """
     if sel.kind == "page_ids":
-        from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+        _reject_structural_page_ids(sel.page_ids or [])
 
-        structural = [
-            pid
-            for pid in (sel.page_ids or [])
-            if pid.split(":", 1)[0] not in MODEL_WRITTEN_PAGE_TYPES
-        ]
-        if structural:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "generate writes the concept layer only; these pages render "
-                    "from structure and refresh on update, not generate: " + ", ".join(structural)
-                ),
-            )
-
-    is_ranked = sel.kind == "ranked"
-    has_coverage = sel.coverage_pct is not None
-    has_top_n = sel.top_n is not None
-
-    if is_ranked:
-        if has_coverage == has_top_n:
-            raise HTTPException(
-                status_code=400,
-                detail="A ranked selection needs exactly one of coverage_pct or top_n.",
-            )
-        if has_coverage and not 0.0 < sel.coverage_pct <= 1.0:
-            raise HTTPException(
-                status_code=400,
-                detail="coverage_pct must be a fraction in (0, 1] (0.2 == the top 20%, 1.0 == all).",
-            )
-        if has_top_n and sel.top_n <= 0:
-            raise HTTPException(status_code=400, detail="top_n must be a positive number of pages.")
-        if sel.page_ids is not None or sel.path_prefix is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="A ranked selection cannot also carry page_ids or path_prefix.",
-            )
-    elif has_coverage or has_top_n:
+    if sel.kind == "ranked":
+        _validate_ranked(sel)
+    elif sel.coverage_pct is not None or sel.top_n is not None:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -102,17 +104,21 @@ def _validate_generate_selection(sel: GenerateSelectionBody) -> None:
         )
 
 
-def _validate_generate_style(style: str | None) -> None:
-    """Reject an unknown wiki style with a 400 listing the valid ones."""
-    if style is None:
-        return
+def _reject_unknown_style(style: str, field: str) -> None:
+    """400 naming ``field`` and listing the valid styles, when ``style`` is unknown."""
     from repowise.core.generation.styles import is_known_style, list_styles
 
     if not is_known_style(style):
         valid = ", ".join(s.name for s in list_styles())
         raise HTTPException(
-            status_code=400, detail=f"Unknown style '{style}'. Valid styles: {valid}."
+            status_code=400, detail=f"Unknown {field} '{style}'. Valid styles: {valid}."
         )
+
+
+def _validate_generate_style(style: str | None) -> None:
+    """Reject an unknown wiki style with a 400 listing the valid ones."""
+    if style is not None:
+        _reject_unknown_style(style, "style")
 
 
 def _generate_job_config(body: GenerateRequestBody) -> dict:
