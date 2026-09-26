@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable, Container, Iterator
+from itertools import chain
 from pathlib import Path
 
 from ...ingestion.composer import COMPOSER_JSON, read_composer
@@ -210,195 +212,277 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
     return list(items_list)
 
 
+_Item = tuple[str, str | None, str]
+
+# A root package.json with none of these fields, no engines.node and no known
+# framework is tooling (Playwright, Husky) rather than a Node.js app.
+_NODE_RUNTIME_FIELDS = ("dependencies", "main", "bin", "module", "exports")
+
+# Root files whose mere presence names a technology.
+_ROOT_MARKERS: tuple[tuple[tuple[str, ...], _Item], ...] = (
+    (("Cargo.toml",), ("Rust", None, "language")),
+    (("Gemfile",), ("Ruby", None, "language")),
+    (("Dockerfile",), ("Docker", None, "infra")),
+    (("docker-compose.yml", "docker-compose.yaml"), ("Docker Compose", None, "infra")),
+)
+
+# .NET stack indicators, tested against the joined text of the scanned .csproj
+# files and the stems of every .csproj found.
+_DOTNET_FLAVOURS: tuple[tuple[str, str, Callable[[str, list[str]], bool]], ...] = (
+    ("ASP.NET Core", "framework", lambda text, stems: "Microsoft.AspNetCore" in text),
+    (
+        "Entity Framework Core",
+        "database",
+        lambda text, stems: "Microsoft.EntityFrameworkCore" in text,
+    ),
+    (
+        ".NET Aspire",
+        "infra",
+        lambda text, stems: "Aspire.Hosting" in text or any("AppHost" in s for s in stems),
+    ),
+    (
+        "gRPC",
+        "framework",
+        lambda text, stems: "Grpc.AspNetCore" in text or "Google.Protobuf" in text,
+    ),
+    (
+        ".NET MAUI",
+        "framework",
+        lambda text, stems: "MAUI" in text.upper() or any("Maui" in s for s in stems),
+    ),
+    (
+        "WinUI 3",
+        "framework",
+        lambda text, stems: "Microsoft.WindowsAppSDK" in text or "Microsoft.UI.Xaml" in text,
+    ),
+    (
+        "WPF",
+        "framework",
+        lambda text, stems: "Microsoft.NET.Sdk.WindowsDesktop" in text or "<UseWPF>true" in text,
+    ),
+    (
+        "Windows Forms",
+        "framework",
+        lambda text, stems: (
+            "Microsoft.NET.Sdk.WindowsDesktop" in text and "<UseWindowsForms>true" in text
+        ),
+    ),
+)
+
+
 def _detect_tech_stack_uncached(repo_path: Path) -> list[TechStackItem]:
     """The real scan. See :func:`detect_tech_stack` for the contract."""
     items: dict[str, TechStackItem] = {}
+    for detect in _DETECTORS:
+        for name, version, category in detect(repo_path):
+            if name not in items:
+                items[name] = TechStackItem(name=name, version=version, category=category)
+    return sorted(items.values(), key=lambda x: (x.category, x.name))
 
-    def add(name: str, version: str | None, category: str) -> None:
-        if name not in items:
-            items[name] = TechStackItem(name=name, version=version, category=category)
 
-    # --- package.json (Node.js) ---
-    # Many .NET / Python / Go repos drop a package.json at the root for
-    # tooling like Playwright or Husky without being Node.js applications.
-    # We only register Node.js as a language when there is real evidence
-    # of a Node.js runtime: a ``main``/``bin`` field, runtime
-    # ``dependencies``, or a known framework dep.
-    pkg_json = repo_path / "package.json"
-    pkg: dict[str, object] | None = None
-    if pkg_json.exists():
-        try:
-            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
-        except Exception:
-            pkg = None
+def _read_package_json(repo_path: Path) -> object:
+    """Parsed root package.json, or None when it is absent or unreadable."""
+    try:
+        return json.loads((repo_path / "package.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
-    if isinstance(pkg, dict):
-        runtime_deps = pkg.get("dependencies") or {}
-        dev_deps = pkg.get("devDependencies") or {}
-        all_deps = {**runtime_deps, **dev_deps}
-        node_ver = (pkg.get("engines") or {}).get("node") if isinstance(pkg.get("engines"), dict) else None
-        # Tooling-only manifests (e.g. .NET / Python repos that drop a
-        # package.json for Playwright or Husky) declare no runtime
-        # dependencies, no entry-point fields, and no engines hint. We
-        # gate the "Node.js" language tag on at least one of those
-        # signals to keep them from being labelled Node.js apps.
-        has_runtime_signal = bool(
-            runtime_deps
-            or pkg.get("main")
-            or pkg.get("bin")
-            or pkg.get("module")
-            or pkg.get("exports")
-            or node_ver
-        )
-        has_framework_dep = any(dep_key in all_deps for dep_key in _NODE_FRAMEWORKS)
-        if has_runtime_signal or has_framework_dep:
-            add("Node.js", node_ver, "language")
-            for dep_key, (display, cat) in _NODE_FRAMEWORKS.items():
-                if dep_key in all_deps:
-                    raw = all_deps[dep_key].lstrip("^~>=")
-                    add(display, raw or None, cat)
-        # TypeScript can be added independently — many monorepos only use
-        # TS via tsconfig.json without depending on a Node.js runtime.
-        # Monorepos frequently keep tsconfig.json only inside workspace
-        # packages (packages/*/tsconfig.json), so look two levels deep.
-        def _is_project_dir(p: Path) -> bool:
-            rel_parts = p.relative_to(repo_path).parts[:-1]
-            if any(part == "node_modules" or part.startswith(".") for part in rel_parts):
-                return False
-            # Skip nested git repos (sibling clones, vendored checkouts).
-            probe = repo_path
-            for part in rel_parts:
-                probe = probe / part
-                if (probe / ".git").exists():
-                    return False
-            return True
 
-        has_tsconfig = (
-            (repo_path / "tsconfig.json").exists()
-            or any(_is_project_dir(p) for p in repo_path.glob("*/tsconfig.json"))
-            or any(_is_project_dir(p) for p in repo_path.glob("*/*/tsconfig.json"))
-        )
-        if "typescript" in all_deps or has_tsconfig:
-            ts_ver = all_deps.get("typescript", "").lstrip("^~>=") or None
-            add("TypeScript", ts_ver, "language")
+def _node_items(repo_path: Path) -> Iterator[_Item]:
+    pkg = _read_package_json(repo_path)
+    if not isinstance(pkg, dict):
+        return
+    all_deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+    if _is_node_app(pkg, all_deps):
+        yield "Node.js", _node_engine(pkg), "language"
+        yield from _node_framework_items(all_deps)
+    # TypeScript stands on its own: many repos use it through tsconfig.json alone.
+    if "typescript" in all_deps or _has_tsconfig(repo_path):
+        yield "TypeScript", _dep_version(all_deps, "typescript"), "language"
 
-    # --- pyproject.toml / setup.py (Python) ---
+
+def _node_framework_items(all_deps: dict) -> Iterator[_Item]:
+    for dep_key, (display, cat) in _NODE_FRAMEWORKS.items():
+        if dep_key in all_deps:
+            yield display, _dep_version(all_deps, dep_key), cat
+
+
+def _dep_version(all_deps: dict, name: str) -> str | None:
+    """The declared version with its range operator stripped, or None."""
+    return all_deps.get(name, "").lstrip("^~>=") or None
+
+
+def _node_engine(pkg: dict) -> str | None:
+    engines = pkg.get("engines")
+    return engines.get("node") if isinstance(engines, dict) else None
+
+
+def _is_node_app(pkg: dict, all_deps: dict) -> bool:
+    return bool(
+        any(pkg.get(field) for field in _NODE_RUNTIME_FIELDS)
+        or _node_engine(pkg)
+        or any(dep_key in all_deps for dep_key in _NODE_FRAMEWORKS)
+    )
+
+
+def _has_tsconfig(repo_path: Path) -> bool:
+    """A tsconfig.json at the root or in a workspace package up to two levels down."""
+    if (repo_path / "tsconfig.json").exists():
+        return True
+    nested = chain(repo_path.glob("*/tsconfig.json"), repo_path.glob("*/*/tsconfig.json"))
+    return any(_is_project_dir(repo_path, p) for p in nested)
+
+
+def _is_project_dir(repo_path: Path, path: Path) -> bool:
+    """False when *path* sits under node_modules, a dot dir, or a nested git repo."""
+    rel_parts = path.relative_to(repo_path).parts[:-1]
+    if any(part == "node_modules" or part.startswith(".") for part in rel_parts):
+        return False
+    probe = repo_path
+    for part in rel_parts:
+        probe = probe / part
+        if (probe / ".git").exists():
+            return False
+    return True
+
+
+def _python_items(repo_path: Path) -> Iterator[_Item]:
     pyproject = repo_path / "pyproject.toml"
-    setup_py = repo_path / "setup.py"
-    if pyproject.exists() or setup_py.exists():
-        add("Python", None, "language")
-        if pyproject.exists():
-            text = pyproject.read_text(encoding="utf-8").lower()
-            for dep_key, (display, cat) in _PYTHON_FRAMEWORKS.items():
-                if dep_key in text:
-                    add(display, None, cat)
+    if not (pyproject.exists() or (repo_path / "setup.py").exists()):
+        return
+    yield "Python", None, "language"
+    if not pyproject.exists():
+        return
+    text = pyproject.read_text(encoding="utf-8").lower()
+    for dep_key, (display, cat) in _PYTHON_FRAMEWORKS.items():
+        if dep_key in text:
+            yield display, None, cat
 
-    # --- Cargo.toml (Rust) ---
-    if (repo_path / "Cargo.toml").exists():
-        add("Rust", None, "language")
 
-    # --- go.mod (Go) ---
+def _go_items(repo_path: Path) -> Iterator[_Item]:
     go_mod = repo_path / "go.mod"
     if go_mod.exists():
-        text = go_mod.read_text(encoding="utf-8")
-        ver_match = re.search(r"^go\s+(\S+)", text, re.MULTILINE)
-        add("Go", ver_match.group(1) if ver_match else None, "language")
+        ver_match = re.search(r"^go\s+(\S+)", go_mod.read_text(encoding="utf-8"), re.MULTILINE)
+        yield "Go", ver_match.group(1) if ver_match else None, "language"
 
-    # --- pom.xml / build.gradle (Java/Kotlin) ---
+
+def _jvm_items(repo_path: Path) -> Iterator[_Item]:
     if (repo_path / "pom.xml").exists():
-        add("Java", None, "language")
-        add("Maven", None, "infra")
-    if (repo_path / "build.gradle").exists() or (repo_path / "build.gradle.kts").exists():
-        add("Kotlin" if (repo_path / "build.gradle.kts").exists() else "Java", None, "language")
-        add("Gradle", None, "infra")
+        yield "Java", None, "language"
+        yield "Maven", None, "infra"
+    kotlin_dsl = (repo_path / "build.gradle.kts").exists()
+    if kotlin_dsl or (repo_path / "build.gradle").exists():
+        yield "Kotlin" if kotlin_dsl else "Java", None, "language"
+        yield "Gradle", None, "infra"
 
-    # --- Gemfile (Ruby) ---
-    if (repo_path / "Gemfile").exists():
-        add("Ruby", None, "language")
 
-    # --- composer.json (PHP) ---
+def _php_items(repo_path: Path) -> Iterator[_Item]:
     composer_json = repo_path / COMPOSER_JSON
-    if composer_json.exists():
-        add("PHP", None, "language")
-        composer = read_composer(composer_json)
-        framework = detect_php_framework(composer) if composer is not None else None
-        if framework is not None:
-            add(framework.name, None, "framework")
+    if not composer_json.exists():
+        return
+    yield "PHP", None, "language"
+    composer = read_composer(composer_json)
+    framework = detect_php_framework(composer) if composer is not None else None
+    if framework is not None:
+        yield framework.name, None, "framework"
 
-    # --- .NET / C# (.csproj / .sln / Directory.Build.props) ---
-    # Walk the tree (bounded) so monorepos whose projects live under
-    # `src/modules/<module>/<Module>.csproj` or `services/foo/foo.csproj`
-    # still register. A shallow glob misses every real-world .NET
-    # monorepo layout — eShop, Aspire samples, PowerToys, Roslyn etc.
+
+def _dotnet_items(repo_path: Path) -> Iterator[_Item]:
+    # A bounded walk, not a shallow glob: .NET monorepos keep projects under
+    # `src/modules/<module>/` or `services/<svc>/`.
     csproj_files = _find_dotnet_projects(repo_path)
-    sln_files = [
-        sln
-        for sln in list(repo_path.glob("*.sln")) + list(repo_path.glob("*/*.sln"))
-        if sln.parent == repo_path
-        or (
-            sln.parent.name not in _DOTNET_PRUNE
-            and not (sln.parent / ".git").exists()
-        )
-    ]
-    has_directory_build = (repo_path / "Directory.Build.props").exists() or (
-        repo_path / "Directory.Packages.props"
-    ).exists()
-    if csproj_files or sln_files or has_directory_build:
-        # Pull TargetFramework from the first .csproj — captures net9.0,
-        # net8.0, etc. Best-effort regex; the .csproj XML is small so a
-        # full parser would be overkill.
-        target_fw: str | None = None
-        for csproj in csproj_files[:10]:
-            try:
-                ctext = csproj.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-            m = re.search(
-                r"<TargetFrameworks?>\s*([^<;]+)", ctext
-            )
-            if m:
-                target_fw = m.group(1).strip()
-                break
-        add("C#", target_fw, "language")
-        add(".NET", target_fw, "framework")
-        # Common .NET stack indicators read from any .csproj text. The
-        # cap is per-file, not per-byte — small projects with many
-        # csprojs (PowerToys ~140, Roslyn ~300) need a generous limit
-        # before they look like an unflavoured .NET repo.
-        joined_csproj = ""
-        for csproj in csproj_files[:80]:
-            try:
-                joined_csproj += csproj.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-        if "Microsoft.AspNetCore" in joined_csproj:
-            add("ASP.NET Core", None, "framework")
-        if "Microsoft.EntityFrameworkCore" in joined_csproj:
-            add("Entity Framework Core", None, "database")
-        if "Aspire.Hosting" in joined_csproj or any(
-            "AppHost" in p.stem for p in csproj_files
-        ):
-            add(".NET Aspire", None, "infra")
-        if "Grpc.AspNetCore" in joined_csproj or "Google.Protobuf" in joined_csproj:
-            add("gRPC", None, "framework")
-        if "MAUI" in joined_csproj.upper() or any(
-            "Maui" in p.stem for p in csproj_files
-        ):
-            add(".NET MAUI", None, "framework")
-        if "Microsoft.WindowsAppSDK" in joined_csproj or "Microsoft.UI.Xaml" in joined_csproj:
-            add("WinUI 3", None, "framework")
-        if "Microsoft.NET.Sdk.WindowsDesktop" in joined_csproj or "<UseWPF>true" in joined_csproj:
-            add("WPF", None, "framework")
-        if "Microsoft.NET.Sdk.WindowsDesktop" in joined_csproj and "<UseWindowsForms>true" in joined_csproj:
-            add("Windows Forms", None, "framework")
+    if not (csproj_files or _has_solution(repo_path) or _has_directory_build(repo_path)):
+        return
+    target_fw = _target_framework(csproj_files[:10])
+    yield "C#", target_fw, "language"
+    yield ".NET", target_fw, "framework"
+    # The cap counts files, not bytes: repos with a hundred-plus small projects
+    # need a generous one before they look like an unflavoured .NET repo.
+    joined_csproj = "".join(_read_csproj_texts(csproj_files[:80]))
+    stems = [p.stem for p in csproj_files]
+    for name, category, matches in _DOTNET_FLAVOURS:
+        if matches(joined_csproj, stems):
+            yield name, None, category
 
-    # --- Docker ---
-    if (repo_path / "Dockerfile").exists():
-        add("Docker", None, "infra")
-    if (repo_path / "docker-compose.yml").exists() or (repo_path / "docker-compose.yaml").exists():
-        add("Docker Compose", None, "infra")
 
-    return sorted(items.values(), key=lambda x: (x.category, x.name))
+def _has_solution(repo_path: Path) -> bool:
+    """A .sln at the root, or one level down outside pruned dirs and nested repos."""
+    if any(repo_path.glob("*.sln")):
+        return True
+    return any(
+        sln.parent.name not in _DOTNET_PRUNE and not (sln.parent / ".git").exists()
+        for sln in repo_path.glob("*/*.sln")
+    )
+
+
+def _has_directory_build(repo_path: Path) -> bool:
+    return any(
+        (repo_path / name).exists()
+        for name in ("Directory.Build.props", "Directory.Packages.props")
+    )
+
+
+def _read_csproj_texts(csproj_files: list[Path]) -> Iterator[str]:
+    for csproj in csproj_files:
+        try:
+            yield csproj.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+
+def _target_framework(csproj_files: list[Path]) -> str | None:
+    """TargetFramework(s) of the first project declaring one (net9.0, net8.0, ...)."""
+    for text in _read_csproj_texts(csproj_files):
+        m = re.search(r"<TargetFrameworks?>\s*([^<;]+)", text)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def _marker_items(repo_path: Path) -> Iterator[_Item]:
+    for names, item in _ROOT_MARKERS:
+        if any((repo_path / name).exists() for name in names):
+            yield item
+
+
+# Order matters only for first-wins on a name two detectors both emit.
+_DETECTORS: tuple[Callable[[Path], Iterator[_Item]], ...] = (
+    _node_items,
+    _python_items,
+    _go_items,
+    _jvm_items,
+    _php_items,
+    _dotnet_items,
+    _marker_items,
+)
+
+# Command key -> script names to try, in order of preference.
+_NPM_SCRIPTS: dict[str, tuple[str, ...]] = {
+    "build": ("build",),
+    "test": ("test", "jest", "vitest"),
+    "lint": ("lint",),
+    "dev": ("dev", "start:dev", "start"),
+    "format": ("format", "prettier"),
+    "typecheck": ("typecheck", "type-check", "tsc"),
+}
+
+_MAKE_TARGETS: dict[str, tuple[str, ...]] = {
+    "build": ("build",),
+    "test": ("test", "tests"),
+    "lint": ("lint",),
+    "dev": ("dev", "run"),
+    "format": ("fmt", "format"),
+}
+
+_MAKE_TARGET_RE = re.compile(r"^([a-z][a-z0-9_-]*):", re.MULTILINE)
+
+# Lockfile -> script runner, first present wins.
+_LOCKFILE_RUNNERS = (
+    ("bun.lock", "bun run"),
+    ("bun.lockb", "bun run"),
+    ("yarn.lock", "yarn"),
+    ("pnpm-lock.yaml", "pnpm"),
+)
 
 
 def detect_build_commands(repo_path: Path) -> dict[str, str]:
@@ -407,69 +491,56 @@ def detect_build_commands(repo_path: Path) -> dict[str, str]:
     Returns a dict with keys from: build, test, lint, dev, format, typecheck.
     Only includes keys where a command was actually detected.
     """
-    commands: dict[str, str] = {}
-
-    # --- package.json scripts ---
-    pkg_json = repo_path / "package.json"
-    if pkg_json.exists():
-        try:
-            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
-            scripts = pkg.get("scripts", {})
-            _map = {
-                "build": ["build"],
-                "test": ["test", "jest", "vitest"],
-                "lint": ["lint"],
-                "dev": ["dev", "start:dev", "start"],
-                "format": ["format", "prettier"],
-                "typecheck": ["typecheck", "type-check", "tsc"],
-            }
-            runner = "npm run" if not (repo_path / "pnpm-lock.yaml").exists() else "pnpm"
-            if (repo_path / "yarn.lock").exists():
-                runner = "yarn"
-            if (repo_path / "bun.lock").exists() or (repo_path / "bun.lockb").exists():
-                runner = "bun run"
-            for key, candidates in _map.items():
-                for cand in candidates:
-                    if cand in scripts:
-                        commands[key] = f"{runner} {cand}"
-                        break
-        except Exception:
-            pass
-
-    # --- pyproject.toml ---
-    pyproject = repo_path / "pyproject.toml"
-    if pyproject.exists():
-        text = pyproject.read_text(encoding="utf-8")
-        if "test" not in commands and ("pytest" in text or "[tool.pytest" in text):
-            commands["test"] = "pytest"
-        if "lint" not in commands and "ruff" in text:
-            commands["lint"] = "ruff check ."
-        if "format" not in commands and declares_ruff_format(repo_path):
-            commands["format"] = "ruff format ."
-        if "typecheck" not in commands and "mypy" in text:
-            commands["typecheck"] = "mypy ."
-
-    # --- Makefile (first-level .PHONY or obvious targets) ---
-    makefile = repo_path / "Makefile"
-    if makefile.exists():
-        try:
-            mk_text = makefile.read_text(encoding="utf-8")
-            target_pat = re.compile(r"^([a-z][a-z0-9_-]*):", re.MULTILINE)
-            mk_targets = set(target_pat.findall(mk_text))
-            _make_map = {
-                "build": ["build"],
-                "test": ["test", "tests"],
-                "lint": ["lint"],
-                "dev": ["dev", "run"],
-                "format": ["fmt", "format"],
-            }
-            for key, candidates in _make_map.items():
-                if key not in commands:
-                    for cand in candidates:
-                        if cand in mk_targets:
-                            commands[key] = f"make {cand}"
-                            break
-        except Exception:
-            pass
-
+    commands = _package_script_commands(repo_path)
+    _add_pyproject_commands(repo_path, commands)
+    for key, command in _make_commands(repo_path).items():
+        commands.setdefault(key, command)
     return commands
+
+
+def _first_available(
+    candidates: dict[str, tuple[str, ...]], available: Container[str], runner: str
+) -> dict[str, str]:
+    """Each key mapped to ``"<runner> <name>"`` for its first available candidate name."""
+    found: dict[str, str] = {}
+    for key, names in candidates.items():
+        match = next((name for name in names if name in available), None)
+        if match is not None:
+            found[key] = f"{runner} {match}"
+    return found
+
+
+def _package_script_commands(repo_path: Path) -> dict[str, str]:
+    pkg = _read_package_json(repo_path)
+    runner = next(
+        (cmd for lockfile, cmd in _LOCKFILE_RUNNERS if (repo_path / lockfile).exists()),
+        "npm run",
+    )
+    try:
+        return _first_available(_NPM_SCRIPTS, pkg.get("scripts", {}), runner)
+    except (AttributeError, TypeError):
+        # No manifest, a manifest that is not an object, or non-container scripts.
+        return {}
+
+
+def _add_pyproject_commands(repo_path: Path, commands: dict[str, str]) -> None:
+    pyproject = repo_path / "pyproject.toml"
+    if not pyproject.exists():
+        return
+    text = pyproject.read_text(encoding="utf-8")
+    if "pytest" in text:
+        commands.setdefault("test", "pytest")
+    if "ruff" in text:
+        commands.setdefault("lint", "ruff check .")
+    if "format" not in commands and declares_ruff_format(repo_path):
+        commands["format"] = "ruff format ."
+    if "mypy" in text:
+        commands.setdefault("typecheck", "mypy .")
+
+
+def _make_commands(repo_path: Path) -> dict[str, str]:
+    try:
+        text = (repo_path / "Makefile").read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return {}
+    return _first_available(_MAKE_TARGETS, set(_MAKE_TARGET_RE.findall(text)), "make")
