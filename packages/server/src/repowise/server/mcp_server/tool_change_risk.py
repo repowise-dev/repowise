@@ -363,7 +363,8 @@ async def _attach_health_references(ctx: Any, delta: Any) -> None:
                 .scalars()
                 .all()
             )
-    except SQLAlchemyError:
+    except (LookupError, SQLAlchemyError):
+        # No repository row is "no index", as in the sibling enrichments.
         return
     if not rows:
         return
