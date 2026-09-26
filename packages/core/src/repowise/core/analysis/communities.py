@@ -35,6 +35,19 @@ log = structlog.get_logger(__name__)
 _MAX_COMMUNITY_FRACTION = 0.30
 _MIN_SPLIT_SIZE = 20
 
+# Stored community id for a node the partition leaves out. Persisted rows carry
+# a NOT NULL id defaulting to 0, which is the largest real community, so an
+# external node must not fall through to it.
+NO_COMMUNITY = -1
+
+
+def stored_community_id(assignment: dict[str, int], node_id: str) -> int:
+    """Community id to persist for *node_id*: its own, else 0, or ``NO_COMMUNITY`` for external code."""
+    if node_id in assignment:
+        return assignment[node_id]
+    return NO_COMMUNITY if is_external(node_id) else 0
+
+
 # Edge types to include when building file-level community subgraph.
 # Was {imports, framework, dynamic, extends, implements}: "dynamic" matched no
 # real edge, and extends/implements are symbol-to-symbol so they never joined
@@ -529,12 +542,14 @@ def detect_file_communities(
         - communities_info: {community_id: CommunityInfo}
         - algorithm_used: "leiden" or "louvain"
     """
-    # Extract file nodes (exclude external nodes — they're structural noise)
+    # Extract file nodes. External and framework nodes are stored as files but
+    # are code we do not own: left in, they join the partition (two files that
+    # both import `os` get pulled together through it) and inflate members/size.
     # Sorted: node order seeds the undirected graph's insertion order, and
     # Louvain/Leiden partitions depend on iteration order even when seeded.
     file_nodes = sorted(
         n for n, d in graph.nodes(data=True)
-        if d.get("node_type", "file") == "file"
+        if d.get("node_type", "file") == "file" and not is_external(n)
     )
 
     if not file_nodes:
@@ -641,19 +656,11 @@ def detect_file_communities(
     # Labels and conductance come from the production members: tests were kept
     # out of the partition so they would not shape a community, and they must
     # not name it either. The non-core catch-all is labelled from what it has.
-    #
-    # External and framework nodes are stored as files, so they reach the
-    # partition, but they must not name a community either. They have no
-    # directory, so a big community with no dominant segment fell through to
-    # the filename-stem strategy, where eight `external:rich.*` imports share
-    # the stem `external:rich` and won: this repo's largest community was
-    # labelled after a third-party library that every view hides.
     label_members: dict[int, list[str]] = {}
     for cid, members in community_members.items():
         sorted_members = sorted(members)
         prod_members = [m for m in sorted_members if not non_core[m]]
-        owned = [m for m in prod_members if not is_external(m)]
-        label_members[cid] = owned or prod_members or sorted_members
+        label_members[cid] = prod_members or sorted_members
         communities_info[cid] = CommunityInfo(
             community_id=cid,
             label=_heuristic_label(label_members[cid], cid, extra_generic),

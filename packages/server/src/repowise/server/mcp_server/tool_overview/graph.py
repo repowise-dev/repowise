@@ -60,7 +60,7 @@ def _build_community_summary(all_nodes: list[GraphNode]) -> list[dict[str, Any]]
     """Top-10 communities by size, skipping generic/unhelpful labels."""
     community_groups: dict[int, list[GraphNode]] = defaultdict(list)
     for n in all_nodes:
-        if n.node_type == "file" and n.community_id is not None:
+        if n.node_type == "file" and n.community_id is not None and n.community_id >= 0:
             community_groups[n.community_id].append(n)
 
     generic_labels = {"packages", "src", "lib", "core", "app", ""}
