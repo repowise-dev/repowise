@@ -7,6 +7,7 @@ that reports them while skipping lines the string mask says are not code.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 from repowise.server.mcp_server.tool_answer.source import (
@@ -15,6 +16,7 @@ from repowise.server.mcp_server.tool_answer.source import (
 )
 from repowise.server.mcp_server.tool_answer.string_mask import (
     _has_backtick_strings,
+    _Masked,
     _string_masked_lines,
 )
 
@@ -125,45 +127,47 @@ def _match_definition(raw: str, next_raw: str = "") -> re.Match[str] | None:
     """
     for i, pattern in enumerate(_WITHHELD_DEF_PATTERNS):
         m = pattern.match(raw)
-        if not m:
+        if not m or m.group("name").lower() in _RESERVED_NAMES:
             continue
-        if m.group("name").lower() in _RESERVED_NAMES:
+        if i == _BRACE_MEMBER and _not_a_brace_member(raw, next_raw, m):
             continue
-        if i == _BRACE_MEMBER:
-            head = _FIRST_WORD_RE.match(raw.strip())
-            if m.group("name").lower() in _NOT_A_DEFINITION:
-                continue
-            if head and head.group(0).lower() in _NOT_A_DEFINITION:
-                continue
-            # An anonymous function passed as an argument, in either syntax.
-            if "=>" in raw[: m.end()] or "function" in raw[: m.end()]:
-                continue
-            # Go's third spelling of the same thing: ``func(req *http.Request)
-            # (*http.Response, error) {``. There is no space after ``func``, so
-            # the optional return-type group matches empty and the name group
-            # takes the keyword itself, yielding an unresolvable ``path::func``.
-            # This cannot be handled by either general-purpose set above:
-            # ``_RESERVED_NAMES`` is tested for every pattern and ``def func():``
-            # is a real Python definition (41 of them in django alone), while
-            # ``_NOT_A_DEFINITION`` is also tested against the line's FIRST
-            # word, which is ``func`` on every named Go function too.
-            #
-            # Requiring ``func`` to open the line is what keeps it to the Go
-            # literal: ``int func(int a) {`` is a real definition named ``func``
-            # in C, C++, Java, C# and Kotlin, and a name-only test suppresses
-            # all five.
-            if m.group("name") == "func" and head and head.group(0) == "func":
-                continue
-            # Allman: the brace is on the next line. A declaration never ends in
-            # a comma, but an argument on its own line inside a multi-line call
-            # does -- and when the following argument is a dict literal, the
-            # next line really is ``{`` (``bool(matched_nums),`` then ``{``).
-            if not m.group("brace") and (
-                next_raw.strip() != "{" or raw.rstrip().endswith(",")
-            ):
-                continue
         return m
     return None
+
+
+def _not_a_brace_member(raw: str, next_raw: str, m: re.Match[str]) -> bool:
+    """Whether a brace-member match is a statement or call that only looks like one."""
+    head = _FIRST_WORD_RE.match(raw.strip())
+    if m.group("name").lower() in _NOT_A_DEFINITION:
+        return True
+    if head and head.group(0).lower() in _NOT_A_DEFINITION:
+        return True
+    # An anonymous function passed as an argument, in either syntax.
+    if "=>" in raw[: m.end()] or "function" in raw[: m.end()]:
+        return True
+    # Go's third spelling of the same thing: ``func(req *http.Request)
+    # (*http.Response, error) {``. There is no space after ``func``, so
+    # the optional return-type group matches empty and the name group
+    # takes the keyword itself, yielding an unresolvable ``path::func``.
+    # This cannot be handled by either general-purpose set above:
+    # ``_RESERVED_NAMES`` is tested for every pattern and ``def func():``
+    # is a real Python definition (41 of them in django alone), while
+    # ``_NOT_A_DEFINITION`` is also tested against the line's FIRST
+    # word, which is ``func`` on every named Go function too.
+    #
+    # Requiring ``func`` to open the line is what keeps it to the Go
+    # literal: ``int func(int a) {`` is a real definition named ``func``
+    # in C, C++, Java, C# and Kotlin, and a name-only test suppresses
+    # all five.
+    if m.group("name") == "func" and head and head.group(0) == "func":
+        return True
+    # Allman: the brace is on the next line. A declaration never ends in
+    # a comma, but an argument on its own line inside a multi-line call
+    # does -- and when the following argument is a dict literal, the
+    # next line really is ``{`` (``bool(matched_nums),`` then ``{``).
+    return not m.group("brace") and (
+        next_raw.strip() != "{" or raw.rstrip().endswith(",")
+    )
 
 
 def _indent_width(raw: str) -> int:
@@ -203,13 +207,10 @@ def withheld_definitions(
     symbol first, empty on any failure (a probe that cannot read must not
     manufacture doubt).
     """
-    if not continuation:
+    span = _parse_continuation(continuation)
+    if span is None:
         return []
-    path, _, span = continuation.rpartition(":")
-    first, _, last = span.partition("-")
-    if not path or not first.isdigit() or not last.isdigit():
-        return []
-    lo, hi = int(first), int(last)
+    path, lo, hi = span
     text = _read_repo_text(repo_root, path)
     if text is None:
         return []
@@ -217,55 +218,78 @@ def withheld_definitions(
     if lo < 1 or lo > len(lines):
         return []
     mask = _string_masked_lines(tuple(lines), _has_backtick_strings(path))
-    masked = mask.all
-
-    def _entry(line_no: int, m: re.Match[str], *, cut: bool = False) -> dict:
-        name = m.group("name")
-        # The brace-member shape has no keyword to report, so it is named for
-        # what it is rather than mislabelled as a Python `def`.
-        kind = m.groupdict().get("kind") or "member"
-        sig = _read_signature_from_source(repo_root, path, line_no, text=text)
-        e = {
-            "name": name,
-            "kind": kind,
-            "line": line_no,
-            "symbol_id": f"{path}::{name}",
-            "signature": (sig or f"{kind} {name}").strip(),
-        }
-        if cut:
-            e["body_continues"] = True
-        return e
+    end = min(hi, len(lines))
 
     out: list[dict] = []
+    anchor = _cut_anchor_indent(lines, lo, end, mask)
+    cut = _definition_cut_by_boundary(lines, lo, anchor, mask.all)
+    if cut is not None:
+        out.append(_withheld_entry(repo_root, path, text, *cut, cut=True))
 
-    # The symbol whose body is CUT BY the boundary, which is the case that
-    # motivated this whole helper and the one a naive implementation misses.
-    # In the reference defect the served range ended at 166 and `_validate`
-    # starts at 164: its `def` line was served, so it does not appear anywhere
-    # in the withheld range, while the line that actually causes the bug (176)
-    # sits inside it. Reporting only defs that START after the cut would say
-    # nothing about the symbol the answer is about.
-    #
-    # Taking the nearest preceding definition unconditionally is wrong, though:
-    # a symbol that ENDED before the cut was served whole, and reporting it as
-    # continuing puts a fully-served name at the head of the note and into the
-    # get_symbol pointer. A definition at indent I reaches line ``lo`` only if
-    # every non-blank line from it up to the first non-blank withheld line is
-    # indented deeper than I, so walking backwards while tracking the running
-    # minimum indent decides it exactly, in one pass and with no re-scan.
-    #
+    seen = {d["name"] for d in out}
+    for line_no, m in _definitions_starting_in(lines, lo, end, mask.all):
+        if m.group("name") in seen:
+            continue
+        seen.add(m.group("name"))
+        out.append(_withheld_entry(repo_root, path, text, line_no, m))
+        if len(out) >= _WITHHELD_MAX_SYMBOLS:
+            break
+    return out
+
+
+def _parse_continuation(continuation: str | None) -> tuple[str, int, int] | None:
+    """``(path, first, last)`` from a ``path:first-last`` pointer, or None."""
+    if not continuation:
+        return None
+    path, _, span = continuation.rpartition(":")
+    first, _, last = span.partition("-")
+    if not path or not first.isdigit() or not last.isdigit():
+        return None
+    return path, int(first), int(last)
+
+
+def _withheld_entry(
+    repo_root: Path | None,
+    path: str,
+    text: str,
+    line_no: int,
+    m: re.Match[str],
+    *,
+    cut: bool = False,
+) -> dict:
+    name = m.group("name")
+    # The brace-member shape has no keyword to report, so it is named for
+    # what it is rather than mislabelled as a Python `def`.
+    kind = m.groupdict().get("kind") or "member"
+    sig = _read_signature_from_source(repo_root, path, line_no, text=text)
+    e = {
+        "name": name,
+        "kind": kind,
+        "line": line_no,
+        "symbol_id": f"{path}::{name}",
+        "signature": (sig or f"{kind} {name}").strip(),
+    }
+    if cut:
+        e["body_continues"] = True
+    return e
+
+
+def _cut_anchor_indent(lines: list[str], lo: int, end: int, mask: _Masked) -> int | None:
+    """The indent a definition above ``lo`` must undercut to still be open there.
+
+    None when every withheld line is blank, so nothing can be continuing.
+    """
     # The anchor obeys the same two exclusions as the walk. Taking the first
     # non-blank withheld line flatly is what put the walk one line short of
     # reality: when the cut lands ON a multi-line signature's own ``) -> dict:``
     # (or on a flush-left docstring line), the anchor reads as column 0, the
     # walk dies at once, and the payload ships truncated with NO withheld
     # symbols -- gate 8 inert on exactly the long entry points that truncate.
-    _end = min(hi, len(lines))
-    _usable = [
+    usable = [
         n
-        for n in range(lo, _end + 1)
+        for n in range(lo, end + 1)
         if lines[n - 1].strip()
-        and n not in masked
+        and n not in mask.all
         and lines[n - 1].strip()[0] not in ")]}{"
     ]
     if lo in mask.strings:
@@ -276,54 +300,76 @@ def withheld_definitions(
         # (D9: 8 real definitions lost across cli/cli and mui). A block COMMENT
         # cannot stand in for this: one sitting between two methods would report
         # the preceding method as continuing when it has already ended.
-        anchor = _UNBOUNDED_INDENT
-    elif _usable:
-        anchor = _indent_width(lines[_usable[0] - 1])
-    elif any(lines[n - 1].strip() for n in range(lo, _end + 1)):
+        return _UNBOUNDED_INDENT
+    if usable:
+        return _indent_width(lines[usable[0] - 1])
+    if any(lines[n - 1].strip() for n in range(lo, end + 1)):
         # Every withheld line is a string body or a bracket tail, so whatever
         # encloses the cut is certainly still open: let any preceding
         # definition qualify.
-        anchor = _UNBOUNDED_INDENT
-    else:
-        anchor = None
-    if anchor is not None:
-        min_indent = anchor
-        for back in range(lo - 1, 0, -1):
-            if min_indent <= 0:
-                break  # nothing can be shallower, so nothing can still be open
-            raw = lines[back - 1]
-            stripped = raw.strip()
-            if not stripped:
-                continue
-            # A line opening with a closing bracket is the tail of a multi-line
-            # construct, not a statement at its own indent. Folding it is what
-            # made this miss the live reference case: ``get_answer``'s signature
-            # spans lines and ends ``) -> dict:`` at column 0, so the running
-            # minimum hit zero on the signature's own closing paren and the walk
-            # gave up two lines short of the ``async def`` it was looking for.
-            # An Allman brace (``{`` alone) is likewise part of the declaration
-            # above it, not a statement.
-            if stripped[0] in ")]}{":
-                continue
-            ind = _indent_width(raw)
-            nxt = lines[back] if back < len(lines) else ""
-            m = None if back in masked else _match_definition(raw, nxt)
-            if m is not None and ind < min_indent:
-                out.append(_entry(back, m, cut=True))
-                break
-            min_indent = min(min_indent, ind)
+        return _UNBOUNDED_INDENT
+    return None
 
-    seen = {d["name"] for d in out}
-    for offset, raw in enumerate(lines[lo - 1 : _end]):
+
+def _definition_cut_by_boundary(
+    lines: list[str], lo: int, anchor: int | None, masked: frozenset[int]
+) -> tuple[int, re.Match[str]] | None:
+    """The definition above ``lo`` whose body the cut splits, if any.
+
+    The symbol whose body is CUT BY the boundary, which is the case that
+    motivated this whole helper and the one a naive implementation misses.
+    In the reference defect the served range ended at 166 and `_validate`
+    starts at 164: its `def` line was served, so it does not appear anywhere
+    in the withheld range, while the line that actually causes the bug (176)
+    sits inside it. Reporting only defs that START after the cut would say
+    nothing about the symbol the answer is about.
+
+    Taking the nearest preceding definition unconditionally is wrong, though:
+    a symbol that ENDED before the cut was served whole, and reporting it as
+    continuing puts a fully-served name at the head of the note and into the
+    get_symbol pointer. A definition at indent I reaches line ``lo`` only if
+    every non-blank line from it up to the first non-blank withheld line is
+    indented deeper than I, so walking backwards while tracking the running
+    minimum indent decides it exactly, in one pass and with no re-scan.
+    """
+    if anchor is None:
+        return None
+    min_indent = anchor
+    for back in range(lo - 1, 0, -1):
+        if min_indent <= 0:
+            break  # nothing can be shallower, so nothing can still be open
+        raw = lines[back - 1]
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        # A line opening with a closing bracket is the tail of a multi-line
+        # construct, not a statement at its own indent. Folding it is what
+        # made this miss the live reference case: ``get_answer``'s signature
+        # spans lines and ends ``) -> dict:`` at column 0, so the running
+        # minimum hit zero on the signature's own closing paren and the walk
+        # gave up two lines short of the ``async def`` it was looking for.
+        # An Allman brace (``{`` alone) is likewise part of the declaration
+        # above it, not a statement.
+        if stripped[0] in ")]}{":
+            continue
+        ind = _indent_width(raw)
+        nxt = lines[back] if back < len(lines) else ""
+        m = None if back in masked else _match_definition(raw, nxt)
+        if m is not None and ind < min_indent:
+            return back, m
+        min_indent = min(min_indent, ind)
+    return None
+
+
+def _definitions_starting_in(
+    lines: list[str], lo: int, end: int, masked: frozenset[int]
+) -> Iterator[tuple[int, re.Match[str]]]:
+    """Every unmasked definition line in ``lo..end``, in order."""
+    for offset, raw in enumerate(lines[lo - 1 : end]):
         line_no = lo + offset
         if line_no in masked:
             continue
         nxt = lines[line_no] if line_no < len(lines) else ""
         m = _match_definition(raw, nxt)
-        if m is None or m.group("name") in seen:
-            continue
-        seen.add(m.group("name"))
-        out.append(_entry(line_no, m))
-        if len(out) >= _WITHHELD_MAX_SYMBOLS:
-            break
-    return out
+        if m is not None:
+            yield line_no, m
