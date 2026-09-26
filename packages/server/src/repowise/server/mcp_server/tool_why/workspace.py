@@ -58,20 +58,7 @@ async def _why_workspace_search(query: str) -> dict:
     ranking ever needs to be exact, is to sweep a floor against a pooled corpus,
     not to pool the statistics underneath the floor that exists.
     """
-    contexts = await _resolve_all_contexts()
-    scored: list[tuple[tuple[float, float, int], str, Any, str, Any, list[str]]] = []
-    for ctx in contexts:
-        async with get_session(ctx.session_factory) as session:
-            repository = await _get_repo(session)
-            records = await _decision_corpus(session, repository.id, _get_exclude_spec(ctx.path))
-        ranked = _score_keyword_matches(records, query, set())
-        # Collapsed per store, not across the merge: ``_evidence_key`` is a
-        # (source, commit) pair carrying no repo, so two stores sharing a commit
-        # sha would fold into one and a repo would lose its record.
-        key_by_id = {d.id: key for key, d in ranked}
-        for d, folded in _collapse_restatements([d for _, d in ranked]):
-            scored.append((key_by_id[d.id], ctx.alias, ctx, d.id, d, folded))
-
+    scored = await _score_workspace(query)
     if not scored:
         return {
             "mode": "search",
@@ -99,18 +86,7 @@ async def _why_workspace_search(query: str) -> dict:
     records_by_alias: dict[str, list[Any]] = {}
     contexts_by_alias = {entry[1]: entry[2] for entry in selected}
     for _, alias, _selected_ctx, _id, d, folded in selected:
-        entry = {
-            "repo": alias,
-            "id": d.id,
-            "title": d.title,
-            "status": d.status,
-            "decision": _decision_body(d),
-            "rationale": d.rationale,
-            "source": d.source,
-            "confidence": d.confidence,
-        }
-        if folded:
-            entry["restates"] = folded
+        entry = _workspace_entry(alias, d, folded)
         entries_by_alias.setdefault(alias, []).append(entry)
         records_by_alias.setdefault(alias, []).append(d)
         decisions.append(entry)
@@ -138,3 +114,40 @@ async def _why_workspace_search(query: str) -> dict:
     )
     collector.attach(result)
     return result
+
+
+async def _score_workspace(
+    query: str,
+) -> list[tuple[tuple[float, float, int], str, Any, str, Any, list[str]]]:
+    """Every store's relevant records, collapsed per store, with their sort keys."""
+    contexts = await _resolve_all_contexts()
+    scored: list[tuple[tuple[float, float, int], str, Any, str, Any, list[str]]] = []
+    for ctx in contexts:
+        async with get_session(ctx.session_factory) as session:
+            repository = await _get_repo(session)
+            records = await _decision_corpus(session, repository.id, _get_exclude_spec(ctx.path))
+        ranked = _score_keyword_matches(records, query, set())
+        # Collapsed per store, not across the merge: ``_evidence_key`` is a
+        # (source, commit) pair carrying no repo, so two stores sharing a commit
+        # sha would fold into one and a repo would lose its record.
+        key_by_id = {d.id: key for key, d in ranked}
+        for d, folded in _collapse_restatements([d for _, d in ranked]):
+            scored.append((key_by_id[d.id], ctx.alias, ctx, d.id, d, folded))
+    return scored
+
+
+def _workspace_entry(alias: str, d: Any, folded: list[str]) -> dict[str, Any]:
+    """One workspace search row, naming the store it came from."""
+    entry = {
+        "repo": alias,
+        "id": d.id,
+        "title": d.title,
+        "status": d.status,
+        "decision": _decision_body(d),
+        "rationale": d.rationale,
+        "source": d.source,
+        "confidence": d.confidence,
+    }
+    if folded:
+        entry["restates"] = folded
+    return entry

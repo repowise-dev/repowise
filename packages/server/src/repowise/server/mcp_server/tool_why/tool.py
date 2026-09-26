@@ -64,14 +64,7 @@ async def get_why(
             accepted together without caller translation.
     """
     if reference:
-        if id is None and isinstance(reference.get("id"), str):
-            id = reference["id"]
-        if (
-            repo is None
-            and _is_workspace_mode()
-            and isinstance(reference.get("repository"), str)
-        ):
-            repo = reference["repository"]
+        id, repo = _reference_coordinates(reference, id, repo)
     if id:
         if repo == "all":
             return _unsupported_repo_all("get_why (reference lookup)")
@@ -101,3 +94,18 @@ async def get_why(
 
     # --- Mode 3: Natural language → target-aware search ---
     return _stamp_answer_basis(await _why_search(query, targets, repo))
+
+
+def _reference_coordinates(
+    reference: dict[str, Any], decision_id: str | None, repo: str | None
+) -> tuple[str | None, str | None]:
+    """Fill the id and repo a caller left unset from their structured reference."""
+    if decision_id is None and isinstance(reference.get("id"), str):
+        decision_id = reference["id"]
+    if (
+        repo is None
+        and _is_workspace_mode()
+        and isinstance(reference.get("repository"), str)
+    ):
+        repo = reference["repository"]
+    return decision_id, repo

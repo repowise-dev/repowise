@@ -61,6 +61,17 @@ def _governing_decision_entry(
         "staleness_score": d.staleness_score,
         "lineage": lineage if len(lineage) > 1 else [],
     }
+    _cap_affected_files(entry, d.id, affected_files, collector)
+    return entry
+
+
+def _cap_affected_files(
+    entry: dict,
+    decision_id: str,
+    affected_files: list,
+    collector: OmissionCollector | None,
+) -> None:
+    """Bank the paths past the head *entry* serves, and count them on it."""
     if len(affected_files) > _MAX_AFFECTED_FILES:
         cap_collection(
             entry,
@@ -68,9 +79,8 @@ def _governing_decision_entry(
             affected_files,
             _MAX_AFFECTED_FILES,
             collector,
-            label=f"decision {d.id} :: affected_files beyond cap={_MAX_AFFECTED_FILES}",
+            label=f"decision {decision_id} :: affected_files beyond cap={_MAX_AFFECTED_FILES}",
         )
-    return entry
 
 
 def _merge_decisions(
@@ -110,15 +120,7 @@ def _merge_decisions(
             "confidence": d.confidence,
             "lineage": lineage_by_id.get(d.id, []),
         }
-        if len(affected_files) > _MAX_AFFECTED_FILES:
-            cap_collection(
-                entry,
-                "affected_files",
-                affected_files,
-                _MAX_AFFECTED_FILES,
-                collector,
-                label=f"decision {d.id} :: affected_files beyond cap={_MAX_AFFECTED_FILES}",
-            )
+        _cap_affected_files(entry, d.id, affected_files, collector)
         if folded:
             entry["restates"] = folded
         merged_decisions.append(entry)

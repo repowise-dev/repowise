@@ -189,12 +189,19 @@ def _score_decision(
 
     # Target file boosting: decisions governing target files get a bonus
     if target_files:
-        affected = set(json.loads(d.affected_files_json))
-        affected_mods = json.loads(d.affected_modules_json)
-        for t in target_files:
-            if t in affected:
-                score += 5.0  # Strong boost for exact file match
-            elif any(t.startswith(m + "/") for m in affected_mods):
-                score += 3.0  # Module-level match
+        score += _target_boost(d, target_files)
 
     return score
+
+
+def _target_boost(d: Any, target_files: set[str]) -> float:
+    """Bonus for a record that governs the files the caller named."""
+    boost = 0.0
+    affected = set(json.loads(d.affected_files_json))
+    affected_mods = json.loads(d.affected_modules_json)
+    for t in target_files:
+        if t in affected:
+            boost += 5.0  # Strong boost for exact file match
+        elif any(t.startswith(m + "/") for m in affected_mods):
+            boost += 3.0  # Module-level match
+    return boost
