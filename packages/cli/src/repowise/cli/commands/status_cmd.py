@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from datetime import UTC
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.table import Table
@@ -104,6 +105,136 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
         return run_async(_query())
     except Exception:
         return 0, 0
+
+
+def _mapping_report(repo_path: Path) -> dict[str, Any]:
+    """Compare the index's file rows against the checkout they should describe.
+
+    The row-exists check this replaces did not catch #1748. In their repro the
+    ``Repository`` row resolved correctly — that is the same lookup
+    :func:`_query_page_count` goes through, and it is how ``status`` managed to
+    print ``indexed: true`` with a correct ``last_sync_commit`` at all. The
+    divergence was one level down, between the repository row and the file rows
+    hanging off it: 9 files resolved through the identity ingestion uses, against
+    a working tree of 2,251. So the cheap check that actually fires is the
+    comparison of the two counts, which is what this returns.
+
+    Keys, per the fields #1748 asks for:
+      ``indexed_files``  file rows for this repository id
+      ``working_tree_files``  documentable files the traverser sees now
+      ``mapping_valid``  False when the index cannot describe this checkout
+      ``reason``  why, for the JSON consumer and the table's status column
+    """
+
+    async def _query() -> dict[str, Any]:
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+        )
+        from repowise.core.persistence.models import GraphNode, Repository
+
+        url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        try:
+            async with get_session(sf) as session:
+                row = await session.execute(
+                    sa_select(Repository.id, Repository.name, Repository.local_path).where(
+                        Repository.local_path == str(repo_path)
+                    )
+                )
+                found = row.first()
+                if found is None:
+                    return {
+                        "repository_id": None,
+                        "indexed_root": None,
+                        "indexed_files": 0,
+                        "working_tree_files": None,
+                        "mapping_valid": False,
+                        "reason": "no repository row resolves this checkout",
+                    }
+                repo_id, repo_name, indexed_root = found
+                count = await session.execute(
+                    sa_select(sa_func.count())
+                    .select_from(GraphNode)
+                    .where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file")
+                )
+                return {
+                    "repository_id": repo_id,
+                    "repository_name": repo_name,
+                    "indexed_root": indexed_root,
+                    "indexed_files": int(count.scalar_one() or 0),
+                    "working_tree_files": None,
+                    "mapping_valid": True,
+                    "reason": None,
+                }
+        finally:
+            await engine.dispose()
+
+    db_path = get_repowise_dir(repo_path) / "wiki.db"
+    if not db_path.exists() and not db_configured():
+        # Nothing indexed to diverge from; an unindexed directory is not a
+        # broken mapping, which is the right default this replaces.
+        return {
+            "repository_id": None,
+            "indexed_root": None,
+            "indexed_files": 0,
+            "working_tree_files": None,
+            "mapping_valid": True,
+            "reason": None,
+        }
+    try:
+        report = run_async(_query())
+    except Exception as exc:  # a store that will not open cannot describe the tree
+        return {
+            "repository_id": None,
+            "indexed_root": None,
+            "indexed_files": 0,
+            "working_tree_files": None,
+            "mapping_valid": False,
+            "reason": f"index could not be read: {type(exc).__name__}",
+        }
+
+    # The count that actually catches the reported failure. Counted with the same
+    # traverser the ingestion phase uses, so the two numbers describe the same
+    # file set rather than two different notions of "a file".
+    if report["mapping_valid"]:
+        try:
+            from repowise.core.ingestion.traverser import FileTraverser
+
+            traverser = FileTraverser(repo_path)
+            report["working_tree_files"] = sum(1 for _ in traverser._walk())
+        except Exception as exc:
+            report["reason"] = f"working tree could not be walked: {type(exc).__name__}"
+            return report
+
+        indexed = report["indexed_files"]
+        tree = report["working_tree_files"] or 0
+        if indexed == 0 and tree == 0:
+            report["mapping_valid"] = True
+        elif indexed == 0:
+            report["mapping_valid"] = False
+            report["reason"] = (
+                f"the index holds no file rows for this repository, but the "
+                f"checkout has {tree:,}"
+            )
+        elif tree and indexed * 4 < tree:
+            # A wide margin on purpose: an index legitimately lags the tree, and
+            # a tight ratio would report every mid-edit tree as broken. #1748's
+            # repro was 9 against 2,251, which is three orders of magnitude, so
+            # anything near parity is deliberately left alone.
+            report["mapping_valid"] = False
+            report["reason"] = (
+                f"only {indexed:,} of {tree:,} files in the checkout resolve "
+                f"through the index's repository identity"
+            )
+
+    return report
 
 
 def _query_page_count(repo_path: Path) -> int:
@@ -369,6 +500,7 @@ def _workspace_rows(target: CommandTarget) -> list[dict]:
             "head": None,
             "stale": None,
             "commits_behind": None,
+            "mapping_valid": None,
         }
         if not row["indexed"]:
             rows.append(row)
@@ -390,6 +522,9 @@ def _workspace_rows(target: CommandTarget) -> list[dict]:
             head=current_head,
             stale=is_stale,
             commits_behind=behind,
+            # False when the index cannot describe this checkout, even though
+            # .repowise/ exists (issue #1748).
+            mapping_valid=_mapping_report(abs_path)["mapping_valid"],
         )
         rows.append(row)
     return rows
@@ -467,7 +602,13 @@ def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
             no_docs.append(row["alias"])
 
         behind = row["commits_behind"]
-        if row["stale"] and behind > 0:
+        # Mapping validity is read before the count, because a broken mapping is
+        # what makes the count small: #1748's repo rendered as "[yellow]empty"
+        # on the strength of `files == 0`, which is the presentation the issue
+        # objects to. A false verdict is not a quiet repo.
+        if row.get("mapping_valid") is False:
+            status = "[red]mapping broken[/red]"
+        elif row["stale"] and behind > 0:
             status = f"[yellow]{behind} new commit(s)[/yellow]"
             total_stale += 1
         elif row["stale"]:
@@ -496,7 +637,20 @@ def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
     summary = f"\n  {indexed}/{len(rows)} repos indexed. Default: {ws_config.default_repo}"
     if total_stale:
         summary += f". [yellow]{total_stale} stale[/yellow]"
+    broken = [r for r in rows if r.get("mapping_valid") is False]
+    if broken:
+        summary += f". [red]{len(broken)} with a broken path mapping[/red]"
     console.print(summary)
+
+    # A count that disagrees with the checkout is the cheap preflight #1748 asks
+    # for, and it is invisible in the row above: both numbers look fine on their
+    # own. Print them side by side for anyone who has to act on it.
+    for r in broken:
+        console.print(
+            f"  [red]{r['alias']}[/red]: only {r['files']:,} file(s) resolve through "
+            f"the index; re-run [bold]repowise init {r['alias']}[/bold] to rebuild the "
+            "repository identity"
+        )
 
     # Honest "no docs" tip — print the exact remediation command so the
     # user never has to dig through docs to figure out what to do next.
@@ -574,9 +728,16 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         counts, total_db_tokens = (
             run_async(_query_pages(repo_path)) if has_db else ({}, 0)
         )
+        mapping = _mapping_report(repo_path)
         emit_json(
             {
                 "repo": str(repo_path),
+                # The preflight #1748 asks for: a machine consumer can read this
+                # before paying for a coverage job, which today it cannot,
+                # because every other field here reads healthy in the broken
+                # state.
+                "mapping_valid": mapping["mapping_valid"],
+                "mapping": mapping,
                 "indexed": True,
                 "state": {
                     "last_sync_commit": state.get("last_sync_commit"),
@@ -600,6 +761,16 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     # unguarded, and on a wiki.db whose schema predates the current models it
     # raises. Ordering it first means a reader still gets the sync state that
     # tells them the index is old.
+    mapping = _mapping_report(repo_path)
+    if mapping["mapping_valid"] is False:
+        # Printed before the state table: in the broken state every field in that
+        # table reads correct, so a reader who sees it first has already been
+        # told the index is fine.
+        notices.print(
+            f"[red]Path mapping broken:[/red] {mapping['reason']}. "
+            "Run [bold]repowise init[/bold] to rebuild the repository identity."
+        )
+
     state_table = Table(title="Sync State")
     state_table.add_column("Key", style="cyan")
     state_table.add_column("Value")
