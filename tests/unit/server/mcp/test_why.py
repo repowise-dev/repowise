@@ -683,3 +683,32 @@ async def test_get_why_path_fits_on_an_ungoverned_file(session, setup_mcp, monke
     # The fallback really was over the line — otherwise this test proves nothing.
     assert result["truncated"] is True
     assert len(_json.dumps(result, default=str)) <= effective_char_budget()
+
+
+def _meta_with(path: str, *messages: str):
+    import json as _json
+    from types import SimpleNamespace
+
+    commits = [
+        {"sha": f"s{i}", "message": m, "author": "a", "date": f"2026-01-0{i + 1}"}
+        for i, m in enumerate(messages)
+    ]
+    return SimpleNamespace(file_path=path, significant_commits_json=_json.dumps(commits))
+
+
+def test_cross_references_match_whole_tokens_not_substrings():
+    """``auth`` inside ``author`` is not a mention of an auth file."""
+    from repowise.server.mcp_server.tool_why.archaeology import _cross_references, _search_terms
+
+    path = "src/auth_cache.py"
+    basename, _stem, terms = _search_terms(path)
+    other = _meta_with(
+        "src/other.py",
+        "Credit the author in the cache docs",  # "auth" only inside "author"
+        "Invalidate auth cache on logout",  # both stem tokens as words
+    )
+
+    refs = _cross_references(path, basename, terms, [other])
+
+    assert [r["message"] for r in refs] == ["Invalidate auth cache on logout"]
+    assert refs[0]["matched_terms"] == ["auth", "cache"]

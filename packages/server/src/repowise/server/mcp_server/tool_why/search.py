@@ -182,7 +182,7 @@ async def _why_no_match(
     if targets:
         collector = OmissionCollector("get_why", repo_root=ctx.path)
         result["target_context"] = await _build_target_context(
-            ctx, repository, all_decisions, target_git, targets, collector, accepted
+            ctx, repository, all_decisions, target_git, targets, accepted
         )
         rationale = _mine_rationale(
             ctx.path, targets, query, max_results=1000, truncate_blocks=False
@@ -263,7 +263,7 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
 
     if targets:
         result_data["target_context"] = await _build_target_context(
-            ctx, repository, all_decisions, target_git, targets, collector, accepted
+            ctx, repository, all_decisions, target_git, targets, accepted
         )
 
     # Targets resolve through the node index; without them the question itself

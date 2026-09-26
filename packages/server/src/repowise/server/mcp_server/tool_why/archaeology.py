@@ -9,8 +9,6 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from repowise.server.mcp_server._budget import OmissionCollector
-
 _GIT_LOG_FORMAT = "--format=%H\t%an\t%ai\t%s"
 
 
@@ -19,7 +17,6 @@ async def _git_archaeology_fallback(
     git_meta: Any | None,
     all_git_meta: list,
     repository: Any,
-    collector: OmissionCollector | None = None,
 ) -> dict:
     """When no decisions govern a file, mine git history for intent signals."""
     result: dict[str, Any] = {"triggered": True}
@@ -76,6 +73,11 @@ def _search_terms(file_path: str) -> tuple[str, str, set[str]]:
     return basename, stem, search_terms
 
 
+def _mentions(msg_lower: str, term: str) -> bool:
+    """Whether *term* occurs in *msg_lower* as a whole token, so ``auth`` misses ``author``."""
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", msg_lower) is not None
+
+
 def _cross_references(
     file_path: str, basename: str, search_terms: set[str], all_git_meta: list
 ) -> list[dict[str, Any]]:
@@ -88,8 +90,8 @@ def _cross_references(
         for c in commits:
             msg_lower = c.get("message", "").lower()
             # Match if the commit message mentions the file basename or 2+ stem terms
-            matched_terms = sorted(t for t in search_terms if t in msg_lower)
-            if basename.lower() in msg_lower or len(matched_terms) >= 2:
+            matched_terms = sorted(t for t in search_terms if _mentions(msg_lower, t))
+            if _mentions(msg_lower, basename.lower()) or len(matched_terms) >= 2:
                 cross_references.append(
                     {"source_file": gm.file_path, **_commit_row(c), "matched_terms": matched_terms}
                 )

@@ -109,7 +109,7 @@ async def _why_path(query: str, repo: str | None) -> dict:
         # --- Fallback: git archaeology when no accepted decision governs ---
         if not governing:
             await _add_ungoverned_evidence(
-                result_data, query, git_meta, all_git_meta, repository, collector, ctx.path
+                result_data, query, git_meta, all_git_meta, repository, ctx.path
             )
 
         # Episodes are additive, not a fallback: a governed file still has history.
@@ -237,7 +237,6 @@ async def _add_ungoverned_evidence(
     git_meta: Any | None,
     all_git_meta: list,
     repository: Any,
-    collector: OmissionCollector,
     repo_path: str | Path,
 ) -> None:
     """Git archaeology and mined rationale for a file no accepted decision governs."""
@@ -246,7 +245,6 @@ async def _add_ungoverned_evidence(
         git_meta,
         all_git_meta,
         repository,
-        collector,
     )
     # The "why" may live in a code comment.
     rationale = _mine_rationale(
@@ -262,7 +260,6 @@ async def _build_target_context(
     all_decisions: list,
     target_git: dict[str, Any],
     targets: list[str],
-    collector: OmissionCollector | None = None,
     accepted: set[str] | None = None,
 ) -> dict[str, Any]:
     """Per-target governing decisions + origin story, with archaeology fallback.
@@ -284,7 +281,6 @@ async def _build_target_context(
                 target_git.get(t),
                 all_git_meta_list,
                 repository,
-                collector,
                 accepted or set(),
             )
         return target_context
@@ -311,7 +307,6 @@ async def _target_card(
     git_m: Any | None,
     all_git_meta_list: list,
     repository: Any,
-    collector: OmissionCollector | None,
     accepted_ids: set[str],
 ) -> dict[str, Any]:
     """One target's card: its rules, its candidates, its origin, and archaeology."""
@@ -348,7 +343,6 @@ async def _target_card(
             git_m,
             all_git_meta_list,
             repository,
-            collector,
         )
     return ctx_entry
 
@@ -371,7 +365,7 @@ async def _why_targets(targets: list[str], repo: str | None) -> dict:
         "mode": "path",
         "paths": targets,
         "target_context": await _build_target_context(
-            ctx, repository, all_decisions, target_git, targets, collector, accepted
+            ctx, repository, all_decisions, target_git, targets, accepted
         ),
         "_meta": _build_meta(repository=repository, targets=targets),
     }
