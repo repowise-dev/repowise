@@ -504,6 +504,61 @@ def _is_declaration(
     return _is_bodiless_cpp_type(language, node_type, def_node)
 
 
+def _objc_call_target(
+    site_node: Node, target_node: Node, target_name: str, has_receiver: bool, src: str
+) -> str | None:
+    """Objective-C call target name, or None to drop the match."""
+    # A message send binds one `method:` child per keyword, so
+    # `[view setTitle:t forState:s]` matches the query twice. Join the whole
+    # selector on the first match and drop the rest.
+    if site_node.type == "message_expression":
+        return _objc_message_selector(site_node, target_node, src)
+    # A block variable invoked with C call syntax (`completionBlock(hit)`) is
+    # not a call to a same-named function or property.
+    if not has_receiver and _objc_call_is_block_variable(site_node, target_name, src):
+        return None
+    return target_name
+
+
+def _jsx_supplied_props(site_node: Node, src: str) -> frozenset[str] | None:
+    """Props written on a JSX element, or None when not JSX or a spread hides them."""
+    if site_node.type not in ("jsx_self_closing_element", "jsx_opening_element"):
+        return None
+    props_set: set[str] = set()
+    for child in site_node.children:
+        if child.type == "jsx_attribute":
+            name = next(
+                (sub for sub in child.children if sub.type in ("property_identifier", "identifier")),
+                None,
+            )
+            if name is not None:
+                props_set.add(_node_text(name, src))
+        elif child.type == "jsx_expression" and any(
+            sub.type == "spread_element" for sub in child.children
+        ):
+            return None
+    return frozenset(props_set)
+
+
+def _dedupe_calls(calls: list[CallSite]) -> list[CallSite]:
+    """One call per ``(line, target, receiver)``, keeping the richest record.
+
+    Two scoped-call patterns can match the same two-part call (one keeps the
+    qualifier), so the richer record wins whichever order they arrive in.
+    """
+    deduplicated: dict[tuple[int, str, str | None], CallSite] = {}
+    for call in calls:
+        key = (call.line, call.target_name, call.receiver_name)
+        existing = deduplicated.get(key)
+        if (
+            existing is None
+            or (existing.receiver_call is None and call.receiver_call is not None)
+            or (existing.scope_name is None and call.scope_name is not None)
+        ):
+            deduplicated[key] = call
+    return list(deduplicated.values())
+
+
 _FSHARP_BINDING_NODE_TYPES = ("function_declaration_left", "value_declaration_left")
 _DART_FUNCTION_NODE_TYPES = ("function_signature", "getter_signature", "setter_signature")
 
@@ -1661,23 +1716,11 @@ class ASTParser:
             if not target_name:
                 continue
 
-            # Objective-C: a message send binds one `method:` child per
-            # keyword, so `[view setTitle:t forState:s]` matches the one
-            # query pattern twice. Join the whole selector on the first match
-            # so it can meet the symbol side, and drop the rest.
             if file_info.language == "objectivec":
-                if site_node.type == "message_expression":
-                    joined = _objc_message_selector(site_node, target_nodes[0], src)
-                    if joined is None:
-                        continue
-                    target_name = joined
-                # A block held in a parameter or a local is invoked with C call
-                # syntax, so `completionBlock(hit)` is indistinguishable from a
-                # call to a C function by name alone. Left in, the resolver
-                # binds it to whatever same-named @property the repo holds.
-                elif not receiver_nodes and _objc_call_is_block_variable(
-                    site_node, target_name, src
-                ):
+                target_name = _objc_call_target(
+                    site_node, target_node, target_name, bool(receiver_nodes), src
+                )
+                if target_name is None:
                     continue
 
             if target_name in _call_builtins:
@@ -1699,8 +1742,8 @@ class ASTParser:
             # capture a receiver from -- so the split happens on the text.
             # After the builtin check above, so a name is filtered as written.
             if file_info.language == "fsharp" and receiver_name is None and "." in target_name:
-                receiver_name, _, target_name = target_name.rpartition(".")
-                receiver_name = receiver_name.strip()
+                receiver_part, _, target_name = target_name.rpartition(".")
+                receiver_name = receiver_part.strip()
                 target_name = target_name.strip()
                 if not target_name:
                     continue
@@ -1711,29 +1754,7 @@ class ASTParser:
             )
             scope_name = _node_text(scope_nodes[0], src).strip() if scope_nodes else None
 
-            arg_count: int | None = None
-            if arg_nodes:
-                arg_node = arg_nodes[0]
-                arg_count = _count_arguments(arg_node)
-
-            supplied_props: frozenset[str] | None = None
-            if site_node.type in ("jsx_self_closing_element", "jsx_opening_element"):
-                props_set: set[str] = set()
-                has_spread = False
-                for child in site_node.children:
-                    if child.type == "jsx_attribute":
-                        for sub in child.children:
-                            if sub.type in ("property_identifier", "identifier"):
-                                props_set.add(_node_text(sub, src))
-                                break
-                    elif child.type == "jsx_expression":
-                        for sub in child.children:
-                            if sub.type == "spread_element":
-                                has_spread = True
-                                break
-                if not has_spread:
-                    supplied_props = frozenset(props_set)
-
+            arg_count = _count_arguments(arg_nodes[0]) if arg_nodes else None
             caller_id = _find_enclosing_symbol(line, symbol_ranges)
 
             calls.append(
@@ -1750,27 +1771,10 @@ class ASTParser:
                         if site_node.type in config.reference_call_node_types
                         else "calls"
                     ),
-                    supplied_props=supplied_props,
+                    supplied_props=_jsx_supplied_props(site_node, src),
                 )
             )
-
-        deduplicated: dict[tuple[int, str, str | None], CallSite] = {}
-        for call in calls:
-            key = (call.line, call.target_name, call.receiver_name)
-            existing = deduplicated.get(key)
-            # Two of the three scoped-call patterns can match the same two-part call
-            # (one keeps the qualifier, one does not) and both dedup to this key, so
-            # the richer record has to win whichever order they arrive in. The
-            # three-part pattern (ns::util::fn()) never collides here, it's the
-            # only pattern that can match a nested qualified_identifier, so it
-            # always lands as a fresh key.
-            if (
-                existing is None
-                or (existing.receiver_call is None and call.receiver_call is not None)
-                or (existing.scope_name is None and call.scope_name is not None)
-            ):
-                deduplicated[key] = call
-        return list(deduplicated.values())
+        return _dedupe_calls(calls)
 
     def _extract_references(
         self,
