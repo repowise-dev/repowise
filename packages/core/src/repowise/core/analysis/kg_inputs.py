@@ -1,8 +1,4 @@
-"""What the KG curation passes read: file nodes, import edges, barrels, language.
-
-Shared by the layer, entry-point and tour passes, so each derives these
-the same way.
-"""
+"""Shared KG curation inputs: file nodes, import edges, barrels, dominant language."""
 
 from __future__ import annotations
 

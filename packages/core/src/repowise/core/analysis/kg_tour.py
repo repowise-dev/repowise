@@ -1,8 +1,7 @@
 """The curated knowledge graph's canonical tour (curation phase 3).
 
-One execution-flow walk over the curated layers, degrading honestly to a
-structural walk when the import graph cannot support flow claims. Split out
-of :mod:`kg_curation`, which calls :func:`_curate_tour`.
+An execution-flow walk over the curated layers, or a structural walk when the
+import graph cannot support flow claims.
 """
 
 from __future__ import annotations
@@ -357,11 +356,8 @@ def _curate_tour(
     # consumers (UI, harness) can see the degradation level.
     kg.project["graph_mode"] = ctx.graph_mode
 
-    # The overview step retargets to the root README — keep that file out of
-    # the walk so the tour never visits it twice. Tests and example programs
-    # are excluded from the walk universe *before* build_tour spends its step
-    # budget; otherwise a samples-heavy repo (express) fills the budget with
-    # stops that get filtered away afterwards.
+    # The README is the overview stop, so it stays out of the walk. Tests and
+    # examples are excluded before build_tour spends its step budget on them.
     readme = _readme_overview_node(kg)
     overview_target = readme["filePath"] if readme is not None else None
     walk_universe = [
@@ -505,23 +501,14 @@ class _TourContext:
 def _closing_stop_paths(ctx: _TourContext, graph_builder: Any) -> list[str]:
     """One closing stop per adjacent layer present (the test suite).
 
-    Tests verify the system, they don't start it, so they never lead the
-    walk. Face = the shallowest suite anchor when present (conftest /
-    spec_helper / test_helper — registry-declared suite roots), else the best
-    code file, else anything (never a stray Cargo.toml if avoidable).
-
-    Shared test harness files — base classes and helpers imported by two or
-    more other test files (AbstractFileSystemTest, BaseTestCase, SpecUtil) —
-    are what the suite runs ON, not where tests start. Their heavy in-degree
-    otherwise wins the pagerank tie-break on every repo with shared fixtures.
+    Tests verify the system rather than start it, so they close the tour.
+    Shared harness files (imported by other test files) never face the suite.
     """
     adjacent_paths = {
         p for layer in ADJACENT_LAYERS for p in ctx.by_layer.get(layer, [])
     }
-    # Fan-out groups (one import statement expanded to many sibling targets
-    # — Go/JVM package imports) are *not* evidence that a specific file is
-    # referenced: a chi root test "imports" every sibling test through the
-    # package fan-out. Only single-target import evidence counts here.
+    # A package-import fan-out is not evidence that a specific file is
+    # referenced, so only single-target imports count as harness evidence.
     harness_in: Counter[str] = Counter()
     for src, dst in _import_pairs_excluding_fanout(graph_builder):
         if src != dst and src in adjacent_paths and dst in adjacent_paths:
@@ -536,7 +523,11 @@ def _closing_stop_paths(ctx: _TourContext, graph_builder: Any) -> list[str]:
 
 
 def _suite_face(cands: list[str], ctx: _TourContext, harness_in: Counter[str]) -> str:
-    """The file that stands for one adjacent layer's suite in the tour."""
+    """The file that stands for one adjacent layer's suite in the tour.
+
+    A registry-declared suite anchor wins; else the best non-harness,
+    non-fixture code file; else the layer's best file of any kind.
+    """
     anchors = sorted(
         (p for p in cands if PurePosixPath(p).stem.lower() in _SUITE_ANCHOR_STEMS),
         key=lambda p: (len(PurePosixPath(p).parts), p),
@@ -547,34 +538,22 @@ def _suite_face(cands: list[str], ctx: _TourContext, harness_in: Counter[str]) -
         p
         for p in cands
         if ctx.type_by_path.get(p) not in {"config", "document"}
-        # Declaration descriptors (module-info.java) are source files
-        # that describe a module, not tests — gson's shallow JPMS
-        # descriptor must never face the suite.
+        # Declaration descriptors describe a module; fixtures hold test data.
         and PurePosixPath(p).name not in _DESCRIPTOR_FILENAMES
-        # Fixture-shaped files (FooFixtures.java) hold test data; the
-        # suite's face must be something that verifies behavior.
         and not _is_fixture_shaped(p)
     ]
-    # Drop harness files unless that would leave nothing. One
-    # single-target import from another test file is already harness
-    # evidence — leaf tests have zero (okio's CipherFactory.kt had
-    # exactly one cipher-test importer and still faced the suite).
+    # Drop harness files unless that would leave nothing: one single-target
+    # import from another test file is already harness evidence.
     non_harness = [p for p in code_cands if harness_in.get(p, 0) < 1]
     if non_harness:
         code_cands = non_harness
-    # When the repo declares test *projects* (.NET's Foo.Tests/ or
-    # Foo.Specs/ sibling-project convention), the suite lives there —
-    # a test/Shared/ helper dir next to them is auxiliary compile-time
-    # plumbing, not where a maintainer says tests start.
+    # When the repo declares test projects (Foo.Tests/), the suite lives there.
     in_test_project = [p for p in code_cands if _in_test_project(p)]
     if in_test_project:
         code_cands = in_test_project
     if not code_cands:
         return _best_in_layer(cands, ctx.rank, ctx.pagerank)
-    # No suite anchor (non-pytest/rspec suites): prefer the repo's
-    # dominant language (gson's suite face is a .java, not a stray
-    # .proto), then the shallowest test-root file (django's
-    # tests/runtests.py), most-imported as the tie-break.
+    # Prefer the dominant language, then the shallowest file, then PageRank.
     return min(
         code_cands,
         key=lambda p: (
@@ -625,11 +604,8 @@ def _flow_walk(
         and ctx.file_layers.get(s.target_path) not in ADJACENT_LAYERS
         and not is_support_path(s.target_path)
     ]
-    # A genuine churn hotspot off the hot import path (a constantly-edited
-    # pipeline file buried in a large catch-all layer) earns one reserved
-    # slot — picked from the whole code universe, not just build_tour's
-    # selection, and only when it is not already a stop. Repos without git
-    # history pass an empty map, so the reserve is a no-op there.
+    # A churn hotspot off the import path earns one reserved slot, picked from
+    # the whole code universe; without git history the map is empty.
     hotspot_path: str | None = None
     if hotspot_commits:
         hotspot_pool = [
@@ -695,9 +671,7 @@ def _layer_face(
     layer: str, ctx: _TourContext, walk: list[str], overview_target: str | None
 ) -> str | None:
     """The stop that represents *layer* in the walk, or None if it has no face."""
-    # Manifests (mix.exs, project.clj, Setup.lhs) are code-shaped
-    # but describe the project rather than implement it — never a
-    # layer's face, same rule as the structural anchor.
+    # Manifests describe the project rather than implement it: never a face.
     manifest_names = _LANG_REGISTRY.manifest_filenames()
     candidates = [
         p
@@ -711,12 +685,8 @@ def _layer_face(
     ]
     if not candidates:
         return None
-    # A layer's face must be code. A layer holding only configs/docs
-    # (a plugins/ dir of JSON manifests) gets no manufactured stop —
-    # except Config itself, where "this is where configuration
-    # lives" is the point.
-    # Infra-language scripts (run-hlint.sh, deploy.sh) wire the
-    # project, they don't implement a layer — never its face.
+    # A face must be code (not config, docs or infra scripts), except for the
+    # Config layer itself.
     infra_langs = _LANG_REGISTRY.infra_languages()
     code_candidates = [
         p
