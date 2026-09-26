@@ -16,15 +16,10 @@ class ExtractedDecision:
     alternatives: list[str] = field(default_factory=list)
     consequences: list[str] = field(default_factory=list)
     affected_files: list[str] = field(default_factory=list)
-    #: What the mining model named, before the commit's own file list has
-    #: validated it. Mining-time only: the two commit miners intersect it into
-    #: :attr:`affected_files` and clear it, so nothing downstream ever reads a
-    #: path the model produced and the commit does not list.
-    #:
-    #: ``None`` means the model was never asked or did not answer, which is
-    #: not the same as an empty list. An empty list is the model saying this
-    #: decision is about none of the commit's files, and that answer binds the
-    #: record to nothing; ``None`` falls back to the old breadth rule.
+    #: The files the mining model named, before the commit's own file list
+    #: validates them. Mining-time only: the commit miners intersect it into
+    #: :attr:`affected_files` and clear it. ``[]`` binds the record to nothing;
+    #: ``None`` (never asked, or no answer) falls back to the commit-wide scope.
     proposed_files: list[str] | None = None
     affected_modules: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
@@ -38,18 +33,14 @@ class ExtractedDecision:
     evidence_line: int | None = None
     confidence: float = 0.5
     status: str = "proposed"
-    # Which of the two nouns this is. Defaulted rather than classified per
-    # extractor: every other source reads an artifact already written about the
-    # code, and only the session lane mines the prose where an agreement about
-    # conducting the work gets stated.
+    # Defaulted: only the session lane mines prose where an agreement about
+    # conducting the work is stated.
     kind: str = ARCHITECTURAL_KIND
-    # The verbatim claimed quote (LLM/parser output) and the verdict from the
-    # anti-hallucination substring gate (Phase 1D).
+    # The claimed verbatim quote and the substring gate's verdict on it.
     source_quote: str = ""
     verification: str = "unverified"  # exact | fuzzy | unverified
-    # Transient: the verbatim source span this decision was drawn from. Set by
-    # each extractor, consumed by the substring gate, then cleared before
-    # persistence (the persistence layer ignores unknown dict keys anyway).
+    # Transient: the verbatim span this decision was drawn from, consumed by
+    # the substring gate and cleared before persistence.
     source_text: str = ""
     # ``source`` alone cannot separate the two session lanes. Blank and False
     # mean the lane said nothing, not that it said no.
@@ -83,8 +74,7 @@ class DecisionExtractionReport:
     total_found: int
     decisions: list[ExtractedDecision]
     by_source: dict[str, int]
-    # Sources that raised, {source name: error text}. A source that fails
-    # returns an empty list, so without this a total outage and an honestly
-    # empty repo are the same number on screen. Callers render it; nothing
-    # else can tell the two apart.
+    # {source name: error text} for sources that raised. A failed source
+    # contributes zero decisions, so this is what tells an outage from an
+    # empty repo.
     failures: dict[str, str] = field(default_factory=dict)

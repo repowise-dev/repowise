@@ -37,16 +37,10 @@ def _coerce_line(value: object) -> int | None:
 def _coerce_paths(value: object) -> list[str] | None:
     """A list of path-ish strings out of whatever the model returned.
 
-    ``None`` for an absent *or malformed* key, so that a model which answered
-    ``[]`` is told apart from one that never usefully answered: the first is a
-    decision about none of the commit's files, which binds the record to
-    nothing, and the second is a provider that has not seen the new prompt,
-    which falls back to the commit list. A list of dicts or numbers is the
-    second case, not the first -- reading it as "chose nothing" would silently
-    make the record govern nothing forever on a shape error.
-
-    Models return a bare string for a one-element list often enough to be
-    worth handling.
+    ``None`` for an absent *or malformed* key, which falls back to the
+    commit's file list; ``[]`` is a real answer that binds the record to
+    nothing, so a shape error must never read as one. A bare string is taken
+    as a one-element list.
     """
     if value is None:
         return None
@@ -136,14 +130,10 @@ def _decision_from_item(item: dict) -> ExtractedDecision:
         alternatives=item.get("alternatives", []),
         consequences=item.get("consequences", []),
         tags=item.get("tags", []),
-        # Only the two commit prompts ask for this. Every other prompt omits
-        # the key, so this stays None and the miner that owns those decisions
-        # keeps scoping them its own way.
+        # Only the two commit prompts ask for this; elsewhere it stays None.
         proposed_files=_coerce_paths(item.get("affected_files")),
         evidence_commits=[item["commit_sha"]] if "commit_sha" in item else [],
-        # Which marker this came from, for the inline-marker miner's per-marker
-        # attribution. Absent (and left None) for every other prompt; they
-        # scope by sha or by file instead.
+        # The marker this came from, for inline-marker attribution; None elsewhere.
         evidence_line=_coerce_line(item.get("marker_line")),
         source_quote=item.get("source_quote", ""),
     )
@@ -155,7 +145,6 @@ def parse_decisions_json(content: str) -> list[ExtractedDecision]:
     A blank body raises :class:`EmptyModelResponseError`; every caller
     sits inside a gather or a fallback that counts that as a lost batch.
     """
-    # Extract JSON from response (may be wrapped in markdown code blocks)
     content = content.strip()
     if not content:
         raise EmptyModelResponseError(

@@ -1,35 +1,17 @@
-"""Architectural Decision Intelligence - extraction from multiple sources.
+"""Architectural decision extraction from every index-time source.
 
-Capture sources (see ``decision_provenance.SOURCE_RANK`` for the trust ladder):
-    1. Inline markers     (# WHY:, # DECISION:, etc.)
-    2. Git archaeology    (significant commit messages)
-    3. ADR auto-discovery (Nygard/MADR records — deterministic parse first)
-    4. PR / squash-body mining (commit bodies captured in git indexing)
-    5. Comment archaeology (LLM rationale prose on high-centrality code)
-    + CLI capture (manual entry)
+Sources run in :data:`SOURCE_NAMES` order (inline markers, git archaeology,
+ADRs, PR / squash bodies, comment archaeology, conventions) and can be disabled
+per repo via ``decisions.sources`` in ``.repowise/config.yaml``. ADRs are parsed
+structurally before any LLM call.
 
-Sources can be disabled per-repo via ``decisions.sources`` in
-``.repowise/config.yaml`` (see :data:`SOURCE_NAMES` /
-:meth:`DecisionExtractor.extract_all`).
+``code_comment``, ``readme_mining`` and ``changelog`` are retired: they mined
+prose that describes a repo rather than evidence of a choice made in it. Their
+names stay in ``SOURCE_RANK`` so older rows still rank, and
+:data:`RETIRED_SOURCES` drives the purge on the persist path.
 
-Three sources have been retired, all for the same reason: they mined prose that
-describes a repo rather than evidence of a choice made in it, and the records
-they produced were never acted on. ``code_comment`` went first (#751) — the
-query-time live-grep miner serves the same comments fresh, so persisting them
-only flooded the proposed queue. ``readme_mining`` and ``changelog`` follow:
-between them they produced 153 records in this project's own store and **zero**
-that ever became active, while accounting for most of a 214-deep review queue.
-Retired source names are kept in ``SOURCE_RANK`` so rows written before the
-removal still rank, and :data:`RETIRED_SOURCES` drives the one-shot purge on the
-persist path. The ADR miner still borrows ``README_MINING_PROMPT`` for its
-unstructured-file fallback; that is the prompt, not the source.
-
-Determinism-first: ADRs are parsed structurally before any LLM call.
-Every extracted decision passes an anti-hallucination substring gate
-(:meth:`DecisionExtractor._apply_substring_gate`) — fields not grounded in the
-verbatim source span are dropped, and evidence-less decisions are rejected.
-
-All LLM calls are wrapped in try/except - failures never propagate.
+Every decision passes the anti-hallucination substring gate before it is
+returned, and a source that fails is reported in the result, never raised.
 """
 
 from __future__ import annotations
@@ -109,7 +91,7 @@ def _truncate_title(text: str, limit: int) -> str:
     window = text[:limit]
     cut = window.rfind(" ")
     if cut <= 0:
-        # Single over-long word — hard cut, still signal truncation.
+        # Single over-long word: hard cut, still signal truncation.
         return window.rstrip() + "…"
     return window[:cut].rstrip() + "…"
 
@@ -174,10 +156,8 @@ def _first_section(sections: dict[str, str], *headings: str) -> str:
 def _adr_status(declared: str) -> str:
     """The record status for an ADR's declared status.
 
-    A document with no Status section has not said it is accepted, and a
-    committed ADR is the one artifact allowed to accept its own decision.
-    Defaulting to ``active`` therefore let any draft under docs/adr/ grant
-    itself authority.
+    An undeclared status stays ``proposed``: a committed ADR is the one
+    artifact allowed to accept its own decision, so a draft must not.
     """
     status_key = declared.strip().lower().split()[0] if declared.strip() else ""
     return _ADR_STATUS_MAP.get(status_key, "proposed")
@@ -217,10 +197,8 @@ def _snippet_for(
     return batch[0]
 
 
-# Above this node count, skip the iterative PageRank solve and use degree
-# centrality (O(nodes)) instead — comment archaeology only needs a rough
-# "most depended-on files" ranking, not exact PageRank, and the iterative
-# solve would otherwise add seconds on very large graphs.
+# Above this node count, rank by degree (O(nodes)) instead of solving PageRank:
+# comment archaeology only needs a rough "most depended-on files" ranking.
 _PAGERANK_NODE_CEILING = 20_000
 
 
@@ -266,17 +244,13 @@ class DecisionExtractor:
     ) -> None:
         self._repo_path = Path(repo_path)
         self._provider = provider
-        # Per-source model gate. ``None`` means "no policy supplied", which
-        # keeps the provider available to every source, as before this existed.
+        # Per-source model gate; ``None`` lets every source use the provider.
         self._policy = policy
         self._graph = graph
         self._git_meta_map = git_meta_map or {}
         self._parsed_files = parsed_files or []
-        # ``source_map`` is ingestion's already-computed {rel_path: bytes} for
-        # the indexed file set. When present, the inline-marker scan reuses it
-        # for both discovery and reads instead of re-walking the tree and
-        # re-reading every file from disk (redundant with ingestion). ``None``
-        # keeps the legacy self-walk fallback for callers that don't thread it.
+        # Ingestion's {rel_path: bytes} for the indexed set. When given, the
+        # marker scan reads it instead of walking and re-reading the tree.
         self._source_map = source_map
 
     def _llm(self, source: str) -> Any | None:
@@ -330,10 +304,8 @@ class DecisionExtractor:
         self, file_path: str, markers: list[dict], marker_llm: Any | None
     ) -> list[ExtractedDecision]:
         """One file's markers as decisions: model-structured when possible, else raw."""
-        # Get 1-hop graph neighbors for affected_files
         affected = self._get_neighbors(file_path)
         if not marker_llm:
-            # No LLM — create minimal decisions from raw marker text
             return [self._raw_decision_from_marker(file_path, m, affected) for m in markers]
         try:
             llm_decisions = await self._structure_markers_via_llm(file_path, markers)
@@ -343,7 +315,6 @@ class DecisionExtractor:
                 "decision_extractor.llm_structuring_failed",
                 file=file_path,
             )
-            # Fall through to raw extraction
             return [self._raw_decision_from_marker(file_path, m, affected) for m in markers]
         return llm_decisions
 
@@ -354,18 +325,15 @@ class DecisionExtractor:
         markers: list[dict],
         affected: list[str],
     ) -> None:
-        """Bind each model-structured decision to the marker it was drawn from."""
+        """Bind each model-structured decision to the marker it was drawn from.
+
+        The model reports ``marker_line``, parsed into ``evidence_line``. A
+        decision that names no known marker gets no source span, so the gate
+        leaves it ``unverified`` instead of verifying it against another
+        marker's text.
+        """
         markers_by_line = {m["line"]: m for m in markers}
         for d in decisions:
-            # Attribute the decision to the one marker it was drawn from (the
-            # prompt asks for `marker_line`, which the parser lands in
-            # `evidence_line`). Joining every marker's context into one span
-            # and handing it to all of them let the substring gate stamp a
-            # decision `exact` against a *different* marker's text, and put
-            # marker 1's line number on marker 3's decision. A decision we
-            # cannot attribute gets no source span at all: the gate then leaves
-            # it `unverified`, which is the honest verdict, rather than
-            # verifying it against a neighbour.
             marker = markers_by_line.get(d.evidence_line)
             if marker is None and len(markers) == 1:
                 marker = markers[0]  # unambiguous without the hint
@@ -388,10 +356,8 @@ class DecisionExtractor:
         return ExtractedDecision(
             title=_truncate_title(marker["text"], 100),
             decision=marker["text"],
-            # No context. This lane has only the marker's own text, and
-            # `evidence_file`/`evidence_line` below already say where it was
-            # found, so the location string it used to carry was a restatement
-            # that made a record with no stated reason read as having one.
+            # No context: the marker's text is all this lane has, and its
+            # location is already in evidence_file / evidence_line.
             source="inline_marker",
             status="active",
             confidence=0.7,
@@ -409,12 +375,7 @@ class DecisionExtractor:
     ) -> list[ExtractedDecision]:
         """Use LLM to structure inline markers into decision records.
 
-        Markers are sent five per call. The batch size caps prompt length;
-        it is not a cap on how many markers a file may have. ``markers[:5]``
-        alone dropped every marker past the fifth: the caller invokes this
-        once per file, and the raw-marker fallback below only runs on an
-        exception, so those markers were never structured and never fell
-        back — they left no record and no log line.
+        Every marker is sent, ``_MARKERS_PER_CALL`` per call.
         """
         provider = self._llm("inline_marker")
         decisions: list[ExtractedDecision] = []
@@ -569,8 +530,8 @@ class DecisionExtractor:
         decision_txt = _first_section(sections, "decision", "decision outcome")
         rationale = _first_section(sections, "rationale", "decision drivers")
 
-        # Require recognizable ADR structure — at minimum a Decision or Context
-        # section — otherwise let the LLM fallback handle it.
+        # Require a Decision or Context section; anything less goes to the LLM
+        # fallback.
         if not (decision_txt or context):
             return None
 
@@ -591,7 +552,7 @@ class DecisionExtractor:
         )
 
     # ------------------------------------------------------------------
-    # Source 4: PR / squash-body mining (consumes commit bodies from 1A)
+    # Source 4: PR / squash-body mining
     # ------------------------------------------------------------------
 
     async def mine_pr_bodies(self) -> list[ExtractedDecision]:
@@ -610,18 +571,12 @@ class DecisionExtractor:
             bodies_block = ""
             source_by_sha: dict[str, str] = {}
             for c in batch:
-                # The file list is what makes "affected_files" answerable.
-                # This miner asked for a decision without ever showing which
-                # files the commit touched, and scored 20% on topic against
-                # git archaeology's 45% on the same store.
+                # The file list is what lets the model answer "affected_files".
                 bodies_block += pr_commit_block(c, files_by_sha.get(c["sha"], []))
                 source_by_sha[c["sha"]] = f"{c['subject']}\n{c['body']}"
             prompt = PR_BODY_MINING_PROMPT.format(bodies_block=bodies_block)
-            # Let this propagate to the gather below. Swallowed here, a total
-            # provider outage returned five empty lists, so ``_collect_batches``
-            # saw no errors and the run reported "Nothing found in: pull
-            # requests" — the exact zero-that-means-failure this change exists
-            # to remove.
+            # Not caught: _run_batches counts a failed batch, so an outage is
+            # reported rather than read as nothing found.
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
@@ -669,10 +624,7 @@ class DecisionExtractor:
             for fp, prose in batch:
                 comments_block += f"\n--- {fp} ---\n{prose[:1500]}\n"
             prompt = COMMENT_ARCHAEOLOGY_PROMPT.format(comments_block=comments_block)
-            # Was a bare ``except Exception: return []`` here with no log at
-            # all — the quietest of the three swallows, and the one that made
-            # "comment: 0" unfalsifiable. Let it propagate to the gather
-            # below, which counts it.
+            # Not caught: _run_batches counts a failed batch.
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
             )
@@ -724,7 +676,7 @@ class DecisionExtractor:
                 out.append(node)
         return out
     # ------------------------------------------------------------------
-    # Anti-hallucination substring gate (Phase 1D)
+    # Anti-hallucination substring gate
     # ------------------------------------------------------------------
 
     def _apply_substring_gate(
@@ -732,9 +684,8 @@ class DecisionExtractor:
     ) -> tuple[list[ExtractedDecision], int]:
         """Run the shared anti-hallucination gate over extracted decisions.
 
-        Thin wrapper around :func:`decision_gate.apply_substring_gate` — the
-        gate orchestration is factored out so the Phase-2 LLM-docs harvest path
-        enforces the *same* grounding rules. See that module for the contract.
+        Thin wrapper around :func:`decision_gate.apply_substring_gate`, which
+        the docs harvest path shares so both enforce the same grounding rules.
         """
         return apply_substring_gate(decisions)
 
@@ -777,7 +728,7 @@ class DecisionExtractor:
         none.
 
         Every extracted decision is then put through the anti-hallucination
-        substring gate (:meth:`_apply_substring_gate`) before being returned —
+        substring gate (:meth:`_apply_substring_gate`) before being returned:
         ungrounded LLM fields are dropped and evidence-less decisions rejected.
         """
 
@@ -790,9 +741,8 @@ class DecisionExtractor:
                 logger.info("decision_extractor.finished", source=name, count=len(result))
                 return result
             except Exception as exc:
-                # Recorded as well as logged: the CLI pins core to ERROR, so
-                # a source that dies here used to reach the user as a plain
-                # zero indistinguishable from "this repo has no ADRs".
+                # Recorded as well as logged: the CLI pins core logging to
+                # ERROR, so the report is where a failed source shows up.
                 failures[name] = f"{type(exc).__name__}: {exc}"
                 logger.warning("decision_extractor.source_failed", source=name, error=str(exc))
                 return []
@@ -800,7 +750,7 @@ class DecisionExtractor:
                 if on_step:
                     on_step(name)
 
-        # (source name, bound coroutine factory) — order is the progress order.
+        # (source name, bound coroutine factory), in progress order.
         all_sources: list[tuple[str, Any]] = [
             ("inline_marker", self.scan_inline_markers),
             ("git_archaeology", self.mine_git_archaeology),
@@ -859,12 +809,9 @@ class DecisionExtractor:
           Text comes from ``source_map`` when the file was just ingested, else a
           targeted disk read; deleted / unreadable paths are skipped.
         * ``source_map`` (init path): ingestion's already-decoded indexed set.
-          Discovery AND reads are free — no tree walk, no per-file ``read_text``.
-          Paths are POSIX (``FileInfo.path``), matching the graph node keys the
-          neighbour lookup joins against.
-        * legacy self-walk (``source_map is None``): the original ``os.walk`` +
-          git-tracked filter, kept so callers that don't thread ``source_map``
-          behave exactly as before.
+          No tree walk and no per-file read. Paths are POSIX (``FileInfo.path``),
+          matching the graph node keys the neighbour lookup joins against.
+        * the tree walk, for callers that pass no ``source_map``.
         """
         if restrict_to_files:
             for rel_path in restrict_to_files:

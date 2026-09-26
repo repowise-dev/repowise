@@ -37,19 +37,9 @@ def compute_staleness(
     """Fraction of *affected_files* that have changed since the record's birth.
 
     A fact about the code, not a judgement about the record: 0.0 means
-    nothing it governs has moved, 1.0 means all of it has. There is no
-    tuned constant left in it, which is the point — the previous formula
-    was ``commit_count / 15 * 0.7 + age_days / 365 * 0.3``, whose divisors
-    were fitted to one repository's history and produced ~0 for almost
-    every record here regardless of whether the code had moved.
-
-    Also gone: a keyword boost that read recent commit *messages* for words
-    like "migrate away". That inferred intent from English prose, which
-    does not travel, and it mixed a guess into a value other surfaces
-    store and compare.
-
-    *decision_text* is accepted and unused, so the two call sites keep
-    working; it goes when they do.
+    nothing it governs has moved, 1.0 means all of it has. No tuned
+    constants and no reading of commit messages. *decision_text* is
+    accepted and unused so existing call sites keep working.
 
     A file with no git metadata **after** the caller's gap fill counts as
     changed: the record names something the repository does not track, so
@@ -66,7 +56,7 @@ def compute_staleness(
     for fp in affected_files:
         meta = git_meta_map.get(fp)
         if meta is None:
-            changed += 1  # named but not tracked — cannot be shown to hold
+            changed += 1  # named but not tracked, so cannot be shown to hold
             continue
         last_commit = meta.get("last_commit_at")
         if not last_commit or created is None:

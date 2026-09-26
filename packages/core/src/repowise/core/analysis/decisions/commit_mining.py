@@ -18,20 +18,14 @@ from .records import ExtractedDecision
 
 #: The output budget for one batch of either commit prompt. Reasoning tokens
 #: are charged to it, so a budget that only fits the answer buys an empty
-#: body rather than a short one. Roughly twice the largest completion measured
-#: on this repository; see decision ``1c228ed8``.
+#: body rather than a short one; see decision ``1c228ed8``.
 _BATCH_MAX_TOKENS = 8000
 
-#: How many of a commit's files either commit prompt will show. The model has
-#: to read the list to pick from it, and a commit that touched ninety files is
-#: not one whose decisions can be assigned by reading the list anyway.
-#:
-#: Sorted before truncating at both call sites, so which files the model is
-#: allowed to choose from is a property of the commit rather than of the order
-#: ``_git_meta_map`` happened to be built in.
+#: How many of a commit's files either commit prompt will show. Sorted before
+#: truncating, so the files offered depend on the commit, not on map order.
 _MAX_PROMPT_FILES = 20
 
-# PR/squash body markers — a body containing any of these reads like a PR
+# PR/squash body markers: a body containing any of these reads like a PR
 # description worth mining (vs an incidental multi-line commit message).
 _PR_BODY_MARKERS = (
     "## why",
@@ -56,18 +50,9 @@ def _scope_from_selection(
     """The files and basis for one decision mined out of one commit.
 
     Returns the model's own selection, validated against the commit's file
-    list, under :data:`SCOPE_BASIS_SELECTED`. Falling back to the commit's
-    whole footprint when the model selected nothing would reinstate exactly
-    what this replaces, so an empty selection stays empty: the record keeps
-    its commit, its evidence and its place in repository-wide answers, and
-    stops answering "what governs this file". Roughly one record in six lands
-    here, and every one of them measured as a record whose subject was not in
-    the commit's list to begin with.
-
-    The old breadth rule is the fallback for a *missing* answer rather than an
-    empty one -- a provider that ignored the new key, or a cached response
-    written before it existed. There the record is scoped as it always was and
-    the legacy basis says so.
+    list, under :data:`SCOPE_BASIS_SELECTED`. An empty selection stays empty:
+    the record keeps its commit and evidence but governs no file. Only a
+    *missing* answer falls back to the commit-wide scope.
     """
     if decision.proposed_files is None:
         return (commit_scope_files(commit_files), commit_scope_basis(commit_files))
@@ -80,8 +65,7 @@ def _signal_commit_info(commit: dict) -> dict | None:
     """The prompt-ready record of a commit with decision signals, else None."""
     msg = commit.get("message", "")
     body = commit.get("body", "")
-    # Scan subject + body for signals — squash-merge repos carry the
-    # decision rationale in the body, not the one-line subject.
+    # Scan subject and body: squash-merge repos carry the rationale in the body.
     signal_count = count_decision_signals(f"{msg}\n{body}".lower())
     if signal_count <= 0:
         return None
@@ -122,9 +106,8 @@ def _attribute_to_commit(
             decision, files_by_sha.get(sha)
         )
         decision.source_text = source_by_sha.get(sha, "")
-    # Cleared whether or not the sha resolved: an unattributed decision has no
-    # commit to validate paths against, so the model's list is unusable rather
-    # than merely unused.
+    # Cleared either way: an unattributed decision has no commit to validate
+    # the model's paths against.
     decision.proposed_files = None
     return sha
 
