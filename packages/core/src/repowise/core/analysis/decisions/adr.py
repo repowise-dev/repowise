@@ -77,11 +77,16 @@ def find_adr_files(repo_path: Path) -> list[Path]:
             bucket = _adr_bucket(fname, in_adr_dir, conventional, loose)
             if bucket is None:
                 continue
+            # A full loose bucket can never reach the output, so skip it.
+            if bucket is loose and len(loose) >= _MAX_ADR_FILES:
+                continue
             if ignore.match_file(f"{rel_dir}/{fname}" if rel_dir else fname):
                 continue
             bucket.append(dirpath / fname)
 
-        if len(conventional) + len(loose) >= _MAX_ADR_FILES:
+        # Only a full conventional bucket ends the walk: loose matches seen
+        # early must not crowd out an ADR dir the walk has not reached yet.
+        if len(conventional) >= _MAX_ADR_FILES:
             break
 
     # No dedup pass: walk_repo yields each directory once, and each file
