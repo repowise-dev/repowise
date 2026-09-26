@@ -148,12 +148,14 @@ class IdMigrationPlan:
 async def plan_id_migration(session: AsyncSession, repository_id: str) -> IdMigrationPlan:
     """Classify every record in *repository_id*. Writes nothing.
 
-    Three outcomes. ``stable`` is a record whose id already derives from its
+    Four outcomes. ``stable`` is a record whose id already derives from its
     own identity, which is what a second run sees for everything. ``rewrite``
     is a move. ``fold`` is a record whose identity another record already
     holds, which under evidence-keyed identity is not a collision but the
     answer: the two are one decision worded twice, so the later one is merged
-    into the earlier and leaves an alias where it was.
+    into the earlier and leaves an alias where it was. ``blocked`` is a record
+    whose derived id is still held by a record leaving it this run; it moves
+    on the next run, once that id is free.
     """
     result = await session.execute(
         select(DecisionRecord)
@@ -181,17 +183,31 @@ async def plan_id_migration(session: AsyncSession, repository_id: str) -> IdMigr
         )
         for rec in records
     }
-    # The record that keeps each derived id: the first in creation order. Its
-    # title and its acceptance are the ones the folded group ends up under,
-    # which is the oldest reading of the decision rather than the newest.
+    # The record that keeps each derived id: the first in creation order, so
+    # the folded group ends up under the oldest reading of the decision. A
+    # record already sitting on the id keeps it instead, because nothing can
+    # be copied onto an id that is still occupied.
     keeper: dict[str, str] = {}
     for rec in records:
         keeper.setdefault(derived[rec.id], rec.id)
+    for new_id in keeper:
+        if derived.get(new_id) == new_id:
+            keeper[new_id] = new_id
 
     rows: list[IdRowPlan] = []
     for rec in records:
         new_id = derived[rec.id]
-        if keeper[new_id] != rec.id:
+        if new_id in derived and derived[new_id] != new_id:
+            rows.append(
+                IdRowPlan(
+                    rec.id,
+                    new_id,
+                    rec.title,
+                    "blocked",
+                    f"{new_id} is still held by a record moving elsewhere",
+                )
+            )
+        elif keeper[new_id] != rec.id:
             rows.append(
                 IdRowPlan(
                     rec.id,
@@ -540,8 +556,8 @@ async def apply_id_migration(
     come next, so every keeper is sitting on its derived id. Folds come last,
     because a fold points dependents at the keeper's *new* id.
 
-    Idempotent: a second run classifies every id as ``stable``, finds no
-    rewrites and no folds, and touches nothing.
+    Idempotent: once nothing is ``blocked``, a second run classifies every id
+    as ``stable``, finds no rewrites and no folds, and touches nothing.
     """
     plan = plan or await plan_id_migration(session, repository_id)
     rewrites = plan.rewrites()

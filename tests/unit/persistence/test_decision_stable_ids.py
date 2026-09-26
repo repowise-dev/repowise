@@ -12,6 +12,7 @@ that fold.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
@@ -727,3 +728,63 @@ async def test_a_failed_rewrite_leaves_no_half_moved_record(async_session, monke
         (await async_session.execute(select(DecisionRecord.title))).scalars().all()
     )
     assert titles == ["Legacy one"]
+
+
+def _occupant_id(repo_id: str, quote: str) -> str:
+    return derive_decision_id(
+        repo_id, "any title", source="session", evidence_file="src/app.py", identity_quote=quote
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_record_already_on_the_derived_id_keeps_it(async_session):
+    """An older duplicate folds into the record sitting on the id.
+
+    Keeping the older one would copy it onto an id that is still occupied,
+    which raises on the primary key on every run.
+    """
+    repo = await insert_repo(async_session)
+    occupied = _occupant_id(repo.id, "q")
+    await _legacy_record(
+        async_session,
+        repo.id,
+        "Older wording",
+        id="a" * 32,
+        identity_quote="q",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await _legacy_record(
+        async_session,
+        repo.id,
+        "Newer wording",
+        id=occupied,
+        identity_quote="q",
+        created_at=datetime(2026, 2, 1, tzinfo=UTC),
+    )
+
+    plan = await apply_id_migration(async_session, repo.id)
+
+    assert plan.counts() == {"fold": 1, "stable": 1}
+    assert (await async_session.execute(select(DecisionRecord.id))).scalars().all() == [occupied]
+    assert await resolve_decision_id(async_session, "a" * 32) == occupied
+    assert (await apply_id_migration(async_session, repo.id)).counts() == {"stable": 1}
+
+
+@pytest.mark.asyncio
+async def test_an_id_held_by_a_record_moving_away_waits_for_the_next_run(async_session):
+    """The target is freed this run, so the move lands on the next one."""
+    repo = await insert_repo(async_session)
+    target = _occupant_id(repo.id, "q")
+    await _legacy_record(async_session, repo.id, "Wants the id", id="a" * 32, identity_quote="q")
+    await _legacy_record(
+        async_session, repo.id, "Holds the id", id=target, identity_quote="something else"
+    )
+
+    first = await apply_id_migration(async_session, repo.id)
+    assert first.counts() == {"blocked": 1, "rewrite": 1}
+    assert await async_session.get(DecisionRecord, "a" * 32) is not None
+
+    second = await apply_id_migration(async_session, repo.id)
+    assert second.counts() == {"rewrite": 1, "stable": 1}
+    assert (await async_session.get(DecisionRecord, target)).title == "Wants the id"
+    assert (await apply_id_migration(async_session, repo.id)).counts() == {"stable": 2}
