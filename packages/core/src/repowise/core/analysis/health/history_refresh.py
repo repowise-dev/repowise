@@ -38,6 +38,9 @@ REFRESHABLE_MARKERS: frozenset[str] = frozenset(
     }
 )
 
+#: History markers that read a per-line blame index, which is never persisted.
+BLAME_MARKERS: frozenset[str] = frozenset({"code_age_volatility", "function_hotspot"})
+
 
 @dataclass
 class RefreshedFile:
