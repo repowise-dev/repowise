@@ -106,23 +106,13 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 #: A sentence opening with one of these reads as pushback on what the agent
-#: just did or proposed. Matched at the start of any *sentence*, not only at
-#: the start of the message: measured over this machine's 436 transcripts,
-#: requiring the whole message to open with a lead finds 62 corrections while
-#: the same list at sentence start finds 249, and the gap is not noise. Over
-#: the two days before this was written the message-start form found **zero**
-#: while pushback language stayed at its long-run density (19.3% of messages
-#: contain a lead somewhere, against 20.1% before), because a correction
-#: increasingly arrives as one sentence inside a longer brief rather than as
-#: a short reply that opens with it. A gate that only sees the short reply
-#: reports "no corrections" for a corpus full of them, which is worse than
-#: reporting none: :func:`apply_injection_feedback` reads silence here as
-#: "followed".
+#: just did or proposed. Matched at the start of any *sentence*, not only of
+#: the message: corrections often arrive as one sentence inside a longer brief,
+#: and missing them matters because :func:`apply_injection_feedback` reads
+#: silence as "followed".
 #:
-#: ``actually`` is deliberately absent. It is the one lead that does not
-#: survive the move — at message start it read as a reversal, but mid-message
-#: half its hits are narrative ("actually produces.", "actually does now.")
-#: rather than pushback, and 11 corpus hits do not pay for that.
+#: ``actually`` is deliberately absent: mid-message it is mostly narrative
+#: ("actually produces.") rather than pushback.
 PUSHBACK_LEADS: tuple[str, ...] = (
     "no,",
     "no.",
@@ -146,10 +136,9 @@ PUSHBACK_LEADS: tuple[str, ...] = (
 
 #: A sentence needs one of these to read as a choice being made (paired with
 #: a :data:`CAUSAL_MARKERS` cue for the stated reason). Word-bounded so e.g.
-#: "beca**use** it" never reads as the verb "use". Deliberately excludes
-#: "instead of" / "rather than": those are already causal cues, and letting
-#: one phrase satisfy both conditions turned every narrated trade-off in
-#: assistant prose into a candidate (dogfood: 796 hits, mostly noise).
+#: "beca**use** it" never reads as the verb "use". Excludes "instead of" /
+#: "rather than": they are causal cues already, and one phrase satisfying both
+#: conditions turns every narrated trade-off into a candidate.
 DECISION_VERB_RE = re.compile(
     r"\b(?:use|using|went with|go(?:ing)? with|stick with|switch(?:ed)? to|chose"
     r"|decided|always|never|must)\b|decision:"
@@ -170,18 +159,10 @@ _TRAILING_FILES = 8
 _QUOTE_CAP = 600
 _MAX_QUOTES_PER_EVENT = 2
 
-#: Wall-clock ceiling on one run's transcript sweep.
-#:
-#: The corpus this pass reads is bounded by how much the user has worked, not
-#: by the repository: a first read starts every cursor at byte 0, and on this
-#: machine that is 857 MB across 426 sessions for one repo. Without a ceiling
-#: an index's cost depends on a directory that has nothing to do with the code
-#: being indexed.
-#:
-#: Stopping is safe rather than lossy, which is what makes a ceiling the right
-#: instrument here: cursors are per file and saved after the loop, so the next
-#: run resumes exactly where this one stopped, and steady state (a handful of
-#: sessions with new bytes) finishes in well under a tenth of this.
+#: Wall-clock ceiling on one run's transcript sweep. The corpus grows with how
+#: much the user has worked, not with the repository, and a first read starts
+#: every cursor at byte 0. Stopping is safe, not lossy: cursors are per file and
+#: saved after the loop, so the next run resumes where this one stopped.
 SWEEP_BUDGET_S = 5.0
 
 _EXIT_CODE_RE = re.compile(r"^Error: Exit code (\d+)")
@@ -197,9 +178,8 @@ class SessionCandidate:
     quotes: list[str]
     files: list[str] = field(default_factory=list)
     #: Which of ``files`` this candidate saw changed rather than only read.
-    #: Ordering input only, never staged: staging keeps ``files`` and an
-    #: already-staged row is never rewritten, so the order must be right the
-    #: first time.
+    #: Ordering input only, never staged; staged rows are never rewritten, so
+    #: the order must be right the first time.
     edited: set[str] = field(default_factory=set)
     session_id: str | None = None
     ts: float | None = None
@@ -212,24 +192,14 @@ class SessionCandidate:
         this, so one quote is structured by the LLM once however many sessions
         produced it.
 
-        **Known ceiling, and it arrived with sentence-level corrections.**
-        ``raw_candidates`` keeps one ``session_id`` per hash — the first — so a
-        repeated correction is bound to the session that said it first and
-        :meth:`~SessionStagingStore.correction_quotes` returns nothing for the
-        rest. Whole-message quotes almost never repeated, so this cost nothing
-        before; sentence quotes do repeat, and they repeat precisely on the
-        standing rules ("No em dashes.", "Do NOT branch off stale local main.")
-        that are the most likely to contradict an injected decision. Measured
-        over 436 transcripts: 14 of 249 corrections dropped, 5 of 185 sessions
-        losing their only one, and it is a **ratchet** — :meth:`prune` only
-        drops rows that were never structured, so one structured correction
-        blocks that sentence for every future session. It fails safe rather
-        than wrong — those sessions become unjudgeable rather than falsely
-        "followed" — which is why this is a note and not a fix, and why
-        :meth:`~SessionStagingStore.retire_unjudgeable_verdicts` runs once
-        rather than perpetually. The upgrade is a raw-to-session association rather
-        than a session-scoped hash: the ``decisions`` table already carries a
-        ``sessions`` list for the promoted row, and the raw row wants the same.
+        **Known ceiling.** ``raw_candidates`` keeps only the first
+        ``session_id`` per hash, so a correction repeated in later sessions
+        (typically a standing rule) yields no
+        :meth:`~SessionStagingStore.correction_quotes` for them, and a
+        structured row is never pruned, so this persists. It fails safe: those
+        sessions become unjudgeable, not falsely "followed". The upgrade is a
+        raw-to-session association, like the promoted row's ``sessions`` list,
+        rather than a session-scoped hash.
         """
         norm = " ".join(" ".join(q.lower().split()) for q in self.quotes)
         return hashlib.sha256(f"{self.kind}|{norm}".encode()).hexdigest()[:16]
@@ -256,26 +226,15 @@ def _interrupt_guidance(text: str) -> str:
 def _pushback_sentences(text: str) -> list[str]:
     """Sentences that open with a pushback lead, verbatim, capped at two.
 
-    Scans sentences rather than the message so a correction buried in a longer
-    brief still counts — see :data:`PUSHBACK_LEADS` for the measurement that
-    forced this. Returns the sentences alone, not the message around them,
-    which is also what the one consumer wants: :func:`apply_injection_feedback`
-    feeds these to ``contradicts()`` against a single decision statement, and a
-    600-character brief with one contradicting clause in it is a worse input
-    to that comparison than the clause.
+    Scans sentences so a correction buried in a longer brief still counts (see
+    :data:`PUSHBACK_LEADS`). Returns the sentences alone: ``contradicts()``
+    compares them against a single decision statement, and the clause is a
+    better input than the whole brief.
 
-    **Two rather than one, and the second is not a bonus.** Of the messages
-    this gate newly catches, 89 of 221 carry more than one lead sentence, and
-    the gate's precision is roughly 75% — the residue is declarative rather
-    than directive ("No releases yet.", "No prose job has ever run in
-    production."), which no cheap rule separates from the directive form it is
-    identical to ("No Claude attribution in commits.", "No em dashes."). A
-    lead-list narrow enough to exclude the first excludes the second: dropping
-    bare "no" mid-message costs 119 of 398 sentences and takes the standing
-    rules with it. So the residue is accepted and the *first-match* rule is
-    what gets fixed — taking one sentence would let a declarative opener
-    discard the real correction behind it, which the whole-message quote never
-    did.
+    **Two, not one.** Declarative sentences ("No releases yet.") look identical
+    to directive rules ("No em dashes.") to any cheap rule, so they are
+    accepted as residue; keeping only the first match would let a declarative
+    opener discard the real correction behind it.
     """
     out: list[str] = []
     for sentence in _SENTENCE_SPLIT_RE.split(text):
@@ -337,11 +296,8 @@ def _repo_relative_touches(
 ) -> list[tuple[str, str]]:
     """``(path, intent)`` with each path repo-relative POSIX, outsiders dropped.
 
-    A transcript records the path the tool call was given, which for every
-    agent this reads is an absolute one. Staging that verbatim writes a
-    machine's directory layout into a row the index later has to match
-    against repo-relative paths, so it is normalized here, at the single
-    point a touch enters the miner, rather than by each reader guessing.
+    Transcripts record absolute paths; the index matches repo-relative ones,
+    so paths are normalized here, the single point a touch enters the miner.
     """
     out: list[tuple[str, str]] = []
     for path, intent in touches:
@@ -364,15 +320,12 @@ def mine_events(
     a candidate carries is stated relative to it. Pure and streaming: state
     is bounded regardless of transcript size.
 
-    A file the session touched outside the root is dropped rather than kept
-    absolute. It names another checkout, a scratch directory, or the agent's
-    own state, none of which this index can resolve, and a scope built from
-    paths that resolve to nothing is worse than an empty one.
+    A file touched outside the root is dropped: the index cannot resolve it,
+    and a scope of unresolvable paths is worse than an empty one.
 
     *edit_tools* is the producing adapter's edit vocabulary. It orders each
-    candidate's files, putting the ones the session changed ahead of the ones
-    it only opened, because a decision is about the code that moved and the
-    surrounding reads are how it got there.
+    candidate's files, changed ones first, because a decision is about the
+    code that moved.
     """
     repo_prefix = str(repo_root).lower().rstrip("\\/")
     candidates: list[SessionCandidate] = []
@@ -487,12 +440,8 @@ def mine_events(
                         ts=event.ts,
                     )
                 )
-                # Deliberately falls through to the choice gate rather than
-                # skipping it. Skipping was harmless while a correction was a
-                # short reply that was *only* a correction; now that one lead
-                # sentence inside a long brief fires this gate, a `continue`
-                # silently costs the brief its explicit choices — measured at
-                # 22 candidates over this corpus.
+                # Falls through to the choice gate: a brief that contains a
+                # correction can also state explicit choices.
 
         # Explicit choices: user prose or main-thread assistant prose.
         if event.text and not event.is_meta and not event.is_compact_summary:
@@ -573,9 +522,8 @@ def session_mining_enabled(repo_config: dict[str, Any] | None) -> bool:
 def harnesses_for(repo_path: Path) -> tuple[str, ...]:
     """Harnesses this repo reads transcripts from, from its own config.
 
-    The fallback for a caller that holds no resolved policy. Both pipelines
-    do hold one and pass it, so this is not the usual path: two readings of
-    the same setting that can disagree is the drift worth avoiding.
+    The fallback for a caller that holds no resolved policy; callers that hold
+    one pass it, so the setting is not read twice.
     """
     from repowise.core.repo_config import load_repo_config
 
@@ -589,10 +537,9 @@ def harnesses_for(repo_path: Path) -> tuple[str, ...]:
 def registered_harnesses(names: Sequence[str]) -> tuple[str, ...]:
     """*names* that name a registered adapter, never empty.
 
-    An unregistered name is dropped rather than raised on: a config written
-    against a newer repowise must not stop this one from indexing. Falling
-    back is deliberate too, because an empty reader list and a repository
-    with no sessions produce the same silence.
+    An unregistered name is dropped, not raised on, so a config from a newer
+    repowise cannot stop indexing. Never empty, because an empty reader list
+    would be indistinguishable from a repository with no sessions.
     """
     known = set(registered_adapters())
     return tuple(name for name in names if name in known) or DEFAULT_HARNESSES
@@ -611,9 +558,8 @@ def _sweep_harness(
 ) -> dict[str, int]:
     """Read one harness's new transcript lines, and report what it did.
 
-    The counts are the harness's own, and they are separate on purpose:
-    *read* is transcripts opened, so a reader that has stopped reading shows
-    a zero there next to a non-zero *discovered*, which one total cannot say.
+    Counts are kept apart so a reader that stopped reading shows *read* zero
+    beside a non-zero *discovered*.
     """
     adapter = get_adapter(harness)
     # This miner needs user prose, assistant prose, tool uses and results:
@@ -622,18 +568,11 @@ def _sweep_harness(
     deadline = time.monotonic() + budget
     discovered = adapter.discover(repo_root, projects_root=_root_for(harness, projects_root))
     counts = {"discovered": len(discovered), "read": 0, "found": 0, "staged": 0, "deferred": 0}
-    # Every discovered transcript is present whether or not this run gets to
-    # read it; the episode writer notes absence on the row it can no longer
-    # point at, and keeps the episode.
+    # Discovered transcripts are present whether or not this run reads them.
     recorder.note_present(discovered)
     for index, path in enumerate(discovered):
         if time.monotonic() > deadline:
-            # A first index on a machine with a long agent history reads the
-            # whole corpus from byte 0, and that corpus is bounded by how much
-            # the user has worked, not by the size of the repo. Stopping is
-            # safe and self-healing rather than lossy, because the cursor is
-            # per file and saved by the caller, so the next run resumes
-            # exactly where this one stopped. Steady state never reaches it.
+            # Safe to stop: see SWEEP_BUDGET_S.
             counts["deferred"] = len(discovered) - index
             break
         try:
@@ -664,12 +603,9 @@ def _sweep_harness(
 def _root_for(harness: str, projects_root: Path | None) -> Path | None:
     """The transcript-root override, per harness.
 
-    The override is a sandbox, so nothing may read outside it: a caller that
-    passes one and gets a harness reading the real home directory has been
-    given the machine's whole history for that agent without asking. The
-    default harness keeps the root itself, so existing callers are unchanged,
-    and every other harness gets a subdirectory that is simply absent unless
-    the caller made one.
+    The override is a sandbox: no harness may read the real home directory
+    when one is given. The default harness keeps the root itself; every other
+    harness gets a subdirectory, absent unless the caller made one.
     """
     if projects_root is None:
         return None
@@ -749,9 +685,8 @@ def _gate_structured(item: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any
     files = [f for f in raw["files"] if f in claimed] if isinstance(claimed, list) else []
     if not files and raw["kind"] != "user_correction":
         # A choice/dead end is about the code in play; a correction with no
-        # named files is a repo-wide rule, and linking it to whatever files
-        # happened to be open would govern the wrong code (dogfood: the
-        # em-dash rule pinned to an unrelated docs file).
+        # named files is a repo-wide rule, and linking it to whatever was open
+        # would govern the wrong code.
         files = raw["files"]
     return {
         "title": title,
@@ -773,11 +708,9 @@ _MAX_EVIDENCE_SESSIONS = 5
 def _staged_files(structured: dict[str, Any], row: dict[str, Any]) -> list[str]:
     """The files a staged row claims, distinguishing empty from absent.
 
-    ``_gate_structured`` leaves the list empty on purpose for a correction the
-    model named no files for, because a repo-wide rule linked to whatever was
-    open governs the wrong code. Only a row with no structured claim at all
-    falls back to the gate hits, which staging accretes across observations:
-    the latest structuring pass wins over what earlier ones had in play.
+    An empty list is deliberate (a repo-wide correction; see
+    ``_gate_structured``). Only a row with no structured claim falls back to
+    the gate hits staging accreted.
     """
     claimed = structured.get("affected_files")
     return list(claimed) if claimed is not None else list(row["files"])
@@ -800,9 +733,9 @@ def promotion_decisions(
     ``first_promotion`` still gates re-emission in the staging store, so a
     recurring candidate accretes evidence without re-proposing itself.
 
-    *indexed* is the indexed file set, and binding happens here rather than at
-    staging so a candidate staged before the set was threaded is repaired on
-    its way out rather than staying wrong.
+    *indexed* is the indexed file set. Binding, classification and the split
+    flag are applied here rather than at staging, so older staged rows are
+    judged on their way out instead of staying stale.
     """
     structured = row["structured"]
     # Both session lanes store source="session"; the staging kind is what tells
@@ -825,18 +758,11 @@ def promotion_decisions(
         ),
     )
     sessions = row["sessions"][-_MAX_EVIDENCE_SESSIONS:] or [None]
-    # Flagged here rather than at staging, for the same reason binding and
-    # classification are: a row staged before the flag existed is judged on
-    # its way out instead of staying unflagged forever, which is the whole
-    # backlog. The discovery lane already decides this at grounding time, so
-    # its answer is kept and only ever raised -- the two lanes ask the same
-    # question of the same text and must not disagree by which ran first.
+    # The discovery lane's grounding-time answer is kept and only ever raised,
+    # so the two lanes cannot disagree by which ran first.
     needs_split = bool(structured.get("needs_split")) or bundles_decisions(
         structured.get("decision", "") or ""
     )
-    # Classified here rather than at staging, for the same reason binding is:
-    # a candidate staged before the split existed is classified on its way out
-    # instead of staying one noun forever.
     kind = classify_kind(
         row["title"],
         structured.get("decision", ""),
@@ -883,15 +809,9 @@ async def _records_by_alias(
     """Live records for retired ids, keyed by the **retired** id.
 
     Keyed by the alias so the caller can look a sidecar row up under the id it
-    stored.
-
-    One hop, because re-keying does not chain: ``decision_aliases.decision_id``
-    is in ``_DEPENDENT_COLUMNS``, so re-keying a record that is already some
-    id's target repoints the existing alias rather than writing a hop beside
-    it. A merge *can* chain, since a merged candidate keeps its record, so
-    ``A -> B -> C`` is reachable with ``B`` live. One hop is still the right
-    answer there: ``A`` has no record, ``B`` has a real one, and ``B``'s text
-    is what was shown.
+    stored. One hop: re-keying repoints existing aliases rather than chaining
+    (``decision_aliases.decision_id`` is in ``_DEPENDENT_COLUMNS``), and where
+    a merge chains ``A -> B -> C``, ``B`` is live and its text is what was shown.
     """
     if not alias_ids:
         return {}
@@ -926,29 +846,18 @@ async def apply_injection_feedback(
     corrections: a correction that contradicts the shown decision (the
     :func:`~repowise.core.analysis.decisions.evolution.contradicts` heuristic)
     marks it contradicted; otherwise the guidance counts as followed. The
-    verdict is stored on the injection row and nowhere else: it used to also
-    clamp the decision's ``staleness_score``, which is now a measured fact
-    about whether the governed files moved, and a per-machine session verdict
-    may not overwrite a value the dashboard and hosted both read.
+    verdict lives on the injection row only; it must not touch the decision's
+    ``staleness_score``, which measures whether the governed files moved.
 
-    **A decision no session could have contradicted is not "followed".**
-    "Followed" was the else branch of the contradiction test, so a corpus in
-    which the two halves never meet reported a perfect score from an
-    instrument that had no opportunity to fire. Measured on this machine
-    before the change: 100 followed, 0 contradicted, and *zero* of those 100
-    rows came from a session holding any mined correction at all. Those rows
-    are now settled with no verdict — the ``no_verdict`` bucket
-    :meth:`~SessionStagingStore.decision_feedback_totals` already reports —
-    so the followed rate is computed over injections that were genuinely
-    judgeable. It reads as a much smaller number, and that is the point.
+    **A decision no session could have contradicted is not "followed".** A
+    session with no mined correction is settled with no verdict (the
+    ``no_verdict`` bucket), so the followed rate covers judgeable injections
+    only.
 
-    Deliberately binary for v1 (followed / contradicted); the
-    followed-vs-ignored split and relevance decay are the validation-gated
-    backlog item that rides on this data. Returns
+    Deliberately binary (followed / contradicted). Returns
     ``{"followed": n, "contradicted": n, "unjudgeable": n}``, counted over
     **ledger rows** so it reconciles with
-    :meth:`~SessionStagingStore.decision_feedback_totals` rather than
-    disagreeing with it by a factor of however many sessions saw a decision.
+    :meth:`~SessionStagingStore.decision_feedback_totals`.
     """
     import time
 
@@ -962,22 +871,16 @@ async def apply_injection_feedback(
 
     store = SessionStagingStore.open_default(Path(repo_path).resolve())
     try:
-        # Before judging anything new, retire the verdicts an older version
-        # awarded for free. Those rows are already evaluated, so this pass
-        # would never reach them otherwise and the reported rate would stay
-        # pinned at whatever the else branch produced.
+        # One-shot repairs of verdicts older versions awarded without evidence;
+        # already-evaluated rows are otherwise never revisited.
         retired = store.retire_unjudgeable_verdicts()
-        # Beside it: rows another session's match settled, handed back to the
-        # judge below. **This order is load-bearing** -- both repairs ride one
-        # `PRAGMA user_version` and this one writes the higher number, so
-        # reversing them skips the retirement for good.
+        # **Order is load-bearing**: both repairs ride one `PRAGMA user_version`
+        # and this one writes the higher number, so reversing them skips the
+        # retirement for good.
         reopened = store.reopen_smeared_contradictions()
-        # Commit even when nothing matched, because what is being persisted is
-        # the "already repaired" mark, not the rows. Without this the mark is
-        # rolled back by the early return below on any store with nothing to
-        # judge, and the repair re-arms itself — so 90 days later, once
-        # RAW_TTL_DAYS has pruned the corrections, it would fire on verdicts
-        # that were earned. That is the exact decay the one-shot prevents.
+        # Commit even when nothing matched: the "already repaired" mark must
+        # persist, or the repair re-arms and later fires on earned verdicts
+        # once RAW_TTL_DAYS has pruned the corrections.
         store.commit()
         if retired or reopened:
             logger.info(
@@ -998,19 +901,16 @@ async def apply_injection_feedback(
             )
         )
         records = {rec.id: rec for rec in rows.scalars().all()}
-        # A record's id moves when its scope does and nothing rewrites the
-        # sidecar, so without the aliases those rows read as "the decision is
-        # gone" and are drained, discarding feedback already earned -- 372 of
-        # 421 settled rows on this store.
+        # A record's id moves with its scope and the sidecar is not rewritten,
+        # so without the aliases earned feedback reads as "decision gone".
         records |= await _records_by_alias(
             db_session, repository_id, [d for d in decision_ids if d not in records]
         )
 
         quotes_by_session: dict[str, list[str]] = {}
         #: (session_id, decision_id, judgeable, this session's own verdict).
-        #: **Both flags are per row**, because the totals count rows: a verdict
-        #: shared across every session a decision was shown to is multiplied by
-        #: however many that was.
+        #: **Both flags are per row**: the totals count rows, so a shared
+        #: verdict would be multiplied by the number of sessions.
         judged: list[tuple[str, str, bool, bool]] = []
         for inj in injections:
             rec = records.get(inj["decision_id"])
@@ -1032,9 +932,7 @@ async def apply_injection_feedback(
         # different corrections, or none. Stored so `hook stats` can report it.
         for session_id, decision_id, judgeable, contradicted in judged:
             if not judgeable:
-                # Settled, so it is not re-read every update, but with no
-                # verdict: this session mined nothing that could have
-                # disagreed, so neither verdict is a claim the data supports.
+                # Settled with no verdict: nothing mined could have disagreed.
                 store.mark_injection_evaluated(session_id, decision_id)
                 summary["unjudgeable"] += 1
                 continue
@@ -1074,33 +972,22 @@ async def mine_session_decisions(
     ``bulk_upsert_decisions`` path. Best-effort at the file level; a failed
     LLM call leaves candidates staged for the next update.
 
-    The same pass records one transcript episode per session, riding the event
-    stream rather than re-reading it. That is not a tidiness point: the cursor
-    advances as the file is read, so a second pass over transcripts would find
-    nothing left to read, and whichever consumer ran second would be silently
-    empty rather than merely slow.
+    The same pass records one transcript episode per session and, with
+    *collect_discovery_spans*, queues the prose the discovery lane consumes.
+    Both ride this stream because the cursor advances as bytes are read: a
+    second reader would find nothing left.
 
-    *provider* may be ``None``. Discovery, folding and staging are keyless and
-    run regardless; only the structuring pass needs a model, so a user with no
-    API key gets transcript episodes and a staged backlog rather than nothing.
-
-    With *collect_discovery_spans*, the same read also queues the user and
-    assistant prose that the broad discovery lane consumes. It rides this pass
-    for the same reason the episode recorder does: the cursor advances as the
-    bytes are read, so a second reader would find an empty file.
+    *provider* may be ``None``: discovery, folding and staging are keyless;
+    only structuring needs a model.
 
     *indexed* is the indexed file set, which bounds what a promoted record may
-    claim to govern. Omitting it keeps the previous behaviour, so a caller that
-    has no set does not start binding scope it cannot check.
+    claim to govern; without it scope is not bound.
     """
     repo_root = Path(repo_path).resolve()
-    # The caller's resolved policy wins; reading config again here would be a
-    # second answer to a question it has already asked.
+    # The caller's resolved policy wins over re-reading config.
     names = registered_harnesses(harnesses) if harnesses is not None else harnesses_for(repo_path)
-    # One recorder across every harness, and one write at the end. The episode
-    # writer resolves absence by negation over the tier, so a second write
-    # carrying only the second harness's subjects would mark the first's as
-    # sources that had gone away.
+    # One recorder and one write: the episode writer infers absence by
+    # negation, so a per-harness write would mark the others' sources gone.
     recorder = TranscriptEpisodeRecorder(repo_root)
 
     store = SessionStagingStore.open_default(repo_root)
@@ -1110,10 +997,8 @@ async def mine_session_decisions(
         staged = 0
         deferred = 0
         yields: dict[str, dict[str, int]] = {}
-        # Split the sweep rather than sharing it. Under one deadline the
-        # harness iterated first spends the whole budget on a cold corpus and
-        # the next is deferred on its first file every run, which is
-        # indistinguishable from a harness with nothing to read.
+        # Split the budget, or the first harness on a cold corpus starves the
+        # rest every run.
         budget = SWEEP_BUDGET_S / len(names)
         for name in names:
             try:
@@ -1128,9 +1013,8 @@ async def mine_session_decisions(
                     now=now,
                 )
             except Exception as exc:
-                # One harness must not cost another's committed progress: the
-                # cursor save below is shared, so an escape here would discard
-                # every harness's advances and re-read them next run.
+                # The cursor save below is shared, so one harness's failure
+                # must not discard the others' progress.
                 logger.warning("session_mining.harness_failed", harness=name, error=str(exc))
                 continue
             staged += yields[name]["staged"]
@@ -1138,17 +1022,12 @@ async def mine_session_decisions(
         store.prune(now=now)
         store.cursors.save()  # commits the staged raws atomically with the cursors
 
-        # After the cursors commit, deliberately: the episode store is a
-        # separate sidecar, so writing it first would leave an episode
-        # describing bytes the cursor still thinks are unread.
+        # After the cursors commit: the episode store is a separate sidecar,
+        # and must not describe bytes the cursor still counts as unread.
         episodes = record_transcript_episodes(repo_root, recorder)
 
-        # One batched structuring pass over whatever is pending (this run's
-        # hits plus any backlog a previous failed call left behind).
-        # Queried even with no provider: it is one indexed read, and the
-        # structuring loop below is what skips. Forcing this empty instead
-        # would report a backlog of zero on exactly the path most likely to
-        # have one, since nothing keyless ever drains it.
+        # One batched structuring pass over whatever is pending. Queried even
+        # with no provider so the logged backlog is real on keyless runs.
         pending = store.pending_raws(max_structured)
         structured_count = 0
         processed = 0
@@ -1202,10 +1081,8 @@ async def mine_session_decisions(
             structured=structured_count,
             pending_backlog=max(0, len(pending) - processed),
             discovery_spans=collector.queued if collector else 0,
-            # Per harness, so a reader that stops reading is visible. A
-            # harness that did not run, or failed, has no key at all; one that
-            # ran reports what it discovered, read and found separately, so an
-            # empty corpus and an unread one do not share a number.
+            # Per harness, so an empty corpus and an unread one differ; a
+            # harness that did not run or failed has no key.
             yields=yields,
             promoted=len(decisions),
             episodes=episodes,
