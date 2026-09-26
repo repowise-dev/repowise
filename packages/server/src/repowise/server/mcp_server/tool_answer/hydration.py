@@ -170,16 +170,7 @@ async def _hydrate_candidate_defines(
     """
     qids = {q.lower() for q in (question_ids or set())}
 
-    paths: list[str] = []
-    seen: set[str] = set()
-    for h in hits:
-        p = hit_file_path(h)
-        if not p or p in seen:
-            continue
-        seen.add(p)
-        paths.append(p)
-        if len(paths) >= _DEFINES_MAX_FILES:
-            break
+    paths = _candidate_paths(hits)
     if not paths:
         return
 
@@ -206,24 +197,42 @@ async def _hydrate_candidate_defines(
         by_file.setdefault(file_path, []).append(
             (0 if matched else 1, rank, name, start_line or 0)
         )
-
-    for path, rows in by_file.items():
-        rows.sort(key=lambda r: (r[0], r[1], r[3]))
-        picked: list[tuple[str, int]] = []
-        taken: set[str] = set()
-        for _m, _r, name, start in rows:
-            if name in taken:
-                continue
-            taken.add(name)
-            picked.append((name, start))
-            if len(picked) >= _DEFINES_PER_CANDIDATE:
-                break
-        by_file[path] = picked  # type: ignore[assignment]
+    defines = {path: _pick_defines(rows) for path, rows in by_file.items()}
 
     for h in hits:
         p = hit_file_path(h)
-        if p and by_file.get(p):
-            h["_defines"] = by_file[p]
+        if p and defines.get(p):
+            h["_defines"] = defines[p]
+
+
+def _candidate_paths(hits: list[dict]) -> list[str]:
+    """Distinct hit file paths in rank order, capped at ``_DEFINES_MAX_FILES``."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for h in hits:
+        p = hit_file_path(h)
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        paths.append(p)
+        if len(paths) >= _DEFINES_MAX_FILES:
+            break
+    return paths
+
+
+def _pick_defines(rows: list[tuple[int, int, str, int]]) -> list[tuple[str, int]]:
+    """The first ``_DEFINES_PER_CANDIDATE`` distinct names, best-ranked first."""
+    rows.sort(key=lambda r: (r[0], r[1], r[3]))
+    picked: list[tuple[str, int]] = []
+    taken: set[str] = set()
+    for _m, _r, name, start in rows:
+        if name in taken:
+            continue
+        taken.add(name)
+        picked.append((name, start))
+        if len(picked) >= _DEFINES_PER_CANDIDATE:
+            break
+    return picked
 
 
 async def _hydrate_symbols_for_hits(
@@ -258,16 +267,7 @@ async def _hydrate_symbols_for_hits(
     # Once per call: the question's terms, stemmed to match identifier roots.
     term_stems = {_stem(t) for t in content_terms(question)}
 
-    # Identify the top file_page hits in retrieval-rank order. `hits` is
-    # already sorted by descending score upstream.
-    enrich_paths: list[str] = []
-    for h in hits:
-        if (
-            h.get("target_path")
-            and h.get("page_type") == "file_page"
-            and len(enrich_paths) < _ENRICH_TOP_N_HITS
-        ):
-            enrich_paths.append(h["target_path"])
+    enrich_paths = _enrich_paths(hits)
     if not enrich_paths:
         return
 
@@ -288,122 +288,173 @@ async def _hydrate_symbols_for_hits(
     for row in res.scalars().all():
         if row.file_path not in text_cache:
             text_cache[row.file_path] = _read_repo_text(repo_root, row.file_path)
-        text = text_cache[row.file_path]
-        # Trust contract (shared with get_symbol): verify the stored bounds
-        # against the live file before slicing a signature or body out of it.
-        # Drift (an edit above the def, or an update lag) otherwise turns into a
-        # garbled signature / body served as if fresh. On a re-parse correction
-        # the row is healed; when the symbol can't be re-located we fall back to
-        # the stored signature and skip the live body — a stored-but-consistent
-        # signature beats a live slice at the wrong lines.
-        if text is not None:
-            check = await verify_and_heal(session_factory, row, text)
-            start_line, end_line, verified = check.start_line, check.end_line, check.verified
-        else:
-            start_line, end_line, verified = row.start_line, row.end_line, False
-        # Constants/variables: the stored signature IS the verbatim assignment
-        # line. The disk re-read below walks forward looking for a ":"-closed
-        # def line and would join unrelated following lines for assignments.
-        if row.kind in ("constant", "variable") or not verified:
-            rich_sig = None
-        else:
-            rich_sig = _read_signature_from_source(
-                repo_root, row.file_path, start_line, text=text
-            )
-        matched = _question_names_symbol(row, qids_lower)
-        entry: dict[str, Any] = {
-            "name": row.name,
-            "kind": row.kind,
-            "signature": rich_sig or row.signature,
-            "docstring": row.docstring or "",
-            "start_line": start_line,
-            "end_line": end_line,
-            "_matched": matched,
-            "_verified": verified,
-        }
-        # Scored once here, not in the sort key, so a dense file pays for it per
-        # symbol rather than per comparison.
-        entry["_relevance"] = _symbol_relevance(entry, term_stems)
-        if matched and verified:
-            src = _read_symbol_source(
-                repo_root, row.file_path, start_line, end_line, text=text
-            )
-            if src:
-                entry["source_excerpt"] = src
+        entry = await _symbol_entry(
+            row,
+            text_cache[row.file_path],
+            repo_root,
+            session_factory,
+            qids_lower,
+            term_stems,
+        )
         by_file.setdefault(row.file_path, []).append(entry)
 
-    # Sort: matched symbols first, then by relevance to the question, then in
-    # start_line order. Cap per file — top hit gets more slots than secondary
-    # hits. This decides WHICH symbols are kept; the kept slice is put back into
-    # reading order below, so consumers still see document order.
     for i, h in enumerate(hits):
         path = h.get("target_path")
         if path not in by_file:
             continue
-        syms = by_file[path]
-        syms.sort(key=lambda s: (not s["_matched"], -s["_relevance"], s["start_line"]))
         cap = _MAX_SYMBOLS_TOP_HIT if i == 0 else _MAX_SYMBOLS_PER_HIT
-        # Force-include the exact symbol the question named (via anchoring) so a
-        # class-name flood — where every sibling method "matches" through the
-        # parent's qualified name — can't evict the method the user asked about
-        # from the synthesis context. Without this the LLM never sees the body
-        # and hedges, which is exactly the failure anchoring exists to prevent.
-        anchor_names = {a.get("name") for a in (h.get("_anchor_symbols") or [])}
-        kept: list[dict] = [s for s in syms if s["name"] in anchor_names][:cap]
-        # Then the rest of the matched symbols, then unmatched, up to the cap.
-        kept.extend(s for s in syms if s["_matched"] and s not in kept)
-        kept = kept[:cap]
-        for s in syms:
-            if s in kept:
-                continue
-            if len(kept) >= cap:
-                break
-            kept.append(s)
-        # A prose question names no identifier, so nothing is `_matched` and the
-        # slate would carry signatures only. Give the leading few symbols the
-        # question scored against a body, so the excerpts hold the code the
-        # question is about. `kept` is still in priority order here.
-        bodied = 0
-        for s in kept:
-            if bodied >= _RELEVANT_EXCERPT_MAX_SYMBOLS:
-                break
-            if s.get("source_excerpt") or not s["_relevance"] or not s["_verified"]:
-                continue
-            src = _read_symbol_source(
-                repo_root,
-                path,
-                s["start_line"],
-                s.get("end_line") or 0,
-                text=text_cache.get(path),
-            )
-            if src:
-                s["source_excerpt"] = src
-                bodied += 1
-        # Upgrade the top question-relevant symbols to the inline-body depth
-        # BEFORE the reading-order sort, while `kept` is still in priority order
-        # (anchors, then matched, then unmatched). The default 40-line excerpt
-        # truncates a docstring-heavy definition before its answer-bearing logic,
-        # so synthesis hedges on the exact symbol whose full 120-line body the
-        # response inlines in symbol_bodies. Reading the leading few at the same
-        # depth keeps the LLM's view and the served body consistent. Bounded so a
-        # class-name flood can't balloon the prompt; the rest keep the excerpt.
-        upgraded = 0
-        for s in kept:
-            if upgraded >= _SYNTH_FULL_BODY_MAX_SYMBOLS:
-                break
-            if not s.get("_matched") or not s.get("source_excerpt"):
-                continue
-            fuller = _read_symbol_source(
-                repo_root,
-                path,
-                s["start_line"],
-                s.get("end_line") or 0,
-                max_lines=_SYNTH_FULL_SOURCE_LINES,
-                text=text_cache.get(path),
-            )
-            if fuller:
-                s["source_excerpt"] = fuller
-            upgraded += 1
+        kept = _keep_symbols(by_file[path], h, cap)
+        text = text_cache.get(path)
+        _attach_relevant_excerpts(kept, repo_root, path, text)
+        _deepen_matched_excerpts(kept, repo_root, path, text)
         # Sort final slice by start_line for natural reading order.
         kept.sort(key=lambda s: s["start_line"])
         h["symbols"] = kept
+
+
+def _enrich_paths(hits: list[dict]) -> list[str]:
+    """The top ``_ENRICH_TOP_N_HITS`` file_page paths, in retrieval-rank order."""
+    # `hits` is already sorted by descending score upstream.
+    enrich_paths: list[str] = []
+    for h in hits:
+        if len(enrich_paths) >= _ENRICH_TOP_N_HITS:
+            break
+        if h.get("target_path") and h.get("page_type") == "file_page":
+            enrich_paths.append(h["target_path"])
+    return enrich_paths
+
+
+async def _symbol_entry(
+    row,
+    text: str | None,
+    repo_root: Path | None,
+    session_factory: Any,
+    qids_lower: set[str],
+    term_stems: set[str],
+) -> dict[str, Any]:
+    """One hydrated symbol: verified bounds, live signature, match and relevance."""
+    # Trust contract (shared with get_symbol): verify the stored bounds
+    # against the live file before slicing a signature or body out of it.
+    # Drift (an edit above the def, or an update lag) otherwise turns into a
+    # garbled signature / body served as if fresh. On a re-parse correction
+    # the row is healed; when the symbol can't be re-located we fall back to
+    # the stored signature and skip the live body — a stored-but-consistent
+    # signature beats a live slice at the wrong lines.
+    if text is not None:
+        check = await verify_and_heal(session_factory, row, text)
+        start_line, end_line, verified = check.start_line, check.end_line, check.verified
+    else:
+        start_line, end_line, verified = row.start_line, row.end_line, False
+    # Constants/variables: the stored signature IS the verbatim assignment
+    # line. The disk re-read below walks forward looking for a ":"-closed
+    # def line and would join unrelated following lines for assignments.
+    if row.kind in ("constant", "variable") or not verified:
+        rich_sig = None
+    else:
+        rich_sig = _read_signature_from_source(
+            repo_root, row.file_path, start_line, text=text
+        )
+    matched = _question_names_symbol(row, qids_lower)
+    entry: dict[str, Any] = {
+        "name": row.name,
+        "kind": row.kind,
+        "signature": rich_sig or row.signature,
+        "docstring": row.docstring or "",
+        "start_line": start_line,
+        "end_line": end_line,
+        "_matched": matched,
+        "_verified": verified,
+    }
+    # Scored once here, not in the sort key, so a dense file pays for it per
+    # symbol rather than per comparison.
+    entry["_relevance"] = _symbol_relevance(entry, term_stems)
+    if matched and verified:
+        src = _read_symbol_source(
+            repo_root, row.file_path, start_line, end_line, text=text
+        )
+        if src:
+            entry["source_excerpt"] = src
+    return entry
+
+
+def _keep_symbols(syms: list[dict], hit: dict, cap: int) -> list[dict]:
+    """The ``cap`` symbols of one file worth the synthesis context, in priority order."""
+    # Sort: matched symbols first, then by relevance to the question, then in
+    # start_line order. Cap per file — top hit gets more slots than secondary
+    # hits. This decides WHICH symbols are kept; the kept slice is put back into
+    # reading order below, so consumers still see document order.
+    syms.sort(key=lambda s: (not s["_matched"], -s["_relevance"], s["start_line"]))
+    # Force-include the exact symbol the question named (via anchoring) so a
+    # class-name flood — where every sibling method "matches" through the
+    # parent's qualified name — can't evict the method the user asked about
+    # from the synthesis context. Without this the LLM never sees the body
+    # and hedges, which is exactly the failure anchoring exists to prevent.
+    anchor_names = {a.get("name") for a in (hit.get("_anchor_symbols") or [])}
+    kept: list[dict] = [s for s in syms if s["name"] in anchor_names][:cap]
+    # Then the rest of the matched symbols, then unmatched, up to the cap.
+    kept.extend(s for s in syms if s["_matched"] and s not in kept)
+    kept = kept[:cap]
+    for s in syms:
+        if s in kept:
+            continue
+        if len(kept) >= cap:
+            break
+        kept.append(s)
+    return kept
+
+
+def _attach_relevant_excerpts(
+    kept: list[dict], repo_root: Path | None, path: str, text: str | None
+) -> None:
+    """Give the leading question-relevant symbols without an excerpt a body."""
+    # A prose question names no identifier, so nothing is `_matched` and the
+    # slate would carry signatures only. Give the leading few symbols the
+    # question scored against a body, so the excerpts hold the code the
+    # question is about. `kept` is still in priority order here.
+    bodied = 0
+    for s in kept:
+        if bodied >= _RELEVANT_EXCERPT_MAX_SYMBOLS:
+            break
+        if s.get("source_excerpt") or not s["_relevance"] or not s["_verified"]:
+            continue
+        src = _read_symbol_source(
+            repo_root,
+            path,
+            s["start_line"],
+            s.get("end_line") or 0,
+            text=text,
+        )
+        if src:
+            s["source_excerpt"] = src
+            bodied += 1
+
+
+def _deepen_matched_excerpts(
+    kept: list[dict], repo_root: Path | None, path: str, text: str | None
+) -> None:
+    """Re-read the leading matched excerpts at the inline-body depth."""
+    # Upgrade the top question-relevant symbols to the inline-body depth
+    # BEFORE the reading-order sort, while `kept` is still in priority order
+    # (anchors, then matched, then unmatched). The default 40-line excerpt
+    # truncates a docstring-heavy definition before its answer-bearing logic,
+    # so synthesis hedges on the exact symbol whose full 120-line body the
+    # response inlines in symbol_bodies. Reading the leading few at the same
+    # depth keeps the LLM's view and the served body consistent. Bounded so a
+    # class-name flood can't balloon the prompt; the rest keep the excerpt.
+    upgraded = 0
+    for s in kept:
+        if upgraded >= _SYNTH_FULL_BODY_MAX_SYMBOLS:
+            break
+        if not s.get("_matched") or not s.get("source_excerpt"):
+            continue
+        fuller = _read_symbol_source(
+            repo_root,
+            path,
+            s["start_line"],
+            s.get("end_line") or 0,
+            max_lines=_SYNTH_FULL_SOURCE_LINES,
+            text=text,
+        )
+        if fuller:
+            s["source_excerpt"] = fuller
+        upgraded += 1
