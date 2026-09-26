@@ -713,13 +713,13 @@ async def test_a_failed_rewrite_leaves_no_half_moved_record(async_session, monke
 
     import repowise.core.persistence.decision_id_migration as mod
 
-    real = mod._rewrite_one
+    real = mod._move
 
-    async def _explode(session, repository_id, row, tables):
-        await real(session, repository_id, row, tables)
+    async def _explode(session, from_id, to_id, title, tables):
+        await real(session, from_id, to_id, title, tables)
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(mod, "_rewrite_one", _explode)
+    monkeypatch.setattr(mod, "_move", _explode)
 
     with pytest.raises(RuntimeError):
         await apply_id_migration(async_session, repo.id)
@@ -770,21 +770,65 @@ async def test_a_record_already_on_the_derived_id_keeps_it(async_session):
     assert (await apply_id_migration(async_session, repo.id)).counts() == {"stable": 1}
 
 
-@pytest.mark.asyncio
-async def test_an_id_held_by_a_record_moving_away_waits_for_the_next_run(async_session):
-    """The target is freed this run, so the move lands on the next one."""
-    repo = await insert_repo(async_session)
-    target = _occupant_id(repo.id, "q")
-    await _legacy_record(async_session, repo.id, "Wants the id", id="a" * 32, identity_quote="q")
-    await _legacy_record(
-        async_session, repo.id, "Holds the id", id=target, identity_quote="something else"
+async def _seat(session, repo_id: str, quote: str, sits_on: str) -> None:
+    """A record whose identity is *quote*, sitting on the id *sits_on*."""
+    await _legacy_record(session, repo_id, f"Decided {quote}", id=sits_on, identity_quote=quote)
+    session.add(
+        DecisionEvidence(
+            decision_id=sits_on, source="session", evidence_file="src/app.py", source_quote=quote
+        )
     )
+    await session.flush()
 
-    first = await apply_id_migration(async_session, repo.id)
-    assert first.counts() == {"blocked": 1, "rewrite": 1}
-    assert await async_session.get(DecisionRecord, "a" * 32) is not None
 
-    second = await apply_id_migration(async_session, repo.id)
-    assert second.counts() == {"rewrite": 1, "stable": 1}
-    assert (await async_session.get(DecisionRecord, target)).title == "Wants the id"
-    assert (await apply_id_migration(async_session, repo.id)).counts() == {"stable": 2}
+async def _assert_settled_in_one_run(session, repo_id: str, seats: dict[str, str]) -> None:
+    """*seats* maps each quote to the id its record sat on before the run."""
+    plan = await apply_id_migration(session, repo_id)
+    assert plan.counts() == {"rewrite": len(seats)}
+
+    for quote, old_id in seats.items():
+        final = _occupant_id(repo_id, quote)
+        rec = await session.get(DecisionRecord, final)
+        assert rec is not None and rec.title == f"Decided {quote}"
+        evidence = (
+            await session.execute(
+                select(DecisionEvidence.decision_id).where(DecisionEvidence.source_quote == quote)
+            )
+        ).scalar_one()
+        assert evidence == final
+        # Straight from the original id to the final one, never via a parking id.
+        alias = await session.get(DecisionAlias, old_id)
+        assert (alias.decision_id, alias.reason) == (final, ALIAS_REASON)
+    ids = (await session.execute(select(DecisionRecord.id))).scalars().all()
+    assert sorted(ids) == sorted(_occupant_id(repo_id, q) for q in seats)
+    aliases = (await session.execute(select(DecisionAlias.decision_id))).scalars().all()
+    assert not [a for a in aliases if a.startswith("~")]
+    assert (await apply_id_migration(session, repo_id)).counts() == {"stable": len(seats)}
+
+
+@pytest.mark.asyncio
+async def test_a_chain_of_occupied_ids_settles_in_one_run(async_session):
+    """Each target is held by the next record, and the last target is free."""
+    repo = await insert_repo(async_session)
+    seats = {
+        "q1": "a" * 32,
+        "q2": _occupant_id(repo.id, "q1"),
+        "q3": _occupant_id(repo.id, "q2"),
+    }
+    for quote, sits_on in seats.items():
+        await _seat(async_session, repo.id, quote, sits_on)
+
+    await _assert_settled_in_one_run(async_session, repo.id, seats)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [2, 3])
+async def test_records_on_each_others_ids_settle_in_one_run(async_session, size):
+    """A cycle has no free target to start from, so one member is parked first."""
+    repo = await insert_repo(async_session)
+    quotes = [f"q{n}" for n in range(size)]
+    seats = {q: _occupant_id(repo.id, quotes[(n + 1) % size]) for n, q in enumerate(quotes)}
+    for quote, sits_on in seats.items():
+        await _seat(async_session, repo.id, quote, sits_on)
+
+    await _assert_settled_in_one_run(async_session, repo.id, seats)

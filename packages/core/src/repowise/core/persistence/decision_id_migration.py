@@ -148,14 +148,12 @@ class IdMigrationPlan:
 async def plan_id_migration(session: AsyncSession, repository_id: str) -> IdMigrationPlan:
     """Classify every record in *repository_id*. Writes nothing.
 
-    Four outcomes. ``stable`` is a record whose id already derives from its
+    Three outcomes. ``stable`` is a record whose id already derives from its
     own identity, which is what a second run sees for everything. ``rewrite``
     is a move. ``fold`` is a record whose identity another record already
     holds, which under evidence-keyed identity is not a collision but the
     answer: the two are one decision worded twice, so the later one is merged
-    into the earlier and leaves an alias where it was. ``blocked`` is a record
-    whose derived id is still held by a record leaving it this run; it moves
-    on the next run, once that id is free.
+    into the earlier and leaves an alias where it was.
     """
     result = await session.execute(
         select(DecisionRecord)
@@ -197,17 +195,7 @@ async def plan_id_migration(session: AsyncSession, repository_id: str) -> IdMigr
     rows: list[IdRowPlan] = []
     for rec in records:
         new_id = derived[rec.id]
-        if new_id in derived and derived[new_id] != new_id:
-            rows.append(
-                IdRowPlan(
-                    rec.id,
-                    new_id,
-                    rec.title,
-                    "blocked",
-                    f"{new_id} is still held by a record moving elsewhere",
-                )
-            )
-        elif keeper[new_id] != rec.id:
+        if keeper[new_id] != rec.id:
             rows.append(
                 IdRowPlan(
                     rec.id,
@@ -297,13 +285,19 @@ async def _existing_tables(session: AsyncSession) -> set[str]:
     return await connection.run_sync(_table_names)
 
 
-async def _rewrite_one(
+def _parking_id(old_id: str) -> str:
+    """A temporary id of the same length that no hex id can equal."""
+    return f"~{old_id[1:]}"
+
+
+async def _move(
     session: AsyncSession,
-    repository_id: str,
-    row: IdRowPlan,
+    from_id: str,
+    to_id: str,
+    title: str,
     tables: set[str],
 ) -> None:
-    """Move one record to its derived id without ever orphaning a dependent.
+    """Move one record to *to_id* without ever orphaning a dependent.
 
     The order is forced by the foreign keys, which cascade on delete and do
     nothing on update: a dependent cannot point at an id that does not exist
@@ -316,7 +310,7 @@ async def _rewrite_one(
     would make them the same decision twice.
     """
     columns = [column.name for column in DecisionRecord.__table__.columns]
-    placeholder = f"repowise:id-migration:{row.old_id}"
+    placeholder = f"repowise:id-migration:{from_id}"
     projected = ", ".join(
         ":new_id" if name == "id" else (":placeholder" if name == "title" else name)
         for name in columns
@@ -327,7 +321,7 @@ async def _rewrite_one(
             f"INSERT INTO decision_records ({column_list}) "
             f"SELECT {projected} FROM decision_records WHERE id = :old_id"
         ),
-        {"new_id": row.new_id, "placeholder": placeholder, "old_id": row.old_id},
+        {"new_id": to_id, "placeholder": placeholder, "old_id": from_id},
     )
 
     for table, column in _DEPENDENT_COLUMNS:
@@ -335,18 +329,27 @@ async def _rewrite_one(
             continue
         await session.execute(
             _sql_text(f"UPDATE {table} SET {column} = :new_id WHERE {column} = :old_id"),
-            {"new_id": row.new_id, "old_id": row.old_id},
+            {"new_id": to_id, "old_id": from_id},
         )
 
     await session.execute(
         _sql_text("DELETE FROM decision_records WHERE id = :old_id"),
-        {"old_id": row.old_id},
+        {"old_id": from_id},
     )
     await session.execute(
         _sql_text("UPDATE decision_records SET title = :title WHERE id = :new_id"),
-        {"title": row.title, "new_id": row.new_id},
+        {"title": title, "new_id": to_id},
     )
 
+
+async def _write_alias(
+    session: AsyncSession,
+    repository_id: str,
+    row: IdRowPlan,
+    reason: str,
+    tables: set[str],
+) -> None:
+    """Record that *row*'s original id now resolves to its final id."""
     if "decision_aliases" not in tables:
         return
     if await session.get(DecisionAlias, row.old_id) is not None:
@@ -360,7 +363,7 @@ async def _rewrite_one(
             alias_id=row.old_id,
             repository_id=repository_id,
             decision_id=row.new_id,
-            reason=ALIAS_REASON,
+            reason=reason,
             created_at=_now_utc(),
         )
     )
@@ -368,7 +371,7 @@ async def _rewrite_one(
 
 async def _fold_one(
     session: AsyncSession,
-    repository_id: str,
+    from_id: str,
     row: IdRowPlan,
     tables: set[str],
 ) -> None:
@@ -385,6 +388,7 @@ async def _fold_one(
     of is dropped rather than moved: repointing it would raise on the unique
     constraint, out of a migration that runs at the head of every index.
     """
+    row = IdRowPlan(from_id, row.new_id, row.title, row.outcome, row.reason)
     for table, column in _DEPENDENT_COLUMNS:
         if table not in tables:
             continue
@@ -405,20 +409,6 @@ async def _fold_one(
     await session.execute(
         _sql_text("DELETE FROM decision_records WHERE id = :old_id"),
         {"old_id": row.old_id},
-    )
-
-    if "decision_aliases" not in tables:
-        return
-    if await session.get(DecisionAlias, row.old_id) is not None:
-        return
-    session.add(
-        DecisionAlias(
-            alias_id=row.old_id,
-            repository_id=repository_id,
-            decision_id=row.new_id,
-            reason=FOLD_REASON,
-            created_at=_now_utc(),
-        )
     )
 
 
@@ -556,8 +546,12 @@ async def apply_id_migration(
     come next, so every keeper is sitting on its derived id. Folds come last,
     because a fold points dependents at the keeper's *new* id.
 
-    Idempotent: once nothing is ``blocked``, a second run classifies every id
-    as ``stable``, finds no rewrites and no folds, and touches nothing.
+    A record sitting on another's target is parked on a temporary id first,
+    so chains and cycles of occupied ids settle in one run. Aliases name the
+    original id and the final one, never the parking id.
+
+    Idempotent: a second run classifies every id as ``stable``, finds no
+    rewrites and no folds, and touches nothing.
     """
     plan = plan or await plan_id_migration(session, repository_id)
     rewrites = plan.rewrites()
@@ -579,18 +573,23 @@ async def apply_id_migration(
     await session.flush()
 
     tables = await _existing_tables(session)
-    for row in rewrites:
-        # A savepoint per record, because a rewrite that fails halfway has
-        # already inserted the copy under a placeholder title. Both callers
-        # swallow the exception and commit later, so without this the store
-        # keeps a phantom decision that every count and search would pick up,
-        # and that the next run would faithfully rekey rather than clean.
-        async with session.begin_nested():
-            await _rewrite_one(session, repository_id, row, tables)
-    for row in folds:
-        async with session.begin_nested():
-            await _fold_one(session, repository_id, row, tables)
-    await session.flush()
+    targets = {row.new_id for row in rewrites}
+    current = {row.old_id: row.old_id for row in (*rewrites, *folds)}
+    # One savepoint for every move. Both callers swallow the exception and
+    # commit later, so a partial run would keep a placeholder copy or a
+    # parked record with no alias naming the id it came from.
+    async with session.begin_nested():
+        for row in (*rewrites, *folds):
+            if row.old_id in targets:
+                current[row.old_id] = _parking_id(row.old_id)
+                await _move(session, row.old_id, current[row.old_id], row.title, tables)
+        for row in rewrites:
+            await _move(session, current[row.old_id], row.new_id, row.title, tables)
+            await _write_alias(session, repository_id, row, ALIAS_REASON, tables)
+        for row in folds:
+            await _fold_one(session, current[row.old_id], row, tables)
+            await _write_alias(session, repository_id, row, FOLD_REASON, tables)
+        await session.flush()
     _detach_moved(session)
 
     rekeyed = 0
