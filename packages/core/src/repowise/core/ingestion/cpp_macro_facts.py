@@ -6,7 +6,7 @@ import re
 import unicodedata
 from bisect import bisect_left
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from tree_sitter import Node
@@ -23,6 +23,7 @@ _CPP_MACRO_STACK_RE = re.compile(r'\b(push_macro|pop_macro)\s*\(\s*"([^"]+)"\s*\
 _CPP_UNIVERSAL_CHARACTER_NAME_RE = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8}))")
 _CPP_IDENTIFIER_TOKEN_RE = re.compile(r"(?:[^\W\d]|\$)[\w$]*")
 _CPP_INCLUDE_LIKE_DIRECTIVES = frozenset({"include_next", "import"})
+_CPP_MACRO_DEFINITION_NODES = frozenset({"preproc_def", "preproc_function_def"})
 
 
 class _CppMacroState(Enum):
@@ -39,6 +40,15 @@ class _CppMacroAction(Enum):
     PUSH = auto()
     POP = auto()
     UNKNOWN = auto()
+
+
+_CPP_STACK_ACTIONS = {"push_macro": _CppMacroAction.PUSH, "pop_macro": _CppMacroAction.POP}
+_CPP_ACTION_STATES = {
+    _CppMacroAction.DEFINE_EMPTY: _CppMacroState.EMPTY_OBJECT,
+    _CppMacroAction.DEFINE_OTHER: _CppMacroState.NOT_EMPTY_OBJECT,
+    _CppMacroAction.UNDEFINE: _CppMacroState.UNDEFINED,
+    _CppMacroAction.UNKNOWN: _CppMacroState.UNKNOWN,
+}
 
 
 @dataclass(frozen=True)
@@ -71,31 +81,34 @@ class _CppMacroFacts:
 
     def empty_definition_at(self, name: str, declaration: Node) -> Node | None:
         """Prove that *name* is an empty object macro at *declaration*."""
-        events = self.events.get(name, ())
-        event_index = (
-            bisect_left(events, declaration.start_byte, key=lambda event: event.position) - 1
-        )
-        active_event = events[event_index] if event_index >= 0 else None
-        if (
-            active_event is None
-            or active_event.state is not _CppMacroState.EMPTY_OBJECT
-            or active_event.definition is None
-        ):
+        active_event = self._empty_event_before(name, declaration.start_byte)
+        if active_event is None or active_event.definition is None:
             return None
 
         declaration_branch = _cpp_preproc_branch_path(declaration)
-        event_branch = active_event.branch_path
-        definition_branch = _cpp_preproc_branch_path(active_event.definition)
-        if declaration_branch[: len(event_branch)] != event_branch:
+        if not _branch_within(declaration_branch, active_event.branch_path):
             return None
-        if declaration_branch[: len(definition_branch)] != definition_branch:
+        definition_branch = _cpp_preproc_branch_path(active_event.definition)
+        if not _branch_within(declaration_branch, definition_branch):
             return None
 
         barrier_index = bisect_left(self.barriers, declaration.start_byte) - 1
-        latest_barrier = self.barriers[barrier_index] if barrier_index >= 0 else None
-        if latest_barrier is not None and latest_barrier > active_event.position:
+        if barrier_index >= 0 and self.barriers[barrier_index] > active_event.position:
             return None
         return active_event.definition
+
+    def _empty_event_before(self, name: str, position: int) -> _CppMacroEvent | None:
+        """The event in force for *name* at *position*, when it is an empty definition."""
+        events = self.events.get(name, ())
+        event_index = bisect_left(events, position, key=lambda event: event.position) - 1
+        if event_index < 0 or events[event_index].state is not _CppMacroState.EMPTY_OBJECT:
+            return None
+        return events[event_index]
+
+
+def _branch_within(path: tuple[int, ...], branch: tuple[int, ...]) -> bool:
+    """Whether *path* lies inside the preprocessor *branch*."""
+    return path[: len(branch)] == branch
 
 
 def _cpp_normalize_preproc_text(text: str) -> str:
@@ -195,115 +208,168 @@ def _cpp_preproc_branch_path(node: Node) -> tuple[int, ...]:
     return tuple(branch_ids)
 
 
-def _build_cpp_macro_facts(matches: list[dict], src: str) -> _CppMacroFacts:
-    """Build the conservative, source-ordered macro facts used by C++ recovery."""
-    macro_definitions: dict[int, tuple[Node, str]] = {}
-    preproc_calls: dict[int, Node] = {}
-    include_nodes: dict[int, Node] = {}
-    call_sites: dict[int, tuple[Node, str]] = {}
+@dataclass
+class _MacroCaptures:
+    """The query captures macro state tracking reads, keyed by node id."""
 
-    for capture_dict in matches:
-        def_nodes = capture_dict.get("symbol.def", [])
-        name_nodes = capture_dict.get("symbol.name", [])
-        if (
-            def_nodes
-            and def_nodes[0].type in ("preproc_def", "preproc_function_def")
-            and name_nodes
-        ):
-            macro_node = def_nodes[0]
-            macro_name = _cpp_normalize_identifier(_node_text(name_nodes[0], src))
-            if macro_name:
-                macro_definitions[macro_node.id] = (macro_node, macro_name)
+    definitions: dict[int, tuple[Node, str]] = field(default_factory=dict)
+    preproc_calls: dict[int, Node] = field(default_factory=dict)
+    include_nodes: dict[int, Node] = field(default_factory=dict)
+    call_sites: dict[int, tuple[Node, str]] = field(default_factory=dict)
 
-        for node in capture_dict.get("symbol.cpp_preproc_call", []):
-            preproc_calls[node.id] = node
-        for node in capture_dict.get("symbol.cpp_macro_state_barrier", []):
-            include_nodes[node.id] = node
+    @classmethod
+    def from_matches(cls, matches: list[dict], src: str) -> _MacroCaptures:
+        captures = cls()
+        for capture_dict in matches:
+            definition = _macro_definition(capture_dict, src)
+            if definition is not None:
+                captures.definitions[definition[0].id] = definition
+            for node in capture_dict.get("symbol.cpp_preproc_call", []):
+                captures.preproc_calls[node.id] = node
+            for node in capture_dict.get("symbol.cpp_macro_state_barrier", []):
+                captures.include_nodes[node.id] = node
+            site_nodes = capture_dict.get("call.site", [])
+            target_nodes = capture_dict.get("call.target", [])
+            if site_nodes and target_nodes:
+                captures.call_sites[site_nodes[0].id] = (
+                    site_nodes[0],
+                    _node_text(target_nodes[0], src),
+                )
+        return captures
 
-        site_nodes = capture_dict.get("call.site", [])
-        target_nodes = capture_dict.get("call.target", [])
-        if site_nodes and target_nodes:
-            call_sites[site_nodes[0].id] = (site_nodes[0], _node_text(target_nodes[0], src))
+    @property
+    def known_names(self) -> set[str]:
+        return {name for _, name in self.definitions.values()}
 
-    known_names = {name for _, name in macro_definitions.values()}
-    known_names_by_length = tuple(sorted(known_names, key=len, reverse=True))
 
+def _macro_definition(capture_dict: dict, src: str) -> tuple[Node, str] | None:
+    """The macro node and normalized name of a ``#define`` match, if it is one."""
+    def_nodes = capture_dict.get("symbol.def", [])
+    name_nodes = capture_dict.get("symbol.name", [])
+    if not def_nodes or def_nodes[0].type not in _CPP_MACRO_DEFINITION_NODES or not name_nodes:
+        return None
+    macro_name = _cpp_normalize_identifier(_node_text(name_nodes[0], src))
+    return (def_nodes[0], macro_name) if macro_name else None
+
+
+@dataclass
+class _MacroHazards:
+    """Known macros whose expansion runs a push/pop pragma, directly or through aliases.
+
+    ``targets`` maps each macro to the known macros its expansion pushes or pops;
+    ``unknown`` holds macros whose stack operation names no recoverable target.
+    """
+
+    targets: dict[str, set[str]]
+    unknown: set[str]
+
+    def is_hazard(self, name: str) -> bool:
+        return bool(self.targets[name]) or name in self.unknown
+
+    def affected_by(self, referenced_names: set[str]) -> set[str]:
+        return set().union(*(self.targets.get(name, set()) for name in referenced_names))
+
+    def inherit_through_aliases(self, references: dict[str, set[str]]) -> None:
+        """Propagate hazards from each macro to every macro whose replacement names it."""
+        dependents: dict[str, set[str]] = {name: set() for name in self.targets}
+        for macro_name, referenced_names in references.items():
+            for referenced_name in referenced_names:
+                dependents[referenced_name].add(macro_name)
+
+        pending = deque(name for name in self.targets if self.is_hazard(name))
+        queued = set(pending)
+        while pending:
+            referenced_name = pending.popleft()
+            queued.remove(referenced_name)
+            for macro_name in dependents[referenced_name]:
+                if self._inherit(macro_name, referenced_name) and macro_name not in queued:
+                    pending.append(macro_name)
+                    queued.add(macro_name)
+
+    def _inherit(self, macro_name: str, referenced_name: str) -> bool:
+        """Copy *referenced_name*'s hazards onto *macro_name*; True when anything changed."""
+        inherited_targets = self.targets[referenced_name] - self.targets[macro_name]
+        inherited_unknown = referenced_name in self.unknown and macro_name not in self.unknown
+        if not inherited_targets and not inherited_unknown:
+            return False
+        self.targets[macro_name].update(inherited_targets)
+        if inherited_unknown:
+            self.unknown.add(macro_name)
+        return True
+
+
+def _macro_hazards(
+    definitions: dict[int, tuple[Node, str]], known_names: set[str], src: str
+) -> _MacroHazards:
+    """Find the macros whose replacement contains a pragma stack operation."""
     # A macro whose replacement contains a pragma stack operation is itself a
     # state hazard when invoked. Resolve simple wrapper aliases transitively;
     # anything more dynamic remains conservative at the invocation site.
-    hazard_targets: dict[str, set[str]] = {name: set() for name in known_names}
-    hazard_unknown: set[str] = set()
-    replacement_references: dict[str, set[str]] = {name: set() for name in known_names}
-    for macro_node, macro_name in macro_definitions.values():
+    hazards = _MacroHazards(targets={name: set() for name in known_names}, unknown=set())
+    references: dict[str, set[str]] = {name: set() for name in known_names}
+    for macro_node, macro_name in definitions.values():
         value_node = macro_node.child_by_field_name("value")
         replacement = _node_text(value_node, src) if value_node is not None else ""
         replacement_operation, target = _cpp_macro_stack_operation(replacement)
         if replacement_operation is not None:
             if target in known_names:
-                hazard_targets[macro_name].add(target)
+                hazards.targets[macro_name].add(target)
             elif target is None:
-                hazard_unknown.add(macro_name)
-        replacement_references[macro_name].update(
+                hazards.unknown.add(macro_name)
+        references[macro_name].update(
             _cpp_known_macros_in_text(replacement, known_names) - {macro_name}
         )
+    hazards.inherit_through_aliases(references)
+    return hazards
 
-    alias_dependents: dict[str, set[str]] = {name: set() for name in known_names}
-    for macro_name, references in replacement_references.items():
-        for referenced_name in references:
-            alias_dependents[referenced_name].add(macro_name)
 
-    pending = deque(name for name in known_names if hazard_targets[name] or name in hazard_unknown)
-    queued = set(pending)
-    while pending:
-        referenced_name = pending.popleft()
-        queued.remove(referenced_name)
-        for macro_name in alias_dependents[referenced_name]:
-            inherited_targets = hazard_targets[referenced_name] - hazard_targets[macro_name]
-            inherited_unknown = (
-                referenced_name in hazard_unknown and macro_name not in hazard_unknown
-            )
-            if not inherited_targets and not inherited_unknown:
-                continue
-            hazard_targets[macro_name].update(inherited_targets)
-            if inherited_unknown:
-                hazard_unknown.add(macro_name)
-            if macro_name not in queued:
-                pending.append(macro_name)
-                queued.add(macro_name)
-
-    object_hazard_names = {
-        macro_name
-        for macro_node, macro_name in macro_definitions.values()
-        if macro_node.type == "preproc_def"
-        and (hazard_targets[macro_name] or macro_name in hazard_unknown)
-    }
-
+def _object_macro_invocations(
+    definitions: dict[int, tuple[Node, str]], hazards: _MacroHazards, src: str
+) -> dict[int, Node]:
+    """Every identifier that may expand an object-like hazard macro, keyed by node id."""
     # Object-like macros expand wherever their identifier token appears, not
     # only as a standalone expression. Walk the existing tree only when a
     # local definition proves that the name wraps a stack operation. An include
     # is a barrier at its own position, but without preprocessing context it is
     # not evidence that every later identifier is an imported wrapper.
-    possible_invocations: dict[int, Node] = {}
-    if object_hazard_names:
-        root = next(iter(macro_definitions.values()))[0]
-        while root.parent is not None:
-            root = root.parent
-        pending_nodes = [root]
-        while pending_nodes:
-            node = pending_nodes.pop()
-            if node.type in {"preproc_def", "preproc_function_def"}:
-                continue
-            if node.type == "identifier":
-                name = _cpp_normalize_identifier(_node_text(node, src))
-                if name in object_hazard_names:
-                    possible_invocations[node.id] = node
-            pending_nodes.extend(node.children)
+    object_hazard_names = {
+        macro_name
+        for macro_node, macro_name in definitions.values()
+        if macro_node.type == "preproc_def" and hazards.is_hazard(macro_name)
+    }
+    invocations: dict[int, Node] = {}
+    if not object_hazard_names:
+        return invocations
+    root = next(iter(definitions.values()))[0]
+    while root.parent is not None:
+        root = root.parent
+    pending_nodes = [root]
+    while pending_nodes:
+        node = pending_nodes.pop()
+        if node.type in _CPP_MACRO_DEFINITION_NODES:
+            continue
+        if (
+            node.type == "identifier"
+            and _cpp_normalize_identifier(_node_text(node, src)) in object_hazard_names
+        ):
+            invocations[node.id] = node
+        pending_nodes.extend(node.children)
+    return invocations
 
-    operations: list[_CppMacroOperation] = []
-    operation_keys: set[tuple[int, _CppMacroAction, str]] = set()
-    barriers = {node.start_byte for node in include_nodes.values()}
 
-    def add_operation(
+class _MacroOperations:
+    """Macro operations in capture order, plus the positions where macro state turns opaque."""
+
+    def __init__(self, known_names: set[str], hazards: _MacroHazards) -> None:
+        self.known_names = known_names
+        self.known_names_by_length = tuple(sorted(known_names, key=len, reverse=True))
+        self.hazards = hazards
+        self.operations: list[_CppMacroOperation] = []
+        self.barriers: set[int] = set()
+        self._keys: set[tuple[int, _CppMacroAction, str]] = set()
+
+    def add(
+        self,
         node: Node,
         action: _CppMacroAction,
         name: str,
@@ -311,10 +377,10 @@ def _build_cpp_macro_facts(matches: list[dict], src: str) -> _CppMacroFacts:
         definition: Node | None = None,
     ) -> None:
         key = (node.start_byte, action, name)
-        if key in operation_keys:
+        if key in self._keys:
             return
-        operation_keys.add(key)
-        operations.append(
+        self._keys.add(key)
+        self.operations.append(
             _CppMacroOperation(
                 position=node.start_byte,
                 action=action,
@@ -324,179 +390,185 @@ def _build_cpp_macro_facts(matches: list[dict], src: str) -> _CppMacroFacts:
             )
         )
 
-    def add_stack_operation(node: Node, text: str, *, direct: bool) -> bool:
+    def add_definitions(self, definitions: dict[int, tuple[Node, str]]) -> None:
+        for macro_node, macro_name in definitions.values():
+            is_empty_object = (
+                macro_node.type == "preproc_def"
+                and macro_node.child_by_field_name("value") is None
+            )
+            self.add(
+                macro_node,
+                (_CppMacroAction.DEFINE_EMPTY if is_empty_object else _CppMacroAction.DEFINE_OTHER),
+                macro_name,
+                definition=macro_node if is_empty_object else None,
+            )
+
+    def add_preproc_call(self, node: Node, src: str) -> None:
+        directive, argument = _cpp_preproc_call_parts(_node_text(node, src))
+        if directive in _CPP_INCLUDE_LIKE_DIRECTIVES:
+            self.barriers.add(node.start_byte)
+        elif directive == "undef":
+            target = _cpp_known_macro_from_argument(argument, self.known_names_by_length)
+            if target is not None:
+                self.add(node, _CppMacroAction.UNDEFINE, target)
+        elif directive == "pragma":
+            self.add_stack_operation(node, argument, direct=True)
+
+    def add_stack_operation(self, node: Node, text: str, *, direct: bool) -> bool:
+        """Record a push/pop in *text*; False when *text* holds no stack operation."""
         operation, target = _cpp_macro_stack_operation(text)
         if operation is None:
             return False
-        if target in known_names:
-            action = (
-                _CppMacroAction.PUSH
-                if direct and operation == "push_macro"
-                else _CppMacroAction.POP
-                if direct and operation == "pop_macro"
-                else _CppMacroAction.UNKNOWN
-            )
-            add_operation(node, action, target)
+        if target in self.known_names:
+            action = _CPP_STACK_ACTIONS[operation] if direct else _CppMacroAction.UNKNOWN
+            self.add(node, action, target)
         elif target is None:
-            barriers.add(node.start_byte)
+            self.barriers.add(node.start_byte)
         return True
 
-    for macro_node, macro_name in macro_definitions.values():
-        is_empty_object = (
-            macro_node.type == "preproc_def" and macro_node.child_by_field_name("value") is None
-        )
-        add_operation(
-            macro_node,
-            (_CppMacroAction.DEFINE_EMPTY if is_empty_object else _CppMacroAction.DEFINE_OTHER),
-            macro_name,
-            definition=macro_node if is_empty_object else None,
-        )
+    def add_call_sites(self, call_sites: dict[int, tuple[Node, str]], src: str) -> None:
+        for node, target_text in call_sites.values():
+            if _is_pragma_operator(target_text):
+                self.add_stack_operation(node, _node_text(node, src), direct=True)
+        for node, target_text in call_sites.values():
+            if not _is_pragma_operator(target_text):
+                self.add_indirect_hazards(node, _node_text(node, src), target_text)
 
-    for node in preproc_calls.values():
-        directive, argument = _cpp_preproc_call_parts(_node_text(node, src))
-        if directive in _CPP_INCLUDE_LIKE_DIRECTIVES:
-            barriers.add(node.start_byte)
-        elif directive == "undef":
-            target = _cpp_known_macro_from_argument(argument, known_names_by_length)
-            if target is not None:
-                add_operation(node, _CppMacroAction.UNDEFINE, target)
-        elif directive == "pragma":
-            add_stack_operation(node, argument, direct=True)
-
-    direct_pragma_call_ids: set[int] = set()
-    for node, target_text in call_sites.values():
-        normalized_target = _cpp_normalize_identifier(target_text)
-        if normalized_target in {"_Pragma", "__pragma"}:
-            direct_pragma_call_ids.add(node.id)
-            add_stack_operation(node, _node_text(node, src), direct=True)
-
-    def add_indirect_hazards(node: Node, text: str, target_text: str = "") -> None:
-        if add_stack_operation(node, text, direct=False):
+    def add_indirect_hazards(self, node: Node, text: str, target_text: str = "") -> None:
+        """Mark the macros a wrapper invocation may push or pop as UNKNOWN."""
+        if self.add_stack_operation(node, text, direct=False):
             return
-        target_name = _cpp_normalize_identifier(target_text)
-        if not target_name:
-            target_name = _cpp_known_macro_from_argument(text, known_names_by_length) or ""
-        referenced_names = _cpp_known_macros_in_text(text, known_names)
+        target_name = (
+            _cpp_normalize_identifier(target_text)
+            or _cpp_known_macro_from_argument(text, self.known_names_by_length)
+            or ""
+        )
+        referenced_names = _cpp_known_macros_in_text(text, self.known_names)
         if target_name:
             referenced_names.add(target_name)
-        affected_names = set().union(
-            *(hazard_targets.get(name, set()) for name in referenced_names)
-        )
+        affected_names = self.hazards.affected_by(referenced_names)
         for affected_name in affected_names:
-            add_operation(node, _CppMacroAction.UNKNOWN, affected_name)
-        if affected_names or referenced_names & hazard_unknown:
+            self.add(node, _CppMacroAction.UNKNOWN, affected_name)
+        if affected_names or referenced_names & self.hazards.unknown:
             # The wrapper may push or pop even when its final macro value is
             # conservatively represented as UNKNOWN. Taint the stack too, so
             # a later direct pop cannot restore a stale local snapshot.
-            barriers.add(node.start_byte)
+            self.barriers.add(node.start_byte)
 
-    for node, target_text in call_sites.values():
-        if node.id not in direct_pragma_call_ids:
-            add_indirect_hazards(node, _node_text(node, src), target_text)
 
-    for node in possible_invocations.values():
-        add_indirect_hazards(node, _node_text(node, src))
+def _is_pragma_operator(target_text: str) -> bool:
+    return _cpp_normalize_identifier(target_text) in {"_Pragma", "__pragma"}
 
-    operations.sort(key=lambda operation: operation.position)
-    sorted_barriers = sorted(barriers)
-    events: dict[str, list[_CppMacroEvent]] = {}
-    current: dict[str, _CppMacroEvent] = {}
-    stacks: dict[str, list[_CppMacroStackEntry]] = {}
-    barrier_index = 0
 
-    def append_event(operation: _CppMacroOperation, event: _CppMacroEvent) -> None:
-        events.setdefault(operation.name, []).append(event)
-        current[operation.name] = event
+class _MacroReplay:
+    """Replays position-sorted macro operations into per-macro state events."""
 
-    for operation in operations:
-        crossed_barrier = False
-        while (
-            barrier_index < len(sorted_barriers)
-            and sorted_barriers[barrier_index] < operation.position
-        ):
-            barrier_index += 1
-            crossed_barrier = True
-        if crossed_barrier:
+    def __init__(self, sorted_barriers: list[int]) -> None:
+        self.events: dict[str, list[_CppMacroEvent]] = {}
+        self._barriers = sorted_barriers
+        self._barrier_index = 0
+        self._current: dict[str, _CppMacroEvent] = {}
+        self._stacks: dict[str, list[_CppMacroStackEntry]] = {}
+
+    def apply(self, operation: _CppMacroOperation) -> None:
+        if self._cross_barriers(operation.position):
             # Includes and opaque pragma wrappers may mutate both the macro
             # and its push/pop stack. A later local definition can establish
             # the current value again, but only a later local push can
             # establish a stack entry that is safe to restore.
-            current.clear()
-            stacks.clear()
+            self._current.clear()
+            self._stacks.clear()
 
         branch_path = _cpp_preproc_branch_path(operation.node)
-        if operation.action in {
-            _CppMacroAction.DEFINE_EMPTY,
-            _CppMacroAction.DEFINE_OTHER,
-            _CppMacroAction.UNDEFINE,
-            _CppMacroAction.UNKNOWN,
-        }:
-            state = {
-                _CppMacroAction.DEFINE_EMPTY: _CppMacroState.EMPTY_OBJECT,
-                _CppMacroAction.DEFINE_OTHER: _CppMacroState.NOT_EMPTY_OBJECT,
-                _CppMacroAction.UNDEFINE: _CppMacroState.UNDEFINED,
-                _CppMacroAction.UNKNOWN: _CppMacroState.UNKNOWN,
-            }[operation.action]
-            append_event(
+        if operation.action is _CppMacroAction.PUSH:
+            self._push(operation, branch_path)
+        elif operation.action is _CppMacroAction.POP:
+            self._record(operation, self._pop(operation, branch_path))
+        else:
+            self._record(
                 operation,
                 _CppMacroEvent(
                     position=operation.position,
-                    state=state,
+                    state=_CPP_ACTION_STATES[operation.action],
                     definition=operation.definition,
                     branch_path=branch_path,
                 ),
             )
-            continue
 
-        if operation.action is _CppMacroAction.PUSH:
-            snapshot = current.get(operation.name)
-            if (
-                snapshot is not None
-                and branch_path[: len(snapshot.branch_path)] != snapshot.branch_path
-            ):
-                snapshot = None
-            stacks.setdefault(operation.name, []).append(
-                _CppMacroStackEntry(event=snapshot, branch_path=branch_path)
-            )
-            continue
+    def _cross_barriers(self, position: int) -> bool:
+        """Advance past every barrier before *position*; True when any was crossed."""
+        start = self._barrier_index
+        self._barrier_index = bisect_left(self._barriers, position, lo=start)
+        return self._barrier_index > start
 
-        stack = stacks.get(operation.name, [])
+    def _record(self, operation: _CppMacroOperation, event: _CppMacroEvent) -> None:
+        self.events.setdefault(operation.name, []).append(event)
+        self._current[operation.name] = event
+
+    def _push(self, operation: _CppMacroOperation, branch_path: tuple[int, ...]) -> None:
+        snapshot = self._current.get(operation.name)
+        if snapshot is not None and not _branch_within(branch_path, snapshot.branch_path):
+            snapshot = None
+        self._stacks.setdefault(operation.name, []).append(
+            _CppMacroStackEntry(event=snapshot, branch_path=branch_path)
+        )
+
+    def _pop(self, operation: _CppMacroOperation, branch_path: tuple[int, ...]) -> _CppMacroEvent:
+        stack = self._stacks.get(operation.name, [])
         entry = stack.pop() if stack else None
-        current_event = current.get(operation.name)
-        if (
-            entry is None
-            and current_event is not None
-            and bisect_left(sorted_barriers, operation.position) == 0
-            and branch_path[: len(current_event.branch_path)] == current_event.branch_path
-        ):
-            restored = _CppMacroEvent(
-                position=operation.position,
-                state=current_event.state,
-                definition=current_event.definition,
-                branch_path=branch_path,
-            )
-        elif (
-            entry is None
-            or branch_path[: len(entry.branch_path)] != entry.branch_path
-            or entry.event is None
-        ):
-            restored = _CppMacroEvent(
+        if entry is None:
+            restored = self._unpushed_state(operation, branch_path)
+        elif entry.event is None or not _branch_within(branch_path, entry.branch_path):
+            restored = None
+            stack.clear()
+        else:
+            restored = entry.event
+        if restored is None:
+            return _CppMacroEvent(
                 position=operation.position,
                 state=_CppMacroState.UNKNOWN,
                 branch_path=branch_path,
             )
-            if entry is not None:
-                stack.clear()
-        else:
-            restored = _CppMacroEvent(
-                position=operation.position,
-                state=entry.event.state,
-                definition=entry.event.definition,
-                branch_path=branch_path,
-            )
-        append_event(operation, restored)
+        return _CppMacroEvent(
+            position=operation.position,
+            state=restored.state,
+            definition=restored.definition,
+            branch_path=branch_path,
+        )
 
+    def _unpushed_state(
+        self, operation: _CppMacroOperation, branch_path: tuple[int, ...]
+    ) -> _CppMacroEvent | None:
+        """The state a pop with no local push keeps: the current one, before any barrier."""
+        current_event = self._current.get(operation.name)
+        if current_event is None or bisect_left(self._barriers, operation.position) != 0:
+            return None
+        if not _branch_within(branch_path, current_event.branch_path):
+            return None
+        return current_event
+
+
+def _build_cpp_macro_facts(matches: list[dict], src: str) -> _CppMacroFacts:
+    """Build the conservative, source-ordered macro facts used by C++ recovery."""
+    captures = _MacroCaptures.from_matches(matches, src)
+    known_names = captures.known_names
+    hazards = _macro_hazards(captures.definitions, known_names, src)
+    possible_invocations = _object_macro_invocations(captures.definitions, hazards, src)
+
+    collected = _MacroOperations(known_names, hazards)
+    collected.barriers.update(node.start_byte for node in captures.include_nodes.values())
+    collected.add_definitions(captures.definitions)
+    for node in captures.preproc_calls.values():
+        collected.add_preproc_call(node, src)
+    collected.add_call_sites(captures.call_sites, src)
+    for node in possible_invocations.values():
+        collected.add_indirect_hazards(node, _node_text(node, src))
+
+    sorted_barriers = sorted(collected.barriers)
+    replay = _MacroReplay(sorted_barriers)
+    for operation in sorted(collected.operations, key=lambda operation: operation.position):
+        replay.apply(operation)
     return _CppMacroFacts(
-        events={name: tuple(name_events) for name, name_events in events.items()},
-        barriers=tuple(sorted(barriers)),
+        events={name: tuple(name_events) for name, name_events in replay.events.items()},
+        barriers=tuple(sorted_barriers),
     )

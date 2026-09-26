@@ -92,6 +92,24 @@ class CppExportTypes:
     def parent_ids(self) -> frozenset[int]:
         return frozenset(self.parents)
 
+    def add(
+        self,
+        def_node: Node,
+        capture_node: Node,
+        range_node: Node,
+        name: str,
+        *,
+        is_forward_declaration: bool,
+    ) -> None:
+        self.defs[def_node.id] = _CppExportType(
+            range_node=range_node,
+            name=name,
+            is_forward_declaration=is_forward_declaration,
+        )
+        self.capture_ids.add(capture_node.id)
+        self.parents[capture_node.id] = name
+        self.parents[range_node.id] = name
+
 
 def collect_cpp_export_types(matches: list[dict], src: str) -> CppExportTypes:
     """Recover every macro-decorated type the query matched in one C++ file."""
@@ -111,48 +129,47 @@ def collect_cpp_export_types(matches: list[dict], src: str) -> CppExportTypes:
     )
 
     for capture_dict in cpp_export_matches:
-        type_nodes = capture_dict.get("symbol.cpp_export_type", [])
         def_nodes = capture_dict.get("symbol.def", [])
         name_nodes = capture_dict.get("symbol.name", [])
-        macro_nodes = capture_dict.get("symbol.cpp_export_macro", [])
-        if not type_nodes or not def_nodes or not name_nodes:
+        if not def_nodes or not name_nodes:
             continue
         type_name = _node_text(name_nodes[0], src)
         if not type_name:
             continue
-        capture_node = type_nodes[0]
-        is_forward_declaration = capture_node.type in _CPP_EXPORT_FORWARD_DECLARATION_NODES
-        range_node = capture_node
-        if (
-            is_forward_declaration
-            and capture_node.parent is not None
-            and capture_node.parent.type == "template_declaration"
-        ):
-            range_node = capture_node.parent
-        active_macro_def: Node | None = None
-        if is_forward_declaration:
-            active_macro_def = _forward_declaration_macro(
-                cpp_macro_facts, macro_nodes, capture_node, src
-            )
-            if active_macro_def is None:
-                continue
-        else:
+        capture_node = capture_dict["symbol.cpp_export_type"][0]
+        macro_nodes = capture_dict.get("symbol.cpp_export_macro", [])
+        if capture_node.type not in _CPP_EXPORT_FORWARD_DECLARATION_NODES:
             # Body-form matches are unambiguous. Preserve #1896's
             # name-based suppression across conditional definitions.
             found.macro_names.update(
                 _cpp_normalize_identifier(_node_text(node, src)) for node in macro_nodes
             )
-        found.defs[def_nodes[0].id] = _CppExportType(
-            range_node=range_node,
-            name=type_name,
-            is_forward_declaration=is_forward_declaration,
+            found.add(
+                def_nodes[0], capture_node, capture_node, type_name, is_forward_declaration=False
+            )
+            continue
+        active_macro_def = _forward_declaration_macro(
+            cpp_macro_facts, macro_nodes, capture_node, src
         )
-        found.capture_ids.add(capture_node.id)
-        found.parents[capture_node.id] = type_name
-        found.parents[range_node.id] = type_name
-        if active_macro_def is not None:
-            found.macro_def_ids.add(active_macro_def.id)
+        if active_macro_def is None:
+            continue
+        found.add(
+            def_nodes[0],
+            capture_node,
+            _forward_declaration_range(capture_node),
+            type_name,
+            is_forward_declaration=True,
+        )
+        found.macro_def_ids.add(active_macro_def.id)
     return found
+
+
+def _forward_declaration_range(declaration: Node) -> Node:
+    """The node a forward declaration spans, including a ``template <...>`` wrapper."""
+    parent = declaration.parent
+    if parent is not None and parent.type == "template_declaration":
+        return parent
+    return declaration
 
 
 def _forward_declaration_macro(
