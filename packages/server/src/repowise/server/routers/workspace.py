@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
@@ -167,15 +167,27 @@ async def _top_language_from_db(session, repo_id: str) -> str:
 
 
 async def _health_score_from_db(session, repo_id: str) -> float | None:
-    """The canonical NLOC-weighted health score, matching read_repo_health_score."""
+    """The canonical NLOC-weighted health score, matching read_repo_health_score.
+
+    The weight is a CASE because PostgreSQL has no two-argument max() (it reads
+    max() as a one-argument aggregate and raises "function max(integer, integer)
+    does not exist"), and SQLite answers "no such function: greatest" for
+    greatest(a, b). This select has to parse on both engines, and the CASE does.
+    score IS NOT NULL mirrors the SQLite filter, so an unscored row cannot pad
+    the denominator while contributing nothing to the numerator.
+    """
     try:
-        weight = func.max(HealthFileMetric.nloc, 1)
+        nloc = func.coalesce(HealthFileMetric.nloc, 0)
+        weight = case((nloc > 1, nloc), else_=1)
         row = (
             await session.execute(
                 select(
                     func.sum(HealthFileMetric.score * weight),
                     func.sum(weight),
-                ).where(HealthFileMetric.repository_id == repo_id)
+                ).where(
+                    HealthFileMetric.repository_id == repo_id,
+                    HealthFileMetric.score.is_not(None),
+                )
             )
         ).first()
     except Exception:
