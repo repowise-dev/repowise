@@ -65,6 +65,14 @@ class FileContext:
     branch_coverage_pct: float | None = None
     covered_lines: set[int] = field(default_factory=set)
     total_coverable_lines: int = 0
+    # True when a coverage report named this file, whatever it said about it.
+    # Needed because ``line_coverage_pct is None`` has two causes that call for
+    # opposite verdicts: no report was ingested (unknown — fall back to the
+    # test-file signals), or a report measured the file and found nothing
+    # coverable (known — there is nothing here to test, so say nothing). With
+    # ``total_coverable_lines`` at 0 in both cases, this flag is what separates
+    # them (issue #2193).
+    coverage_measured: bool = False
     # Duplication signals (populated when the engine ran the
     # duplication detector for this analyze() call). ``clones`` is the
     # list of clone pairs this file participates in; ``duplication_pct``

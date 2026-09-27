@@ -23,6 +23,7 @@ def _ctx(
     branch_cov: float | None = None,
     covered_lines: set[int] | None = None,
     total_lines: int = 0,
+    coverage_measured: bool = False,
 ) -> FileContext:
     return FileContext(
         file_path=path,
@@ -37,6 +38,7 @@ def _ctx(
         branch_coverage_pct=branch_cov,
         covered_lines=covered_lines or set(),
         total_coverable_lines=total_lines,
+        coverage_measured=coverage_measured,
     )
 
 
@@ -236,3 +238,48 @@ def test_reachability_does_not_override_a_real_coverage_number() -> None:
     results = UntestedHotspotDetector().detect(ctx)
     assert len(results) == 1
     assert results[0].details["reached_by_tests"] is True
+
+
+# ---------------------------------------------------------------------------
+# Nothing to cover keeps every coverage biomarker silent (issue #2193)
+# ---------------------------------------------------------------------------
+
+
+def test_coverage_biomarkers_silent_when_nothing_is_coverable() -> None:
+    """A file with no coverable lines deducts nothing from any of the three.
+
+    This is what ``coverage_gradient``'s docstring already promises — "absent
+    coverage != zero coverage ... it never imputes uncovered for missing data"
+    — and what a ``LF:0`` record used to break by arriving as a hard 0.0.
+    """
+    # The shape from the issue: a hotspot barrel of type declarations, 21
+    # dependents, no paired test file — a report measured it and found no
+    # coverable line.
+    ctx = _ctx(
+        git_meta={"is_hotspot": True},
+        dependents=21,
+        line_cov=None,
+        total_lines=0,
+        coverage_measured=True,
+    )
+    assert CoverageGradientDetector().detect(ctx) == []
+    assert CoverageGapDetector().detect(ctx) == []
+    assert UntestedHotspotDetector().detect(ctx) == []
+
+
+def test_untested_hotspot_still_flags_a_file_no_report_mentioned() -> None:
+    """Silence is bought for measured-and-empty only, not for unknown.
+
+    Same context with ``coverage_measured`` False is the no-data fallback the
+    biomarker documents, and that has to keep firing.
+    """
+    ctx = _ctx(git_meta={"is_hotspot": True}, dependents=21, line_cov=None, total_lines=0)
+    assert len(UntestedHotspotDetector().detect(ctx)) == 1
+
+
+def test_coverage_gradient_still_fires_on_a_genuinely_uncovered_file() -> None:
+    """The guard must not buy its silence by going quiet on real 0% files."""
+    ctx = _ctx(line_cov=0.0, total_lines=40, coverage_measured=True)
+    results = CoverageGradientDetector().detect(ctx)
+    assert len(results) == 1
+    assert results[0].details["line_coverage_pct"] == 0.0

@@ -6,7 +6,9 @@ Fires when a file is **all three** of:
   absolute activity floors under it)
 - under-tested (``line_coverage_pct`` < 40 when coverage is available,
   OR, when it isn't, neither a paired test file nor a test reaching it
-  through the call graph)
+  through the call graph). A file a report measured and found nothing
+  coverable in is neither: it has no code to test, so it is skipped
+  outright rather than sent down the no-data fallback.
 - centrally depended on (``dependents_count`` ≥ 4 OR temporal_hotspot
   in the top decile)
 
@@ -61,6 +63,15 @@ class UntestedHotspotDetector:
             return []
 
         cov = ctx.line_coverage_pct
+        if cov is None and ctx.coverage_measured and ctx.total_coverable_lines == 0:
+            # Measured, and there was nothing to measure: a type-only module, a
+            # barrel of re-exports. The fallback below is for files whose
+            # coverage is *unknown*, and applying it here would accuse a file
+            # with no executable line in it of being untested — which is what
+            # issue #2193 saw, at critical severity, on a barrel of 28 type
+            # declarations with 21 dependents.
+            return []
+
         if cov is None:
             # Fallback: no coverage data. Flag only when nothing says a test
             # touches this file. Two independent things can say so, and either

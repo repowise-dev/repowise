@@ -5,11 +5,46 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, overload
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import CoverageFile, _new_uuid
 from .._shared import _BATCH_SIZE
+
+
+async def _line_pct_accepts_null(session: AsyncSession) -> bool:
+    """Whether the live ``coverage_files.line_coverage_pct`` column allows NULL.
+
+    The model says it does (issue #2193), and a store created from the model —
+    or a PostgreSQL store that has run migration 0077 — agrees. A SQLite store
+    written before this change does not: ``init_db``'s reconciler is
+    additive-only by design and local stores never run Alembic, so the column
+    stays ``NOT NULL`` there for the life of the file.
+
+    Inserting NULL into it would fail the whole ingest, so the writer asks
+    first and drops the not-applicable rows instead. Dropping them costs
+    nothing a caller can observe: every consumer reads an absent row and a
+    NULL percentage the same way (``cov is None`` → the coverage biomarkers
+    stay silent), and the repo rollup weights each row by
+    ``total_coverable_lines``, which is 0 for exactly these rows. The only
+    difference is ``file_count``, which counts files with a measurable
+    percentage either way.
+    """
+
+    def _check(sync_session: Any) -> bool:
+        for column in sa_inspect(sync_session.connection()).get_columns("coverage_files"):
+            if column["name"] == "line_coverage_pct":
+                return bool(column.get("nullable", True))
+        return True
+
+    try:
+        return await session.run_sync(_check)
+    except Exception:
+        # Reflection is a convenience here, not a correctness requirement:
+        # assume the model's shape and let a genuine constraint violation
+        # surface rather than silently dropping rows on a healthy store.
+        return True
 
 
 async def save_coverage_files(
@@ -36,13 +71,19 @@ async def save_coverage_files(
         await session.delete(row)
     await session.flush()
 
+    accepts_null = await _line_pct_accepts_null(session)
+
     for i in range(0, len(files), _BATCH_SIZE):
         batch = files[i : i + _BATCH_SIZE]
         for f in batch:
             if hasattr(f, "file_path"):
+                if f.line_coverage_pct is None and not accepts_null:
+                    continue
                 data = {
                     "file_path": f.file_path,
-                    "line_coverage_pct": float(f.line_coverage_pct),
+                    "line_coverage_pct": (
+                        float(f.line_coverage_pct) if f.line_coverage_pct is not None else None
+                    ),
                     "branch_coverage_pct": (
                         float(f.branch_coverage_pct) if f.branch_coverage_pct is not None else None
                     ),
@@ -51,6 +92,8 @@ async def save_coverage_files(
                 }
             else:
                 data = dict(f)
+                if data.get("line_coverage_pct") is None and not accepts_null:
+                    continue
                 if "covered_lines" in data:
                     data["covered_lines_json"] = json.dumps(list(data.pop("covered_lines") or []))
 
@@ -176,13 +219,28 @@ async def get_coverage_summary(
     total = 0
     branch_pcts: list[float] = []
     branch_weights: list[int] = []
+    measured = 0
     for r in rows:
-        covered += round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)
-        total += r.total_coverable_lines
+        # Branches are weighed first and independently: the two percentages are
+        # separately nullable, so a row that cannot answer for lines must not
+        # also be dropped from the branch average.
         if r.branch_coverage_pct is not None:
             branch_pcts.append(r.branch_coverage_pct)
             branch_weights.append(max(r.total_coverable_lines, 1))
-    line_pct = (covered / total * 100.0) if total else 0.0
+        # A row with nothing to cover carries no percentage (issue #2193). It
+        # contributed nothing to either side of the ratio when it was stored as
+        # 0.0 either — ``total_coverable_lines`` is 0 for exactly these rows —
+        # so skipping it changes no repo-level number, it only keeps the
+        # arithmetic from being handed a ``None``.
+        if r.line_coverage_pct is None:
+            continue
+        measured += 1
+        covered += round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)
+        total += r.total_coverable_lines
+    # No measurable line anywhere in the table is the repo-level form of the
+    # same fact: unknown, not 0% covered. The empty-table shape above already
+    # answers ``None`` here, so every caller reads it.
+    line_pct = (covered / total * 100.0) if total else None
     branch_pct: float | None
     if branch_pcts:
         wsum = sum(branch_weights)
@@ -196,10 +254,10 @@ async def get_coverage_summary(
     # default), which is correct for complete legacy ingests.
     mapping_partial = bool(getattr(latest, "mapping_partial", False))
     return {
-        "file_count": len(rows),
+        "file_count": measured,
         "covered_lines": covered,
         "total_lines": total,
-        "line_coverage_pct": round(line_pct, 2),
+        "line_coverage_pct": round(line_pct, 2) if line_pct is not None else None,
         "branch_coverage_pct": round(branch_pct, 2) if branch_pct is not None else None,
         "source_format": latest.source_format,
         "mapping_partial": mapping_partial,
