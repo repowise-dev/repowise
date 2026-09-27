@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.persistence import crud
@@ -300,27 +300,41 @@ async def _query_repo_stats_from_db(session_factory, local_path: str, result: di
                 ).scalar_one() or 0
             except Exception:
                 result["hotspot_count"] = 0  # table or column may not exist
+
+            # Canonical health score from the health_file_metrics table,
+            # matching read_repo_health_score's NLOC-weighted average. The
+            # weight is a CASE because PostgreSQL has no two-argument max()
+            # (it reads max() as a one-argument aggregate and raises
+            # "function max(integer, integer) does not exist"), and SQLite
+            # answers "no such function: greatest" for greatest(a, b). The
+            # suite runs this select against its SQLite stand-in, so it has
+            # to parse on both engines, and the CASE does.
+            # score IS NOT NULL mirrors the SQLite filter so an unscored row
+            # cannot pad the denominator while contributing nothing to the
+            # numerator. Shares the stats session: it is only reachable once
+            # the stats query succeeded.
+            try:
+                nloc = func.coalesce(HealthFileMetric.nloc, 0)
+                weight = case((nloc > 1, nloc), else_=1)
+                row = (
+                    await session.execute(
+                        select(
+                            func.sum(HealthFileMetric.score * weight),
+                            func.sum(weight),
+                        ).where(
+                            HealthFileMetric.repository_id == result["repo_id"],
+                            HealthFileMetric.score.is_not(None),
+                        )
+                    )
+                ).first()
+                if row and row[1]:
+                    avg = float(row[0]) / float(row[1])
+                    result["health_score"] = max(0.0, min(100.0, round(avg * 10.0, 1)))
+            except Exception:
+                result["health_score"] = None
     except Exception:
         _log.debug("Failed to query stats from db for %s", local_path, exc_info=True)
         return
-
-    # Canonical health score from the health_file_metrics table, matching
-    # read_repo_health_score's NLOC-weighted average.
-    try:
-        async with get_session(session_factory) as session:
-            row = (
-                await session.execute(
-                    select(
-                        func.sum(HealthFileMetric.score * func.max(HealthFileMetric.nloc, 1)),
-                        func.sum(func.max(HealthFileMetric.nloc, 1)),
-                    ).where(HealthFileMetric.repository_id == result["repo_id"])
-                )
-            ).first()
-            if row and row[1]:
-                avg = float(row[0]) / float(row[1])
-                result["health_score"] = max(0.0, min(100.0, round(avg * 10.0, 1)))
-    except Exception:
-        result["health_score"] = None
 
 
 # ---------------------------------------------------------------------------

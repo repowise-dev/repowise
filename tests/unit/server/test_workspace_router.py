@@ -279,6 +279,26 @@ def _create_workspace_repo_db(
             )
 
 
+async def _allow_unscored_health_rows(engine) -> None:
+    """Relax ``score NOT NULL`` so a fixture can seed an unscored row.
+
+    The shipped schema marks ``score`` NOT NULL, but the canonical SQLite
+    read still filters ``score IS NOT NULL`` before weighting, so the
+    configured-DB fallback has to agree when a store carries such a row.
+    Recreating the table without its constraints is the only way to seed
+    one here (SQLite has no ALTER ... DROP NOT NULL).
+    """
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(
+            "ALTER TABLE health_file_metrics RENAME TO health_file_metrics_strict"
+        )
+        await conn.exec_driver_sql(
+            "CREATE TABLE health_file_metrics AS "
+            "SELECT * FROM health_file_metrics_strict WHERE 0"
+        )
+        await conn.exec_driver_sql("DROP TABLE health_file_metrics_strict")
+
+
 # ---------------------------------------------------------------------------
 # Tests — GET /api/workspace
 # ---------------------------------------------------------------------------
@@ -409,6 +429,85 @@ class TestGetWorkspace:
         assert backend["status"] == "indexed"
         assert backend["repo_id"] == repo_id
         assert backend["file_count"] == 0
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_health_score_matches_the_sqlite_read_with_an_unscored_row(
+        self, tmp_path: Path
+    ) -> None:
+        """The fallback must not count an unscored row's weight.
+
+        ``read_repo_health_score`` filters ``score IS NOT NULL`` before
+        weighting; without the same filter the fallback adds an unscored
+        row's weight to the denominator and answers with a lower score
+        than the SQLite path does for the same rows. Two scored rows with
+        different weights and one unscored row move the answer if either
+        the filter or the weighting drifts.
+        """
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+
+        from repowise.core.persistence import upsert_repository
+        from repowise.core.persistence.database import get_session, init_db
+        from repowise.server.services.module_health import read_repo_health_score
+
+        rows = [(10.0, 0), (5.0, 9), (None, 100)]
+
+        # Expected: what the canonical SQLite read answers for these rows.
+        canonical_db = tmp_path / "canonical" / "wiki.db"
+        canonical_db.parent.mkdir(parents=True)
+        with sqlite3.connect(str(canonical_db)) as conn:
+            conn.execute(
+                "CREATE TABLE health_file_metrics ("
+                "id TEXT PRIMARY KEY, score REAL, nloc INTEGER)"
+            )
+            conn.executemany(
+                "INSERT INTO health_file_metrics (id, score, nloc) VALUES (?, ?, ?)",
+                [(f"row-{i}", score, nloc) for i, (score, nloc) in enumerate(rows)],
+            )
+        expected = read_repo_health_score(canonical_db)
+        assert expected == 55.0
+
+        ws_root = tmp_path / "ws"
+        backend_dir = ws_root / "backend"
+        backend_dir.mkdir(parents=True)
+
+        # Configured DB: in-memory SQLite standing in for PostgreSQL.
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        await init_db(engine)
+        await _allow_unscored_health_rows(engine)
+
+        sf = async_sessionmaker(engine, expire_on_commit=False)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name="backend", local_path=str(backend_dir))
+
+        async with engine.begin() as conn:
+            for i, (score, nloc) in enumerate(rows):
+                await conn.exec_driver_sql(
+                    "INSERT INTO health_file_metrics "
+                    "(id, repository_id, file_path, score, nloc, max_ccn, "
+                    "max_nesting, has_test_file) "
+                    "VALUES (?, ?, ?, ?, ?, 0, 0, 0)",
+                    (f"row-{i}", repo.id, f"src/f{i}.py", score, nloc),
+                )
+
+        app = _make_workspace_app(
+            ws_config=_make_ws_config(),
+            workspace_root=str(ws_root),
+            session_factory=sf,
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace")
+
+        assert resp.status_code == 200
+        backend = next(r for r in resp.json()["repos"] if r["alias"] == "backend")
+        assert backend["health_score"] == expected
 
         await engine.dispose()
 
