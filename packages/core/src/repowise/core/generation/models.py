@@ -263,6 +263,13 @@ class GenerationConfig:
     # structure and cost no tokens -- it reduces pages, bytes, embedding calls
     # and retrieval dilution.
     max_file_pages: int | None = None
+    # Folder-specific documentation floors: ``((glob, pct), ...)`` where each
+    # rule promises that at least ``pct`` of the code files under *glob* get a
+    # file_page, whatever their global importance score. A floor, not a cap:
+    # the pinned files are unioned into the selection additively and never
+    # displace global picks. ``src/core=1.0`` means every code file under
+    # src/core gets a page regardless of its score (issue #633).
+    folder_coverage: tuple[tuple[str, float], ...] = field(default_factory=tuple)
     file_page_min_symbols: int = 1
     skip_trivial_files: bool = True
     dedupe_near_clones: bool = True
@@ -387,6 +394,12 @@ class GenerationConfig:
             values["source_evidence_files"] = _normalize_evidence_files(
                 raw_files, label="generation_context.files"
             )
+
+        raw_folder_coverage = config.get("folder_coverage")
+        if raw_folder_coverage is not None:
+            from .folder_coverage import _parse_folder_coverage
+
+            values["folder_coverage"] = _parse_folder_coverage(raw_folder_coverage)
 
         values.update(overrides)
         return cls(**values)
