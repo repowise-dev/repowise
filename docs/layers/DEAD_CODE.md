@@ -245,9 +245,11 @@ These are the cases where a finding is most likely wrong:
   config file, a handler looked up in a registry dict, a Java class loaded by
   `Class.forName`. The dynamic-pattern name list and the `.register` decorator
   suffix catch the common shapes; nothing catches all of them.
-- **Dynamic imports in unmodelled languages.** The marker table covers Python and
-  JS/TS. Go, Ruby, PHP, Kotlin, Swift, and Scala runtime loading is not detected
-  yet, so an orphan in those languages carries no dynamic-import cap.
+- **Dynamic imports in unmodelled languages.** The marker table covers Python,
+  JS/TS, Java, Kotlin, Ruby, PHP, Go, Swift, Scala, Rust, C#, and C/C++.
+  Languages without dynamic import markers or framework hints do not detect
+  runtime loading, so an orphan in those unmodelled languages carries no
+  dynamic-import cap.
 - **Entry points the graph did not mark.** A binary target, a CLI script, or a
   serverless handler that neither the allowlist nor the entry-point pass
   recognized reads as unreachable every time. If you see a whole directory light

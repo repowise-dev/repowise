@@ -5,14 +5,13 @@ When a repo uses ``importlib.import_module``, ``import()``,
 be loaded at runtime. The dead-code analyzer scans for these markers to
 lower confidence on findings within their packages.
 
-Phase 2 work (A1/A2 in ``docs/LANGUAGE_REMAINING_WORK.md``) will:
-
-- expand the marker dicts to cover Go, Ruby, PHP, Kotlin, Swift, Scala,
-- and / or replace this text-scan with consumption of ``edge_type="dynamic"``
-  edges produced by the ``dynamic_hints`` extractors.
+The marker dictionary covers Python, JavaScript/TypeScript, Java, Kotlin,
+Ruby, PHP, Go, Swift, Scala, Rust, C#, and C/C++. In addition, language-specific
+dynamic imports are recognized via ``edge_type="dynamic"`` edges produced by
+the ``dynamic_hints`` extractors.
 
 Keep new entries grouped by file extension so the per-language audit
-in Phase 2 stays mechanical.
+stays mechanical.
 """
 
 from __future__ import annotations
