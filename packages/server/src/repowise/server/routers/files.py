@@ -163,6 +163,11 @@ async def files_index(
     degrees = await crud.get_graph_metrics(session, repo_id)
     metrics_by_path = {m.file_path: m for m in await crud.get_health_metrics(session, repo_id)}
     git_by_path = await crud.get_all_git_metadata(session, repo_id)
+    # The stored report, not the copy the health pass took of it.
+    coverage_by_path = {
+        c.file_path: c.line_coverage_pct
+        for c in await crud.load_coverage_for_repo(session, repo_id, include_covered_lines=False)
+    }
 
     pagerank_pct = _percentile_map({n.node_id: (n.pagerank or 0.0) for n in nodes})
 
@@ -198,7 +203,9 @@ async def files_index(
                 "last_commit_at": (
                     git.last_commit_at.isoformat() if git and git.last_commit_at else None
                 ),
-                "coverage_pct": metric.line_coverage_pct if metric else None,
+                "line_coverage_pct": coverage_by_path.get(path),
+                # Deprecated alias of ``line_coverage_pct``, kept for older clients.
+                "coverage_pct": coverage_by_path.get(path),
                 "is_test": n.is_test,
                 "is_entry_point": n.is_entry_point,
                 "community_id": n.community_id,

@@ -695,11 +695,18 @@ def _cross_repo_block(
 
 
 def _empty_impacted(status: str, summary: str) -> dict[str, Any]:
-    """Uniform impacted-tests block for the degraded (no tests to name) paths."""
+    """Uniform impacted-tests block for the degraded (no tests to name) paths.
+
+    ``basis`` says which signal named the tests (``none`` here) and
+    ``tests_to_run_kind`` what each entry is: a coverage-map ``test_id`` on
+    the measured basis, a ``test_file`` on the inferred one.
+    """
     return {
         "status": status,
+        "basis": "none",
         "map_present": False,
         "tests_to_run": [],
+        "tests_to_run_kind": None,
         "total": 0,
         "truncated": False,
         "line_coverage": {
@@ -1075,6 +1082,7 @@ async def _inferred_impacted(
         {
             "basis": "inferred",
             "tests_to_run": _cap_tests(tests, collector, "inferred"),
+            "tests_to_run_kind": "test_file",
             "total": total,
             "truncated": total > _IMPACTED_TESTS_LIMIT,
             "summary": (
@@ -1197,6 +1205,7 @@ async def _impacted_tests_block(
         "basis": "measured",
         "map_present": True,
         "tests_to_run": _cap_tests(tests, collector, "measured"),
+        "tests_to_run_kind": "test_id",
         "total": total,
         "truncated": total > _IMPACTED_TESTS_LIMIT,
         "line_coverage": _serialize_missing(report),

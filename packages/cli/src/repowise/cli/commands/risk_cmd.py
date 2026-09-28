@@ -231,7 +231,7 @@ def _render_card(name: str, card: dict) -> None:
     # payload that no renderer prints is the second silent failure mode of a
     # trim, and the one a projection test cannot see.
     health = card.get("health_score")
-    coverage = card.get("coverage_pct")
+    coverage = card.get("line_coverage_pct")
     if health is not None or coverage is not None:
         parts = []
         if health is not None:

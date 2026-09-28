@@ -161,7 +161,7 @@ cli/src/repowise/cli/commands/
 server/src/repowise/server/
 ├── mcp_server/
 │   ├── tool_health/                # @mcp.tool get_health(targets, include, repo, limit)
-│   ├── tool_risk.py                # enriched: health_score, top_biomarkers, coverage_pct
+│   ├── tool_risk.py                # enriched: health_score, top_biomarkers, line_coverage_pct
 │   ├── tool_context.py             # include=["health"]: score, top 2 biomarkers, suggestion
 │   └── tool_overview.py            # code_health block with KPIs
 └── routers/
@@ -761,7 +761,7 @@ Defined in `tool_health/tool.py`, which dispatches to one module per mode and bl
 ### Enrichments on existing tools
 
 - `get_risk(targets)`: each per-target row carries `health_score`,
-  `top_biomarkers`, `coverage_pct`, `branch_coverage_pct`.
+  `top_biomarkers`, `line_coverage_pct`, `branch_coverage_pct`.
 - `get_context(targets, include=["health"])`: per-file `score`,
   `max_ccn`, `max_nesting`, `nloc`, `module`, `duplication_pct`, top
   2 markers (each with a `suggestion` string), a coverage block, and a

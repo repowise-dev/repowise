@@ -659,7 +659,10 @@ change is never reported as untested: `status` becomes `inferred` when the
 import graph can name test files reaching the change (candidates, file-level, no
 line attribution, and `line_coverage` stays empty because reaching cannot speak
 to lines), and `no_map` ("run the full suite") when it cannot. `basis` carries
-the same distinction in one word: `measured`, `inferred`, or absent. Build the
+the same distinction in one word, always present: `measured`, `inferred`, or
+`none`. `tests_to_run_kind` says what each entry is: `test_id` (a coverage-map
+test id, measured) or `test_file` (inferred), null when `basis` is `none`;
+`get_risk`'s directive carries the same field beside `tests_to_run_basis`. Build the
 measured map with `coverage run --contexts=test` followed by
 `repowise coverage add`.
 

@@ -57,6 +57,7 @@ _MAY_BREAK_TESTS_LIMIT = 3
 #: than the may-break lists (it is what you actually run), but stays glanceable;
 #: the overflow and full typed rows live in pr_blast_radius.test_impact.
 _TESTS_TO_RUN_LIMIT = 10
+_TESTS_TO_RUN_KIND = {"measured": "test_id", "inferred": "test_file"}
 
 
 def _breaking_change_directive(
@@ -670,6 +671,8 @@ def _build_pr_directive(
         "files_without_measured_tests": [],
         "tests_to_run": tests_to_run,
         "tests_to_run_basis": tests_to_run_basis,
+        # A measured row names a coverage-map test id; an inferred one a test file.
+        "tests_to_run_kind": _TESTS_TO_RUN_KIND.get(tests_to_run_basis),
         "tests_to_run_total": tests_to_run_total,
         "tests_to_run_emitted": len(tests_to_run),
         "tests_to_run_truncated": tests_capped,
