@@ -255,11 +255,12 @@ def _run_doc_drift_partial(
     graph_builder: Any,
     source_map: dict[str, bytes] | None,
     *,
+    repo_path: Any | None = None,
     timings: PhaseTimings | None = None,
 ) -> Any | None:
     """Re-check the repo's markdown against the tree. Delegates to core."""
     from repowise.core.pipeline.incremental import run_doc_drift_partial
 
     return run_doc_drift_partial(
-        graph_builder, source_map, log=console.print, timings=timings
+        graph_builder, source_map, repo_path=repo_path, log=console.print, timings=timings
     )

@@ -102,6 +102,11 @@ class DocDriftFindingData:
     """Lines a reader can check for themselves."""
     raw: str = ""
     context: str = ""
+    suggestion: str = ""
+    """A likely replacement for ``target``, or empty. Evidence for the reader,
+    never applied: this detector does not rewrite documents."""
+    suggestion_basis: str = ""
+    """How ``suggestion`` was found, from :data:`~.constants.SuggestionBasis`."""
 
 
 @dataclass(frozen=True)
@@ -151,6 +156,9 @@ class DocDriftReport:
     """Which renderer's slug algorithm the anchor class used, or the renderer
     that caused it to stand down. See :mod:`~.renderer`."""
     hidden_below_threshold: int = 0
+    suppressed: int = 0
+    """References an inline ``repowise-drift-ignore`` marker silenced. Counted
+    so a suppression is visible and never mistaken for a clean doc."""
     documents: frozenset[str] = field(default_factory=frozenset)
     """Every document this run actually read, of which ``documents_scanned`` is
     the count. A document that missed ``source_map`` (transient read failure, or

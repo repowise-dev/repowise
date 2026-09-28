@@ -246,3 +246,36 @@ def test_end_to_end_on_a_small_document():
     assert (DriftKind.PATH, DriftVerdict.MISSING) in verdicts
     assert (DriftKind.COMMAND, DriftVerdict.RESOLVED) in verdicts
     assert (DriftKind.ANCHOR, DriftVerdict.RESOLVED) in verdicts
+
+
+# ---------------------------------------------------------------------------
+# The on-disk probe: present in the tree, absent from the index
+# ---------------------------------------------------------------------------
+
+
+def _probed_index(present: set[str], asked: list[str] | None = None) -> RepoIndex:
+    def on_disk(rel: str) -> bool:
+        if asked is not None:
+            asked.append(rel)
+        return rel in present
+
+    return RepoIndex.build(TREE, {}, {}, on_disk=on_disk)
+
+
+def test_unindexed_file_on_disk_is_uncheckable_not_missing():
+    res = resolve(_probed_index({"src/util/fixture.py"}), _ref("src/util/fixture.py"))
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "outside-index"
+
+
+def test_probe_that_finds_nothing_leaves_the_finding():
+    res = resolve(_probed_index(set()), _ref("src/util/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+
+
+def test_probe_is_asked_only_about_would_be_misses():
+    asked: list[str] = []
+    idx = _probed_index(set(), asked)
+    resolve(idx, _ref("src/app.py"))
+    resolve(idx, _ref("CLAUDE.md"))
+    assert asked == []

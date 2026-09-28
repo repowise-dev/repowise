@@ -131,6 +131,9 @@ class TraversalStats:
 
 log = structlog.get_logger(__name__)
 
+#: The root/per-directory ignore file, gitignore syntax.
+REPOWISE_IGNORE_FILENAME = ".repowiseIgnore"
+
 #: Cap on the nested-repo names retained in :class:`TraversalStats`.
 _MAX_NESTED_REPO_PATHS = 50
 
@@ -333,7 +336,7 @@ class FileTraverser:
         repo_root: Path,
         *,
         max_file_size_kb: int = 500,
-        extra_ignore_filename: str = ".repowiseIgnore",
+        extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
         extra_exclude_patterns: list[str] | None = None,
         include_submodules: bool = False,
         include_nested_repos: bool = False,
@@ -344,7 +347,7 @@ class FileTraverser:
         self.max_file_size_bytes = max_file_size_kb * 1024
         self._extra_ignore_filename = extra_ignore_filename
         self._gitignore = load_gitignore_spec(self.repo_root)
-        self._extra_ignore = _load_extra_ignore_spec(self.repo_root, extra_ignore_filename)
+        self._extra_ignore = load_extra_ignore_spec(self.repo_root, extra_ignore_filename)
         self._blocked_patterns = _BLOCKED_FILENAME_SPEC
         patterns = extra_exclude_patterns or []
         self._extra_exclude = _compile_gitignore(patterns)
@@ -1247,7 +1250,8 @@ def load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
     return _compile_gitignore(lines)
 
 
-def _load_extra_ignore_spec(repo_root: Path, filename: str) -> pathspec.PathSpec:
+def load_extra_ignore_spec(repo_root: Path, filename: str) -> pathspec.PathSpec:
+    """The ignore file *filename* at *repo_root* as a spec; empty when absent."""
     ignore_file = repo_root / filename
     lines: list[str] = []
     if ignore_file.exists():

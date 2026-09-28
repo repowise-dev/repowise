@@ -1067,6 +1067,9 @@ export interface DocDriftFindingResponse {
   raw: string;
   context: string;
   evidence: string[];
+  fingerprint: string;
+  suggestion?: string | null;
+  suggestion_basis?: string | null;
 }
 
 /**

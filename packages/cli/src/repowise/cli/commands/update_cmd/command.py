@@ -1493,7 +1493,9 @@ def run_update(
         repo_function_mod_p80=repo_function_mod_p80,
         timings=timings,
     )
-    doc_drift_report = _run_doc_drift_partial(graph_builder, source_map, timings=timings)
+    doc_drift_report = _run_doc_drift_partial(
+        graph_builder, source_map, repo_path=repo_path, timings=timings
+    )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
     # the metadata reaches persistence / regeneration so the transient,

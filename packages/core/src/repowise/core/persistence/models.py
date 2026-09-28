@@ -1694,6 +1694,10 @@ class DocDriftFinding(Base):
     #: The reference exactly as written, and the line it was written on.
     raw: Mapped[str] = mapped_column(Text, nullable=False, default="")
     context: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: The likely replacement for a missing target, and the ``SUGGESTION_BASIS``
+    #: that produced it. Null when none was found; never changes the verdict.
+    suggestion: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    suggestion_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
     detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

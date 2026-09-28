@@ -47,6 +47,9 @@ const FINDINGS: DocDriftFinding[] = [
       "resolution: no-candidate",
       "under: Architecture > Resolvers",
     ],
+    fingerprint: "fp1",
+    suggestion: "src/auth/",
+    suggestion_basis: "package_split",
   },
   {
     id: "f2",
@@ -60,6 +63,7 @@ const FINDINGS: DocDriftFinding[] = [
     raw: "#usage",
     context: "See [usage](#usage).",
     evidence: [],
+    fingerprint: "fp2",
   },
 ];
 
@@ -345,6 +349,22 @@ describe("DocDriftView", () => {
     expect(screen.getByText(/resolution: no-candidate/)).toBeTruthy();
   });
 
+  it("shows the likely replacement only when the engine found one", async () => {
+    renderView(<DocDriftView adapter={makeAdapter()} />);
+    const table = await screen.findByRole("table", TABLE);
+    fireEvent.click(within(table).getByText(/docs\/architecture\.md/));
+
+    const panel = await screen.findByRole("dialog", { name: PANEL });
+    expect(within(panel).getByText("Likely now")).toBeTruthy();
+    expect(within(panel).getByText("src/auth/")).toBeTruthy();
+    expect(within(panel).getByText("Became a package")).toBeTruthy();
+
+    // The document and its own-anchor target both match; either cell opens the row.
+    fireEvent.click(within(table).getAllByText(/docs\/cli\.md/)[0]!);
+    const other = await screen.findByRole("dialog", { name: /docs\/cli\.md:7/ });
+    expect(within(other).queryByText("Likely now")).toBeNull();
+  });
+
   it("repeats what a finding does and does not claim where the action is", async () => {
     renderView(<DocDriftView adapter={makeAdapter()} />);
     const table = await screen.findByRole("table", TABLE);
@@ -399,6 +419,7 @@ describe("DocDriftView", () => {
     expect(prompt).toContain("Edit the document, not the code.");
     // And it has to leave room for a deliberate example to be correct.
     expect(prompt).toContain("Some findings are correct as written.");
+    expect(prompt).toContain("Likely replacement: `src/auth/` (Became a package)");
   });
 
   it("can hand the whole slice over at once", async () => {

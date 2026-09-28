@@ -889,6 +889,7 @@ def run_doc_drift_partial(
     graph_builder: Any,
     source_map: dict[str, bytes] | None,
     *,
+    repo_path: Any | None = None,
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
 ) -> Any | None:
@@ -917,6 +918,7 @@ def run_doc_drift_partial(
             report = DocDriftAnalyzer(
                 source_map=source_map,
                 tracked_paths=tracked_paths,
+                repo_root=Path(repo_path) if repo_path else None,
             ).analyze()
             report.authoritative_paths = report.documents
             if report.total_findings:

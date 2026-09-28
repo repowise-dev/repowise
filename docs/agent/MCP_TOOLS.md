@@ -1077,7 +1077,8 @@ The opt-in enrichments:
   imputed zero).
 - **`doc_drift`** returns a `doc_drift` block: `findings` (each naming the
   **document** to edit, its line, the `target` it wrongly claims exists, a
-  `reason` sentence, `kind`, `origin` and `confidence`), plus `findings_total`,
+  `reason` sentence, `kind`, `origin` and `confidence`, plus `suggestion` and
+  `suggestion_basis` only when a likely replacement was found), plus `findings_total`,
   `documents` and the high/medium/low `confidence` split. Its `basis` field is
   load-bearing: the detector checks only references it can resolve, most
   references in a typical repository are uncheckable by design, and a finding is

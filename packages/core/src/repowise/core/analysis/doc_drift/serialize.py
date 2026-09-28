@@ -75,6 +75,29 @@ def derive_doc_drift_id(
     return hashlib.sha256(_FIELD_SEP.join(parts).encode("utf-8")).hexdigest()[:32]
 
 
+#: Namespace for :func:`derive_doc_drift_fingerprint`; distinct from the id's.
+_FINGERPRINT_NAMESPACE = "repowise.doc_drift.fingerprint.v1"
+
+
+def derive_doc_drift_fingerprint(file_path: str, kind: Any, target: str) -> str:
+    """The id minus the line number: the key a baseline or triage holds.
+
+    ``derive_doc_drift_id`` changes whenever an edit above the finding shifts
+    its line, which would turn every accepted finding back into a new one.
+    Consequence accepted: one document naming the same missing target twice
+    has one fingerprint for both.
+    """
+    parts = (_FINGERPRINT_NAMESPACE, file_path, _kind_str(kind), target)
+    return hashlib.sha256(_FIELD_SEP.join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def fingerprint_of(finding: Mapping[str, Any]) -> str:
+    """The finding dict's fingerprint, derived when it does not carry one."""
+    return finding.get("fingerprint") or derive_doc_drift_fingerprint(
+        finding["file_path"], finding["kind"], finding["target"]
+    )
+
+
 def finding_dict(
     *,
     file_path: str,
@@ -87,6 +110,8 @@ def finding_dict(
     raw: str,
     context: str,
     evidence: Sequence[str] | None = None,
+    suggestion: str | None = None,
+    suggestion_basis: str | None = None,
 ) -> dict:
     """One finding as a dict, from primitives either producer can supply.
 
@@ -99,6 +124,9 @@ def finding_dict(
     ``evidence=None`` drops the key for a caller under a response budget: its
     first line restates ``file_path``, ``line_number`` and ``raw``, and the
     rest is the resolver's own trace.
+
+    ``suggestion``/``suggestion_basis`` appear only when a suggestion exists,
+    so a finding without one (most of them) serializes as it always did.
     """
     out = {
         "file_path": file_path,
@@ -115,6 +143,10 @@ def finding_dict(
     }
     if evidence is not None:
         out["evidence"] = [str(line) for line in evidence]
+    if suggestion:
+        out["suggestion"] = suggestion
+        if suggestion_basis:
+            out["suggestion_basis"] = suggestion_basis
     return out
 
 
@@ -159,6 +191,8 @@ def serialize_finding(finding: Any, *, evidence: bool = True) -> dict:
         raw=finding.raw,
         context=finding.context,
         evidence=list(finding.evidence or []) if evidence else None,
+        suggestion=finding.suggestion,
+        suggestion_basis=finding.suggestion_basis,
     )
 
 
@@ -261,6 +295,8 @@ def serialize_report(report: Any) -> dict:
         data["id"] = derive_doc_drift_id(
             data["file_path"], data["kind"], data["line_number"], data["target"]
         )
+        # Line-independent key for baselines; never in finding_dict, so not MCP.
+        data["fingerprint"] = fingerprint_of(data)
         findings.append(data)
 
     by_target: dict[str, list[dict]] = {}
@@ -279,4 +315,5 @@ def serialize_report(report: Any) -> dict:
         "references_checked": report.references_checked,
         "verdict_summary": dict(report.verdict_summary),
         "anchor_renderer": report.anchor_renderer,
+        "suppressed": report.suppressed,
     }

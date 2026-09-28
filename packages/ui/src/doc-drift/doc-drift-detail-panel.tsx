@@ -19,6 +19,7 @@ import { ExternalLink } from "lucide-react";
 import {
   docDriftConfidenceTier,
   docDriftKindLabel,
+  SUGGESTION_BASIS_LABELS,
   type DocDriftFinding,
 } from "@repowise-dev/types/doc-drift";
 
@@ -101,6 +102,20 @@ export function DocDriftDetailPanel({
             {finding.reason}
           </p>
         </Section>
+
+        {/* Evidence, not a verdict: the reader still confirms it. */}
+        {finding.suggestion && (
+          <Section title="Likely now">
+            <p className="font-mono text-xs break-all text-[var(--color-text-primary)]">
+              {finding.suggestion}
+            </p>
+            {finding.suggestion_basis && (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                {SUGGESTION_BASIS_LABELS[finding.suggestion_basis] ?? finding.suggestion_basis}
+              </p>
+            )}
+          </Section>
+        )}
 
         {finding.context && (
           <Section title="The line as written">

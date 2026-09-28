@@ -739,20 +739,31 @@ Show documentation this repository's own tree no longer satisfies: a path a
 document names that no longer exists, a link pointing at a heading that was
 renamed, a `make` target the manifest no longer declares.
 
-Reads what the last `init` or `update` stored rather than re-scanning, so it
-agrees with `get_health(include=["doc_drift"])` on the same tree.
+By default it reads what the last `init` or `update` stored instead of
+re-scanning, so it agrees with `get_health(include=["doc_drift"])` on the same
+tree. With `--check` it reads the working tree directly, needs no index,
+and exits non-zero when the gate fails: the mode for CI.
 
 It checks only references it can resolve. Most references in a typical
 repository are uncheckable by design and are neither counted nor reported, so a
 clean run is not a claim that every sentence is true.
 
+Where the analysis can see a likely replacement, a finding carries it: a module
+that became a package, a file git recorded as renamed, a heading or build target
+with a close match. It is a suggestion to check, never applied.
+
 **Options:**
 
 | Flag | Description |
 |------|-------------|
-| `--min-confidence` | Hide findings below this confidence (default: 0.4) |
+| `--min-confidence` | Hide findings below this confidence (default: show everything stored) |
 | `--kind` | Only this reference class: `path`, `link`, `anchor`, `command`. Repeatable |
-| `--format` | Output: `table` (default), `json` |
+| `--document` | Only findings in this document. Repeatable |
+| `--check` | Read the working tree without an index and gate on the result |
+| `--fail-on-confidence` | With `--check`, fail on findings at or above this confidence (default: 0.7) |
+| `--baseline` | With `--check`, accept the findings recorded in this file; only new ones fail |
+| `--write-baseline` | With `--check`, record the current findings to this file and exit 0 |
+| `--format` | Output: `table` (default), `json`, `markdown`, `github`, `sarif` |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
 | `--no-workspace` | Force single-repo mode |
 
@@ -761,11 +772,22 @@ repowise doc-drift
 repowise doc-drift --kind anchor            # just the renamed-heading links
 repowise doc-drift --min-confidence 0.9     # the near-certain ones
 repowise doc-drift --format json
+
+repowise doc-drift --check                               # CI gate, no index needed
+repowise doc-drift --check --format github               # annotations + step summary
+repowise doc-drift --check --format sarif > drift.sarif  # code scanning upload
+repowise doc-drift --check --write-baseline .doc-drift-baseline.json
+repowise doc-drift --check --baseline .doc-drift-baseline.json
 ```
 
-Exits non-zero when there is no readable index, or when the index predates
-drift storage; in both cases `--format json` still emits a document naming the
-reason, rather than an empty finding list that would read as a clean tree.
+`github` prints workflow annotations and, when `$GITHUB_STEP_SUMMARY` is set,
+appends a markdown summary to it.
+
+Without `--check`, exits non-zero when there is no readable index, or when the
+index predates drift storage; in both cases `--format json` still emits a
+document naming the reason, not an empty finding list that would read as
+a clean tree. With `--check`, exit codes are `0` gate passed, `1` gate failed,
+`2` could not evaluate (not a git repository, unreadable baseline).
 
 ---
 

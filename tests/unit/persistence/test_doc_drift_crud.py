@@ -58,6 +58,21 @@ async def test_findings_round_trip(async_session):
     assert rows[0].evidence_json.startswith("[")
 
 
+async def test_a_suggestion_persists_and_its_absence_is_null(async_session):
+    repo = await insert_repo(async_session)
+    suggested = _finding(line=1)
+    suggested.suggestion = "src/gone/"
+    suggested.suggestion_basis = "package_split"
+    await replace_doc_drift_findings(
+        async_session, repo.id, [suggested, _finding(line=2)]
+    )
+    await async_session.commit()
+
+    rows = {r.line_number: r for r in await _rows(async_session, repo.id)}
+    assert (rows[1].suggestion, rows[1].suggestion_basis) == ("src/gone/", "package_split")
+    assert (rows[2].suggestion, rows[2].suggestion_basis) == (None, None)
+
+
 async def test_rerunning_the_same_pass_changes_no_rows(async_session):
     """The phase exit criterion."""
     repo = await insert_repo(async_session)
@@ -249,7 +264,7 @@ async def test_unreadable_evidence_degrades_to_none_rather_than_raising():
         return types.SimpleNamespace(
             file_path="docs/a.md", line_number=1, kind="path", target="src/gone.py",
             confidence=0.9, origin="path_no_candidate", reason="r", raw="x", context="c",
-            evidence_json=blob,
+            evidence_json=blob, suggestion=None, suggestion_basis=None,
         )
 
     for blob in ("{not json", '{"a": 1}', "", None):

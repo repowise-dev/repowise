@@ -113,6 +113,7 @@ async def _run_doc_drift_analysis(
     *,
     file_infos: list[Any] | None = None,
     repo_id: str = "",
+    repo_path: Path | None = None,
     progress: ProgressCallback | None,
 ) -> Any | None:
     """Check the repository's own markdown against the tree (no LLM).
@@ -139,6 +140,7 @@ async def _run_doc_drift_analysis(
             repo_id,
             source_map=source_map,
             tracked_paths=tracked_paths,
+            repo_root=repo_path,
         )
 
         def _step(_stage: str) -> None:
