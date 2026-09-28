@@ -227,8 +227,10 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
 
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.database import has_db_store
 
-    if not (root / REPOWISE_DIR / "wiki.db").is_file():
+    # The configured store, which may live outside the repo (REPOWISE_DB_URL).
+    if not has_db_store(root):
         yield None
         return
     # The stack keeps the session open across the yield and disposes the engine

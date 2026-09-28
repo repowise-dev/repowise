@@ -30,6 +30,7 @@ from repowise.cli.ci import (
 from repowise.cli.helpers import console, repo_index_session, run_async
 from repowise.cli.output import emit_json, format_option
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.persistence.database import has_db_store
 
 
 class _CannotEvaluateError(Exception):
@@ -113,7 +114,7 @@ def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
     cfg = _coverage_config(root, validate_threshold=fail_under is None)
     threshold = fail_under if fail_under is not None else cfg.fail_under
     report_paths = [Path(p) for p in reports] or cfg.report_paths(root)
-    if not report_paths and not (root / ".repowise" / "wiki.db").is_file():
+    if not report_paths and not has_db_store(root):
         raise _CannotEvaluateError("no_report", _NO_REPORT)
     changed, label = _changed_lines(str(root), revspec or _default_revspec(str(root)))
     if not report_paths:
