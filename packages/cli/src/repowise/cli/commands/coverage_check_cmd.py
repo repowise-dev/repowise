@@ -4,41 +4,37 @@ Needs git and a coverage report, nothing else: no index, no API key. Report
 paths are resolved against ``git ls-files``, so a file added by the change
 resolves too (an index cached from the base branch would not know it).
 
-Exit codes: 0 when the gate passes or there is nothing to judge, 1 when patch
-coverage is below ``--fail-under``, 2 when the check could not run (no report,
-unreadable report, unknown revision, missing history, bad config).
+Exit codes and output channels are the shared CI ones (:mod:`repowise.cli.ci`):
+0 when the gate passes or there is nothing to judge, 1 when patch coverage is
+below ``--fail-under``, 2 when the check could not run (no report, unreadable
+report, unknown revision, missing history, bad config).
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import NoReturn
 
 import click
 from rich.markup import escape
 
-from repowise.cli.helpers import console, err_console
+from repowise.cli.ci import (
+    CI_FORMATS,
+    EXIT_GATE_FAILED,
+    append_step_summary,
+    cannot_evaluate,
+    ci_notices,
+)
+from repowise.cli.helpers import console
 from repowise.cli.output import emit_json, format_option
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 
-#: Exit status when the check could not be evaluated at all.
-EXIT_CANNOT_EVALUATE = 2
-
-#: CI variables naming the branch a change will merge into, in the order they
-#: are consulted; each is read from the ``origin`` remote. A branch, not a
-#: base commit, so a pipeline that runs on a merge onto the target's tip
-#: (merged results) still diffs only the change's own lines.
-_CI_BASE_VARS = (
-    "GITHUB_BASE_REF",  # GitHub Actions pull_request
-    "CI_MERGE_REQUEST_TARGET_BRANCH_NAME",  # GitLab merge request
-    "CHANGE_TARGET",  # Jenkins multibranch pull request
-    "BITBUCKET_PR_DESTINATION_BRANCH",  # Bitbucket Pipelines
-)
-
 
 class _CannotEvaluateError(Exception):
-    """The check could not run; the message says what to do instead."""
+    """The check could not run; *code* names why, the message what to do instead."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @click.command("check")
@@ -71,7 +67,7 @@ class _CannotEvaluateError(Exception):
     help="A path inside the repository (defaults to cwd). Config is read at the repo root.",
 )
 @format_option(
-    choices=("table", "json", "markdown", "github"),
+    choices=CI_FORMATS,
     help="Output format. ``github`` writes annotations to stdout and the "
     "markdown summary to $GITHUB_STEP_SUMMARY when set.",
 )
@@ -97,16 +93,14 @@ def coverage_check(
         repowise coverage check --report coverage.out --format github
         repowise coverage check HEAD --format json
     """
-    # Markdown and annotations are machine output too, so asides go to stderr
-    # for every format but the table (``notice_console`` only moves them for json).
-    notices = console if fmt == "table" else err_console
+    notices = ci_notices(fmt)
     try:
         pc = _evaluate(revspec, reports, report_format, fail_under, repo, notices)
     except _CannotEvaluateError as exc:
-        _fail(fmt, str(exc))
+        cannot_evaluate(fmt, exc.code, str(exc))
     _emit(pc, fmt)
     if pc.gate == "fail":
-        raise click.exceptions.Exit(1)
+        raise click.exceptions.Exit(EXIT_GATE_FAILED)
 
 
 def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
@@ -117,6 +111,7 @@ def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
     report_paths = [Path(p) for p in reports] or cfg.report_paths(root)
     if not report_paths:
         raise _CannotEvaluateError(
+            "no_report",
             "No coverage report found. Pass one with --report (lcov.info, coverage.xml, "
             "coverage.out, jacoco.xml, ...) or set coverage.paths in .repowise/config.yaml."
         )
@@ -150,9 +145,12 @@ def _resolve_reports(root, cfg, report_paths, report_format, notices):
     for path, err in errors:
         notices.print(f"[yellow]{escape(path.name)}: {escape(err)}[/yellow]")
     if len(errors) == len(report_paths):
-        raise _CannotEvaluateError("No coverage report could be read; see the messages above.")
+        raise _CannotEvaluateError(
+            "report_unreadable", "No coverage report could be read; see the messages above."
+        )
     if not resolved.files:
         raise _CannotEvaluateError(
+            "report_unmatched",
             "No report path matched a file in this repository. If the report paths "
             "carry a build prefix, set coverage.strip_prefix in .repowise/config.yaml."
         )
@@ -169,7 +167,9 @@ def _repo_root(repo: str | None) -> Path:
 
     root = git_refs.toplevel(str(Path(repo or ".").resolve()))
     if not root:
-        raise _CannotEvaluateError("Not a git repository (or git is not installed).")
+        raise _CannotEvaluateError(
+            "not_a_git_repository", "Not a git repository (or git is not installed)."
+        )
     return Path(root)
 
 
@@ -180,35 +180,26 @@ def _coverage_config(root: Path, *, validate_threshold: bool):
     try:
         raw = load_repo_config(root)
     except RepoConfigError as exc:
-        raise _CannotEvaluateError(str(exc)) from exc
+        raise _CannotEvaluateError("config_invalid", str(exc)) from exc
     cfg = CoverageConfig.from_repo_config(raw)
     block = raw.get("coverage")
     bad = isinstance(block, dict) and block.get("fail_under") is not None and cfg.fail_under is None
     if validate_threshold and bad:
         # A gate that silently stops gating is worse than no gate.
         raise _CannotEvaluateError(
+            "config_invalid",
             f"coverage.fail_under must be a number from 0 to 100, got {block['fail_under']!r}."
         )
     return cfg
 
 
 def _default_revspec(root: str) -> str:
-    """``<base>...HEAD`` from the CI's pull-request variables, else the default branch."""
-    from repowise.core import git_refs
+    from repowise.core.ci.base import BaseNotFoundError, default_revspec
 
-    for var in _CI_BASE_VARS:
-        if branch := os.environ.get(var, "").strip():
-            return f"origin/{branch}...HEAD"
-    base = git_refs.default_base(root)
-    if base == "HEAD":
-        # CI checkouts rarely set origin/HEAD and have no local trunk branch.
-        base = next((b for b in ("origin/main", "origin/master") if git_refs.resolve(root, b)), "")
-    if not base:
-        raise _CannotEvaluateError(
-            "Could not tell which branch this change targets. Pass REVSPEC, "
-            "e.g. origin/main...HEAD."
-        )
-    return f"{base}...HEAD"
+    try:
+        return default_revspec(root)
+    except BaseNotFoundError as exc:
+        raise _CannotEvaluateError("base_not_found", str(exc)) from exc
 
 
 def _changed_lines(root: str, revspec: str) -> tuple[dict[str, set[int]], str]:
@@ -220,21 +211,13 @@ def _changed_lines(root: str, revspec: str) -> tuple[dict[str, set[int]], str]:
         return changed_lines(root, revspec)
     except ValueError as exc:
         raise _CannotEvaluateError(
+            "diff_failed",
             f"Could not diff {revspec}: {exc}. A shallow CI clone needs the base "
             "branch and enough history for a merge-base (fetch-depth: 0, or "
             "git fetch --deepen)."
         ) from exc
     except (subprocess.SubprocessError, OSError) as exc:
-        raise _CannotEvaluateError(f"Could not run git: {exc}") from exc
-
-
-def _fail(fmt: str, message: str) -> NoReturn:
-    if fmt == "github":
-        from repowise.core.analysis.patch_coverage import github_error
-
-        click.echo(github_error(message))
-    err_console.print(f"[red]{escape(message)}[/red]")
-    raise click.exceptions.Exit(EXIT_CANNOT_EVALUATE)
+        raise _CannotEvaluateError("git_failed", f"Could not run git: {exc}") from exc
 
 
 def _emit(pc, fmt: str) -> None:
@@ -247,10 +230,7 @@ def _emit(pc, fmt: str) -> None:
     elif fmt == "github":
         for line in github_annotations(pc):
             click.echo(line)
-        summary = os.environ.get("GITHUB_STEP_SUMMARY")
-        if summary:
-            with open(summary, "a", encoding="utf-8") as fh:
-                fh.write(render_markdown(pc))
+        append_step_summary(render_markdown(pc))
         _print_summary(pc)
     else:
         _print_summary(pc)

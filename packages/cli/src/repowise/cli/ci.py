@@ -1,0 +1,65 @@
+"""The CLI side of CI gates: exit codes, output channels, the step summary.
+
+Every gating command (``coverage check``, ``doc-drift --check``, ...) exits
+with the same codes and writes to the same channels, so a pipeline treats them
+alike: ``1`` means the gate failed, ``2`` means it could not be evaluated
+(broken setup, not broken code). Content rendering stays with each feature;
+the workflow-command strings come from :mod:`repowise.core.ci.github`.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+from typing import Any, NoReturn
+
+import click
+
+#: The gate ran and the change failed it.
+EXIT_GATE_FAILED = 1
+#: The gate could not run: no report, unknown revision, bad config, ...
+EXIT_CANNOT_EVALUATE = 2
+
+#: Output formats every gating command offers; a command may add more (SARIF).
+CI_FORMATS = ("table", "json", "markdown", "github")
+
+
+def ci_notices(fmt: str) -> Any:
+    """Where asides go: stdout for the table, stderr for every machine format."""
+    from repowise.cli.helpers import console, err_console
+
+    return console if fmt == "table" else err_console
+
+
+def cannot_evaluate(fmt: str, code: str, message: str) -> NoReturn:
+    """Report why the gate could not run and exit :data:`EXIT_CANNOT_EVALUATE`.
+
+    ``json`` gets a ``{"error", "message"}`` document on stdout, ``github`` an
+    ``::error::`` line; the message always reaches stderr for a human.
+    """
+    from rich.markup import escape
+
+    from repowise.cli.helpers import err_console
+    from repowise.cli.output import emit_json
+    from repowise.core.ci.github import error
+
+    if fmt == "json":
+        emit_json({"error": code, "message": message})
+    elif fmt == "github":
+        click.echo(error(message))
+    if fmt != "json":
+        err_console.print(f"[red]{escape(message)}[/red]")
+    raise click.exceptions.Exit(EXIT_CANNOT_EVALUATE)
+
+
+def append_step_summary(markdown: str, *, env: Mapping[str, str] | None = None) -> bool:
+    """Add *markdown* to the GitHub Actions job summary; ``False`` when not in Actions."""
+    target = (os.environ if env is None else env).get("GITHUB_STEP_SUMMARY")
+    if not target:
+        return False
+    try:
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(markdown.rstrip("\n") + "\n")
+    except OSError:
+        return False
+    return True

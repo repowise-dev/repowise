@@ -5,6 +5,9 @@ written to be read once and acted on: the verdict in words on the first line
 with its denominator, the diff, report and file counts on the second, and
 detail only for what needs attention. A passing change with no gaps is two
 lines. A file the report never named reads "not in report", never 0%.
+
+Workflow-command and markdown mechanics (escaping, caps, collapsed lists)
+come from :mod:`repowise.core.ci`, shared with every other CI gate.
 """
 
 from __future__ import annotations
@@ -12,14 +15,12 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 
+from ...ci import github
+from ...ci.markdown import ROW_LIMIT, cell, details, more_line
 from .compute import FilePatchCoverage, PatchCoverage
 
-#: Files listed per section before the rest collapse into "and N more".
-ROW_LIMIT = 10
 #: Uncovered ranges shown per file before "+N more".
 RANGE_LIMIT = 8
-#: GitHub shows at most 10 warning annotations per step; more are dropped silently.
-ANNOTATION_LIMIT = 10
 
 #: How a file that could not be measured reads, wherever it is listed.
 STATUS_TEXT = {
@@ -85,13 +86,13 @@ def render_markdown(pc: PatchCoverage) -> str:
     gaps = [f for f in attention_rows(pc) if f.status == "measured"]
     if gaps:
         out += ["", "| File | Uncovered changed lines | Covered |", "|---|---|---|"]
-        for f in gaps[:ROW_LIMIT]:
-            out.append(
-                f"| `{f.file_path}` | {format_ranges(f.uncovered_ranges, RANGE_LIMIT)} | "
-                f"{f.covered_line_count} of {f.coverable_line_count} |"
-            )
+        out += [
+            f"| `{cell(f.file_path)}` | {format_ranges(f.uncovered_ranges, RANGE_LIMIT)} | "
+            f"{f.covered_line_count} of {f.coverable_line_count} |"
+            for f in gaps[:ROW_LIMIT]
+        ]
         if len(gaps) > ROW_LIMIT:
-            out.append(f"\nand {len(gaps) - ROW_LIMIT} more files with uncovered changed lines.")
+            out += ["", more_line(len(gaps) - ROW_LIMIT, "files with uncovered changed lines")]
     out += _details(pc.with_status("not_in_report"), "not in the coverage report")
     out += _details(pc.with_status("no_line_data"), "in a report without line data")
     return "\n".join(out) + "\n"
@@ -100,31 +101,26 @@ def render_markdown(pc: PatchCoverage) -> str:
 def github_annotations(pc: PatchCoverage) -> list[str]:
     """GitHub Actions workflow commands for a change's patch coverage.
 
-    The largest uncovered ranges are marked first, capped at what GitHub
-    displays, with a notice counting the rest. A failed gate is an error.
+    A failed gate is an error. The largest uncovered ranges are marked, capped
+    at what GitHub displays, with a notice counting the rest.
     """
     ranges = sorted(
         ((f.file_path, a, b) for f in pc.with_status("measured") for a, b in f.uncovered_ranges),
         key=lambda r: (r[1] - r[2], r[0], r[1]),
     )
-    lines = [
-        f"::warning file={_escape_property(path)},line={a},endLine={b},"
-        f"title=Uncovered change::Changed {_span(a, b)} not covered by tests"
-        for path, a, b in ranges[:ANNOTATION_LIMIT]
-    ]
-    if len(ranges) > ANNOTATION_LIMIT:
-        lines.append(
-            f"::notice::{len(ranges) - ANNOTATION_LIMIT} more uncovered changed ranges, "
-            "listed in the job summary"
+    warnings = [
+        github.annotation(
+            "warning",
+            f"Changed {_span(a, b)} not covered by tests",
+            file=path,
+            line=a,
+            end_line=b,
+            title="Uncovered change",
         )
-    if pc.gate == "fail":
-        lines.append(github_error(headline(pc, markdown=False)))
-    return lines
-
-
-def github_error(message: str) -> str:
-    """A GitHub Actions ``::error::`` workflow command."""
-    return f"::error::{_escape_data(message)}"
+        for path, a, b in ranges
+    ]
+    verdict = [github.error(headline(pc, markdown=False))] if pc.gate == "fail" else []
+    return verdict + github.cap_annotations(warnings, noun="uncovered changed ranges")
 
 
 def format_ranges(ranges: Sequence[tuple[int, int]], limit: int | None = None) -> str:
@@ -144,16 +140,8 @@ def _details(files: list[FilePatchCoverage], where: str) -> list[str]:
     if not files:
         return []
     noun = "file is" if len(files) == 1 else "files are"
-    out = [
-        "",
-        "<details>",
-        f"<summary>{len(files)} changed {noun} {where}, so not counted</summary>",
-        "",
-        *(f"- `{f.file_path}`" for f in files[:ROW_LIMIT]),
-    ]
-    if len(files) > ROW_LIMIT:
-        out.append(f"- and {len(files) - ROW_LIMIT} more")
-    return [*out, "", "</details>"]
+    summary = f"{len(files)} changed {noun} {where}, so not counted"
+    return ["", *details(summary, [f"`{cell(f.file_path)}`" for f in files])]
 
 
 def _no_data_reason(pc: PatchCoverage) -> str:
@@ -170,13 +158,3 @@ def _no_data_reason(pc: PatchCoverage) -> str:
 
 def _span(a: int, b: int) -> str:
     return f"line {a}" if a == b else f"lines {a}-{b}"
-
-
-def _escape_data(value: str) -> str:
-    # Workflow-command messages escape %, CR and LF.
-    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-
-
-def _escape_property(value: str) -> str:
-    # Property values additionally escape ':' and ','.
-    return _escape_data(value).replace(":", "%3A").replace(",", "%2C")

@@ -8,8 +8,8 @@ import subprocess
 import pytest
 from click.testing import CliRunner
 
-from repowise.cli.commands.coverage_check_cmd import _CI_BASE_VARS
 from repowise.cli.main import cli
+from repowise.core.ci.base import CI_BASE_VARS
 
 
 def _git(cwd, *args: str) -> None:
@@ -45,7 +45,7 @@ def _lcov(repo, covered: dict[int, int]) -> str:
 
 def _run(repo, *args: str, env: dict[str, str] | None = None):
     # Unset the CI variables the default base reads, so the host CI cannot leak in.
-    base_env = dict.fromkeys(_CI_BASE_VARS, "")
+    base_env = dict.fromkeys(CI_BASE_VARS, "")
     return CliRunner(env={**base_env, **(env or {})}).invoke(
         cli, ["coverage", "check", "--path", str(repo), *args]
     )
