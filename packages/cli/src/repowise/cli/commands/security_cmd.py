@@ -233,7 +233,8 @@ def security_scan(
     "write_baseline_path",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
-    help="Add this change's findings to this file, keeping its entries, and exit 0.",
+    help="Add this change's findings to this file, keeping its entries and those of "
+    "--baseline, and exit 0.",
 )
 @click.option(
     "--path",
@@ -273,26 +274,23 @@ def security_check(
         repowise security check --format sarif > security.sarif
     """
     from repowise.core.analysis.security_gate import evaluate
-    from repowise.core.ci.baseline import BaselineError, read_baseline
 
     if fmt != "table":
         silence_logs_for_machine_output()
     try:
         root = repo_root(repo)
-        baseline = None
-        if baseline_path is not None:
-            try:
-                baseline = read_baseline(baseline_path)
-            except BaselineError as exc:
-                raise CannotEvaluateError("baseline_unreadable", str(exc)) from exc
+        accepted = _baseline_entries(baseline_path) if baseline_path is not None else None
         changed, label = change_lines(str(root), revspec)
         scan = _scan_change(root, changed, label)
         if write_baseline_path is not None:
-            _record_baseline(write_baseline_path, scan, fmt)
+            _record_baseline(write_baseline_path, scan, fmt, also_keep=accepted or [])
             return
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
 
+    baseline = None
+    if accepted is not None:
+        baseline = frozenset(e["fingerprint"] for e in accepted)
     gate = evaluate(scan.findings, fail_on=fail_on, baseline=baseline)
     _emit_check(fmt, scan, gate, label)
     if not gate.passed:
@@ -303,12 +301,18 @@ def _scan_change(root: Path, changed: dict[str, set[int]], label: str) -> Change
     """Scan the change, turning a git failure into a cannot-evaluate."""
     import subprocess
 
-    from repowise.core.analysis.security_gate import ShallowHistoryError, scan_change
+    from repowise.core.analysis.security_gate import (
+        MissingObjectError,
+        ShallowHistoryError,
+        scan_change,
+    )
 
     try:
         return scan_change(str(root), changed, label)
     except ShallowHistoryError as exc:
         raise CannotEvaluateError("history_shallow", str(exc)) from exc
+    except MissingObjectError as exc:
+        raise CannotEvaluateError("object_missing", str(exc)) from exc
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr or ""
         if isinstance(stderr, bytes):
@@ -321,20 +325,29 @@ def _scan_change(root: Path, changed: dict[str, set[int]], label: str) -> Change
         raise CannotEvaluateError("git_failed", f"Could not run git: {exc}") from exc
 
 
-def _record_baseline(path: Path, scan: ChangeScan, fmt: str) -> None:
-    from repowise.core.analysis.security_gate import write_baseline
+def _baseline_entries(path: Path) -> list[dict]:
     from repowise.core.ci.baseline import BaselineError, read_entries
 
     try:
-        keep = read_entries(path) if path.exists() else []
+        return read_entries(path)
     except BaselineError as exc:
         raise CannotEvaluateError("baseline_unreadable", str(exc)) from exc
+
+
+def _record_baseline(path: Path, scan: ChangeScan, fmt: str, *, also_keep: list[dict]) -> None:
+    """Add the change's findings to *path*, keeping its entries and *also_keep* (``--baseline``)."""
+    from repowise.core.analysis.security_gate import write_baseline
+
+    keep = [*(_baseline_entries(path) if path.exists() else []), *also_keep]
     try:
         written = write_baseline(path, scan.findings, keep=keep)
     except OSError as exc:
         raise CannotEvaluateError(
             "baseline_unwritable", f"cannot write baseline {path}: {exc}"
         ) from exc
+    if fmt == "json":
+        emit_json({"baseline": str(path), "recorded": len(scan.findings), "entries": written})
+        return
     ci_notices(fmt).print(
         f"Recorded {len(scan.findings)} finding(s); {escape(str(path))} now holds "
         f"{written} entr{'y' if written == 1 else 'ies'}."
@@ -359,7 +372,12 @@ def _emit_check(fmt: str, scan: ChangeScan, gate: GateResult, label: str) -> Non
         from repowise.cli import __version__
 
         emit_json(
-            security_gate.render_sarif(scan.findings, tool_version=__version__, fail_on=gate.fail_on)
+            security_gate.render_sarif(
+                scan.findings,
+                tool_version=__version__,
+                fail_on=gate.fail_on,
+                accepted=frozenset(f["fingerprint"] for f in gate.baselined),
+            )
         )
     elif fmt in ("markdown", "github"):
         markdown = security_gate.render_markdown(

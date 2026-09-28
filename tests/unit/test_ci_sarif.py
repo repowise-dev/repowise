@@ -25,3 +25,9 @@ def test_run_indexes_known_rules_and_encodes_uris():
     assert second["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "docs/a.md"
     assert second["properties"] == {"x": 1}
     assert "properties" not in first
+
+
+def test_result_without_a_line_or_accepted_by_a_baseline():
+    res = sarif.result("r", "error", "m", "a.py", None, "k/v1", "abc", suppressed=True)
+    assert "region" not in res["locations"][0]["physicalLocation"]
+    assert res["suppressions"] == [{"kind": "external"}]

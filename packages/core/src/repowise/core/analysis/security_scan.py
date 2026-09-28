@@ -312,10 +312,15 @@ _ASSIGNED_VALUE = re.compile(r"""\A['"]?\s*[:=]+\s*['"`]?([^'"`\s,;]+)""")
 
 _SECRET_PATTERNS = [(p, kind) for p, kind, _ in _PATTERNS if kind in SECRET_KINDS]
 _PUBLIC_ENV_PATTERN = next(p for p, kind, _ in _PATTERNS if kind == "public_env_secret")
-# A PEM body written on its header's line (escaped ``\n`` breaks), up to ``-----END``.
+# A PEM body written on its header's line (escaped ``\n`` breaks, or spaces when
+# an environment variable flattened it), up to ``-----END``.
 _PEM_INLINE_BODY = re.compile(
-    r"(?i:-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----)(?:\\[rn])*((?:[A-Za-z0-9+/=]|\\[rn])+)"
+    r"(?i:-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----)(?:\\[rn])*"
+    r"((?:[A-Za-z0-9+/=]|\\[rn]|[ \t])+)"
 )
+# A header that ends its line: the body follows on the next lines.
+_PEM_HEADER_LINE = re.compile(r"(?i:-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----)['\"]?\s*\Z")
+_TOKEN = re.compile(r"[A-Za-z0-9_\-+/.~]{8,}")
 _SECRET_PREFILTER = re.compile(
     "|".join(
         f"(?:{p.pattern})"
@@ -327,13 +332,34 @@ _SNIPPET_MAX = 120
 _MARKER = "****"
 
 
+def _string_end(line: str, start: int) -> int:
+    """Where the string literal holding *start* closes, else the end of *line*.
+
+    The keyword captures stop at the first quote of either kind, so a value
+    holding the other quote would otherwise be masked only up to it.
+    """
+    quote = line[start - 1] if start > 0 else ""
+    i = start
+    while i < len(line):
+        if line[i] == "\\":
+            i += 2
+        elif line[i] == quote:
+            return i
+        else:
+            i += 1
+    return len(line)
+
+
 def _secret_spans(line: str) -> list[tuple[int, int]]:
     """Every credential value on *line*, including repeats of one elsewhere on it."""
     spans: list[tuple[int, int]] = []
     for pattern, kind in _SECRET_PATTERNS:
         for match in pattern.finditer(line):
             if _is_secret_value(kind, match.group(1)):
-                spans.append(match.span(1))
+                start, end = match.span(1)
+                if kind in _KEYWORD_KINDS:
+                    end = _string_end(line, start)
+                spans.append((start, end))
     for match in _PEM_INLINE_BODY.finditer(line):
         if _is_valid_credential_value(match.group(1)):
             spans.append(match.span(1))
@@ -341,6 +367,10 @@ def _secret_spans(line: str) -> list[tuple[int, int]]:
         value = _ASSIGNED_VALUE.search(line[match.end() :])
         if value is not None:
             spans.append((match.end() + value.start(1), match.end() + value.end(1)))
+        # Shapes the assignment test misses (``ENV["NAME"] = "v"``, ``"NAME" => "v"``,
+        # a Dockerfile ``ENV NAME v``, ``NAME ?? "v"``): any long token after the name.
+        rest = match.end()
+        spans += [(rest + t.start(), rest + t.end()) for t in _TOKEN.finditer(line[rest:])]
     for val in {line[start:end] for start, end in spans}:
         if len(val) < 4:
             continue
@@ -488,6 +518,15 @@ def _mask_comments_and_strings(source: str) -> str:
     return "".join(chars)
 
 
+def _source_lines(source: str) -> list[str]:
+    """*source* split where git splits it, so line numbers agree with a diff.
+
+    ``str.splitlines`` also breaks on form feeds and Unicode separators, which
+    numbered every later finding past git's line for it.
+    """
+    return [line.removesuffix("\r") for line in source.split("\n")]
+
+
 def _call_findings(file_path: str, source: str) -> list[dict]:
     """Find executable eval/exec calls with AST or bounded lexical fallback."""
     if file_path.lower().endswith((".py", ".pyi")):
@@ -496,6 +535,7 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
         except SyntaxError:
             pass
         else:
+            lines = _source_lines(source)
             findings = []
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
@@ -512,14 +552,14 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
                     {
                         "kind": f"{call_name}_call",
                         "severity": "high",
-                        "snippet": _snippet(source.splitlines()[node.lineno - 1]),
+                        "snippet": _snippet(lines[node.lineno - 1]),
                         "line": node.lineno,
                     }
                 )
             return findings
 
     masked = _mask_comments_and_strings(source)
-    lines = source.splitlines()
+    lines = _source_lines(source)
     findings = []
 
     def add(kind: str, severity: str, offset: int) -> None:
@@ -557,7 +597,7 @@ def _is_missing_table_error(exc: Exception) -> bool:
 def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> list[dict]:
     """Scan *source* text and symbol names; return finding dicts. No I/O."""
     findings: list[dict] = []
-    lines = source.splitlines()
+    lines = _source_lines(source)
 
     findings.extend(_call_findings(file_path, source))
 
@@ -631,6 +671,20 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                     "end_line": end_line,
                 }
             )
+
+    # Every line after a header that ends its line, up to ``-----END`` (or the end
+    # of the file), is treated as body whether or not the key validated: an
+    # indented YAML block or a key with no END line never matches the pattern
+    # above, and its body lines would otherwise reach another kind's snippet.
+    in_body = False
+    for lineno, line in enumerate(lines, start=1):
+        if in_body:
+            if "-----END" in line:
+                in_body = False
+            else:
+                pem_body_lines.add(lineno)
+        elif _PEM_HEADER_LINE.search(line):
+            in_body = True
 
     # A key body line matches nothing of its own, so a hit there is stray and its
     # snippet would carry key material: mask the whole line.

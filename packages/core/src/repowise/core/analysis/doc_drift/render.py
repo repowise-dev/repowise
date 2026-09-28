@@ -211,10 +211,13 @@ def render_sarif(
     *,
     tool_version: str,
     fail_on: float = HIGH_CONFIDENCE_THRESHOLD,
+    accepted: frozenset[str] = frozenset(),
 ) -> dict:
     """One SARIF 2.1.0 run; ``partialFingerprints`` survive line shifts.
 
-    A finding at or above *fail_on* is an ``error``, so the level matches the gate.
+    A finding at or above *fail_on* is an ``error``, so the level matches the
+    gate, and one whose fingerprint is in *accepted* (the baseline) is marked
+    suppressed.
     """
     results = []
     for f in _order(findings):
@@ -238,6 +241,7 @@ def render_sarif(
                 SARIF_FINGERPRINT_KEY,
                 fingerprint_of(f),
                 properties,
+                suppressed=fingerprint_of(f) in accepted,
             )
         )
     return sarif.run(SARIF_TOOL_NAME, tool_version, _sarif_rules(), results)

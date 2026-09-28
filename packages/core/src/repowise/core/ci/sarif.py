@@ -28,29 +28,36 @@ def result(
     level: str,
     message: str,
     path: str,
-    line: int,
+    line: int | None,
     fingerprint_key: str,
     fingerprint: str,
     properties: Mapping[str, Any] | None = None,
+    *,
+    suppressed: bool = False,
 ) -> dict:
-    """One result, located relative to ``%SRCROOT%`` with a percent-encoded URI."""
+    """One result, located relative to ``%SRCROOT%`` with a percent-encoded URI.
+
+    *line* ``None`` locates the result on the file alone, for a finding whose
+    line belongs to another revision. *suppressed* marks one accepted outside
+    the log (a baseline), so code scanning shows it closed rather than open.
+    """
+    location: dict[str, Any] = {
+        "artifactLocation": {
+            "uri": quote(path.replace("\\", "/").lstrip("/"), safe="/"),
+            "uriBaseId": "%SRCROOT%",
+        }
+    }
+    if line is not None:
+        location["region"] = {"startLine": max(1, int(line))}
     out: dict[str, Any] = {
         "ruleId": rule_id,
         "level": level,
         "message": {"text": message},
-        "locations": [
-            {
-                "physicalLocation": {
-                    "artifactLocation": {
-                        "uri": quote(path.replace("\\", "/").lstrip("/"), safe="/"),
-                        "uriBaseId": "%SRCROOT%",
-                    },
-                    "region": {"startLine": max(1, int(line))},
-                }
-            }
-        ],
+        "locations": [{"physicalLocation": location}],
         "partialFingerprints": {fingerprint_key: fingerprint},
     }
+    if suppressed:
+        out["suppressions"] = [{"kind": "external"}]
     if properties:
         out["properties"] = dict(properties)
     return out

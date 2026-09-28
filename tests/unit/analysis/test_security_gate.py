@@ -320,3 +320,104 @@ def test_sarif_shares_doc_drifts_envelope():
 def test_every_gating_kind_has_a_sarif_rule():
     kinds = {kind for _, kind, _ in [*_PATTERNS, *_SPANNING_PATTERNS]}
     assert kinds == set(security_gate._RULE_TEXT)
+
+
+# ---------------------------------------------------------------------------
+# Review regressions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("line", "raw"),
+    [
+        ("PASSWORD = 'Tr0ub4dor\"TAILSECRET9876'  # md5\n", "TAILSECRET9876"),
+        ('secret = "token = \'RAWVALUE12345678\'"  # md5\n', "RAWVALUE12345678"),
+        ('ENV["NEXT_PUBLIC_API_KEY"] = "RAWVALUE12345678"  # md5\n', "RAWVALUE12345678"),
+        ("ENV NEXT_PUBLIC_API_KEY RAWVALUE12345678 md5\n", "RAWVALUE12345678"),
+        ('k = process.env.NEXT_PUBLIC_API_KEY ?? "RAWVALUE12345678" // md5\n', "RAWVALUE12345678"),
+    ],
+)
+def test_no_raw_value_escapes_the_mask(line, raw):
+    from repowise.core.analysis.security_scan import scan_source
+
+    findings = scan_source("cfg.py", line)
+    assert findings and all(raw not in f["snippet"] for f in findings)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        f"key: |\n  -----BEGIN RSA PRIVATE KEY-----\n  {PEM_BODY}md5\n  -----END RSA PRIVATE KEY-----\n",
+        f"-----BEGIN RSA PRIVATE KEY-----\n{PEM_BODY}\n{PEM_BODY[::-1]}md5\n",
+        f"KEY=-----BEGIN RSA PRIVATE KEY----- {PEM_BODY} md5 -----END RSA PRIVATE KEY-----\n",
+    ],
+)
+def test_pem_body_lines_never_reach_a_snippet(source):
+    from repowise.core.analysis.security_scan import scan_source
+
+    for f in scan_source("cfg.yaml", source):
+        assert PEM_BODY[:12] not in f["snippet"] and PEM_BODY[::-1][:12] not in f["snippet"]
+
+
+def test_line_numbers_follow_git_past_a_form_feed(repo):
+    _write(repo, "ff.py", "a = 1\n\x0c\nb = 2\n")
+    _commit(repo, "ff")
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    _write(repo, "ff.py", "a = 1\n\x0c\nb = 2\npassword = 'Zq8vLm2pXr7w'\n")
+    _commit(repo, "pw")
+    assert _kinds(_scan(repo, f"{base}..HEAD")) == [("hardcoded_password", 4, False)]
+
+
+def test_a_non_ascii_path_is_scanned(repo):
+    _write(repo, "café.py", "password = 'Zq8vLm2pXr7w'\n")
+    _commit(repo, "accent")
+    scan = _scan(repo)
+    assert [f["file_path"] for f in scan.findings] == ["café.py"]
+
+
+def test_two_vendor_keys_on_identical_lines_stay_distinct(repo, tmp_path):
+    _write(repo, "cfg.py", f"AWS = '{KEY}'\n")
+    _commit(repo, "key a")
+    baseline = tmp_path / "b.json"
+    write_baseline(baseline, _scan(repo).findings)
+    other = "AKIA" + "ZXCVBNMLKJHGFDSA"
+    _write(repo, "cfg.py", f"AWS = '{other}'\n")
+    _commit(repo, "key b")
+    scan = _scan(repo)
+    # Both keys are reported: B at the head, A from the commit that added it.
+    assert sorted(f["commit"] is None for f in scan.findings) == [False, True]
+    gate = evaluate(scan.findings, baseline=read_baseline(baseline))
+    assert [f["commit"] for f in gate.failing] == [None]
+
+
+def test_a_shallow_cut_on_the_base_side_refuses(repo, tmp_path):
+    _git(repo, "switch", "-q", "main")
+    _write(repo, "old.py", "password = 'Zq8vLm2pXr7w'\n")
+    _commit(repo, "old")
+    _git(repo, "switch", "-qc", "feat")
+    _write(repo, "a.py", "x = 1\n")
+    _commit(repo, "f1")
+    _git(repo, "switch", "-q", "main")
+    _write(repo, "m.py", "y = 1\n")
+    _commit(repo, "m4")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", "--depth", "1", "--branch", "main", repo.as_uri(), str(clone))
+    _git(clone, "fetch", "-q", "--depth", "10", "origin", "feat:refs/remotes/origin/feat")
+    changed, label = changed_lines(str(clone), "origin/main..origin/feat")
+    with pytest.raises(security_gate.ShallowHistoryError, match="share no commit"):
+        scan_change(str(clone), changed, label)
+
+
+def test_a_path_git_does_not_have_raises():
+    with pytest.raises(security_gate.MissingObjectError):
+        security_gate._read_blobs(".", ["HEAD:no/such/file-anywhere.py"])
+
+
+def test_sarif_suppresses_the_baseline_and_drops_history_lines():
+    head = _row()
+    old = _row("aws_access_key", snippet="AWS = 'AKIA****'", commit="a" * 40)
+    log = render_sarif([head, old], tool_version="0", accepted=frozenset({head["fingerprint"]}))
+    by_rule = {r["ruleId"]: r for r in log["runs"][0]["results"]}
+    assert by_rule["eval_call"]["suppressions"] == [{"kind": "external"}]
+    assert "suppressions" not in by_rule["aws_access_key"]
+    assert "region" not in by_rule["aws_access_key"]["locations"][0]["physicalLocation"]

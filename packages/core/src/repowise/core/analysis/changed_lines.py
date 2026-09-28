@@ -53,14 +53,36 @@ class FileDiff:
     added: list[str] = field(default_factory=list)
 
 
+_C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13}
+
+
+def _c_unquote(text: str) -> str:
+    """Undo git's C-style path quoting: ``caf\\303\\251.py`` -> ``café.py``."""
+    out = bytearray()
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt in "01234567":
+                out.append(int(text[i + 1 : i + 4], 8) & 0xFF)
+                i += 4
+                continue
+            out += bytes([_C_ESCAPES[nxt]]) if nxt in _C_ESCAPES else nxt.encode("utf-8")
+            i += 2
+            continue
+        out += text[i].encode("utf-8")
+        i += 1
+    return out.decode("utf-8", errors="replace")
+
+
 def _header_path(raw: str) -> str | None:
     """Normalize a ``--- a/x`` / ``+++ b/x`` header path. ``None`` for /dev/null."""
     path = raw.strip()
-    # git quotes paths with special chars ("b/pa\tth"); strip the quotes so the
-    # common (unquoted) key still resolves. Rare enough to accept the imperfect
-    # unescaping.
+    # git quotes a path holding a non-ASCII byte, a tab, a quote or a backslash
+    # ("b/caf\303\251.py"); left escaped it names no file, and a reader that
+    # looks the file up would skip it.
     if len(path) >= 2 and path[0] == '"' and path[-1] == '"':
-        path = path[1:-1]
+        path = _c_unquote(path[1:-1])
     if path == "/dev/null":
         return None
     return path[2:] if path[:2] in ("a/", "b/") else path

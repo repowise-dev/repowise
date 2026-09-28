@@ -32,11 +32,23 @@ from repowise.core.support_paths import DOC_EXTENSIONS
 
 from .change_risk.features import GIT_TIMEOUT_SECONDS, _git, revspec_head, split_revspec
 from .changed_lines import parse_unified_diff
-from .security_scan import SECRET_KINDS, scan_source
+from .security_scan import SECRET_KINDS, _source_lines, scan_source
 
 #: Severities from least to most severe; ``--fail-on`` names the lowest that fails.
 SEVERITIES = ("low", "med", "high")
 _RANK = {s: i for i, s in enumerate(SEVERITIES)}
+
+#: Secret kinds matched by the value's own vendor format rather than a variable
+#: name; see :func:`fingerprint_of`.
+_KEY_SHAPE_KINDS = SECRET_KINDS - {"hardcoded_password", "hardcoded_secret"}
+
+
+class ShallowHistoryError(ValueError):
+    """The change reaches past a shallow clone's cut; its history cannot be read."""
+
+
+class MissingObjectError(ValueError):
+    """git has no object for a path a diff listed."""
 
 DETECTION_BASIS = (
     "Pattern matches from a fixed regex registry: a floor, not a scanner. A clean "
@@ -89,13 +101,20 @@ _RULE_TEXT: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
-def fingerprint_of(file_path: str, kind: str, snippet: str) -> str:
+def fingerprint_of(file_path: str, kind: str, snippet: str, material: str = "") -> str:
     """The line-independent key a baseline holds, over the *masked* snippet.
 
+    *material* is the matched text itself, passed only for the vendor key
+    shapes (:data:`_KEY_SHAPE_KINDS`): those mask to the vendor's fixed prefix
+    (``AKIA****``), so without it a different key on an identical line would
+    inherit an accepted key's fingerprint. They are high-entropy by format, so a
+    one-way hash of them cannot be walked back. The keyword kinds keep the
+    masked-only key, because a short password could be guessed from its hash.
+
     Consequence accepted: two identical matched lines in one file share a
-    fingerprint, and so do two secrets whose visible prefix and line agree.
+    fingerprint, and so do two keyword secrets whose visible prefix and line agree.
     """
-    parts = (_FINGERPRINT_NAMESPACE, file_path, kind, snippet)
+    parts = (_FINGERPRINT_NAMESPACE, file_path, kind, snippet, material)
     return hashlib.sha256(_FIELD_SEP.join(parts).encode("utf-8")).hexdigest()[:32]
 
 
@@ -118,8 +137,10 @@ def _text(blob: bytes) -> str | None:
 def _read_blobs(root: str, specs: Sequence[str]) -> list[str | None]:
     """The text of each ``rev:path`` in *specs*, in order, over one ``cat-file``.
 
-    ``None`` for an object that is missing, not a blob (a submodule) or binary.
-    Raises when git itself fails.
+    ``None`` for an object that is not a blob (a submodule) or is binary.
+    Raises when git fails, and :class:`MissingObjectError` for an object git
+    does not have: every spec names a file a diff just listed, so a miss means
+    the path was misread, and skipping it would pass a file nobody scanned.
     """
     if not specs:
         return []
@@ -132,14 +153,13 @@ def _read_blobs(root: str, specs: Sequence[str]) -> list[str | None]:
         check=True,
     )
     out, pos, texts = proc.stdout, 0, []
-    for _ in specs:
+    for spec in specs:
         nl = out.index(b"\n", pos)
         header = out[pos:nl].split()
         pos = nl + 1
         # "<sha> <type> <size>", else "<spec> missing" (the spec may hold spaces).
         if len(header) != 3 or not header[2].isdigit():
-            texts.append(None)
-            continue
+            raise MissingObjectError(f"git has no object for {spec!r}")
         size = int(header[2])
         body = out[pos : pos + size]
         pos += size + 1
@@ -154,12 +174,17 @@ def _scoped(path: str, source: str, lines: set[int], *, secrets_only: bool) -> l
     call, but a key pasted into a README is still a leak.
     """
     secrets_only = secrets_only or PurePosixPath(path).suffix.lower() in DOC_EXTENSIONS
+    text_lines = _source_lines(source)
     rows = []
     for f in scan_source(path, source):
         if secrets_only and f["kind"] not in SECRET_KINDS:
             continue
-        if lines.isdisjoint(range(f["line"], f.get("end_line", f["line"]) + 1)):
+        span = range(f["line"], f.get("end_line", f["line"]) + 1)
+        if lines.isdisjoint(span):
             continue
+        material = ""
+        if f["kind"] in _KEY_SHAPE_KINDS:
+            material = "\n".join(text_lines[span.start - 1 : span.stop - 1])
         rows.append(
             {
                 "file_path": path,
@@ -167,7 +192,7 @@ def _scoped(path: str, source: str, lines: set[int], *, secrets_only: bool) -> l
                 "kind": f["kind"],
                 "severity": f["severity"],
                 "snippet": f["snippet"],
-                "fingerprint": fingerprint_of(path, f["kind"], f["snippet"]),
+                "fingerprint": fingerprint_of(path, f["kind"], f["snippet"], material),
                 "commit": None,
             }
         )
@@ -193,13 +218,15 @@ def _log_range(root: str, revspec: str) -> list[str]:
 def _history_secrets(root: str, revspec: str) -> tuple[list[dict], int]:
     """Secret findings on the lines each commit in the change added, oldest first."""
     # Merges are skipped: a merge from the target branch brings its lines, not
-    # the change's. A secret written in a conflict resolution and kept is still
-    # caught by the head pass.
+    # the change's. Ceiling: a secret written in a conflict resolution is caught
+    # only if the head keeps it; ``--diff-merges=remerge`` (git 2.36+) could show
+    # what a resolution itself introduced.
+    log_range = _log_range(root, revspec)
+    cut = _shallow_boundary(root, log_range)
     args = ["log", "--no-merges", "--reverse", "-p", "--unified=0", "--no-color"]
-    args += ["--no-ext-diff", "--format=%x00%H", *_log_range(root, revspec), "--"]
+    args += ["--no-ext-diff", "--format=%x00%H", *log_range, "--"]
     raw = _git(args, root)
     chunks = raw.split("\0")[1:]
-    cut = _shallow_boundary(root)
     rows: list[dict] = []
     for chunk in chunks:
         sha, _, diff = chunk.partition("\n")
@@ -223,16 +250,27 @@ def _history_secrets(root: str, revspec: str) -> tuple[list[dict], int]:
     return rows, len(chunks)
 
 
-class ShallowHistoryError(ValueError):
-    """The change reaches past a shallow clone's cut; its history cannot be read."""
+def _shallow_boundary(root: str, log_range: Sequence[str]) -> frozenset[str]:
+    """Commits whose parents a shallow clone left out (empty in a full clone).
 
-
-def _shallow_boundary(root: str) -> frozenset[str]:
-    """Commits whose parents a shallow clone left out (empty in a full clone)."""
+    Raises :class:`ShallowHistoryError` when the range's own ends have no
+    merge-base: a cut on the base side hides that the head's older history is
+    the base's too, and ``base..head`` would walk it back to the root.
+    """
     if _git(["rev-parse", "--is-shallow-repository"], root).strip() != "true":
         return frozenset()
+    if len(log_range) == 1 and ".." in log_range[0]:
+        base, _, head = log_range[0].partition("..")
+        if not _git(["merge-base", base, head], root, check=False).strip():
+            raise ShallowHistoryError(
+                f"{base} and {head} share no commit in this shallow clone, so the "
+                "change's own commits cannot be told apart. Fetch the full history "
+                "(fetch-depth: 0)."
+            )
     shallow = Path(root, _git(["rev-parse", "--git-path", "shallow"], root).strip())
-    return frozenset(shallow.read_text(encoding="utf-8").split()) if shallow.exists() else frozenset()
+    if not shallow.exists():
+        return frozenset()
+    return frozenset(shallow.read_text(encoding="utf-8").split())
 
 
 def scan_change(root: str, changed: Mapping[str, set[int]], revspec: str) -> ChangeScan:
@@ -484,10 +522,14 @@ def render_sarif(
     *,
     tool_version: str,
     fail_on: str = "high",
+    accepted: frozenset[str] = frozenset(),
 ) -> dict:
     """One SARIF 2.1.0 run; ``partialFingerprints`` survive line shifts.
 
-    A finding at or above *fail_on* is an ``error``, so the level matches the gate.
+    A finding at or above *fail_on* is an ``error``, so the level matches the
+    gate, and one whose fingerprint is in *accepted* (the baseline) is marked
+    suppressed. A secret found only in an earlier commit is located on its file
+    with no line: its line number belongs to that commit, not the head.
     """
     results = []
     for f in _order(findings):
@@ -500,10 +542,11 @@ def render_sarif(
                 "error" if _RANK[f["severity"]] >= _RANK[fail_on] else "warning",
                 _message(f),
                 str(f["file_path"]),
-                int(f["line_number"]),
+                None if f["commit"] else int(f["line_number"]),
                 SARIF_FINGERPRINT_KEY,
                 f["fingerprint"],
                 properties,
+                suppressed=f["fingerprint"] in accepted,
             )
         )
     return sarif.run(SARIF_TOOL_NAME, tool_version, _sarif_rules(), results)

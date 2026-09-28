@@ -51,9 +51,10 @@ Findings also appear on the Security tab of the code-health page, and at
 
 Twenty-two patterns plus a symbol-name scan, giving twenty-three kinds across
 three severities. Severity is a fixed property of the pattern, with one
-exception: a secret kind found in test material, or under a `test`, `spec`,
-`fixtures`, `mock` or `example` directory (and their plural and dunder forms),
-is recorded at `low`, since those are mostly fake keys but a real one is still
+exception: a secret kind found in test material, or under a directory named
+`test`, `tests`, `__tests__`, `__test__`, `fixtures`, `__fixtures__`, `spec`,
+`specs`, `mock`, `mocks`, `__mocks__`, `example` or `examples`, is recorded at
+`low`, since those are mostly fake keys but a real one is still
 worth seeing. Nothing is scored, ranked, or aggregated.
 
 | Kind | Severity | Matches |
@@ -247,7 +248,10 @@ It judges what the change adds, not the repository:
   change. A code smell added and removed inside the change does not count.
 
 `--fail-on` names the lowest severity that fails (`high` by default, then
-`med`, `low`). Exit codes are the ones every repowise CI gate uses: `0` passed,
+`med`, `low`). A secret under a test, fixture, spec, mock or example path is
+`low` (see above), so under the default it shows as a warning and does not
+fail; pass `--fail-on low` to fail on those too. Exit codes are the ones every
+repowise CI gate uses: `0` passed,
 `1` failed, `2` could not evaluate (not a git repository, unknown revision, no
 merge-base in a shallow clone, a commit of the change cut off by a shallow
 clone, an unreadable baseline). A git error is never read as a clean change.
@@ -260,11 +264,17 @@ above and has its limits: a pass means no pattern matched a changed line.
 **Baseline.** `--write-baseline FILE` records the change's findings in a
 committed JSON file and exits 0; `--baseline FILE` accepts what it lists, so
 only new findings fail. A finding is keyed on its file, kind and masked
-matched line, never on the raw value, so it stays accepted when an edit above
-it shifts its line number and changes when the matched line itself changes.
-Because the gate sees one change at a time, writing to an existing baseline
-adds to its entries instead of replacing them; remove an entry by deleting it
-from the file.
+matched line, so it stays accepted when an edit above it shifts its line
+number. The vendor key shapes mask to their fixed prefix (`AKIA****`), so their
+key also takes a one-way hash of the matched text: a different key on an
+identical line is a new finding. The file never holds a raw value. The keyword
+kinds (`hardcoded_password`, `hardcoded_secret`) stay keyed on the masked line
+alone, because a short password could be guessed back from a hash of it; a
+different value sharing the first four characters on an identical line stays
+accepted. Because the gate sees one change at a time, writing to an existing
+baseline adds to its entries (and to those of `--baseline`, when given)
+instead of replacing them; remove an entry by deleting it from the file.
+`--format sarif` marks accepted findings as suppressed.
 
 GitHub Actions, with the SARIF uploaded from your own workflow:
 
@@ -272,6 +282,7 @@ GitHub Actions, with the SARIF uploaded from your own workflow:
 on: pull_request
 permissions:
   contents: read
+  actions: read          # upload-sarif needs it in a private repository
   security-events: write
 jobs:
   security:
@@ -283,12 +294,19 @@ jobs:
       - run: pip install repowise
       - run: repowise security check --format github --baseline .security-baseline.json
       - if: always()
-        run: repowise security check --format sarif --baseline .security-baseline.json > security.sarif || true
-      - if: always()
+        run: |
+          repowise security check --format sarif --baseline .security-baseline.json > security.sarif || true
+          [ -s security.sarif ] || rm security.sarif
+      - if: always() && hashFiles('security.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: security.sarif
 ```
+
+A pull request from a fork runs with a read-only token, so the upload step
+fails there; the gate step itself still runs and still fails the check. When
+the gate cannot evaluate (exit 2) the SARIF file is empty, so it is removed
+and the upload is skipped.
 
 Without a REVSPEC the base comes from the CI's pull-request variables
 (`GITHUB_BASE_REF`, GitLab's `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, Jenkins'

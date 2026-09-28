@@ -114,3 +114,17 @@ def test_sarif_format_is_one_log(repo):
     assert result.exit_code == 1
     log = json.loads(result.stdout)
     assert log["runs"][0]["results"][0]["ruleId"] == "os_system"
+
+
+def test_write_baseline_merges_the_given_baseline_and_speaks_json(repo, tmp_path):
+    _commit(repo, "cfg.py", f"AWS = '{KEY}'\n")
+    old = tmp_path / "old.json"
+    old.write_text(
+        '{"version": 1, "entries": [{"fingerprint": "f" }]}', encoding="utf-8"
+    )
+    new = tmp_path / "new.json"
+    result = _check(
+        repo, "--baseline", str(old), "--write-baseline", str(new), "--format", "json"
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {"baseline": str(new), "recorded": 1, "entries": 2}

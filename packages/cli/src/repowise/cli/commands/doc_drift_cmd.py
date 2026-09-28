@@ -181,7 +181,12 @@ def _emit(
         from repowise.cli import __version__
 
         fail_on = gate.fail_on if gate is not None else HIGH_CONFIDENCE_THRESHOLD
-        emit_json(render.render_sarif(findings, tool_version=__version__, fail_on=fail_on))
+        accepted = frozenset(f["fingerprint"] for f in gate.baselined) if gate else frozenset()
+        emit_json(
+            render.render_sarif(
+                findings, tool_version=__version__, fail_on=fail_on, accepted=accepted
+            )
+        )
     elif fmt in ("markdown", "github"):
         markdown = render.render_markdown(
             findings,

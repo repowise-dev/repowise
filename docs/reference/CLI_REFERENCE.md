@@ -952,9 +952,9 @@ default branch.
 
 | Flag | Description |
 |------|-------------|
-| `--fail-on` | Exit 1 on a finding of this severity or above: `high` (default), `med`, `low` |
+| `--fail-on` | Exit 1 on a finding of this severity or above: `high` (default), `med`, `low`. A secret under a test, fixture, spec, mock or example path is `low` |
 | `--baseline` | Accept the findings recorded in this file; only new ones fail |
-| `--write-baseline` | Add this change's findings to this file, keeping its entries, and exit 0 |
+| `--write-baseline` | Add this change's findings to this file, keeping its entries and those of `--baseline`, and exit 0 |
 | `--path` | A path inside the repository (defaults to cwd) |
 | `--format` | `table` (default), `json`, `markdown`, `github`, `sarif` |
 
