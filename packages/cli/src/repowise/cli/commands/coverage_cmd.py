@@ -20,6 +20,7 @@ from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_db_url_for_repo,
+    reconcile_schema_best_effort,
     resolve_command_target,
     run_async,
 )
@@ -165,7 +166,10 @@ def coverage_add(
             save_test_coverage,
         )
 
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        url = get_db_url_for_repo(repo_path)
+        # An index from an older repowise lacks newer columns; back-fill them.
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
@@ -373,7 +377,10 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             get_test_coverage_summary,
         )
 
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        url = get_db_url_for_repo(repo_path)
+        # An index from an older repowise lacks newer columns; back-fill them.
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))

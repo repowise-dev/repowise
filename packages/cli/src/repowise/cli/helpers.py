@@ -236,7 +236,9 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
     async with contextlib.AsyncExitStack() as stack:
         opened: tuple[AsyncSession, str] | None = None
         try:
-            engine = create_engine(get_db_url_for_repo(root))
+            url = get_db_url_for_repo(root)
+            await reconcile_schema_best_effort(url)
+            engine = create_engine(url)
             stack.push_async_callback(engine.dispose)
             factory = create_session_factory(engine)
             session = await stack.enter_async_context(get_session(factory))
