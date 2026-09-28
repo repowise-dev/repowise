@@ -590,7 +590,6 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
     established safe default.
     """
     log = log or _noop_log
-    import json
 
     if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
         return {}
@@ -602,7 +601,7 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
         )
         from repowise.core.persistence.crud import (
             get_repository_by_path,
-            load_coverage_for_repo,
+            load_coverage_map,
         )
         from repowise.core.persistence.database import resolve_db_url
 
@@ -612,21 +611,9 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
                     return {}
-                rows = await load_coverage_for_repo(session, repo.id)
+                coverage_map = await load_coverage_map(session, repo.id)
         finally:
             await engine.dispose()
-        coverage_map: dict[str, dict] = {}
-        for row in rows:
-            try:
-                covered = json.loads(row.covered_lines_json) if row.covered_lines_json else []
-            except (ValueError, TypeError):
-                covered = []
-            coverage_map[row.file_path] = {
-                "line_coverage_pct": row.line_coverage_pct,
-                "branch_coverage_pct": row.branch_coverage_pct,
-                "covered_lines": covered,
-                "total_coverable_lines": row.total_coverable_lines or 0,
-            }
         return coverage_map
     except Exception as exc:
         log(f"[yellow]Stored coverage unavailable: {exc}[/yellow]")

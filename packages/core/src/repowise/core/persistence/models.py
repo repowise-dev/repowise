@@ -2203,6 +2203,10 @@ class CoverageFile(Base):
     branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     covered_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     total_coverable_lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Lines the report calls executable, hit or not. Patch coverage needs it to
+    # tell an uncovered changed line from a changed comment. "[]" means the
+    # report did not say (or the row predates the column), never "none".
+    coverable_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     # True when the ingest that wrote these rows mapped fewer than half of the
     # report's files to the repo tree (severe path-mapping loss). The rows are
     # still written — a partial report is better than none — but consumers

@@ -18,8 +18,11 @@ from . import (  # noqa: F401
     refactoring,
 )
 from .coverage import (
+    file_coverage_from_row,
     get_coverage_summary,
     load_coverage_for_repo,
+    load_coverage_map,
+    load_file_coverage,
     save_coverage_files,
 )
 from .coverage_map import (
@@ -119,6 +122,7 @@ __all__ = [
     "covered_source_files",
     "doc_drift_findings_stored",
     "doc_drift_references_stored",
+    "file_coverage_from_row",
     "files_covered_by",
     "finalize_performance_opportunities",
     "finalize_refactoring_opportunities",
@@ -153,6 +157,8 @@ __all__ = [
     "list_performance_opportunities",
     "list_refactoring_opportunities",
     "load_coverage_for_repo",
+    "load_coverage_map",
+    "load_file_coverage",
     "opportunity_details",
     "performance_facet_counts",
     "performance_file_rollups",

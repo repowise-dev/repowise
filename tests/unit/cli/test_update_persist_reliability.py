@@ -251,14 +251,12 @@ def test_missing_reingested_coverage_is_authoritative_empty(tmp_path: Path, monk
         lambda *_args, **_kwargs: [],
     )
 
-    coverage_map, files, source_format, authoritative = asyncio.run(
-        _coverage_for_rescore(object(), "repo", tmp_path, [])
-    )
+    coverage = asyncio.run(_coverage_for_rescore(object(), "repo", tmp_path, []))
 
-    assert coverage_map == {}
-    assert files == []
-    assert source_format is None
-    assert authoritative is True
+    assert coverage.coverage_map == {}
+    assert coverage.files == []
+    assert coverage.source_format is None
+    assert coverage.authoritative is True
 
 
 def test_reingest_with_nothing_to_read_keeps_stored_coverage(tmp_path: Path, monkeypatch) -> None:
@@ -271,14 +269,39 @@ def test_reingest_with_nothing_to_read_keeps_stored_coverage(tmp_path: Path, mon
     )
 
     async def _stored(_session, _repo_id):
-        return []
+        return {"a.py": {"source_format": "lcov"}}
 
-    monkeypatch.setattr("repowise.core.persistence.crud.load_coverage_for_repo", _stored)
+    monkeypatch.setattr("repowise.core.persistence.crud.load_coverage_map", _stored)
 
-    *_, authoritative = asyncio.run(
-        persistence._coverage_for_rescore(object(), "repo", tmp_path, [])
+    coverage = asyncio.run(persistence._coverage_for_rescore(object(), "repo", tmp_path, []))
+    assert coverage.authoritative is False
+    assert coverage.source_format == "lcov"
+
+
+def test_reingest_carries_the_partial_mapping_flag(tmp_path: Path, monkeypatch) -> None:
+    # A fragment re-ingested on update must be stored as a fragment.
+    from repowise.cli.commands.update_cmd import persistence
+    from repowise.core.analysis.health.coverage import FileCoverage, ResolvedCoverage
+
+    monkeypatch.setattr(
+        "repowise.core.repo_config.load_repo_config",
+        lambda _path: {"coverage": {"reingest_on_update": True, "paths": ["c.lcov"]}},
     )
-    assert authoritative is False
+    (tmp_path / "c.lcov").write_text("SF:a.py\nDA:1,1\nend_of_record\n", encoding="utf-8")
+    resolved = ResolvedCoverage(
+        coverage_map={"a.py": {}},
+        files=[FileCoverage("a.py", 100.0, None, [1], 1, [1])],
+        source_format="lcov",
+        mapping_partial=True,
+    )
+    monkeypatch.setattr(
+        "repowise.core.analysis.health.coverage.build_coverage_map",
+        lambda *_a, **_k: (resolved, []),
+    )
+
+    coverage = asyncio.run(persistence._coverage_for_rescore(object(), "repo", tmp_path, []))
+    assert coverage.authoritative is True
+    assert coverage.mapping_partial is True
 
 
 # ---------------------------------------------------------------------------

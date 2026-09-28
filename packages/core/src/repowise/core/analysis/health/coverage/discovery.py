@@ -32,7 +32,13 @@ from pathlib import Path
 from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 
 from .detector import parse as parse_coverage
-from .model import ContextCoverageReport, CoverageReport, FileCoverage, TestCoverage
+from .model import (
+    ContextCoverageReport,
+    CoverageReport,
+    FileCoverage,
+    TestCoverage,
+    coverage_map_entry,
+)
 
 # Default glob patterns, relative to the repo root. Ordered roughly by how
 # canonical/common the location is. Kept curated (not a blind ``**/*.info``)
@@ -421,13 +427,7 @@ def resolve_reports(
         result.mapping_partial = result.matched * 2 < report_file_count
 
     for key, fc in by_key.items():
-        result.coverage_map[key] = {
-            "line_coverage_pct": fc.line_coverage_pct,
-            "branch_coverage_pct": fc.branch_coverage_pct,
-            "covered_lines": list(fc.covered_lines),
-            "total_coverable_lines": fc.total_coverable_lines,
-            "source_format": result.source_format,
-        }
+        result.coverage_map[key] = coverage_map_entry(fc, result.source_format)
     result.files = list(by_key.values())
     return result
 

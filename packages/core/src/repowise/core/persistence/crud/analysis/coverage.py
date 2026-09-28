@@ -48,11 +48,15 @@ async def save_coverage_files(
                     ),
                     "covered_lines_json": json.dumps(list(f.covered_lines or [])),
                     "total_coverable_lines": int(f.total_coverable_lines or 0),
+                    "coverable_lines_json": json.dumps(
+                        list(getattr(f, "coverable_lines", None) or [])
+                    ),
                 }
             else:
                 data = dict(f)
-                if "covered_lines" in data:
-                    data["covered_lines_json"] = json.dumps(list(data.pop("covered_lines") or []))
+                for key in ("covered_lines", "coverable_lines"):
+                    if key in data:
+                        data[f"{key}_json"] = json.dumps(list(data.pop(key) or []))
 
             session.add(
                 CoverageFile(
@@ -79,10 +83,10 @@ async def save_coverage_files(
         await session.flush()
 
 
-#: Every column of ``CoverageFile`` except ``covered_lines_json``. That blob is
-#: the per-file set of covered line numbers, and it dominates the table: 467 KB
-#: of the 549 KB stored for this repo's 1,401 rows. Only the single-file detail
-#: view reads it, so every repo-wide caller was hydrating it to throw it away.
+#: Every column of ``CoverageFile`` except the two line-set blobs
+#: (``covered_lines_json``, ``coverable_lines_json``). They dominate the table:
+#: the covered set alone was 467 KB of the 549 KB stored for this repo's 1,401
+#: rows, and only line-level readers need them.
 _COVERAGE_SCALAR_COLUMNS = (
     CoverageFile.file_path,
     CoverageFile.source_format,
@@ -140,6 +144,49 @@ async def load_coverage_for_repo(
     if include_covered_lines:
         return list(result.scalars().all())
     return list(result.all())
+
+
+def _line_list(raw: str | None) -> list[int]:
+    try:
+        return [int(n) for n in json.loads(raw)] if raw else []
+    except (ValueError, TypeError):
+        return []
+
+
+def file_coverage_from_row(row: CoverageFile) -> Any:
+    """A stored row as the parsers' ``FileCoverage``, the one row-to-model conversion."""
+    from repowise.core.analysis.health.coverage.model import FileCoverage
+
+    return FileCoverage(
+        file_path=row.file_path,
+        line_coverage_pct=row.line_coverage_pct,
+        branch_coverage_pct=row.branch_coverage_pct,
+        covered_lines=_line_list(row.covered_lines_json),
+        total_coverable_lines=row.total_coverable_lines or 0,
+        coverable_lines=_line_list(getattr(row, "coverable_lines_json", None)),
+    )
+
+
+async def load_file_coverage(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    """Stored coverage as ``{path: FileCoverage}``, line sets included."""
+    rows = await load_coverage_for_repo(session, repository_id, file_paths=file_paths)
+    return {row.file_path: file_coverage_from_row(row) for row in rows}
+
+
+async def load_coverage_map(session: AsyncSession, repository_id: str) -> dict[str, dict]:
+    """Stored coverage in the shape ``HealthAnalyzer`` takes as ``coverage_map``."""
+    from repowise.core.analysis.health.coverage.model import coverage_map_entry
+
+    rows = await load_coverage_for_repo(session, repository_id)
+    return {
+        row.file_path: coverage_map_entry(file_coverage_from_row(row), row.source_format)
+        for row in rows
+    }
 
 
 async def get_coverage_summary(

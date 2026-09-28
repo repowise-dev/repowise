@@ -76,6 +76,17 @@ def parse_xml(text: str) -> ET.Element | None:
         return None
 
 
+def coverage_map_entry(fc: FileCoverage, source_format: str | None) -> dict:
+    """The per-file dict ``HealthAnalyzer`` reads from its ``coverage_map``."""
+    return {
+        "line_coverage_pct": fc.line_coverage_pct,
+        "branch_coverage_pct": fc.branch_coverage_pct,
+        "covered_lines": list(fc.covered_lines),
+        "total_coverable_lines": fc.total_coverable_lines,
+        "source_format": source_format,
+    }
+
+
 @dataclass
 class CoverageReport:
     """Whole-report bundle returned by every parser.
