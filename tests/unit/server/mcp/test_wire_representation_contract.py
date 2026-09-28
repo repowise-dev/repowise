@@ -54,7 +54,7 @@ from repowise.core.registry import mcp_tool_registry
 # swallows a per-module ImportError and only logs it: a tool module that stops
 # importing would quietly drop out of the registry, shrinking what the loops
 # below cover while leaving them green.
-EXPECTED_TOOL_COUNT = 18
+EXPECTED_TOOL_COUNT = 19
 
 # A payload shaped like a real tool reply: str keys, nested containers and a
 # `_meta` envelope. Any mapping validates against the SDK's wrapping model, so

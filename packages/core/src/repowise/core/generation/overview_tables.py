@@ -19,6 +19,7 @@ from collections.abc import Iterable, Sequence
 import structlog
 
 from .concept_tree.vocabulary import HouseTerm
+from .declared_glossary import DeclaredTerm
 from .house_vocabulary import SelectedTerm, cell, clamp, select_terms
 
 log = structlog.get_logger(__name__)
@@ -115,6 +116,7 @@ def select_capabilities(
     module_names: Iterable[str],
     *,
     limit: int = MAX_CAPABILITY_ROWS,
+    declared: Sequence[DeclaredTerm] = (),
 ) -> list[Capability]:
     """The terms worth putting on the front page, in the order they go there.
 
@@ -122,8 +124,14 @@ def select_capabilities(
     more of the same list, so the ranking, the corroboration and the definition
     test are shared rather than derived twice — the front page is the top of
     the glossary by construction, which is also what a reader expects of it.
+
+    ``declared`` is the vocabulary the team authored, when there is one. It is
+    passed through to the same call the glossary page makes, so the two pages
+    cannot disagree about which word is canonical — a front page naming a
+    synonym the glossary marks ``_Avoid_`` is the exact failure this is here to
+    prevent.
     """
-    return select_terms(house_terms, module_names, limit=limit)
+    return select_terms(house_terms, module_names, limit=limit, declared=declared)
 
 
 def build_capability_table(capabilities: Sequence[Capability]) -> str | None:
