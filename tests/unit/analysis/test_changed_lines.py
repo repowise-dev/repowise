@@ -161,3 +161,47 @@ def test_split_revspec() -> None:
     assert split_revspec("HEAD~3..") == ("HEAD~3", "..", "HEAD")
     assert split_revspec("..HEAD") == ("HEAD", "..", "HEAD")
     assert split_revspec("HEAD") is None
+
+
+def test_quoted_non_ascii_header_paths_are_decoded() -> None:
+    # git quotes a non-ASCII path and escapes its UTF-8 bytes in octal.
+    diff = (
+        r'diff --git "a/caf\303\251.py" "b/caf\303\251.py"' "\n"
+        r'--- "a/caf\303\251.py"' "\n"
+        r'+++ "b/caf\303\251.py"' "\n"
+        "@@ -1 +1 @@\n"
+        "-a = 1\n"
+        "+a = 2\n"
+    )
+    assert _parse_unified_diff(diff) == {"café.py": {1}}
+
+
+def test_real_non_ascii_path_matches_its_tree_key(git_repo) -> None:
+    (git_repo / "café.py").write_text("a = 1\n", encoding="utf-8")
+    _git(git_repo, "add", "café.py")
+    _git(git_repo, "commit", "-qm", "add")
+    (git_repo / "café.py").write_text("a = 2\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "edit")
+
+    assert changed_lines(str(git_repo), "HEAD")[0] == {"café.py": {1}}
+
+
+def test_change_health_refuses_a_shallow_boundary_commit(git_repo, tmp_path_factory) -> None:
+    from repowise.core.analysis.change_health.sources import GitRevisionSource
+
+    (git_repo / "mod.py").write_text("a = 1\nb = 2\nc = 3\nd = 4\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "second")
+    clone = tmp_path_factory.mktemp("shallow") / "c"
+    _git(git_repo, "clone", "-q", "--depth", "1", git_repo.as_uri(), str(clone))
+
+    with pytest.raises(ValueError, match="shallow"):
+        GitRevisionSource(str(clone)).resolve("HEAD")
+    # A real root commit in a full clone still diffs against the empty tree.
+    root = subprocess.run(
+        ["git", "rev-list", "--max-parents=0", "HEAD"],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert GitRevisionSource(str(git_repo)).resolve(root).base_sha

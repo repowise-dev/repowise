@@ -339,12 +339,23 @@ def _match_key(
     norm_path: str,
     repo_keys: set[str],
     suffix_index: dict[str, list[str]],
+    *,
+    prefer_dir: str | None = None,
 ) -> tuple[str | None, bool]:
     """Resolve a normalized report path to a canonical key.
 
     Returns ``(key, ambiguous)``. ``key`` is None when nothing matched;
     ``ambiguous`` is True when several repo files tie on the longest
-    trailing-segment overlap (we refuse to guess).
+    trailing-segment overlap and *prefer_dir* (the report's own directory)
+    does not single one out: we refuse to guess.
+
+    A match must agree on more than the basename when the report names a
+    directory: ``other/pkg/utils.py`` is not ``src/utils.py``. It is accepted
+    when at least one directory also matches, or when the whole repo key is
+    the tail of the report path (a root-level file under an absolute path).
+    A path that runs through a dependency or environment directory
+    (``node_modules``, ``site-packages``) is someone else's file and never
+    matches by suffix.
     """
     if norm_path in repo_keys:
         return norm_path, False
@@ -353,8 +364,6 @@ def _match_key(
     candidates = suffix_index.get(base)
     if not candidates:
         return None, False
-    if len(candidates) == 1:
-        return candidates[0], False
 
     report_segs = norm_path.split("/")
     best_overlap = 0
@@ -366,15 +375,93 @@ def _match_key(
             if a != b:
                 break
             overlap += 1
+        if not (overlap >= 2 or overlap == len(cand_segs) or len(report_segs) == 1):
+            continue
+        if _VENDORED_DIRS.intersection(report_segs[: len(report_segs) - overlap]):
+            continue
         if overlap > best_overlap:
             best_overlap = overlap
             winners = [cand]
         elif overlap == best_overlap:
             winners.append(cand)
 
+    if len(winners) > 1 and prefer_dir:
+        winners = _nearest(winners, prefer_dir)
     if len(winners) == 1:
         return winners[0], False
-    return None, True
+    return None, bool(winners)
+
+
+#: Directories whose files belong to a dependency or environment, not the repo.
+_VENDORED_DIRS = PRUNED_DIRS | frozenset({"site-packages", "dist-packages", "vendor"})
+
+
+def _nearest(keys: list[str], directory: str) -> list[str]:
+    """The keys sharing the longest leading directory run with *directory*."""
+    dir_segs = directory.split("/")
+
+    def shared(key: str) -> int:
+        n = 0
+        for a, b in zip(key.split("/")[:-1], dir_segs, strict=False):
+            if a != b:
+                break
+            n += 1
+        return n
+
+    best = max(shared(k) for k in keys)
+    return [k for k in keys if shared(k) == best] if best else keys
+
+
+def _is_absolute(raw: str) -> bool:
+    p = raw.strip().replace("\\", "/")
+    return p.startswith("/") or (len(p) >= 2 and p[1] == ":")
+
+
+def _resolve_path(
+    raw: str,
+    report: CoverageReport,
+    repo_keys: set[str],
+    suffix_index: dict[str, list[str]],
+    *,
+    strip_prefix: str | None,
+    path_prefix: str | None,
+) -> tuple[str | None, bool, bool]:
+    """``(key, ambiguous, exact)`` for one report path.
+
+    Tried in order: the path joined to each Cobertura ``<source>`` root, the
+    report's own statement of where its paths live (roots that disagree are
+    ambiguous); then a relative path under the report's own directory and its
+    parents, nearest first, since runners write paths relative to the package
+    they ran in (a monorepo's ``packages/web/coverage/lcov.info`` naming
+    ``src/index.ts``); then the path as written. Ties prefer the report's own
+    directory. A configured *path_prefix* already says where the paths live,
+    so it skips the report-directory step.
+    """
+    norm = normalize_report_path(raw, strip_prefix=strip_prefix, path_prefix=path_prefix)
+    origin = report.origin_dir
+    relative = not _is_absolute(raw)
+    if relative and report.source_roots:
+        found: dict[str, bool] = {}  # key -> matched a path exactly
+        for root in report.source_roots:
+            joined = normalize_report_path(
+                f"{root.rstrip('/')}/{raw}", strip_prefix=strip_prefix, path_prefix=path_prefix
+            )
+            key, _ = _match_key(joined, repo_keys, suffix_index, prefer_dir=origin)
+            if key is not None:
+                found[key] = found.get(key, False) or key in (joined, norm)
+        if len(found) == 1:
+            key, exact = found.popitem()
+            return key, False, exact
+        if found:
+            return None, True, False
+    if origin and relative and not path_prefix:
+        segs = origin.split("/")
+        for depth in range(len(segs), 0, -1):
+            candidate = "/".join([*segs[:depth], norm])
+            if candidate in repo_keys:
+                return candidate, False, True
+    key, ambiguous = _match_key(norm, repo_keys, suffix_index, prefer_dir=origin)
+    return key, ambiguous, key is not None and norm == key
 
 
 def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
@@ -424,17 +511,21 @@ def resolve_reports(
                 result.source_formats.append(report.source_format)
         for fc in report.files:
             report_file_count += 1
-            norm = normalize_report_path(
-                fc.file_path, strip_prefix=strip_prefix, path_prefix=path_prefix
+            key, ambiguous, exact = _resolve_path(
+                fc.file_path,
+                report,
+                repo_keys,
+                suffix_index,
+                strip_prefix=strip_prefix,
+                path_prefix=path_prefix,
             )
-            key, ambiguous = _match_key(norm, repo_keys, suffix_index)
             if key is None:
                 if ambiguous:
                     result.ambiguous.append(fc.file_path)
                 else:
                     result.unmatched.append(fc.file_path)
                 continue
-            if norm == key:
+            if exact:
                 result.matched_exact += 1
             else:
                 result.matched_suffix += 1
@@ -597,8 +688,18 @@ def build_coverage_map(
         if not report.files:
             errors.append((path, f"no coverage entries (detected={report.source_format})"))
             continue
+        report.origin_dir = _repo_relative_dir(path, repo_root)
         parsed.append(report)
     resolved = resolve_reports(
         parsed, repo_keys, strip_prefix=strip_prefix, path_prefix=path_prefix
     )
     return resolved, errors
+
+
+def _repo_relative_dir(path: Path, repo_root: Path) -> str | None:
+    """*path*'s directory relative to *repo_root* (POSIX), ``None`` outside it or at its root."""
+    try:
+        rel = path.resolve().parent.relative_to(repo_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+    return rel if rel not in ("", ".") else None

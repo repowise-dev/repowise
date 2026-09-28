@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ..change_risk.features import split_revspec
-from ..changed_lines import FileDiff, parse_unified_diff
+from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff
 
 GIT_TIMEOUT_SECONDS = 120
 
@@ -190,6 +190,10 @@ class GitRevisionSource:
             self.repo_path,
             check=False,
         ).strip()
+        if not parent and is_shallow_root(self.repo_path, ref):
+            # A shallow boundary's parents are cut off, not absent; the empty
+            # tree would make every line of the snapshot read as changed.
+            raise ValueError(f"{ref!r} has no parent in this shallow clone; fetch more history")
         base = parent or _EMPTY_TREE
         return RevisionPair(
             f"{ref}^" if parent else _EMPTY_TREE,

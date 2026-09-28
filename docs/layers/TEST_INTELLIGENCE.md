@@ -123,6 +123,18 @@ whether the measurement matches the indexed commit. Stored patch coverage
 reads the same record, so its report path counts are real numbers rather than
 null.
 
+A few rules keep that matching honest in monorepos and mixed layouts:
+
+- A match needs more than the basename when the report names a directory:
+  `other/pkg/utils.py` never maps to `src/utils.py`. A root-level file still
+  matches under an absolute path, because the whole key is the path's tail.
+- A relative path is first tried under the report's own directory and its
+  parents, nearest first, so `packages/web/coverage/lcov.info` naming
+  `src/index.ts` maps to `packages/web/src/index.ts`. A remaining tie prefers
+  the file nearest the report.
+- Cobertura paths are joined to each `<source>` root before matching, which
+  separates files that share a name under different packages.
+
 ## Building a per-test map
 
 The map needs a report that records *which test* covered each line. Two paths

@@ -24,6 +24,7 @@ import re
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .change_risk.features import _git, split_revspec
 
@@ -213,7 +214,7 @@ def changed_lines(
         return _parse_unified_diff(diff), label
 
     _verify_ref(repo_path, revspec)
-    if _is_shallow_root(repo_path, revspec):
+    if is_shallow_root(repo_path, revspec):
         # A shallow clone's oldest commit has its parents cut off, so git would
         # diff it against the empty tree and every line would read as changed.
         raise ValueError(f"{revspec!r} has no parent in this shallow clone; fetch more history")
@@ -233,7 +234,15 @@ def _diff(repo_path: str, args: list[str]) -> str:
         raise ValueError(detail[-1] if detail else f"git {args[0]} failed") from exc
 
 
-def _is_shallow_root(repo_path: str, rev: str) -> bool:
-    if _git(["rev-parse", "--is-shallow-repository"], repo_path, check=False).strip() != "true":
+def is_shallow_root(repo_path: str, rev: str) -> bool:
+    """Whether *rev* is a boundary a shallow clone cut its parents from.
+
+    Read from git's own list of grafted commits, so a genuine root commit is
+    never mistaken for a cut one.
+    """
+    shallow = _git(["rev-parse", "--git-path", "shallow"], repo_path, check=False).strip()
+    path = Path(repo_path, shallow)
+    if not shallow or not path.is_file():
         return False
-    return not _git(["rev-parse", "--verify", "--quiet", f"{rev}^"], repo_path, check=False).strip()
+    sha = _git(["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], repo_path, check=False)
+    return bool(sha.strip()) and sha.strip() in path.read_text(encoding="utf-8").split()

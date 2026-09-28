@@ -69,6 +69,10 @@ def parse_cobertura(text: str) -> CoverageReport:
                     bucket.branches_found += 2
                     bucket.branches_hit += 2 if hits > 0 else 0
 
+    # Filenames are relative to one of these; the resolver tries each.
+    roots = tuple(
+        dict.fromkeys(s.text.strip() for s in root.iter("source") if s.text and s.text.strip())
+    )
     files = [
         file_coverage(
             path,
@@ -79,7 +83,7 @@ def parse_cobertura(text: str) -> CoverageReport:
         )
         for path, b in per_file.items()
     ]
-    return CoverageReport(source_format="cobertura", files=files)
+    return CoverageReport(source_format="cobertura", files=files, source_roots=roots)
 
 
 @dataclass

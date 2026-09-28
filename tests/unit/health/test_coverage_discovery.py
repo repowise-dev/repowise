@@ -340,3 +340,107 @@ def test_coverage_config_parses_block() -> None:
     assert cfg.paths == ("coverage/lcov.info",)
     assert cfg.strip_prefix == "build"
     assert cfg.reingest_on_update is True
+
+
+# ---------------------------------------------------------------------------
+# Directory agreement, report location and Cobertura source roots
+# ---------------------------------------------------------------------------
+
+
+def test_a_lone_basename_needs_a_matching_directory() -> None:
+    # Only the basename agrees: another package's utils.py is not this one.
+    res = resolve_reports([_report([_fc("other/pkg/utils.py")])], {"src/utils.py"})
+    assert res.unmatched == ["other/pkg/utils.py"]
+    assert res.coverage_map == {}
+
+
+def test_a_root_file_under_an_absolute_path_still_matches() -> None:
+    # The whole key is the tail of the report path.
+    res = resolve_reports([_report([_fc("/home/ci/proj/command.go")])], {"command.go"})
+    assert "command.go" in res.coverage_map
+
+
+def test_relative_paths_resolve_under_the_reports_own_package() -> None:
+    # A monorepo package's report names paths relative to that package.
+    keys = {"src/index.ts", "packages/web/src/index.ts", "packages/api/src/index.ts"}
+    report = CoverageReport(
+        source_format="lcov",
+        files=[_fc("src/index.ts")],
+        origin_dir="packages/web/coverage",
+    )
+    res = resolve_reports([report], keys)
+    assert list(res.coverage_map) == ["packages/web/src/index.ts"]
+    assert res.matched_exact == 1
+
+
+def test_a_tie_prefers_the_reports_own_directory() -> None:
+    keys = {"packages/web/src/util.ts", "packages/api/src/util.ts"}
+    report = CoverageReport(
+        source_format="lcov",
+        files=[_fc("/ci/build/src/util.ts")],
+        origin_dir="packages/api/coverage",
+    )
+    res = resolve_reports([report], keys)
+    assert list(res.coverage_map) == ["packages/api/src/util.ts"]
+
+
+def test_cobertura_source_roots_disambiguate_shared_basenames() -> None:
+    from repowise.core.analysis.health.coverage import parse_cobertura
+
+    xml = (
+        "<coverage><sources><source>/ci/repo/packages/core/src</source></sources>"
+        '<packages><package><classes><class filename="pkg/__init__.py">'
+        '<lines><line number="1" hits="1"/></lines></class></classes></package>'
+        "</packages></coverage>"
+    )
+    report = parse_cobertura(xml)
+    keys = {"packages/core/src/pkg/__init__.py", "packages/cli/src/pkg/__init__.py"}
+
+    assert report.source_roots == ("/ci/repo/packages/core/src",)
+    res = resolve_reports([report], keys)
+    assert list(res.coverage_map) == ["packages/core/src/pkg/__init__.py"]
+
+
+def test_build_coverage_map_records_where_the_report_lives(tmp_path: Path) -> None:
+    pkg = tmp_path / "packages" / "web"
+    (pkg / "coverage").mkdir(parents=True)
+    (pkg / "coverage" / "lcov.info").write_text(
+        "SF:src/index.ts\nDA:1,1\nend_of_record\n", encoding="utf-8"
+    )
+    res, errors = build_coverage_map(
+        tmp_path,
+        [pkg / "coverage" / "lcov.info"],
+        {"src/index.ts", "packages/web/src/index.ts"},
+    )
+    assert not errors
+    assert list(res.coverage_map) == ["packages/web/src/index.ts"]
+
+
+def test_a_dependency_file_never_matches_the_repos_own() -> None:
+    keys = {"index.js", "src/index.js"}
+    res = resolve_reports([_report([_fc("node_modules/x/index.js")])], keys)
+    assert res.coverage_map == {}
+    assert res.unmatched == ["node_modules/x/index.js"]
+
+
+def test_source_roots_that_disagree_are_ambiguous() -> None:
+    keys = {"src/foo/x.py", "lib/foo/x.py"}
+    report = CoverageReport(
+        source_format="cobertura",
+        files=[_fc("foo/x.py")],
+        source_roots=("/ci/repo/src", "/ci/repo/lib"),
+    )
+    res = resolve_reports([report], keys)
+    assert res.ambiguous == ["foo/x.py"]
+
+
+def test_source_roots_win_over_the_report_directory() -> None:
+    keys = {"packages/api/x.py", "packages/api/src/x.py"}
+    report = CoverageReport(
+        source_format="cobertura",
+        files=[_fc("x.py")],
+        source_roots=("/ci/repo/packages/api/src",),
+        origin_dir="packages/api",
+    )
+    res = resolve_reports([report], keys)
+    assert list(res.coverage_map) == ["packages/api/src/x.py"]

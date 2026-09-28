@@ -106,6 +106,12 @@ class CoverageReport:
     source_format: str
     files: list[FileCoverage] = field(default_factory=list)
     commit_sha: str | None = None
+    # Directories the report's paths are relative to, as the report names
+    # them (Cobertura ``<source>``). Empty for formats that do not say.
+    source_roots: tuple[str, ...] = ()
+    # Repo-relative directory of the report file itself, set by whoever read
+    # it from disk; ``None`` when the report did not come from inside the repo.
+    origin_dir: str | None = None
 
 
 @dataclass
