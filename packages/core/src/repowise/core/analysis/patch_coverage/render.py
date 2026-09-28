@@ -1,127 +1,177 @@
-"""Human renderings of :class:`PatchCoverage`: markdown and CI annotations.
+"""Human renderings of :class:`PatchCoverage`: markdown, plain text, CI annotations.
 
 Markdown is what a CI step summary or a pull-request comment shows, so it is
 written to be read once and acted on: the verdict in words on the first line
-with its denominator, the diff and report it was measured from on the second,
-and detail only for what needs attention. A passing change with no gaps is
-two lines. A file the report never named reads "not in report", never 0%.
+with its denominator, the diff, report and file counts on the second, and
+detail only for what needs attention. A passing change with no gaps is two
+lines. A file the report never named reads "not in report", never 0%.
 """
 
 from __future__ import annotations
+
+import math
+from collections.abc import Sequence
 
 from .compute import FilePatchCoverage, PatchCoverage
 
 #: Files listed per section before the rest collapse into "and N more".
 ROW_LIMIT = 10
-#: Annotations emitted per run; CI systems cap and truncate beyond this.
-ANNOTATION_LIMIT = 50
+#: Uncovered ranges shown per file before "+N more".
+RANGE_LIMIT = 8
+#: GitHub shows at most 10 warning annotations per step; more are dropped silently.
+ANNOTATION_LIMIT = 10
+
+#: How a file that could not be measured reads, wherever it is listed.
+STATUS_TEXT = {
+    "not_in_report": "not in report",
+    "no_line_data": "report has no line data",
+    "no_coverable_changes": "no executable lines changed",
+}
 
 
-def headline(pc: PatchCoverage) -> str:
-    """One-sentence verdict, markdown bold on the figure."""
-    pct = pc.pct
+def headline(pc: PatchCoverage, *, markdown: bool = True) -> str:
+    """One-sentence verdict. Bold on the figure only in markdown."""
+    bold = "**" if markdown else ""
+    pct = pc.patch_coverage_pct
     if pct is None:
-        return "**Patch coverage: no measurable changed lines.** " + _no_data_reason(pc)
+        text = f"{bold}Patch coverage: no measurable changed lines.{bold} {_no_data_reason(pc)}"
+        if pc.threshold is not None:
+            text += f" The {fmt_pct(pc.threshold)} gate was not applied."
+        return text
     text = (
-        f"**Patch coverage {_fmt_pct(pct)}** "
-        f"({pc.covered_lines} of {pc.coverable_lines} changed executable lines covered)"
+        f"{bold}Patch coverage {fmt_pct(pct)}{bold} ({pc.covered_line_count} of "
+        f"{pc.coverable_line_count} changed executable lines covered)"
     )
     if pc.gate == "fail":
-        text += f" · below the {_fmt_pct(pc.threshold)} gate"
+        text += f" · below the {fmt_pct(pc.threshold)} gate"
     elif pc.gate == "pass":
-        text += f" · meets the {_fmt_pct(pc.threshold)} gate"
+        text += f" · meets the {fmt_pct(pc.threshold)} gate"
     return text
+
+
+def scope_line(pc: PatchCoverage, *, markdown: bool = True) -> str:
+    """The diff, the reports and how many changed files were measured."""
+    scope = pc.scope
+    parts = []
+    if scope.label:
+        parts.append(f"`{scope.label}`" if markdown else scope.label)
+    if scope.source_formats:
+        parts.append(", ".join(scope.source_formats))
+    measured = len(pc.with_status("measured"))
+    files = f"{measured} of {pc.changed_file_count} changed files measured"
+    if pc.out_of_scope_count:
+        files += f", {pc.out_of_scope_count} out of scope"
+    parts.append(files)
+    if scope.unmatched_report_path_count:
+        parts.append(
+            f"{scope.unmatched_report_path_count} of {scope.report_path_count} report paths "
+            "did not match a file in this repository"
+        )
+    return " · ".join(parts)
+
+
+def attention_rows(pc: PatchCoverage) -> list[FilePatchCoverage]:
+    """Files a reader should look at: uncovered changes first, then unmeasurable ones."""
+    gaps = sorted(
+        (f for f in pc.with_status("measured") if f.uncovered_line_count),
+        key=lambda f: (-f.uncovered_line_count, f.file_path),
+    )
+    return gaps + pc.with_status("not_in_report") + pc.with_status("no_line_data")
 
 
 def render_markdown(pc: PatchCoverage) -> str:
     """Markdown for a CI step summary or PR comment."""
-    out = [headline(pc), "", _scope_line(pc)]
-
-    gaps = sorted(
-        (f for f in pc.with_status("measured") if f.uncovered_lines),
-        key=lambda f: (-f.uncovered_lines, f.path),
-    )
+    out = [headline(pc), "", scope_line(pc)]
+    gaps = [f for f in attention_rows(pc) if f.status == "measured"]
     if gaps:
         out += ["", "| File | Uncovered changed lines | Covered |", "|---|---|---|"]
         for f in gaps[:ROW_LIMIT]:
             out.append(
-                f"| `{f.path}` | {_ranges(f)} | {f.covered_lines} of {f.coverable_lines} |"
+                f"| `{f.file_path}` | {format_ranges(f.uncovered_ranges, RANGE_LIMIT)} | "
+                f"{f.covered_line_count} of {f.coverable_line_count} |"
             )
         if len(gaps) > ROW_LIMIT:
             out.append(f"\nand {len(gaps) - ROW_LIMIT} more files with uncovered changed lines.")
-
-    missing = pc.with_status("not_in_report")
-    if missing:
-        noun = "file is" if len(missing) == 1 else "files are"
-        out += [
-            "",
-            "<details>",
-            f"<summary>{len(missing)} changed {noun} not in the coverage report, "
-            "so not counted</summary>",
-            "",
-            *(f"- `{f.path}`" for f in missing[:ROW_LIMIT]),
-        ]
-        if len(missing) > ROW_LIMIT:
-            out.append(f"- and {len(missing) - ROW_LIMIT} more")
-        out += ["", "</details>"]
+    out += _details(pc.with_status("not_in_report"), "not in the coverage report")
+    out += _details(pc.with_status("no_line_data"), "in a report without line data")
     return "\n".join(out) + "\n"
 
 
 def github_annotations(pc: PatchCoverage) -> list[str]:
-    """GitHub Actions workflow commands marking uncovered changed lines."""
-    lines: list[str] = []
-    for f in pc.with_status("measured"):
-        for start, end in f.uncovered_ranges:
-            span = f"line {start}" if start == end else f"lines {start}-{end}"
-            lines.append(
-                f"::warning file={_escape_property(f.path)},line={start},endLine={end},"
-                f"title=Uncovered change::Changed {span} not covered by tests"
-            )
-            if len(lines) >= ANNOTATION_LIMIT:
-                return lines
+    """GitHub Actions workflow commands for a change's patch coverage.
+
+    The largest uncovered ranges are marked first, capped at what GitHub
+    displays, with a notice counting the rest. A failed gate is an error.
+    """
+    ranges = sorted(
+        ((f.file_path, a, b) for f in pc.with_status("measured") for a, b in f.uncovered_ranges),
+        key=lambda r: (r[1] - r[2], r[0], r[1]),
+    )
+    lines = [
+        f"::warning file={_escape_property(path)},line={a},endLine={b},"
+        f"title=Uncovered change::Changed {_span(a, b)} not covered by tests"
+        for path, a, b in ranges[:ANNOTATION_LIMIT]
+    ]
+    if len(ranges) > ANNOTATION_LIMIT:
+        lines.append(
+            f"::notice::{len(ranges) - ANNOTATION_LIMIT} more uncovered changed ranges, "
+            "listed in the job summary"
+        )
+    if pc.gate == "fail":
+        lines.append(f"::error::{_escape_data(headline(pc, markdown=False))}")
     return lines
 
 
-def _scope_line(pc: PatchCoverage) -> str:
-    parts = []
-    if pc.scope.label:
-        parts.append(f"`{pc.scope.label}`")
-    if pc.scope.report_formats:
-        parts.append(", ".join(pc.scope.report_formats))
-    if pc.scope.unmatched_report_paths:
-        parts.append(
-            f"{pc.scope.unmatched_report_paths} of {pc.scope.report_files} report paths "
-            "did not match a file in this repository"
-        )
-    return " · ".join(parts) if parts else "Measured against the coverage report."
+def format_ranges(ranges: Sequence[tuple[int, int]], limit: int | None = None) -> str:
+    """``((1, 3), (7, 7))`` -> ``"1-3, 7"``, with ``+N more`` past *limit*."""
+    shown = ranges if limit is None else ranges[:limit]
+    text = ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in shown)
+    rest = len(ranges) - len(shown)
+    return text + (f", +{rest} more" if rest else "")
+
+
+def fmt_pct(value: float | None) -> str:
+    """One decimal, floored, so a figure never reads as meeting a gate it missed."""
+    return "n/a" if value is None else f"{math.floor(value * 10) / 10:.1f}%"
+
+
+def _details(files: list[FilePatchCoverage], where: str) -> list[str]:
+    if not files:
+        return []
+    noun = "file is" if len(files) == 1 else "files are"
+    out = [
+        "",
+        "<details>",
+        f"<summary>{len(files)} changed {noun} {where}, so not counted</summary>",
+        "",
+        *(f"- `{f.file_path}`" for f in files[:ROW_LIMIT]),
+    ]
+    if len(files) > ROW_LIMIT:
+        out.append(f"- and {len(files) - ROW_LIMIT} more")
+    return [*out, "", "</details>"]
 
 
 def _no_data_reason(pc: PatchCoverage) -> str:
+    if not pc.changed_file_count:
+        return "The change has no changed lines."
     if pc.with_status("no_line_data"):
         return "The report does not say which lines are executable."
     if pc.with_status("not_in_report"):
         return "The changed source files are not in the coverage report."
     if pc.with_status("no_coverable_changes"):
         return "The change touches no executable lines."
-    return "No changed file is measured by the coverage report."
+    return "Only tests or files the report does not measure changed."
 
 
-def _ranges(f: FilePatchCoverage) -> str:
-    shown = [f"{a}" if a == b else f"{a}-{b}" for a, b in f.uncovered_ranges[:8]]
-    rest = len(f.uncovered_ranges) - len(shown)
-    return ", ".join(shown) + (f", +{rest} more" if rest else "")
+def _span(a: int, b: int) -> str:
+    return f"line {a}" if a == b else f"lines {a}-{b}"
 
 
-def _fmt_pct(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.1f}%"
+def _escape_data(value: str) -> str:
+    # Workflow-command messages escape %, CR and LF.
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def _escape_property(value: str) -> str:
-    # Workflow-command property values escape %, CR, LF, ':' and ','.
-    return (
-        value.replace("%", "%25")
-        .replace("\r", "%0D")
-        .replace("\n", "%0A")
-        .replace(":", "%3A")
-        .replace(",", "%2C")
-    )
+    # Property values additionally escape ':' and ','.
+    return _escape_data(value).replace(":", "%3A").replace(",", "%2C")

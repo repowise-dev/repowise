@@ -12,7 +12,7 @@ import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .analysis.change_risk.features import _git
+from .analysis.change_risk.features import _git, split_revspec
 
 __all__ = [
     "BranchRef",
@@ -224,14 +224,12 @@ def commit_file_sets(repo_path: str, revspec: str | None) -> list[frozenset[str]
     Only a range carries the information: a single revision names one commit,
     and one commit says nothing about what moves with what.
     """
-    if not revspec:
+    parts = split_revspec(revspec) if revspec else None
+    if parts is None:
         return []
     # The commits of "a...b" are "a..b"; three dots is diff syntax, not a range.
-    if "..." in revspec:
-        revspec = revspec.replace("...", "..")
-    elif ".." not in revspec:
-        return []
-    out = _read(repo_path, ["log", "--reverse", "--format=%x00%H", "--name-only", revspec])
+    base, _sep, head = parts
+    out = _read(repo_path, ["log", "--reverse", "--format=%x00%H", "--name-only", f"{base}..{head}"])
     sets: list[frozenset[str]] = []
     for block in out.split("\x00"):
         paths = {line.strip() for line in block.splitlines()[1:] if line.strip()}

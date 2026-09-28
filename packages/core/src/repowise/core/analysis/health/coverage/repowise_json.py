@@ -1,10 +1,10 @@
 """Repowise normalized-JSON coverage parser.
 
 A small, explicit JSON schema so coverage from a runner with no native
-parser here (coverlet, a Codecov/Coveralls scrape, a custom tool) can be
-normalized once to a single shape and fed to ``repowise health
---coverage``. LCOV, Cobertura, Clover, Go cover profiles and JaCoCo XML are
-read directly. Keyed by **repo-relative POSIX path**.
+parser here (any runner or a custom export) can be normalized once to a
+single shape and fed to ``repowise health --coverage``. The other formats in
+:data:`~.detector.PARSERS` are read directly. Keyed by **repo-relative POSIX
+path**.
 
 Schema (``format: "repowise-coverage-v1"``)::
 

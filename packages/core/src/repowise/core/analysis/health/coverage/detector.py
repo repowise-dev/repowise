@@ -75,34 +75,67 @@ _ALIASES = {"json": "repowise-json"}
 _BOM = "\ufeff"
 
 
+_LCOV_LINE_RE = re.compile(r"^(TN|SF|DA|BRDA|LF|LH|BRF|BRH):", re.MULTILINE)
+
+
+# Sniffers take the BOM-stripped, left-stripped 2048-char sample. The leading
+# character already separates JSON (``{``), XML (``<``) and the line formats,
+# so only the XML sniffers depend on their relative order.
+
+
+def _is_repowise_json(sample: str) -> bool:
+    # Tagged by ``format`` or recognizable by its per-file coverage keys.
+    return sample.startswith("{") and (
+        "repowise-coverage" in sample or "line_coverage_pct" in sample
+    )
+
+
+def _is_lcov(sample: str) -> bool:
+    return sample.startswith(("TN:", "SF:")) or _LCOV_LINE_RE.match(sample) is not None
+
+
+def _is_go_coverprofile(sample: str) -> bool:
+    return sample.startswith("mode:")
+
+
+def _is_jacoco_doctype(sample: str) -> bool:
+    return sample.startswith("<") and "-//JACOCO//DTD" in sample
+
+
+def _is_clover(sample: str) -> bool:
+    return sample.startswith("<") and "<coverage" in sample and "<project" in sample
+
+
+def _is_cobertura(sample: str) -> bool:
+    return (
+        sample.startswith("<")
+        and "<coverage" in sample
+        and ("<packages" in sample or "line-rate" in sample)
+    )
+
+
+def _is_jacoco_report(sample: str) -> bool:
+    return sample.startswith("<") and "<report" in sample and "<coverage" not in sample
+
+
+#: ``(format, sniffer)`` in priority order; the first match wins.
+_SNIFFERS: tuple[tuple[str, Callable[[str], bool]], ...] = (
+    ("repowise-json", _is_repowise_json),
+    ("lcov", _is_lcov),
+    ("go-coverprofile", _is_go_coverprofile),
+    ("jacoco", _is_jacoco_doctype),
+    ("clover", _is_clover),
+    ("cobertura", _is_cobertura),
+    ("jacoco", _is_jacoco_report),
+)
+
+
 def detect_format(text: str) -> str | None:
     """Return a :data:`PARSERS` key for *text*, or ``None`` when unrecognised."""
     sample = text.lstrip(_BOM).lstrip()[:2048]
     if not sample:
         return None
-    if sample.startswith("{"):
-        # Repowise normalized JSON — tagged by ``format`` or recognizable by its
-        # per-file coverage keys. Checked before LCOV/XML since none start with ``{``.
-        if "repowise-coverage" in sample or "line_coverage_pct" in sample:
-            return "repowise-json"
-        return None
-    if sample.startswith(("TN:", "SF:")) or _LCOV_LINE_RE.match(sample):
-        return "lcov"
-    if sample.startswith("mode:"):
-        return "go-coverprofile"
-    if sample.startswith("<"):
-        if "-//JACOCO//DTD" in sample:
-            return "jacoco"
-        if "<coverage" in sample and "<project" in sample:
-            return "clover"
-        if "<coverage" in sample and ("<packages" in sample or "line-rate" in sample):
-            return "cobertura"
-        if "<report" in sample and "<coverage" not in sample:
-            return "jacoco"
-    return None
-
-
-_LCOV_LINE_RE = re.compile(r"^(TN|SF|DA|BRDA|LF|LH|BRF|BRH):", re.MULTILINE)
+    return next((fmt for fmt, sniff in _SNIFFERS if sniff(sample)), None)
 
 
 def parse(text: str, *, format: str | None = None) -> CoverageReport:

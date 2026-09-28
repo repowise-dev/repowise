@@ -9,19 +9,35 @@ from .compute import (
     PatchCoverage,
     PatchScope,
     compute_patch_coverage,
-    line_ranges,
+    patch_coverage_from_resolved,
 )
-from .render import github_annotations, headline, render_markdown
+from .render import (
+    RANGE_LIMIT,
+    STATUS_TEXT,
+    attention_rows,
+    fmt_pct,
+    format_ranges,
+    github_annotations,
+    headline,
+    render_markdown,
+    scope_line,
+)
 
 __all__ = [
+    "RANGE_LIMIT",
+    "STATUS_TEXT",
     "FilePatchCoverage",
     "FileStatus",
     "GateStatus",
     "PatchCoverage",
     "PatchScope",
+    "attention_rows",
     "compute_patch_coverage",
+    "fmt_pct",
+    "format_ranges",
     "github_annotations",
     "headline",
-    "line_ranges",
+    "patch_coverage_from_resolved",
     "render_markdown",
+    "scope_line",
 ]

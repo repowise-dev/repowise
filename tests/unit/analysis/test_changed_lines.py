@@ -130,3 +130,24 @@ def test_changed_lines_three_dot_diffs_from_merge_base(git_repo) -> None:
     assert changed == {"mod.py": {2}}
     # Two dots compares the tips, so base's own edit shows up too.
     assert changed_lines(str(git_repo), "main..feat")[0] == {"mod.py": {2, 3}}
+
+
+def test_single_commit_at_a_shallow_boundary_raises(git_repo, tmp_path_factory) -> None:
+    # Its parents are cut off, so git would diff against the empty tree and
+    # report every line as changed.
+    (git_repo / "mod.py").write_text("a = 1\nb = 2\nc = 3\nd = 4\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "second")
+    clone = tmp_path_factory.mktemp("shallow") / "c"
+    _git(git_repo, "clone", "-q", "--depth", "1", git_repo.as_uri(), str(clone))
+
+    with pytest.raises(ValueError, match="shallow"):
+        changed_lines(str(clone), "HEAD")
+
+
+def test_range_without_merge_base_raises_value_error(git_repo) -> None:
+    _git(git_repo, "branch", "-M", "main")
+    _git(git_repo, "checkout", "-q", "--orphan", "lonely")
+    _git(git_repo, "commit", "-qm", "orphan")
+
+    with pytest.raises(ValueError):
+        changed_lines(str(git_repo), "main...lonely")

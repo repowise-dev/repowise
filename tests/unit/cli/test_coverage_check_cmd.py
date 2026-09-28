@@ -8,6 +8,7 @@ import subprocess
 import pytest
 from click.testing import CliRunner
 
+from repowise.cli.commands.coverage_check_cmd import _CI_BASE_VARS
 from repowise.cli.main import cli
 
 
@@ -42,8 +43,12 @@ def _lcov(repo, covered: dict[int, int]) -> str:
     return str(path)
 
 
-def _run(repo, *args: str):
-    return CliRunner().invoke(cli, ["coverage", "check", "--path", str(repo), *args])
+def _run(repo, *args: str, env: dict[str, str] | None = None):
+    # Unset the CI variables the default base reads, so the host CI cannot leak in.
+    base_env = {var: "" for var, _ in _CI_BASE_VARS}
+    return CliRunner(env={**base_env, **(env or {})}).invoke(
+        cli, ["coverage", "check", "--path", str(repo), *args]
+    )
 
 
 def test_json_reports_patch_coverage_without_an_index(repo) -> None:
@@ -53,13 +58,14 @@ def test_json_reports_patch_coverage_without_an_index(repo) -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)
     assert data["patch_coverage_pct"] == 50.0
-    assert (data["covered_lines"], data["coverable_lines"]) == (1, 2)
+    assert (data["covered_line_count"], data["coverable_line_count"]) == (1, 2)
     assert data["gate"] == "not_set"
-    statuses = {f["path"]: f["status"] for f in data["files"]}
+    statuses = {f["file_path"]: f["status"] for f in data["files"]}
     # The new file resolves from git (no index) and is surfaced, README is out of scope.
     assert statuses == {"src/app.py": "measured", "src/new.py": "not_in_report"}
     assert data["file_counts"]["out_of_scope"] == 1
     assert data["scope"]["label"] == "main...feat"
+    assert data["scope"]["reports"] == [report]
 
 
 def test_gate_fails_below_threshold(repo) -> None:
@@ -85,15 +91,67 @@ def test_github_format_writes_annotations_and_step_summary(repo, tmp_path_factor
     report = _lcov(repo, {2: 1, 3: 0})
     summary = tmp_path_factory.mktemp("gh") / "summary.md"
 
-    result = CliRunner(env={"GITHUB_STEP_SUMMARY": str(summary)}).invoke(
-        cli,
-        ["coverage", "check", "--path", str(repo), "main...feat", "--report", report,
-         "--format", "github"],
+    result = _run(
+        repo,
+        "main...feat",
+        "--report",
+        report,
+        "--format",
+        "github",
+        env={"GITHUB_STEP_SUMMARY": str(summary)},
     )
 
     assert result.exit_code == 0, result.output
     assert "::warning file=src/app.py,line=3,endLine=3" in result.stdout
     assert summary.read_text(encoding="utf-8").startswith("**Patch coverage 50.0%**")
+
+
+def test_default_base_comes_from_ci_variables(repo) -> None:
+    # A CI checkout: detached, no local trunk, the base only as a remote branch.
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    _git(repo, "checkout", "-q", "--detach", "feat")
+    _git(repo, "branch", "-D", "main")
+    report = _lcov(repo, {2: 1, 3: 0})
+
+    via_ci = _run(repo, "--report", report, "--format", "json", env={"GITHUB_BASE_REF": "main"})
+    assert via_ci.exit_code == 0, via_ci.output
+    assert json.loads(via_ci.stdout)["scope"]["label"] == "origin/main...HEAD"
+    # Without the variable, origin/main is found even though origin/HEAD is unset.
+    fallback = _run(repo, "--report", report, "--format", "json")
+    assert json.loads(fallback.stdout)["patch_coverage_pct"] == 50.0
+
+
+def test_undeterminable_base_exits_2_instead_of_passing(repo) -> None:
+    _git(repo, "checkout", "-q", "--detach", "feat")
+    _git(repo, "branch", "-D", "main")
+    report = _lcov(repo, {2: 1, 3: 0})
+
+    result = _run(repo, "--report", report, "--fail-under", "90")
+    assert result.exit_code == 2
+    assert "Pass REVSPEC" in result.output
+
+
+def test_bad_fail_under_in_config_exits_2(repo) -> None:
+    (repo / ".repowise").mkdir()
+    (repo / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  fail_under: 80%\n", encoding="utf-8"
+    )
+    assert _run(repo, "main...feat", "--report", _lcov(repo, {2: 1})).exit_code == 2
+
+
+def test_reports_come_from_config_paths(repo) -> None:
+    out = repo / "out"
+    out.mkdir()
+    (out / "cov.info").write_text(
+        f"SF:{repo / 'src' / 'app.py'}\nDA:2,1\nDA:3,1\nend_of_record\n", encoding="utf-8"
+    )
+    (repo / ".repowise").mkdir()
+    (repo / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  paths: [out/cov.info]\n", encoding="utf-8"
+    )
+    result = _run(repo, "main...feat", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["patch_coverage_pct"] == 100.0
 
 
 def test_cannot_evaluate_exits_2(repo, tmp_path) -> None:
@@ -111,3 +169,14 @@ def test_not_a_git_repository_exits_2(tmp_path) -> None:
     lcov = tmp_path / "c.lcov"
     lcov.write_text("SF:a.py\nDA:1,1\nend_of_record\n", encoding="utf-8")
     assert _run(tmp_path, "--report", str(lcov)).exit_code == 2
+
+
+def test_no_merge_base_exits_2_not_1(repo) -> None:
+    # An unrelated history stands in for a shallow clone that lacks the merge-base.
+    _git(repo, "checkout", "-q", "--orphan", "lonely")
+    _git(repo, "commit", "-qm", "orphan")
+    report = _lcov(repo, {1: 1})
+
+    result = _run(repo, "main...lonely", "--report", report)
+    assert result.exit_code == 2
+    assert "merge-base" in result.output

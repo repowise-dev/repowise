@@ -150,7 +150,9 @@ orchestrator (falls back to the top-level directory). The MCP tool
 - `complexity/` — tree-sitter AST walker. CCN, max nesting, cognitive,
   parameter count, bumps. Single AST pass per file. Writes
   `Symbol.complexity_estimate` as a side effect.
-- `coverage/` — LCOV / Cobertura / Clover parsers + test-file heuristic.
+- `coverage/` — coverage report parsers (LCOV, Cobertura, Clover, Go cover
+  profiles, JaCoCo, repowise JSON; `coverage.PARSERS` is the registry) +
+  test-file heuristic.
 - `duplication/` — Rabin–Karp over tree-sitter tokens. Co-change correlation
   via `git_meta_map[path]["co_change_partners_json"]`.
 - `biomarkers/` — one detector per file. Implements the `Biomarker`

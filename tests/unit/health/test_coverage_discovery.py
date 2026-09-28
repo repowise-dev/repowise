@@ -180,9 +180,12 @@ def test_discover_finds_go_and_jacoco_defaults(tmp_path: Path) -> None:
     below = tmp_path / "build" / "reports" / "jacoco" / "node_modules" / "x.xml"
     below.parent.mkdir(parents=True)
     below.write_text("<report/>")
+    module = tmp_path / "svc" / "target" / "site" / "jacoco-aggregate" / "jacoco.xml"
+    module.parent.mkdir(parents=True)
+    module.write_text("<report/>")
 
     found = set(discover_artifacts(tmp_path))
-    assert {go, maven, gradle} <= found
+    assert {go, maven, gradle, module} <= found
     assert nested not in found
     assert below not in found
 

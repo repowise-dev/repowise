@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from repowise.core.analysis.changed_lines import line_ranges
 from repowise.core.analysis.health.coverage import file_coverage
 from repowise.core.analysis.patch_coverage import (
     PatchScope,
     compute_patch_coverage,
+    fmt_pct,
     github_annotations,
     headline,
-    line_ranges,
     render_markdown,
 )
 
@@ -24,9 +25,9 @@ def test_counts_only_changed_executable_lines() -> None:
 
     (f,) = pc.files
     assert f.status == "measured"
-    assert (f.covered_lines, f.coverable_lines, f.changed_lines) == (3, 4, 6)
+    assert (f.covered_line_count, f.coverable_line_count, f.changed_line_count) == (3, 4, 6)
     assert f.uncovered_ranges == ((3, 3),)
-    assert pc.pct == 75.0
+    assert pc.patch_coverage_pct == 75.0
 
 
 def test_file_absent_from_report_is_not_in_report_and_not_counted() -> None:
@@ -34,7 +35,7 @@ def test_file_absent_from_report_is_not_in_report_and_not_counted() -> None:
     pc = compute_patch_coverage({"src/a.py": {1}, "src/new.py": {1, 2}}, coverage)
 
     assert [f.status for f in pc.files] == ["measured", "not_in_report"]
-    assert pc.pct == 100.0  # the unknown file is surfaced, not scored as 0%
+    assert pc.patch_coverage_pct == 100.0  # the unknown file is surfaced, not scored as 0%
 
 
 def test_tests_and_unmeasured_kinds_are_out_of_scope() -> None:
@@ -43,8 +44,8 @@ def test_tests_and_unmeasured_kinds_are_out_of_scope() -> None:
         {"src/a.py": {1}, "tests/test_a.py": {3}, "README.md": {1}}, coverage
     )
 
-    assert [f.path for f in pc.files] == ["src/a.py"]
-    assert pc.out_of_scope == 2
+    assert [f.file_path for f in pc.files] == ["src/a.py"]
+    assert pc.out_of_scope_count == 2
 
 
 def test_report_without_line_data_is_never_zero_percent() -> None:
@@ -52,7 +53,7 @@ def test_report_without_line_data_is_never_zero_percent() -> None:
     pc = compute_patch_coverage({"src/a.py": {1, 2}}, {"src/a.py": fc})
 
     assert pc.files[0].status == "no_line_data"
-    assert pc.pct is None
+    assert pc.patch_coverage_pct is None
     assert pc.gate == "not_set"
 
 
@@ -80,6 +81,8 @@ def test_to_dict_shape() -> None:
     assert d["gate"] == "fail"
     assert d["file_counts"]["measured"] == 1
     assert d["files"][0]["uncovered_ranges"] == [[2, 2]]
+    assert d["files"][0]["file_path"] == "a.py"
+    assert d["covered_line_count"] == 1
     assert d["scope"]["label"] == "main...HEAD"
 
 
@@ -90,7 +93,7 @@ def test_markdown_passing_change_is_quiet() -> None:
             {"a.py": {1, 2}},
             coverage,
             threshold=80,
-            scope=PatchScope(label="main...HEAD", report_formats=("lcov",)),
+            scope=PatchScope(label="main...HEAD", source_formats=("lcov",)),
         )
     )
 
@@ -98,7 +101,7 @@ def test_markdown_passing_change_is_quiet() -> None:
         "**Patch coverage 100.0%** (2 of 2 changed executable lines covered) "
         "· meets the 80.0% gate",
         "",
-        "`main...HEAD` · lcov",
+        "`main...HEAD` · lcov · 1 of 1 changed files measured",
     ]
 
 
@@ -131,3 +134,51 @@ def test_github_annotations_escape_and_span() -> None:
         "::warning file=dir%2Cx/a%3Ab.py,line=9,endLine=9,title=Uncovered change::"
         "Changed line 9 not covered by tests",
     ]
+
+
+def test_gate_compares_unrounded_and_display_never_rounds_up() -> None:
+    # 79.9975% rounds to 80.0 but must still fail an 80% gate, and say so.
+    coverable = list(range(1, 40001))
+    coverage = _cov("a.py", covered=coverable[:31999], coverable=coverable)
+    pc = compute_patch_coverage({"a.py": set(coverable)}, coverage, threshold=80)
+
+    assert pc.gate == "fail"
+    assert "79.9%" in headline(pc)
+    assert fmt_pct(79.96) == "79.9%"
+    assert fmt_pct(None) == "n/a"
+
+
+def test_no_data_headline_names_the_reason_and_the_skipped_gate() -> None:
+    coverage = _cov("a.py", covered=[1], coverable=[1])
+    empty = headline(compute_patch_coverage({}, coverage, threshold=80))
+    assert "no changed lines" in empty
+    assert "80.0% gate was not applied" in empty
+    docs_only = headline(compute_patch_coverage({"README.md": {1}}, coverage))
+    assert "Only tests or files the report does not measure changed" in docs_only
+
+
+def test_annotations_mark_largest_ranges_first_and_count_the_rest() -> None:
+    coverable = list(range(1, 100))
+    # Twelve single uncovered lines plus one 5-line run.
+    uncovered = {*range(1, 24, 2), 50, 51, 52, 53, 54}
+    covered = [n for n in coverable if n not in uncovered]
+    pc = compute_patch_coverage(
+        {"a.py": set(coverable)}, _cov("a.py", covered, coverable), threshold=99
+    )
+    lines = github_annotations(pc)
+
+    warnings = [line for line in lines if line.startswith("::warning")]
+    assert len(warnings) == 10
+    assert "line=50,endLine=54" in warnings[0]
+    assert "::notice::3 more uncovered changed ranges" in lines[10]
+    assert lines[-1].startswith("::error::Patch coverage")
+
+
+def test_markdown_lists_files_without_line_data() -> None:
+    fc = file_coverage("b.py", [1], [])
+    md = render_markdown(
+        compute_patch_coverage(
+            {"a.py": {1}, "b.py": {1}}, {**_cov("a.py", [1], [1]), "b.py": fc}
+        )
+    )
+    assert "1 changed file is in a report without line data" in md

@@ -1,6 +1,7 @@
 /**
- * Coverage report formats `repowise coverage add` reads, in display order.
- * Mirrors the parsers in core's `analysis/health/coverage/`; repowise's own
+ * Curated display list of the coverage reports users produce, in display
+ * order. Not a mirror of the parsers: core's `PARSERS` registry in
+ * `analysis/health/coverage/detector.py` is authoritative, and repowise's own
  * JSON is left out because nobody hand-produces it.
  */
 export const COVERAGE_REPORT_FORMATS = [

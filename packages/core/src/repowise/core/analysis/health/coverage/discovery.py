@@ -55,7 +55,9 @@ DEFAULT_DISCOVERY_GLOBS: tuple[str, ...] = (
     "coverage.out",
     "cover.out",
     "target/site/jacoco/jacoco.xml",
-    "**/jacocoTestReport.xml",
+    "**/target/site/jacoco*/jacoco.xml",
+    # Root module only: ``build`` is pruned under ``**``, so a nested
+    # module's report is passed explicitly.
     "build/reports/jacoco/**/*.xml",
 )
 
@@ -119,6 +121,14 @@ class CoverageConfig:
             reingest_on_update=bool(block.get("reingest_on_update", False)),
             fail_under=_percent(block.get("fail_under")),
         )
+
+    def report_paths(self, repo_root: Path) -> list[Path]:
+        """The reports this config names: explicit ``paths``, else discovery when on."""
+        if self.paths:
+            return [repo_root / p for p in self.paths if (repo_root / p).is_file()]
+        if self.auto_discover:
+            return discover_artifacts(repo_root, globs=self.artifacts or None)
+        return []
 
 
 def _percent(value: object) -> float | None:

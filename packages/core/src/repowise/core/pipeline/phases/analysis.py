@@ -182,21 +182,12 @@ def _build_pipeline_coverage(
         from repowise.core.analysis.health.coverage import (
             CoverageConfig,
             build_coverage_map,
-            discover_artifacts,
         )
         from repowise.core.repo_config import load_repo_config
 
         cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
-        if explicit_paths:
-            report_paths = list(explicit_paths)
-        elif cfg.paths:
-            report_paths = [repo_path / p for p in cfg.paths if (repo_path / p).is_file()]
-        elif cfg.auto_discover:
-            report_paths = discover_artifacts(repo_path, globs=cfg.artifacts or None)
-        else:
-            return {}, [], None, False
-
+        report_paths = list(explicit_paths) if explicit_paths else cfg.report_paths(repo_path)
         if not report_paths:
             return {}, [], None, False
 

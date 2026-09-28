@@ -62,6 +62,20 @@ class ChangeFeatures:
 GIT_TIMEOUT_SECONDS = 60
 
 
+def split_revspec(revspec: str) -> tuple[str, str, str] | None:
+    """Split ``base..head`` / ``base...head`` into ``(base, sep, head)``.
+
+    ``None`` for a single revision. An empty head means ``HEAD``. Three dots
+    keep their git meaning (diff from the merge-base), so every reader of a
+    range measures the same change.
+    """
+    sep = "..." if "..." in revspec else ".." if ".." in revspec else None
+    if sep is None:
+        return None
+    base, _, head = revspec.partition(sep)
+    return base, sep, head or "HEAD"
+
+
 def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
     # stdin=DEVNULL: on MCP stdio transport a child that inherits the JSON-RPC
     # pipe handles can wedge the session (same failure mode _meta.py guards
@@ -367,14 +381,15 @@ def extract_range_features(
     *,
     extensions: tuple[str, ...] = (),
     exclude_patterns: tuple[str, ...] = (),
+    sep: str = "..",
 ) -> ChangeFeatures:
     """Extract features for a ``base..head`` range scored as one change.
 
-    Diff size/diffusion come from the cumulative ``base..head`` diff; author and
-    fix-flag come from the head commit; experience is the head author's prior
-    commit count at *base*.
+    Diff size/diffusion come from the cumulative ``base{sep}head`` diff (``...``
+    diffs from the merge-base); author and fix-flag come from the head commit;
+    experience is the head author's prior commit count at *base*.
     """
-    numstat = _git(["diff", "--numstat", f"{base}..{head}"], repo_path)
+    numstat = _git(["diff", "--numstat", f"{base}{sep}{head}"], repo_path)
     la, ld, nf, dirs, subs, per_file, files = _accumulate_numstat(
         numstat, extensions, exclude_patterns
     )

@@ -195,7 +195,7 @@ def coverage_add(
                 or getattr(repo_row, "head_commit", None)
             )
 
-            # --- Per-file aggregate coverage (lcov / cobertura / clover / json).
+            # --- Per-file aggregate coverage (any format in COVERAGE_PARSERS).
             agg_matched = 0
             unmapped = 0
             mapping_partial = False
@@ -353,7 +353,7 @@ def _discover_context_reports(repo_path: Path) -> list[Path]:
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
 )
 # Safe to spell this ``--format`` here: the ``--format`` that names an *input*
-# parser (lcov / cobertura / clover) lives on ``coverage add``, not on the
+# parser (a COVERAGE_PARSERS key) lives on ``coverage add``, not on the
 # group, so the two never meet on one command line.
 @format_option()
 def coverage_status(repo: str | None, fmt: str) -> None:

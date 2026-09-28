@@ -26,6 +26,8 @@ matching maps them to ``src/main/java/...`` later. The DTD is never fetched.
 
 from __future__ import annotations
 
+from xml.etree import ElementTree as ET
+
 from .model import CoverageReport, file_coverage, parse_xml
 
 
@@ -36,37 +38,51 @@ def _int(value: str | None) -> int:
         return 0
 
 
+#: (covered lines, coverable lines, line -> (branches, branches hit))
+_FileLines = tuple[set[int], set[int], dict[int, tuple[int, int]]]
+
+
+def _merge_line(line: ET.Element, acc: _FileLines) -> None:
+    """Fold one ``<line>`` element into *acc*: hit-wins, branch counts take the max."""
+    covered, coverable, branches = acc
+    nr = _int(line.get("nr"))
+    if nr <= 0:
+        return
+    ci = _int(line.get("ci"))
+    if _int(line.get("mi")) + ci > 0:
+        coverable.add(nr)
+    if ci > 0:
+        covered.add(nr)
+    cb = _int(line.get("cb"))
+    total = _int(line.get("mb")) + cb
+    if total:
+        prev_total, prev_hit = branches.get(nr, (0, 0))
+        branches[nr] = (max(prev_total, total), max(prev_hit, cb))
+
+
+def _merge_package(package: ET.Element, merged: dict[str, _FileLines]) -> None:
+    """Fold every ``<sourcefile>`` of one ``<package>`` into *merged*, keyed by path."""
+    pkg_name = (package.get("name") or "").strip("/")
+    for sourcefile in package.findall("sourcefile"):
+        name = sourcefile.get("name") or ""
+        if not name:
+            continue
+        path = f"{pkg_name}/{name}" if pkg_name else name
+        acc = merged.setdefault(path, (set(), set(), {}))
+        for line in sourcefile.findall("line"):
+            _merge_line(line, acc)
+
+
 def parse_jacoco(text: str) -> CoverageReport:
     root = parse_xml(text)
     if root is None:
         return CoverageReport(source_format="jacoco", files=[])
 
-    # path -> (covered, coverable, line -> (branches, branches hit)). The same
-    # source file can appear under several groups: merged hit-wins, and
-    # branches per line take the max so a duplicate never double counts.
-    merged: dict[str, tuple[set[int], set[int], dict[int, tuple[int, int]]]] = {}
+    # The same source file can appear under several groups: merged hit-wins,
+    # and branches per line take the max so a duplicate never double counts.
+    merged: dict[str, _FileLines] = {}
     for package in root.iter("package"):
-        pkg_name = (package.get("name") or "").strip("/")
-        for sourcefile in package.findall("sourcefile"):
-            name = sourcefile.get("name") or ""
-            if not name:
-                continue
-            path = f"{pkg_name}/{name}" if pkg_name else name
-            covered, coverable, branches = merged.setdefault(path, (set(), set(), {}))
-            for line in sourcefile.findall("line"):
-                nr = _int(line.get("nr"))
-                if nr <= 0:
-                    continue
-                ci = _int(line.get("ci"))
-                if _int(line.get("mi")) + ci > 0:
-                    coverable.add(nr)
-                if ci > 0:
-                    covered.add(nr)
-                cb = _int(line.get("cb"))
-                total = _int(line.get("mb")) + cb
-                if total:
-                    prev_total, prev_hit = branches.get(nr, (0, 0))
-                    branches[nr] = (max(prev_total, total), max(prev_hit, cb))
+        _merge_package(package, merged)
 
     files = [
         file_coverage(

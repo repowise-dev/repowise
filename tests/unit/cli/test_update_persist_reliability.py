@@ -247,7 +247,7 @@ def test_missing_reingested_coverage_is_authoritative_empty(tmp_path: Path, monk
         lambda _path: {"coverage": {"reingest_on_update": True}},
     )
     monkeypatch.setattr(
-        "repowise.core.analysis.health.coverage.discover_artifacts",
+        "repowise.core.analysis.health.coverage.discovery.discover_artifacts",
         lambda *_args, **_kwargs: [],
     )
 

@@ -21,9 +21,11 @@ feature extractor (no new dependency, deterministic).
 from __future__ import annotations
 
 import re
+import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from .change_risk.features import _git
+from .change_risk.features import _git, split_revspec
 
 # ``@@ -a,b +c,d @@`` - both sides. ``b``/``d`` default to 1 when omitted; a
 # count of 0 means "nothing on that side" (pure insertion / pure deletion).
@@ -116,6 +118,17 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
     return result
 
 
+def line_ranges(lines: Iterable[int]) -> tuple[tuple[int, int], ...]:
+    """Adjacent line numbers as inclusive spans: ``{1,2,3,7}`` -> ``((1,3),(7,7))``."""
+    spans: list[tuple[int, int]] = []
+    for line in sorted(lines):
+        if spans and line == spans[-1][1] + 1:
+            spans[-1] = (spans[-1][0], line)
+        else:
+            spans.append((line, line))
+    return tuple(spans)
+
+
 def _parse_unified_diff(diff: str) -> dict[str, set[int]]:
     """New-side changed lines per file - the coverage-intersection view.
 
@@ -162,20 +175,37 @@ def changed_lines(
         diff = _git(["diff", "--cached", "--unified=0"], repo_path)
         return _parse_unified_diff(diff), "staged changes"
 
-    if ".." in revspec:
+    if (parts := split_revspec(revspec)) is not None:
         # ``base...head`` is what a pull request changed: git diffs from the
         # merge-base, so commits that landed on base meanwhile stay out.
-        sep = "..." if "..." in revspec else ".."
-        base, _, head = revspec.partition(sep)
-        head = head or "HEAD"
+        base, sep, head = parts
         _verify_ref(repo_path, base)
         _verify_ref(repo_path, head)
-        diff = _git(["diff", "--unified=0", f"{base}{sep}{head}"], repo_path)
-        return _parse_unified_diff(diff), f"{base}{sep}{head}"
+        label = f"{base}{sep}{head}"
+        return _parse_unified_diff(_diff(repo_path, ["diff", "--unified=0", label])), label
 
     _verify_ref(repo_path, revspec)
+    if _is_shallow_root(repo_path, revspec):
+        # A shallow clone's oldest commit has its parents cut off, so git would
+        # diff it against the empty tree and every line would read as changed.
+        raise ValueError(f"{revspec!r} has no parent in this shallow clone; fetch more history")
     # --format= drops the commit message so only the diff body is parsed.
     # -m --first-parent matches what change risk counts on a merge; without it
     # git's combined diff emits nothing at all and a merged PR reads as empty.
-    diff = _git(["show", "--unified=0", "--format=", "-m", "--first-parent", revspec], repo_path)
-    return _parse_unified_diff(diff), revspec
+    args = ["show", "--unified=0", "--format=", "-m", "--first-parent", revspec]
+    return _parse_unified_diff(_diff(repo_path, args)), revspec
+
+
+def _diff(repo_path: str, args: list[str]) -> str:
+    """Run a diff, turning git's refusal (e.g. no merge-base) into ``ValueError``."""
+    try:
+        return _git(args, repo_path)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip().splitlines()
+        raise ValueError(detail[-1] if detail else f"git {args[0]} failed") from exc
+
+
+def _is_shallow_root(repo_path: str, rev: str) -> bool:
+    if _git(["rev-parse", "--is-shallow-repository"], repo_path, check=False).strip() != "true":
+        return False
+    return not _git(["rev-parse", "--verify", "--quiet", f"{rev}^"], repo_path, check=False).strip()

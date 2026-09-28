@@ -118,15 +118,14 @@ async def _coverage_for_rescore(
     from repowise.core.analysis.health.coverage import (
         CoverageConfig,
         build_coverage_map,
-        discover_artifacts,
     )
     from repowise.core.persistence.crud import load_coverage_for_repo
     from repowise.core.repo_config import load_repo_config
 
     cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
-    if cfg.reingest_on_update and cfg.auto_discover:
-        report_paths = discover_artifacts(repo_path, globs=cfg.artifacts or None)
+    if cfg.reingest_on_update:
+        report_paths = cfg.report_paths(repo_path)
         if report_paths:
             repo_keys = {pf.file_info.path for pf in parsed_files}
             resolved, _errors = build_coverage_map(

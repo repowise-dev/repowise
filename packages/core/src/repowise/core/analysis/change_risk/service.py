@@ -16,6 +16,7 @@ from .features import (
     extract_commit_features,
     extract_range_features,
     extract_worktree_features,
+    split_revspec,
     working_tree_is_dirty,
 )
 from .fix_history import (
@@ -162,12 +163,15 @@ def score_live_change(
     if working_tree:
         features = uncommitted
         anchor, excluded_ref = "HEAD", ""
-    elif ".." in target:
-        base, _, head = target.partition("..")
-        # Strip leading dot(s) so three-dot syntax (main...HEAD) gives a valid anchor ref.
-        head = head.lstrip(".") or "HEAD"
+    elif (parts := split_revspec(target)) is not None:
+        base, sep, head = parts
         features = extract_range_features(
-            repo_path, base, head, extensions=extensions, exclude_patterns=effective_excludes
+            repo_path,
+            base,
+            head,
+            extensions=extensions,
+            exclude_patterns=effective_excludes,
+            sep=sep,
         )
         # Fix history is read at the fork point, not at ``base``'s tip: with
         # three-dot syntax the diff starts at the merge-base, so base's later
