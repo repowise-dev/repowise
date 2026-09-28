@@ -590,7 +590,7 @@ compares the two revisions directly and needs no index refresh.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `revspec` | string | No | Commit or `base..head` range to score. Omit it to score uncommitted work, or pass `HEAD` when the tree is clean |
+| `revspec` | string | No | Commit, `base..head` range, or `base...head` (diffed from the merge-base) to score. Omit it to score uncommitted work, or pass `HEAD` when the tree is clean |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `extensions` | list[string] | No | File suffixes to count, such as `[".py", ".ts"]` |
 | `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |

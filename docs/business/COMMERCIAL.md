@@ -80,11 +80,12 @@ All of the following ship in `pip install repowise` today, free for internal use
 - **Dead-code detection**: pure graph traversal, confidence-tiered, framework-aware
   (ASP.NET, Django, FastAPI, Flask, Rails, Laravel), dynamic-import aware.
 - **Test intelligence, from a coverage report and from the call graph.** Ingests
-  LCOV / Cobertura / Clover like a coverage service, then does the half a coverage
-  service structurally cannot: answers *which tests reach this file* and *which
-  tests does this diff exercise* **with no report at all**, at **95.7% and 97.5%
-  precision** measured against a real `coverage run --contexts=test`. Measured and
-  inferred rows are labelled and never averaged. Zero LLM calls, no CI integration.
+  LCOV / Cobertura / Clover / JaCoCo / Go coverprofile like a coverage service,
+  then does the half a coverage service structurally cannot: answers *which
+  tests reach this file* and *which tests does this diff exercise* **with no
+  report at all**, at **95.7% and 97.5% precision** measured against a real
+  `coverage run --contexts=test`. Measured and inferred rows are labelled and
+  never averaged. Zero LLM calls, no CI integration needed.
   ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
 - **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
   offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
