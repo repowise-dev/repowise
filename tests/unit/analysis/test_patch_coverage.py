@@ -182,3 +182,22 @@ def test_markdown_lists_files_without_line_data() -> None:
         )
     )
     assert "1 changed file is in a report without line data" in md
+
+
+def test_exact_threshold_passes_and_reads_exactly() -> None:
+    # 57 / 100 * 100 is 56.99999999999999 in floating point.
+    coverable = list(range(1, 101))
+    pc = compute_patch_coverage(
+        {"a.py": set(coverable)}, _cov("a.py", coverable[:57], coverable), threshold=57
+    )
+    assert pc.gate == "pass"
+    assert "57.0%" in headline(pc)
+    assert pc.to_dict()["patch_coverage_pct"] == 57.0
+
+
+def test_serialized_percentage_is_floored_not_rounded() -> None:
+    coverable = list(range(1, 40001))
+    pc = compute_patch_coverage(
+        {"a.py": set(coverable)}, _cov("a.py", coverable[:31999], coverable), threshold=80
+    )
+    assert pc.to_dict()["patch_coverage_pct"] == 79.99

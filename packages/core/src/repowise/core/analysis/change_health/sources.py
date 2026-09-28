@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from ..change_risk.features import split_revspec
 from ..changed_lines import FileDiff, parse_unified_diff
 
 GIT_TIMEOUT_SECONDS = 120
@@ -157,8 +158,8 @@ class GitRevisionSource:
     def resolve(self, revspec: str | None) -> RevisionPair:
         if not revspec:
             return self._resolve_working_tree()
-        if ".." in revspec:
-            return self._resolve_range(revspec)
+        if (parts := split_revspec(revspec)) is not None:
+            return self._resolve_range(*parts)
         return self._resolve_commit(revspec)
 
     def _sha(self, ref: str) -> str:
@@ -199,17 +200,15 @@ class GitRevisionSource:
             self._changes(["diff", f"-M{_RENAME_SIMILARITY}%", base, head]),
         )
 
-    def _resolve_range(self, revspec: str) -> RevisionPair:
-        base, _, head = revspec.partition("..")
-        three_dot = head.startswith(".")
-        head = head.lstrip(".") or "HEAD"
-        base = base or "HEAD"
+    def _resolve_range(self, base: str, sep: str, head: str) -> RevisionPair:
         base_sha = self._sha(base)
         head_sha = self._sha(head)
-        if three_dot:
-            base_sha = (
-                _git(["merge-base", base, head], self.repo_path, check=False).strip() or base_sha
-            )
+        if sep == "...":
+            # Same meaning as change risk and changed lines: no merge-base (a
+            # shallow clone) is an error, not a silent two-dot diff.
+            base_sha = _git(["merge-base", base, head], self.repo_path, check=False).strip()
+            if not base_sha:
+                raise ValueError(f"No merge-base between {base!r} and {head!r}.")
         return RevisionPair(
             base,
             head,

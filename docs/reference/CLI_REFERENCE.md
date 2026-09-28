@@ -1222,9 +1222,9 @@ report, nothing else (no index, no LLM key). Report paths are resolved against
 
 `REVSPEC` is the change: `base...head` (the change since the branch forked
 from `base`, the pull-request view), `base..head`, or a single commit. Without
-it the check diffs `<base>...HEAD`, taking the base from `GITHUB_BASE_REF`,
-`CI_MERGE_REQUEST_DIFF_BASE_SHA`, `CHANGE_TARGET` or
-`BITBUCKET_PR_DESTINATION_BRANCH` (a branch name is read as `origin/<name>`),
+it the check diffs `<base>...HEAD`, taking the base branch from `GITHUB_BASE_REF`,
+`CI_MERGE_REQUEST_TARGET_BRANCH_NAME`, `CHANGE_TARGET` or
+`BITBUCKET_PR_DESTINATION_BRANCH` (read as `origin/<name>`),
 else `origin/HEAD`, a local `main` / `master`, or `origin/main` /
 `origin/master`; with none of those it exits 2 and asks for `REVSPEC`. Pass it
 explicitly in CI so the job says what it measures.
@@ -1320,10 +1320,11 @@ coverage-gate:
   variables:
     GIT_DEPTH: 0
   script:
+    - git fetch --no-tags origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
     - pytest --cov=src --cov-report=lcov:coverage/lcov.info
     - pip install repowise
     - >
-      repowise coverage check "$CI_MERGE_REQUEST_DIFF_BASE_SHA...HEAD"
+      repowise coverage check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
       --report coverage/lcov.info --fail-under 80 --format markdown
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"

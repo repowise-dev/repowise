@@ -124,7 +124,9 @@ async def _coverage_for_rescore(
 
     cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
-    if cfg.reingest_on_update:
+    # Without paths or discovery there is nothing to re-read, so the stored
+    # rows (e.g. from `coverage add`) stay authoritative.
+    if cfg.reingest_on_update and (cfg.paths or cfg.auto_discover):
         report_paths = cfg.report_paths(repo_path)
         if report_paths:
             repo_keys = {pf.file_info.path for pf in parsed_files}

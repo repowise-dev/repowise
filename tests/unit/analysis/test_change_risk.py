@@ -336,11 +336,11 @@ def test_score_live_change_three_dot_range_is_valid(git_repo: Path) -> None:
         ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
     ).stdout.strip()
     _commit(git_repo, {"r/a.py": "a=1\n"}, "feat: a", author="Dev")
-    # Three-dot syntax (base...HEAD) must degrade to a valid anchor rather than
-    # leaving a leading dot that git rejects as a ref.
+    # Three-dot syntax (base...HEAD) resolves to valid refs and keeps its
+    # merge-base meaning in the label.
     result = score_live_change(str(git_repo), f"{base}...HEAD", baseline=0)
     assert result.features.nf == 1
-    assert result.features.ref == f"{base}..HEAD"
+    assert result.features.ref == f"{base}...HEAD"
 
 
 def test_score_live_change_below_min_baseline_yields_no_percentile(git_repo: Path) -> None:

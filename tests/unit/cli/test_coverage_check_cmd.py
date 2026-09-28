@@ -45,7 +45,7 @@ def _lcov(repo, covered: dict[int, int]) -> str:
 
 def _run(repo, *args: str, env: dict[str, str] | None = None):
     # Unset the CI variables the default base reads, so the host CI cannot leak in.
-    base_env = {var: "" for var, _ in _CI_BASE_VARS}
+    base_env = dict.fromkeys(_CI_BASE_VARS, "")
     return CliRunner(env={**base_env, **(env or {})}).invoke(
         cli, ["coverage", "check", "--path", str(repo), *args]
     )
@@ -180,3 +180,12 @@ def test_no_merge_base_exits_2_not_1(repo) -> None:
     result = _run(repo, "main...lonely", "--report", report)
     assert result.exit_code == 2
     assert "merge-base" in result.output
+
+
+def test_flag_overrides_a_bad_config_threshold(repo) -> None:
+    (repo / ".repowise").mkdir()
+    (repo / ".repowise" / "config.yaml").write_text(
+        "coverage:\n  fail_under: 80%\n", encoding="utf-8"
+    )
+    report = _lcov(repo, {2: 1, 3: 1})
+    assert _run(repo, "main...feat", "--report", report, "--fail-under", "50").exit_code == 0

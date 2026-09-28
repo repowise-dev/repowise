@@ -261,6 +261,26 @@ def test_missing_reingested_coverage_is_authoritative_empty(tmp_path: Path, monk
     assert authoritative is True
 
 
+def test_reingest_with_nothing_to_read_keeps_stored_coverage(tmp_path: Path, monkeypatch) -> None:
+    # No paths and discovery off: coverage added by hand must survive an update.
+    from repowise.cli.commands.update_cmd import persistence
+
+    monkeypatch.setattr(
+        "repowise.core.repo_config.load_repo_config",
+        lambda _path: {"coverage": {"reingest_on_update": True, "auto_discover": False}},
+    )
+
+    async def _stored(_session, _repo_id):
+        return []
+
+    monkeypatch.setattr("repowise.core.persistence.crud.load_coverage_for_repo", _stored)
+
+    *_, authoritative = asyncio.run(
+        persistence._coverage_for_rescore(object(), "repo", tmp_path, [])
+    )
+    assert authoritative is False
+
+
 # ---------------------------------------------------------------------------
 # A retirement has to reach an index nobody re-indexes
 # ---------------------------------------------------------------------------

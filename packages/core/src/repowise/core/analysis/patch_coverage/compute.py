@@ -22,6 +22,7 @@ report format carries "file present, nothing executed".
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
@@ -218,8 +219,10 @@ def _file_patch(path: str, lines: set[int], fc: FileCoverage) -> FilePatchCovera
 def _pct(covered: int, coverable: int) -> float | None:
     # Unrounded, so a gate never passes on rounding (79.998% is below 80%).
     # Rounding happens only where the number is shown or serialized.
-    return covered / coverable * 100.0 if coverable else None
+    # Multiply first: 57 / 100 * 100 is 56.99999999999999.
+    return covered * 100.0 / coverable if coverable else None
 
 
 def _round(pct: float | None) -> float | None:
-    return None if pct is None else round(pct, 2)
+    # Floored like the display, so a serialized 80.0 never means 79.998.
+    return None if pct is None else math.floor(pct * 100) / 100

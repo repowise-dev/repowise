@@ -65,7 +65,7 @@ GIT_TIMEOUT_SECONDS = 60
 def split_revspec(revspec: str) -> tuple[str, str, str] | None:
     """Split ``base..head`` / ``base...head`` into ``(base, sep, head)``.
 
-    ``None`` for a single revision. An empty head means ``HEAD``. Three dots
+    ``None`` for a single revision. An empty side means ``HEAD``, as in git. Three dots
     keep their git meaning (diff from the merge-base), so every reader of a
     range measures the same change.
     """
@@ -73,7 +73,7 @@ def split_revspec(revspec: str) -> tuple[str, str, str] | None:
     if sep is None:
         return None
     base, _, head = revspec.partition(sep)
-    return base, sep, head or "HEAD"
+    return base or "HEAD", sep, head or "HEAD"
 
 
 def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
@@ -410,6 +410,6 @@ def extract_range_features(
         is_fix=is_fix,
         author=author,
         subject=subject,
-        ref=f"{base}..{head}",
+        ref=f"{base}{sep}{head}",
         file_churn=tuple(files),
     )

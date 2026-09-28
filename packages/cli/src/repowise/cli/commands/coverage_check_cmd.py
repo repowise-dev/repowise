@@ -25,13 +25,15 @@ from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 #: Exit status when the check could not be evaluated at all.
 EXIT_CANNOT_EVALUATE = 2
 
-#: CI variables naming the branch (or commit) a change will merge into, in the
-#: order they are consulted. A branch name is read from the ``origin`` remote.
+#: CI variables naming the branch a change will merge into, in the order they
+#: are consulted; each is read from the ``origin`` remote. A branch, not a
+#: base commit, so a pipeline that runs on a merge onto the target's tip
+#: (merged results) still diffs only the change's own lines.
 _CI_BASE_VARS = (
-    ("GITHUB_BASE_REF", "branch"),  # GitHub Actions pull_request
-    ("CI_MERGE_REQUEST_DIFF_BASE_SHA", "commit"),  # GitLab merge request
-    ("CHANGE_TARGET", "branch"),  # Jenkins multibranch pull request
-    ("BITBUCKET_PR_DESTINATION_BRANCH", "branch"),  # Bitbucket Pipelines
+    "GITHUB_BASE_REF",  # GitHub Actions pull_request
+    "CI_MERGE_REQUEST_TARGET_BRANCH_NAME",  # GitLab merge request
+    "CHANGE_TARGET",  # Jenkins multibranch pull request
+    "BITBUCKET_PR_DESTINATION_BRANCH",  # Bitbucket Pipelines
 )
 
 
@@ -113,7 +115,7 @@ def _evaluate(revspec, reports, report_format, fail_under, repo, notices):
     from repowise.core.analysis.patch_coverage import patch_coverage_from_resolved
 
     root = _repo_root(repo)
-    cfg = _coverage_config(root)
+    cfg = _coverage_config(root, validate_threshold=fail_under is None)
     threshold = fail_under if fail_under is not None else cfg.fail_under
     report_paths = [Path(p) for p in reports] or cfg.report_paths(root)
     if not report_paths:
@@ -166,7 +168,7 @@ def _repo_root(repo: str | None) -> Path:
     return Path(root)
 
 
-def _coverage_config(root: Path):
+def _coverage_config(root: Path, *, validate_threshold: bool):
     from repowise.core.analysis.health.coverage import CoverageConfig
     from repowise.core.repo_config import RepoConfigError, load_repo_config
 
@@ -176,7 +178,8 @@ def _coverage_config(root: Path):
         raise _CannotEvaluateError(str(exc)) from exc
     cfg = CoverageConfig.from_repo_config(raw)
     block = raw.get("coverage")
-    if isinstance(block, dict) and block.get("fail_under") is not None and cfg.fail_under is None:
+    bad = isinstance(block, dict) and block.get("fail_under") is not None and cfg.fail_under is None
+    if validate_threshold and bad:
         # A gate that silently stops gating is worse than no gate.
         raise _CannotEvaluateError(
             f"coverage.fail_under must be a number from 0 to 100, got {block['fail_under']!r}."
@@ -188,10 +191,9 @@ def _default_revspec(root: str) -> str:
     """``<base>...HEAD`` from the CI's pull-request variables, else the default branch."""
     from repowise.core import git_refs
 
-    for var, kind in _CI_BASE_VARS:
-        value = os.environ.get(var, "").strip()
-        if value:
-            return f"{value if kind == 'commit' else f'origin/{value}'}...HEAD"
+    for var in _CI_BASE_VARS:
+        if branch := os.environ.get(var, "").strip():
+            return f"origin/{branch}...HEAD"
     base = git_refs.default_base(root)
     if base == "HEAD":
         # CI checkouts rarely set origin/HEAD and have no local trunk branch.
@@ -223,7 +225,9 @@ def _changed_lines(root: str, revspec: str) -> tuple[dict[str, set[int]], str]:
 
 def _fail(fmt: str, message: str) -> NoReturn:
     if fmt == "github":
-        click.echo(f"::error::{message}")
+        from repowise.core.analysis.patch_coverage import github_error
+
+        click.echo(github_error(message))
     err_console.print(f"[red]{escape(message)}[/red]")
     raise click.exceptions.Exit(EXIT_CANNOT_EVALUATE)
 

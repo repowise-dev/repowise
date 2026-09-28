@@ -151,3 +151,13 @@ def test_range_without_merge_base_raises_value_error(git_repo) -> None:
 
     with pytest.raises(ValueError):
         changed_lines(str(git_repo), "main...lonely")
+
+
+def test_split_revspec() -> None:
+    from repowise.core.analysis.change_risk.features import split_revspec
+
+    assert split_revspec("a..b") == ("a", "..", "b")
+    assert split_revspec("a...b") == ("a", "...", "b")
+    assert split_revspec("HEAD~3..") == ("HEAD~3", "..", "HEAD")
+    assert split_revspec("..HEAD") == ("HEAD", "..", "HEAD")
+    assert split_revspec("HEAD") is None

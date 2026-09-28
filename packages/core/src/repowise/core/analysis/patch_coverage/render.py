@@ -118,8 +118,13 @@ def github_annotations(pc: PatchCoverage) -> list[str]:
             "listed in the job summary"
         )
     if pc.gate == "fail":
-        lines.append(f"::error::{_escape_data(headline(pc, markdown=False))}")
+        lines.append(github_error(headline(pc, markdown=False)))
     return lines
+
+
+def github_error(message: str) -> str:
+    """A GitHub Actions ``::error::`` workflow command."""
+    return f"::error::{_escape_data(message)}"
 
 
 def format_ranges(ranges: Sequence[tuple[int, int]], limit: int | None = None) -> str:
