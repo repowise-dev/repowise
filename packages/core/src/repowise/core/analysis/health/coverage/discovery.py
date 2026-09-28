@@ -369,15 +369,8 @@ def _match_key(
     best_overlap = 0
     winners: list[str] = []
     for cand in candidates:
-        cand_segs = cand.split("/")
-        overlap = 0
-        for a, b in zip(reversed(report_segs), reversed(cand_segs), strict=False):
-            if a != b:
-                break
-            overlap += 1
-        if not (overlap >= 2 or overlap == len(cand_segs) or len(report_segs) == 1):
-            continue
-        if _VENDORED_DIRS.intersection(report_segs[: len(report_segs) - overlap]):
+        overlap = _agreed_overlap(report_segs, cand.split("/"))
+        if overlap is None:
             continue
         if overlap > best_overlap:
             best_overlap = overlap
@@ -396,17 +389,35 @@ def _match_key(
 _VENDORED_DIRS = PRUNED_DIRS | frozenset({"site-packages", "dist-packages", "vendor"})
 
 
+def _common_run(a: Iterable[str], b: Iterable[str]) -> int:
+    """How many leading items *a* and *b* share."""
+    n = 0
+    for x, y in zip(a, b, strict=False):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _agreed_overlap(report_segs: list[str], cand_segs: list[str]) -> int | None:
+    """Trailing segments shared, or ``None`` when the match rests on too little.
+
+    See :func:`_match_key` for what counts as agreement.
+    """
+    overlap = _common_run(reversed(report_segs), reversed(cand_segs))
+    if not (overlap >= 2 or overlap == len(cand_segs) or len(report_segs) == 1):
+        return None
+    if _VENDORED_DIRS.intersection(report_segs[: len(report_segs) - overlap]):
+        return None
+    return overlap
+
+
 def _nearest(keys: list[str], directory: str) -> list[str]:
     """The keys sharing the longest leading directory run with *directory*."""
     dir_segs = directory.split("/")
 
     def shared(key: str) -> int:
-        n = 0
-        for a, b in zip(key.split("/")[:-1], dir_segs, strict=False):
-            if a != b:
-                break
-            n += 1
-        return n
+        return _common_run(key.split("/")[:-1], dir_segs)
 
     best = max(shared(k) for k in keys)
     return [k for k in keys if shared(k) == best] if best else keys
@@ -449,19 +460,32 @@ def _resolve_path(
             key, _ = _match_key(joined, repo_keys, suffix_index, prefer_dir=origin)
             if key is not None:
                 found[key] = found.get(key, False) or key in (joined, norm)
-        if len(found) == 1:
-            key, exact = found.popitem()
-            return key, False, exact
         if found:
-            return None, True, False
+            return _one_root(found)
     if origin and relative and not path_prefix:
-        segs = origin.split("/")
-        for depth in range(len(segs), 0, -1):
-            candidate = "/".join([*segs[:depth], norm])
-            if candidate in repo_keys:
-                return candidate, False, True
+        key = _under_origin(norm, origin, repo_keys)
+        if key is not None:
+            return key, False, True
     key, ambiguous = _match_key(norm, repo_keys, suffix_index, prefer_dir=origin)
     return key, ambiguous, key is not None and norm == key
+
+
+def _one_root(found: dict[str, bool]) -> tuple[str | None, bool, bool]:
+    """The source-root step's answer: one key, or ambiguous when roots disagree."""
+    if len(found) > 1:
+        return None, True, False
+    key, exact = next(iter(found.items()))
+    return key, False, exact
+
+
+def _under_origin(norm: str, origin: str, repo_keys: set[str]) -> str | None:
+    """*norm* under the report's directory or its nearest parent that has it."""
+    segs = origin.split("/")
+    for depth in range(len(segs), 0, -1):
+        candidate = "/".join([*segs[:depth], norm])
+        if candidate in repo_keys:
+            return candidate
+    return None
 
 
 def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
