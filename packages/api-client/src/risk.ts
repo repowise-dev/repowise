@@ -1,9 +1,11 @@
 /**
  * REST client for the change-risk endpoints.
- * Backend: packages/server/src/repowise/server/routers/git.py (risk/range)
+ * Backend: packages/server/src/repowise/server/routers/git.py (risk/range,
+ * coverage/patch)
  */
 
 import { apiGet } from "./client";
+import type { PatchCoverageResponse } from "@repowise-dev/types/generated/http";
 import type { RiskAuthority } from "@repowise-dev/types/risk-semantics";
 import type { RiskDriverResponse } from "./types/git";
 
@@ -73,4 +75,18 @@ export async function getRiskRange(
     head: params.head,
     baseline: params.baseline,
   });
+}
+
+/**
+ * Patch coverage of `base...head`: the share of the change's executable lines
+ * the stored test coverage ran. Null when no coverage report was ingested.
+ */
+export async function getPatchCoverage(
+  repoId: string,
+  params: Pick<RiskRangeParams, "base" | "head">,
+): Promise<PatchCoverageResponse | null> {
+  return apiGet<PatchCoverageResponse | null>(
+    `/api/repos/${repoId}/coverage/patch`,
+    { base: params.base, head: params.head },
+  );
 }

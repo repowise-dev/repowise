@@ -35,6 +35,7 @@ export * from "./hidden-coupling-list";
 export * from "./defect-accuracy-card";
 export * from "./code-health-lede";
 export * from "./coverage-lede";
+export * from "./patch-coverage-summary";
 export * from "./severity-mark";
 export * from "./code-health-adapter";
 export * from "./file-opportunity";

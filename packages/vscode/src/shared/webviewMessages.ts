@@ -34,6 +34,7 @@ import type {
   PageResponse,
 } from "@repowise-dev/api-client/types";
 import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
+import type { PatchCoverageResponse } from "@repowise-dev/types/generated/http";
 import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import type { ArchitectureView } from "@repowise-dev/ui/c4";
@@ -219,6 +220,12 @@ export interface RiskRangeReport {
   base: string;
   branch: string | null;
   result: RiskRangeResponse;
+  /**
+   * Patch coverage of the same base...HEAD range. Null when no coverage was
+   * ingested, or when the fetch failed (an older server has no endpoint): the
+   * panel then shows nothing rather than an error.
+   */
+  patchCoverage: PatchCoverageResponse | null;
 }
 
 /**
