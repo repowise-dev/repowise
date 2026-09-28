@@ -200,15 +200,17 @@ def _mapping_report(repo_path: Path) -> dict[str, Any]:
             "reason": f"index could not be read: {type(exc).__name__}",
         }
 
-    # The count that actually catches the reported failure. Counted with the same
-    # traverser the ingestion phase uses, so the two numbers describe the same
-    # file set rather than two different notions of "a file".
+    # The count that actually catches the reported failure. Counted through
+    # ``traverse()``, the path ingestion takes, so the two numbers describe the
+    # same file set: ``_walk()`` yields images, fonts and lockfiles that
+    # ``_build_file_info`` drops, and counting those reports a healthy index as
+    # broken whenever assets outnumber a quarter of the source tree.
     if report["mapping_valid"]:
         try:
             from repowise.core.ingestion.traverser import FileTraverser
 
             traverser = FileTraverser(repo_path)
-            report["working_tree_files"] = sum(1 for _ in traverser._walk())
+            report["working_tree_files"] = sum(1 for _ in traverser.traverse())
         except Exception as exc:
             report["reason"] = f"working tree could not be walked: {type(exc).__name__}"
             return report
