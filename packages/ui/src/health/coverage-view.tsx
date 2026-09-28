@@ -492,6 +492,8 @@ function CoverageGap({
   const map = data.inferred as InferredTestMap;
   const measured = map.measured_file_count ?? 0;
   const unreached = map.files.filter((f) => !f.reached);
+  const paths = data.summary.report_paths;
+  const missed = paths ? paths.unmatched + paths.ambiguous : 0;
 
   return (
     <OverviewSection
@@ -502,6 +504,31 @@ function CoverageGap({
           : "The dependency graph could not answer for the files the coverage report left out."
       }
     >
+      {/* Why a file can be missing here: the report named it under a path
+          that did not map to this repository. */}
+      {paths && paths.total > 0 ? (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          <span className="tabular-nums">
+            {paths.matched.toLocaleString()} of {paths.total.toLocaleString()}
+          </span>{" "}
+          report paths matched a file in this repository
+          {missed > 0 ? (
+            <>
+              ; {missed.toLocaleString()} did not
+              {paths.unmatched_sample[0] ? (
+                <>
+                  {" "}(for example{" "}
+                  <span className="font-mono">{paths.unmatched_sample[0]}</span>). Set{" "}
+                  <span className="font-mono">coverage.strip_prefix</span> or{" "}
+                  <span className="font-mono">coverage.path_prefix</span> if the
+                  paths are off
+                </>
+              ) : null}
+            </>
+          ) : null}
+          .
+        </p>
+      ) : null}
       <div className="border-t border-[var(--color-border-default)]">
         <ResponsiveTable
           columns={gapColumns}

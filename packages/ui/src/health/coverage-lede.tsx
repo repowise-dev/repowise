@@ -155,6 +155,29 @@ export function CoverageLede({
               : "branch coverage rides on the same report."}
           </p>
         )}
+
+        {/* Current is the quiet default; only a report from another commit is marked. */}
+        {summary.freshness?.status === "stale" && (
+          <p className="mt-2.5">
+            <strong className="font-semibold text-[var(--color-warning)]">
+              Measured at another commit.
+            </strong>{" "}
+            The report ran at{" "}
+            <span className="font-mono text-[var(--color-text-primary)]">
+              {summary.ingested_commit_sha?.slice(0, 8)}
+            </span>
+            {summary.freshness.indexed_commit ? (
+              <>
+                {" "}and the index is at{" "}
+                <span className="font-mono text-[var(--color-text-primary)]">
+                  {summary.freshness.indexed_commit.slice(0, 8)}
+                </span>
+              </>
+            ) : null}
+            , so its line numbers may describe code that has since moved. Run the
+            tests and ingest again to bring it level.
+          </p>
+        )}
       </PageLede>
 
       <StatRibbon stats={stats} />
